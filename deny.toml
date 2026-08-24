@@ -1,0 +1,48 @@
+# ADR-P0021 — dependency licence policy.
+#
+# We ship a proprietary product on five platforms including two app stores.
+# Copyleft is a hard no in anything shipped. MuPDF / Ghostscript / veraPDF /
+# jbig2dec remain usable as CI oracles (ADR-P0009), never as dependencies.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",       # file-level, case by case
+    "OFL-1.1",       # fonts only
+    "LicenseRef-Selis-Proprietary",
+]
+confidence-threshold = 0.93
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Never link a third-party PDF implementation (ADR-P0008 / ADR-P0009).
+deny = [
+    { name = "pdf" },
+    { name = "lopdf" },
+    { name = "pdfium-render" },
+    { name = "mupdf" },
+    { name = "printpdf" },
+]
+
+[advisories]
+version = 2
+unmaintained = "all"
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

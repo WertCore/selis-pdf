@@ -1,0 +1,95 @@
+# Selis — PDF platform workspace.
+#
+# `[workspace.dependencies]` is the ONLY place a dependency version appears
+# (03-CONVENTIONS.md §1, ADR-P0002).
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/cli", "xtask"]
+
+[workspace.package]
+edition      = "2021"
+rust-version = "1.85"
+license      = "LicenseRef-Selis-Proprietary"
+authors      = ["Selis"]
+repository   = "https://github.com/selis/selis"
+version      = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# Dependencies. Versions live here and nowhere else.
+# ADR-P0021: MIT / Apache-2.0 / BSD-2 / BSD-3 / ISC / Zlib / Unicode-3.0 only.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# L0/L1
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+toml        = "0.8"
+
+# Filters (ADR-P0018)
+miniz_oxide = "0.8"
+
+# Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
+aes         = "0.8"
+cbc         = { version = "0.1", features = ["alloc"] }
+md-5        = "0.10"
+sha2        = "0.10"
+
+# CLI
+clap        = { version = "4", features = ["derive"] }
+
+# Test-only
+proptest    = "1"
+
+# Internal crates — L0
+selis-error   = { path = "crates/selis-error", version = "0.1.0" }
+selis-bytes   = { path = "crates/selis-bytes", version = "0.1.0" }
+selis-geom    = { path = "crates/selis-geom", version = "0.1.0" }
+selis-color   = { path = "crates/selis-color", version = "0.1.0" }
+selis-log     = { path = "crates/selis-log", version = "0.1.0" }
+# L1
+selis-io      = { path = "crates/selis-io", version = "0.1.0" }
+selis-sandbox = { path = "crates/selis-sandbox", version = "0.1.0" }
+selis-crypto  = { path = "crates/selis-crypto", version = "0.1.0" }
+# L2
+selis-pdf-cos      = { path = "crates/selis-pdf-cos", version = "0.1.0" }
+selis-pdf-filter   = { path = "crates/selis-pdf-filter", version = "0.1.0" }
+selis-pdf-doc      = { path = "crates/selis-pdf-doc", version = "0.1.0" }
+selis-pdf-edit     = { path = "crates/selis-pdf-edit", version = "0.1.0" }
+selis-pdf-optimize = { path = "crates/selis-pdf-optimize", version = "0.1.0" }
+selis-image        = { path = "crates/selis-image", version = "0.1.0" }
+# L3
+selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0" }
+selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
+selis-job        = { path = "crates/selis-job", version = "0.1.0" }
+
+# ---------------------------------------------------------------------------
+# Lints — 03-CONVENTIONS.md §1. The hostile-input set.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code               = "warn"
+missing_docs              = "deny"
+unreachable_pub           = "deny"
+elided_lifetimes_in_paths = "deny"
+
+[workspace.lints.clippy]
+unwrap_used              = "deny"
+expect_used              = "deny"
+panic                    = "deny"
+indexing_slicing         = "deny"
+arithmetic_side_effects  = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss           = "deny"
+integer_division         = "deny"
+unwrap_in_result         = "deny"
+large_stack_arrays       = "deny"
+recursive_format_impl    = "deny"
+mem_forget               = "deny"
+todo                     = "deny"
+unimplemented            = "deny"
+missing_panics_doc       = "deny"
+
+[profile.release]
+panic = "unwind" # SL-0.ERR.03: the trampoline needs unwinding.
+lto   = "thin"
+
+[profile.bench]
+lto = "thin"

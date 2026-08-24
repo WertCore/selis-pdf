@@ -1,0 +1,16 @@
+﻿[package]
+name = "selis-pdf-filter"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }

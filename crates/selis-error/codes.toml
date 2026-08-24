@@ -1,0 +1,611 @@
+# The error-code registry — 03-CONVENTIONS.md §3, SL-0.ERR.01.
+#
+# NEVER reuse a number. NEVER change a `meaning`. `xtask check-codes` enforces
+# both, plus "used in source but absent here".
+#
+# `doc_state` answers, for every error: *what happened to the user's document?*
+#   NotLoaded | Loaded | PartiallyLoaded | Unchanged | Modified
+#
+# Ranges:
+#   1000–1499 COS / structure / xref      1500–1799 Filters and codecs
+#   1800–1999 Encryption and permissions  2000–2299 Fonts and text
+#   2300–2599 Content and rendering       2600–2799 Annotations and forms
+#   2800–2999 Edit and save               3000–3199 Redaction
+#   3200–3399 Signatures and PKI          3400–3599 OCR and conversion
+#   3600–3799 Accessibility/conformance   4000–4299 Budget / sandbox
+#   4300–4499 Policy / entitlement        5000–5299 I/O and sources
+#   6000–6299 Bindings                    7000–7299 Service tier
+
+# ---------------------------------------------------------------------------
+# 1000–1499 — COS / structure / xref
+# ---------------------------------------------------------------------------
+[[code]]
+id = 1000
+name = "NOT_A_PDF"
+kind = "Malformed"
+meaning = "The bytes do not begin with a PDF header and no header was found within the scan window."
+user_msg = "This file does not look like a PDF."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1001
+name = "LEX_UNEXPECTED_BYTE"
+kind = "Malformed"
+meaning = "The lexer encountered a byte that cannot begin any COS token."
+user_msg = "This PDF contains a syntax error and could not be read."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1002
+name = "LEX_UNTERMINATED_STRING"
+kind = "Malformed"
+meaning = "A literal or hexadecimal string ran to end of input without a terminator."
+user_msg = "This PDF contains an unterminated text value."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1003
+name = "LEX_NUMBER_OVERFLOW"
+kind = "Malformed"
+meaning = "A numeric token exceeded the representable range."
+user_msg = "This PDF contains a number that is out of range."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1010
+name = "OBJ_UNEXPECTED"
+kind = "Malformed"
+meaning = "An object of an unexpected COS type was found where the structure requires another."
+user_msg = "This PDF's internal structure is inconsistent."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1011
+name = "OBJ_MISSING"
+kind = "Malformed"
+meaning = "An indirect reference resolved to no object in any revision."
+user_msg = "This PDF refers to content that is missing."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1012
+name = "OBJ_CYCLE"
+kind = "Malformed"
+meaning = "Reference resolution revisited an object already on the resolution path."
+user_msg = "This PDF contains a circular reference."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1013
+name = "OBJ_GENERATION_MISMATCH"
+kind = "Malformed"
+meaning = "The object header's generation number does not match the cross-reference entry."
+user_msg = "This PDF's index disagrees with its content."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1100
+name = "XREF_NOT_FOUND"
+kind = "Malformed"
+meaning = "No startxref keyword was found in the tail scan window."
+user_msg = "This PDF has no readable index."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1101
+name = "XREF_MALFORMED"
+kind = "Malformed"
+meaning = "A cross-reference table or stream was structurally invalid."
+user_msg = "This PDF's index is damaged."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1102
+name = "XREF_PREV_CYCLE"
+kind = "Malformed"
+meaning = "The /Prev chain of cross-reference sections revisits an offset already seen."
+user_msg = "This PDF's revision history contains a loop."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1103
+name = "TRAILER_MISSING_ROOT"
+kind = "Malformed"
+meaning = "No trailer in any revision supplies a usable /Root catalog reference."
+user_msg = "This PDF does not declare its document root."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1204
+name = "XREF_UNRECOVERABLE"
+kind = "Malformed"
+meaning = "The cross-reference data is damaged beyond reconstruction."
+user_msg = "This PDF's index is damaged and could not be rebuilt."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1205
+name = "OBJSTM_MALFORMED"
+kind = "Malformed"
+meaning = "A compressed object stream (/ObjStm) had an invalid header, /N, or /First."
+user_msg = "This PDF contains a damaged object container."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1206
+name = "OBJSTM_NESTED"
+kind = "Malformed"
+meaning = "An object stream was found inside another object stream, which the format forbids."
+user_msg = "This PDF nests object containers illegally."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1300
+name = "PAGE_TREE_MALFORMED"
+kind = "Malformed"
+meaning = "The page tree is not a tree: a node was reachable by two paths, or a kid was not a node."
+user_msg = "This PDF's page structure is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1301
+name = "PAGE_OUT_OF_RANGE"
+kind = "Invalid"
+meaning = "A page index was requested that the document does not contain."
+user_msg = "That page does not exist in this document."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 1302
+name = "STREAM_LENGTH_MISMATCH"
+kind = "Malformed"
+meaning = "A stream's /Length disagreed with the position of its endstream keyword."
+user_msg = "This PDF contains a stream with an incorrect declared length."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+# ---------------------------------------------------------------------------
+# 1500–1799 — Filters and codecs
+# ---------------------------------------------------------------------------
+[[code]]
+id = 1500
+name = "FILTER_UNKNOWN"
+kind = "Unsupported"
+meaning = "A stream declared a filter name the engine does not implement."
+user_msg = "This PDF uses a compression method Selis does not yet support."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1501
+name = "FILTER_PARAM_INVALID"
+kind = "Malformed"
+meaning = "A /DecodeParms entry was absent, of the wrong type, or out of range for its filter."
+user_msg = "This PDF has invalid compression settings."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1502
+name = "FILTER_CHAIN_TOO_LONG"
+kind = "Malformed"
+meaning = "A filter chain exceeded the configured maximum length."
+user_msg = "This PDF applies an unreasonable number of compression layers."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1510
+name = "FLATE_CORRUPT"
+kind = "Malformed"
+meaning = "A FlateDecode stream could not be inflated and yielded no usable prefix."
+user_msg = "Compressed data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1511
+name = "PREDICTOR_INVALID"
+kind = "Malformed"
+meaning = "A PNG or TIFF predictor row used an undefined filter type, or the row length was wrong."
+user_msg = "Compressed data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1520
+name = "LZW_CORRUPT"
+kind = "Malformed"
+meaning = "An LZWDecode stream referenced a code outside the current dictionary."
+user_msg = "Compressed data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1530
+name = "ASCII_CORRUPT"
+kind = "Malformed"
+meaning = "An ASCIIHexDecode or ASCII85Decode stream contained an invalid character or group."
+user_msg = "Encoded data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1540
+name = "RUNLENGTH_CORRUPT"
+kind = "Malformed"
+meaning = "A RunLengthDecode stream ended inside a run."
+user_msg = "Encoded data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1550
+name = "IMAGE_UNSUPPORTED"
+kind = "Unsupported"
+meaning = "An image used a codec, colour space, or bit depth the engine does not yet decode."
+user_msg = "Selis cannot yet read this image format."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 1551
+name = "IMAGE_MALFORMED"
+kind = "Malformed"
+meaning = "An image's headers were self-inconsistent or its sample data was truncated."
+user_msg = "This image file is damaged."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
+# 1800–1999 — Encryption and permissions
+# ---------------------------------------------------------------------------
+[[code]]
+id = 1800
+name = "ENCRYPTED"
+kind = "Auth"
+meaning = "The document is encrypted and no password was supplied."
+user_msg = "This PDF is password-protected."
+retryable = true
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1801
+name = "WRONG_PASSWORD"
+kind = "Auth"
+meaning = "Neither the user nor the owner password validated against the /Encrypt dictionary."
+user_msg = "That password is not correct for this PDF."
+retryable = true
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1802
+name = "ENCRYPT_UNSUPPORTED"
+kind = "Unsupported"
+meaning = "The document uses a security handler or revision the engine does not implement."
+user_msg = "This PDF uses a protection method Selis does not support."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1803
+name = "ENCRYPT_MALFORMED"
+kind = "Malformed"
+meaning = "The /Encrypt dictionary was missing required entries or had invalid key lengths."
+user_msg = "This PDF's protection data is damaged."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 1804
+name = "PERMISSION_DENIED"
+kind = "Policy"
+meaning = "The document's permission bits forbid the requested operation and no override was given."
+user_msg = "This PDF's permissions do not allow that."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 1805
+name = "PERMS_TAMPERED"
+kind = "Malformed"
+meaning = "The /Perms entry did not decrypt to the expected permission values (revision 6)."
+user_msg = "This PDF's permission data has been altered."
+retryable = false
+doc_state = "NotLoaded"
+
+# ---------------------------------------------------------------------------
+# 2800–2999 — Edit and save
+# ---------------------------------------------------------------------------
+[[code]]
+id = 2800
+name = "WRITE_FAILED"
+kind = "Io"
+meaning = "The destination rejected a write or could not be committed."
+user_msg = "Selis could not write the output file."
+retryable = true
+doc_state = "Unchanged"
+
+[[code]]
+id = 2801
+name = "PREFIX_VIOLATION"
+kind = "Internal"
+meaning = "An incremental save produced output whose prefix is not byte-identical to the source (invariant I2)."
+user_msg = "Selis stopped a save that would have altered your original file."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2802
+name = "VERIFY_FAILED"
+kind = "Internal"
+meaning = "Post-write verification found the output did not match the model it was written from."
+user_msg = "The saved file did not verify, so Selis discarded it and kept your original."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2803
+name = "MUTATION_INVALID"
+kind = "Invalid"
+meaning = "A mutation referenced an object, page, or field that does not exist in the current model."
+user_msg = "That change cannot be applied to this document."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2804
+name = "SOURCE_CHANGED"
+kind = "Io"
+meaning = "The source document changed underneath an open session; the journal is no longer valid against it."
+user_msg = "This file changed on disk while it was open."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2805
+name = "NOTHING_TO_WRITE"
+kind = "Invalid"
+meaning = "An incremental save was requested with an empty journal."
+user_msg = "There are no changes to save."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2806
+name = "MERGE_CONFLICT"
+kind = "Invalid"
+meaning = "Cross-document reconciliation found a collision the configured policy refuses to resolve."
+user_msg = "These documents contain conflicting content that Selis will not silently merge."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 2807
+name = "SIGNATURE_WOULD_BREAK"
+kind = "Policy"
+meaning = "The requested operation rewrites bytes covered by an existing signature's /ByteRange."
+user_msg = "This change would invalidate an existing digital signature."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
+# 3600–3799 — Accessibility and conformance
+# ---------------------------------------------------------------------------
+[[code]]
+id = 3600
+name = "CONFORMANCE_RULE_UNEVALUATED"
+kind = "Unsupported"
+meaning = "A conformance rule could not be evaluated because the engine area it needs is below the required ladder level."
+user_msg = "Selis cannot check that rule yet."
+retryable = false
+doc_state = "Loaded"
+
+# ---------------------------------------------------------------------------
+# 4000–4299 — Budget / sandbox / cancellation
+# ---------------------------------------------------------------------------
+[[code]]
+id = 4000
+name = "BUDGET_BYTES"
+kind = "Budget"
+meaning = "The operation's allocation budget was exhausted."
+user_msg = "This document needs more memory than Selis is allowed to use here."
+retryable = true
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 4001
+name = "BUDGET_WALL"
+kind = "Budget"
+meaning = "The operation's wall-clock deadline expired."
+user_msg = "This document is taking too long to process."
+retryable = true
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 4002
+name = "BUDGET_DEPTH"
+kind = "Budget"
+meaning = "The nesting-depth budget was exhausted."
+user_msg = "This document nests content too deeply."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 4003
+name = "BUDGET_OBJECTS"
+kind = "Budget"
+meaning = "The indirect-object resolution budget was exhausted."
+user_msg = "This document contains more objects than Selis is allowed to load here."
+retryable = true
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 4004
+name = "BUDGET_PIXELS"
+kind = "Budget"
+meaning = "The rasterised-sample budget was exhausted."
+user_msg = "This page is too large to render at this size."
+retryable = true
+doc_state = "Loaded"
+
+[[code]]
+id = 4010
+name = "BUDGET_POISONED"
+kind = "Budget"
+meaning = "A charge was attempted against a guard already poisoned by a prior exhaustion."
+user_msg = "This operation was already stopped."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 4020
+name = "CANCELLED"
+kind = "Cancelled"
+meaning = "The caller's cancel token was signalled."
+user_msg = "Cancelled."
+retryable = true
+doc_state = "Unchanged"
+
+[[code]]
+id = 4100
+name = "INTERNAL_PANIC"
+kind = "Internal"
+meaning = "A panic was caught at a binding boundary and converted to an error. Always a bug."
+user_msg = "Selis hit an internal error. Your document was not modified."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 4101
+name = "INTERNAL_INVARIANT"
+kind = "Internal"
+meaning = "An engine invariant was violated. Always a bug."
+user_msg = "Selis hit an internal error. Your document was not modified."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
+# 4300–4499 — Policy / entitlement / consent
+# ---------------------------------------------------------------------------
+[[code]]
+id = 4300
+name = "FEATURE_NOT_ENTITLED"
+kind = "Policy"
+meaning = "The active entitlement set does not include the requested feature."
+user_msg = "That feature is not included in your plan."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 4301
+name = "ACTIVE_CONTENT_BLOCKED"
+kind = "Policy"
+meaning = "The document requested JavaScript, a launch/URI action, or an external stream reference while active content was disabled."
+user_msg = "Selis blocked this document from running embedded code."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 4302
+name = "CLOUD_CONSENT_REQUIRED"
+kind = "Policy"
+meaning = "An operation would send document-derived data off the device without a consent token."
+user_msg = "This action would send your document off this device, so Selis stopped it."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
+# 5000–5299 — I/O and sources
+# ---------------------------------------------------------------------------
+[[code]]
+id = 5000
+name = "IO_READ_FAILED"
+kind = "Io"
+meaning = "The source returned an error for a read within its declared length."
+user_msg = "Selis could not read this file."
+retryable = true
+doc_state = "NotLoaded"
+
+[[code]]
+id = 5001
+name = "IO_UNEXPECTED_EOF"
+kind = "Io"
+meaning = "A read within the source's declared length returned fewer bytes than the source claims exist."
+user_msg = "This file appears to be truncated."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 5002
+name = "IO_PENDING"
+kind = "Io"
+meaning = "The requested range is not resident; the caller must supply it and re-drive the parse."
+user_msg = "Waiting for more of this document to arrive."
+retryable = true
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 5003
+name = "IO_NOT_RANDOM_ACCESS"
+kind = "Io"
+meaning = "An operation requiring seeking was attempted on a stream-only source."
+user_msg = "This document must be fully downloaded before that action."
+retryable = true
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 5004
+name = "SINK_FINISHED"
+kind = "Internal"
+meaning = "A write was attempted against a sink that was already finished."
+user_msg = "Selis hit an internal error. Your document was not modified."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 5005
+name = "SOURCE_TOO_LARGE"
+kind = "Budget"
+meaning = "The source's declared length exceeds the addressable or budgeted maximum."
+user_msg = "This file is too large for Selis to open here."
+retryable = false
+doc_state = "NotLoaded"
+
+# ---------------------------------------------------------------------------
+# 6000–6299 — Bindings
+# ---------------------------------------------------------------------------
+[[code]]
+id = 6000
+name = "BINDING_BAD_HANDLE"
+kind = "Invalid"
+meaning = "A handle passed across a binding boundary was null, stale, or of the wrong type."
+user_msg = "Selis hit an internal error. Your document was not modified."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 6001
+name = "BINDING_BAD_ARGUMENT"
+kind = "Invalid"
+meaning = "An argument across a binding boundary failed validation before entering the engine."
+user_msg = "That request was not valid."
+retryable = false
+doc_state = "Unchanged"

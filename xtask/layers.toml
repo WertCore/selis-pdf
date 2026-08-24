@@ -1,0 +1,158 @@
+# ADR-P0003 — strict, mechanically-enforced layering.
+# `cargo xtask check-layers` fails the build on any edge that violates this file.
+#
+# Rule: a crate may depend on STRICTLY LOWER layers only. Sideways edges within
+# a layer require an entry in [[edge]] with a written justification.
+#
+# Crates listed here but not yet present in the workspace are planned (later
+# phases); check-layers ignores absent crates and reports them as `planned`.
+
+[layers]
+# L0 — Foundation
+selis-error = 0
+selis-bytes = 0
+selis-geom  = 0
+selis-color = 0
+selis-log   = 0
+
+# L1 — Abstraction
+selis-io      = 1
+selis-sandbox = 1
+selis-crypto  = 1
+
+# L2 — Domain
+selis-pdf-cos      = 2
+selis-pdf-filter   = 2
+selis-pdf-doc      = 2
+selis-pdf-edit     = 2
+selis-pdf-optimize = 2
+selis-image        = 2
+selis-font         = 2 # planned — Phase 3
+selis-shape        = 2 # planned — Phase 3
+selis-pdf-content  = 2 # planned — Phase 2
+selis-raster       = 2 # planned — Phase 2
+selis-pdf-text     = 2 # planned — Phase 3
+selis-pdf-annot    = 2 # planned — Phase 5
+selis-pdf-form     = 2 # planned — Phase 5
+selis-pdf-redact   = 2 # planned — Phase 5
+selis-pdf-sign     = 2 # planned — Phase 5
+
+# L3 — Orchestration
+selis-pdf-engine = 3
+selis-policy     = 3
+selis-job        = 3
+
+# L4 — Bindings
+selis-pdf-wasm = 4
+selis-pdf-ffi  = 4 # planned — Phase 7
+
+# L5 — Apps
+selis-cli = 5
+
+# ---------------------------------------------------------------------------
+# The explicit L2 sideways-edge allowlist (01-ARCHITECTURE.md §3).
+# Each edge needs a justification. Adding one needs review, not a drive-by.
+# ---------------------------------------------------------------------------
+
+[[edge]]
+from = "selis-pdf-doc"
+to = "selis-pdf-cos"
+why = """
+The document model is a typed view over the COS object graph. Catalog, page
+tree and inheritance are defined in terms of COS objects; re-abstracting them
+would mean a parallel object model with no additional information."""
+
+[[edge]]
+from = "selis-pdf-doc"
+to = "selis-pdf-filter"
+why = """
+Stream decoding is required to read metadata (XMP), object streams, and the
+structure tree. Filters are a leaf concern with no reverse dependency."""
+
+[[edge]]
+from = "selis-pdf-cos"
+to = "selis-pdf-filter"
+why = """
+Object streams (/ObjStm) and cross-reference streams are Flate-encoded by
+construction; the COS layer cannot build an index without decoding them."""
+
+[[edge]]
+from = "selis-pdf-edit"
+to = "selis-pdf-cos"
+why = "01-ARCHITECTURE.md §3 — declared exception. The writer serialises COS objects."
+
+[[edge]]
+from = "selis-pdf-edit"
+to = "selis-pdf-doc"
+why = "01-ARCHITECTURE.md §3 — declared exception. Page operations act on the page tree."
+
+[[edge]]
+from = "selis-pdf-edit"
+to = "selis-pdf-filter"
+why = "The writer re-encodes streams it emits (object streams, recompression)."
+
+[[edge]]
+from = "selis-pdf-optimize"
+to = "selis-pdf-cos"
+why = "Deduplication and GC operate on the object graph directly."
+
+[[edge]]
+from = "selis-pdf-optimize"
+to = "selis-pdf-doc"
+why = "Reachability analysis starts from the catalog and page tree."
+
+[[edge]]
+from = "selis-pdf-optimize"
+to = "selis-pdf-edit"
+why = "Optimisation emits a document through the writer; it does not have its own."
+
+[[edge]]
+from = "selis-pdf-optimize"
+to = "selis-pdf-filter"
+why = "Stream recompression is the core of the lossless tier."
+
+[[edge]]
+from = "selis-pdf-content"
+to = "selis-font"
+why = "01-ARCHITECTURE.md §3 — declared exception. Glyph resolution during interpretation."
+
+[[edge]]
+from = "selis-pdf-content"
+to = "selis-image"
+why = "01-ARCHITECTURE.md §3 — declared exception. Inline images and Image XObjects."
+
+[[edge]]
+from = "selis-pdf-text"
+to = "selis-pdf-content"
+why = "01-ARCHITECTURE.md §3 — declared exception. Extraction consumes the display list."
+
+[[edge]]
+from = "selis-pdf-form"
+to = "selis-pdf-annot"
+why = "01-ARCHITECTURE.md §3 — declared exception. Widget annotations are field appearances."
+
+# ---------------------------------------------------------------------------
+# check-purity (SL-0.WS.04) — ADR-P0005 / P0011 / P0016.
+# No crate at L0–L3 may name a filesystem, network, clock, or environment API.
+# ---------------------------------------------------------------------------
+[purity]
+banned = [
+    "std::fs",
+    "std::net",
+    "std::env",
+    "std::process",
+    "std::time::Instant",
+    "std::time::SystemTime",
+    "reqwest",
+    "tokio::net",
+    "ureq",
+]
+
+# Crates exempt from a specific banned path, with the reason.
+[[purity_allow]]
+crate = "selis-io"
+paths = ["std::fs"]
+why = """
+FileSource / FileSink are the shipped native DocSource+DocSink implementations
+and are compiled only under the `native-io` feature. They exist precisely so
+that no crate above L1 needs to name the filesystem. WASM builds exclude them."""

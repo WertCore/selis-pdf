@@ -1,0 +1,21 @@
+﻿[package]
+name = "selis-pdf-optimize"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-io = { workspace = true }
+selis-pdf-cos = { workspace = true }
+selis-pdf-doc = { workspace = true }
+selis-pdf-edit = { workspace = true }
+selis-pdf-filter = { workspace = true }

@@ -1,0 +1,31 @@
+[package]
+name = "selis-cli"
+description = "The `selis` command-line interface."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "selis"
+path = "src/main.rs"
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-io = { workspace = true, features = ["native-io"] }
+selis-sandbox = { workspace = true }
+selis-log = { workspace = true }
+selis-pdf-cos = { workspace = true }
+selis-pdf-doc = { workspace = true }
+selis-pdf-edit = { workspace = true }
+selis-pdf-engine = { workspace = true }
+selis-policy = { workspace = true }
+selis-job = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }

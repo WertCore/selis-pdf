@@ -1,0 +1,77 @@
+# Budget profiles by surface — SL-0.SBX.05.
+#
+# The single source of truth for `Budget::profile(Surface)`. build.rs generates
+# a const function from this file, so the numbers cannot drift from the code.
+#
+# Tuned against the corpus over time (the task says: "tuned later against the
+# corpus, not guessed forever"). Each limit is deliberately generous enough for
+# legitimate documents of its class and hostile enough to bound the "one page,
+# 40 gigapixels" file:
+#
+#   bytes   — peak allocation attributable to the operation (ADR-P0006).
+#   wall    — deadline in nanoseconds from guard construction.
+#   depth   — nesting: form XObjects, patterns, object streams, /Prev chains.
+#   objects — indirect objects resolved.
+#   pixels  — rasterised samples.
+#
+# Reasoning per surface:
+#   Thumbnail — tiny, fast, first paint must not stall; page-1-only work.
+#   Viewer    — the default open surface; must handle a 5 MB linearised doc and
+#               a 500 MB behemoth without exhausting a browser tab.
+#   Editor    — annotations, forms, page ops, incremental save on top of view;
+#               more headroom, longer deadline.
+#   Batch     — offline tool runs (merge/split/compress/OCR): no user waiting,
+#               bounded by the machine, not the clock.
+#   Server    — multi-tenant; per-document cap so one job cannot starve others.
+#   Fuzz      — deliberately tiny and short so a hostile file fails in a moment.
+#
+# Number format: integers; bytes and pixels in bytes/samples, wall in
+# nanoseconds, depth a count, objects a count.
+
+[[surface]]
+name = "Thumbnail"
+bytes = 134217728          # 128 MiB
+wall = 250000000           # 250 ms
+depth = 16
+objects = 20000
+pixels = 4000000           # e.g. 2000 x 2000
+
+[[surface]]
+name = "Viewer"
+bytes = 268435456          # 256 MiB
+wall = 5000000000          # 5 s
+depth = 64
+objects = 200000
+pixels = 200000000
+
+[[surface]]
+name = "Editor"
+bytes = 1073741824         # 1 GiB
+wall = 30000000000         # 30 s
+depth = 128
+objects = 1000000
+pixels = 800000000
+
+[[surface]]
+name = "Batch"
+bytes = 2147483648         # 2 GiB
+wall = 600000000000        # 10 min
+depth = 128
+objects = 4000000
+pixels = 4000000000
+
+[[surface]]
+name = "Server"
+bytes = 2147483648         # 2 GiB
+wall = 30000000000         # 30 s
+depth = 128
+objects = 4000000
+pixels = 2000000000
+
+[[surface]]
+name = "Fuzz"
+bytes = 67108864           # 64 MiB
+wall = 100000000           # 100 ms
+depth = 16
+objects = 50000
+pixels = 16000000

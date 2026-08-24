@@ -1,0 +1,23 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# graphify knowledge-graph output (regenerable via `graphify update .`)
+/graphify-out
+
+# Local cargo config overrides (this repo has none; user-level config is elsewhere)
+/.cargo
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Python / misc tooling
+__pycache__/
+*.pyc

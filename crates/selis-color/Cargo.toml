@@ -1,0 +1,14 @@
+﻿[package]
+name = "selis-color"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-geom = { workspace = true }
