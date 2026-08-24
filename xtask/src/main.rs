@@ -6,8 +6,11 @@
 //! succeeding (SL-0.WS.02 DoD): a stub that returns 0 is a lie, and a CI gate
 //! that lies is worse than no gate.
 
+mod checks;
 mod codes;
 mod layers;
+mod purity;
+mod unsafe_check;
 
 use std::process::ExitCode;
 
@@ -79,10 +82,10 @@ fn main() -> ExitCode {
         Command::Lint => lint(),
         Command::CheckLayers => layers::check(),
         Command::CheckCodes => codes::check(),
-        Command::CheckPurity => not_in_phase_0("check-purity"),
-        Command::CheckUnsafe => not_in_phase_0("check-unsafe"),
-        Command::CheckContracts => not_in_phase_0("check-contracts"),
-        Command::CheckAlloc => not_in_phase_0("check-alloc"),
+        Command::CheckPurity => purity::check(),
+        Command::CheckUnsafe => unsafe_check::check(),
+        Command::CheckContracts => checks::check_contracts(),
+        Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::SizeCheck => not_in_phase_0("size-check"),
         Command::Corpus => not_in_phase_0("corpus"),
@@ -113,6 +116,9 @@ fn lint() -> Result<(), String> {
     run("cargo", &["clippy", "--workspace", "--all-targets"])?;
     layers::check()?;
     codes::check()?;
+    purity::check()?;
+    unsafe_check::check()?;
+    checks::check_contracts()?;
     Ok(())
 }
 

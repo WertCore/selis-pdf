@@ -1,0 +1,13 @@
+# The `unsafe` allowlist — 03-CONVENTIONS.md §2.
+#
+# `unsafe` is denied by default everywhere. Only crates listed here may contain
+# it, and every block must carry a `// SAFETY:` comment. Adding a crate to this
+# list requires an ADR, not a review comment.
+
+allow = [
+    "selis-bytes",       # aligned buffer construction
+    "selis-io",          # mmap in FileSource (native only)
+    "selis-pdf-ffi",     # the C ABI itself (planned — Phase 7)
+    "selis-pdf-jni",     # JNI marshalling (planned — Phase 7)
+    "selis-raster",      # proven-identical SIMD kernels only (planned — Phase 2)
+]
