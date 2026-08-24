@@ -218,9 +218,93 @@ pub fn parse_classic_xref(
     Ok(index)
 }
 
+/// Read the integer that follows the `startxref` keyword (at `after_kw`).
+///
+/// Returns `(offset, next_position)`.
+///
+/// # Budget
+///
+/// No heap allocation; reads a single integer.
+///
+/// # Malformed Input
+///
+/// `XREF_MALFORMED` when the value is not a valid integer.
+pub(crate) fn read_startxref_value(src: &[u8], after_kw: usize) -> Result<(u64, usize)> {
+    let (off, next) = read_int(src, after_kw)?;
+    Ok((u64::try_from(off).unwrap_or(u64::MAX), next))
+}
+
+/// Parse exactly one classic xref table + trailer at `cursor`.
+///
+/// Returns `(entries, trailer, /Prev)` — the per-revision data SL-1.COS.05
+/// keeps addressable.
+pub(crate) fn parse_one_revision(
+    src: &[u8],
+    cursor: u64,
+    budget: &selis_sandbox::Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> Result<(
+    BTreeMap<u32, XrefEntry>,
+    Vec<(selis_bytes::Bytes, Obj)>,
+    Option<u64>,
+)> {
+    let pos = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let slice = src
+        .get(pos..)
+        .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-table", at = cursor))?;
+
+    // Skip whitespace then expect `xref`.
+    let xref_kw = find_keyword(slice, b"xref")
+        .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-table", at = cursor))?;
+    let mut p = pos.saturating_add(xref_kw).saturating_add(4);
+
+    let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
+
+    // Subsection entries: `N COUNT` then COUNT 20-byte lines.
+    loop {
+        // At the `trailer` keyword the table is done.
+        p = skip_ws(src, p);
+        if src.get(p..p.saturating_add(7)) == Some(b"trailer") {
+            break;
+        }
+        // Read the subsection header `N COUNT`.
+        let (start_num, count, next_p) = read_subsection_header(src, p)?;
+        p = next_p;
+        let start_num_u64 = u64::from(start_num);
+        for i in 0..count {
+            g.charge_one(selis_sandbox::Resource::Objects)?;
+            let (offset, gen, in_use, next_p) = read_entry_line(src, p)?;
+            p = next_p;
+            let num = u32::try_from(start_num_u64.saturating_add(u64::from(i))).unwrap_or(u32::MAX);
+            let entry = if in_use {
+                XrefEntry::InUse { offset, gen }
+            } else {
+                XrefEntry::Free {
+                    next_free: u32::try_from(offset).unwrap_or(u32::MAX),
+                    gen,
+                }
+            };
+            entries.insert(num, entry);
+        }
+    }
+
+    // Parse the trailer dictionary.
+    let (trailer, _next_p) = parse_trailer(src, p, budget, g)?;
+    let prev = trailer
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Prev")
+        .and_then(|(_, v)| match v {
+            Obj::Int(p) => Some(u64::try_from(*p).unwrap_or(u64::MAX)),
+            _ => None,
+        });
+    Ok((entries, trailer, prev))
+}
+
 /// Find `startxref` in the last `window` bytes of the buffer.
 ///
-/// Returns the byte offset of the `startxref` keyword, or `None` if absent.
+/// Returns the byte offset of the **last** `startxref` keyword (the newest
+/// revision's), or `None` if absent. Scanning from the end is what makes
+/// incremental files resolve to the newest revision rather than the original.
 ///
 /// # Budget
 ///
@@ -233,10 +317,16 @@ pub fn parse_classic_xref(
 /// SL-1.COS.06 is the fallback).
 #[must_use]
 pub fn find_startxref(src: &[u8], window: usize) -> Option<u64> {
-    let start = src.len().saturating_sub(window);
-    let tail = src.get(start..)?;
-    let idx = find_keyword(tail, b"startxref")?;
-    Some(start.saturating_add(idx) as u64)
+    let tail_start = src.len().saturating_sub(window);
+    let tail = src.get(tail_start..)?;
+    // Find the LAST `startxref` in the window.
+    let mut idx = None;
+    let mut from = 0usize;
+    while let Some(rel) = find_keyword(tail.get(from..)?, b"startxref") {
+        idx = Some(from.saturating_add(rel));
+        from = idx.unwrap_or(0).saturating_add(1);
+    }
+    idx.map(|i| tail_start.saturating_add(i) as u64)
 }
 
 /// Read the decimal integer at `p`, skipping surrounding whitespace.
@@ -325,7 +415,7 @@ fn parse_trailer(
     // Find the `<<` after `trailer` and lex from just before it so the lexer
     // produces the `DictStart` token itself.
     let after_trailer = p.saturating_add("trailer".len());
-    let mut q = skip_ws(src, after_trailer);
+    let q = skip_ws(src, after_trailer);
     if src.get(q) != Some(&b'<') || src.get(q.saturating_add(1)) != Some(&b'<') {
         return Err(err!(
             Code::XrefMalformed,

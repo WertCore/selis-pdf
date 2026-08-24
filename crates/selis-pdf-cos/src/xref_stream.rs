@@ -17,8 +17,7 @@ use std::collections::BTreeMap;
 use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
 
-use crate::obj::{Obj, Ref};
-use crate::parse::ObjectParser;
+use crate::obj::Obj;
 use crate::xref::XrefEntry;
 
 /// A decoded xref stream.
@@ -80,7 +79,7 @@ impl XrefStream {
 pub fn parse_xref_stream(
     dict: &[(selis_bytes::Bytes, Obj)],
     payload: &[u8],
-    budget: &Budget,
+    _budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<XrefStream> {
     // /W [w0 w1 w2]

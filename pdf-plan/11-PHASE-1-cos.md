@@ -48,7 +48,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **DoD:** Corpus tag `xref-stream`; a test for the hybrid-reference file case (`/XRefStm`),
     which is the one everybody gets wrong.
 
-- [ ] **SL-1.COS.05 — Incremental-update chain as first-class revisions** · deps: COS.03 · owner: AI+
+- [x] **SL-1.COS.05 — Incremental-update chain as first-class revisions** · deps: COS.03 · owner: AI+
   - **Do:** Build `Vec<Revision>` (byte range + xref + trailer per revision, oldest first) rather
     than a flattened view. Newest wins for resolution, but every revision stays addressable.
   - **API:** `Doc::revisions()`, `Doc::at_revision(n) -> Doc<'_>`
