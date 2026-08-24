@@ -26,7 +26,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
     what you accepted* — record every deviation in a `Vec<Deviation>` on the document so the UI can
     say "this file is malformed in these ways" and so the corpus can assert on it.
 
-- [ ] **SL-1.COS.02 — Object model** · deps: COS.01 · owner: AI+
+- [x] **SL-1.COS.02 — Object model** · deps: COS.01 · owner: AI+
   - **Do:** `Obj` = Null | Bool | Int | Real | String(raw bytes) | Name | Array | Dict | Stream |
     Ref. Zero-copy against the source where possible (`selis-bytes::Bytes`). Strings stay **raw
     bytes** — text decoding is a separate, explicit step (PDFDocEncoding vs UTF-16BE vs UTF-8 in
