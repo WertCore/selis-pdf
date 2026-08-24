@@ -1,0 +1,20 @@
+[package]
+name = "selis-bench"
+description = "Criterion benchmarks + the perf-budget harness (SL-0.PERF.01)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+selis-sandbox = { workspace = true }
+selis-io = { workspace = true }
+
+[[bench]]
+name = "budget"
+harness = false

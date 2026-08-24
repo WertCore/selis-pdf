@@ -4,7 +4,7 @@
 # (03-CONVENTIONS.md §1, ADR-P0002).
 [workspace]
 resolver = "2"
-members = ["crates/*", "apps/cli", "xtask"]
+members = ["crates/*", "apps/cli", "xtask", "bench"]
 
 [workspace.package]
 edition      = "2021"
