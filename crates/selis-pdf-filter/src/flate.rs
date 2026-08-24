@@ -35,7 +35,12 @@ impl std::error::Error for FlateDecodeError {}
 
 /// Inflate a Flate stream, returning only complete output.
 ///
-/// # Errors
+/// # Budget
+///
+/// No bound: callers that accept untrusted streams must use
+/// [`flate_decode_bounded`].
+///
+/// # Malformed Input
 ///
 /// `FLATE_CORRUPT` when the stream is not valid deflate data.
 pub fn flate_decode(data: &[u8]) -> std::result::Result<Vec<u8>, FlateDecodeError> {
@@ -124,7 +129,7 @@ mod tests {
         // miniz_oxide's compress_to_vec produces zlib-wrapped; strip the 2-byte
         // header and 4-byte adler32 to get raw deflate.
         let zlib = compress_to_vec_zlib(&data, 6);
-        let raw = &zlib[2..zlib.len().saturating_sub(4)];
+        let raw = zlib.get(2..zlib.len().saturating_sub(4)).unwrap_or(&[]);
         let out = flate_decode(raw).expect("raw inflate");
         assert_eq!(out, data);
     }
@@ -149,7 +154,8 @@ mod tests {
         let data = b"abc".repeat(500);
         let compressed = compress_to_vec_zlib(&data, 6);
         // Cut the stream in half: inflation must still produce a prefix.
-        let cut = &compressed[..compressed.len() / 2];
+        let half = compressed.len().saturating_div(2);
+        let cut = compressed.get(..half).unwrap_or(&[]);
         let mut g = guard();
         match flate_decode_bounded(cut, 100_000, &mut g) {
             Ok(out) => assert!(!out.is_empty()),

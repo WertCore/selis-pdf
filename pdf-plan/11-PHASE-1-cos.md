@@ -41,7 +41,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **DoD:** Corpus tags `xref-classic` and `xref-damaged` pass; a cyclic `/Prev` terminates with
     a typed error.
 
-- [ ] **SL-1.COS.04 — Cross-reference streams + object streams** · deps: COS.03 · owner: AI+
+- [x] **SL-1.COS.04 — Cross-reference streams + object streams** · deps: COS.03 · owner: AI+
   - **Do:** PDF 1.5+ xref streams (`/W`, `/Index`, field widths including the 0-width default case)
     and compressed object streams (`/ObjStm`), including the rule that an object stream cannot
     itself be in an object stream.

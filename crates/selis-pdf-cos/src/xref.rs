@@ -33,6 +33,13 @@ pub enum XrefEntry {
         /// Generation number.
         gen: u16,
     },
+    /// A compressed entry: the object lives in an object stream.
+    Compressed {
+        /// The object stream number.
+        objstm: u32,
+        /// The index of the object within that stream.
+        index: u32,
+    },
 }
 
 impl XrefEntry {
@@ -41,6 +48,7 @@ impl XrefEntry {
     pub const fn gen(self) -> u16 {
         match self {
             XrefEntry::Free { gen, .. } | XrefEntry::InUse { gen, .. } => gen,
+            XrefEntry::Compressed { .. } => 0,
         }
     }
 }

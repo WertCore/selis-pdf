@@ -16,12 +16,14 @@ pub mod lex;
 pub mod obj;
 pub mod parse;
 pub mod xref;
+pub mod xref_stream;
 
 pub use deviation::Deviation;
 pub use lex::{tokenise, Lexer, Number, Token};
 pub use obj::{Obj, Ref};
 pub use parse::{parse_all, ObjectParser};
 pub use xref::{parse_classic_xref, XrefEntry, XrefIndex};
+pub use xref_stream::{parse_object_stream, parse_xref_stream, XrefStream};
 
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, FixedClock, Surface};
