@@ -17,3 +17,6 @@ selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
 selis-crypto = { workspace = true }
 selis-pdf-filter = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

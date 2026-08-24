@@ -779,6 +779,7 @@ version = "0.1.0"
 name = "selis-pdf-cos"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "selis-bytes",
  "selis-crypto",
  "selis-error",

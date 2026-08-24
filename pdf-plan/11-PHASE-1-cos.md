@@ -12,7 +12,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
 
 ## 1.COS — The object layer
 
-- [ ] **SL-1.COS.01 — Lexer** · owner: AI+
+- [x] **SL-1.COS.01 — Lexer** · owner: AI+
   - **Do:** Tokenise the COS syntax: numbers (including the `--5` and `6.` malformations real files
     contain), names with `#xx` escapes, literal and hex strings (including unbalanced parens and
     odd-length hex), arrays, dicts, `stream`/`endstream`, comments, and the `R`/`obj`/`endobj`
