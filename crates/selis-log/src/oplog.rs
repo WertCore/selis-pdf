@@ -214,8 +214,20 @@ mod tests {
     #[test]
     fn sequence_numbers_are_monotonic() {
         let mut log = OpLog::new();
-        let a = log.record("rotate-page", "page 3 rotated 90°", 0, ActorId::local(), Outcome::Ok { revision: None });
-        let b = log.record("save", "incremental update appended", 1, ActorId::local(), Outcome::Ok { revision: Some(2) });
+        let a = log.record(
+            "rotate-page",
+            "page 3 rotated 90°",
+            0,
+            ActorId::local(),
+            Outcome::Ok { revision: None },
+        );
+        let b = log.record(
+            "save",
+            "incremental update appended",
+            1,
+            ActorId::local(),
+            Outcome::Ok { revision: Some(2) },
+        );
         assert_eq!(a, 0);
         assert_eq!(b, 1);
         assert_eq!(log.len(), 2);
@@ -225,7 +237,13 @@ mod tests {
     #[test]
     fn overrides_are_recorded_and_queryable() {
         let mut log = OpLog::new();
-        log.record("merge", "3 documents merged", 0, ActorId::local(), Outcome::Ok { revision: None });
+        log.record(
+            "merge",
+            "3 documents merged",
+            0,
+            ActorId::local(),
+            Outcome::Ok { revision: None },
+        );
         log.record_override(
             "clear-permissions",
             "print and copy restrictions cleared",
@@ -239,24 +257,41 @@ mod tests {
             log.overrides().first().and_then(|r| r.override_used),
             Some("owner-password-permission-bits")
         );
-        assert!(log.to_text().contains("[override: owner-password-permission-bits]"));
+        assert!(log
+            .to_text()
+            .contains("[override: owner-password-permission-bits]"));
     }
 
     /// 23-EDIT-MODEL-SPEC.md §5: undo does not truncate history.
     #[test]
     fn undo_marks_rather_than_removes() {
         let mut log = OpLog::new();
-        let seq = log.record("add-page", "blank page inserted at 2", 0, ActorId::local(), Outcome::Ok { revision: None });
+        let seq = log.record(
+            "add-page",
+            "blank page inserted at 2",
+            0,
+            ActorId::local(),
+            Outcome::Ok { revision: None },
+        );
         assert!(log.mark_undone(seq));
         assert_eq!(log.len(), 1, "history is append-only");
-        assert_eq!(log.records().first().map(|r| &r.outcome), Some(&Outcome::Undone));
+        assert_eq!(
+            log.records().first().map(|r| &r.outcome),
+            Some(&Outcome::Undone)
+        );
         assert!(!log.mark_undone(999));
     }
 
     #[test]
     fn refusals_carry_a_registry_code_not_a_restated_reason() {
         let mut log = OpLog::new();
-        log.record("edit-text", "attempted", 0, ActorId::local(), Outcome::Refused { code: 4300 });
+        log.record(
+            "edit-text",
+            "attempted",
+            0,
+            ActorId::local(),
+            Outcome::Refused { code: 4300 },
+        );
         assert!(log.to_text().contains("refused (E4300)"));
     }
 }

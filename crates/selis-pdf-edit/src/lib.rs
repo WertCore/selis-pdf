@@ -1,2 +1,2 @@
-﻿//! Placeholder for `selis-pdf-edit`; replaced during implementation.
+//! Placeholder for `selis-pdf-edit`; replaced during implementation.
 #![forbid(unsafe_code)]

@@ -1,4 +1,4 @@
-﻿//! Colour: the PDF colour-space model and conversion.
+//! Colour: the PDF colour-space model and conversion.
 //!
 //! Phase 1A does not rasterise, so this crate carries the *model* — enough to
 //! identify a colour space, know its component count, and convert device colours
@@ -9,7 +9,7 @@
 //! Component values are `f64` in `[0,1]` except where a space defines otherwise
 //! (Lab). Conversion is exact and platform-independent — no lookup tables whose
 //! contents could differ between builds (ADR-P0012).
-
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
@@ -171,9 +171,7 @@ impl ColorSpace {
             ColorSpace::DeviceCmyk => 4,
             ColorSpace::IccBased { n, .. } => *n,
             ColorSpace::Separation { .. } => 1,
-            ColorSpace::DeviceN { names, .. } => {
-                u8::try_from(names.len()).unwrap_or(u8::MAX)
-            }
+            ColorSpace::DeviceN { names, .. } => u8::try_from(names.len()).unwrap_or(u8::MAX),
             ColorSpace::Pattern { under } => under.as_ref().map_or(0, |u| u.components()),
         }
     }
@@ -212,11 +210,9 @@ impl ColorSpace {
                 let g = *comps.first()?;
                 Some(Rgb::new(g, g, g))
             }
-            ColorSpace::DeviceRgb | ColorSpace::CalRgb => Some(Rgb::new(
-                *comps.first()?,
-                *comps.get(1)?,
-                *comps.get(2)?,
-            )),
+            ColorSpace::DeviceRgb | ColorSpace::CalRgb => {
+                Some(Rgb::new(*comps.first()?, *comps.get(1)?, *comps.get(2)?))
+            }
             ColorSpace::DeviceCmyk => Some(
                 Cmyk::new(
                     *comps.first()?,
@@ -284,10 +280,7 @@ mod tests {
             1,
             "an Indexed colour is one index, not three components"
         );
-        assert_eq!(
-            ColorSpace::Pattern { under: None }.components(),
-            0
-        );
+        assert_eq!(ColorSpace::Pattern { under: None }.components(), 0);
     }
 
     #[test]

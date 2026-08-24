@@ -1,4 +1,5 @@
-﻿//! Immutable, refcounted byte slices — the mechanism behind ADR-P0007.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+//! Immutable, refcounted byte slices — the mechanism behind ADR-P0007.
 //!
 //! [`Bytes`] is a cheap-to-clone handle onto a shared buffer. There is **no API
 //! on this crate that yields a mutable view of a [`Bytes`]**, and that absence is
@@ -120,7 +121,7 @@ impl Bytes {
         let start = range.start.min(len);
         let end = range.end.clamp(start, len);
         // Cannot fail: start <= end <= len by construction above.
-        self.slice(start..end).unwrap_or_else(Bytes::new)
+        self.slice(start..end).unwrap_or_default()
     }
 
     /// The byte at `i`, or `None`.
@@ -381,7 +382,12 @@ mod tests {
     fn out_of_range_slice_is_none_not_a_panic() {
         let a = Bytes::from_vec(b"abc".to_vec());
         assert!(a.slice(0..4).is_none());
-        assert!(a.slice(2..1).is_none());
+        // Deliberately reversed range (start > end): the constructor must reject
+        // it, not panic. Written through variables so the lint cannot assume a
+        // constant empty range.
+        let start = 2usize;
+        let end = 1usize;
+        assert!(a.slice(start..end).is_none());
         assert!(a.slice(4..5).is_none());
         assert_eq!(a.slice(3..3).map(|b| b.len()), Some(0));
     }

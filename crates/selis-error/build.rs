@@ -109,7 +109,9 @@ fn main() {
             e.id
         );
         assert!(
-            e.name.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+            e.name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
             "code name {:?} must be SCREAMING_SNAKE_CASE",
             e.name
         );
@@ -157,14 +159,11 @@ fn main() {
 
     // name
     rs.push_str("    /// The registry name, e.g. `\"XREF_UNRECOVERABLE\"`.\n");
-    rs.push_str("    #[must_use]\n    pub const fn name(self) -> &'static str {\n        match self {\n");
+    rs.push_str(
+        "    #[must_use]\n    pub const fn name(self) -> &'static str {\n        match self {\n",
+    );
     for e in &registry.code {
-        let _ = writeln!(
-            rs,
-            "            Code::{} => {:?},",
-            pascal(&e.name),
-            e.name
-        );
+        let _ = writeln!(rs, "            Code::{} => {:?},", pascal(&e.name), e.name);
     }
     rs.push_str("        }\n    }\n\n");
 
@@ -184,7 +183,9 @@ fn main() {
     // doc_state
     rs.push_str("    /// What happened to the user's document. The field that matters\n");
     rs.push_str("    /// (03-CONVENTIONS.md §3, SL-0.ERR.02).\n");
-    rs.push_str("    #[must_use]\n    pub const fn doc_state(self) -> DocState {\n        match self {\n");
+    rs.push_str(
+        "    #[must_use]\n    pub const fn doc_state(self) -> DocState {\n        match self {\n",
+    );
     for e in &registry.code {
         let _ = writeln!(
             rs,
@@ -197,7 +198,9 @@ fn main() {
 
     // retryable
     rs.push_str("    /// Whether retrying the identical operation could plausibly succeed.\n");
-    rs.push_str("    #[must_use]\n    pub const fn retryable(self) -> bool {\n        match self {\n");
+    rs.push_str(
+        "    #[must_use]\n    pub const fn retryable(self) -> bool {\n        match self {\n",
+    );
     for e in &registry.code {
         let _ = writeln!(
             rs,
@@ -210,7 +213,9 @@ fn main() {
 
     // meaning
     rs.push_str("    /// The engineer-facing meaning. Immutable once published.\n");
-    rs.push_str("    #[must_use]\n    pub const fn meaning(self) -> &'static str {\n        match self {\n");
+    rs.push_str(
+        "    #[must_use]\n    pub const fn meaning(self) -> &'static str {\n        match self {\n",
+    );
     for e in &registry.code {
         let _ = writeln!(
             rs,

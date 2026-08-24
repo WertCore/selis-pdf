@@ -23,7 +23,7 @@
 //! assert_eq!(e.doc_state(), DocState::PartiallyLoaded);
 //! assert!(e.code().retryable());
 //! ```
-
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -408,11 +408,21 @@ macro_rules! err {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __err_field {
-    ($ctx:expr, at, $v:expr) => { $ctx.at($v) };
-    ($ctx:expr, object, $v:expr) => { $ctx.object($v) };
-    ($ctx:expr, page, $v:expr) => { $ctx.page($v) };
-    ($ctx:expr, during, $v:expr) => { $ctx.during($v) };
-    ($ctx:expr, detail, $v:expr) => { $ctx.detail($v) };
+    ($ctx:expr, at, $v:expr) => {
+        $ctx.at($v)
+    };
+    ($ctx:expr, object, $v:expr) => {
+        $ctx.object($v)
+    };
+    ($ctx:expr, page, $v:expr) => {
+        $ctx.page($v)
+    };
+    ($ctx:expr, during, $v:expr) => {
+        $ctx.during($v)
+    };
+    ($ctx:expr, detail, $v:expr) => {
+        $ctx.detail($v)
+    };
 }
 
 /// A locale catalogue for user-facing messages (SL-0.ERR.04).
@@ -552,7 +562,8 @@ mod tests {
             let key = code.message_key();
             assert!(key.starts_with("error-"));
             assert!(
-                key.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit()),
+                key.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit()),
                 "{key} is not kebab-case"
             );
         }
@@ -564,7 +575,12 @@ mod tests {
     fn pseudo_locale_renders_every_message() {
         for code in ALL_CODES {
             let msg = user_message(&PseudoMessages, code);
-            assert_eq!(msg.as_ref(), "«⟦pseudo⟧»", "{} bypassed the catalogue", code.name());
+            assert_eq!(
+                msg.as_ref(),
+                "«⟦pseudo⟧»",
+                "{} bypassed the catalogue",
+                code.name()
+            );
         }
     }
 

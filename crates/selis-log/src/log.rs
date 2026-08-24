@@ -208,10 +208,7 @@ impl CaptureSink {
     /// The records captured so far.
     #[must_use]
     pub fn records(&self) -> Vec<Record> {
-        self.records
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.records.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// How many records were captured.
@@ -247,7 +244,11 @@ mod tests {
         let sink = CaptureSink::new(Level::Warn);
         assert!(!sink.enabled(Level::Debug));
         assert!(sink.enabled(Level::Error));
-        sink.emit(&Record::new(Level::Warn, "selis-pdf-cos", "reconstructed index"));
+        sink.emit(&Record::new(
+            Level::Warn,
+            "selis-pdf-cos",
+            "reconstructed index",
+        ));
         assert_eq!(sink.len(), 1);
     }
 

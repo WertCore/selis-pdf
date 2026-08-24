@@ -1,2 +1,2 @@
-﻿//! Placeholder for `selis-pdf-doc`; replaced during implementation.
+//! Placeholder for `selis-pdf-doc`; replaced during implementation.
 #![forbid(unsafe_code)]

@@ -1,4 +1,5 @@
-﻿//! The safety kernel: budgets, cancellation, depth guards, and budget-aware
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+//! The safety kernel: budgets, cancellation, depth guards, and budget-aware
 //! allocation.
 //!
 //! This crate implements **Rule 1** of `00-INDEX.md §5` and ADR-P0006:

@@ -1,4 +1,4 @@
-﻿//! Geometry: PDF's coordinate model, matrices, rectangles, and the fixed-point
+//! Geometry: PDF's coordinate model, matrices, rectangles, and the fixed-point
 //! type that makes ADR-P0012 (deterministic rasterisation) achievable.
 //!
 //! # Why fixed point
@@ -22,7 +22,7 @@
 //! with row vectors: `[x y 1] × M`. [`Matrix`] stores exactly those six in that
 //! order, so a reader with the spec open can compare field-for-field
 //! (03-CONVENTIONS.md §4).
-
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
@@ -137,6 +137,8 @@ impl Fixed {
         } else if scaled < i32::MIN as i64 {
             Fixed::MIN
         } else {
+            // In range by the guards above, so the cast is exact.
+            #[allow(clippy::cast_possible_truncation)]
             Fixed(scaled as i32)
         }
     }
@@ -149,12 +151,16 @@ impl Fixed {
             return None;
         }
         let numerator = (self.0 as i64) << Self::SHIFT;
+        // Division is defined here: the zero divisor was already rejected.
+        #[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
         let quotient = numerator / (o.0 as i64);
         if quotient > i32::MAX as i64 {
             Some(Fixed::MAX)
         } else if quotient < i32::MIN as i64 {
             Some(Fixed::MIN)
         } else {
+            // In range by the guards above, so the cast is exact.
+            #[allow(clippy::cast_possible_truncation)]
             Some(Fixed(quotient as i32))
         }
     }
@@ -576,7 +582,10 @@ mod tests {
             Fixed::from_int(6).div(Fixed::from_int(2)),
             Some(Fixed::from_int(3))
         );
-        assert_eq!(Fixed::from_int(3).mul(Fixed::from_int(4)), Fixed::from_int(12));
+        assert_eq!(
+            Fixed::from_int(3).mul(Fixed::from_int(4)),
+            Fixed::from_int(12)
+        );
     }
 
     #[test]
@@ -591,7 +600,10 @@ mod tests {
         // Sort stability in the raster path depends on a total order.
         let mut v = [Fixed::from_int(3), Fixed::from_int(-1), Fixed::from_int(2)];
         v.sort_unstable();
-        assert_eq!(v, [Fixed::from_int(-1), Fixed::from_int(2), Fixed::from_int(3)]);
+        assert_eq!(
+            v,
+            [Fixed::from_int(-1), Fixed::from_int(2), Fixed::from_int(3)]
+        );
     }
 
     #[test]
@@ -614,7 +626,9 @@ mod tests {
         assert!((back.y - p.y).abs() < 1e-12);
 
         assert!(Matrix::scale(0.0, 1.0).invert().is_none());
-        assert!(Matrix::new(f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0).invert().is_none());
+        assert!(Matrix::new(f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0)
+            .invert()
+            .is_none());
     }
 
     #[test]

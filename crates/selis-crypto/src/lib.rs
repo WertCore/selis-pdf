@@ -1,2 +1,2 @@
-﻿//! Placeholder for `selis-crypto`; replaced during implementation.
+//! Placeholder for `selis-crypto`; replaced during implementation.
 #![forbid(unsafe_code)]

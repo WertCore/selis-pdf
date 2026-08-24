@@ -131,6 +131,37 @@ from = "selis-pdf-form"
 to = "selis-pdf-annot"
 why = "01-ARCHITECTURE.md §3 — declared exception. Widget annotations are field appearances."
 
+[[edge]]
+from = "selis-pdf-engine"
+to = "selis-policy"
+why = """
+The engine is the only L3 crate an app talks to; budget surfaces, entitlement
+sets and CloudConsent are policy decisions, and the engine is where they are
+consulted per operation. Policy is a leaf with no reverse dependency."""
+
+[[edge]]
+from = "selis-pdf-engine"
+to = "selis-job"
+why = """
+Batch operations (merge, split, OCR, convert) are scheduled through selis-job
+for progress, cancellation and resumability; the engine drives them to completion."""
+
+[[edge]]
+from = "selis-color"
+to = "selis-geom"
+why = """
+Colour transforms operate on geometry: conversion matrices (Matrix), sample
+points (Point) and gamut bounds (Rect). Geom is a leaf L0 crate with no reverse
+dependency."""
+
+[[edge]]
+from = "selis-image"
+to = "selis-pdf-filter"
+why = """
+Image XObjects are decoded through the stream filters (Flate, DCTDecode,
+JPXDecode); the image crate orchestrates codec selection but never re-implements
+a codec. Filter is a leaf L2 crate with no reverse dependency."""
+
 # ---------------------------------------------------------------------------
 # check-purity (SL-0.WS.04) — ADR-P0005 / P0011 / P0016.
 # No crate at L0–L3 may name a filesystem, network, clock, or environment API.

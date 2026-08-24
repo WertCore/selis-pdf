@@ -1,0 +1,4 @@
+# clippy: allow unwrap/expect/panic in test code
+# 03-CONVENTIONS.md §1 lints are strict in production; test code asserts
+# invariants, where `expect` and `panic` are idiomatic.
+allow-unwrap-in-tests = true

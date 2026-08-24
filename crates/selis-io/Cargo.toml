@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
-selis-sandbox = { workspace = true }
 
 [features]
 default = []

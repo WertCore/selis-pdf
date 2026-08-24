@@ -90,8 +90,10 @@ pub fn grow<T>(g: &mut BudgetGuard<'_>, v: &mut Vec<T>, additional: usize) -> Re
         .ok_or_else(|| exceeded(additional))?;
     if target > current {
         charge_len::<T>(g, additional)?;
-        v.try_reserve(additional).map_err(|_| exceeded(additional))?;
-    }    Ok(())
+        v.try_reserve(additional)
+            .map_err(|_| exceeded(additional))?;
+    }
+    Ok(())
 }
 
 /// Allocate a `Box<[T]>` of `len` zero-initialised elements, charging first.
@@ -139,11 +141,17 @@ mod tests {
         let e = vec_with_capacity::<u8>(&mut g, 40 * 1024 * 1024 * 1024)
             .expect_err("40 GB cannot fit a viewer budget");
         assert_eq!(e.code(), Code::BudgetBytes);
-        assert_eq!(g.usage().bytes, 0, "charge-before-allocate means zero charged");
+        assert_eq!(
+            g.usage().bytes,
+            0,
+            "charge-before-allocate means zero charged"
+        );
         assert_eq!(g.poisoned_by(), Some(Resource::Bytes));
         // The poison covers every later charge too.
         assert_eq!(
-            vec_with_capacity::<u8>(&mut g, 1).expect_err("poisoned").code(),
+            vec_with_capacity::<u8>(&mut g, 1)
+                .expect_err("poisoned")
+                .code(),
             Code::BudgetPoisoned
         );
     }

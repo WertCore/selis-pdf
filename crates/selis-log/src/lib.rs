@@ -1,4 +1,5 @@
-﻿//! Two logs that must never be merged (01-ARCHITECTURE.md §11).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+//! Two logs that must never be merged (01-ARCHITECTURE.md §11).
 //!
 //! * [`log`] — **structured logging for engineers.** Off in release except at
 //!   `warn`. Never contains document content (ADR-P0017). The sink is injected,
