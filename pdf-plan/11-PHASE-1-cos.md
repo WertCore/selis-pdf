@@ -34,7 +34,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **DoD:** `size_of::<Obj>()` recorded and budgeted; property test for the text-string decoder
     across all three encodings.
 
-- [ ] **SL-1.COS.03 — Classic xref table + trailer** · deps: COS.02 · owner: AI+
+- [x] **SL-1.COS.03 — Classic xref table + trailer** · deps: COS.02 · owner: AI+
   - **Do:** Parse `startxref`, the xref table, the trailer, and `/Prev` chains. Tolerate: wrong
     subsection counts, off-by-N object offsets, missing `endobj`, and a `/Prev` cycle (depth- and
     visited-set-guarded).

@@ -15,11 +15,13 @@ pub mod deviation;
 pub mod lex;
 pub mod obj;
 pub mod parse;
+pub mod xref;
 
 pub use deviation::Deviation;
 pub use lex::{tokenise, Lexer, Number, Token};
 pub use obj::{Obj, Ref};
 pub use parse::{parse_all, ObjectParser};
+pub use xref::{parse_classic_xref, XrefEntry, XrefIndex};
 
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, FixedClock, Surface};

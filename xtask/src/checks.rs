@@ -119,7 +119,9 @@ fn load_layers() -> Result<std::collections::HashMap<String, u8>, String> {
     Ok(map)
 }
 
-/// Collect the doc comment lines immediately above a function.
+/// Collect the doc comment lines immediately above a function, skipping
+/// attributes (`#[must_use]`, `#[inline]`, …) that sit between the doc and the
+/// signature.
 fn doc_above(lines: &[&str], idx: usize) -> String {
     let mut out = Vec::new();
     let mut j = idx;
@@ -128,6 +130,8 @@ fn doc_above(lines: &[&str], idx: usize) -> String {
         let l = lines[j].trim_start();
         if l.starts_with("///") || l.starts_with("//!") {
             out.push(l);
+        } else if l.starts_with('#') && l.starts_with("#[") {
+            continue; // an attribute between the doc and the fn
         } else if l.is_empty() {
             continue;
         } else {
