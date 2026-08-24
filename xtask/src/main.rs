@@ -8,6 +8,8 @@
 
 mod checks;
 mod codes;
+mod conformance;
+mod corpus;
 mod layers;
 mod purity;
 mod unsafe_check;
@@ -53,7 +55,7 @@ enum Command {
     /// WASM size budgets (SL-0.WS.09).
     SizeCheck,
     /// Corpus fetch / stats / verify (SL-0.CORP.01-03).
-    Corpus,
+    Corpus(CorpusArgs),
     /// Oracle containers and comparisons (SL-0.ORACLE.01).
     Oracle,
     /// Fuzzing harness (SL-0.SEC.02).
@@ -74,6 +76,22 @@ enum Command {
     PublishOss,
 }
 
+#[derive(clap::Args)]
+struct CorpusArgs {
+    #[command(subcommand)]
+    sub: CorpusSub,
+}
+
+#[derive(Subcommand)]
+enum CorpusSub {
+    /// Download manifests to the cache, verifying hashes (SL-0.CORP.01).
+    Fetch,
+    /// List the configured corpora.
+    List,
+    /// Report total corpora and tag distribution.
+    Stats,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -88,11 +106,15 @@ fn main() -> ExitCode {
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::SizeCheck => not_in_phase_0("size-check"),
-        Command::Corpus => not_in_phase_0("corpus"),
+        Command::Corpus(args) => match args.sub {
+            CorpusSub::Fetch => corpus::run(corpus::CorpusCommand::Fetch),
+            CorpusSub::List => corpus::run(corpus::CorpusCommand::List),
+            CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
+        },
         Command::Oracle => not_in_phase_0("oracle"),
         Command::Fuzz => not_in_phase_0("fuzz"),
         Command::Bench => not_in_phase_0("bench"),
-        Command::Conformance => not_in_phase_0("conformance"),
+        Command::Conformance => conformance::report(),
         Command::Sbom => not_in_phase_0("sbom"),
         Command::Sign => not_in_phase_0("sign"),
         Command::Package => not_in_phase_0("package"),

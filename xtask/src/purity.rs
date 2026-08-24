@@ -55,7 +55,7 @@ pub fn check() -> Result<(), String> {
 
     for (crate_name, files) in &crates {
         for file in files {
-            scan_file(&crate_name, file, &cfg.banned, &allowed, &mut violations);
+            scan_file(crate_name, file, &cfg.banned, &allowed, &mut violations);
         }
     }
 

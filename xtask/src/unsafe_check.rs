@@ -33,10 +33,10 @@ pub fn check() -> Result<(), String> {
                 let trimmed = line.trim_start();
                 // Attribute lines declaring the lint policy are the *prohibition*
                 // of unsafe, not a use of it.
-                if trimmed.starts_with("#![") || trimmed.starts_with("#[") {
-                    if trimmed.contains("unsafe_code") {
-                        continue;
-                    }
+                if (trimmed.starts_with("#![") || trimmed.starts_with("#["))
+                    && trimmed.contains("unsafe_code")
+                {
+                    continue;
                 }
                 if !is_unsafe_use(line) {
                     continue;

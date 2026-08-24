@@ -1,0 +1,98 @@
+# Conformance areas — SL-0.OPS.02.
+#
+# Machine-readable twin of 20-CONFORMANCE-PROGRAM.md. Every area starts at
+# level 0 (None). `xtask conformance report` renders the current state as the
+# project's real status page; CI publishes it.
+#
+# Ladder levels (20-CONFORMANCE-PROGRAM.md):
+#   0 None       — nothing implemented, nothing claimed.
+#   1 Identify   — the engine recognises the construct.
+#   2 Parse      — the engine parses it without loss.
+#   3 Render     — it renders correctly.
+#   4 Extract    — text/structure can be extracted.
+#   5 Edit       — it can be modified and saved back.
+#   6 Author     — the engine can author new documents using it.
+
+[[area]]
+id = "cos"
+name = "COS object model"
+level = 0
+notes = "Phase 1 (SL-1.COS.*)"
+
+[[area]]
+id = "xref"
+name = "Cross-reference tables and streams"
+level = 0
+notes = "Phase 1 (SL-1.COS.*)"
+
+[[area]]
+id = "filters"
+name = "Stream filters"
+level = 0
+notes = "Phase 1 (SL-1.FILT.*)"
+
+[[area]]
+id = "encryption"
+name = "Encryption and permissions"
+level = 0
+notes = "Phase 1 (SL-1.ENCRYPT.*)"
+
+[[area]]
+id = "document"
+name = "Document model (catalog, pages, outlines)"
+level = 0
+notes = "Phase 1 (SL-1.DOC.*)"
+
+[[area]]
+id = "render"
+name = "Rendering (content, raster)"
+level = 0
+notes = "Phase 2 (SL-2.*)"
+
+[[area]]
+id = "text"
+name = "Text and fonts"
+level = 0
+notes = "Phase 3 (SL-3.*)"
+
+[[area]]
+id = "annot"
+name = "Annotations"
+level = 0
+notes = "Phase 5 (SL-5.*)"
+
+[[area]]
+id = "forms"
+name = "AcroForm"
+level = 0
+notes = "Phase 5 (SL-5.*)"
+
+[[area]]
+id = "edit"
+name = "Editing and incremental save"
+level = 0
+notes = "Phase 5 (SL-5.*)"
+
+[[area]]
+id = "redact"
+name = "Redaction"
+level = 0
+notes = "Phase 5 (SL-5.REDACT.*)"
+
+[[area]]
+id = "sign"
+name = "Digital signatures"
+level = 0
+notes = "Phase 5 (SL-5.SIGN.*)"
+
+[[area]]
+id = "pdfa"
+name = "PDF/A"
+level = 0
+notes = "Phase 9 (SL-9.COMPL.01)"
+
+[[area]]
+id = "pdfua"
+name = "PDF/UA"
+level = 0
+notes = "Phase 9 (SL-9.COMPL.02)"
