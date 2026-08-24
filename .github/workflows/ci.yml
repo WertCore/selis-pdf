@@ -1,0 +1,63 @@
+# CI pipeline — 03-CONVENTIONS.md §9.
+#
+# Stage          | Runs on   | Gate
+# fmt + lint     | every PR  | required
+# build-matrix   | every PR  | required
+# test-fast      | every PR  | required
+# size-check     | every PR  | required
+# determinism    | every PR  | required
+# test-slow      | nightly   | required for release
+# fuzz-soak      | nightly   | non-blocking
+# perf           | nightly   | blocks release on >5% regression
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── fmt + lint + gates ──────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+      - run: cargo xtask lint
+
+  # ── build matrix (6 targets, 03-CONVENTIONS.md §9) ──────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - wasm32-unknown-unknown
+          - aarch64-apple-ios
+          - aarch64-linux-android
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - run: cargo build --workspace --target ${{ matrix.target }}
+        timeout-minutes: 15
+
+  # ── unit + property tests ──────────────────────────────────────────────────
+  test-fast:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo test --workspace
+        timeout-minutes: 10
