@@ -62,21 +62,21 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.WS — Workspace & tooling
 
-- [ ] **SL-0.WS.01 — Repo bootstrap** · owner: AI
+- [x] **SL-0.WS.01 — Repo bootstrap** · owner: AI
   - **Do:** Create the workspace exactly as `01-ARCHITECTURE.md §12` and `03-CONVENTIONS.md §1`:
     `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`, `deny.toml`, `rustfmt.toml`,
     `.editorconfig`, `CODEOWNERS`, licence files (proprietary + Apache-2.0 for the three OSS
     crates), and every crate directory with an empty `lib.rs`.
   - **DoD:** `cargo check --workspace` passes; `cargo fmt --check` clean; 33 crates present.
 
-- [ ] **SL-0.WS.02 — `xtask` skeleton** · deps: WS.01 · owner: AI
+- [x] **SL-0.WS.02 — `xtask` skeleton** · deps: WS.01 · owner: AI
   - **Do:** `xtask` with subcommands `build test lint check-layers check-purity check-unsafe
     check-contracts check-codes check-alloc check-flags size-check corpus oracle fuzz bench
     conformance sbom sign package release publish-oss`. Stub unimplemented ones with an explicit
     "not implemented in phase 0" error, never a silent success.
   - **DoD:** `cargo xtask --help` lists all of them.
 
-- [ ] **SL-0.WS.03 — `check-layers`** · deps: WS.02 · owner: AI
+- [x] **SL-0.WS.03 — `check-layers`** · deps: WS.02 · owner: AI
   - **Do:** Parse `cargo metadata`, load `xtask/layers.toml` (crate → layer + an explicit
     allowed-extra-edge list with a justification string per edge), fail on any violating edge.
   - **API:** `fn check_layers(meta: &Metadata, cfg: &LayerCfg) -> Vec<Violation>`
@@ -84,7 +84,7 @@ point you have 40 000 lines and no idea which of them are wrong.
     demonstrates the failure. The four legitimate L2 edges from `01-ARCHITECTURE.md §3` are present
     with justifications.
 
-- [ ] **SL-0.WS.04 — `check-purity`** · deps: WS.02 · owner: AI+
+- [x] **SL-0.WS.04 — `check-purity`** · deps: WS.02 · owner: AI+
   - **Do:** Enforce ADR-P0005/P0011/P0016 mechanically: no crate at L0–L3 may reference
     `std::fs`, `std::net`, `std::env`, `std::time::{Instant,SystemTime}`, `std::process`,
     `reqwest`, or any socket API. Implement by walking the dependency graph *and* scanning source
@@ -92,7 +92,7 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** Positive and negative fixture tests; runs in CI. This is the test that makes the
     local-first claim structural rather than aspirational.
 
-- [ ] **SL-0.WS.05 — `check-unsafe`, `check-contracts`, `check-alloc`** · deps: WS.02 · owner: AI
+- [x] **SL-0.WS.05 — `check-unsafe`, `check-contracts`, `check-alloc`** · deps: WS.02 · owner: AI
   - **Do:** `check-unsafe`: every `unsafe` block has a preceding `// SAFETY:` and the crate is on
     the allowlist. `check-contracts`: every fn taking `Budget` or a document-origin `&[u8]` has
     `# Budget` and `# Malformed Input` rustdoc sections; every content-driven loop calls
@@ -131,7 +131,7 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.ERR — Error model
 
-- [ ] **SL-0.ERR.01 — `codes.toml` registry + codegen** · owner: AI+
+- [x] **SL-0.ERR.01 — `codes.toml` registry + codegen** · owner: AI+
   - **Do:** Implement `crates/selis-error/codes.toml` with the schema of `03-CONVENTIONS.md §3` and a
     build script generating the `Code` enum, the `doc_state` accessor, the user-message table, and
     a Markdown reference. Seed the ranges with the codes Phase 0 needs (budget, I/O, policy).
@@ -140,7 +140,7 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** `xtask check-codes` catches a duplicate id, a changed meaning, and a source-used
     but unregistered code. Generated docs published.
 
-- [ ] **SL-0.ERR.02 — `DocState` on every error** · deps: ERR.01 · owner: AI+
+- [x] **SL-0.ERR.02 — `DocState` on every error** · deps: ERR.01 · owner: AI+
   - **Do:** Make `doc_state` mandatory in the registry schema and prove it is correct for the seed
     codes. This is the field callers use to decide whether the user's work survived.
   - **DoD:** A test asserting every registered code has a `doc_state`; a doc page explaining each.
@@ -152,7 +152,7 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** A test that a deliberate panic in a deep parser returns an error rather than killing
     the host process; a test that the payload contains no document-derived bytes.
 
-- [ ] **SL-0.ERR.04 — Localisation plumbing** · deps: ERR.01 · owner: AI
+- [x] **SL-0.ERR.04 — Localisation plumbing** · deps: ERR.01 · owner: AI
   - **Do:** User messages resolved through Fluent (or ICU MessageFormat) keys from the registry.
     English is a translation, not a hardcode.
   - **DoD:** A pseudo-locale build renders every message; `xtask check-codes` fails on a message
@@ -162,7 +162,7 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.SBX — The sandbox kernel
 
-- [ ] **SL-0.SBX.01 — `Budget`, `BudgetGuard`, `Resource`** · owner: AI+
+- [x] **SL-0.SBX.01 — `Budget`, `BudgetGuard`, `Resource`** · owner: AI+
   - **Do:** Implement `01-ARCHITECTURE.md §6`. Charging is checked arithmetic; exhaustion returns
     `BudgetExceeded { resource, limit, requested }` and poisons the guard so later charges cannot
     silently succeed.
@@ -170,25 +170,25 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** Property test: no sequence of charges can exceed a limit; a poisoned guard rejects all
     further charges; overflow in a charge is an error, not a wrap.
 
-- [ ] **SL-0.SBX.02 — Budget-aware allocator wrapper** · deps: SBX.01 · owner: AI+
+- [x] **SL-0.SBX.02 — Budget-aware allocator wrapper** · deps: SBX.01 · owner: AI+
   - **Do:** `sandbox::alloc::{vec_with_capacity, boxed_slice, grow}` that charge `bytes` before
     allocating and return `Result`. Must work on WASM (no global allocator hooks needed).
   - **DoD:** `check-alloc` enforces its use; a test proves a 40 GB length field yields
     `BudgetExceeded` in constant memory and constant time.
 
-- [ ] **SL-0.SBX.03 — `CancelToken` and deadlines** · deps: SBX.01 · owner: AI
+- [x] **SL-0.SBX.03 — `CancelToken` and deadlines** · deps: SBX.01 · owner: AI
   - **Do:** Cooperative cancellation via `guard.tick()`, checking an atomic flag and an injected
     `Clock`. No `std::time::Instant` (ADR-P0011).
   - **API:** `trait Clock { fn now(&self) -> Nanos; }`, `CancelToken::cancel()`
   - **DoD:** A test that a long operation cancels within one tick interval; a WASM test using a
     JS-backed clock.
 
-- [ ] **SL-0.SBX.04 — Depth guards and the no-native-recursion rule** · deps: SBX.01 · owner: AI+
+- [x] **SL-0.SBX.04 — Depth guards and the no-native-recursion rule** · deps: SBX.01 · owner: AI+
   - **Do:** `DepthGuard` plus a documented worklist pattern for `selis-pdf-cos`, `selis-pdf-content`, `selis-pdf-doc`.
     A lint (`check-contracts` extension) flags direct recursion in those three crates.
   - **DoD:** Fixture test; the rule documented with an example worklist implementation.
 
-- [ ] **SL-0.SBX.05 — Budget profiles** · deps: SBX.01 · owner: AI
+- [x] **SL-0.SBX.05 — Budget profiles** · deps: SBX.01 · owner: AI
   - **Do:** `Budget::profile(Surface)` for `Thumbnail | Viewer | Editor | Batch | Server | Fuzz`.
     Values in `sandbox/profiles.toml`, tuned later against the corpus, not guessed forever.
   - **DoD:** Profiles documented with the reasoning for each number.
@@ -205,12 +205,12 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.IO — Sources and sinks
 
-- [ ] **SL-0.IO.01 — `DocSource` / `DocSink` traits + `Availability`** · owner: AI+
+- [x] **SL-0.IO.01 — `DocSource` / `DocSink` traits + `Availability`** · owner: AI+
   - **Do:** Implement `01-ARCHITECTURE.md §5` verbatim, including `RangeSet`.
   - **DoD:** Doc comments carry the contract sections; `RangeSet` has property tests for union,
     subtract, and coalesce.
 
-- [ ] **SL-0.IO.02 — `MemSource` and `FaultSource`** · deps: IO.01 · owner: AI
+- [x] **SL-0.IO.02 — `MemSource` and `FaultSource`** · deps: IO.01 · owner: AI
   - **Do:** The in-memory source and the fault injector (truncation at offset N, byte corruption at
     rate R, latency, range-refusal, size lying).
   - **DoD:** `FaultSource` can reproduce each failure mode deterministically from a seed.
@@ -359,7 +359,7 @@ point you have 40 000 lines and no idea which of them are wrong.
 ## 0.OPS — Project operations
 
 - [ ] **SL-0.OPS.01 — ADR process + `docs/adr/` live** · owner: HUMAN
-- [ ] **SL-0.OPS.02 — Conformance ladder scaffold** · owner: AI
+- [x] **SL-0.OPS.02 — Conformance ladder scaffold** · owner: AI
   - **Do:** `20-CONFORMANCE-PROGRAM.md` machine-readable twin: `conformance/areas.toml` with every
     area at level `None`, and `xtask conformance report` rendering the current state.
   - **DoD:** The report is generated in CI and published; it is the project's real status page.
