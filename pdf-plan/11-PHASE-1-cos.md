@@ -55,7 +55,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **DoD:** A file with 5 incremental updates exposes 5 revisions; rendering revision 3 matches
     what that revision's author saw. **This is the foundation of ADR-P0007 — do not shortcut it.**
 
-- [ ] **SL-1.COS.06 — Damaged-file reconstruction** · deps: COS.04 · owner: AI+
+- [x] **SL-1.COS.06 — Damaged-file reconstruction** · deps: COS.04 · owner: AI+
   - **Do:** When the xref is unusable, scan the whole file for `N G obj` patterns, rebuild an
     index, recover the trailer by finding a `/Root`, and reconstruct page-tree order. Bounded by
     the budget; reports a `Reconstructed` deviation.

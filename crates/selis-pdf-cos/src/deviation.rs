@@ -64,6 +64,12 @@ pub enum Deviation {
         /// Byte offset of the delimiter.
         offset: u64,
     },
+    /// The xref was unusable and the index was rebuilt by scanning for
+    /// `N G obj` headers (SL-1.COS.06).
+    ReconstructedIndex {
+        /// Byte offset where reconstruction started.
+        offset: u64,
+    },
 }
 
 impl Deviation {
@@ -82,6 +88,7 @@ impl Deviation {
             Deviation::EmptyName { .. } => "empty-name",
             Deviation::UnknownWord { .. } => "unknown-word",
             Deviation::ReservedDelimiter { .. } => "reserved-delimiter",
+            Deviation::ReconstructedIndex { .. } => "reconstructed-index",
         }
     }
 
@@ -99,7 +106,8 @@ impl Deviation {
             | Deviation::BadNameEscape { offset }
             | Deviation::EmptyName { offset }
             | Deviation::UnknownWord { offset }
-            | Deviation::ReservedDelimiter { offset } => offset,
+            | Deviation::ReservedDelimiter { offset }
+            | Deviation::ReconstructedIndex { offset } => offset,
         }
     }
 }

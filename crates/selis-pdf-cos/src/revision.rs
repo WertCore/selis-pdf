@@ -55,6 +55,30 @@ pub struct RevisionView {
 }
 
 impl Doc {
+    /// A single-revision document (used by damaged-file reconstruction).
+    #[must_use]
+    pub fn from_single_revision(
+        entries: BTreeMap<u32, XrefEntry>,
+        trailer: Vec<(selis_bytes::Bytes, Obj)>,
+    ) -> Self {
+        let root = trailer
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Root")
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            });
+        Self {
+            revisions: vec![Revision {
+                byte_range: 0..u64::MAX,
+                entries,
+                trailer,
+                root,
+                prev: None,
+            }],
+        }
+    }
+
     /// All revisions, oldest first.
     #[must_use]
     pub fn revisions(&self) -> &[Revision] {
