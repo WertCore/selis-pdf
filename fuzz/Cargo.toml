@@ -1,0 +1,24 @@
+# cargo-fuzz workspace member — SL-0.SEC.02.
+#
+# One fuzz target per parser entry point, added as the entry points land
+# (03-CONVENTIONS.md §6: "A new parser without a fuzz target does not merge").
+# Every target constructs a MemSource + a Fuzz-budget and asserts: no panic,
+# no OOM, terminates within the budget.
+
+[package]
+name = "selis-fuzz"
+edition = "2021"
+publish = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+selis-io = { path = "../crates/selis-io" }
+selis-sandbox = { path = "../crates/selis-sandbox" }
+selis-pdf-cos = { path = "../crates/selis-pdf-cos" }
+
+[[bin]]
+name = "cos_parse"
+path = "fuzz_targets/cos_parse.rs"
+test = false
+doc = false
+bench = false

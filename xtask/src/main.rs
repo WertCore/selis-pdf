@@ -12,6 +12,7 @@ mod conformance;
 mod corpus;
 mod layers;
 mod purity;
+mod sbom;
 mod unsafe_check;
 
 use std::process::ExitCode;
@@ -115,7 +116,7 @@ fn main() -> ExitCode {
         Command::Fuzz => not_in_phase_0("fuzz"),
         Command::Bench => not_in_phase_0("bench"),
         Command::Conformance => conformance::report(),
-        Command::Sbom => not_in_phase_0("sbom"),
+        Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),
         Command::Package => not_in_phase_0("package"),
         Command::Release => not_in_phase_0("release"),
