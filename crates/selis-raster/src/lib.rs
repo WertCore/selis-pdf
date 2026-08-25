@@ -19,6 +19,7 @@ pub mod aa;
 pub mod clip;
 pub mod group;
 pub mod image;
+pub mod pattern;
 pub mod render;
 pub mod shading;
 pub mod soft_mask;
@@ -28,6 +29,7 @@ pub use aa::{renders_match, stable_hash, AaPolicy, Determinism, DeterminismProof
 pub use clip::ClipStack;
 pub use group::{composite, group_backdrop, Backdrop, GroupParams};
 pub use image::{decode_image, decode_image_scaled, draw, Decode, DecodedImage};
+pub use pattern::{plan_pattern, PatternTile, PatternType, TileInstance, TilePlan, TilingPattern};
 pub use render::{apply_ctm, fill, stroke, to_backend_stroke, StrokeSpec};
 pub use shading::{
     axial_colour, barycentric, radial_colour, AxialShading, FunctionShading, GouraudShading,

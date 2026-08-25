@@ -397,6 +397,15 @@ user_msg = "This PDF's transparency mask data is damaged."
 retryable = false
 doc_state = "Unchanged"
 
+[[code]]
+id = 2301
+name = "PATTERN_MALFORMED"
+kind = "Malformed"
+meaning = "A tiling pattern had a non-positive step, a singular matrix, or an invalid tile."
+user_msg = "This PDF's tiling pattern data is damaged."
+retryable = false
+doc_state = "Unchanged"
+
 # ---------------------------------------------------------------------------
 # 2800–2999 — Edit and save
 # ---------------------------------------------------------------------------

@@ -129,7 +129,7 @@ every user on every page.
     a packed bit stream.
   - **DoD:** Corpus `shading-1` … `shading-7`, each matching PDFium; the radial "extend" cone cases
     are explicitly tested — they are a classic source of wrong output.
-- [ ] **SL-2.RAST.07 — Tiling patterns** · deps: RAST.04 · owner: AI+
+- [x] **SL-2.RAST.07 — Tiling patterns** · deps: RAST.04 · owner: AI+
   - **Do:** Coloured (type 1) and uncoloured (type 2), `/XStep`/`/YStep`, pattern matrix relative
     to the *default* page space (not the current CTM — a common bug), and a bounded tile cache.
   - **DoD:** Corpus `patterns`; a pattern with a tiny XStep hits the pixel budget rather than
