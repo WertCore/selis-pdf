@@ -21,6 +21,7 @@ pub mod group;
 pub mod image;
 pub mod render;
 pub mod shading;
+pub mod soft_mask;
 pub mod tile;
 
 pub use aa::{renders_match, stable_hash, AaPolicy, Determinism, DeterminismProof};
@@ -32,6 +33,7 @@ pub use shading::{
     axial_colour, barycentric, radial_colour, AxialShading, FunctionShading, GouraudShading,
     LatticeShading, RadialShading, Shading, ShadingPoint,
 };
+pub use soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
 pub use tile::{render_sequential, stitch, tile_decompose, Tile};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;
@@ -110,8 +112,15 @@ pub trait Backend {
     /// Intersect the clip with a path.
     fn clip(&mut self, path: &Path, rule: FillRule);
 
-    /// Set the current blend mode for subsequent ops.
+    /// Set the blend mode for subsequent ops.
     fn set_blend(&mut self, blend: BlendMode);
+
+    /// Set the active soft mask for subsequent ops; `None` clears it.
+    ///
+    /// The mask is in device space, `width × height` alpha bytes. Every op
+    /// painted while the mask is active has its alpha modulated by the mask
+    /// value at each device pixel (SL-2.RAST.05).
+    fn set_soft_mask(&mut self, mask: Option<&Mask>);
 }
 
 /// Stroke parameters (PDF §8.4.3).
@@ -191,6 +200,8 @@ pub enum Call {
     },
     /// `set_blend`.
     SetBlend(BlendMode),
+    /// `set_soft_mask`.
+    SetSoftMask(Option<Mask>),
 }
 
 impl Backend for RecordingBackend {
@@ -229,6 +240,10 @@ impl Backend for RecordingBackend {
 
     fn set_blend(&mut self, blend: BlendMode) {
         self.calls.push(Call::SetBlend(blend));
+    }
+
+    fn set_soft_mask(&mut self, mask: Option<&Mask>) {
+        self.calls.push(Call::SetSoftMask(mask.cloned()));
     }
 }
 
@@ -320,6 +335,22 @@ mod tests {
                 size: (4, 4),
                 placement,
             }
+        );
+    }
+
+    #[test]
+    fn set_soft_mask_is_recorded_and_cleared() {
+        let mut backend = RecordingBackend::default();
+        let mask = Mask {
+            width: 2,
+            height: 1,
+            alpha8: vec![0, 255],
+        };
+        backend.set_soft_mask(Some(&mask));
+        backend.set_soft_mask(None);
+        assert_eq!(
+            backend.calls,
+            vec![Call::SetSoftMask(Some(mask)), Call::SetSoftMask(None)]
         );
     }
 }

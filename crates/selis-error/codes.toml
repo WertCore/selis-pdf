@@ -386,6 +386,18 @@ retryable = false
 doc_state = "NotLoaded"
 
 # ---------------------------------------------------------------------------
+# 2300–2599 — Content and rendering
+# ---------------------------------------------------------------------------
+[[code]]
+id = 2300
+name = "SMASK_MALFORMED"
+kind = "Malformed"
+meaning = "A soft-mask dictionary or its rendered group was structurally invalid."
+user_msg = "This PDF's transparency mask data is damaged."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
 # 2800–2999 — Edit and save
 # ---------------------------------------------------------------------------
 [[code]]

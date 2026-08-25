@@ -8,10 +8,11 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, Pixmap, PixmapPaint, Stroke, StrokeDash, Transform,
+    FillRule, LineCap, LineJoin, Paint, Pixmap, PixmapMut, PixmapPaint, Stroke, StrokeDash,
+    Transform,
 };
 
-use crate::{Backend, Image, ImagePlacement, Path, PathCmd};
+use crate::{Backend, Image, ImagePlacement, Mask, Path, PathCmd};
 
 /// A backend backed by a tiny-skia pixmap.
 pub struct TinySkiaBackend {
@@ -21,6 +22,8 @@ pub struct TinySkiaBackend {
     width: u32,
     /// The pixmap height.
     height: u32,
+    /// The active soft mask (device-space alpha), if any.
+    soft_mask: Option<tiny_skia::Mask>,
 }
 
 impl TinySkiaBackend {
@@ -32,6 +35,7 @@ impl TinySkiaBackend {
             pixmap,
             width,
             height,
+            soft_mask: None,
         })
     }
 
@@ -52,6 +56,50 @@ impl TinySkiaBackend {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+
+    /// Run a paint closure, compositing through the active soft mask when one
+    /// is set. The closure draws into a temporary layer; the layer is then
+    /// composited onto the canvas with the mask modulating its alpha.
+    fn with_soft_mask(&mut self, paint: impl FnOnce(PixmapMut<'_>)) {
+        let Some(mask) = self.soft_mask.as_ref() else {
+            paint(self.pixmap.as_mut());
+            return;
+        };
+        let Some(mut layer) = Pixmap::new(self.width, self.height) else {
+            return; // zero canvas: nothing to draw
+        };
+        paint(layer.as_mut());
+        let ts_paint = PixmapPaint::default();
+        self.pixmap.as_mut().draw_pixmap(
+            0,
+            0,
+            layer.as_ref(),
+            &ts_paint,
+            Transform::identity(),
+            Some(mask),
+        );
+    }
+}
+
+/// Convert a device-space [`Mask`] to a canvas-sized `tiny_skia::Mask`,
+/// resampling by nearest-neighbour when the dimensions differ. The caller is
+/// expected to provide a canvas-aligned mask; this only guards against a
+/// mismatch.
+fn to_ts_mask(mask: &Mask, canvas_w: u32, canvas_h: u32) -> Option<tiny_skia::Mask> {
+    let w = canvas_w.max(1);
+    let h = canvas_h.max(1);
+    let size = tiny_skia::IntSize::from_wh(w, h)?;
+    let expected = (w as usize).saturating_mul(h as usize);
+    if mask.width == w && mask.height == h && mask.alpha8.len() == expected {
+        return tiny_skia::Mask::from_vec(mask.alpha8.clone(), size);
+    }
+    let mut data = Vec::with_capacity(expected);
+    for y in 0..h {
+        for x in 0..w {
+            data.push(mask.sample(x, y));
+        }
+    }
+    tiny_skia::Mask::from_vec(data, size)
 }
 
 fn to_ts_path(path: &Path) -> Option<tiny_skia::Path> {
@@ -128,13 +176,10 @@ impl Backend for TinySkiaBackend {
             return;
         };
         let ts_paint = to_ts_paint(paint);
-        self.pixmap.as_mut().fill_path(
-            &ts_path,
-            &ts_paint,
-            to_ts_fill_rule(rule),
-            Transform::identity(),
-            None,
-        );
+        let rule = to_ts_fill_rule(rule);
+        self.with_soft_mask(|mut layer| {
+            layer.fill_path(&ts_path, &ts_paint, rule, Transform::identity(), None);
+        });
     }
 
     fn stroke(&mut self, path: &Path, paint: &crate::Paint, stroke: &crate::Stroke) {
@@ -143,13 +188,9 @@ impl Backend for TinySkiaBackend {
         };
         let ts_paint = to_ts_paint(paint);
         let ts_stroke = to_ts_stroke(stroke);
-        self.pixmap.as_mut().stroke_path(
-            &ts_path,
-            &ts_paint,
-            &ts_stroke,
-            Transform::identity(),
-            None,
-        );
+        self.with_soft_mask(|mut layer| {
+            layer.stroke_path(&ts_path, &ts_paint, &ts_stroke, Transform::identity(), None);
+        });
     }
 
     fn draw_image(&mut self, image: &Image, placement: &ImagePlacement) {
@@ -166,9 +207,9 @@ impl Backend for TinySkiaBackend {
         )
         .pre_translate(placement.rect.x0 as f32, placement.rect.y0 as f32);
         let paint = PixmapPaint::default();
-        self.pixmap
-            .as_mut()
-            .draw_pixmap(0, 0, src.as_ref(), &paint, ts, None);
+        self.with_soft_mask(|mut layer| {
+            layer.draw_pixmap(0, 0, src.as_ref(), &paint, ts, None);
+        });
     }
 
     fn push_layer(&mut self, _blend: crate::BlendMode, _alpha: f64) {
@@ -186,10 +227,16 @@ impl Backend for TinySkiaBackend {
     fn set_blend(&mut self, _blend: crate::BlendMode) {
         // Blend mode is per-paint in tiny-skia; RAST.06 wires it through.
     }
+
+    fn set_soft_mask(&mut self, mask: Option<&Mask>) {
+        self.soft_mask = mask.and_then(|m| to_ts_mask(m, self.width, self.height));
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
     use super::*;
     use crate::{FillRule, Paint, PathCmd, Stroke};
 
@@ -247,5 +294,64 @@ mod tests {
         backend.draw_image(&image, &placement);
         let data = backend.pixmap().data();
         assert!(data.iter().any(|&b| b != 0));
+    }
+
+    /// SL-2.RAST.05 DoD: an active soft mask modulates per-pixel alpha. A
+    /// `[0, 255]` mask blocks the left half and passes the right half.
+    #[test]
+    fn soft_mask_modulates_paint_alpha() {
+        let mut backend = TinySkiaBackend::new(2, 1).expect("pixmap");
+        let mask = Mask {
+            width: 2,
+            height: 1,
+            alpha8: vec![0, 255],
+        };
+        backend.set_soft_mask(Some(&mask));
+        let path = Path {
+            commands: vec![
+                PathCmd::Move(pt(0.0, 0.0)),
+                PathCmd::Line(pt(2.0, 0.0)),
+                PathCmd::Line(pt(2.0, 1.0)),
+                PathCmd::Line(pt(0.0, 1.0)),
+                PathCmd::Close,
+            ],
+        };
+        let paint = Paint {
+            colour: selis_color::Rgba::new(1.0, 0.0, 0.0, 1.0),
+        };
+        backend.fill(&path, FillRule::NonZero, &paint);
+        let data = backend.pixmap().data();
+        // Left pixel (mask 0): stays transparent.
+        assert_eq!(&data[0..4], &[0, 0, 0, 0]);
+        // Right pixel (mask 255): opaque red.
+        assert_eq!(&data[4..8], &[255, 0, 0, 255]);
+    }
+
+    /// Clearing the soft mask restores unmodulated painting.
+    #[test]
+    fn clearing_soft_mask_restores_normal_paint() {
+        let mut backend = TinySkiaBackend::new(1, 1).expect("pixmap");
+        let mask = Mask {
+            width: 1,
+            height: 1,
+            alpha8: vec![0],
+        };
+        backend.set_soft_mask(Some(&mask));
+        backend.set_soft_mask(None);
+        let path = Path {
+            commands: vec![
+                PathCmd::Move(pt(0.0, 0.0)),
+                PathCmd::Line(pt(1.0, 0.0)),
+                PathCmd::Line(pt(1.0, 1.0)),
+                PathCmd::Line(pt(0.0, 1.0)),
+                PathCmd::Close,
+            ],
+        };
+        let paint = Paint {
+            colour: selis_color::Rgba::new(0.0, 0.0, 1.0, 1.0),
+        };
+        backend.fill(&path, FillRule::NonZero, &paint);
+        let data = backend.pixmap().data();
+        assert_eq!(&data[0..4], &[0, 0, 255, 255]);
     }
 }

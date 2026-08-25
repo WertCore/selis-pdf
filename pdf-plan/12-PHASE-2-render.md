@@ -121,7 +121,7 @@ every user on every page.
     within tolerance; corpus `transparency`.
   - **Risk:** Budget two full weeks. Non-isolated non-knockout groups are where every renderer,
     including the well-funded ones, has bugs. Compare against *two* oracles here, not one.
-- [ ] **SL-2.RAST.05 — Soft masks (luminosity and alpha)** · deps: RAST.04 · owner: AI+
+- [x] **SL-2.RAST.05 — Soft masks (luminosity and alpha)** · deps: RAST.04 · owner: AI+
   - **Do:** `/SMask` in ExtGState, backdrop colour, transfer functions.
 - [x] **SL-2.RAST.06 — Shadings 1–7** · deps: COLOR.05, RAST.03 · owner: AI+
   - **Do:** Function-based (1), axial (2), radial (3), free-form Gouraud triangle mesh (4),
