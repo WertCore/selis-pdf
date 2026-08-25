@@ -17,3 +17,4 @@ selis-sandbox = { workspace = true }
 swash = { workspace = true }
 unicode-script = { workspace = true }
 unicode-bidi = { workspace = true }
+unicode-linebreak = { workspace = true }

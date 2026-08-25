@@ -44,6 +44,7 @@ skrifa = "0.44"
 swash = "0.2"
 unicode-script = "0.5"
 unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
 
 # Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
 aes         = "0.8"
@@ -115,5 +116,6 @@ lto   = "thin"
 
 [profile.bench]
 lto = "thin"
+
 
 

@@ -110,7 +110,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 - [x] **SL-3.SHAPE.02 — Bidi and RTL** · deps: SHAPE.01 · owner: AI+
   - **Do:** UAX #9 via `unicode-bidi`, paragraph direction detection, and mirroring.
   - **DoD:** Corpus `rtl` (Arabic, Hebrew) renders and extracts in correct logical order.
-- [ ] **SL-3.SHAPE.03 — Line breaking and justification** · deps: SHAPE.02 · owner: AI+
+- [x] **SL-3.SHAPE.03 — Line breaking and justification** · deps: SHAPE.02 · owner: AI+
   - **Do:** UAX #14 line breaking, plus PDF-specific justification (word spacing vs. char spacing
     vs. horizontal scaling) so reflowed text matches the original paragraph's visual style.
 - [ ] **SL-3.SHAPE.04 — Indic and complex-script validation** · deps: SHAPE.01 · owner: AI
