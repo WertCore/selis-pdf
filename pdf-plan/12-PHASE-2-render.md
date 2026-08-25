@@ -36,7 +36,7 @@ every user on every page.
   - **DoD:** Corpus `paths` including degenerate cases: zero-length subpath with round caps (must
     paint a dot), zero-area fill, self-intersecting even-odd fills.
 
-- [ ] **SL-2.CONT.04 — Form XObjects with depth budgeting** · deps: CONT.02 · owner: AI+
+- [x] **SL-2.CONT.04 — Form XObjects with depth budgeting** · deps: CONT.02 · owner: AI+
   - **Do:** `Do` for form XObjects: resource-dictionary scoping (including inheritance from the
     page when the form omits `/Resources` — a real-world case), `/Matrix`, `/BBox` clipping, and
     recursion depth via the worklist pattern (no native recursion).

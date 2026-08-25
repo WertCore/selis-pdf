@@ -9,11 +9,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod dispatch;
+pub mod form;
 pub mod gstate;
 pub mod lex;
 pub mod path;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
+pub use form::{Form, FormWorklist, ResourceDict};
 pub use gstate::{GState, GStateStack};
 pub use lex::{tokenise, Lexer, Tok};
 pub use path::{PaintOp, PaintedPath, Path, Segment};
