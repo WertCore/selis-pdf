@@ -90,7 +90,7 @@ every user on every page.
   - **Files:** `crates/selis-color/src/function/`
   - **DoD:** Fuzz target `pdf_function`; a type-4 function with a pathological expression hits the
     budget; numeric results match Ghostscript within 1e-6 on a generated test set.
-- [ ] **SL-2.COLOR.06 — Blend modes** · deps: COLOR.01 · owner: AI+
+- [x] **SL-2.COLOR.06 — Blend modes** · deps: COLOR.01 · owner: AI+
   - **Do:** All separable modes and the four non-separable (Hue, Saturation, Color, Luminosity),
     in the correct blend colour space.
   - **DoD:** A generated matrix of every blend mode × backdrop × source, compared to PDFium.
