@@ -15,12 +15,14 @@
 extern crate alloc;
 
 pub mod blend;
+pub mod cie;
 pub mod function;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 pub use blend::{BlendMode, Rgba};
+pub use cie::{CalGray, CalRgb, Lab, WhitePoint};
 pub use function::{Function, FunctionBudget};
 
 /// A device-independent RGB triple with components in `[0,1]`.
