@@ -30,7 +30,7 @@ every user on every page.
   - **DoD:** `q` without `Q` at stream end, and `Q` underflow, both handled per spec and tested;
     `/ExtGState` merging tested for every key.
 
-- [ ] **SL-2.CONT.03 — Path construction and painting** · deps: CONT.02 · owner: AI+
+- [x] **SL-2.CONT.03 — Path construction and painting** · deps: CONT.02 · owner: AI+
   - **Do:** `m l c v y h re`, painting operators `S s f F f* B B* b b* n`, and clipping `W W*`
     with the "clip takes effect after the painting op" rule that is easy to get subtly wrong.
   - **DoD:** Corpus `paths` including degenerate cases: zero-length subpath with round caps (must

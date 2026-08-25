@@ -296,7 +296,6 @@ mod tests {
 
     #[test]
     fn underflow_is_a_typed_error() {
-        let mut g = guard();
         let mut stack = GStateStack::new();
         let e = stack.pop().expect_err("underflow");
         assert_eq!(e.code(), Code::BudgetDepth);

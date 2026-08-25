@@ -11,10 +11,12 @@
 pub mod dispatch;
 pub mod gstate;
 pub mod lex;
+pub mod path;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
 pub use gstate::{GState, GStateStack};
 pub use lex::{tokenise, Lexer, Tok};
+pub use path::{PaintOp, PaintedPath, Path, Segment};
 
 use selis_error::Result;
 use selis_sandbox::BudgetGuard;

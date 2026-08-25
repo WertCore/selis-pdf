@@ -397,6 +397,17 @@ impl Rect {
         }
     }
 
+    /// A rectangle spanning two corner points, normalising the corners.
+    #[must_use]
+    pub fn from_points(ax: f64, ay: f64, bx: f64, by: f64) -> Self {
+        Self {
+            x0: ax.min(bx),
+            y0: ay.min(by),
+            x1: ax.max(bx),
+            y1: ay.max(by),
+        }
+    }
+
     /// Back to a PDF array, in the normalised order.
     #[must_use]
     pub const fn to_pdf_array(self) -> [f64; 4] {
