@@ -63,7 +63,7 @@ every user on every page.
   - **Note:** Everything downstream — raster, text, redaction, edit, print, convert — consumes
     this. Getting the IR right is worth a week of design.
 
-- [ ] **SL-2.CONT.08 — Resumable/incremental interpretation** · deps: CONT.07, SL-1.COS.07 · owner: AI+
+- [x] **SL-2.CONT.08 — Resumable/incremental interpretation** · deps: CONT.07, SL-1.COS.07 · owner: AI+
   - **Do:** Interpretation yields on `Pending` and on budget-tick, so a huge page can be rendered
     progressively and cancelled instantly.
   - **DoD:** A 50 MB content stream renders progressively; cancellation returns within one tick.

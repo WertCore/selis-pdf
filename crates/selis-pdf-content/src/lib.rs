@@ -16,6 +16,7 @@ pub mod inline_image;
 pub mod lex;
 pub mod marked_content;
 pub mod path;
+pub mod resumable;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
 pub use display_list::{diff, DisplayList, GlyphRun, Op, ResolvedState};
@@ -25,6 +26,7 @@ pub use inline_image::{extract_inline_image, InlineImage};
 pub use lex::{tokenise, Lexer, Tok};
 pub use marked_content::{MarkedContent, McStack, McidMap};
 pub use path::{PaintOp, PaintedPath, Path, Segment};
+pub use resumable::{ResumableInterpreter, Step};
 
 use selis_error::Result;
 use selis_sandbox::BudgetGuard;
