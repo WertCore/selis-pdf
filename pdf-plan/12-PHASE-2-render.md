@@ -42,7 +42,7 @@ every user on every page.
     recursion depth via the worklist pattern (no native recursion).
   - **DoD:** A self-referential form XObject terminates with `DEPTH_EXCEEDED`; corpus `xobject-form`.
 
-- [ ] **SL-2.CONT.05 — Inline images (`BI`/`ID`/`EI`)** · deps: CONT.01 · owner: AI+
+- [x] **SL-2.CONT.05 — Inline images (`BI`/`ID`/`EI`)** · deps: CONT.01 · owner: AI+
   - **Do:** Including the notorious `EI` detection problem — binary image data may contain the
     bytes `EI`. Implement length-driven detection where `/L` is present and heuristic scanning
     with validation where it is not.
