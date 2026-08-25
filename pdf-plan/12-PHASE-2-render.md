@@ -80,7 +80,7 @@ every user on every page.
   - **Do:** `qcms` or `moxcms` behind `selis-color::IccEngine`. Fall back to the `/N`-implied device
     space when a profile is broken — never fail a page over a bad profile.
   - **DoD:** Corpus `color-icc` including a corrupt profile that must degrade gracefully.
-- [ ] **SL-2.COLOR.04 — Indexed, Separation, DeviceN + tint transforms** · deps: COLOR.03 · owner: AI+
+- [x] **SL-2.COLOR.04 — Indexed, Separation, DeviceN + tint transforms** · deps: COLOR.03 · owner: AI+
   - **Do:** Requires PDF functions (FUNC.01) for the tint transform. Handle `/All` and `/None`
     separations correctly — `/None` paints nothing, which is a correctness trap.
 - [x] **SL-2.COLOR.05 — PDF functions types 0, 2, 3, 4** · owner: AI+
