@@ -4,6 +4,7 @@
 # fmt + lint     | every PR  | required
 # build-matrix   | every PR  | required
 # test-fast      | every PR  | required
+# supply-chain   | every PR  | required
 # size-check     | every PR  | required
 # determinism    | every PR  | required
 # test-slow      | nightly   | required for release
@@ -52,6 +53,25 @@ jobs:
           target: ${{ matrix.target }}
       - run: cargo build --workspace --target ${{ matrix.target }}
         timeout-minutes: 15
+
+  # ── supply chain: deny + vet + SBOM (SL-0.WS.07) ───────────────────────────
+  supply-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo install cargo-vet --locked
+      - run: cargo deny check
+      - run: cargo vet --locked
+      - run: cargo xtask sbom
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: target/sbom.json
 
   # ── unit + property tests ──────────────────────────────────────────────────
   test-fast:

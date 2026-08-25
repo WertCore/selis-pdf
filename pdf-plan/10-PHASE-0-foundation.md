@@ -106,7 +106,7 @@ point you have 40 000 lines and no idea which of them are wrong.
     `aarch64-linux-android`. WASM is a **required** target from day 1 (ADR-P0011).
   - **DoD:** All six green on the empty workspace in under 8 minutes with caching.
 
-- [ ] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
+- [x] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
   - **DoD:** `cargo deny check` clean; SBOM produced; both in CI.
 

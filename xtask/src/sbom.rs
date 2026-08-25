@@ -36,7 +36,7 @@ pub fn sbom() -> Result<(), String> {
     out.push_str("  \"bomFormat\": \"CycloneDX\",\n");
     out.push_str("  \"specVersion\": \"1.5\",\n");
     out.push_str("  \"serialNumber\": \"urn:uuid:00000000-0000-0000-0000-000000000000\",\n");
-    out.push_str(&format!("  \"components\": [\n",));
+    out.push_str("  \"components\": [\n");
     for (i, (pkg, name)) in externals.iter().enumerate() {
         let version = pkg
             .get("version")

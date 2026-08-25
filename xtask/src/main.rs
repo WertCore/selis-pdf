@@ -142,6 +142,10 @@ fn lint() -> Result<(), String> {
     purity::check()?;
     unsafe_check::check()?;
     checks::check_contracts()?;
+    // SL-0.WS.07 — supply-chain gates.
+    run("cargo", &["deny", "check"])?;
+    run("cargo", &["vet"])?;
+    sbom::sbom()?;
     Ok(())
 }
 
