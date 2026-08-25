@@ -18,6 +18,7 @@ pub mod parse;
 pub mod reconstruct;
 pub mod resume;
 pub mod revision;
+pub mod writer;
 pub mod xref;
 pub mod xref_stream;
 
@@ -28,6 +29,7 @@ pub use parse::{parse_all, ObjectParser};
 pub use reconstruct::{reconstruct, reconstruct_index, recover_root, Reconstruction};
 pub use resume::{ParseStep, ResumableLexer};
 pub use revision::{parse_revisions, Doc, Revision, RevisionView};
+pub use writer::{roundtrip, Writer};
 pub use xref::{parse_classic_xref, XrefEntry, XrefIndex};
 pub use xref_stream::{parse_object_stream, parse_xref_stream, XrefStream};
 

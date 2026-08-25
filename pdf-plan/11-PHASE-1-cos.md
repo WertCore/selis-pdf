@@ -79,7 +79,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
     loading. Validate rather than trust — a lying hint stream must degrade, not corrupt.
   - **DoD:** Linearised corpus opens page 1 with a measured byte count under 5% of the file.
 
-- [ ] **SL-1.COS.09 — Object writer** · deps: COS.02 · owner: AI+
+- [x] **SL-1.COS.09 — Object writer** · deps: COS.02 · owner: AI+
   - **Do:** Serialise `Obj` back to COS syntax with correct escaping, number formatting (no locale,
     no exponent notation — PDF forbids it), and stream `/Length` handling.
   - **DoD:** Property test: `parse(write(obj)) == obj` for arbitrary generated objects, including
