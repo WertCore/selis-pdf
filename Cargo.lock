@@ -919,6 +919,7 @@ dependencies = [
  "selis-bytes",
  "selis-color",
  "selis-error",
+ "selis-font",
  "selis-geom",
  "selis-sandbox",
 ]
@@ -1044,6 +1045,7 @@ name = "selis-shape"
 version = "0.1.0"
 dependencies = [
  "selis-error",
+ "selis-font",
  "selis-sandbox",
  "swash",
  "unicode-bidi",

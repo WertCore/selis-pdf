@@ -163,6 +163,24 @@ FUNCTION_BUDGET) from the shared registry; the error crate is a leaf L0 with
 no reverse dependency."""
 
 [[edge]]
+from = "selis-color"
+to = "selis-error"
+why = """
+PDF functions (SL-2.COLOR.05) return typed errors (FUNCTION_INPUT_COUNT,
+FUNCTION_BUDGET) from the shared registry; the error crate is a leaf L0 with
+no reverse dependency."""
+
+[[edge]]
+from = "selis-shape"
+to = "selis-font"
+why = """
+The shaper consumes font programs and their metrics (the `Shaper` trait takes
+`font_data: &[u8]`). The PDF justification formula (§9.2.7) is shared between
+the shaping path (selis-shape) and the content-interpreter replay path
+(selis-pdf-content → selis-font); the canonical implementation lives in
+selis-font, and selis-shape re-exports it."""
+
+[[edge]]
 from = "selis-image"
 to = "selis-pdf-filter"
 why = """

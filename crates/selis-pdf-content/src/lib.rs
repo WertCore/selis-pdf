@@ -17,6 +17,7 @@ pub mod lex;
 pub mod marked_content;
 pub mod path;
 pub mod resumable;
+pub mod text;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
 pub use display_list::{diff, DisplayList, GlyphRun, Op, ResolvedState};

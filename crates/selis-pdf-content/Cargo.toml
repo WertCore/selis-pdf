@@ -17,6 +17,7 @@ selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-geom = { workspace = true }
 selis-color = { workspace = true }
+selis-font = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
