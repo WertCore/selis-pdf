@@ -153,8 +153,8 @@ pub fn glyph_id_for_name(data: &Bytes, name: &str) -> Option<u16> {
 
 /// A [`OutlinePen`] that collects [`OutlineCmd`]s.
 #[derive(Default)]
-struct OutlineSink {
-    commands: Vec<OutlineCmd>,
+pub(crate) struct OutlineSink {
+    pub(crate) commands: Vec<OutlineCmd>,
 }
 
 impl OutlinePen for OutlineSink {
@@ -200,7 +200,7 @@ impl OutlinePen for OutlineSink {
 /// The `[x0 y0 x1 y1]` bounding box of the outline commands, if any point
 /// exists.
 #[must_use]
-fn bbox_of(commands: &[OutlineCmd]) -> Option<[f64; 4]> {
+pub(crate) fn bbox_of(commands: &[OutlineCmd]) -> Option<[f64; 4]> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;

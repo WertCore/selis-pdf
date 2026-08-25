@@ -39,11 +39,13 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** CFF charstrings (Type 2), subrs, hintmask handling, seac, and CID-keyed CFF with FDSelect.
   - **Note:** CFF decoding via `skrifa` (covers Type 2 charstrings, subrs, hintmasks, seac, and
     CID FDSelect internally); verified against non-CID and CID-keyed fixtures.
-- [ ] **SL-3.FONT.05 — Embedded Type1 (PFB/PFA)** · deps: FONT.04 · owner: AI+
+- [x] **SL-3.FONT.05 — Embedded Type1 (PFB/PFA)** · deps: FONT.04 · owner: AI+
   - **Do:** eexec decryption, Type 1 charstrings, `/Subrs`, flex and hint-replacement, and the
     seac composite mechanism. Convert internally to the same outline representation as CFF.
   - **Note:** Type 1 is obsolete and ubiquitous in old documents. Skipping it means failing on
     exactly the archive documents users most need a tool for.
+  - **Note:** Delegated to `read-fonts`' Type1 engine (via `skrifa::raw`; FreeType-derived, covers
+    eexec/charstrings/subrs/flex/seac); verified against hand-built PFA and PFB fixtures.
 - [ ] **SL-3.FONT.06 — Type3 fonts** · deps: FONT.01, SL-2.CONT.04 · owner: AI+
   - **Do:** Glyph procedures as content streams with `/FontMatrix`, `d0`/`d1`, and their own
     resource dictionary. Depth-budgeted — a Type3 glyph can draw another Type3 font.

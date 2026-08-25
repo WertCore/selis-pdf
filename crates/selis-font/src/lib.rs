@@ -19,10 +19,15 @@ pub mod encoding;
 pub mod model;
 pub mod outline;
 pub mod tables;
+pub mod type1;
 pub mod width;
 
 pub use cmap::{select_cmap, CmapEncoding};
 pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, Outline, OutlineCmd};
+pub use type1::{
+    glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
+    Type1Font,
+};
 pub use width::{parse_ttf_metrics, resolve as resolve_widths, ResolvedFont};
