@@ -20,6 +20,7 @@ pub mod cmapfile;
 pub mod encoding;
 pub mod model;
 pub mod outline;
+pub mod standard14;
 pub mod tables;
 pub mod type1;
 pub mod type3;
@@ -31,6 +32,7 @@ pub use cmapfile::{parse_cmap, CMap, CidRange};
 pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, Outline, OutlineCmd};
+pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};
 pub use type1::{
     glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
     Type1Font,

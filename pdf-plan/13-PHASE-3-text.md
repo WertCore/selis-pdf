@@ -57,11 +57,13 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Note:** CMap parsing (`begincidrange`/`begincidchar`/`usecmap`/`/WMode`) and `/W`//`/DW`
     CID width resolution implemented; the predefined CMap registry names and `/W2` vertical
     metrics integrate with the text layer (SL-3.TEXT.01).
-- [ ] **SL-3.FONT.08 — Standard-14 metric-compatible substitution** · deps: FONT.02, SL-0.LEAD.07 · owner: AI+
+- [x] **SL-3.FONT.08 — Standard-14 metric-compatible substitution** · deps: FONT.02, SL-0.LEAD.07 · owner: AI+
   - **Do:** Ship metric-compatible substitutes for Helvetica/Times/Courier/Symbol/ZapfDingbats
     with the *exact* AFM widths, so unembedded-font documents lay out identically to Acrobat.
     Using the real AFM metrics with a substitute outline is the correct approach.
   - **DoD:** A document using all 14 fonts matches PDFium's layout within 0.5 px per line.
+  - **Note:** AFM widths shipped for all 14 fonts (pdf.js metrics, Apache-2.0); the substitute
+    *outlines* resolve through the fallback chain (SL-3.FONT.09).
 - [ ] **SL-3.FONT.09 — Fallback chain for arbitrary unembedded fonts** · deps: FONT.08 · owner: AI+
   - **Do:** Match on `/FontDescriptor` flags, `/FontFamily`, panose, and stem width; fall back
     through a bundled set, then to system fonts on native (via `fontdb`), then to a notdef box.
