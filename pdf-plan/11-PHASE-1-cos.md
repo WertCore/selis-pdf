@@ -124,7 +124,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **Do:** `zune-jpeg`, plus the PDF-specific parts everyone gets wrong: 4-component Adobe APP14
     transform detection, inverted CMYK from Photoshop, and 12-bit samples.
   - **DoD:** Corpus `filter-dct` including a CMYK-inverted file and a 12-bit file.
-- [ ] **SL-1.FILT.06 — CCITTFaxDecode** · deps: FILT.01 · owner: AI+
+- [x] **SL-1.FILT.06 — CCITTFaxDecode** · deps: FILT.01 · owner: AI+
   - **Do:** Own implementation. Group 3 1-D, Group 3 2-D, Group 4; `/K`, `/BlackIs1`,
     `/EncodedByteAlign`, `/Columns`, `/Rows`, damaged-row recovery.
   - **DoD:** Round-trip against a generated corpus; fuzz target; decoded output matches Ghostscript

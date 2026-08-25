@@ -266,6 +266,15 @@ retryable = false
 doc_state = "PartiallyLoaded"
 
 [[code]]
+id = 1546
+name = "FAX_CORRUPT"
+kind = "Malformed"
+meaning = "A CCITTFaxDecode stream could not be decoded."
+user_msg = "Fax image data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
 id = 1550
 name = "IMAGE_UNSUPPORTED"
 kind = "Unsupported"
