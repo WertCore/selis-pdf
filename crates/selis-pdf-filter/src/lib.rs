@@ -23,11 +23,13 @@ pub mod ascii;
 pub mod dct;
 pub mod flate;
 pub mod lzw;
+pub mod pipeline;
 
 pub use ascii::{ascii85_decode, ascii_hex_decode, runlength_decode};
 pub use dct::{dct_decode, DctImage};
 pub use flate::{flate_decode, flate_decode_bounded, FlateDecodeError};
 pub use lzw::lzw_decode;
+pub use pipeline::{decode_chain, decode_stream, DecodeParms};
 
 use selis_error::Result;
 
