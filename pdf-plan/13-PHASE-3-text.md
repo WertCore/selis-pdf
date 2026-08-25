@@ -76,6 +76,9 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     lazy-load additional ranges as separate chunks on demand, and cache them. Native bundles more.
   - **DoD:** A Chinese document renders correctly on the web with a measured incremental download;
     the viewer never blocks on a font fetch (renders notdef, then repaints).
+  - **Status:** Font-side chunk model shipped (`selis_font::cjk` — the Unicode range → chunk table,
+    main Ideographs quartered). The DoD's web verification (incremental download, notdef→repaint)
+    requires the WASM app/shell, which does not exist yet.
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds

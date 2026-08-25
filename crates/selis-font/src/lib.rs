@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cid;
+pub mod cjk;
 pub mod cmap;
 pub mod cmapfile;
 pub mod encoding;
@@ -29,6 +30,7 @@ pub mod type3;
 pub mod width;
 
 pub use cid::{resolve_cid_widths, CidWidthEntry, CidWidths};
+pub use cjk::{chunk_for, is_cjk, CjkChunk, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
 pub use cmapfile::{parse_cmap, CMap, CidRange};
 pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
