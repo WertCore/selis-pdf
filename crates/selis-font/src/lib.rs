@@ -20,6 +20,7 @@ pub mod model;
 pub mod outline;
 pub mod tables;
 pub mod type1;
+pub mod type3;
 pub mod width;
 
 pub use cmap::{select_cmap, CmapEncoding};
@@ -30,4 +31,5 @@ pub use type1::{
     glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
     Type1Font,
 };
+pub use type3::{glyph_metrics, GlyphProcedureMetrics, Type3Font};
 pub use width::{parse_ttf_metrics, resolve as resolve_widths, ResolvedFont};

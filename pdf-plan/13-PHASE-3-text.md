@@ -46,7 +46,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     exactly the archive documents users most need a tool for.
   - **Note:** Delegated to `read-fonts`' Type1 engine (via `skrifa::raw`; FreeType-derived, covers
     eexec/charstrings/subrs/flex/seac); verified against hand-built PFA and PFB fixtures.
-- [ ] **SL-3.FONT.06 — Type3 fonts** · deps: FONT.01, SL-2.CONT.04 · owner: AI+
+- [x] **SL-3.FONT.06 — Type3 fonts** · deps: FONT.01, SL-2.CONT.04 · owner: AI+
   - **Do:** Glyph procedures as content streams with `/FontMatrix`, `d0`/`d1`, and their own
     resource dictionary. Depth-budgeted — a Type3 glyph can draw another Type3 font.
 - [ ] **SL-3.FONT.07 — CID fonts, CMaps, and predefined CMap resources** · deps: FONT.03 · owner: AI+
