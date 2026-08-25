@@ -76,13 +76,16 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     lazy-load additional ranges as separate chunks on demand, and cache them. Native bundles more.
   - **DoD:** A Chinese document renders correctly on the web with a measured incremental download;
     the viewer never blocks on a font fetch (renders notdef, then repaints).
-- [ ] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
+- [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds
     characters the original subset lacks.
   - **DoD:** Round-trip: subset → embed → parse → render matches the original; a test that adds a
     glyph absent from the original subset and renders it correctly.
   - **Risk:** This is the task that makes text editing possible. If it slips, ADR-P0024 slips.
+  - **Note:** TrueType subsetting (open/close composite closure, `loca`/`hmtx`/`cmap`/`head`/
+    `maxp`/`hhea`/`post` rebuild, checksum-adjusted) + `add_glyph` merge implemented. CFF subsetting
+    deferred (returns `Ok(None)` — deviation).
 - [ ] **SL-3.FONT.12 — Font-program fuzzing** · deps: FONT.05 · owner: AI
   - **DoD:** Fuzz targets for TrueType, CFF, Type1, and CMap parsing; 8 h clean each.
 

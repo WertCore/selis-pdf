@@ -22,6 +22,7 @@ pub mod fallback;
 pub mod model;
 pub mod outline;
 pub mod standard14;
+pub mod subset;
 pub mod tables;
 pub mod type1;
 pub mod type3;
@@ -31,10 +32,11 @@ pub use cid::{resolve_cid_widths, CidWidthEntry, CidWidths};
 pub use cmap::{select_cmap, CmapEncoding};
 pub use cmapfile::{parse_cmap, CMap, CidRange};
 pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
-pub use fallback::{can_render, fallback_order, substitute};
+pub use fallback::{can_render, fallback_order, match_substitute, substitute, FontMatchHints};
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, Outline, OutlineCmd};
 pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};
+pub use subset::{add_glyph, subset_ttf, GlyphSet};
 pub use type1::{
     glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
     Type1Font,
