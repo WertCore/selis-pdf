@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod attachments;
+mod conformance;
 mod doc;
 mod doc_extra;
 mod metadata;
@@ -18,6 +19,7 @@ mod struct_tree;
 mod tree;
 
 pub use attachments::{embedded_files, Attachment};
+pub use conformance::{evaluate, registry, Area, EvaluationCtx, Level, Profile, Rule, RuleResult};
 pub use doc::{Document, Page};
 pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};
 pub use metadata::{FieldValue, Metadata};

@@ -193,7 +193,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     exposed via `inspect --json`.
 - [x] **SL-1.DOC.07 — Embedded files + attachments (inventory only)** · deps: DOC.01 · owner: AI
   - **Do:** Enumerate without extracting; extraction is gated by policy (ADR-P0020).
-- [ ] **SL-1.DOC.09 — Conformance rule registry + the Phase-1-checkable subset** · deps: DOC.05, DOC.06 · owner: AI+
+- [x] **SL-1.DOC.09 — Conformance rule registry + the Phase-1-checkable subset** · deps: DOC.05, DOC.06 · owner: AI+
   - **Do:** Implement the registry of `20-CONFORMANCE-PROGRAM.md §4a`. Each rule declares the
     engine area and ladder level it needs; rules whose dependency is unmet return `Unevaluated`,
     never `Pass`. Populate the structural and structure-tree classes now — encryption, JavaScript,
