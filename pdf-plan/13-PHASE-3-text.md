@@ -21,7 +21,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Note:** The plan's named `ttf-parser` was declared unmaintained (RUSTSEC-2026-0192, denied
     by ADR-P0021); the font crate uses `skrifa` (MIT OR Apache-2.0, Google Fonts) instead.
 
-- [ ] **SL-3.FONT.02 — Encoding and character mapping** · deps: FONT.01 · owner: AI+
+- [x] **SL-3.FONT.02 — Encoding and character mapping** · deps: FONT.01 · owner: AI+
   - **Do:** StandardEncoding, WinAnsiEncoding, MacRomanEncoding, MacExpertEncoding, `/Differences`,
     the built-in font encoding, symbolic-vs-nonsymbolic TrueType cmap selection rules (3,0 vs 3,1
     vs 1,0 — the single messiest area of the spec), and the `/Encoding` precedence order.

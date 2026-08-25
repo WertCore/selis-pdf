@@ -14,8 +14,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
+pub mod cmap;
+pub mod encoding;
 pub mod model;
+pub mod tables;
 pub mod width;
 
+pub use cmap::{select_cmap, CmapEncoding};
+pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
-pub use width::{parse_ttf_metrics, ResolvedFont};
+pub use width::{parse_ttf_metrics, resolve as resolve_widths, ResolvedFont};
