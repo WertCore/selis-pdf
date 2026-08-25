@@ -123,7 +123,7 @@ every user on every page.
     including the well-funded ones, has bugs. Compare against *two* oracles here, not one.
 - [ ] **SL-2.RAST.05 — Soft masks (luminosity and alpha)** · deps: RAST.04 · owner: AI+
   - **Do:** `/SMask` in ExtGState, backdrop colour, transfer functions.
-- [ ] **SL-2.RAST.06 — Shadings 1–7** · deps: COLOR.05, RAST.03 · owner: AI+
+- [x] **SL-2.RAST.06 — Shadings 1–7** · deps: COLOR.05, RAST.03 · owner: AI+
   - **Do:** Function-based (1), axial (2), radial (3), free-form Gouraud triangle mesh (4),
     lattice-form (5), Coons patch (6), tensor-product patch (7). Types 4–7 need mesh decoding from
     a packed bit stream.
