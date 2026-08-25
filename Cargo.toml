@@ -26,6 +26,7 @@ toml        = "0.8"
 
 # Filters (ADR-P0018)
 miniz_oxide = "0.8"
+zune-jpeg   = "0.4"
 
 # Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
 aes         = "0.8"

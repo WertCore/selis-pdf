@@ -13,10 +13,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod ascii;
+pub mod dct;
 pub mod flate;
 pub mod lzw;
 
 pub use ascii::{ascii85_decode, ascii_hex_decode, runlength_decode};
+pub use dct::{dct_decode, DctImage};
 pub use flate::{flate_decode, flate_decode_bounded, FlateDecodeError};
 pub use lzw::lzw_decode;
 

@@ -257,6 +257,15 @@ retryable = false
 doc_state = "PartiallyLoaded"
 
 [[code]]
+id = 1545
+name = "DCT_CORRUPT"
+kind = "Malformed"
+meaning = "A DCTDecode stream could not be decoded as JPEG."
+user_msg = "Image data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
 id = 1550
 name = "IMAGE_UNSUPPORTED"
 kind = "Unsupported"

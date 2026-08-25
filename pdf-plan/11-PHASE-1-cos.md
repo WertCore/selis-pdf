@@ -120,7 +120,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 - [x] **SL-1.FILT.03 — LZWDecode** · deps: FILT.01 · owner: AI
   - **Do:** Including `/EarlyChange` 0 and 1, and the early-code-reuse malformation.
 - [x] **SL-1.FILT.04 — ASCIIHex, ASCII85, RunLength** · deps: FILT.01 · owner: AI
-- [ ] **SL-1.FILT.05 — DCTDecode** · deps: FILT.01 · owner: AI+
+- [x] **SL-1.FILT.05 — DCTDecode** · deps: FILT.01 · owner: AI+
   - **Do:** `zune-jpeg`, plus the PDF-specific parts everyone gets wrong: 4-component Adobe APP14
     transform detection, inverted CMYK from Photoshop, and 12-bit samples.
   - **DoD:** Corpus `filter-dct` including a CMYK-inverted file and a 12-bit file.
