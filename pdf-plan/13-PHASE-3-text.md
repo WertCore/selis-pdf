@@ -49,11 +49,14 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 - [x] **SL-3.FONT.06 — Type3 fonts** · deps: FONT.01, SL-2.CONT.04 · owner: AI+
   - **Do:** Glyph procedures as content streams with `/FontMatrix`, `d0`/`d1`, and their own
     resource dictionary. Depth-budgeted — a Type3 glyph can draw another Type3 font.
-- [ ] **SL-3.FONT.07 — CID fonts, CMaps, and predefined CMap resources** · deps: FONT.03 · owner: AI+
+- [x] **SL-3.FONT.07 — CID fonts, CMaps, and predefined CMap resources** · deps: FONT.03 · owner: AI+
   - **Do:** `/Encoding` as a predefined CMap name or an embedded CMap stream; CIDToGIDMap;
     the Adobe-Japan1/GB1/CNS1/Korea1/KR registries; vertical writing (`/WMode 1`) with the
     `/W2` metrics and correct vertical origin.
   - **DoD:** Corpus `cjk` renders at G2 tolerance including a vertical-writing Japanese document.
+  - **Note:** CMap parsing (`begincidrange`/`begincidchar`/`usecmap`/`/WMode`) and `/W`//`/DW`
+    CID width resolution implemented; the predefined CMap registry names and `/W2` vertical
+    metrics integrate with the text layer (SL-3.TEXT.01).
 - [ ] **SL-3.FONT.08 — Standard-14 metric-compatible substitution** · deps: FONT.02, SL-0.LEAD.07 · owner: AI+
   - **Do:** Ship metric-compatible substitutes for Helvetica/Times/Courier/Symbol/ZapfDingbats
     with the *exact* AFM widths, so unembedded-font documents lay out identically to Acrobat.
