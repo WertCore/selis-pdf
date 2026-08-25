@@ -48,7 +48,7 @@ every user on every page.
     with validation where it is not.
   - **DoD:** Corpus `inline-images` including a file whose image data contains `EI`; matches PDFium.
 
-- [ ] **SL-2.CONT.06 — Marked content and the MCID map** · deps: CONT.01 · owner: AI
+- [x] **SL-2.CONT.06 — Marked content and the MCID map** · deps: CONT.01 · owner: AI
   - **Do:** `BMC BDC EMC`, the marked-content stack, and a page-level MCID → content-range map.
     Required by `selis-pdf-text` for structure-driven reading order and by `selis-pdf-redact` to find what a
     region contains. Per ADR-P0031, not optional.
