@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use selis_error::Result;
-use selis_pdf_cos::{Obj, Ref};
+use selis_pdf_cos::Obj;
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::Resolver;

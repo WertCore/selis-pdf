@@ -353,7 +353,7 @@ mod tests {
     )]
 
     use super::*;
-    use selis_pdf_cos::{parse_revisions, XrefEntry};
+    use selis_pdf_cos::XrefEntry;
     use selis_sandbox::{CancelToken, FixedClock};
 
     fn guard() -> BudgetGuard<'static> {
