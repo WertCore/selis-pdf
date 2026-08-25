@@ -103,7 +103,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
 Each filter task shares a DoD template: streaming (no full-buffer requirement), budget-charged,
 round-trip property test where the filter is also an encoder, fuzz target, corpus entry.
 
-- [ ] **SL-1.FILT.01 — Filter pipeline + `/DecodeParms`** · owner: AI+
+- [x] **SL-1.FILT.01 — Filter pipeline + `/DecodeParms`** · owner: AI+
   - **Do:** Filter chains, per-filter parameters, the abbreviated names (`/Fl`, `/AHx`, …), and
     correct behaviour on a filter that is not the last in a chain producing image data.
   - **DoD:** Chain tests including the pathological "Flate then Flate then Flate" bomb, which must
@@ -242,7 +242,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 
 ## 1.OSS — Open-sourcing the parser crates (ADR-P0030)
 
-- [ ] **SL-1.OSS.01 — Split `selis-pdf-cos`, `selis-pdf-filter` for publication** · owner: AI+
+- [x] **SL-1.OSS.01 — Split `selis-pdf-cos`, `selis-pdf-filter` for publication** · owner: AI+
   - **Do:** Confirm they depend only on L0/L1 and carry no proprietary code; add Apache-2.0
     headers, a public README, and an API-stability statement.
   - **DoD:** `cargo publish --dry-run` clean; `check-layers` proves no proprietary dependency.

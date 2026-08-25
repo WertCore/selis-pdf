@@ -215,14 +215,14 @@ point you have 40 000 lines and no idea which of them are wrong.
     rate R, latency, range-refusal, size lying).
   - **DoD:** `FaultSource` can reproduce each failure mode deterministically from a seed.
 
-- [ ] **SL-0.IO.03 — `FileSource` (native)** · deps: IO.01 · owner: AI+
+- [x] **SL-0.IO.03 — `FileSource` (native)** · deps: IO.01 · owner: AI+
   - **Do:** `pread`-based with an optional `mmap` fast path; a size+mtime+inode fingerprint
     revalidated on read so a file replaced under us is an error, not silent corruption.
   - **DoD:** A test that mutating the file mid-read produces `SOURCE_CHANGED`, not garbage.
   - **Risk:** `mmap` + a truncating writer = SIGBUS. Guard it or do not use `mmap`. Decide and
     document; the safe default is `pread`.
 
-- [ ] **SL-0.IO.04 — `HttpRangeSource`** · deps: IO.01 · owner: AI+
+- [x] **SL-0.IO.04 — `HttpRangeSource`** · deps: IO.01 · owner: AI+
   - **Do:** Range-request coalescing, configurable read-ahead, `Accept-Ranges` detection, graceful
     degradation to a full sequential download, and `Pending` semantics wired to a caller-supplied
     fetch callback (the crate itself performs no network I/O — ADR-P0005/`check-purity`).
@@ -230,7 +230,7 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** Simulated-network tests for: server without range support, server that lies about
     length, mid-transfer disconnection, out-of-order arrival.
 
-- [ ] **SL-0.IO.05 — `AppendSink` + atomic commit** · deps: IO.01 · owner: AI+
+- [x] **SL-0.IO.05 — `AppendSink` + atomic commit** · deps: IO.01 · owner: AI+
   - **Do:** The append-only sink with a `finish()` that fsyncs. Native variant supports
     write-to-temp-then-rename for the rewrite path and true in-place append for the incremental
     path.
