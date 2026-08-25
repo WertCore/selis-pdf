@@ -1,0 +1,23 @@
+[package]
+name = "selis-font"
+description = "The font engine of the Selis PDF engine: font dictionaries, encodings, embedded outlines. Apache-2.0 (ADR-P0030)."
+edition.workspace = true
+rust-version.workspace = true
+# ADR-P0030: the parser crates publish under Apache-2.0; the rest of the
+# workspace stays proprietary (LicenseRef-Selis-Proprietary).
+license = "Apache-2.0"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+skrifa = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

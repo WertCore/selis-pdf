@@ -28,6 +28,13 @@ toml        = "0.8"
 miniz_oxide = "0.8"
 zune-jpeg   = "0.4"
 
+# Fonts (Phase 3) — skrifa (MIT OR Apache-2.0, Google Fonts, actively
+# maintained) is the font table/metadata parser for embedded TrueType/OpenType.
+# The plan's original choice, ttf-parser, was declared unmaintained
+# (RUSTSEC-2026-0192) — denied by the supply-chain gate (ADR-P0021); skrifa is
+# its maintained successor ecosystem.
+skrifa = "0.46"
+
 # Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
 aes         = "0.8"
 cbc         = { version = "0.1", features = ["alloc"] }
@@ -59,6 +66,7 @@ selis-pdf-edit     = { path = "crates/selis-pdf-edit", version = "0.1.0" }
 selis-pdf-optimize = { path = "crates/selis-pdf-optimize", version = "0.1.0" }
 selis-image        = { path = "crates/selis-image", version = "0.1.0" }
 selis-raster       = { path = "crates/selis-raster", version = "0.1.0" }
+selis-font         = { path = "crates/selis-font", version = "0.1.0" }
 # L3
 selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0" }
 selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }

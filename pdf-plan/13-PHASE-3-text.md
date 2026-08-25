@@ -12,12 +12,14 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 
 ## 3.FONT — The font engine
 
-- [ ] **SL-3.FONT.01 — Font dictionary model + resolution** · owner: AI+
+- [x] **SL-3.FONT.01 — Font dictionary model + resolution** · owner: AI+
   - **Do:** Simple fonts (Type1, TrueType, Type3, MMType1) and composite (Type0) with descendant
     CIDFonts; `/FirstChar`/`/LastChar`/`/Widths`, `/FontDescriptor`, `/MissingWidth`. Resolve the
     real width for every code, because width errors accumulate into visibly wrong line lengths.
   - **DoD:** Widths match PDFium for every glyph on the font corpus; a missing `/Widths` falls back
     correctly to the embedded font's own metrics.
+  - **Note:** The plan's named `ttf-parser` was declared unmaintained (RUSTSEC-2026-0192, denied
+    by ADR-P0021); the font crate uses `skrifa` (MIT OR Apache-2.0, Google Fonts) instead.
 
 - [ ] **SL-3.FONT.02 — Encoding and character mapping** · deps: FONT.01 · owner: AI+
   - **Do:** StandardEncoding, WinAnsiEncoding, MacRomanEncoding, MacExpertEncoding, `/Differences`,
