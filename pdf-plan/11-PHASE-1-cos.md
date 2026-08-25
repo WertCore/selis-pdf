@@ -109,7 +109,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **DoD:** Chain tests including the pathological "Flate then Flate then Flate" bomb, which must
     hit the budget, not memory.
 
-- [ ] **SL-1.FILT.02 — FlateDecode + predictors** · deps: FILT.01 · owner: AI+
+- [x] **SL-1.FILT.02 — FlateDecode + predictors** · deps: FILT.01 · owner: AI+
   - **Do:** `miniz_oxide` inflate, plus PNG predictors 0–4 and the TIFF predictor. Handle the
     real-world cases: leading garbage bytes, missing zlib header (raw deflate), and truncated
     streams that should yield partial data with a deviation rather than an error.
@@ -117,9 +117,9 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **Risk:** "Truncated Flate yields what it decoded so far" is what every other reader does and
     what users expect. Diverging here means files that "only fail in Selis".
 
-- [ ] **SL-1.FILT.03 — LZWDecode** · deps: FILT.01 · owner: AI
+- [x] **SL-1.FILT.03 — LZWDecode** · deps: FILT.01 · owner: AI
   - **Do:** Including `/EarlyChange` 0 and 1, and the early-code-reuse malformation.
-- [ ] **SL-1.FILT.04 — ASCIIHex, ASCII85, RunLength** · deps: FILT.01 · owner: AI
+- [x] **SL-1.FILT.04 — ASCIIHex, ASCII85, RunLength** · deps: FILT.01 · owner: AI
 - [ ] **SL-1.FILT.05 — DCTDecode** · deps: FILT.01 · owner: AI+
   - **Do:** `zune-jpeg`, plus the PDF-specific parts everyone gets wrong: 4-component Adobe APP14
     transform detection, inverted CMYK from Photoshop, and 12-bit samples.

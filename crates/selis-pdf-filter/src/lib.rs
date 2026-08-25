@@ -12,16 +12,20 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod ascii;
 pub mod flate;
+pub mod lzw;
 
+pub use ascii::{ascii85_decode, ascii_hex_decode, runlength_decode};
 pub use flate::{flate_decode, flate_decode_bounded, FlateDecodeError};
+pub use lzw::lzw_decode;
 
 use selis_error::Result;
 
 /// Decode a stream through a single filter.
 ///
-/// Phase 1 supports Flate only; a stream naming any other filter returns
-/// `FILTER_UNKNOWN`.
+/// Phase 1 supports Flate, LZW, ASCIIHex, ASCII85, and RunLength. A stream
+/// naming any other filter returns `FILTER_UNKNOWN`.
 ///
 /// # Budget
 ///
@@ -30,7 +34,8 @@ use selis_error::Result;
 ///
 /// # Malformed Input
 ///
-/// `FLATE_CORRUPT` when the stream cannot be inflated.
+/// `FLATE_CORRUPT` / `LZW_CORRUPT` / `ASCII_CORRUPT` /
+/// `RUNLENGTH_CORRUPT` when the stream cannot be decoded.
 pub fn decode(
     filter: &str,
     data: &[u8],
@@ -39,6 +44,15 @@ pub fn decode(
 ) -> Result<Vec<u8>> {
     match filter {
         "FlateDecode" | "Fl" => flate_decode_bounded(data, output_limit, g),
+        "LZWDecode" | "LZW" => {
+            // /EarlyChange is a /DecodeParms concern (SL-1.FILT.01); the
+            // default 0 is used here.
+            let _ = output_limit;
+            lzw_decode(data, 0, g)
+        }
+        "ASCIIHexDecode" | "AHx" => ascii_hex_decode(data, g),
+        "ASCII85Decode" | "A85" => ascii85_decode(data, g),
+        "RunLengthDecode" | "RL" => runlength_decode(data, g),
         other => Err(selis_error::err!(
             selis_error::Code::FilterUnknown,
             during = "filter-decode",
