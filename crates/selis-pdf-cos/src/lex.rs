@@ -214,8 +214,8 @@ impl<'a> Lexer<'a> {
                         .push(Deviation::ReservedDelimiter { offset: off });
                     continue; // tolerated, recorded, skipped
                 }
-                b'/' => return self.lex_name(),
-                b'(' => return self.lex_literal_string(),
+                b'/' => return self.lex_name(g),
+                b'(' => return self.lex_literal_string(g),
                 b'<' => {
                     // `<<` is a dict start; a lone `<` opens a hex string.
                     if self.peek_at(1) == Some(b'<') {
@@ -223,7 +223,7 @@ impl<'a> Lexer<'a> {
                         self.bump();
                         return Ok(Some(Token::DictStart));
                     }
-                    return self.lex_hex_string();
+                    return self.lex_hex_string(g);
                 }
                 b'>' => {
                     if self.peek_at(1) == Some(b'>') {
@@ -238,14 +238,23 @@ impl<'a> Lexer<'a> {
                     continue;
                 }
                 _ if is_digit(b) || b == b'+' || b == b'-' || b == b'.' => {
-                    return self.lex_number();
+                    return self.lex_number(g);
                 }
-                _ => return self.lex_word_or_keyword(),
+                _ => return self.lex_word_or_keyword(g),
             }
         }
     }
 
-    fn lex_number(&mut self) -> Result<Option<Token>> {
+    /// Push one byte into a token buffer, charging the byte budget so a
+    /// 100 MB name/string from a hostile file exhausts `BUDGET_BYTES` before
+    /// the buffer is built, not after (ADR-P0006).
+    fn push_charged(&mut self, g: &mut BudgetGuard<'_>, out: &mut Vec<u8>, b: u8) -> Result<()> {
+        g.charge(selis_sandbox::Resource::Bytes, 1)?;
+        out.push(b);
+        Ok(())
+    }
+
+    fn lex_number(&mut self, _g: &mut BudgetGuard<'_>) -> Result<Option<Token>> {
         let start = self.pos;
         let mut sign = 1i64;
         let mut saw_sign = false;
@@ -342,7 +351,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_name(&mut self) -> Result<Option<Token>> {
+    fn lex_name(&mut self, g: &mut BudgetGuard<'_>) -> Result<Option<Token>> {
         let start = self.pos as u64;
         self.bump(); // consume `/`
         let mut out = Vec::new();
@@ -361,23 +370,23 @@ impl<'a> Lexer<'a> {
                         if let (Some(x), Some(y)) = (hex_val(a), hex_val(bb)) {
                             let _ = self.bump();
                             let _ = self.bump();
-                            out.push((x << 4) | y);
+                            self.push_charged(g, &mut out, (x << 4) | y)?;
                         } else {
                             self.deviations.push(Deviation::BadNameEscape {
                                 offset: self.pos.saturating_sub(1) as u64,
                             });
-                            out.push(b'#');
+                            self.push_charged(g, &mut out, b'#')?;
                         }
                     }
                     _ => {
                         self.deviations.push(Deviation::BadNameEscape {
                             offset: self.pos.saturating_sub(1) as u64,
                         });
-                        out.push(b'#');
+                        self.push_charged(g, &mut out, b'#')?;
                     }
                 }
             } else {
-                out.push(b);
+                self.push_charged(g, &mut out, b)?;
             }
         }
         if out.is_empty() {
@@ -386,7 +395,7 @@ impl<'a> Lexer<'a> {
         Ok(Some(Token::Name(selis_bytes::Bytes::copy_from_slice(&out))))
     }
 
-    fn lex_literal_string(&mut self) -> Result<Option<Token>> {
+    fn lex_literal_string(&mut self, g: &mut BudgetGuard<'_>) -> Result<Option<Token>> {
         let start = self.pos as u64;
         self.bump(); // consume `(`
         let mut out = Vec::new();
@@ -405,14 +414,14 @@ impl<'a> Lexer<'a> {
             match b {
                 b'(' => {
                     depth = depth.saturating_add(1);
-                    out.push(b'(');
+                    self.push_charged(g, &mut out, b'(')?;
                 }
                 b')' => {
                     if depth == 0 {
                         break; // the string is closed
                     }
                     depth = depth.saturating_sub(1);
-                    out.push(b')');
+                    self.push_charged(g, &mut out, b')')?;
                 }
                 b'\\' => {
                     let Some(e) = self.peek() else {
@@ -426,14 +435,14 @@ impl<'a> Lexer<'a> {
                     };
                     self.bump();
                     match e {
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
-                        b'b' => out.push(0x08),
-                        b'f' => out.push(0x0c),
-                        b'(' => out.push(b'('),
-                        b')' => out.push(b')'),
-                        b'\\' => out.push(b'\\'),
+                        b'n' => self.push_charged(g, &mut out, b'\n')?,
+                        b'r' => self.push_charged(g, &mut out, b'\r')?,
+                        b't' => self.push_charged(g, &mut out, b'\t')?,
+                        b'b' => self.push_charged(g, &mut out, 0x08)?,
+                        b'f' => self.push_charged(g, &mut out, 0x0c)?,
+                        b'(' => self.push_charged(g, &mut out, b'(')?,
+                        b')' => self.push_charged(g, &mut out, b')')?,
+                        b'\\' => self.push_charged(g, &mut out, b'\\')?,
                         b'\r' => {
                             if self.peek() == Some(b'\n') {
                                 self.bump();
@@ -453,12 +462,12 @@ impl<'a> Lexer<'a> {
                                     _ => break,
                                 }
                             }
-                            out.push(u8::try_from(v & 0xff).unwrap_or(0));
+                            self.push_charged(g, &mut out, u8::try_from(v & 0xff).unwrap_or(0))?;
                         }
-                        other => out.push(other),
+                        other => self.push_charged(g, &mut out, other)?,
                     }
                 }
-                other => out.push(other),
+                other => self.push_charged(g, &mut out, other)?,
             }
         }
         Ok(Some(Token::String(selis_bytes::Bytes::copy_from_slice(
@@ -466,7 +475,7 @@ impl<'a> Lexer<'a> {
         ))))
     }
 
-    fn lex_hex_string(&mut self) -> Result<Option<Token>> {
+    fn lex_hex_string(&mut self, g: &mut BudgetGuard<'_>) -> Result<Option<Token>> {
         let start = self.pos as u64;
         self.bump(); // consume `<`
         let mut out = Vec::new();
@@ -482,7 +491,7 @@ impl<'a> Lexer<'a> {
                 b => match hex_val(b) {
                     Some(v) => {
                         if let Some(hi) = nibble_hi.take() {
-                            out.push((hi << 4) | v);
+                            self.push_charged(g, &mut out, (hi << 4) | v)?;
                         } else {
                             nibble_hi = Some(v);
                         }
@@ -499,14 +508,14 @@ impl<'a> Lexer<'a> {
             // Odd number of digits: pad the final nibble with 0.
             self.deviations
                 .push(Deviation::OddLengthHex { offset: start });
-            out.push(hi << 4);
+            self.push_charged(g, &mut out, hi << 4)?;
         }
         Ok(Some(Token::String(selis_bytes::Bytes::copy_from_slice(
             &out,
         ))))
     }
 
-    fn lex_word_or_keyword(&mut self) -> Result<Option<Token>> {
+    fn lex_word_or_keyword(&mut self, _g: &mut BudgetGuard<'_>) -> Result<Option<Token>> {
         let start = self.pos as u64;
         let mut word = Vec::new();
         while let Some(b) = self.peek() {

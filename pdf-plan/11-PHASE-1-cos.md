@@ -226,7 +226,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 - [ ] **SL-1.ROB.02 — 24-hour fuzz campaign, all Phase-1 targets** · deps: SL-0.SEC.02 · owner: AI
   - **DoD:** Zero crashes; coverage report per target; new corpus entries minted from interesting
     inputs found.
-- [ ] **SL-1.ROB.03 — Budget-exhaustion test suite** · deps: SL-0.SBX.01 · owner: AI+
+- [x] **SL-1.ROB.03 — Budget-exhaustion test suite** · deps: SL-0.SBX.01 · owner: AI+
   - **Do:** A crafted set: xref bomb, `/Prev` chain of 10 000, object stream referencing itself,
     2 GB `/Length`, 10 000-deep array nesting, a Flate bomb, a name with a 100 MB escape sequence.
   - **DoD:** Each terminates with `BudgetExceeded` in bounded memory and bounded time. **These

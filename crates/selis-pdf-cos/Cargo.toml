@@ -20,3 +20,5 @@ selis-pdf-filter = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+miniz_oxide = { workspace = true }
+selis-pdf-filter = { workspace = true }
