@@ -143,7 +143,7 @@ every user on every page.
     across x86-64 Linux, arm64 macOS, and WASM.
   - **DoD:** The `cross-platform-determinism` CI job goes green here. Any SIMD path must prove
     bit-identity or be disabled.
-- [ ] **SL-2.RAST.10 — Tile decomposition and parallel rasterisation** · deps: RAST.09 · owner: AI+
+- [x] **SL-2.RAST.10 — Tile decomposition and parallel rasterisation** · deps: RAST.09 · owner: AI+
   - **Do:** Split a page into tiles, render in parallel via `rayon` where threads exist, sequential
     on single-threaded WASM. **Output must be identical either way** — that is the test.
   - **DoD:** Threaded and unthreaded renders hash-equal on the whole corpus.

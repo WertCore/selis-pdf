@@ -20,6 +20,7 @@ pub mod clip;
 pub mod image;
 pub mod render;
 pub mod shading;
+pub mod tile;
 
 pub use aa::{renders_match, stable_hash, AaPolicy, Determinism, DeterminismProof};
 pub use clip::ClipStack;
@@ -29,6 +30,7 @@ pub use shading::{
     axial_colour, barycentric, radial_colour, AxialShading, FunctionShading, GouraudShading,
     LatticeShading, RadialShading, Shading, ShadingPoint,
 };
+pub use tile::{render_sequential, stitch, tile_decompose, Tile};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;
 
