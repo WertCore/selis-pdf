@@ -94,7 +94,7 @@ every user on every page.
   - **Do:** All separable modes and the four non-separable (Hue, Saturation, Color, Luminosity),
     in the correct blend colour space.
   - **DoD:** A generated matrix of every blend mode × backdrop × source, compared to PDFium.
-- [ ] **SL-2.COLOR.07 — Overprint and overprint simulation** · deps: COLOR.04 · owner: AI
+- [x] **SL-2.COLOR.07 — Overprint and overprint simulation** · deps: COLOR.04 · owner: AI
   - **Note:** Matters only for the print/prepress audience. Ship at `Identify` level in Phase 2,
     promote in Phase 9 if the prepress market is pursued.
 

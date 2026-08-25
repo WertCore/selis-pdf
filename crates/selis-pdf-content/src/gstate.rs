@@ -42,6 +42,12 @@ pub struct GState {
     pub alpha_fill: f64,
     /// Whether alpha is shape (true) or opacity (false).
     pub alpha_is_shape: bool,
+    /// Overprint for stroking (`/OP`).
+    pub overprint_stroke: bool,
+    /// Overprint for non-stroking (`/op`).
+    pub overprint_fill: bool,
+    /// Overprint mode (`/OPM`); 0 or 1.
+    pub overprint_mode: u8,
     /// Text state: the font resource name.
     pub text_font: Option<selis_bytes::Bytes>,
     /// Text size.
@@ -78,6 +84,9 @@ impl Default for GState {
             alpha_stroke: 1.0,
             alpha_fill: 1.0,
             alpha_is_shape: false,
+            overprint_stroke: false,
+            overprint_fill: false,
+            overprint_mode: 0,
             text_font: None,
             text_size: 0.0,
             char_spacing: 0.0,
@@ -166,6 +175,21 @@ impl GState {
                 b"AIS" => {
                     if let crate::dispatch::Operand::Bool(_) = val {
                         self.alpha_is_shape = true;
+                    }
+                }
+                b"OP" => {
+                    if let crate::dispatch::Operand::Bool(b) = val {
+                        self.overprint_stroke = *b;
+                    }
+                }
+                b"op" => {
+                    if let crate::dispatch::Operand::Bool(b) = val {
+                        self.overprint_fill = *b;
+                    }
+                }
+                b"OPM" => {
+                    if let crate::dispatch::Operand::Num(v) = val {
+                        self.overprint_mode = if *v >= 1.0 { 1 } else { 0 };
                     }
                 }
                 _ => {} // unrecognised key: ignored per spec
@@ -328,5 +352,28 @@ mod tests {
         state.merge_ext_gstate(&pairs);
         assert_eq!(state.line_width, 2.5);
         assert_eq!(state.alpha_stroke, 0.5);
+    }
+
+    #[test]
+    fn ext_gstate_overprint_is_parsed() {
+        let mut state = GState::new();
+        let pairs = vec![
+            (
+                selis_bytes::Bytes::copy_from_slice(b"OP"),
+                crate::dispatch::Operand::Bool(true),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"op"),
+                crate::dispatch::Operand::Bool(false),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"OPM"),
+                crate::dispatch::Operand::Num(1.0),
+            ),
+        ];
+        state.merge_ext_gstate(&pairs);
+        assert!(state.overprint_stroke);
+        assert!(!state.overprint_fill);
+        assert_eq!(state.overprint_mode, 1);
     }
 }

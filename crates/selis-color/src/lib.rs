@@ -18,6 +18,7 @@ pub mod blend;
 pub mod cie;
 pub mod function;
 pub mod icc;
+pub mod overprint;
 pub mod special;
 
 use alloc::string::String;
@@ -27,6 +28,7 @@ pub use blend::{BlendMode, Rgba};
 pub use cie::{CalGray, CalRgb, Lab, WhitePoint};
 pub use function::{Function, FunctionBudget};
 pub use icc::{IccEngine, IccProfile, IccSpace};
+pub use overprint::{overprint_mode0, overprint_mode1, OverprintParams};
 pub use special::{alternate_to_rgb, DeviceN, Indexed, Separation};
 
 /// A device-independent RGB triple with components in `[0,1]`.
