@@ -21,6 +21,7 @@ pub mod group;
 pub mod image;
 pub mod pattern;
 pub mod render;
+pub mod render_params;
 pub mod shading;
 pub mod soft_mask;
 pub mod tile;
@@ -31,6 +32,7 @@ pub use group::{composite, group_backdrop, Backdrop, GroupParams};
 pub use image::{decode_image, decode_image_scaled, draw, Decode, DecodedImage};
 pub use pattern::{plan_pattern, PatternTile, PatternType, TileInstance, TilePlan, TilingPattern};
 pub use render::{apply_ctm, fill, stroke, to_backend_stroke, StrokeSpec};
+pub use render_params::{RenderIntent, RenderParams, TargetColourSpace};
 pub use shading::{
     axial_colour, barycentric, radial_colour, AxialShading, FunctionShading, GouraudShading,
     LatticeShading, RadialShading, Shading, ShadingPoint,

@@ -147,7 +147,7 @@ every user on every page.
   - **Do:** Split a page into tiles, render in parallel via `rayon` where threads exist, sequential
     on single-threaded WASM. **Output must be identical either way** — that is the test.
   - **DoD:** Threaded and unthreaded renders hash-equal on the whole corpus.
-- [ ] **SL-2.RAST.11 — Render parameter surface** · deps: RAST.10 · owner: AI
+- [x] **SL-2.RAST.11 — Render parameter surface** · deps: RAST.10 · owner: AI
   - **Do:** DPI/matrix, target colour space, alpha/no-alpha, annotation inclusion, optional-content
     configuration, "for print" vs "for screen", text-rendering hints, and a `RenderIntent`.
   - **DoD:** Every parameter has a corpus case proving it changes output as documented.
