@@ -25,7 +25,7 @@ mod mem;
 mod range_set;
 mod sink;
 
-pub use fault::FaultSource;
+pub use fault::{FaultConfig, FaultSource};
 pub use mem::MemSource;
 pub use range_set::RangeSet;
 pub use sink::AppendSink;

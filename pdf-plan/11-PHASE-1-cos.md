@@ -65,7 +65,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **Risk:** This is where competitors differentiate on "opens files Acrobat rejects". Worth doing
     genuinely well; also the single most fuzz-sensitive code in the codebase.
 
-- [ ] **SL-1.COS.07 — Resumable parsing over partial sources** · deps: COS.04, SL-0.IO.04 · owner: AI+
+- [x] **SL-1.COS.07 — Resumable parsing over partial sources** · deps: COS.04, SL-0.IO.04 · owner: AI+
   - **Do:** Every parse step tolerates `Availability::Pending`, unwinding with the ranges it needs
     instead of blocking. Implemented as an explicit state machine, not recursion.
   - **API:** `enum ParseStep { Done(T), Need(RangeSet) }`
