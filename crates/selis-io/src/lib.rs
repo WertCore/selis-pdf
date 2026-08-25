@@ -21,11 +21,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod fault;
+mod file;
 mod mem;
 mod range_set;
 mod sink;
 
 pub use fault::{FaultConfig, FaultSource};
+pub use file::FileSource;
 pub use mem::MemSource;
 pub use range_set::RangeSet;
 pub use sink::AppendSink;

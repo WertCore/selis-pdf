@@ -182,8 +182,9 @@ banned = [
 # Crates exempt from a specific banned path, with the reason.
 [[purity_allow]]
 crate = "selis-io"
-paths = ["std::fs"]
+paths = ["std::fs", "std::env", "std::process"]
 why = """
 FileSource / FileSink are the shipped native DocSource+DocSink implementations
 and are compiled only under the `native-io` feature. They exist precisely so
-that no crate above L1 needs to name the filesystem. WASM builds exclude them."""
+that no crate above L1 needs to name the filesystem. WASM builds exclude them.
+Tests use env/process for temp dirs and unique file names."""

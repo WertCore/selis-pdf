@@ -81,13 +81,22 @@ fn load_cfg() -> Result<PurityCfg, String> {
     let text = std::fs::read_to_string("xtask/layers.toml")
         .map_err(|e| format!("cannot read xtask/layers.toml: {e}"))?;
     let value: Value = toml::from_str(&text).map_err(|e| format!("layers.toml invalid: {e}"))?;
-    let purity = value
+    // The `banned` list lives under `[purity]`; the allowlist is a top-level
+    // `[[purity_allow]]` array. Merge both into one config.
+    let mut cfg: PurityCfg = value
         .get("purity")
         .cloned()
-        .unwrap_or(Value::Table(Default::default()));
-    purity
+        .unwrap_or(Value::Table(Default::default()))
         .try_into::<PurityCfg>()
-        .map_err(|e| format!("[purity] section invalid: {e}"))
+        .map_err(|e| format!("[purity] section invalid: {e}"))?;
+    let allow = value
+        .get("purity_allow")
+        .cloned()
+        .unwrap_or(Value::Array(Default::default()));
+    cfg.purity_allow = allow
+        .try_into::<Vec<PurityAllow>>()
+        .map_err(|e| format!("[[purity_allow]] section invalid: {e}"))?;
+    Ok(cfg)
 }
 
 /// Collect `(crate_name, source_files)` for every crate at L0–L3.
