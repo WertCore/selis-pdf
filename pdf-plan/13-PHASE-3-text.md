@@ -137,7 +137,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     Report a per-run confidence.
   - **DoD:** Extraction corpus ≥98% agreement with PDFium; files with no `/ToUnicode` and symbolic
     encodings are correctly flagged low-confidence rather than emitting mojibake silently.
-- [ ] **SL-3.TEXT.03 — Run, word, and line assembly** · deps: TEXT.01 · owner: AI+
+- [x] **SL-3.TEXT.03 — Run, word, and line assembly** · deps: TEXT.01 · owner: AI+
   - **Do:** Group glyphs into runs by style continuity, infer word boundaries from advance gaps
     relative to the font's space width, and assemble lines by baseline clustering.
   - **DoD:** Word segmentation matches PDFium on the extraction corpus; a test for the

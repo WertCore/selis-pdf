@@ -1,0 +1,19 @@
+[package]
+name = "selis-pdf-text"
+description = "Text extraction, run/word/line assembly, reading-order inference, search, selection. L2 (SL-3.TEXT.*)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-geom = { workspace = true }
+selis-pdf-content = { workspace = true }
+selis-font = { workspace = true }

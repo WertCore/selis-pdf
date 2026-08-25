@@ -31,7 +31,7 @@ selis-raster       = 2
 selis-font         = 2
 selis-shape        = 2
 selis-pdf-content  = 2 # planned — Phase 2
-selis-pdf-text     = 2 # planned — Phase 3
+selis-pdf-text     = 2
 selis-pdf-annot    = 2 # planned — Phase 5
 selis-pdf-form     = 2 # planned — Phase 5
 selis-pdf-redact   = 2 # planned — Phase 5
@@ -125,6 +125,14 @@ why = "01-ARCHITECTURE.md §3 — declared exception. Inline images and Image XO
 from = "selis-pdf-text"
 to = "selis-pdf-content"
 why = "01-ARCHITECTURE.md §3 — declared exception. Extraction consumes the display list."
+
+[[edge]]
+from = "selis-pdf-text"
+to = "selis-font"
+why = """
+Text recovery and extraction resolve glyph names and encodings through the
+font model (ToUnicode CMaps, the AGL, glyph-name conventions); the font crate
+is a leaf L2 with no reverse dependency."""
 
 [[edge]]
 from = "selis-pdf-form"

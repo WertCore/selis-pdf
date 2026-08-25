@@ -1012,6 +1012,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-text"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-font",
+ "selis-geom",
+ "selis-pdf-content",
+]
+
+[[package]]
 name = "selis-policy"
 version = "0.1.0"
 dependencies = [
