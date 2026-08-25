@@ -339,4 +339,44 @@ mod tests {
             .count();
         assert_eq!(moves, 2);
     }
+
+    /// SL-3.FONT.04: CFF (OpenType) outlines extract correctly.
+    #[test]
+    fn cff_outlines_extract() {
+        let mut g = guard();
+        let data = Bytes::copy_from_slice(include_bytes!("../tests/fixtures/cff.otf"));
+        let a = outline_glyph(&data, 1, &mut g)
+            .expect("extract")
+            .expect("glyph A");
+        assert_eq!(a.bbox.expect("bbox"), [0.0, 0.0, 700.0, 600.0]);
+        let b = outline_glyph(&data, 2, &mut g)
+            .expect("extract")
+            .expect("glyph B");
+        assert_eq!(b.bbox.expect("bbox"), [0.0, 0.0, 900.0, 400.0]);
+    }
+
+    /// SL-3.FONT.04: CID-keyed CFF (with FDSelect / FDArray) extracts.
+    #[test]
+    fn cid_cid_cff_outlines_extract() {
+        let mut g = guard();
+        let data = Bytes::copy_from_slice(include_bytes!("../tests/fixtures/cff-cid.otf"));
+        let a = outline_glyph(&data, 1, &mut g)
+            .expect("extract")
+            .expect("glyph cid00001");
+        assert_eq!(a.bbox.expect("bbox"), [0.0, 0.0, 700.0, 600.0]);
+        let b = outline_glyph(&data, 2, &mut g)
+            .expect("extract")
+            .expect("glyph cid00002");
+        assert_eq!(b.bbox.expect("bbox"), [0.0, 0.0, 900.0, 400.0]);
+    }
+
+    /// SL-3.FONT.04: broken CFF font is a deviation, not an error.
+    #[test]
+    fn broken_cff_is_a_deviation() {
+        let mut g = guard();
+        let garbage = Bytes::copy_from_slice(b"not a font");
+        assert!(outline_glyph(&garbage, 1, &mut g)
+            .expect("extract")
+            .is_none());
+    }
 }

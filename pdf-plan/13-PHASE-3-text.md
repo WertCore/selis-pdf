@@ -35,8 +35,10 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** `ttf-parser` for tables; glyph outlines including composite glyphs; broken-font
     tolerance (bad `loca`, missing `hmtx`, wrong `numGlyphs`).
   - **Note:** Tables via `skrifa` (ttf-parser unmaintained, see SL-3.FONT.01).
-- [ ] **SL-3.FONT.04 — Embedded CFF / Type1C** · deps: FONT.01 · owner: AI+
+- [x] **SL-3.FONT.04 — Embedded CFF / Type1C** · deps: FONT.01 · owner: AI+
   - **Do:** CFF charstrings (Type 2), subrs, hintmask handling, seac, and CID-keyed CFF with FDSelect.
+  - **Note:** CFF decoding via `skrifa` (covers Type 2 charstrings, subrs, hintmasks, seac, and
+    CID FDSelect internally); verified against non-CID and CID-keyed fixtures.
 - [ ] **SL-3.FONT.05 — Embedded Type1 (PFB/PFA)** · deps: FONT.04 · owner: AI+
   - **Do:** eexec decryption, Type 1 charstrings, `/Subrs`, flex and hint-replacement, and the
     seac composite mechanism. Convert internally to the same outline representation as CFF.
