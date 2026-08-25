@@ -115,6 +115,9 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     vs. horizontal scaling) so reflowed text matches the original paragraph's visual style.
 - [ ] **SL-3.SHAPE.04 — Indic and complex-script validation** · deps: SHAPE.01 · owner: AI
   - **DoD:** Corpus `indic` (Devanagari, Tamil, Bengali) at G2 tolerance.
+  - **Status:** Shaping fuzz target (`shaper`) + Arabic cluster test shipped in `selis-shape`.
+    The DoD corpus render needs the page-render pipeline (SL-2.RAST.11 surface exists but the
+    engine driving it does not).
 
 ---
 

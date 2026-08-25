@@ -264,4 +264,26 @@ mod tests {
         assert_eq!(out.glyphs[0].cluster, 0);
         assert_eq!(out.glyphs[1].cluster, 1);
     }
+
+    /// SL-3.SHAPE.04: complex-script text shapes without panicking; the
+    /// cluster byte offsets map into the input even when the font lacks the
+    /// glyphs (they fall back to `.notdef`).
+    #[test]
+    fn shapes_arabic_clusters() {
+        let shaper = SwashShaper;
+        let params = ShapingParams {
+            text: "مرحبا",
+            font_data: MINI_TTF, // no Arabic glyphs → .notdef, but clusters map
+            font_size: 1000.0,
+            script: 0x4172_6162, // Arab
+            language: Some("ar"),
+            features: &[],
+        };
+        let out = shaper.shape(&params).expect("shape");
+        assert!(!out.glyphs.is_empty());
+        for g in &out.glyphs {
+            // The cluster byte offset is within the 10-byte input.
+            assert!(g.cluster < 10);
+        }
+    }
 }
