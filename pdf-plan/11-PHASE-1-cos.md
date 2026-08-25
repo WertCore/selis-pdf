@@ -233,7 +233,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     files go in the corpus permanently** — they are the regression suite for the sandbox.
 - [ ] **SL-1.ROB.04 — Memory-ceiling test on the huge corpus** · owner: AI
   - **Do:** Prove peak RSS stays under the viewer profile on 500 MB+ documents.
-- [ ] **SL-1.ROB.05 — Malformation catalogue** · deps: COS.11 · owner: AI+
+- [x] **SL-1.ROB.05 — Malformation catalogue** · deps: COS.11 · owner: AI+
   - **Do:** Finish `docs/specs/MALFORMATIONS.md`: every real-world deviation encountered, how we
     handle it, and which competitor does what. This document is a genuine competitive asset and
     the onboarding text for every future parser engineer.
