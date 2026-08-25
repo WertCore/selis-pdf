@@ -14,6 +14,7 @@ mod doc_extra;
 mod metadata;
 mod oc;
 mod resolve;
+mod struct_tree;
 mod tree;
 
 pub use attachments::{embedded_files, Attachment};
@@ -22,6 +23,7 @@ pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPrefere
 pub use metadata::{FieldValue, Metadata};
 pub use oc::{OcConfig, OcGroup, OcMembership, OcProperties};
 pub use resolve::Resolver;
+pub use struct_tree::{StructElement, StructKid, StructTree};
 pub use tree::{
     parse_destination, walk_name_tree, walk_number_tree, Destination, NameTree, NumberTree,
 };

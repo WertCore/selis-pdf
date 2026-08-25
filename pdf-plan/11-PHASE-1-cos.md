@@ -185,7 +185,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **Do:** Read both, reconcile conflicts, and expose which one won. XMP parsing is budget-bounded
     XML — treat it as hostile input (billion-laughs, external entities: **disabled**).
   - **DoD:** An XXE/entity-expansion test suite passes; no network fetch is ever attempted.
-- [ ] **SL-1.DOC.06 — Structure tree (tagged PDF), read** · deps: DOC.01 · owner: AI+
+- [x] **SL-1.DOC.06 — Structure tree (tagged PDF), read** · deps: DOC.01 · owner: AI+
   - **Do:** Parse `/StructTreeRoot`, the element hierarchy, `/K` kids including MCID references and
     OBJR, role maps, and attribute dictionaries. Per ADR-P0031 this is Phase 1 work, not a
     Phase 9 bolt-on.
