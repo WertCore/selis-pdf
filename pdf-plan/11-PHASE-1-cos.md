@@ -129,7 +129,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     `/EncodedByteAlign`, `/Columns`, `/Rows`, damaged-row recovery.
   - **DoD:** Round-trip against a generated corpus; fuzz target; decoded output matches Ghostscript
     on the fax corpus.
-- [ ] **SL-1.FILT.07 — JBIG2Decode (generic region)** · deps: FILT.01 · owner: AI+
+- [x] **SL-1.FILT.07 — JBIG2Decode (generic region)** · deps: FILT.01 · owner: AI+
   - **Do:** Own implementation (ADR-P0018) — generic region decoding with arithmetic and MMR
     coding, plus the embedded-in-PDF stream organisation and `/JBIG2Globals`.
   - **DoD:** Matches Ghostscript on the JBIG2 corpus; fuzz target; budget-bounded.

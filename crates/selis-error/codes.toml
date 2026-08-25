@@ -275,6 +275,24 @@ retryable = false
 doc_state = "PartiallyLoaded"
 
 [[code]]
+id = 1547
+name = "JBIG2_CORRUPT"
+kind = "Malformed"
+meaning = "A JBIG2Decode stream could not be decoded."
+user_msg = "JBIG2 image data in this PDF is damaged."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1548
+name = "JBIG2_UNSUPPORTED"
+kind = "Unsupported"
+meaning = "A JBIG2 segment type (symbol dict, text region, refinement) is not yet supported."
+user_msg = "Selis cannot yet read this JBIG2 encoding."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
 id = 1550
 name = "IMAGE_UNSUPPORTED"
 kind = "Unsupported"
