@@ -64,7 +64,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** A document using all 14 fonts matches PDFium's layout within 0.5 px per line.
   - **Note:** AFM widths shipped for all 14 fonts (pdf.js metrics, Apache-2.0); the substitute
     *outlines* resolve through the fallback chain (SL-3.FONT.09).
-- [ ] **SL-3.FONT.09 — Fallback chain for arbitrary unembedded fonts** · deps: FONT.08 · owner: AI+
+- [x] **SL-3.FONT.09 — Fallback chain for arbitrary unembedded fonts** · deps: FONT.08 · owner: AI+
   - **Do:** Match on `/FontDescriptor` flags, `/FontFamily`, panose, and stem width; fall back
     through a bundled set, then to system fonts on native (via `fontdb`), then to a notdef box.
     Web/extension have no system fonts — the bundled set must stand alone there.
