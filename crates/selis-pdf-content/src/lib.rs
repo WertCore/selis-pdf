@@ -11,12 +11,14 @@
 pub mod dispatch;
 pub mod form;
 pub mod gstate;
+pub mod inline_image;
 pub mod lex;
 pub mod path;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
 pub use form::{Form, FormWorklist, ResourceDict};
 pub use gstate::{GState, GStateStack};
+pub use inline_image::{extract_inline_image, InlineImage};
 pub use lex::{tokenise, Lexer, Tok};
 pub use path::{PaintOp, PaintedPath, Path, Segment};
 
