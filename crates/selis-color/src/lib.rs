@@ -17,6 +17,7 @@ extern crate alloc;
 pub mod blend;
 pub mod cie;
 pub mod function;
+pub mod icc;
 pub mod special;
 
 use alloc::string::String;
@@ -25,6 +26,7 @@ use alloc::vec::Vec;
 pub use blend::{BlendMode, Rgba};
 pub use cie::{CalGray, CalRgb, Lab, WhitePoint};
 pub use function::{Function, FunctionBudget};
+pub use icc::{IccEngine, IccProfile, IccSpace};
 pub use special::{alternate_to_rgb, DeviceN, Indexed, Separation};
 
 /// A device-independent RGB triple with components in `[0,1]`.

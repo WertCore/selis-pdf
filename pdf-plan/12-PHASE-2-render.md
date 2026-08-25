@@ -76,7 +76,7 @@ every user on every page.
   - **Do:** DeviceGray/RGB/CMYK, `/CS` `/cs` `/SC` `/SCN` `/sc` `/scn` `/G` `/RG` `/K` operators,
     and the default-colour-space overrides (`/DefaultRGB` etc.).
 - [x] **SL-2.COLOR.02 — CIE spaces: CalGray, CalRGB, Lab** · deps: COLOR.01 · owner: AI+
-- [ ] **SL-2.COLOR.03 — ICCBased + profile handling** · deps: COLOR.02 · owner: AI+
+- [x] **SL-2.COLOR.03 — ICCBased + profile handling** · deps: COLOR.02 · owner: AI+
   - **Do:** `qcms` or `moxcms` behind `selis-color::IccEngine`. Fall back to the `/N`-implied device
     space when a profile is broken — never fail a page over a bad profile.
   - **DoD:** Corpus `color-icc` including a corrupt profile that must degrade gracefully.
