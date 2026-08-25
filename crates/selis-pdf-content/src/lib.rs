@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod dispatch;
+pub mod display_list;
 pub mod form;
 pub mod gstate;
 pub mod inline_image;
@@ -17,6 +18,7 @@ pub mod marked_content;
 pub mod path;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
+pub use display_list::{diff, DisplayList, GlyphRun, Op, ResolvedState};
 pub use form::{Form, FormWorklist, ResourceDict};
 pub use gstate::{GState, GStateStack};
 pub use inline_image::{extract_inline_image, InlineImage};

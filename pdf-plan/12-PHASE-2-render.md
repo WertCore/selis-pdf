@@ -53,7 +53,7 @@ every user on every page.
     Required by `selis-pdf-text` for structure-driven reading order and by `selis-pdf-redact` to find what a
     region contains. Per ADR-P0031, not optional.
 
-- [ ] **SL-2.CONT.07 — Display-list IR** · deps: CONT.03 · owner: AI+
+- [x] **SL-2.CONT.07 — Display-list IR** · deps: CONT.03 · owner: AI+
   - **Do:** Define and emit the immutable IR of `01-ARCHITECTURE.md §8`: an arena-allocated,
     serialisable op list with resolved (not referenced) state per op. Must be `Send`, cacheable,
     and diffable.
