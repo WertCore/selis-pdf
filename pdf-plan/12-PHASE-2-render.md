@@ -156,7 +156,7 @@ every user on every page.
 
 ## 2.FILT — Codec completion
 
-- [ ] **SL-2.FILT.01 — JBIG2 symbol dictionary, text region, refinement** · deps: SL-1.FILT.07 · owner: AI+
+- [x] **SL-2.FILT.01 — JBIG2 symbol dictionary, text region, refinement** · deps: SL-1.FILT.07 · owner: AI+
   - **DoD:** Full JBIG2 corpus matches Ghostscript; fuzz target sustained 8 h.
 - [ ] **SL-2.FILT.02 — Progressive/arithmetic JPEG edge cases** · deps: SL-1.FILT.05 · owner: AI
 

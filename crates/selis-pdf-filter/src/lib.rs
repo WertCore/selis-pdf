@@ -24,6 +24,8 @@ pub mod dct;
 pub mod fax;
 pub mod flate;
 pub mod jbig2;
+pub mod jbig2_full;
+pub mod jbig2_mq;
 pub mod lzw;
 pub mod pipeline;
 
@@ -32,6 +34,10 @@ pub use dct::{dct_decode, DctImage};
 pub use fax::{ccitt_decode, FaxParms};
 pub use flate::{flate_decode, flate_decode_bounded, FlateDecodeError};
 pub use jbig2::jbig2_decode;
+pub use jbig2_full::{
+    decode_symbol_dictionary, decode_text_region, Symbol, SymbolDictionary, TextRegion,
+};
+pub use jbig2_mq::MqDecoder;
 pub use lzw::lzw_decode;
 pub use pipeline::{decode_chain, decode_stream, DecodeParms};
 
