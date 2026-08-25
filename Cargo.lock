@@ -729,6 +729,7 @@ dependencies = [
  "selis-pdf-engine",
  "selis-policy",
  "selis-sandbox",
+ "serde",
  "serde_json",
 ]
 

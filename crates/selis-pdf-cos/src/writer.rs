@@ -18,21 +18,17 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::obj::Obj;
 
-/// The writer's buffer and budget.
+/// The writer's buffer.
 #[derive(Debug)]
-pub struct Writer<'a> {
+pub struct Writer {
     out: Vec<u8>,
-    budget: &'a Budget,
 }
 
-impl<'a> Writer<'a> {
-    /// A writer with a budget.
+impl Writer {
+    /// A writer.
     #[must_use]
-    pub fn new(budget: &'a Budget) -> Self {
-        Self {
-            out: Vec::new(),
-            budget,
-        }
+    pub fn new(_budget: &Budget) -> Self {
+        Self { out: Vec::new() }
     }
 
     /// Write a top-level object.

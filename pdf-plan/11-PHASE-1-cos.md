@@ -85,12 +85,12 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **DoD:** Property test: `parse(write(obj)) == obj` for arbitrary generated objects, including
     strings with every byte value and deeply nested containers.
 
-- [ ] **SL-1.COS.10 — `selis inspect --json`** · deps: COS.05 · owner: AI
+- [x] **SL-1.COS.10 — `selis inspect --json`** · deps: COS.05 · owner: AI
   - **Do:** The structural dump used by the qpdf oracle: revisions, objects, page tree, streams,
     deviations found.
   - **DoD:** `SL-0.ORACLE.03` comparison passes on the clean corpus.
 
-- [ ] **SL-1.COS.11 — Deviation reporting API** · deps: COS.01 · owner: AI
+- [x] **SL-1.COS.11 — Deviation reporting API** · deps: COS.01 · owner: AI
   - **Do:** A typed `Deviation` list on every opened document (`BadXrefOffset`, `MissingEndobj`,
     `ReconstructedIndex`, `LengthMismatch`, `NonConformingEncoding`, …) with byte offsets.
   - **DoD:** Surfaced in `inspect --json`; the corpus asserts specific deviations on specific files.
