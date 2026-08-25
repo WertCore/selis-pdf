@@ -17,7 +17,7 @@
 id = "pdfjs"
 name = "pdf.js test corpus"
 source_url = "https://github.com/mozilla/pdf.js/archive/refs/tags/v3.11.174.tar.gz"
-sha256 = ""
+sha256 = "4203c56665d9ce5b65d652077744bc90d055aa10a14af9ae6069e9cc247cfdc6"
 licence = "Apache-2.0 (test files carry varied licences; fetch-only)"
 tags = ["smoke", "render", "text", "forms"]
 notes = "Primary pdf.js reference corpus; drives smoke + text tiers."

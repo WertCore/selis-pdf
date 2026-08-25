@@ -86,7 +86,11 @@ struct CorpusArgs {
 #[derive(Subcommand)]
 enum CorpusSub {
     /// Download manifests to the cache, verifying hashes (SL-0.CORP.01).
-    Fetch,
+    Fetch {
+        /// Only fetch entries carrying this tag (smoke, render, text, ...).
+        #[arg(short, long)]
+        tag: Option<String>,
+    },
     /// List the configured corpora.
     List,
     /// Report total corpora and tag distribution.
@@ -108,7 +112,7 @@ fn main() -> ExitCode {
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::SizeCheck => not_in_phase_0("size-check"),
         Command::Corpus(args) => match args.sub {
-            CorpusSub::Fetch => corpus::run(corpus::CorpusCommand::Fetch),
+            CorpusSub::Fetch { tag } => corpus::run(corpus::CorpusCommand::Fetch(tag)),
             CorpusSub::List => corpus::run(corpus::CorpusCommand::List),
             CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
         },

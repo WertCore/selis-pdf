@@ -6,8 +6,11 @@
 //! count and tag distribution. `corpus list` prints the manifests.
 //!
 //! The plan's rule is strict: the harness fetches rather than vendors anything
-//! unclear (SL-0.LEGAL.04), so a manifest without a sha256 is fetched but
-//! *warned*, never silently trusted.
+//! unclear (SL-0.LEGAL.04). Downloads go through `curl` (present on Windows 10+,
+//! macOS, and every Linux CI image) so the xtask binary stays dependency-free;
+//! the digest check is done with `certutil`/`sha256sum`. A recorded sha256 that
+//! does not match fails loudly — an unverified download is a warning, never a
+//! silent success.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +37,7 @@ struct CorpusEntry {
 }
 
 pub enum CorpusCommand {
-    Fetch,
+    Fetch(Option<String>),
     List,
     Stats,
 }
@@ -42,7 +45,7 @@ pub enum CorpusCommand {
 pub fn run(cmd: CorpusCommand) -> Result<(), String> {
     let entries = load_all()?;
     match cmd {
-        CorpusCommand::Fetch => fetch(&entries),
+        CorpusCommand::Fetch(tag) => fetch(&entries, tag.as_deref()),
         CorpusCommand::List => list(&entries),
         CorpusCommand::Stats => stats(&entries),
     }
@@ -78,32 +81,48 @@ fn cache_dir() -> PathBuf {
         })
 }
 
-fn fetch(entries: &[CorpusEntry]) -> Result<(), String> {
+/// Deterministic local name for an entry: `id` plus the URL's extension.
+fn dest_for(e: &CorpusEntry, cache: &Path) -> PathBuf {
+    let ext = Path::new(&e.source_url)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| format!(".{s}"))
+        .unwrap_or_default();
+    cache.join(format!("{}{}", e.id, ext))
+}
+
+fn fetch(entries: &[CorpusEntry], tag: Option<&str>) -> Result<(), String> {
     let cache = cache_dir();
     std::fs::create_dir_all(&cache).map_err(|e| format!("cannot create cache dir: {e}"))?;
+
+    let selected: Vec<&CorpusEntry> = match tag {
+        Some(t) => {
+            let hits: Vec<&CorpusEntry> = entries
+                .iter()
+                .filter(|e| e.tags.iter().any(|candidate| candidate == t))
+                .collect();
+            if hits.is_empty() {
+                return Err(format!("no corpus entry carries the tag `{t}`"));
+            }
+            hits
+        }
+        None => entries.iter().collect(),
+    };
+
     let mut fetched = 0usize;
     let mut warnings = 0usize;
-    for e in entries {
-        // Deterministic local name: id + extension from the URL.
-        let ext = Path::new(&e.source_url)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| format!(".{s}"))
-            .unwrap_or_default();
-        let dest = cache.join(format!("{}{}", e.id, ext));
+    for e in selected {
+        let dest = dest_for(e, &cache);
         if dest.exists() {
-            // Verify what is already cached; do not re-download.
             match verify_sha256(&dest, e) {
-                Ok(true) => {
-                    println!("  {}: cached, hash ok", e.id);
-                }
+                Ok(true) => println!("  {}: cached, hash ok", e.id),
                 Ok(false) => {
-                    warnings += 1;
-                    println!(
-                        "  {}: cached but hash MISMATCH (delete {} to refetch)",
+                    // DoD: a hash mismatch fails loudly, never silently trusts.
+                    return Err(format!(
+                        "{}: cached file {} fails sha256 — delete it and refetch",
                         e.id,
                         dest.display()
-                    );
+                    ));
                 }
                 Err(msg) => return Err(msg),
             }
@@ -113,22 +132,65 @@ fn fetch(entries: &[CorpusEntry]) -> Result<(), String> {
             warnings += 1;
             println!(
                 "  {}: no sha256 recorded — downloading UNVERIFIED ({}). Refusing to trust; \
-                 record the hash after first fetch.",
+                 record the printed hash after this fetch.",
                 e.id, e.source_url
             );
         } else {
             println!("  {}: fetching {}", e.id, e.source_url);
         }
-        // NOTE: actual HTTP fetch is deferred to a small shell/curl invocation
-        // so the xtask binary stays dependency-free and testable offline. The
-        // plan's DoD ("fetch is reproducible and offline-cacheable") is met by
-        // the manifest + hash verification; the transport is injected.
+        download(e, &dest)?;
+        let expected = e.sha256.trim().to_ascii_lowercase();
+        if expected.is_empty() {
+            let hash = sha256_hex(&dest).map_err(|m| format!("{}: {m}", dest.display()))?;
+            println!(
+                "  {}: downloaded — RECORD sha256 = \"{}\" in the manifest",
+                e.id, hash
+            );
+        } else {
+            match verify_sha256(&dest, e) {
+                Ok(true) => println!("  {}: downloaded, hash verified", e.id),
+                Ok(false) => {
+                    let actual =
+                        sha256_hex(&dest).map_err(|m| format!("{}: {m}", dest.display()))?;
+                    return Err(format!(
+                        "{}: sha256 MISMATCH after download — expected {}, got {}. Refusing the file.",
+                        e.id,
+                        e.sha256,
+                        actual
+                    ));
+                }
+                Err(msg) => return Err(msg),
+            }
+        }
         fetched += 1;
     }
     println!(
         "corpus fetch: {fetched} new, {} warnings (missing/unverified hashes)",
         warnings
     );
+    Ok(())
+}
+
+/// Download `source_url` to `dest` with `curl`, following redirects and
+/// failing on any HTTP error. A partial download is removed so it is never
+/// mistaken for a verified cache hit.
+fn download(e: &CorpusEntry, dest: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("curl")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--connect-timeout")
+        .arg("30")
+        .arg("--output")
+        .arg(dest)
+        .arg(&e.source_url)
+        .status()
+        .map_err(|err| format!("cannot run curl: {err} (is curl installed?)"))?;
+    if !status.success() {
+        let _ = std::fs::remove_file(dest);
+        return Err(format!("download failed for {}: {}", e.id, e.source_url));
+    }
     Ok(())
 }
 
@@ -152,6 +214,7 @@ fn sha256_hex(path: &Path) -> Result<String, String> {
     let out = std::process::Command::new(program)
         .arg("-hashfile")
         .arg(path)
+        .arg("SHA256") // certutil defaults to SHA1; the manifests pin SHA256
         .output()
         .or_else(|_| std::process::Command::new("sha256sum").arg(path).output())
         .map_err(|e| format!("cannot run hash tool ({program}): {e}"))?;

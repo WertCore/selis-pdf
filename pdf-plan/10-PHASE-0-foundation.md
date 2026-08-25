@@ -241,7 +241,7 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.CORP — Corpus harness
 
-- [ ] **SL-0.CORP.01 — Corpus manifest format + fetcher** · owner: AI
+- [x] **SL-0.CORP.01 — Corpus manifest format + fetcher** · owner: AI
   - **Do:** `corpus/manifests/*.toml` with `{id, source_url, sha256, licence, tags[], notes}`.
     `xtask corpus fetch` downloads to a local cache, verifies hashes, and never commits the files
     (SL-0.LEGAL.04). `tags` drive selection: `smoke`, `render`, `text`, `forms`, `damaged`,
