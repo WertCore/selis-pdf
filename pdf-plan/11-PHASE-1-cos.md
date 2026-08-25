@@ -212,7 +212,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     same structural checks that find a PDF/A violation find embedded JavaScript, phone-home
     references, and leftover content in prior revisions. Build once, ship twice.
 
-- [ ] **SL-1.DOC.08 — Page labels, article threads, viewer preferences** · deps: DOC.01 · owner: AI
+- [x] **SL-1.DOC.08 — Page labels, article threads, viewer preferences** · deps: DOC.01 · owner: AI
 
 ---
 

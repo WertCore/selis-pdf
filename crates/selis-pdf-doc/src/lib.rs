@@ -9,11 +9,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod doc;
+mod doc_extra;
 mod metadata;
 mod resolve;
 mod tree;
 
 pub use doc::{Document, Page};
+pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};
 pub use metadata::{FieldValue, Metadata};
 pub use resolve::Resolver;
 pub use tree::{
