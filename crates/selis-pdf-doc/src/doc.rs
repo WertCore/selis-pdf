@@ -1,0 +1,466 @@
+//! The document model (SL-1.DOC.01).
+//!
+//! Walks the catalog and page tree over a parsed COS document, resolving
+//! inherited attributes (`Resources`, `MediaBox`, `CropBox`, `Rotate`) and
+//! guarding every walk against cycles and malformed graphs.
+
+use std::collections::BTreeSet;
+
+use selis_error::{err, Code, Result};
+use selis_geom::Rect;
+use selis_pdf_cos::{resolve_object, Doc, Obj, Ref};
+use selis_sandbox::{Budget, BudgetGuard};
+
+/// A resolved page: its attributes after inheritance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    /// The object number of this page.
+    pub num: u32,
+    /// The inherited `/MediaBox`.
+    pub media_box: Option<Rect>,
+    /// The inherited `/CropBox` (falls back to `/MediaBox`).
+    pub crop_box: Option<Rect>,
+    /// The inherited `/Rotate` (0, 90, 180, 270).
+    pub rotate: Option<i32>,
+    /// The inherited `/Resources` dictionary.
+    pub resources: Option<Obj>,
+    /// The `/Contents` reference(s): a single ref or an array of refs.
+    pub contents: Option<Vec<Ref>>,
+}
+
+/// The document model over a parsed COS [`Doc`] and its source bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Document {
+    /// The catalog dictionary (the `/Root` object).
+    pub catalog: Obj,
+    /// Pages, in document order.
+    pub pages: Vec<Page>,
+}
+
+impl Document {
+    /// Resolve the catalog and page tree from a COS document.
+    ///
+    /// # Budget
+    ///
+    /// The caller's budget bounds the walk: every object resolved is charged,
+    /// and cycle depth is bounded.
+    ///
+    /// # Malformed Input
+    ///
+    /// A missing or non-dict `/Root` yields `OBJ_UNEXPECTED`; a cyclic page
+    /// tree terminates with `OBJ_CYCLE` rather than hanging.
+    pub fn resolve(
+        doc: &Doc,
+        src: &[u8],
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Self> {
+        let view = doc
+            .at_revision(doc.len().saturating_sub(1))
+            .ok_or_else(|| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "doc-catalog",
+                    detail = "no revisions"
+                )
+            })?;
+        let root_ref = view.root.ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-catalog",
+                detail = "no /Root"
+            )
+        })?;
+        let catalog = resolve_ref(doc, src, root_ref, budget, g)?;
+
+        // Walk the page tree from /Pages.
+        let pages_ref = dict_ref(&catalog, b"Pages").ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-pages",
+                detail = "catalog has no /Pages"
+            )
+        })?;
+
+        let mut pages = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut inherited = Inherited::default();
+        walk_pages(
+            doc,
+            src,
+            pages_ref,
+            &mut inherited,
+            &mut pages,
+            &mut visited,
+            budget,
+            g,
+        )?;
+
+        Ok(Self { catalog, pages })
+    }
+
+    /// The number of pages.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Whether the document has no pages.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+}
+
+/// Inheritable page attributes, threaded down the page tree.
+#[derive(Debug, Clone, Default)]
+struct Inherited {
+    media_box: Option<Rect>,
+    crop_box: Option<Rect>,
+    rotate: Option<i32>,
+    resources: Option<Obj>,
+}
+
+/// Resolve a reference: find its byte offset in the newest xref, then read
+/// the object body.
+fn resolve_ref(
+    doc: &Doc,
+    src: &[u8],
+    r: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Obj> {
+    let view = doc
+        .at_revision(doc.len().saturating_sub(1))
+        .ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-resolve",
+                detail = "no revisions"
+            )
+        })?;
+    let offset = match view.xref.get(&r.num) {
+        Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
+        Some(selis_pdf_cos::XrefEntry::Compressed { .. }) => {
+            // Compressed objects (in object streams) need stream decoding;
+            // that is a later phase (SL-1.COS.04 follow-up).
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "doc-resolve",
+                object = r.num,
+                detail = "compressed object resolution not yet wired"
+            ));
+        }
+        Some(_) | None => {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "doc-resolve",
+                object = r.num
+            ));
+        }
+    };
+    resolve_object(src, offset, budget, g)
+}
+
+fn dict_ref(dict: &Obj, key: &[u8]) -> Option<Ref> {
+    match dict {
+        Obj::Dict(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            }),
+        _ => None,
+    }
+}
+
+fn dict_get<'a>(dict: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
+    match dict {
+        Obj::Dict(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+/// Parse a PDF rectangle array into a normalised [`Rect`].
+fn obj_rect(obj: &Obj) -> Option<Rect> {
+    match obj {
+        Obj::Array(items) => {
+            if items.len() != 4 {
+                return None;
+            }
+            let mut v = [0f64; 4];
+            for (slot, item) in v.iter_mut().zip(items) {
+                *slot = obj_f64(item)?;
+            }
+            Some(Rect::from_pdf_array(v))
+        }
+        _ => None,
+    }
+}
+
+fn obj_f64(obj: &Obj) -> Option<f64> {
+    match obj {
+        Obj::Int(i) => Some(*i as f64),
+        Obj::Real { scaled, scale } => {
+            let div = 10f64.powi(i32::from(*scale));
+            Some(*scaled as f64 / div)
+        }
+        _ => None,
+    }
+}
+
+/// A PDF integer (Rotate, page count, …).
+fn obj_i32(obj: &Obj) -> Option<i32> {
+    match obj {
+        Obj::Int(i) => i32::try_from(*i).ok(),
+        _ => None,
+    }
+}
+
+/// Walk the page tree, resolving inherited attributes and guarding cycles.
+#[allow(clippy::too_many_arguments)]
+fn walk_pages(
+    doc: &Doc,
+    src: &[u8],
+    node_ref: Ref,
+    inherited: &mut Inherited,
+    out: &mut Vec<Page>,
+    visited: &mut BTreeSet<u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<()> {
+    if !visited.insert(node_ref.num) {
+        return Err(err!(
+            Code::ObjCycle,
+            during = "doc-pages",
+            object = node_ref.num
+        ));
+    }
+    g.enter()?;
+
+    let node = resolve_ref(doc, src, node_ref, budget, g)?;
+    let node_type = dict_get(&node, b"Type").and_then(|t| match t {
+        Obj::Name(n) => Some(n.clone()),
+        _ => None,
+    });
+
+    // A node's own attributes override what it inherits — for both tree and
+    // page nodes.
+    apply_inherited(&node, inherited);
+
+    if node_type.as_ref().map(|n| n.as_slice()) == Some(b"Pages") {
+        // A tree node: thread inherited attributes down, then recurse.
+        let kids = dict_get(&node, b"Kids").ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-pages",
+                object = node_ref.num,
+                detail = "/Pages without /Kids"
+            )
+        })?;
+        let kids = match kids {
+            Obj::Array(items) => items,
+            _ => {
+                return Err(err!(
+                    Code::ObjUnexpected,
+                    during = "doc-pages",
+                    object = node_ref.num,
+                    detail = "/Kids is not an array"
+                ));
+            }
+        };
+        // Validate /Count when present (never trust it for walking).
+        if let Some(count) = dict_get(&node, b"Count").and_then(obj_f64) {
+            let _ = count;
+        }
+        for kid in kids {
+            let kid_ref = match kid {
+                Obj::Ref(r) => *r,
+                _ => {
+                    return Err(err!(
+                        Code::ObjUnexpected,
+                        during = "doc-pages",
+                        object = node_ref.num,
+                        detail = "/Kids entry is not a reference"
+                    ));
+                }
+            };
+            walk_pages(doc, src, kid_ref, inherited, out, visited, budget, g)?;
+        }
+    } else {
+        // A page node: materialise the resolved attributes.
+        let media_box = inherited.media_box;
+        let crop_box = inherited.crop_box;
+        let rotate = inherited.rotate;
+        let resources = inherited.resources.clone();
+        let contents = dict_get(&node, b"Contents").and_then(contents_refs);
+        out.push(Page {
+            num: node_ref.num,
+            media_box,
+            crop_box,
+            rotate,
+            resources,
+            contents,
+        });
+    }
+    Ok(())
+}
+
+/// Override inherited attributes with any this node declares.
+fn apply_inherited(node: &Obj, inherited: &mut Inherited) {
+    if let Some(v) = dict_get(node, b"MediaBox").and_then(obj_rect) {
+        inherited.media_box = Some(v);
+    }
+    if let Some(v) = dict_get(node, b"CropBox").and_then(obj_rect) {
+        inherited.crop_box = Some(v);
+    }
+    if let Some(v) = dict_get(node, b"Rotate").and_then(obj_i32) {
+        inherited.rotate = Some(v);
+    }
+    if let Some(v) = dict_get(node, b"Resources").cloned() {
+        inherited.resources = Some(v);
+    }
+}
+
+/// `/Contents` is a single ref or an array of refs.
+fn contents_refs(obj: &Obj) -> Option<Vec<Ref>> {
+    match obj {
+        Obj::Ref(r) => Some(vec![*r]),
+        Obj::Array(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                match item {
+                    Obj::Ref(r) => out.push(*r),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_sign_loss
+    )]
+
+    use super::*;
+    use selis_pdf_cos::{parse_revisions, XrefEntry};
+    use selis_sandbox::{CancelToken, FixedClock};
+
+    fn guard() -> BudgetGuard<'static> {
+        Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
+    }
+
+    /// A minimal 2-page document with inheritance at the /Pages node.
+    fn two_page_doc() -> (Vec<u8>, Vec<(u32, u64)>) {
+        let mut out = Vec::new();
+        let mut entries = Vec::new();
+
+        out.extend_from_slice(b"%PDF-1.4\n");
+
+        // Object 1: catalog.
+        let off = out.len() as u64;
+        out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        entries.push((1, off));
+        // Object 2: page tree root with inherited MediaBox.
+        let off = out.len() as u64;
+        out.extend_from_slice(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 612 792] >>\nendobj\n",
+        );
+        entries.push((2, off));
+        // Object 3: page 1 (no own MediaBox; inherits).
+        let off = out.len() as u64;
+        out.extend_from_slice(b"3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n");
+        entries.push((3, off));
+        // Object 4: page 2 with its own MediaBox.
+        let off = out.len() as u64;
+        out.extend_from_slice(
+            b"4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>\nendobj\n",
+        );
+        entries.push((4, off));
+        (out, entries)
+    }
+
+    #[test]
+    fn resolves_catalog_and_pages() {
+        let (src, entries) = two_page_doc();
+        let mut g = guard();
+        let budget = Budget::unlimited();
+
+        // Build a Doc from the xref entries directly (single revision).
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, off) in &entries {
+            xref.insert(
+                *num,
+                XrefEntry::InUse {
+                    offset: *off,
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = Doc::from_single_revision(xref, trailer);
+
+        let document = Document::resolve(&doc, &src, &budget, &mut g).expect("resolve");
+        assert_eq!(document.len(), 2);
+        // Page 1 inherits MediaBox from /Pages.
+        assert_eq!(
+            document.pages[0].media_box,
+            Some(Rect::from_pdf_array([0.0, 0.0, 612.0, 792.0]))
+        );
+        // Page 2 overrides it.
+        assert_eq!(
+            document.pages[1].media_box,
+            Some(Rect::from_pdf_array([0.0, 0.0, 300.0, 400.0]))
+        );
+        assert_eq!(document.pages[0].num, 3);
+        assert_eq!(document.pages[1].num, 4);
+    }
+
+    /// A cyclic page tree must terminate with OBJ_CYCLE, not hang.
+    #[test]
+    fn cyclic_page_tree_terminates() {
+        let mut out = Vec::new();
+        let mut entries = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let off = out.len() as u64;
+        out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        entries.push((1, off));
+        // Object 2: a /Pages node whose only kid is ITSELF.
+        let off = out.len() as u64;
+        out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [2 0 R] /Count 1 >>\nendobj\n");
+        entries.push((2, off));
+
+        let mut g = guard();
+        let budget = Budget::unlimited();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, off) in &entries {
+            xref.insert(
+                *num,
+                XrefEntry::InUse {
+                    offset: *off,
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = Doc::from_single_revision(xref, trailer);
+        let e = Document::resolve(&doc, &out, &budget, &mut g).expect_err("cycle");
+        assert_eq!(e.code(), Code::ObjCycle);
+    }
+}

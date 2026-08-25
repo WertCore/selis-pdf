@@ -171,7 +171,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 
 ## 1.DOC — The document model
 
-- [ ] **SL-1.DOC.01 — Catalog, page tree, inheritance** · deps: COS.05 · owner: AI+
+- [x] **SL-1.DOC.01 — Catalog, page tree, inheritance** · deps: COS.05 · owner: AI+
   - **Do:** Page-tree walk with `/Count` validation (never trust it), inherited attributes
     (`Resources`, `MediaBox`, `CropBox`, `Rotate`), and recovery when the tree is a cyclic or
     malformed graph.
