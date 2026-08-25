@@ -21,7 +21,7 @@ every user on every page.
   - **Risk:** Operand-count recovery after an unknown operator is the difference between "one
     missing glyph" and "the rest of the page is garbage". Test it deliberately.
 
-- [ ] **SL-2.CONT.02 — Graphics state machine** · deps: CONT.01 · owner: AI+
+- [x] **SL-2.CONT.02 — Graphics state machine** · deps: CONT.01 · owner: AI+
   - **Do:** The full state: CTM, colour spaces and colours (stroke/fill separately), line width,
     cap, join, miter, dash, rendering intent, flatness, smoothness, stroke adjustment, blend mode,
     soft mask, alpha constants, alpha-is-shape, text state (font, size, char/word spacing,

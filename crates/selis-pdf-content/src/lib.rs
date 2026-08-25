@@ -9,9 +9,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod dispatch;
+pub mod gstate;
 pub mod lex;
 
 pub use dispatch::{Dispatch, Interpreter, Operand, Operator};
+pub use gstate::{GState, GStateStack};
 pub use lex::{tokenise, Lexer, Tok};
 
 use selis_error::Result;

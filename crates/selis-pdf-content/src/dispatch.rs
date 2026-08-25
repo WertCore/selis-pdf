@@ -33,6 +33,8 @@ pub enum Operand {
     Name(selis_bytes::Bytes),
     /// A string.
     Str(selis_bytes::Bytes),
+    /// A boolean (from an array or dict).
+    Bool(bool),
     /// An array of numbers/names.
     Arr(Vec<Operand>),
     /// A dictionary of name→value.
