@@ -11,7 +11,7 @@ every user on every page.
 
 ## 2.CONT — The content-stream interpreter
 
-- [ ] **SL-2.CONT.01 — Content tokeniser + operator dispatch** · owner: AI+
+- [x] **SL-2.CONT.01 — Content tokeniser + operator dispatch** · owner: AI+
   - **Do:** Tokenise content streams (a different grammar from COS — no indirect refs, inline
     images embedded in the token stream) and dispatch all ~73 operators. Unknown operators are
     recorded as a deviation and skipped with correct operand consumption, never fatal.

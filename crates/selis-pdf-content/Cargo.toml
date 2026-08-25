@@ -1,0 +1,22 @@
+[package]
+name = "selis-pdf-content"
+description = "The content-stream interpreter of the Selis PDF engine (SL-2.CONT.*)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-geom = { workspace = true }
+selis-color = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

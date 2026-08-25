@@ -792,6 +792,18 @@ name = "selis-log"
 version = "0.1.0"
 
 [[package]]
+name = "selis-pdf-content"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "selis-bytes",
+ "selis-color",
+ "selis-error",
+ "selis-geom",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-pdf-cos"
 version = "0.1.0"
 dependencies = [

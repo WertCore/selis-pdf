@@ -54,6 +54,7 @@ selis-crypto  = { path = "crates/selis-crypto", version = "0.1.0" }
 selis-pdf-cos      = { path = "crates/selis-pdf-cos", version = "0.1.0" }
 selis-pdf-filter   = { path = "crates/selis-pdf-filter", version = "0.1.0" }
 selis-pdf-doc      = { path = "crates/selis-pdf-doc", version = "0.1.0" }
+selis-pdf-content  = { path = "crates/selis-pdf-content", version = "0.1.0" }
 selis-pdf-edit     = { path = "crates/selis-pdf-edit", version = "0.1.0" }
 selis-pdf-optimize = { path = "crates/selis-pdf-optimize", version = "0.1.0" }
 selis-image        = { path = "crates/selis-image", version = "0.1.0" }
