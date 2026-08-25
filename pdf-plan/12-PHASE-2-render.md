@@ -111,7 +111,7 @@ every user on every page.
   - **Do:** Nonzero and even-odd winding, PDF's stroke geometry (including the zero-width line =
     thinnest-renderable rule, and dash-phase semantics), and miter-limit behaviour.
   - **DoD:** Corpus `strokes`; zero-width and hairline cases match PDFium at 72/150/300 DPI.
-- [ ] **SL-2.RAST.03 — Clipping, including text clip modes** · deps: RAST.02 · owner: AI+
+- [x] **SL-2.RAST.03 — Clipping, including text clip modes** · deps: RAST.02 · owner: AI+
   - **Do:** Intersecting clip paths, and text render modes 4–7 which add glyphs to the clip path.
   - **DoD:** Corpus `clip-text`; nested clip depth budgeted.
 - [ ] **SL-2.RAST.04 — Transparency groups** · deps: RAST.03, COLOR.06 · owner: AI+

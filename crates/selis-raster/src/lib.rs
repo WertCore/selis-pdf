@@ -15,8 +15,10 @@ use selis_geom::Rect;
 #[cfg(feature = "tiny-skia")]
 pub mod tiny_skia;
 
+pub mod clip;
 pub mod render;
 
+pub use clip::ClipStack;
 pub use render::{apply_ctm, fill, stroke, to_backend_stroke, StrokeSpec};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;
