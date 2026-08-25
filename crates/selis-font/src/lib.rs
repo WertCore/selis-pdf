@@ -14,6 +14,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
+pub mod agl;
 pub mod cid;
 pub mod cjk;
 pub mod cmap;
@@ -23,6 +24,8 @@ pub mod fallback;
 pub mod justify;
 pub mod model;
 pub mod outline;
+pub mod pdfdoc_encoding;
+pub mod recover;
 pub mod standard14;
 pub mod subset;
 pub mod tables;
@@ -30,15 +33,19 @@ pub mod type1;
 pub mod type3;
 pub mod width;
 
+pub use agl::{glyph_to_unicode, AglEntry, AGL};
+
 pub use cid::{resolve_cid_widths, CidWidthEntry, CidWidths};
 pub use cjk::{chunk_for, is_cjk, CjkChunk, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
-pub use cmapfile::{parse_cmap, CMap, CidRange};
+pub use cmapfile::{parse_cmap, BfRange, CMap, CidRange};
 pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
 pub use fallback::{can_render, fallback_order, match_substitute, substitute, FontMatchHints};
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, Outline, OutlineCmd};
+pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
+pub use recover::{Recovery, RecoveryConfidence, TextRecovery};
 pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};
 pub use subset::{add_glyph, subset_ttf, GlyphSet};
 pub use type1::{

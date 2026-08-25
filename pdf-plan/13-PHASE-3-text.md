@@ -131,7 +131,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Note:** Text state machine (`selis_pdf_content::text`) implemented with all operators,
     the advance formula (moved to `selis-font` for the replay path), and the CID-0x20 trap.
     The DoD corpus comparison needs the engine's page-render path.
-- [ ] **SL-3.TEXT.02 — ToUnicode and text recovery** · deps: FONT.02 · owner: AI+
+- [x] **SL-3.TEXT.02 — ToUnicode and text recovery** · deps: FONT.02 · owner: AI+
   - **Do:** `/ToUnicode` CMap parsing; fall back through the encoding's glyph names →
     Adobe Glyph List → the `uniXXXX`/`uXXXX` name conventions → the font's own cmap reverse map.
     Report a per-run confidence.

@@ -41,10 +41,26 @@ pub struct CMap {
     pub cid_chars: Vec<(u32, u16)>,
     /// `beginnotdefrange` ranges (informational).
     pub notdef_ranges: Vec<CidRange>,
+    /// `beginbfchar` single code → Unicode mappings.
+    pub bf_chars: Vec<(u32, u32)>,
+    /// `beginbfrange` code range → Unicode base mappings.
+    pub bf_ranges: Vec<BfRange>,
     /// The writing mode (`/WMode`): 0 horizontal, 1 vertical.
     pub wmode: u8,
     /// A `usecmap /Name` reference, if any.
     pub uses: Option<String>,
+}
+
+/// One `beginbfrange` entry: codes `first..=last` map to the Unicodes
+/// `unicode..=unicode + (last - first)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BfRange {
+    /// The first character code.
+    pub first: u32,
+    /// The last character code.
+    pub last: u32,
+    /// The Unicode of `first`.
+    pub unicode: u32,
 }
 
 impl CMap {
@@ -61,6 +77,24 @@ impl CMap {
             if code >= r.first && code <= r.last {
                 let delta = u16::try_from(code.saturating_sub(r.first)).unwrap_or(u16::MAX);
                 return Some(r.cid.saturating_add(delta));
+            }
+        }
+        None
+    }
+
+    /// The Unicode for a character code, from a `/ToUnicode` CMap
+    /// (`beginbfchar`/`beginbfrange`), or `None`.
+    ///
+    /// Single `beginbfchar` mappings win; otherwise the enclosing
+    /// `beginbfrange`.
+    #[must_use]
+    pub fn unicode_map(&self, code: u32) -> Option<u32> {
+        if let Some((_, uni)) = self.bf_chars.iter().find(|(c, _)| *c == code) {
+            return Some(*uni);
+        }
+        for r in &self.bf_ranges {
+            if code >= r.first && code <= r.last {
+                return Some(r.unicode.saturating_add(code.saturating_sub(r.first)));
             }
         }
         None
@@ -144,13 +178,51 @@ pub fn parse_cmap(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Option<CMap>> 
             Token::Raw(b"beginnotdefrange") => {
                 collect_triples(&mut tok, &mut cmap.notdef_ranges)?;
             }
+            Token::Raw(b"beginbfchar") => {
+                while let Some(Token::Number(start)) = tok.next() {
+                    let Some(Token::Number(uni)) = tok.next() else {
+                        return Ok(None);
+                    };
+                    cmap.bf_chars.push((num_to_u32(start), num_to_u32(uni)));
+                }
+            }
+            Token::Raw(b"beginbfrange") => {
+                collect_bfrange(&mut tok, &mut cmap.bf_ranges)?;
+            }
             _ => {}
         }
     }
-    if cmap.cid_ranges.is_empty() && cmap.cid_chars.is_empty() {
-        return Ok(None); // no mapping: not a CID CMap
+    if cmap.cid_ranges.is_empty()
+        && cmap.cid_chars.is_empty()
+        && cmap.bf_chars.is_empty()
+        && cmap.bf_ranges.is_empty()
+    {
+        return Ok(None); // no mapping: not a CMap
     }
     Ok(Some(cmap))
+}
+
+/// Collect `start end unicode` triples until `endbfrange`.
+///
+/// The explicit-destination array form (`<start> <end> [u1 u2 ...]`) is
+/// skipped; a `/ToUnicode` with that form falls back to `None` for the codes.
+fn collect_bfrange(tok: &mut Tokenizer<'_>, out: &mut Vec<BfRange>) -> Result<()> {
+    loop {
+        let Some(Token::Number(start)) = tok.next() else {
+            return Ok(()); // endbfrange or end of stream
+        };
+        let Some(Token::Number(last)) = tok.next() else {
+            return Ok(());
+        };
+        let Some(Token::Number(uni)) = tok.next() else {
+            return Ok(());
+        };
+        out.push(BfRange {
+            first: num_to_u32(start),
+            last: num_to_u32(last),
+            unicode: num_to_u32(uni),
+        });
+    }
 }
 
 /// Collect `start end cid` triples until `endcidrange`.
