@@ -777,7 +777,9 @@ name = "selis-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "selis-geom",
  "selis-io",
+ "selis-pdf-engine",
  "selis-sandbox",
 ]
 
