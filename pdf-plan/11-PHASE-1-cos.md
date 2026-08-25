@@ -231,7 +231,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     2 GB `/Length`, 10 000-deep array nesting, a Flate bomb, a name with a 100 MB escape sequence.
   - **DoD:** Each terminates with `BudgetExceeded` in bounded memory and bounded time. **These
     files go in the corpus permanently** — they are the regression suite for the sandbox.
-- [ ] **SL-1.ROB.04 — Memory-ceiling test on the huge corpus** · owner: AI
+- [x] **SL-1.ROB.04 — Memory-ceiling test on the huge corpus** · owner: AI
   - **Do:** Prove peak RSS stays under the viewer profile on 500 MB+ documents.
 - [x] **SL-1.ROB.05 — Malformation catalogue** · deps: COS.11 · owner: AI+
   - **Do:** Finish `docs/specs/MALFORMATIONS.md`: every real-world deviation encountered, how we
