@@ -31,9 +31,10 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     renders as boxes" bugs, and the rules are genuinely ambiguous in places. Document every
     decision with a spec citation or an observed-behaviour note.
 
-- [ ] **SL-3.FONT.03 — Embedded TrueType/OpenType** · deps: FONT.01 · owner: AI+
+- [x] **SL-3.FONT.03 — Embedded TrueType/OpenType** · deps: FONT.01 · owner: AI+
   - **Do:** `ttf-parser` for tables; glyph outlines including composite glyphs; broken-font
     tolerance (bad `loca`, missing `hmtx`, wrong `numGlyphs`).
+  - **Note:** Tables via `skrifa` (ttf-parser unmaintained, see SL-3.FONT.01).
 - [ ] **SL-3.FONT.04 — Embedded CFF / Type1C** · deps: FONT.01 · owner: AI+
   - **Do:** CFF charstrings (Type 2), subrs, hintmask handling, seac, and CID-keyed CFF with FDSelect.
 - [ ] **SL-3.FONT.05 — Embedded Type1 (PFB/PFA)** · deps: FONT.04 · owner: AI+
