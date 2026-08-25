@@ -159,7 +159,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **DoD:** Round-trip encrypt→decrypt; interop test — a file we encrypt opens in PDFium and
     Acrobat, and files they encrypt open in ours.
 - [ ] **SL-1.ENC.03 — Public-key (PKCS#7) handler, read-only** · deps: ENC.02 · owner: HUMAN
-- [ ] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
+- [x] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
   - **Do:** Surface `/P` bits honestly. We honour them by default and expose an explicit,
     logged override for the owner-password case. Do not pretend the bits are security.
   - **DoD:** Documented behaviour; UI copy reviewed; the override is recorded in the oplog.
