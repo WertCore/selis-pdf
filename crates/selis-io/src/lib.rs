@@ -22,6 +22,7 @@
 
 mod fault;
 mod file;
+mod file_sink;
 mod http;
 mod mem;
 mod range_set;
@@ -29,6 +30,7 @@ mod sink;
 
 pub use fault::{FaultConfig, FaultSource};
 pub use file::FileSource;
+pub use file_sink::FileSink;
 pub use http::{FetchFn, HttpRangeSource};
 pub use mem::MemSource;
 pub use range_set::RangeSet;
