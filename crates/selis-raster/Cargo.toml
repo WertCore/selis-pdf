@@ -1,0 +1,27 @@
+[package]
+name = "selis-raster"
+description = "The rasteriser Backend abstraction (ADR-P0008) and implementations of the Selis PDF engine."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-geom = { workspace = true }
+selis-color = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-error = { workspace = true }
+tiny-skia = { version = "0.11", optional = true }
+
+[features]
+# The tiny-skia backend (default). Disable for WASM-first builds.
+tiny-skia = ["dep:tiny-skia"]
+default = ["tiny-skia"]
+
+[dev-dependencies]
+proptest = { workspace = true }

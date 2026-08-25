@@ -102,7 +102,7 @@ every user on every page.
 
 ## 2.RAST — The rasteriser
 
-- [ ] **SL-2.RAST.01 — `raster::Backend` trait + `tiny-skia` implementation** · owner: AI+
+- [x] **SL-2.RAST.01 — `raster::Backend` trait + `tiny-skia` implementation** · owner: AI+
   - **Do:** The abstraction of ADR-P0008: fill path, stroke path, draw image, push/pop layer,
     set clip, set blend. `tiny-skia` behind it. Deliberately narrow so a replacement is contained.
   - **DoD:** Backend contract documented; a `RecordingBackend` for tests that asserts the call
