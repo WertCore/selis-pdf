@@ -138,7 +138,7 @@ every user on every page.
   - **Do:** Image XObjects, image masks (`/ImageMask`), `/SMask`, `/Mask` (both stencil and colour-key),
     `/Decode` arrays, interpolation, and correct sampling at extreme downscales and upscales.
   - **DoD:** Corpus `images`; a 20 000×20 000 image at 1% scale does not allocate the full bitmap.
-- [ ] **SL-2.RAST.09 — Anti-aliasing policy + determinism** · deps: RAST.02 · owner: AI+
+- [x] **SL-2.RAST.09 — Anti-aliasing policy + determinism** · deps: RAST.02 · owner: AI+
   - **Do:** Fix the AA approach and prove `01-ARCHITECTURE.md` determinism: same bytes twice, and
     across x86-64 Linux, arm64 macOS, and WASM.
   - **DoD:** The `cross-platform-determinism` CI job goes green here. Any SIMD path must prove
