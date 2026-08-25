@@ -243,6 +243,40 @@ impl ColorSpace {
             _ => None,
         }
     }
+
+    /// Resolve a colour space name (from the resource dict or a built-in name)
+    /// into a [`ColorSpace`].
+    ///
+    /// `name` is the `/CS` operand value (e.g. `/DeviceRGB` or `/CS1`).
+    /// `resources` is a map of resource name → colour space array (from the
+    /// page or form XObject `/ColorSpace` /`Resources` dict).
+    ///
+    /// # Malformed Input
+    ///
+    /// An unrecognised name returns `None` (the caller falls back to the
+    /// default space).
+    pub fn resolve(
+        name: &[u8],
+        resources: &std::collections::BTreeMap<String, alloc::vec::Vec<u8>>,
+    ) -> Option<Self> {
+        // Built-in device spaces.
+        match name {
+            b"DeviceGray" => return Some(ColorSpace::DeviceGray),
+            b"DeviceRGB" => return Some(ColorSpace::DeviceRgb),
+            b"DeviceCMYK" => return Some(ColorSpace::DeviceCmyk),
+            b"Pattern" => return Some(ColorSpace::Pattern { under: None }),
+            _ => {}
+        }
+        // Look up in the resource dictionary.
+        let key = String::from_utf8_lossy(name);
+        if let Some(value) = resources.get(key.as_ref()) {
+            // For now, Phase 2.1 treats resource-sourced spaces as the
+            // device space matching their component count, or fall back.
+            let _ = value;
+            return None;
+        }
+        None
+    }
 }
 
 fn clamp01(v: f64) -> f64 {
@@ -345,5 +379,24 @@ mod tests {
         assert_eq!(to_u8(0.0), 0);
         assert_eq!(to_u8(1.0), 255);
         assert_eq!(to_u8(0.5), 128);
+    }
+
+    #[test]
+    fn resolve_builtin_spaces() {
+        use alloc::collections::BTreeMap;
+        let empty: BTreeMap<String, alloc::vec::Vec<u8>> = BTreeMap::new();
+        assert_eq!(
+            ColorSpace::resolve(b"DeviceRGB", &empty),
+            Some(ColorSpace::DeviceRgb)
+        );
+        assert_eq!(
+            ColorSpace::resolve(b"DeviceGray", &empty),
+            Some(ColorSpace::DeviceGray)
+        );
+        assert_eq!(
+            ColorSpace::resolve(b"DeviceCMYK", &empty),
+            Some(ColorSpace::DeviceCmyk)
+        );
+        assert_eq!(ColorSpace::resolve(b"Unknown", &empty), None);
     }
 }

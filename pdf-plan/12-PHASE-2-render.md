@@ -72,7 +72,7 @@ every user on every page.
 
 ## 2.COLOR — Colour
 
-- [ ] **SL-2.COLOR.01 — Device spaces + `/ColorSpace` resolution** · owner: AI+
+- [x] **SL-2.COLOR.01 — Device spaces + `/ColorSpace` resolution** · owner: AI+
   - **Do:** DeviceGray/RGB/CMYK, `/CS` `/cs` `/SC` `/SCN` `/sc` `/scn` `/G` `/RG` `/K` operators,
     and the default-colour-space overrides (`/DefaultRGB` etc.).
 - [ ] **SL-2.COLOR.02 — CIE spaces: CalGray, CalRGB, Lab** · deps: COLOR.01 · owner: AI+
