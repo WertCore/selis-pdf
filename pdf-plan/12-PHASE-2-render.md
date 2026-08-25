@@ -114,7 +114,7 @@ every user on every page.
 - [x] **SL-2.RAST.03 — Clipping, including text clip modes** · deps: RAST.02 · owner: AI+
   - **Do:** Intersecting clip paths, and text render modes 4–7 which add glyphs to the clip path.
   - **DoD:** Corpus `clip-text`; nested clip depth budgeted.
-- [ ] **SL-2.RAST.04 — Transparency groups** · deps: RAST.03, COLOR.06 · owner: AI+
+- [x] **SL-2.RAST.04 — Transparency groups** · deps: RAST.03, COLOR.06 · owner: AI+
   - **Do:** Isolated/non-isolated, knockout/non-knockout, group colour space, and the correct
     compositing formula. This is the hardest correctness problem in PDF rendering.
   - **DoD:** The generated transparency matrix (isolated × knockout × blend × alpha) matches PDFium
