@@ -17,10 +17,12 @@ pub mod tiny_skia;
 
 pub mod aa;
 pub mod clip;
+pub mod image;
 pub mod render;
 
 pub use aa::{renders_match, stable_hash, AaPolicy, Determinism, DeterminismProof};
 pub use clip::ClipStack;
+pub use image::{decode_image, decode_image_scaled, draw, Decode, DecodedImage};
 pub use render::{apply_ctm, fill, stroke, to_backend_stroke, StrokeSpec};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;

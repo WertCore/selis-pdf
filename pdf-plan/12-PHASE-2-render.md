@@ -134,7 +134,7 @@ every user on every page.
     to the *default* page space (not the current CTM — a common bug), and a bounded tile cache.
   - **DoD:** Corpus `patterns`; a pattern with a tiny XStep hits the pixel budget rather than
     rendering for an hour.
-- [ ] **SL-2.RAST.08 — Image drawing** · deps: RAST.02, SL-1.FILT.05 · owner: AI+
+- [x] **SL-2.RAST.08 — Image drawing** · deps: RAST.02, SL-1.FILT.05 · owner: AI+
   - **Do:** Image XObjects, image masks (`/ImageMask`), `/SMask`, `/Mask` (both stencil and colour-key),
     `/Decode` arrays, interpolation, and correct sampling at extreme downscales and upscales.
   - **DoD:** Corpus `images`; a 20 000×20 000 image at 1% scale does not allocate the full bitmap.
