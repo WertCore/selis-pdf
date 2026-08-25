@@ -181,7 +181,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 - [ ] **SL-1.DOC.04 — Optional content (OCG/OCMD)** · deps: DOC.01 · owner: AI
   - **Do:** The OC model and visibility evaluation, including usage-application dictionaries.
     Needed early because it affects both rendering and redaction correctness.
-- [ ] **SL-1.DOC.05 — Metadata: Info dictionary + XMP** · deps: DOC.01 · owner: AI
+- [x] **SL-1.DOC.05 — Metadata: Info dictionary + XMP** · deps: DOC.01 · owner: AI
   - **Do:** Read both, reconcile conflicts, and expose which one won. XMP parsing is budget-bounded
     XML — treat it as hostile input (billion-laughs, external entities: **disabled**).
   - **DoD:** An XXE/entity-expansion test suite passes; no network fetch is ever attempted.

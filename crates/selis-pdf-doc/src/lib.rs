@@ -9,7 +9,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod doc;
+mod metadata;
 mod resolve;
 
 pub use doc::{Document, Page};
+pub use metadata::{FieldValue, Metadata};
 pub use resolve::Resolver;

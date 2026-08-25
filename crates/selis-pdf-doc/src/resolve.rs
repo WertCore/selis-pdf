@@ -48,11 +48,7 @@ impl<'a> Resolver<'a> {
     /// `OBJ_UNEXPECTED` for unresolvable or non-object offsets.
     pub fn resolve(&mut self, r: Ref, g: &mut BudgetGuard<'_>) -> Result<Obj> {
         if !self.visited.insert(r.num) {
-            return Err(err!(
-                Code::ObjCycle,
-                during = "doc-resolve",
-                object = r.num
-            ));
+            return Err(err!(Code::ObjCycle, during = "doc-resolve", object = r.num));
         }
         g.enter()?;
         self.depth = self.depth.saturating_add(1);
