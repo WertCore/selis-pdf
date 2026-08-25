@@ -1,8 +1,11 @@
 ﻿[package]
 name = "selis-pdf-cos"
+description = "The COS object layer of the Selis PDF engine: lexer, object model, xref, revisions. Apache-2.0 (ADR-P0030)."
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# ADR-P0030: the parser crates publish under Apache-2.0; the rest of the
+# workspace stays proprietary (LicenseRef-Selis-Proprietary).
+license = "Apache-2.0"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

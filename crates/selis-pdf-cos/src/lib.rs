@@ -7,6 +7,13 @@
 //!
 //! **Phase 1 writes no pixels.** It builds the object layer and, more
 //! importantly, establishes that the engine can survive the real world's PDFs.
+//!
+//! # API stability (SL-1.OSS.01)
+//!
+//! This crate publishes under Apache-2.0 (ADR-P0030). The public API is **not
+//! yet stable**: between 0.1.x releases names, signatures, and semantics may
+//! change as Phase 1 matures, and breaking changes are called out in the
+//! changelog. At 1.0 the API is frozen under semver.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
