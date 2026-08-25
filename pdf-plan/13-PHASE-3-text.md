@@ -107,7 +107,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     maintained fontations shaping engine), behind the same `Shaper` trait in the `selis-shape`
     L2 crate. `check-layers` enforces no edge from `selis-pdf-content` to `selis-shape`, keeping
     swash out of the replay path.
-- [ ] **SL-3.SHAPE.02 — Bidi and RTL** · deps: SHAPE.01 · owner: AI+
+- [x] **SL-3.SHAPE.02 — Bidi and RTL** · deps: SHAPE.01 · owner: AI+
   - **Do:** UAX #9 via `unicode-bidi`, paragraph direction detection, and mirroring.
   - **DoD:** Corpus `rtl` (Arabic, Hebrew) renders and extracts in correct logical order.
 - [ ] **SL-3.SHAPE.03 — Line breaking and justification** · deps: SHAPE.02 · owner: AI+

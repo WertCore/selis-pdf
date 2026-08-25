@@ -16,6 +16,13 @@ use selis_error::{err, Code, Result};
 use swash::shape::ShapeContext;
 use swash::FontRef;
 
+pub mod bidi;
+
+pub use bidi::{
+    bidi_levels, mirrored_glyph, paragraph_direction, reorder_text, visual_runs, BaseDirection,
+    VisualRun,
+};
+
 /// A single positioned glyph, in font-size units (points).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PositionedGlyph {
