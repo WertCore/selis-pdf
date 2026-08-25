@@ -386,6 +386,18 @@ retryable = false
 doc_state = "NotLoaded"
 
 # ---------------------------------------------------------------------------
+# 2000–2299 — Fonts and text
+# ---------------------------------------------------------------------------
+[[code]]
+id = 2000
+name = "SHAPE_FONT"
+kind = "Malformed"
+meaning = "A shaping run referenced a font program that could not be parsed."
+user_msg = "This PDF's text cannot be shaped because its font data is damaged."
+retryable = false
+doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
 # 2300–2599 — Content and rendering
 # ---------------------------------------------------------------------------
 [[code]]

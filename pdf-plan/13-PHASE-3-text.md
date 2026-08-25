@@ -98,11 +98,15 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 
 ## 3.SHAPE — Shaping and layout (for authored and reflowed text)
 
-- [ ] **SL-3.SHAPE.01 — `Shaper` trait + `rustybuzz` backend** · owner: AI+
+- [x] **SL-3.SHAPE.01 — `Shaper` trait + `rustybuzz` backend** · owner: AI+
   - **Do:** Script itemisation, feature application, cluster mapping. Used for new/edited text
     only — existing content is replayed by glyph id, never re-shaped.
   - **DoD:** The trait boundary keeps `rustybuzz` out of the replay path entirely (checked by
     `check-layers`).
+  - **Note:** `rustybuzz` declared unmaintained (RUSTSEC-2026-0206) — replaced with `swash` (the
+    maintained fontations shaping engine), behind the same `Shaper` trait in the `selis-shape`
+    L2 crate. `check-layers` enforces no edge from `selis-pdf-content` to `selis-shape`, keeping
+    swash out of the replay path.
 - [ ] **SL-3.SHAPE.02 — Bidi and RTL** · deps: SHAPE.01 · owner: AI+
   - **Do:** UAX #9 via `unicode-bidi`, paragraph direction detection, and mirroring.
   - **DoD:** Corpus `rtl` (Arabic, Hebrew) renders and extracts in correct logical order.

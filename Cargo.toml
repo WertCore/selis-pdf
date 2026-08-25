@@ -33,7 +33,16 @@ zune-jpeg   = "0.4"
 # The plan's original choice, ttf-parser, was declared unmaintained
 # (RUSTSEC-2026-0192) — denied by the supply-chain gate (ADR-P0021); skrifa is
 # its maintained successor ecosystem.
-skrifa = "0.46"
+skrifa = "0.44"
+
+# Shaping (Phase 3, SL-3.SHAPE.01) — swash (MIT OR Apache-2.0, the fontations
+# shaping engine) is the maintained replacement for the plan's original
+# rustybuzz (declared unmaintained — RUSTSEC-2026-0206, denied by the
+# supply-chain gate).  unicode-script (MIT OR Apache-2.0) drives script
+# itemisation. Both stay behind the selis-shape Shapertrait so the replay
+# path never depends on them.
+swash = "0.2"
+unicode-script = "0.5"
 
 # Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
 aes         = "0.8"
@@ -67,6 +76,7 @@ selis-pdf-optimize = { path = "crates/selis-pdf-optimize", version = "0.1.0" }
 selis-image        = { path = "crates/selis-image", version = "0.1.0" }
 selis-raster       = { path = "crates/selis-raster", version = "0.1.0" }
 selis-font         = { path = "crates/selis-font", version = "0.1.0" }
+selis-shape        = { path = "crates/selis-shape", version = "0.1.0" }
 # L3
 selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0" }
 selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
@@ -104,3 +114,4 @@ lto   = "thin"
 
 [profile.bench]
 lto = "thin"
+

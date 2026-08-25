@@ -1,0 +1,18 @@
+[package]
+name = "selis-shape"
+description = "Text shaping: script itemisation, shaping via rustybuzz, line breaking, justification. L2, open-sourced under Apache-2.0 (ADR-P0030)."
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-sandbox = { workspace = true }
+swash = { workspace = true }
+unicode-script = { workspace = true }

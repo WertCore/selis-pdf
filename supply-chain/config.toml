@@ -309,7 +309,7 @@ version = "1.13.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.read-fonts]]
-version = "0.43.2"
+version = "0.41.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.regex]]
@@ -365,7 +365,7 @@ version = "0.3.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.skrifa]]
-version = "0.46.2"
+version = "0.44.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.slab]]
@@ -378,6 +378,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.strsim]]
 version = "0.11.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.swash]]
+version = "0.2.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.syn]]
@@ -422,6 +426,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]
 version = "1.0.24"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-script]]
+version = "0.5.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.wait-timeout]]
@@ -471,6 +479,14 @@ criteria = "safe-to-deploy"
 [[exemptions.wit-bindgen]]
 version = "0.57.1"
 criteria = "safe-to-run"
+
+[[exemptions.yazi]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.zeno]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
 
 [[exemptions.zerocopy]]
 version = "0.8.56"
