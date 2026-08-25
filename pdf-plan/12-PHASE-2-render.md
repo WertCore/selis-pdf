@@ -83,7 +83,7 @@ every user on every page.
 - [ ] **SL-2.COLOR.04 — Indexed, Separation, DeviceN + tint transforms** · deps: COLOR.03 · owner: AI+
   - **Do:** Requires PDF functions (FUNC.01) for the tint transform. Handle `/All` and `/None`
     separations correctly — `/None` paints nothing, which is a correctness trap.
-- [ ] **SL-2.COLOR.05 — PDF functions types 0, 2, 3, 4** · owner: AI+
+- [x] **SL-2.COLOR.05 — PDF functions types 0, 2, 3, 4** · owner: AI+
   - **Do:** Sampled (type 0, with all interpolation orders), exponential (2), stitching (3), and
     the **PostScript calculator (type 4)** — a small stack language that must be budget-bounded
     and cannot be allowed to loop.

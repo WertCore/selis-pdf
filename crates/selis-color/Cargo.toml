@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 selis-geom = { workspace = true }
+selis-error = { workspace = true }

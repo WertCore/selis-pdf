@@ -155,6 +155,14 @@ points (Point) and gamut bounds (Rect). Geom is a leaf L0 crate with no reverse
 dependency."""
 
 [[edge]]
+from = "selis-color"
+to = "selis-error"
+why = """
+PDF functions (SL-2.COLOR.05) return typed errors (FUNCTION_INPUT_COUNT,
+FUNCTION_BUDGET) from the shared registry; the error crate is a leaf L0 with
+no reverse dependency."""
+
+[[edge]]
 from = "selis-image"
 to = "selis-pdf-filter"
 why = """

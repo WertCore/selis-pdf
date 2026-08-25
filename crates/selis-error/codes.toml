@@ -302,6 +302,24 @@ retryable = false
 doc_state = "Loaded"
 
 [[code]]
+id = 1560
+name = "FUNCTION_INPUT_COUNT"
+kind = "Invalid"
+meaning = "A PDF function was evaluated with the wrong number of input components."
+user_msg = "A colour function in this PDF received the wrong inputs."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
+id = 1561
+name = "FUNCTION_BUDGET"
+kind = "Budget"
+meaning = "A PDF function exceeded its evaluation budget (a type-4 calculator loop or stack overflow)."
+user_msg = "A colour function in this PDF used too much computation."
+retryable = false
+doc_state = "PartiallyLoaded"
+
+[[code]]
 id = 1551
 name = "IMAGE_MALFORMED"
 kind = "Malformed"
