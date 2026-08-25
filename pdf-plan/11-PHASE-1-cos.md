@@ -74,7 +74,7 @@ that we can survive the real world's PDFs. A renderer on top of a fragile parser
   - **Note:** This task is why the web product feels fast. It is also the task most likely to be
     skipped "for now" and then be a rewrite. Do it in Phase 1.
 
-- [ ] **SL-1.COS.08 — Linearisation parsing** · deps: COS.07 · owner: AI
+- [x] **SL-1.COS.08 — Linearisation parsing** · deps: COS.07 · owner: AI
   - **Do:** Detect and use the linearisation dictionary and hint streams for first-page-first
     loading. Validate rather than trust — a lying hint stream must degrade, not corrupt.
   - **DoD:** Linearised corpus opens page 1 with a measured byte count under 5% of the file.
