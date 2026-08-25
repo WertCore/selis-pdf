@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod attachments;
 mod doc;
 mod doc_extra;
 mod metadata;
@@ -15,6 +16,7 @@ mod oc;
 mod resolve;
 mod tree;
 
+pub use attachments::{embedded_files, Attachment};
 pub use doc::{Document, Page};
 pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};
 pub use metadata::{FieldValue, Metadata};

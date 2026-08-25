@@ -191,7 +191,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     Phase 9 bolt-on.
   - **DoD:** Corpus `tagged` produces a structure tree matching the file's declared hierarchy;
     exposed via `inspect --json`.
-- [ ] **SL-1.DOC.07 — Embedded files + attachments (inventory only)** · deps: DOC.01 · owner: AI
+- [x] **SL-1.DOC.07 — Embedded files + attachments (inventory only)** · deps: DOC.01 · owner: AI
   - **Do:** Enumerate without extracting; extraction is gated by policy (ADR-P0020).
 - [ ] **SL-1.DOC.09 — Conformance rule registry + the Phase-1-checkable subset** · deps: DOC.05, DOC.06 · owner: AI+
   - **Do:** Implement the registry of `20-CONFORMANCE-PROGRAM.md §4a`. Each rule declares the
