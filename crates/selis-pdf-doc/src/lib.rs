@@ -11,7 +11,11 @@
 mod doc;
 mod metadata;
 mod resolve;
+mod tree;
 
 pub use doc::{Document, Page};
 pub use metadata::{FieldValue, Metadata};
 pub use resolve::Resolver;
+pub use tree::{
+    parse_destination, walk_name_tree, walk_number_tree, Destination, NameTree, NumberTree,
+};

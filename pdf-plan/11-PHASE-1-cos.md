@@ -177,7 +177,7 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     malformed graph.
   - **DoD:** Page count matches qpdf on 100% of the clean corpus; a cyclic page tree terminates.
 - [x] **SL-1.DOC.02 — Cycle-safe resolution with a visited set** · deps: DOC.01 · owner: AI+
-- [ ] **SL-1.DOC.03 — Name trees, number trees, destinations, outlines** · deps: DOC.01 · owner: AI
+- [x] **SL-1.DOC.03 — Name trees, number trees, destinations, outlines** · deps: DOC.01 · owner: AI
 - [ ] **SL-1.DOC.04 — Optional content (OCG/OCMD)** · deps: DOC.01 · owner: AI
   - **Do:** The OC model and visibility evaluation, including usage-application dictionaries.
     Needed early because it affects both rendering and redaction correctness.
