@@ -107,7 +107,7 @@ every user on every page.
     set clip, set blend. `tiny-skia` behind it. Deliberately narrow so a replacement is contained.
   - **DoD:** Backend contract documented; a `RecordingBackend` for tests that asserts the call
     sequence rather than pixels.
-- [ ] **SL-2.RAST.02 — Fill and stroke with PDF semantics** · deps: RAST.01 · owner: AI+
+- [x] **SL-2.RAST.02 — Fill and stroke with PDF semantics** · deps: RAST.01 · owner: AI+
   - **Do:** Nonzero and even-odd winding, PDF's stroke geometry (including the zero-width line =
     thinnest-renderable rule, and dash-phase semantics), and miter-limit behaviour.
   - **DoD:** Corpus `strokes`; zero-width and hairline cases match PDFium at 72/150/300 DPI.

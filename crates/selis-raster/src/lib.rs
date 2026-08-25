@@ -15,6 +15,9 @@ use selis_geom::Rect;
 #[cfg(feature = "tiny-skia")]
 pub mod tiny_skia;
 
+pub mod render;
+
+pub use render::{apply_ctm, fill, stroke, to_backend_stroke, StrokeSpec};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;
 
@@ -97,7 +100,7 @@ pub trait Backend {
 }
 
 /// Stroke parameters (PDF §8.4.3).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     /// The line width.
     pub width: f64,
@@ -108,7 +111,7 @@ pub struct Stroke {
     /// The miter limit.
     pub miter_limit: f64,
     /// The dash pattern: `(array, phase)`.
-    pub dash: (&'static [f64], f64),
+    pub dash: (Vec<f64>, f64),
 }
 
 impl Default for Stroke {
@@ -118,7 +121,7 @@ impl Default for Stroke {
             cap: 0,
             join: 0,
             miter_limit: 10.0,
-            dash: (&[], 0.0),
+            dash: (Vec::new(), 0.0),
         }
     }
 }
@@ -185,7 +188,7 @@ impl Backend for RecordingBackend {
 
     fn stroke(&mut self, _path: &Path, paint: &Paint, stroke: &Stroke) {
         self.calls.push(Call::Stroke {
-            stroke: *stroke,
+            stroke: stroke.clone(),
             colour: paint.colour,
         });
     }
