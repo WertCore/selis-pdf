@@ -1,2 +1,12 @@
-//! Placeholder for `selis-pdf-engine`; replaced during implementation.
+//! The Selis PDF engine (SL-2.PERF.01, ADR-P0025).
+//!
+//! The single crate every shell asks for pages, display lists, and tiles.
+//! The engine owns the caches (memory-budgeted LRU keyed by page/matrix/
+//! params/revision, exact invalidation on edit) so no shell reimplements them.
+
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
+
+pub mod cache;
+
+pub use cache::{matrix_id, CacheKey, LruCache};

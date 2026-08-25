@@ -28,15 +28,16 @@ pub enum RenderIntent {
 }
 
 impl RenderIntent {
-    /// From the numeric PDF rendering-intent value (0–3); anything else is
-    /// treated as relative colorimetric, the spec default.
+    /// From the numeric PDF rendering-intent value (0–3); anything else —
+    /// negative, fractional-floor, NaN, or out of range — is treated as
+    /// relative colorimetric, the spec default.
     #[must_use]
     pub fn from_number(n: f64) -> Self {
-        // Clamped into range before narrowing; exact for 0..=3. NaN clamps to
-        // the default.
-        let v = n.clamp(0.0, 3.0);
+        // Narrow toward zero; out-of-range and NaN saturate to values outside
+        // 0..=3 and fall through to the default.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        match v as u8 {
+        let v = n as u8;
+        match v {
             1 => RenderIntent::AbsoluteColorimetric,
             2 => RenderIntent::Saturation,
             3 => RenderIntent::Perceptual,

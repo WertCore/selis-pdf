@@ -14,7 +14,13 @@ workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
+selis-geom = { workspace = true }
+selis-pdf-engine = { workspace = true }
 
 [[bench]]
 name = "budget"
+harness = false
+
+[[bench]]
+name = "cache"
 harness = false

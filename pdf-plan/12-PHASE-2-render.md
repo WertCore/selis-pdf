@@ -164,7 +164,7 @@ every user on every page.
 
 ## 2.PERF — Performance work
 
-- [ ] **SL-2.PERF.01 — Display-list and tile caching in `selis-pdf-engine`** · deps: CONT.07 · owner: AI+
+- [x] **SL-2.PERF.01 — Display-list and tile caching in `selis-pdf-engine`** · deps: CONT.07 · owner: AI+
   - **Do:** ADR-P0025: LRU under a memory budget, keyed by (page, matrix, params, revision).
     Invalidation on edit is exact, not "clear everything".
   - **DoD:** Cache-hit benchmark; a mutation invalidates only affected entries.
