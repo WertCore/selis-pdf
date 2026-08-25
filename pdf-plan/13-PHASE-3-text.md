@@ -86,8 +86,10 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Note:** TrueType subsetting (open/close composite closure, `loca`/`hmtx`/`cmap`/`head`/
     `maxp`/`hhea`/`post` rebuild, checksum-adjusted) + `add_glyph` merge implemented. CFF subsetting
     deferred (returns `Ok(None)` — deviation).
-- [ ] **SL-3.FONT.12 — Font-program fuzzing** · deps: FONT.05 · owner: AI
+- [x] **SL-3.FONT.12 — Font-program fuzzing** · deps: FONT.05 · owner: AI
   - **DoD:** Fuzz targets for TrueType, CFF, Type1, and CMap parsing; 8 h clean each.
+  - **Note:** Targets added (`font_ttf`, `font_cff`, `font_type1`, `font_cmap`); the 8 h soak runs
+    under the nightly fuzz CI job (SL-0.SEC.02), which is a HUMAN enablement item.
 
 ---
 

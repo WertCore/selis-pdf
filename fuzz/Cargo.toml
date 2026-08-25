@@ -14,6 +14,8 @@ publish = false
 libfuzzer-sys = "0.4"
 selis-sandbox = { path = "../crates/selis-sandbox" }
 selis-pdf-cos = { path = "../crates/selis-pdf-cos" }
+selis-bytes = { path = "../crates/selis-bytes" }
+selis-font = { path = "../crates/selis-font" }
 
 [[bin]]
 name = "cos_parse"
@@ -25,6 +27,34 @@ bench = false
 [[bin]]
 name = "cos_lex"
 path = "fuzz_targets/cos_lex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font_ttf"
+path = "fuzz_targets/font_ttf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font_cff"
+path = "fuzz_targets/font_cff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font_type1"
+path = "fuzz_targets/font_type1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font_cmap"
+path = "fuzz_targets/font_cmap.rs"
 test = false
 doc = false
 bench = false
