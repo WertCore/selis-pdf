@@ -973,6 +973,7 @@ dependencies = [
 name = "selis-pdf-engine"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "selis-bytes",
  "selis-color",
  "selis-error",

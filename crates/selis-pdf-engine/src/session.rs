@@ -183,6 +183,32 @@ fn fill_page_backdrop(backend: &mut TinySkiaBackend) {
     let _ = selis_raster::render::fill(backend, &path, FillRule::NonZero, &paint);
 }
 
+/// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
+fn dim_ceil(v: f64) -> u32 {
+    let v = v.ceil();
+    if v <= 0.0 {
+        0
+    } else if v >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        // The value is bounded to [0, u32::MAX], so the narrowing is exact.
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        {
+            v as u32
+        }
+    }
+}
+
+/// A value in [0, 1] as an 8-bit byte (clamped before the narrowing).
+fn f64_to_u8(v: f64) -> u8 {
+    let v = v.clamp(0.0, 1.0) * 255.0;
+    // The value is bounded to [0, 255], so the narrowing is exact.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    {
+        v as u8
+    }
+}
+
 /// The embedded font program bytes for a font resource name.
 fn font_data_inner(
     resolver: &mut Resolver<'_>,
@@ -407,15 +433,59 @@ fn parse_font_dict(
     fd
 }
 
-/// Unfilter stream data given its dictionary.
+/// Unfilter a stream's data through its `/Filter` chain (Name or array) with
+/// `/DecodeParms` (predictors). Falls back to the raw data on any decode
+/// failure so a hostile stream never aborts the page.
 fn unfilter_stream_data(dict: &[(Bytes, Obj)], data: &[u8], g: &mut BudgetGuard<'_>) -> Vec<u8> {
-    if let Some(Obj::Name(n)) = dict_get_obj(dict, b"Filter") {
-        let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
-        if let Ok(decoded) = selis_pdf_filter::decode(filt, data, u64::MAX, g) {
-            return decoded;
-        }
+    let filters: Vec<String> = match dict_get_obj(dict, b"Filter") {
+        Some(Obj::Name(n)) => vec![String::from_utf8_lossy(n.as_slice()).to_string()],
+        Some(Obj::Array(arr)) => arr
+            .iter()
+            .filter_map(|o| match o {
+                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => return data.to_vec(),
+    };
+    if filters.is_empty() {
+        return data.to_vec();
     }
-    data.to_vec()
+    let parms = decode_parms_from_obj(dict_get_obj(dict, b"DecodeParms"));
+    selis_pdf_filter::decode_chain(&filters, &parms, data, u64::MAX, g)
+        .unwrap_or_else(|_| data.to_vec())
+}
+
+/// Parse `/DecodeParms` (a dict, or an array aligned with the filter chain)
+/// into per-filter parameters.
+fn decode_parms_from_obj(obj: Option<&Obj>) -> Vec<selis_pdf_filter::DecodeParms> {
+    let from_dict = |pairs: &[(Bytes, Obj)]| -> selis_pdf_filter::DecodeParms {
+        let mut p = selis_pdf_filter::DecodeParms::default();
+        let int = |key: &[u8]| -> Option<i64> {
+            dict_get_obj(pairs, key).and_then(|v| match v {
+                Obj::Int(n) => Some(*n),
+                _ => None,
+            })
+        };
+        p.predictor = int(b"Predictor").and_then(|n| u16::try_from(n).ok()).unwrap_or(1);
+        p.columns = int(b"Columns").and_then(|n| u32::try_from(n).ok()).unwrap_or(1);
+        p.colors = int(b"Colors").and_then(|n| u32::try_from(n).ok()).unwrap_or(1);
+        p.bits_per_component =
+            int(b"BitsPerComponent").and_then(|n| u32::try_from(n).ok()).unwrap_or(8);
+        p.early_change = int(b"EarlyChange").and_then(|n| u8::try_from(n).ok()).unwrap_or(0);
+        p
+    };
+    match obj {
+        Some(Obj::Dict(pairs)) => vec![from_dict(pairs)],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .map(|o| match o {
+                Obj::Dict(pairs) => from_dict(pairs),
+                _ => selis_pdf_filter::DecodeParms::default(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve an image XObject from the page's resources into decoded RGBA.
@@ -680,7 +750,10 @@ fn resolve_shading_inner(
         o => o.clone(),
     };
     let Obj::Dict(pairs) = &obj else { return None };
-    let shading_type = on(pairs, b"ShadingType")? as i64;
+    let shading_type = match dict_get_obj(pairs, b"ShadingType") {
+        Some(Obj::Int(n)) => *n,
+        _ => return None,
+    };
     let bbox = match o(pairs, b"BBox") {
         Some(Obj::Array(arr)) => arr_to_rect(arr)?,
         _ => Rect::new(0.0, 0.0, 1.0, 1.0),
@@ -711,8 +784,8 @@ fn resolve_shading_inner(
         max_y = max_y.max(p.y);
     }
     let dev_rect = Rect::new(min_x, min_y, max_x, max_y);
-    let w = (dev_rect.width().ceil() as u32).max(1);
-    let h = (dev_rect.height().ceil() as u32).max(1);
+    let w = dim_ceil(dev_rect.width()).max(1);
+    let h = dim_ceil(dev_rect.height()).max(1);
     // Parse /Function and /ColorSpace.
     let func = parse_shading_function(o(pairs, b"Function")?)?;
     let color_space = match o(pairs, b"ColorSpace") {
@@ -772,9 +845,9 @@ fn resolve_shading_inner(
                 _ => continue,
             };
             let rgb = components_to_rgb(&components, color_space);
-            let r = (rgb[0].clamp(0.0, 1.0) * 255.0) as u8;
-            let g = (rgb[1].clamp(0.0, 1.0) * 255.0) as u8;
-            let b = (rgb[2].clamp(0.0, 1.0) * 255.0) as u8;
+            let r = f64_to_u8(rgb[0]);
+            let g = f64_to_u8(rgb[1]);
+            let b = f64_to_u8(rgb[2]);
             rgba.push(r);
             rgba.push(g);
             rgba.push(b);
@@ -1072,5 +1145,55 @@ mod tests {
         // The form's red square fills the page: the centre pixel is red.
         let idx = (50 * 100 + 50) * 4;
         assert_eq!(&data[idx..idx + 3], &[255, 0, 0]);
+    }
+
+    /// A stream `/Filter` array decodes in reverse (the last-named filter was
+    /// applied first on encode): `ASCIIHex(Flate(orig))` → `orig`.
+    #[test]
+    fn unfilter_handles_filter_arrays_in_reverse() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let original = b"Hello filter chain!";
+        // Encode: ASCIIHex, then Flate.
+        let hex: Vec<u8> = original
+            .iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect();
+        let flated = miniz_oxide::deflate::compress_to_vec_zlib(&hex, 6);
+        let dict = vec![(
+            Bytes::copy_from_slice(b"Filter"),
+            Obj::Array(vec![
+                Obj::Name(Bytes::copy_from_slice(b"ASCIIHexDecode")),
+                Obj::Name(Bytes::copy_from_slice(b"FlateDecode")),
+            ]),
+        )];
+        let decoded = unfilter_stream_data(&dict, &flated, &mut g);
+        assert_eq!(decoded, original);
+    }
+
+    /// `/DecodeParms` (a dict) parses the predictor settings.
+    #[test]
+    fn decode_parms_parse_predictor() {
+        let pairs = vec![
+            (Bytes::copy_from_slice(b"Predictor"), Obj::Int(12)),
+            (Bytes::copy_from_slice(b"Columns"), Obj::Int(3)),
+            (Bytes::copy_from_slice(b"Colors"), Obj::Int(3)),
+            (Bytes::copy_from_slice(b"BitsPerComponent"), Obj::Int(8)),
+        ];
+        let obj = Obj::Dict(pairs);
+        let parms = decode_parms_from_obj(Some(&obj));
+        assert_eq!(parms.len(), 1);
+        assert_eq!(parms[0].predictor, 12);
+        assert_eq!(parms[0].columns, 3);
+        assert_eq!(parms[0].colors, 3);
+        assert_eq!(parms[0].bits_per_component, 8);
+        // An array aligns with the filter chain.
+        let arr = Obj::Array(vec![Obj::Dict(vec![(
+            Bytes::copy_from_slice(b"Predictor"),
+            Obj::Int(2),
+        )])]);
+        let parms = decode_parms_from_obj(Some(&arr));
+        assert_eq!(parms.len(), 1);
+        assert_eq!(parms[0].predictor, 2);
     }
 }

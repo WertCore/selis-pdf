@@ -29,3 +29,6 @@ selis-pdf-content = { workspace = true }
 selis-font = { workspace = true }
 selis-raster = { workspace = true }
 selis-color = { workspace = true }
+
+[dev-dependencies]
+miniz_oxide = { workspace = true }
