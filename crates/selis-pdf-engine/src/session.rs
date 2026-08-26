@@ -862,6 +862,55 @@ fn resolve_shading_inner(
                     Some((m.vertices, tris))
                 }
             }
+            6 | 7 => {
+                let data = mesh_data?;
+                let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
+                let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
+                let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
+                let decode: Vec<f64> = match o(pairs, b"Decode") {
+                    Some(Obj::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|v| match v {
+                            Obj::Int(n) => Some(*n as f64),
+                            Obj::Real { scaled, scale } => {
+                                Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let components = match color_space {
+                    b"DeviceGray" | b"G" => 1,
+                    b"DeviceCMYK" | b"CMYK" => 4,
+                    _ => 3,
+                };
+                let is_tensor = shading_type == 7;
+                let patches =
+                    parse_patch_shading(data, bpc, bpc_color, bpf, &decode, components, is_tensor)?;
+                // Tessellate each patch into a (grid+1)² mesh and connect the
+                // cells into triangle pairs.
+                let grid = 8usize;
+                let stride = grid.saturating_add(1);
+                let mut vertices = Vec::new();
+                let mut triangles = Vec::new();
+                for patch in &patches {
+                    let base = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
+                    vertices.extend(tessellate_patch(patch, is_tensor, grid));
+                    for j in 0..grid {
+                        for i in 0..grid {
+                            let v00 = base
+                                .saturating_add(u32::try_from(j.saturating_mul(stride).saturating_add(i)).unwrap_or(u32::MAX));
+                            let v01 = v00.saturating_add(1);
+                            let v10 = v00.saturating_add(u32::try_from(stride).unwrap_or(u32::MAX));
+                            let v11 = v10.saturating_add(1);
+                            triangles.push((v00, v01, v10));
+                            triangles.push((v10, v01, v11));
+                        }
+                    }
+                }
+                Some((vertices, triangles))
+            }
             _ => None,
         };
     let mut rgba = Vec::with_capacity(
@@ -900,7 +949,7 @@ fn resolve_shading_inner(
                     Some(c) => c,
                     None => continue,
                 },
-                4 | 5 => {
+                4 | 5 | 6 | 7 => {
                     // Find the triangle containing the point and interpolate
                     // the vertex colours (barycentric).
                     let Some((vertices, triangles)) = &mesh else { continue };
@@ -1231,6 +1280,197 @@ fn lattice_triangles(
     tris
 }
 
+/// The cubic Bernstein basis functions.
+fn bernstein(i: usize, t: f64) -> f64 {
+    match i {
+        0 => (1.0 - t).powi(3),
+        1 => 3.0 * (1.0 - t) * (1.0 - t) * t,
+        2 => 3.0 * (1.0 - t) * t * t,
+        3 => t * t * t,
+        _ => 0.0,
+    }
+}
+
+/// A cubic Bézier curve value at `t` for control vectors `a b c d`.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+fn bezier3(a: &[f64], b: &[f64], c: &[f64], d: &[f64], t: f64) -> Vec<f64> {
+    (0..a.len())
+        .map(|k| {
+            bernstein(0, t) * a[k] + bernstein(1, t) * b[k] + bernstein(2, t) * c[k] + bernstein(3, t) * d[k]
+        })
+        .collect()
+}
+
+/// A Coons patch surface value at `(u, v)` from its 12 control points
+/// (each a position+colour vector). The control-point count is validated by
+/// `parse_patch_shading` before this is called.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+fn coons_patch(points: &[selis_raster::shading::ShadingPoint], u: f64, v: f64) -> Vec<f64> {
+    let bottom = {
+        let v0 = pts_vec(&points[0]);
+        let v1 = pts_vec(&points[1]);
+        let v2 = pts_vec(&points[2]);
+        let v3 = pts_vec(&points[3]);
+        bezier3(&v0, &v1, &v2, &v3, u)
+    };
+    let right = {
+        let v3 = pts_vec(&points[3]);
+        let v4 = pts_vec(&points[4]);
+        let v5 = pts_vec(&points[5]);
+        let v6 = pts_vec(&points[6]);
+        bezier3(&v3, &v4, &v5, &v6, v)
+    };
+    let top = {
+        let v6 = pts_vec(&points[6]);
+        let v7 = pts_vec(&points[7]);
+        let v8 = pts_vec(&points[8]);
+        let v9 = pts_vec(&points[9]);
+        bezier3(&v6, &v7, &v8, &v9, u)
+    };
+    let left = {
+        let v9 = pts_vec(&points[9]);
+        let v10 = pts_vec(&points[10]);
+        let v11 = pts_vec(&points[11]);
+        let v0 = pts_vec(&points[0]);
+        bezier3(&v9, &v10, &v11, &v0, v)
+    };
+    let c0 = pts_vec(&points[0]);
+    let c3 = pts_vec(&points[3]);
+    let c6 = pts_vec(&points[6]);
+    let c9 = pts_vec(&points[9]);
+    let w = bottom.len();
+    (0..w)
+        .map(|k| {
+            (1.0 - v) * bottom[k]
+                + v * top[k]
+                + (1.0 - u) * left[k]
+                + u * right[k]
+                - (1.0 - u) * (1.0 - v) * c0[k]
+                - u * (1.0 - v) * c3[k]
+                - u * v * c6[k]
+                - (1.0 - u) * v * c9[k]
+        })
+        .collect()
+}
+
+/// A tensor-product (bicubic Bézier) patch surface value at `(u, v)` from its
+/// 16 control points.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+fn tensor_patch(points: &[selis_raster::shading::ShadingPoint], u: f64, v: f64) -> Vec<f64> {
+    let dim = pts_vec(&points[0]).len();
+    let mut out = vec![0.0; dim];
+    for row in 0..4 {
+        for col in 0..4 {
+            let w = bernstein(row, v) * bernstein(col, u);
+            let p = pts_vec(&points[row.saturating_mul(4).saturating_add(col)]);
+            for k in 0..dim {
+                out[k] += w * p[k];
+            }
+        }
+    }
+    out
+}
+
+/// A shading point as a (x, y, colours) vector.
+#[allow(clippy::arithmetic_side_effects)]
+fn pts_vec(sp: &selis_raster::shading::ShadingPoint) -> Vec<f64> {
+    let mut v = Vec::with_capacity(sp.components.len() + 2);
+    v.push(sp.point.x);
+    v.push(sp.point.y);
+    v.extend_from_slice(&sp.components);
+    v
+}
+
+/// Tessellate a patch's control points into a `(grid+1)²` mesh of shading
+/// points (Coons or tensor).
+#[allow(clippy::arithmetic_side_effects)]
+fn tessellate_patch(
+    patch: &[selis_raster::shading::ShadingPoint],
+    is_tensor: bool,
+    grid: usize,
+) -> Vec<selis_raster::shading::ShadingPoint> {
+    use selis_geom::Point;
+    use selis_raster::shading::ShadingPoint;
+    let g = grid.max(1);
+    let mut out = Vec::with_capacity((g + 1) * (g + 1));
+    for j in 0..=g {
+        for i in 0..=g {
+            let u = i as f64 / g as f64;
+            let v = j as f64 / g as f64;
+            let s = if is_tensor {
+                tensor_patch(patch, u, v)
+            } else {
+                coons_patch(patch, u, v)
+            };
+            let point = Point::new(s.get(0).copied().unwrap_or(0.0), s.get(1).copied().unwrap_or(0.0));
+            let components = s.get(2..).map(|c| c.to_vec()).unwrap_or_default();
+            out.push(ShadingPoint { point, components });
+        }
+    }
+    out
+}
+
+/// Decode a type-6 (Coons) or type-7 (tensor-product) patch shading's control
+/// points from its packed bit stream. Only standalone patches (flag 0) are
+/// decoded; patch-reuse flags (1–2) are a refinement.
+fn parse_patch_shading(
+    data: &[u8],
+    bpc: u32,
+    bpc_color: u32,
+    bpf: u32,
+    decode: &[f64],
+    components: usize,
+    is_tensor: bool,
+) -> Option<Vec<Vec<selis_raster::shading::ShadingPoint>>> {
+    use selis_geom::Point;
+    use selis_raster::shading::ShadingPoint;
+    let per_patch = if is_tensor { 16 } else { 12 };
+    let mut r = BitReader::new(data);
+    let mut patches: Vec<Vec<ShadingPoint>> = Vec::new();
+    loop {
+        let Some(flag) = r.read(bpf.max(1)) else { break };
+        if flag != 0 {
+            break; // patch-reuse flags are a refinement; skip the shading
+        }
+        let mut points = Vec::with_capacity(per_patch);
+        for _ in 0..per_patch {
+            let Some(x_raw) = r.read(bpc.max(1)) else { break };
+            let Some(y_raw) = r.read(bpc.max(1)) else { break };
+            let (x, y) = (
+                decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
+                decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+            );
+            let mut comps = Vec::with_capacity(components);
+            let mut ok = true;
+            for c in 0..components {
+                let Some(raw) = r.read(bpc_color.max(1)) else {
+                    ok = false;
+                    break;
+                };
+                let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
+                let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+                comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
+            }
+            if !ok {
+                break;
+            }
+            points.push(ShadingPoint {
+                point: Point::new(x, y),
+                components: comps,
+            });
+        }
+        if points.len() != per_patch {
+            break;
+        }
+        patches.push(points);
+    }
+    if patches.is_empty() {
+        None
+    } else {
+        Some(patches)
+    }
+}
+
 /// Barycentric weights of `p` inside triangle `a b c`, or `None` if outside.
 fn barycentric_weights(
     a: selis_geom::Point,
@@ -1551,5 +1791,24 @@ mod tests {
         assert_eq!(tris.len(), 2);
         assert_eq!(tris[0], (0, 1, 2));
         assert_eq!(tris[1], (2, 1, 3));
+    }
+
+    /// A flat Coons patch (all 12 control points identical) tessellates to a
+    /// uniform mesh: every vertex carries the same position and colour.
+    #[test]
+    fn coons_patch_tessellates_a_flat_surface() {
+        use selis_raster::shading::ShadingPoint;
+        let flat = ShadingPoint {
+            point: selis_geom::Point::new(0.5, 0.5),
+            components: vec![1.0, 0.0, 0.0],
+        };
+        let patch = vec![flat.clone(); 12];
+        let mesh = tessellate_patch(&patch, false, 3);
+        assert_eq!(mesh.len(), 16); // (3+1)²
+        for sp in &mesh {
+            assert!((sp.point.x - 0.5).abs() < 1e-9, "x preserved");
+            assert!((sp.point.y - 0.5).abs() < 1e-9, "y preserved");
+            assert!((sp.components[0] - 1.0).abs() < 1e-9, "red preserved");
+        }
     }
 }
