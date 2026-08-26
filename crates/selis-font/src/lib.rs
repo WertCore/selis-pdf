@@ -43,7 +43,10 @@ pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding
 pub use fallback::{can_render, fallback_order, match_substitute, substitute, FontMatchHints};
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
-pub use outline::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, Outline, OutlineCmd};
+pub use outline::{
+    glyph_count, glyph_id_for_char, glyph_id_for_name, glyph_name, outline_glyph, Outline,
+    OutlineCmd,
+};
 pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
 pub use recover::{Recovery, RecoveryConfidence, TextRecovery};
 pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};

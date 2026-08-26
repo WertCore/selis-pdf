@@ -151,6 +151,19 @@ pub fn glyph_id_for_name(data: &Bytes, name: &str) -> Option<u16> {
     None
 }
 
+/// The glyph id for a Unicode character, via the font's cmap.
+///
+/// This is the code → glyph bridge the renderer uses: for a font whose codes
+/// are Unicode (WinAnsi/Unicode-encoded simple fonts), the character maps
+/// through the cmap to the outline.
+#[must_use]
+pub fn glyph_id_for_char(data: &Bytes, code: u32) -> Option<u16> {
+    let font = FontRef::new(data.as_slice()).ok()?;
+    let ch = char::from_u32(code)?;
+    let glyph = font.charmap().map(ch)?;
+    Some(u16::try_from(glyph.to_u32()).unwrap_or(u16::MAX))
+}
+
 /// A [`OutlinePen`] that collects [`OutlineCmd`]s.
 #[derive(Default)]
 pub(crate) struct OutlineSink {
