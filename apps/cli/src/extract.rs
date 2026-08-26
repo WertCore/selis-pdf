@@ -186,12 +186,38 @@ mod tests {
         assert_eq!(imgs.len(), 1);
         assert_eq!(imgs[0].file, "page-0-1.ppm");
     }
+
+    #[test]
+    fn line_text_joins_words_with_space() {
+        let glyph = |code: u16, x: f64| selis_pdf_content::text::TextGlyph {
+            code,
+            at: selis_geom::Point::new(x, 0.0),
+            font: selis_bytes::Bytes::copy_from_slice(b"F1"),
+            size: 12.0,
+        };
+        let word = |codes: &[u16], x: f64| selis_pdf_text::TextWord {
+            runs: vec![selis_pdf_text::TextRun {
+                glyphs: codes.iter().map(|&c| glyph(c, x)).collect(),
+                bbox: selis_geom::Rect::new(x, 0.0, x + 10.0, 12.0),
+            }],
+            bbox: selis_geom::Rect::new(x, 0.0, x + 10.0, 12.0),
+        };
+        let line = TextLine {
+            words: vec![word(&[72, 105], 0.0), word(&[87], 20.0)], // "Hi" "W"
+            bbox: selis_geom::Rect::new(0.0, 0.0, 30.0, 12.0),
+        };
+        assert_eq!(line_text(&line), "Hi W");
+    }
 }
 
-/// The recovered text of a line (code → Unicode char).
+/// The recovered text of a line (code → Unicode char), with a space between
+/// words (the assembler strips space glyphs when splitting runs into words).
 fn line_text(line: &TextLine) -> String {
     let mut out = String::new();
-    for word in &line.words {
+    for (wi, word) in line.words.iter().enumerate() {
+        if wi > 0 {
+            out.push(' ');
+        }
         for run in &word.runs {
             for g in &run.glyphs {
                 if let Some(ch) = char::from_u32(u32::from(g.code)) {
