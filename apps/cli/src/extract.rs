@@ -61,7 +61,24 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
 
     let out = match format {
         "json" => {
-            let s = selis_pdf_text::structured(&lines, &line_texts, &[]);
+            // Per-run text (parallel to each line's flattened runs) so the
+            // JSON spans carry only their own glyphs, not the whole line.
+            let run_texts: Vec<Vec<String>> = lines
+                .iter()
+                .map(|line| {
+                    line.words
+                        .iter()
+                        .flat_map(|w| w.runs.iter())
+                        .map(|run| {
+                            run.glyphs
+                                .iter()
+                                .filter_map(|g| char::from_u32(u32::from(g.code)))
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect();
+            let s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
             selis_pdf_text::to_json(&s)
         }
         "md" => selis_pdf_text::to_markdown(&lines, &line_texts),
