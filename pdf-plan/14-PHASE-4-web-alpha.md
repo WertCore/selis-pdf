@@ -57,6 +57,9 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     and desktop each implement it.
   - **DoD:** The UI compiles and tests with a `MockAdapter`; a lint forbids platform globals in
     `apps/web/ui`.
+  - **Note:** The `PlatformAdapter` is the *host* seam (what the OS can do). ADR-P0035 adds the
+    *logic* seam: app state lives in `selis-viewmodel`, and the UI renders published diffs. Keep
+    them distinct — conflating them is how logic leaks back into the shell.
 - [ ] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
   - **Do:** Windowed rendering with a placeholder→low-res→full-res tile ladder, correct scroll
     anchoring on zoom, and page-fit/width/spread modes.

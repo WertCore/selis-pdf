@@ -1,12 +1,19 @@
 # Phase 7 — Mobile (Months 13–18)
 
-**Gate G7 exit criteria:** iOS and Android in the stores · scan → dewarp → OCR → PDF pipeline
-shipping · annotate/fill/sign working · share-sheet and Files/SAF integration · cold-open of a
-20 MB PDF under 800 ms on a four-year-old midrange device.
+**Gate G7 exit criteria:** Android in the Play Store · **iOS shipping as an installable PWA** ·
+scan → dewarp → OCR → PDF pipeline shipping on Android · annotate/fill/sign working on both ·
+share-target and SAF integration on Android · cold-open of a 20 MB PDF under 800 ms on a
+four-year-old midrange Android device.
 
-Native UI over the C ABI (ADR-P0022). Scope is deliberately narrower than desktop: view, annotate,
-fill, sign, scan, and share. Not text editing — that is a desktop/web job and pretending otherwise
-produces a bad version of both.
+Android is native UI over the C ABI; iOS is the web build installed to the home screen
+(ADR-P0022). Scope is deliberately narrower than desktop: view, annotate, fill, sign, scan, and
+share. Not text editing — that is a desktop/web job and pretending otherwise produces a bad version
+of both.
+
+**iOS is PWA-first by decision, not by omission.** Native iOS is specified in full under
+`§7.IOS-NATIVE` and is unblocked by funding, not by engineering. Read ADR-P0022 for exactly which
+capabilities the PWA gives up — 120 Hz, share-target, Files provider, Quick Look — before promising
+any of them to a user.
 
 ---
 
@@ -35,28 +42,66 @@ produces a bad version of both.
 
 ---
 
-## 7.IOS — iOS app
+## 7.IOS — iOS via PWA (the shipping path)
 
-- [ ] **SL-7.IOS.01 — SwiftUI app shell + document browser** · deps: FFI.03 · owner: AI
-- [ ] **SL-7.IOS.02 — Page view with 120 Hz pinch-zoom and scroll** · deps: FFI.02 · owner: AI+
+Depends on the Phase 4 web build and `selis-viewmodel` (ADR-P0035), not on the C ABI.
+
+- [ ] **SL-7.IOS.01 — iOS `PlatformAdapter` for the PWA surface** · deps: SL-4.UI.01 · owner: AI+
+  - **Do:** Implement the adapter against what Safari actually provides — OPFS storage, Web Share
+    (outbound only), `showSaveFilePicker` absent so downloads instead of save-in-place, and
+    capability flags that let the UI hide what iOS cannot do rather than failing at the tap.
+  - **DoD:** No feature is reachable on iOS that the adapter cannot service.
+- [ ] **SL-7.IOS.02 — Installable-PWA packaging** · deps: IOS.01 · owner: AI
+  - **Do:** Manifest, icon set, splash screens, standalone display mode, and an Add-to-Home-Screen
+    prompt that explains *why* — an uninstalled Safari tab has weaker storage guarantees.
+- [ ] **SL-7.IOS.03 — Touch page view: pinch-zoom, scroll, tiled re-render** · deps: SL-4.UI.03 · owner: AI+
+  - **Do:** Immediate scaled presentation on pinch with re-render behind it, same strategy as
+    native. Budget 60 fps and design the interaction to feel right at 60 rather than pretending.
+- [ ] **SL-7.IOS.04 — Touch and Apple Pencil annotation** · deps: SL-5.ANNOT.03 · owner: AI+
+  - **Do:** Pointer events carry pressure and tilt for Apple Pencil in Safari; map them onto Ink
+    annotations (ADR-P0026). Palm rejection is weaker than PencilKit — tune the touch heuristics.
+- [ ] **SL-7.IOS.05 — Storage durability and data-loss prevention** · deps: IOS.02, SL-0.IO.01 · owner: AI+
+  - **Do:** Treat OPFS as a cache, never as the only copy. Warn on unexported edits, persist an
+    export reminder, and request `navigator.storage.persist()`.
+  - **DoD:** A simulated storage eviction loses no user work that was ever marked saved.
+  - **Note:** This is the single largest correctness risk of the PWA route. Rule 5 applies.
+- [ ] **SL-7.IOS.06 — VoiceOver accessibility over the structure tree** · deps: ADR-P0031 · owner: AI+
+  - **Do:** ARIA mapping of the tagged-PDF structure tree; verify with VoiceOver on a real device.
+- [ ] **SL-7.IOS.07 — iOS Safari test matrix** · owner: AI
+  - **Do:** Two iOS majors × iPhone/iPad, standalone and in-tab. Cover the memory ceiling — Safari
+    kills tabs aggressively, so large-document behaviour must degrade, not crash.
+
+---
+
+## 7.IOS-NATIVE — iOS native app (deferred; unblocked by funding)
+
+Fully specified so it can start the day it is funded. Every task here is blocked on
+`SL-0.LEAD.02` (Apple Developer Program), which **also gates macOS notarisation**
+(`SL-6.DIST.02`) and the Safari extension — so this cost returns at Phase 6 regardless of what iOS
+does. Enrol as *Individual* if the Organization D-U-N-S process is the blocker.
+
+- [ ] **SL-7.IOSN.01 — SwiftUI app shell + document browser** · deps: FFI.03, SL-0.LEAD.02 · owner: AI
+- [ ] **SL-7.IOSN.02 — Page view with 120 Hz pinch-zoom and scroll** · deps: FFI.02 · owner: AI+
   - **Do:** `CALayer`-backed tiled rendering; immediate scaled presentation on pinch with
-    re-render behind it. This is the whole reason mobile is native.
-- [ ] **SL-7.IOS.03 — Annotation with PencilKit-quality stylus input** · deps: SL-5.ANNOT.03 · owner: AI+
+    re-render behind it. This is the one capability the PWA cannot reach at all.
+- [ ] **SL-7.IOSN.03 — Annotation with PencilKit-quality stylus input** · deps: SL-5.ANNOT.03 · owner: AI+
   - **Do:** Pressure, tilt, and palm rejection mapped onto standard Ink annotations (ADR-P0026).
-- [ ] **SL-7.IOS.04 — Form filling and signing on mobile** · deps: SL-5.FORM.04 · owner: AI
-- [ ] **SL-7.IOS.05 — Files provider, security-scoped URLs, iCloud Drive** · deps: SL-0.IO.01 · owner: AI+
-- [ ] **SL-7.IOS.06 — Share extension + Quick Look thumbnail/preview extensions** · owner: AI+
+- [ ] **SL-7.IOSN.04 — Files provider, security-scoped URLs, iCloud Drive** · deps: SL-0.IO.01 · owner: AI+
+- [ ] **SL-7.IOSN.05 — Share extension + Quick Look thumbnail/preview extensions** · owner: AI+
   - **Note:** Extensions have hard memory limits (tens of MB). The engine must run inside them
     under a much tighter budget — this is a real constraint, test it early.
-- [ ] **SL-7.IOS.07 — VoiceOver accessibility over the structure tree** · deps: ADR-P0031 · owner: AI+
-- [ ] **SL-7.IOS.08 — App Store submission, privacy nutrition labels, review** · deps: SL-0.LEAD.02 · owner: HUMAN
+- [ ] **SL-7.IOSN.06 — App Store submission, privacy nutrition labels, review** · deps: SL-0.LEAD.02 · owner: HUMAN
   - **Do:** The privacy labels must match ADR-P0016/P0017 exactly. "Data not collected" is a strong
     marketing position and an audit liability if wrong.
+- [ ] **SL-7.IOSN.07 — Port the shells' view usage to `selis-viewmodel`** · deps: ADR-P0035 · owner: AI+
+  - **Do:** SwiftUI binds to the same view-model the web UI uses. If this task is large, ADR-P0035
+    was not being enforced — treat its size as the metric for whether the seam held.
 
 ---
 
 ## 7.AND — Android app
 
+- [ ] **SL-7.AND.00 — Form filling and signing on mobile (both platforms)** · deps: SL-5.FORM.04 · owner: AI
 - [ ] **SL-7.AND.01 — Compose app shell** · deps: FFI.04 · owner: AI
 - [ ] **SL-7.AND.02 — Tiled page view with `SurfaceView`/`TextureView`** · deps: FFI.02 · owner: AI+
 - [ ] **SL-7.AND.03 — SAF integration: open, save-in-place, document provider** · deps: SL-0.IO.01 · owner: AI+

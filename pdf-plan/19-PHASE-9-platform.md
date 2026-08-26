@@ -105,4 +105,16 @@ product itself.
     `git filter-repo --subdirectory-filter`. Tier B crates stay in the workspace permanently.
   - **DoD:** The crates.io name is unchanged for every extracted crate, so no downstream consumer
     observes a version bump or a re-import.
-- [ ] **SL-9.PLAT.07 — G9 review** · owner: HUMAN
+- [ ] **SL-9.PLAT.07 — Desktop shell profiling and the native-GUI decision** · deps: SL-6.QUAL.02 · owner: HUMAN
+  - **Do:** Profile the shipped Tauri shell on a low-end target — 4 GB RAM, 2015-era dual-core,
+    integrated graphics. Measure idle RSS, RSS with a 50-page PDF open, cold-start to first page,
+    and sustained scroll fps. Separate the *shell* baseline from the *engine* footprint; only the
+    former is what a framework change would recover.
+  - **Then:** Decide against ADR-P0036. Prototype a Slint or per-platform-native chrome against the
+    same numbers only if the shell baseline is a material share of the `03-CONVENTIONS.md §12`
+    ≤ 400 MB budget. Re-check Slint's licence against ADR-P0030 and whether Xilem has reached 1.0.
+  - **DoD:** A decision recorded in ADR-P0036 with the measurements behind it. "Keep Tauri" is a
+    perfectly good outcome and must be equally documented.
+  - **Note:** Deliberately last. Before this runs, the cheaper lever for low-end hardware is the
+    budget kernel — tile-cache ceilings, lazy page loading, resolution scaling under pressure.
+- [ ] **SL-9.PLAT.08 — G9 review** · owner: HUMAN

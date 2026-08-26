@@ -246,17 +246,70 @@ dynamic-linking arguments do not survive an iOS static-link requirement.
 **Consequences:** Rules out `jbig2dec`, MuPDF, Ghostscript, veraPDF as libraries. All remain usable
 as CI oracles (ADR-P0009).
 
-## ADR-P0022 — Web and desktop share one TypeScript UI; mobile is native
-**Status:** Accepted
+## ADR-P0022 — Shell strategy: one TypeScript UI for web, desktop, and iOS; Android native
+**Status:** Accepted (revised — supersedes the original "mobile is native" position)
 **Decision:** `apps/web/ui` is the single React/TypeScript application. The desktop shell (Tauri v2)
-renders the same UI behind a different platform adapter. iOS (SwiftUI) and Android (Compose) are
-**native**, sharing only the engine via the C ABI.
-**Rationale:** Web and desktop have the same interaction model, screen sizes, and users — one UI is
-a genuine 2× saving. Mobile does not: a webview cannot deliver 120 Hz pinch-zoom over a rendered
-page, and the integrations that matter on mobile (share sheet, Files/SAF, camera, stylus pressure,
-widgets) are native surfaces.
-**Consequences:** Two mobile UIs to build and maintain. Mitigate by keeping mobile scope narrow
-(view, annotate, fill, sign, scan) and pushing all logic below the FFI.
+and the **iOS PWA** both render it behind a different `PlatformAdapter`. Android is **native**
+(Compose) over the C ABI. A native iOS app (SwiftUI) is deferred until revenue justifies it, and is
+tracked as a funding-gated track in `17-PHASE-7-mobile.md §7.IOS-NATIVE`.
+**Rationale:** The original position — native on both mobile platforms — was correct on capability
+and wrong on sequencing. Native iOS requires paid Apple Developer enrolment, Mac hardware, App
+Store review, and a third implementation of the app logic, all before a single iOS user has been
+validated. A PWA reaches iOS at the marginal cost of the web build. Android stays native because
+its native surfaces (SAF, share target, print-service plugin, S Pen) are where mobile PDF usage
+actually concentrates, and because Android allows sideloaded distribution without a review gate.
+**What the iOS PWA gives up** — accepted deliberately, not overlooked:
+
+| Capability | iOS PWA status |
+|---|---|
+| 120 Hz pinch-zoom | **Lost.** Safari caps web content at 60 fps. This was the original ADR's main argument for native, and it is the real cost. |
+| Share-sheet *target* | **Lost.** Web Share Target is unsupported in Safari; the PWA can share out, not receive. |
+| Files app provider / save-in-place | **Lost.** No File System Access API in Safari; OPFS is app-private, so it is open-a-copy and download-to-save. |
+| Quick Look thumbnails | **Lost.** Requires an app extension. |
+| Apple Pencil | **Degraded.** Pointer events expose pressure and tilt, but not PencilKit fidelity or latency. |
+| App Store discoverability | **Lost.** Distribution is a URL plus Add to Home Screen. |
+| Storage durability | **At risk.** Home-screen PWAs are more durable, but eviction is possible; never treat OPFS as the only copy of user data. |
+| Push, offline, WASM threads | **Retained.** Push works for home-screen PWAs; COOP/COEP gives SharedArrayBuffer. |
+
+**Consequences:** The iOS experience is a viewer/annotator, not a scanner — `7.SCAN` is
+Android-first. Deferring Apple enrolment (`SL-0.LEAD.02`) **also defers macOS notarisation**
+(`SL-6.DIST.02`) and the Safari extension, so a signed macOS desktop build still requires the same
+programme at Phase 6; the saving is in timing, not in total cost. Enrol as *Individual* if the
+Organization D-U-N-S process is the blocker — it carries the same signing rights under a personal
+name.
+
+## ADR-P0035 — The view-model lives in Rust, not in each shell
+**Status:** Accepted
+**Decision:** A format-neutral `selis-viewmodel` crate (L3, Tier B) owns all app logic above the
+engine: current page and zoom, active tool, selection, undo/redo presentation, search match state,
+command enablement, dirty state, panel and dialog state. Shells render the state it publishes and
+forward input events to it. They hold no app logic of their own.
+**Rationale:** Without this the same rules are implemented once per shell — TypeScript, Kotlin, and
+later Swift — which is three chances to diverge on questions like "does highlighting mark the
+document dirty." It also makes the shell thin enough that replacing it is a bounded rewrite rather
+than a rebuild, which is the precondition for ADR-P0036 being decidable later instead of now.
+**Consequences:** State crosses a language boundary on every update, so the crate publishes
+**diffs, not full snapshots**. Debugging spans two languages. The discipline is load-bearing and
+therefore mechanically enforced: `xtask check-layers` fails the build if a shell package declares
+app-logic state of its own. Shells keep exactly what should stay native — widgets, menus, gestures,
+file pickers, platform conventions.
+
+## ADR-P0036 — Tauri for desktop now; the native-GUI question is settled by profiling, not debate
+**Status:** Accepted
+**Decision:** Phase 6 ships Tauri v2. A native Rust GUI (Slint, Xilem, or per-platform native
+chrome) is **not** evaluated until the profiling pass at `SL-9.PLAT.07`, after Desktop GA.
+**Rationale:** A webview baseline of roughly 80–150 MB is a real fraction of the ≤ 400 MB peak-RSS
+budget in `03-CONVENTIONS.md §12`, and it matters most in the commonest case — a small document,
+where the framework rather than the document dominates footprint. That is a genuine argument for a
+native shell. It is not yet an argument for acting: no Rust GUI toolkit currently supplies
+office-application chrome (docking, rich text, data grids) without substantial custom widget work;
+Slint additionally needs licence review against the proprietary-renderer position of ADR-P0030; and
+Xilem — the best architectural fit, via Vello, Parley, and AccessKit — was pre-1.0 at the time of
+writing. Deciding now would be choosing on speculation when ADR-P0035 makes the decision cheap to
+defer and cheap to reverse.
+**Consequences:** For low-end hardware the larger lever is the budget kernel, not the shell: tile
+cache ceilings, lazy page loading, render-resolution scaling, and graceful degradation under
+memory pressure. Those are `selis-sandbox` work and are worth more than the shell delta.
 
 ## ADR-P0023 — Redaction is a removal operation with a proof obligation
 **Status:** Accepted
@@ -483,6 +536,26 @@ the Aspose structure, and the thing PDFTron's rebrand to Apryse proves you want.
 | npm | `@selis/pdf`, later `@selis/words`, `@selis/sheets` |
 | Session bundle | `.selis` |
 | Task ID prefix | `SL-<phase>.<area>.<n>` |
+
+### CLI shape — one dispatcher, one binary per engine
+
+`selis` is a thin dispatcher: `selis pdf convert` execs `selis-pdf convert`, and `selis-pdf convert`
+works when invoked directly. Both spellings are valid, as with `git`/`git-lfs` and
+`cargo`/`cargo-nextest`. The reason is distribution, not ergonomics — four engines plus fonts, ICC
+profiles, and OCR models in one binary would be a large download for someone who only wants PDF.
+`brew install selis-pdf` installs the dispatcher and the PDF engine; `brew install selis-sheet`
+later makes `selis sheet` start working.
+
+Subcommands name the **domain**, not the file extension — `pdf` / `doc` / `sheet` / `slide` — since
+one engine serves several formats (`selis doc` handles `.docx`, `.odt`, `.rtf`). Conversion belongs
+to the source format: `selis doc convert r.docx --to pdf`, with a dispatcher-level
+`selis convert a.docx a.pdf` that infers both ends from the extensions. Dispatch also yields a
+plugin surface for free — `selis foo` finds `selis-foo` on `PATH` — independent of the WASM plugin
+model in `SL-9.PLAT.01`.
+
+Today's flat verbs (`selis convert`, `selis extract`) stay valid as PDF-implied aliases; they need
+no change until a second engine exists. Note the npm names above use `words`/`sheets` where the CLI
+uses `doc`/`sheet` — align them before the first non-PDF engine ships.
 
 ### Why the neutral/PDF crate split matters
 

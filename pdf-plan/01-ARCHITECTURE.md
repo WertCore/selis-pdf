@@ -98,6 +98,7 @@ L0  FOUNDATION      selis-error   selis-bytes   selis-geom   selis-color   selis
 | `selis-pdf-engine` | The `Session` and `Document` handles; the page/display-list/tile cache (ADR-P0025); render scheduling; the composition of L2 crates into user-meaningful operations. This is the only L3 crate an app should need to think about. |
 | `selis-policy` | Entitlements (`Feature` enum → allow/deny), budget profiles per surface, `CloudConsent` (ADR-P0016), active-content policy (ADR-P0020), telemetry consent, admin/MDM policy overlay. |
 | `selis-job` | Long-running/batch operations: progress, cancellation, resumability, queueing. Used by batch convert, OCR of a 900-page scan, and the server tier. |
+| `selis-viewmodel` | All app logic above the engine, shared by every shell (ADR-P0035): page/zoom, active tool, selection, undo/redo presentation, search match state, command enablement, dirty state, panel and dialog state. Publishes **diffs**, not snapshots. Format-neutral, so a future `.docx` shell reuses it. Holds no widgets and no platform calls. |
 
 ### L4 — Bindings
 

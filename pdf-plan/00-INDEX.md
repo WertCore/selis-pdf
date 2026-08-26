@@ -8,7 +8,7 @@
 >
 > **Selis is the product family; the shared engine carries its name; every product is an
 > entitlement set over one core.** Identifiers (locked by ADR-P0034, pending trademark clearance):
-> product/org/repo `selis` · crates `selis-*` (format-neutral) and `selis-pdf-*` (PDF engine) ·
+> org `WertCore` · repo `selis-pdf` · crates `selis-*` (format-neutral) and `selis-pdf-*` (PDF engine) ·
 > CLI binary `selis` · C ABI prefix `selis_pdf_` · session bundle `.selis` ·
 > product family **Selis Reader / Editor / Sign / Convert / Scan / Server / SDK**.
 
@@ -120,8 +120,9 @@ turned out to be wrong or under-specified.
 | **G3 — Text & fonts** | End week 23 | All 14 standard fonts substituted metric-compatibly; embedded Type1/CFF/TrueType/CID/Type3 render at G2 tolerance; text extraction matches PDFium `GetText` ≥ 98% by edit distance on the extraction corpus; reading order matches tagged order on 100% of tagged corpus; CJK + RTL + Indic corpora at G2 tolerance. |
 | **G4 — Web Alpha** | Month 7 | Web viewer + MV3 extension published; core WASM ≤ 3 MB brotli; first page painted < 1.2 s p75 on a 5 MB linearised PDF over Fast 3G; 1000 external users; crash-free session rate ≥ 99.5%; zero document-corruption reports (viewer is read-only, so this must be trivially true). |
 | **G5 — Editor Beta (paid)** | Month 12 | Annotate, fill, sign, edit-text, page-ops, redact, OCR shipping on web + extension; **incremental-save invariant proven** by a 100k-mutation property suite (original bytes remain a byte-identical prefix); redaction verified by an independent extraction pass on 100% of the redaction corpus; billing + entitlements live. |
-| **G6 — Desktop GA** | Month 15 | Signed + notarised installers for Win/mac/Linux; default-PDF-handler registration; print pipeline; offline licence; crash-free ≥ 99.7% over 5000 sessions; feature parity with web editor. |
-| **G7 — Mobile GA** | Month 18 | iOS + Android in stores; scan → dewarp → OCR → PDF pipeline; annotate/fill/sign; share-sheet + Files/SAF integration; cold-open of a 20 MB PDF < 800 ms on a 4-year-old midrange device. |
+| **G6 — Desktop GA** | Month 15 | Signed + notarised installers for Win/mac/Linux (macOS needs `SL-0.LEAD.02`); default-PDF-handler registration; print pipeline; offline licence; crash-free ≥ 99.7% over 5000 sessions; feature parity with web editor. |
+| **G7 — Mobile GA** | Month 18 | Android in the Play Store; **iOS shipping as an installable PWA** (ADR-P0022); scan → dewarp → OCR → PDF pipeline on Android; annotate/fill/sign on both; share-target + SAF on Android; cold-open of a 20 MB PDF < 800 ms on a 4-year-old midrange Android device; simulated iOS storage eviction loses no saved work. |
+| **G7b — iOS native** | Funding-gated | Deferred by ADR-P0022, specified at `17-PHASE-7-mobile.md §7.IOS-NATIVE`. Unblocked by `SL-0.LEAD.02`, not by engineering. |
 | **G8 — Cloud & collaboration** | Month 21 | Opt-in sync + real-time annotation collaboration; SOC 2 Type I; DPA + sub-processor list published; the local/cloud boundary enforced by `selis-policy` and provable by a test that fails if any document byte leaves the device without consent. |
 | **G9 — Platform** | Month 30 | C ABI GA + Python/Node/Go/Java wrappers; server API GA; enterprise admin console + MDM/GPO deployment; PDF/A + PDF/UA conformance products validated by veraPDF; ≥1 OEM LOI. |
 
@@ -135,8 +136,11 @@ These block later gates and cannot be compressed.
       `recto.com`/`.io`/`.app`; GitHub org; crates.io `selis-pdf-*`, npm `@recto/*`, PyPI, Maven,
       Homebrew tap. "Selis" is a printing term of art — expect descriptive-mark objections and
       prior use. Blocks every user-visible string, the cert CN, and store listings. See ADR-P0034.
-- [ ] **SL-0.LEAD.02 — Apple Developer Program (Organization).** Needs a D-U-N-S number (5–14 days
-      alone). Required for Developer ID (desktop notarisation) *and* the App Store (iOS). Blocks `G6`, `G7`.
+- [ ] **SL-0.LEAD.02 — Apple Developer Program.** Needs a D-U-N-S number for *Organization*
+      enrolment (5–14 days alone); *Individual* enrolment carries the same signing rights without
+      it. Required for Developer ID (desktop notarisation), the Safari extension, and the App Store.
+      Blocks `G6`. **No longer blocks `G7`** — ADR-P0022 ships iOS as a PWA — but it still gates
+      macOS notarisation, so deferring it defers signed macOS desktop, not just native iOS.
 - [ ] **SL-0.LEAD.03 — Windows code-signing identity.** Azure Trusted Signing preferred (EV-equivalent
       SmartScreen reputation, no HSM to run). 1–6 weeks org validation. Blocks `G6`.
 - [ ] **SL-0.LEAD.04 — Chrome Web Store + Edge Add-ons + Google Play developer accounts.**

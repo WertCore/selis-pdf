@@ -11,6 +11,10 @@ only on the UI contract (`SL-4.UI.01`).
 
 ## 6.SHELL — The Tauri shell
 
+Tauri v2 is confirmed for this phase by ADR-P0036. The native-GUI alternatives (Slint, Xilem,
+per-platform chrome) are deliberately **not** assessed here — that happens at `SL-9.PLAT.07`, after
+GA, with profiling data. ADR-P0035 is what keeps that reversal cheap.
+
 - [ ] **SL-6.SHELL.01 — Tauri v2 project + the desktop `PlatformAdapter`** · deps: SL-4.UI.01 · owner: AI+
   - **Do:** Wire `apps/web/ui` into Tauri with a desktop adapter: Tauri commands replace worker
     `postMessage`, and the engine runs natively (no WASM) with full threading.
@@ -99,6 +103,9 @@ only on the UI contract (`SL-4.UI.01`).
 - [ ] **SL-6.CLI.01 — Command surface** · owner: AI
   - **Do:** `inspect render extract convert optimise merge split rotate sign verify redact ocr
     form batch diff`, all `--json`-capable, all sharing the GUI's code paths exactly.
+  - **Note:** Ship these as PDF-implied top-level verbs now. ADR-P0034 fixes the multi-engine shape
+    — `selis` becomes a dispatcher so `selis pdf convert` and `selis-pdf convert` are both valid —
+    which needs no change here until a second engine exists.
 - [ ] **SL-6.CLI.02 — Batch engine with progress and resume** · deps: SL-0.WS.02, CLI.01 · owner: AI+
   - **Do:** Parallel batch over a file set with per-file isolation (one bad document never kills a
     batch), a machine-readable report, and resumability.
