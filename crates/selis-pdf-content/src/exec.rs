@@ -16,13 +16,29 @@ use crate::gstate::{GState, GStateStack};
 use crate::path::{PaintOp, Path};
 use crate::text::{self, TextState};
 
+/// An XObject target resolved from a `Do` resource name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DoTarget {
+    /// An image XObject's decoded straight-RGBA samples.
+    Image {
+        /// The image width in pixels.
+        width: u32,
+        /// The image height in pixels.
+        height: u32,
+        /// The decoded RGBA8 samples.
+        rgba8: Bytes,
+    },
+}
+
 /// Execute a content stream into a display list.
 ///
 /// `font_width` resolves a glyph's advance width (1000/em units) for text
-/// positioning. The engine provides this from the document's font resources.
+/// positioning; `resolve_do` resolves a `Do` resource name to an XObject.
+/// The engine provides both from the document's resources.
 pub fn execute(
     content: &[u8],
     font_width: &dyn Fn(&Bytes, u16) -> f64,
+    resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DisplayList> {
     let mut interp = Interpreter::new(content);
@@ -198,8 +214,31 @@ pub fn execute(
                 }
             }
 
-            // XObjects — skipped (the engine's Do handler resolves them).
-            "Do" => {}
+            // XObjects.
+            "Do" => {
+                if let Some(Operand::Name(name)) = operands.first() {
+                    if let Some(DoTarget::Image {
+                        width,
+                        height,
+                        rgba8,
+                    }) = resolve_do(name)
+                    {
+                        // The image fills the unit square in user space,
+                        // transformed by the CTM.
+                        let p0 = gstate.ctm.apply(Point::new(0.0, 0.0));
+                        let p1 = gstate.ctm.apply(Point::new(1.0, 1.0));
+                        let state = ResolvedState::from(&gstate);
+                        dl.push(Op::Image {
+                            rgba8,
+                            width,
+                            height,
+                            rect: Rect::new(p0.x, p0.y, p1.x, p1.y),
+                            state,
+                        });
+                        g.charge_one(selis_sandbox::Resource::Objects)?;
+                    }
+                }
+            }
 
             // Everything else — ignored.
             _ => {}
@@ -297,12 +336,17 @@ mod tests {
         500.0
     }
 
+    fn no_do(_name: &Bytes) -> Option<DoTarget> {
+        None
+    }
+
     #[test]
     fn a_path_and_fill_produces_a_fill_op() {
         let mut g = guard();
         let dl = execute(
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
+            &no_do,
             &mut g,
         )
         .expect("execute");
@@ -316,6 +360,7 @@ mod tests {
         let dl = execute(
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 0.3 0.1 rg f",
             &const_width,
+            &no_do,
             &mut g,
         )
         .expect("execute");
@@ -331,7 +376,13 @@ mod tests {
     fn text_produces_a_text_op() {
         let mut g = guard();
         // BT /F1 12 Tf 0 0 Td (A) Tj ET
-        let dl = execute(b"BT /F1 12 Tf 0 0 Td (A) Tj ET", &const_width, &mut g).expect("execute");
+        let dl = execute(
+            b"BT /F1 12 Tf 0 0 Td (A) Tj ET",
+            &const_width,
+            &no_do,
+            &mut g,
+        )
+        .expect("execute");
         assert_eq!(dl.ops.len(), 1);
         if let Op::Text { runs, .. } = &dl.ops[0] {
             assert_eq!(runs.len(), 1);
@@ -349,6 +400,7 @@ mod tests {
         let dl = execute(
             b"q 0.5 0 0 0.5 0 0 cm Q 0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
+            &no_do,
             &mut g,
         )
         .expect("execute");

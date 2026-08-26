@@ -13,7 +13,8 @@ use selis_geom::{Matrix, Point};
 use selis_pdf_content::display_list::{DisplayList, Op};
 use selis_pdf_content::path::{Path as ContentPath, Segment};
 use selis_raster::{
-    FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, StrokeSpec, TinySkiaBackend,
+    Backend, FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, StrokeSpec,
+    TinySkiaBackend,
 };
 use selis_sandbox::BudgetGuard;
 
@@ -91,6 +92,21 @@ pub fn render_display_list(
                         selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
                     }
                 }
+            }
+            Op::Image {
+                rgba8,
+                width,
+                height,
+                rect,
+                ..
+            } => {
+                let img = selis_raster::Image {
+                    width: *width,
+                    height: *height,
+                    rgba8: rgba8.as_slice().to_vec(),
+                };
+                let placement = selis_raster::ImagePlacement { rect: *rect };
+                backend.draw_image(&img, &placement);
             }
         }
     }
@@ -245,12 +261,17 @@ mod tests {
         None
     }
 
+    fn no_do(_name: &selis_bytes::Bytes) -> Option<selis_pdf_content::exec::DoTarget> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
         let mut g = guard();
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &mut g).expect("execute");
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &mut g)
+            .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(&dl, &mut backend, &no_font, &mut g);
         let data = backend.pixmap().data();
@@ -265,7 +286,8 @@ mod tests {
         let mut g = guard();
         // Fill the whole page blue first, then a red square in the centre.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0 0 1 rg f 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &mut g).expect("execute");
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &mut g)
+            .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(&dl, &mut backend, &no_font, &mut g);
         let data = backend.pixmap().data();
@@ -274,5 +296,37 @@ mod tests {
         let corner = (5 * 100 + 5) * 4;
         assert_eq!(&data[centre..centre + 3], &[255, 0, 0]);
         assert_eq!(&data[corner..corner + 3], &[0, 0, 255]);
+    }
+
+    /// A content stream with a `Do` for a 2×2 image renders it scaled.
+    #[test]
+    fn an_image_xobject_renders() {
+        use selis_pdf_content::exec::DoTarget;
+        let mut g = guard();
+        // 2x2 RGBA: top-left red, rest blue.
+        let rgba8 = vec![
+            255u8, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        ];
+        let do_image = |_name: &selis_bytes::Bytes| {
+            Some(DoTarget::Image {
+                width: 2,
+                height: 2,
+                rgba8: selis_bytes::Bytes::copy_from_slice(&rgba8),
+            })
+        };
+        // Scale the unit square to 0..100 so the image fills the canvas.
+        let content = b"100 0 0 100 0 0 cm /Im1 Do";
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &do_image, &mut g)
+            .expect("execute");
+        assert_eq!(dl.ops.len(), 1);
+        assert!(matches!(dl.ops[0], Op::Image { .. }));
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        let data = backend.pixmap().data();
+        // Top-left (10,10) is red; bottom-right (90,90) is blue.
+        let tl = (10 * 100 + 10) * 4;
+        let br = (90 * 100 + 90) * 4;
+        assert_eq!(&data[tl..tl + 3], &[255, 0, 0]);
+        assert_eq!(&data[br..br + 3], &[0, 0, 255]);
     }
 }

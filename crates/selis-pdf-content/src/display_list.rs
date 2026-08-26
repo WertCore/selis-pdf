@@ -11,7 +11,7 @@
 //! an earlier one's appearance. This is what makes the IR diffable at the
 //! semantic level ("op 412 changed fill colour") rather than the pixel level.
 
-use selis_geom::{Matrix, Point};
+use selis_geom::{Matrix, Point, Rect};
 
 use crate::gstate::GState;
 use crate::path::Path;
@@ -88,6 +88,20 @@ pub enum Op {
         /// The glyph runs (resolved in SL-2.TEXT).
         runs: Vec<GlyphRun>,
     },
+    /// Draw an image XObject (decoded RGBA, placed in user space).
+    Image {
+        /// The decoded straight-RGBA samples.
+        rgba8: selis_bytes::Bytes,
+        /// The image width in pixels.
+        width: u32,
+        /// The image height in pixels.
+        height: u32,
+        /// The placement rectangle in user space (the unit square under the
+        /// CTM).
+        rect: Rect,
+        /// The resolved state at paint time.
+        state: ResolvedState,
+    },
 }
 
 /// A resolved glyph run (font, size, and the glyph codes).
@@ -144,6 +158,7 @@ impl DisplayList {
                 Op::Text { runs, .. } => {
                     runs.iter().map(|r| r.glyphs.len().saturating_mul(2)).sum()
                 }
+                Op::Image { rgba8, .. } => rgba8.len().saturating_mul(4),
             });
         }
         total
@@ -215,6 +230,24 @@ fn op_diff(a: &Op, b: &Op) -> Option<String> {
                 None
             }
         }
+        (
+            Op::Image {
+                width: x,
+                height: xh,
+                ..
+            },
+            Op::Image {
+                width: y,
+                height: yh,
+                ..
+            },
+        ) => {
+            if x != y || xh != yh {
+                Some("image dimensions changed".to_string())
+            } else {
+                None
+            }
+        }
         _ => Some(format!("op kind changed: {} vs {}", op_name(a), op_name(b))),
     }
 }
@@ -225,6 +258,7 @@ fn op_name(op: &Op) -> &'static str {
         Op::Stroke { .. } => "stroke",
         Op::FillStroke { .. } => "fillstroke",
         Op::Text { .. } => "text",
+        Op::Image { .. } => "image",
     }
 }
 
