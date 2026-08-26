@@ -50,6 +50,16 @@ impl Session {
         self.document.is_empty()
     }
 
+    /// The media-box size of a page in points.
+    #[must_use]
+    pub fn page_size(&self, page_num: usize) -> Option<(f64, f64)> {
+        self.document
+            .pages
+            .get(page_num)
+            .and_then(|p| p.media_box)
+            .map(|r| (r.width(), r.height()))
+    }
+
     /// Render a page onto a backend.
     pub fn render_page(
         &self,

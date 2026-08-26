@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
 mod inspect;
+mod render;
 
 #[derive(Parser)]
 #[command(
@@ -31,12 +32,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Render a page to a PPM image.
+    Render {
+        /// The PDF file to render.
+        path: String,
+        /// The page number (0-based; default 0).
+        #[arg(long, default_value_t = 0)]
+        page: usize,
+        /// The output PPM file.
+        output: String,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
+        Command::Render { path, page, output } => render::run(&path, page, &output),
     };
     match result {
         Ok(()) => {}
@@ -65,7 +77,7 @@ impl From<selis_error::Error> for CliError {
     }
 }
 
-type CliResult<T> = std::result::Result<T, CliError>;
+pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
 /// The structural JSON emitted by `inspect --json` (SL-1.COS.10).
 ///
@@ -123,7 +135,7 @@ fn ref_str(r: &selis_pdf_cos::Ref) -> String {
 /// # Errors
 ///
 /// `IO_READ_FAILED` when the file cannot be read.
-fn read_file(path: &str) -> CliResult<Vec<u8>> {
+pub(crate) fn read_file(path: &str) -> CliResult<Vec<u8>> {
     std::fs::read(path)
         .map_err(|e| {
             let mut ctx = selis_error::Ctx::new();
