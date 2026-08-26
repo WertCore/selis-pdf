@@ -155,7 +155,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** Normalised search (case, diacritics, ligature decomposition, soft hyphens, and
     cross-line matches), incremental index built per resident page only.
   - **DoD:** Finds "ﬁrst" when searching "first"; finds a term broken across a line break.
-- [ ] **SL-3.TEXT.07 — Structured extraction output** · deps: TEXT.04 · owner: AI
+- [x] **SL-3.TEXT.07 — Structured extraction output** · deps: TEXT.04 · owner: AI
   - **Do:** Emit text as plain, or as a structured document (blocks/lines/spans with style and
     bbox), or as Markdown/HTML. Foundation for the convert product and for any AI/RAG integration.
   - **DoD:** JSON schema versioned and documented; `selis extract --format=json|text|md|html`.
