@@ -43,17 +43,30 @@ const MAX_FORM_DEPTH: usize = 32;
 /// Execute a content stream into a display list.
 ///
 /// `font_width` resolves a glyph's advance width (1000/em units) for text
-/// positioning; `resolve_do` resolves a `Do` resource name to an XObject.
-/// The engine provides both from the document's resources.
+/// positioning; `resolve_do` resolves a `Do` resource name to an XObject; and
+/// `resolve_ext_gstate` resolves a `/ExtGState` resource name (used by `gs`)
+/// to its dictionary, merging blend mode, alpha, soft mask, and overprint into
+/// the graphics state. The engine provides all three from the document's
+/// resources.
 pub fn execute(
     content: &[u8],
     font_width: &dyn Fn(&Bytes, u16) -> f64,
     resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
+    resolve_ext_gstate: &dyn Fn(&Bytes) -> Option<Vec<(Bytes, Operand)>>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DisplayList> {
     let mut dl = DisplayList::new();
     let mut gstate = GState::new();
-    execute_inner(content, font_width, resolve_do, g, &mut gstate, 0, &mut dl)?;
+    execute_inner(
+        content,
+        font_width,
+        resolve_do,
+        resolve_ext_gstate,
+        g,
+        &mut gstate,
+        0,
+        &mut dl,
+    )?;
     Ok(dl)
 }
 
@@ -63,6 +76,7 @@ fn execute_inner(
     content: &[u8],
     font_width: &dyn Fn(&Bytes, u16) -> f64,
     resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
+    resolve_ext_gstate: &dyn Fn(&Bytes) -> Option<Vec<(Bytes, Operand)>>,
     g: &mut BudgetGuard<'_>,
     gstate: &mut GState,
     depth: usize,
@@ -123,7 +137,13 @@ fn execute_inner(
             }
             "ri" => {} // rendering intent: ignored
             "gs" => {
-                // ExtGState name — the engine resolves it. Ignored here.
+                // `/GS1 gs` — resolve the ExtGState dictionary (blend mode,
+                // alpha, soft mask, overprint) and merge it into the state.
+                if let Some(Operand::Name(name)) = operands.first() {
+                    if let Some(pairs) = resolve_ext_gstate(name) {
+                        gstate.merge_ext_gstate(&pairs);
+                    }
+                }
             }
 
             // Colour — device RGB.
@@ -270,6 +290,7 @@ fn execute_inner(
                                 &content,
                                 font_width,
                                 resolve_do,
+                                resolve_ext_gstate,
                                 g,
                                 &mut form_gstate,
                                 depth.saturating_add(1),
@@ -318,6 +339,7 @@ fn flush_path(
         stroke: gs.stroke_colour,
         alpha_fill: gs.alpha_fill,
         alpha_stroke: gs.alpha_stroke,
+        blend: selis_color::BlendMode::from_name(&gs.blend_mode),
     };
     let op = match paint {
         PaintOp::Fill | PaintOp::FillEvenOdd => Op::Fill { path, state },
@@ -381,6 +403,10 @@ mod tests {
         None
     }
 
+    fn no_ext_gstate(_name: &Bytes) -> Option<Vec<(Bytes, Operand)>> {
+        None
+    }
+
     #[test]
     fn a_path_and_fill_produces_a_fill_op() {
         let mut g = guard();
@@ -388,6 +414,7 @@ mod tests {
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
             &no_do,
+            &no_ext_gstate,
             &mut g,
         )
         .expect("execute");
@@ -402,6 +429,7 @@ mod tests {
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 0.3 0.1 rg f",
             &const_width,
             &no_do,
+            &no_ext_gstate,
             &mut g,
         )
         .expect("execute");
@@ -421,6 +449,7 @@ mod tests {
             b"BT /F1 12 Tf 0 0 Td (A) Tj ET",
             &const_width,
             &no_do,
+            &no_ext_gstate,
             &mut g,
         )
         .expect("execute");
@@ -442,12 +471,43 @@ mod tests {
             b"q 0.5 0 0 0.5 0 0 cm Q 0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
             &no_do,
+            &no_ext_gstate,
             &mut g,
         )
         .expect("execute");
         // After Q, the CTM is restored to identity.
         if let Op::Fill { state, .. } = &dl.ops[0] {
             assert!((state.ctm.a - 1.0).abs() < 0.01);
+        } else {
+            panic!("expected fill");
+        }
+    }
+
+    /// The `gs` operator resolves the `/ExtGState` dict and carries its
+    /// `/BM` blend mode into the op's resolved state.
+    #[test]
+    fn gs_resolves_ext_gstate_blend_mode() {
+        let mut g = guard();
+        let ext = |name: &Bytes| -> Option<Vec<(Bytes, Operand)>> {
+            if name.as_slice() == b"GS1" {
+                Some(vec![(
+                    Bytes::copy_from_slice(b"BM"),
+                    Operand::Name(Bytes::copy_from_slice(b"Multiply")),
+                )])
+            } else {
+                None
+            }
+        };
+        let dl = execute(
+            b"/GS1 gs 0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
+            &const_width,
+            &no_do,
+            &ext,
+            &mut g,
+        )
+        .expect("execute");
+        if let Op::Fill { state, .. } = &dl.ops[0] {
+            assert_eq!(state.blend, selis_color::BlendMode::Multiply);
         } else {
             panic!("expected fill");
         }

@@ -24,6 +24,8 @@ pub struct TinySkiaBackend {
     height: u32,
     /// The active soft mask (device-space alpha), if any.
     soft_mask: Option<tiny_skia::Mask>,
+    /// The blend mode for subsequent ops.
+    blend: crate::BlendMode,
 }
 
 impl TinySkiaBackend {
@@ -36,6 +38,7 @@ impl TinySkiaBackend {
             width,
             height,
             soft_mask: None,
+            blend: crate::BlendMode::Normal,
         })
     }
 
@@ -69,7 +72,10 @@ impl TinySkiaBackend {
             return; // zero canvas: nothing to draw
         };
         paint(layer.as_mut());
-        let ts_paint = PixmapPaint::default();
+        let ts_paint = PixmapPaint {
+            blend_mode: to_ts_blend(self.blend),
+            ..PixmapPaint::default()
+        };
         self.pixmap.as_mut().draw_pixmap(
             0,
             0,
@@ -133,7 +139,7 @@ fn to_ts_path(path: &Path) -> Option<tiny_skia::Path> {
 /// The colour components are clamped in [0,1], so the RGBA8 narrowing is
 /// exact in range.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-fn to_ts_paint(paint: &crate::Paint) -> Paint<'static> {
+fn to_ts_paint_sub(paint: &crate::Paint) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color_rgba8(
         (paint.colour.rgb.r * 255.0) as u8,
@@ -142,6 +148,30 @@ fn to_ts_paint(paint: &crate::Paint) -> Paint<'static> {
         (paint.colour.a * 255.0) as u8,
     );
     p
+}
+
+/// Map a selis blend mode to a tiny-skia blend mode.
+fn to_ts_blend(blend: crate::BlendMode) -> tiny_skia::BlendMode {
+    use crate::BlendMode;
+    match blend {
+        BlendMode::Normal => tiny_skia::BlendMode::SourceOver,
+        BlendMode::Multiply => tiny_skia::BlendMode::Multiply,
+        BlendMode::Screen => tiny_skia::BlendMode::Screen,
+        BlendMode::Overlay => tiny_skia::BlendMode::Overlay,
+        BlendMode::Darken => tiny_skia::BlendMode::Darken,
+        BlendMode::Lighten => tiny_skia::BlendMode::Lighten,
+        BlendMode::ColorDodge => tiny_skia::BlendMode::ColorDodge,
+        BlendMode::ColorBurn => tiny_skia::BlendMode::ColorBurn,
+        BlendMode::HardLight => tiny_skia::BlendMode::HardLight,
+        BlendMode::SoftLight => tiny_skia::BlendMode::SoftLight,
+        BlendMode::Difference => tiny_skia::BlendMode::Difference,
+        BlendMode::Exclusion => tiny_skia::BlendMode::Exclusion,
+        BlendMode::Hue => tiny_skia::BlendMode::Hue,
+        BlendMode::Saturation => tiny_skia::BlendMode::Saturation,
+        BlendMode::Color => tiny_skia::BlendMode::Color,
+        BlendMode::Luminosity => tiny_skia::BlendMode::Luminosity,
+        BlendMode::Unknown => tiny_skia::BlendMode::SourceOver,
+    }
 }
 
 fn to_ts_stroke(stroke: &crate::Stroke) -> Stroke {
@@ -175,7 +205,8 @@ impl Backend for TinySkiaBackend {
         let Some(ts_path) = to_ts_path(path) else {
             return;
         };
-        let ts_paint = to_ts_paint(paint);
+        let mut ts_paint = to_ts_paint_sub(paint);
+        ts_paint.blend_mode = to_ts_blend(self.blend);
         let rule = to_ts_fill_rule(rule);
         self.with_soft_mask(|mut layer| {
             layer.fill_path(&ts_path, &ts_paint, rule, Transform::identity(), None);
@@ -186,7 +217,8 @@ impl Backend for TinySkiaBackend {
         let Some(ts_path) = to_ts_path(path) else {
             return;
         };
-        let ts_paint = to_ts_paint(paint);
+        let mut ts_paint = to_ts_paint_sub(paint);
+        ts_paint.blend_mode = to_ts_blend(self.blend);
         let ts_stroke = to_ts_stroke(stroke);
         self.with_soft_mask(|mut layer| {
             layer.stroke_path(&ts_path, &ts_paint, &ts_stroke, Transform::identity(), None);
@@ -206,7 +238,10 @@ impl Backend for TinySkiaBackend {
             placement.rect.height() as f32 / image.height as f32,
         )
         .pre_translate(placement.rect.x0 as f32, placement.rect.y0 as f32);
-        let paint = PixmapPaint::default();
+        let paint = tiny_skia::PixmapPaint {
+            blend_mode: to_ts_blend(self.blend),
+            ..PixmapPaint::default()
+        };
         self.with_soft_mask(|mut layer| {
             layer.draw_pixmap(0, 0, src.as_ref(), &paint, ts, None);
         });
@@ -224,8 +259,8 @@ impl Backend for TinySkiaBackend {
         // RecordingBackend and enforced here once masks are threaded.
     }
 
-    fn set_blend(&mut self, _blend: crate::BlendMode) {
-        // Blend mode is per-paint in tiny-skia; RAST.06 wires it through.
+    fn set_blend(&mut self, blend: crate::BlendMode) {
+        self.blend = blend;
     }
 
     fn set_soft_mask(&mut self, mask: Option<&Mask>) {

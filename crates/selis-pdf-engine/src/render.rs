@@ -32,7 +32,21 @@ pub fn render_display_list(
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     g: &mut BudgetGuard<'_>,
 ) {
+    // The blend mode is per-op resolved state; emit `set_blend` only when it
+    // changes so the backend stays in sync without redundant calls.
+    let mut current_blend = selis_color::BlendMode::Normal;
     for op in &dl.ops {
+        let blend = match op {
+            Op::Fill { state, .. }
+            | Op::Stroke { state, .. }
+            | Op::FillStroke { state, .. }
+            | Op::Text { state, .. }
+            | Op::Image { state, .. } => state.blend,
+        };
+        if blend != current_blend {
+            backend.set_blend(blend);
+            current_blend = blend;
+        }
         match op {
             Op::Fill { path, state } => {
                 let Some(p) = to_raster_path(path) else {
@@ -265,13 +279,23 @@ mod tests {
         None
     }
 
+    fn no_ext_gstate(_name: &selis_bytes::Bytes) -> Option<Vec<(selis_bytes::Bytes, selis_pdf_content::dispatch::Operand)>> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
         let mut g = guard();
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &mut g)
-            .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(&dl, &mut backend, &no_font, &mut g);
         let data = backend.pixmap().data();
@@ -286,8 +310,14 @@ mod tests {
         let mut g = guard();
         // Fill the whole page blue first, then a red square in the centre.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0 0 1 rg f 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &mut g)
-            .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(&dl, &mut backend, &no_font, &mut g);
         let data = backend.pixmap().data();
@@ -316,7 +346,7 @@ mod tests {
         };
         // Scale the unit square to 0..100 so the image fills the canvas.
         let content = b"100 0 0 100 0 0 cm /Im1 Do";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &do_image, &mut g)
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &do_image, &no_ext_gstate, &mut g)
             .expect("execute");
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
@@ -328,5 +358,41 @@ mod tests {
         let br = (90 * 100 + 90) * 4;
         assert_eq!(&data[tl..tl + 3], &[255, 0, 0]);
         assert_eq!(&data[br..br + 3], &[0, 0, 255]);
+    }
+
+    /// A `/Multiply` blend darkens the fill against a gray backdrop, rather
+    /// than source-over replacing it.
+    #[test]
+    fn multiply_blend_darkens_the_fill() {
+        let mut g = guard();
+        // Gray page, then red on top with /Multiply: red = 0.5 × 1.0 = 0.5.
+        let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 g f \
+                        /GS1 gs 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
+        let ext = |name: &selis_bytes::Bytes| {
+            if name.as_slice() == b"GS1" {
+                Some(vec![(
+                    selis_bytes::Bytes::copy_from_slice(b"BM"),
+                    selis_pdf_content::dispatch::Operand::Name(
+                        selis_bytes::Bytes::copy_from_slice(b"Multiply"),
+                    ),
+                )])
+            } else {
+                None
+            }
+        };
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
+            .expect("execute");
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        let data = backend.pixmap().data();
+        let centre = (50 * 100 + 50) * 4;
+        // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
+        // the green/blue channels are suppressed.
+        assert!(
+            data[centre] < 200,
+            "red should be darkened by Multiply, got {}",
+            data[centre]
+        );
+        assert_eq!(data[centre + 1], 0, "green should be zero");
     }
 }

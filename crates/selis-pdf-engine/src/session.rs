@@ -7,6 +7,7 @@
 use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
 use selis_geom::Matrix;
+use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
 use selis_raster::TinySkiaBackend;
@@ -119,7 +120,15 @@ impl Session {
                 .ok()
                 .flatten()
         };
-        selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, g)
+        let resolve_ext_gstate =
+            move |name: &Bytes| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
+                let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+                let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+                resolve_ext_gstate_inner(&mut res, page, name, &mut bg)
+                    .ok()
+                    .flatten()
+            };
+        selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
     }
 }
 
@@ -440,6 +449,59 @@ fn resolve_xobject_inner(
         height: img.height,
         rgba8: Bytes::copy_from_slice(&img.rgba8),
     }))
+}
+
+/// Resolve a `/ExtGState` resource name to its dictionary as `Operand` pairs,
+/// for the content interpreter's `gs` operator. Unknown values are skipped so
+/// a hostile ExtGState never aborts the page.
+fn resolve_ext_gstate_inner(
+    resolver: &mut Resolver<'_>,
+    page: &selis_pdf_doc::Page,
+    name: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Vec<(Bytes, Operand)>>> {
+    let resources = match &page.resources {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    let ext = match dict_get(resources, b"ExtGState") {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    let gs = match dict_get(ext, name.as_slice()) {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    let obj = match gs {
+        Obj::Ref(r) => resolver.resolve(*r, g)?,
+        Obj::Dict(_) => gs.clone(),
+        _ => return Ok(None),
+    };
+    let Obj::Dict(pairs) = &obj else {
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    for (k, v) in pairs {
+        if let Some(op) = obj_to_operand(v) {
+            out.push((k.clone(), op));
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Convert a resolved object to a content `Operand` (for ExtGState merging).
+fn obj_to_operand(obj: &Obj) -> Option<Operand> {
+    match obj {
+        Obj::Int(v) => Some(Operand::Num(*v as f64)),
+        Obj::Real { scaled, scale } => Some(Operand::Num(*scaled as f64 / 10f64.powi(*scale as i32))),
+        Obj::Name(n) => Some(Operand::Name(n.clone())),
+        Obj::Bool(b) => Some(Operand::Bool(*b)),
+        Obj::Array(items) => {
+            let ops: Vec<Operand> = items.iter().filter_map(obj_to_operand).collect();
+            Some(Operand::Arr(ops))
+        }
+        _ => None,
+    }
 }
 
 fn dict_get<'a>(obj: &'a Obj, key: &[u8]) -> Option<&'a Obj> {

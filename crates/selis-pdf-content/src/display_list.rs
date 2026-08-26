@@ -11,6 +11,7 @@
 //! an earlier one's appearance. This is what makes the IR diffable at the
 //! semantic level ("op 412 changed fill colour") rather than the pixel level.
 
+use selis_color::BlendMode;
 use selis_geom::{Matrix, Point, Rect};
 
 use crate::gstate::GState;
@@ -36,6 +37,8 @@ pub struct ResolvedState {
     pub alpha_fill: f64,
     /// The stroke alpha.
     pub alpha_stroke: f64,
+    /// The blend mode (from `/ExtGState /BM`).
+    pub blend: BlendMode,
 }
 
 impl From<&GState> for ResolvedState {
@@ -51,6 +54,7 @@ impl From<&GState> for ResolvedState {
             stroke: [0.0, 0.0, 0.0],
             alpha_fill: g.alpha_fill,
             alpha_stroke: g.alpha_stroke,
+            blend: BlendMode::from_name(&g.blend_mode),
         }
     }
 }
