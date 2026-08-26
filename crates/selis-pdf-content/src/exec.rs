@@ -380,6 +380,7 @@ fn flush_path(
         alpha_stroke: gs.alpha_stroke,
         blend: selis_color::BlendMode::from_name(&gs.blend_mode),
         clip: gs.clip.clone(),
+        soft_mask: gs.soft_mask.clone(),
     };
     let op = match paint {
         PaintOp::Fill | PaintOp::FillEvenOdd => Op::Fill { path, state },

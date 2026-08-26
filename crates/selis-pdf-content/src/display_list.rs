@@ -41,6 +41,9 @@ pub struct ResolvedState {
     pub blend: BlendMode,
     /// The clip paths active at the op, innermost last (from `W`/`W*`).
     pub clip: Vec<(Path, ClipRule)>,
+    /// The soft-mask key (a stable reference to the `/SMask` dict), if one is
+    /// active. The engine resolves it to a per-pixel mask at render time.
+    pub soft_mask: Option<selis_bytes::Bytes>,
 }
 
 impl From<&GState> for ResolvedState {
@@ -56,6 +59,7 @@ impl From<&GState> for ResolvedState {
             alpha_stroke: g.alpha_stroke,
             blend: BlendMode::from_name(&g.blend_mode),
             clip: g.clip.clone(),
+            soft_mask: g.soft_mask.clone(),
         }
     }
 }

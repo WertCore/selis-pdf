@@ -11,7 +11,11 @@ use selis_geom::{Matrix, Point};
 use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
-use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
+use selis_raster::{
+    FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend,
+};
+use selis_raster::image::{decode_image, Decode, DecodedImage};
+use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
 
 use crate::render::render_display_list;
@@ -85,10 +89,15 @@ impl Session {
             let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
             font_data_inner(&mut res, page, font_name, &mut bg)
         };
+        let resolve_smask = move |key: &Bytes| -> Option<Mask> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            resolve_smask_inner(&mut res, key, &mut bg)
+        };
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
         // transparent black — fill the canvas before painting content.
         fill_page_backdrop(backend);
-        render_display_list(&dl, backend, &font_data, g);
+        render_display_list(&dl, backend, &font_data, &resolve_smask, g);
         Ok(())
     }
 
@@ -476,6 +485,107 @@ fn resolve_xobject_inner(
     }))
 }
 
+/// Decode a stream (dict + raw data) as an image into straight RGBA8.
+fn decode_image_rgba(
+    dict: &[(selis_bytes::Bytes, Obj)],
+    data: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Result<DecodedImage> {
+    let width = dict_get_obj(dict, b"Width")
+        .and_then(|v| match v {
+            Obj::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let height = dict_get_obj(dict, b"Height")
+        .and_then(|v| match v {
+            Obj::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let bpc = dict_get_obj(dict, b"BitsPerComponent")
+        .and_then(|v| match v {
+            Obj::Int(n) => u8::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(8);
+    let components: u8 = match dict_get_obj(dict, b"ColorSpace") {
+        Some(Obj::Name(n)) => match n.as_slice() {
+            b"DeviceGray" => 1,
+            b"DeviceCMYK" => 4,
+            _ => 3,
+        },
+        _ => 3,
+    };
+    let unfiltered = unfilter_stream_data(dict, data, g);
+    let decode = Decode::identity(usize::from(components));
+    decode_image(width, height, components, bpc, &unfiltered, &decode, g)
+}
+
+/// Resolve a soft-mask key (an object reference to an `/SMask` dict) into a
+/// per-pixel alpha mask.
+fn resolve_smask_inner(
+    resolver: &mut Resolver<'_>,
+    key: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> Option<Mask> {
+    let key_str = std::str::from_utf8(key.as_slice()).ok()?;
+    let mut it = key_str.split_whitespace();
+    let num: u32 = it.next()?.parse().ok()?;
+    let gen: u16 = it.next()?.parse().ok()?;
+    let obj = resolver.resolve(selis_pdf_cos::Ref::new(num, gen), g).ok()?;
+    let Obj::Dict(pairs) = &obj else {
+        return None;
+    };
+    let kind = match dict_get_obj(pairs, b"S") {
+        Some(Obj::Name(n)) if n.as_slice() == b"Alpha" => SoftMaskType::Alpha,
+        _ => SoftMaskType::Luminosity,
+    };
+    let backdrop = dict_backdrop(pairs);
+    let group_ref = match dict_get_obj(pairs, b"G") {
+        Some(Obj::Ref(r)) => *r,
+        _ => return None,
+    };
+    let (dict, data) = resolve_stream(resolver, group_ref, g).ok()??;
+    let img = decode_image_rgba(&dict, &data, g).ok()?;
+    let group = MaskGroup {
+        width: img.width,
+        height: img.height,
+        rgba8: img.rgba8,
+    };
+    let sm = SoftMask {
+        kind,
+        backdrop,
+        transfer: None,
+        group,
+    };
+    build_mask(&sm, g).ok()
+}
+
+/// The backdrop colour from an `/SMask` `/BC` array (default transparent
+/// black).
+fn dict_backdrop(pairs: &[(selis_bytes::Bytes, Obj)]) -> Rgba {
+    let nums: Vec<f64> = match dict_get_obj(pairs, b"BC") {
+        Some(Obj::Array(items)) => items
+            .iter()
+            .filter_map(|o| match o {
+                Obj::Int(v) => Some(*v as f64),
+                Obj::Real { scaled, scale } => {
+                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Rgba::new(
+        nums.first().copied().unwrap_or(0.0).clamp(0.0, 1.0),
+        nums.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0),
+        nums.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
+        1.0,
+    )
+}
+
 /// Resolve a `/ExtGState` resource name to its dictionary as `Operand` pairs,
 /// for the content interpreter's `gs` operator. Unknown values are skipped so
 /// a hostile ExtGState never aborts the page.
@@ -507,11 +617,29 @@ fn resolve_ext_gstate_inner(
     };
     let mut out = Vec::new();
     for (k, v) in pairs {
+        // A soft mask is a dictionary (or a reference to one); emit a stable
+        // key so the renderer can resolve it to a per-pixel mask later.
+        if k.as_slice() == b"SMask" {
+            if let Some(key) = smask_ref_key(v) {
+                out.push((k.clone(), Operand::Name(key)));
+            }
+            continue;
+        }
         if let Some(op) = obj_to_operand(v) {
             out.push((k.clone(), op));
         }
     }
     Ok(Some(out))
+}
+
+/// A stable key for an `/SMask` value: the object reference of the SMask
+/// dictionary. `None` when the value is not a direct reference (inline soft
+/// masks are a refinement; most producers reference the dictionary).
+fn smask_ref_key(obj: &Obj) -> Option<Bytes> {
+    match obj {
+        Obj::Ref(r) => Some(Bytes::copy_from_slice(format!("{} {}", r.num, r.gen).as_bytes())),
+        _ => None,
+    }
 }
 
 /// Convert a resolved object to a content `Operand` (for ExtGState merging).

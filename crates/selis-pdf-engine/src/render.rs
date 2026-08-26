@@ -30,14 +30,15 @@ pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     g: &mut BudgetGuard<'_>,
 ) {
-    // The blend mode and clip are per-op resolved state; emit `set_blend` and
-    // re-establish the clip only when they change so the backend stays in sync
-    // without redundant work.
+    // The blend mode, clip, and soft mask are per-op resolved state; emit
+    // backend state only when they change.
     let mut current_blend = selis_color::BlendMode::Normal;
     let mut current_clip: Vec<(selis_pdf_content::path::Path, selis_pdf_content::path::ClipRule)> =
         Vec::new();
+    let mut current_smask: Option<selis_bytes::Bytes> = None;
     for op in &dl.ops {
         // Transparency group boundaries have no per-op paint state.
         if let Op::PushLayer { blend, alpha } = op {
@@ -67,6 +68,14 @@ pub fn render_display_list(
                 }
             }
             current_clip = state.clip.clone();
+        }
+        if state.soft_mask != current_smask {
+            let mask = match &state.soft_mask {
+                Some(key) => resolve_smask(key),
+                None => None,
+            };
+            backend.set_soft_mask(mask.as_ref());
+            current_smask = state.soft_mask.clone();
         }
         match op {
             Op::Fill { path, state } => {
@@ -276,7 +285,7 @@ fn op_state(op: &Op) -> &ResolvedState {
 fn paint(rgb: &[f64; 3], alpha: f64) -> RasterPaint {
     RasterPaint {
         colour: Rgba::new(
-            rgb.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0),
+            rgb.first().copied().unwrap_or(0.0).clamp(0.0, 1.0),
             rgb.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0),
             rgb.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
             alpha.clamp(0.0, 1.0),
@@ -322,6 +331,10 @@ mod tests {
         None
     }
 
+    fn no_smask(_key: &selis_bytes::Bytes) -> Option<selis_raster::Mask> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -336,7 +349,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         // The centre pixel should be opaque red.
         let idx = (50 * 100 + 50) * 4;
@@ -358,7 +371,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         // Centre (50,50) is red; corner (5,5) is blue.
         let centre = (50 * 100 + 50) * 4;
@@ -390,7 +403,7 @@ mod tests {
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         // Top-left (10,10) is red; bottom-right (90,90) is blue.
         let tl = (10 * 100 + 10) * 4;
@@ -422,7 +435,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
@@ -448,7 +461,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         // Inside the clip (25, 25): red (the red fill covers the clip area).
         let inside = (25 * 100 + 25) * 4;
@@ -481,12 +494,58 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
         assert_eq!(data[centre], 128, "red channel ≈127.5");
         assert_eq!(data[centre + 1], 0, "green channel none");
         assert_eq!(data[centre + 2], 128, "blue channel ≈127.5");
+    }
+
+    /// A soft mask (from `/GS1 gs` with an SMask key) modulates the alpha of
+    /// everything painted while active: a black fill becomes 50% alpha.
+    #[test]
+    fn soft_mask_modulates_alpha() {
+        let mut g = guard();
+        let ext = |name: &selis_bytes::Bytes| {
+            if name.as_slice() == b"GS1" {
+                Some(vec![(
+                    selis_bytes::Bytes::copy_from_slice(b"SMask"),
+                    selis_pdf_content::dispatch::Operand::Name(
+                        selis_bytes::Bytes::copy_from_slice(b"1 0"),
+                    ),
+                )])
+            } else {
+                None
+            }
+        };
+        let resolve_smask = |key: &selis_bytes::Bytes| -> Option<selis_raster::Mask> {
+            if key.as_slice() == b"1 0" {
+                Some(selis_raster::Mask {
+                    width: 1,
+                    height: 1,
+                    alpha8: vec![128],
+                })
+            } else {
+                None
+            }
+        };
+        let content = b"/GS1 gs 0 0 m 100 0 l 100 100 l 0 100 l h 0 g f";
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &ext,
+            &mut g,
+        )
+        .expect("execute");
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &mut g);
+        let data = backend.pixmap().data();
+        let centre = (50 * 100 + 50) * 4;
+        // The black fill is 50% alpha (mask 128), not fully opaque.
+        assert_eq!(data[centre], 0, "black");
+        assert_eq!(data[centre + 3], 128, "alpha halved by the mask");
     }
 }
