@@ -313,6 +313,35 @@ fn execute_inner(
                 }
             }
 
+            // Marked content / transparency groups.
+            "BMC" => {
+                // Unconditional marked content starts a transparency group
+                // using the current graphics state's blend and alpha.
+                dl.push(Op::PushLayer {
+                    blend: selis_color::BlendMode::from_name(&gstate.blend_mode),
+                    alpha: gstate.alpha_fill,
+                });
+            }
+            "BDC" => {
+                // Tagged marked content: the tag may name an /ExtGState that
+                // carries the group's blend mode and alpha.
+                let mut blend = selis_color::BlendMode::from_name(&gstate.blend_mode);
+                let mut alpha = gstate.alpha_fill;
+                if let Some(Operand::Name(name)) = operands.first() {
+                    if let Some(pairs) = resolve_ext_gstate(name) {
+                        if let Some(b) = ext_gstate_blend(&pairs) {
+                            blend = b;
+                        }
+                        if let Some(a) = ext_gstate_alpha(&pairs) {
+                            alpha = a;
+                        }
+                    }
+                }
+                dl.push(Op::PushLayer { blend, alpha });
+            }
+            "EMC" => dl.push(Op::PopLayer),
+            "MP" | "DP" => {} // marked-content points: no grouping
+
             // Everything else — ignored.
             _ => {}
         }
@@ -364,6 +393,29 @@ fn flush_path(
     dl.push(op);
 }
 
+/// The `/BM` blend mode from a resolved ExtGState dictionary.
+fn ext_gstate_blend(pairs: &[(Bytes, Operand)]) -> Option<selis_color::BlendMode> {
+    pairs.iter().find(|(k, _)| k.as_slice() == b"BM").and_then(|(_, v)| match v {
+        Operand::Name(n) => Some(selis_color::BlendMode::from_name(n.as_slice())),
+        _ => None,
+    })
+}
+
+/// The constant alpha from a resolved ExtGState dictionary (`ca` fill, else
+/// `CA` stroke).
+fn ext_gstate_alpha(pairs: &[(Bytes, Operand)]) -> Option<f64> {
+    let find = |key: &[u8]| {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .and_then(|(_, v)| match v {
+                Operand::Num(a) => Some(*a),
+                _ => None,
+            })
+    };
+    find(b"ca").or_else(|| find(b"CA"))
+}
+
 /// A numeric operand, defaulting to 0.
 fn num(operands: &[Operand], i: usize) -> f64 {
     match operands.get(i) {
@@ -371,8 +423,6 @@ fn num(operands: &[Operand], i: usize) -> f64 {
         _ => 0.0,
     }
 }
-
-/// Clamp a value to a byte.
 fn clamp_u8(v: f64) -> u8 {
     if !v.is_finite() || v < 0.0 {
         return 0;
@@ -569,5 +619,42 @@ mod tests {
         } else {
             panic!("expected fill 1");
         }
+    }
+
+    /// `BDC`/`EMC` produce a `PushLayer`/`PopLayer` pair, with the group's
+    /// blend mode and alpha taken from the tagged `/ExtGState`.
+    #[test]
+    fn bdc_emc_produce_group_ops() {
+        let mut g = guard();
+        let ext = |name: &Bytes| -> Option<Vec<(Bytes, Operand)>> {
+            if name.as_slice() == b"GS1" {
+                Some(vec![
+                    (
+                        Bytes::copy_from_slice(b"BM"),
+                        Operand::Name(Bytes::copy_from_slice(b"Multiply")),
+                    ),
+                    (Bytes::copy_from_slice(b"ca"), Operand::Num(0.5)),
+                ])
+            } else {
+                None
+            }
+        };
+        let dl = execute(
+            b"/GS1 BDC 0 0 m 100 0 l 100 100 l 0 100 l h 0 g f EMC",
+            &const_width,
+            &no_do,
+            &ext,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 3, "push-layer, fill, pop-layer");
+        if let Op::PushLayer { blend, alpha } = &dl.ops[0] {
+            assert_eq!(*blend, selis_color::BlendMode::Multiply);
+            assert!((*alpha - 0.5).abs() < 1e-9);
+        } else {
+            panic!("expected push layer");
+        }
+        assert!(matches!(dl.ops[1], Op::Fill { .. }));
+        assert!(matches!(dl.ops[2], Op::PopLayer));
     }
 }

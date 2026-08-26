@@ -28,7 +28,27 @@ pub struct TinySkiaBackend {
     blend: crate::BlendMode,
     /// The accumulated clip mask (intersection of all `clip` calls), if any.
     clip_mask: Option<tiny_skia::Mask>,
+    /// The transparency-group layer stack (RAST.04).
+    layers: Vec<LayerState>,
 }
+
+/// A pushed transparency group: the parent canvas and the state to restore
+/// when the group is composited back.
+struct LayerState {
+    /// The parent pixmap (restored on pop).
+    parent: Pixmap,
+    /// The soft mask saved on push (applied to the group's composite).
+    soft_mask: Option<tiny_skia::Mask>,
+    /// The blend mode saved on push (restored on pop).
+    blend: crate::BlendMode,
+    /// The group's blend mode (used to composite the layer back).
+    group_blend: crate::BlendMode,
+    /// The group's alpha (used to composite the layer back).
+    group_alpha: f64,
+}
+
+/// The maximum group nesting depth (a hostile BDC/EMC must terminate).
+const MAX_LAYER_DEPTH: usize = 32;
 
 impl TinySkiaBackend {
     /// Create a new raster of `width × height` pixels.
@@ -42,6 +62,7 @@ impl TinySkiaBackend {
             soft_mask: None,
             blend: crate::BlendMode::Normal,
             clip_mask: None,
+            layers: Vec::new(),
         })
     }
 
@@ -256,11 +277,43 @@ impl Backend for TinySkiaBackend {
         self.clip_mask = clip;
     }
 
-    fn push_layer(&mut self, _blend: crate::BlendMode, _alpha: f64) {
-        // Transparency groups land with RAST.04.
+    fn push_layer(&mut self, blend: crate::BlendMode, alpha: f64) {
+        if self.layers.len() >= MAX_LAYER_DEPTH {
+            return; // deviation: skip the over-deep group
+        }
+        let Some(layer) = Pixmap::new(self.width, self.height) else {
+            return;
+        };
+        let parent = std::mem::replace(&mut self.pixmap, layer);
+        self.layers.push(LayerState {
+            parent,
+            soft_mask: self.soft_mask.take(),
+            blend: self.blend,
+            group_blend: blend,
+            group_alpha: alpha.clamp(0.0, 1.0),
+        });
+        // Inside the group, elements composite with source-over onto the
+        // group backdrop; the group's blend applies at the composite-back.
+        self.blend = crate::BlendMode::Normal;
     }
 
-    fn pop_layer(&mut self) {}
+    fn pop_layer(&mut self) {
+        let Some(state) = self.layers.pop() else {
+            return; // deviation: EMC with no matching BDC/BMC
+        };
+        let layer = std::mem::replace(&mut self.pixmap, state.parent);
+        let paint = PixmapPaint {
+            blend_mode: to_ts_blend(state.group_blend),
+            opacity: state.group_alpha.clamp(0.0, 1.0) as f32,
+            ..PixmapPaint::default()
+        };
+        let mask = state.soft_mask.as_ref();
+        self.pixmap
+            .as_mut()
+            .draw_pixmap(0, 0, layer.as_ref(), &paint, Transform::identity(), mask);
+        self.soft_mask = state.soft_mask;
+        self.blend = state.blend;
+    }
 
     fn clip(&mut self, path: &Path, rule: crate::FillRule) {
         let Some(ts_path) = to_ts_path(path) else {

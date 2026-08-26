@@ -39,6 +39,15 @@ pub fn render_display_list(
     let mut current_clip: Vec<(selis_pdf_content::path::Path, selis_pdf_content::path::ClipRule)> =
         Vec::new();
     for op in &dl.ops {
+        // Transparency group boundaries have no per-op paint state.
+        if let Op::PushLayer { blend, alpha } = op {
+            backend.push_layer(*blend, *alpha);
+            continue;
+        }
+        if matches!(op, Op::PopLayer) {
+            backend.pop_layer();
+            continue;
+        }
         let state = op_state(op);
         if state.blend != current_blend {
             backend.set_blend(state.blend);
@@ -133,6 +142,9 @@ pub fn render_display_list(
                 };
                 let placement = selis_raster::ImagePlacement { rect: *rect };
                 backend.draw_image(&img, &placement);
+            }
+            Op::PushLayer { .. } | Op::PopLayer => {
+                // Handled before the paint dispatch; unreachable here.
             }
         }
     }
@@ -245,7 +257,8 @@ fn raster_path_from_commands(commands: &[PathCmd]) -> Option<RasterPath> {
     })
 }
 
-/// The resolved state of any display-list op.
+/// The resolved state of any paint op (the caller handles group boundaries
+/// before calling this).
 fn op_state(op: &Op) -> &ResolvedState {
     match op {
         Op::Fill { state, .. }
@@ -253,6 +266,9 @@ fn op_state(op: &Op) -> &ResolvedState {
         | Op::FillStroke { state, .. }
         | Op::Text { state, .. }
         | Op::Image { state, .. } => state,
+        Op::PushLayer { .. } | Op::PopLayer => {
+            unreachable!("group ops are handled before op_state")
+        }
     }
 }
 
@@ -442,5 +458,35 @@ mod tests {
         assert_eq!(data[outside], 127, "outside clip should be gray");
         assert_eq!(data[outside + 1], 127);
         assert_eq!(data[outside + 2], 127);
+    }
+
+    /// A transparency group with alpha 0.5 composites its content at 50%
+    /// over the backdrop: blue at 50% over red is magenta.
+    #[test]
+    fn group_alpha_composites_over_the_backdrop() {
+        let mut g = guard();
+        // Fill the canvas red, then a group tagged /GS1 (alpha 0.5) fills blue.
+        let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 1 0 0 rg f \
+                        /GS1 BDC 0 0 m 100 0 l 100 100 l 0 100 l h 0 0 1 rg f EMC";
+        let ext = |name: &selis_bytes::Bytes| {
+            if name.as_slice() == b"GS1" {
+                Some(vec![(
+                    selis_bytes::Bytes::copy_from_slice(b"ca"),
+                    selis_pdf_content::dispatch::Operand::Num(0.5),
+                )])
+            } else {
+                None
+            }
+        };
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
+            .expect("execute");
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        let data = backend.pixmap().data();
+        let centre = (50 * 100 + 50) * 4;
+        // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
+        assert_eq!(data[centre], 128, "red channel ≈127.5");
+        assert_eq!(data[centre + 1], 0, "green channel none");
+        assert_eq!(data[centre + 2], 128, "blue channel ≈127.5");
     }
 }

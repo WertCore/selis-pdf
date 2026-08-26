@@ -107,6 +107,16 @@ pub enum Op {
         /// The resolved state at paint time.
         state: ResolvedState,
     },
+    /// Push a transparency group (`BDC`/`BMC`): subsequent ops paint into a
+    /// layer that is composited back with `blend` and `alpha`.
+    PushLayer {
+        /// The group's blend mode.
+        blend: BlendMode,
+        /// The group's alpha.
+        alpha: f64,
+    },
+    /// Pop the most recent transparency group (`EMC`).
+    PopLayer,
 }
 
 /// A resolved glyph run (font, size, and the glyph codes).
@@ -164,6 +174,7 @@ impl DisplayList {
                     runs.iter().map(|r| r.glyphs.len().saturating_mul(2)).sum()
                 }
                 Op::Image { rgba8, .. } => rgba8.len().saturating_mul(4),
+                Op::PushLayer { .. } | Op::PopLayer => 0,
             });
         }
         total
@@ -253,6 +264,14 @@ fn op_diff(a: &Op, b: &Op) -> Option<String> {
                 None
             }
         }
+        (Op::PushLayer { blend: x, alpha: xa }, Op::PushLayer { blend: y, alpha: ya }) => {
+            if x != y || xa != ya {
+                Some("group blend or alpha changed".to_string())
+            } else {
+                None
+            }
+        }
+        (Op::PopLayer, Op::PopLayer) => None,
         _ => Some(format!("op kind changed: {} vs {}", op_name(a), op_name(b))),
     }
 }
@@ -264,6 +283,8 @@ fn op_name(op: &Op) -> &'static str {
         Op::FillStroke { .. } => "fillstroke",
         Op::Text { .. } => "text",
         Op::Image { .. } => "image",
+        Op::PushLayer { .. } => "push-layer",
+        Op::PopLayer => "pop-layer",
     }
 }
 
