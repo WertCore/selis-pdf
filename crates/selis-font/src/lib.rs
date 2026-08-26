@@ -44,8 +44,8 @@ pub use fallback::{can_render, fallback_order, match_substitute, substitute, Fon
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{
-    glyph_count, glyph_id_for_char, glyph_id_for_name, glyph_name, outline_glyph, Outline,
-    OutlineCmd,
+    glyph_count, glyph_id_for_char, glyph_id_for_name, glyph_name, outline_glyph, units_per_em,
+    Outline, OutlineCmd,
 };
 pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
 pub use recover::{Recovery, RecoveryConfidence, TextRecovery};

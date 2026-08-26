@@ -67,7 +67,7 @@ pub fn render_display_list(
                     let fb = selis_bytes::Bytes::from(font_bytes);
                     // The outline coordinates are in font units; the text
                     // transform scales them by size/upem and positions them.
-                    let upem = selis_font::glyph_count(&fb)
+                    let upem = selis_font::units_per_em(&fb)
                         .map(f64::from)
                         .unwrap_or(1000.0);
                     let scale = run.size / upem;

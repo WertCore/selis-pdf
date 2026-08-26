@@ -126,6 +126,23 @@ pub fn glyph_count(data: &Bytes) -> Option<u16> {
     )
 }
 
+/// The units-per-em of the embedded font, or `None` for a broken font.
+///
+/// The outline coordinates from [`outline_glyph`] are in these units; the
+/// renderer scales by `font_size / units_per_em`.
+#[must_use]
+pub fn units_per_em(data: &Bytes) -> Option<u16> {
+    let font = FontRef::new(data.as_slice()).ok()?;
+    let upem = font
+        .metrics(Size::unscaled(), LocationRef::default())
+        .units_per_em;
+    if upem == 0 {
+        None
+    } else {
+        Some(upem)
+    }
+}
+
 /// The `post` glyph name for a glyph id, if the font has one.
 ///
 /// This is the link from the encoding model (a glyph *name* from

@@ -93,10 +93,27 @@ impl Session {
                 .ok()
                 .flatten()
         };
+        let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            font_data_inner(&mut res, page, font_name, &mut bg)
+        };
         let dl = selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, g)?;
-        render_display_list(&dl, backend, &|_| None, g);
+        render_display_list(&dl, backend, &font_data, g);
         Ok(())
     }
+}
+
+/// The embedded font program bytes for a font resource name.
+fn font_data_inner(
+    resolver: &mut Resolver<'_>,
+    page: &selis_pdf_doc::Page,
+    font_name: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> Option<Vec<u8>> {
+    let font_dict = resolve_font_dict(resolver, page, font_name, g)?;
+    let font_file = font_dict.font_file?;
+    Some(font_file.data().as_slice().to_vec())
 }
 
 fn resolve_page_content(
@@ -452,5 +469,31 @@ mod tests {
         // The top-left pixel is white (255 gray); the rest are black.
         assert_eq!(&data[0..3], &[255, 255, 255]);
         assert_eq!(&data[8..11], &[0, 0, 0]);
+    }
+
+    /// A PDF with an embedded TrueType font renders its text glyphs.
+    #[test]
+    fn session_renders_embedded_text() {
+        let src = include_bytes!("fixtures/text.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut backend = TinySkiaBackend::new(2000, 200).expect("pixmap");
+        session
+            .render_page(0, &mut backend, &budget, &mut g)
+            .expect("render");
+        let data = backend.pixmap().data();
+        // The canvas has no background fill; glyphs paint black with alpha 255.
+        let mut painted = 0usize;
+        for px in data.chunks(4) {
+            if px[3] == 255 {
+                painted = painted.saturating_add(1);
+            }
+        }
+        // At least some pixels were painted by the 'AB' glyphs.
+        assert!(
+            painted > 100,
+            "expected painted glyph pixels, got {painted}"
+        );
     }
 }
