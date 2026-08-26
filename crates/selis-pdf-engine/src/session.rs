@@ -824,35 +824,46 @@ fn resolve_shading_inner(
         Some(Obj::Array(arr)) => arr.as_slice(),
         _ => &[],
     };
-    // Type 4 (free-form Gouraud mesh): decode the packed vertex stream.
-    let gouraud = if shading_type == 4 {
-        let data = mesh_data?;
-        let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
-        let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
-        let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
-        let decode: Vec<f64> = match o(pairs, b"Decode") {
-            Some(Obj::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| match v {
-                    Obj::Int(n) => Some(*n as f64),
-                    Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
+    // Types 4/5 (Gouraud and lattice meshes): decode the packed vertex stream
+    // into a common (vertices, triangles) mesh.
+    let mesh: Option<(Vec<selis_raster::shading::ShadingPoint>, Vec<(u32, u32, u32)>)> =
+        match shading_type {
+            4 | 5 => {
+                let data = mesh_data?;
+                let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
+                let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
+                let decode: Vec<f64> = match o(pairs, b"Decode") {
+                    Some(Obj::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|v| match v {
+                            Obj::Int(n) => Some(*n as f64),
+                            Obj::Real { scaled, scale } => {
+                                Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let components = match color_space {
+                    b"DeviceGray" | b"G" => 1,
+                    b"DeviceCMYK" | b"CMYK" => 4,
+                    _ => 3,
+                };
+                if shading_type == 4 {
+                    let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
+                    let m = parse_gouraud_shading(data, bpc, bpc_color, bpf, &decode, components)?;
+                    Some((m.vertices, m.triangles))
+                } else {
+                    let cols = f64_to_u32(on(pairs, b"VerticesPerRow").unwrap_or(2.0));
+                    let m =
+                        parse_lattice_shading(data, bpc, bpc_color, &decode, components, cols as usize)?;
+                    let tris = lattice_triangles(&m);
+                    Some((m.vertices, tris))
+                }
+            }
+            _ => None,
         };
-        let components = match color_space {
-            b"DeviceGray" | b"G" => 1,
-            b"DeviceCMYK" | b"CMYK" => 4,
-            _ => 3,
-        };
-        parse_gouraud_shading(data, bpc, bpc_color, bpf, &decode, components)?
-    } else {
-        selis_raster::shading::GouraudShading {
-            vertices: Vec::new(),
-            triangles: Vec::new(),
-        }
-    };
     let mut rgba = Vec::with_capacity(
         usize::try_from(w).unwrap_or(0).saturating_mul(usize::try_from(h).unwrap_or(0)).saturating_mul(4),
     );
@@ -889,19 +900,21 @@ fn resolve_shading_inner(
                     Some(c) => c,
                     None => continue,
                 },
-                4 => {
+                4 | 5 => {
                     // Find the triangle containing the point and interpolate
                     // the vertex colours (barycentric).
+                    let Some((vertices, triangles)) = &mesh else { continue };
                     let mut found: Option<Vec<f64>> = None;
-                    for tri in &gouraud.triangles {
+                    for tri in triangles {
                         let (Some(a), Some(b), Some(c)) = (
-                            gouraud.vertices.get(tri.0 as usize),
-                            gouraud.vertices.get(tri.1 as usize),
-                            gouraud.vertices.get(tri.2 as usize),
+                            vertices.get(tri.0 as usize),
+                            vertices.get(tri.1 as usize),
+                            vertices.get(tri.2 as usize),
                         ) else {
                             continue;
                         };
-                        if let Some((u, v, w)) = barycentric_weights(a.point, b.point, c.point, in_shading)
+                        if let Some((u, v, w)) =
+                            barycentric_weights(a.point, b.point, c.point, in_shading)
                         {
                             found = Some(
                                 a.components
@@ -1143,6 +1156,79 @@ fn parse_gouraud_shading(
     } else {
         Some(GouraudShading { vertices, triangles })
     }
+}
+
+/// Decode a type-5 lattice-form Gouraud mesh from its packed bit stream. The
+/// vertices form a grid of `/VerticesPerRow` columns; each 2×2 cell becomes
+/// two triangles.
+fn parse_lattice_shading(
+    data: &[u8],
+    bpc: u32,
+    bpc_color: u32,
+    decode: &[f64],
+    components: usize,
+    cols: usize,
+) -> Option<selis_raster::shading::LatticeShading> {
+    use selis_geom::Point;
+    use selis_raster::shading::{LatticeShading, ShadingPoint};
+    let mut r = BitReader::new(data);
+    let mut vertices: Vec<ShadingPoint> = Vec::new();
+    loop {
+        let Some(x_raw) = r.read(bpc.max(1)) else { break };
+        let Some(y_raw) = r.read(bpc.max(1)) else { break };
+        let (x, y) = (
+            decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
+            decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+        );
+        let mut comps = Vec::with_capacity(components);
+        let mut ok = true;
+        for c in 0..components {
+            let Some(raw) = r.read(bpc_color.max(1)) else {
+                ok = false;
+                break;
+            };
+            let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
+            let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+            comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
+        }
+        if !ok {
+            break;
+        }
+        vertices.push(ShadingPoint {
+            point: Point::new(x, y),
+            components: comps,
+        });
+    }
+    if vertices.len() < cols.saturating_mul(2) || vertices.len().rem_euclid(cols) != 0 {
+        return None;
+    }
+    Some(LatticeShading {
+        vertices,
+        cols: u32::try_from(cols).ok()?,
+    })
+}
+
+/// Triangulate a lattice-form mesh into its (vertex-index) triangles.
+fn lattice_triangles(
+    l: &selis_raster::shading::LatticeShading,
+) -> Vec<(u32, u32, u32)> {
+    let cols = usize::try_from(l.cols).unwrap_or(0);
+    if cols < 2 {
+        return Vec::new();
+    }
+    let rows = l.vertices.len().div_euclid(cols);
+    let mut tris = Vec::new();
+    for row in 0..rows.saturating_sub(1) {
+        for col in 0..cols.saturating_sub(1) {
+            let v00 = u32::try_from(row.saturating_mul(cols).saturating_add(col)).unwrap_or(u32::MAX);
+            let v01 = u32::try_from(row.saturating_mul(cols).saturating_add(col).saturating_add(1)).unwrap_or(u32::MAX);
+            let v10 = u32::try_from(row.saturating_add(1).saturating_mul(cols).saturating_add(col)).unwrap_or(u32::MAX);
+            let v11 = u32::try_from(row.saturating_add(1).saturating_mul(cols).saturating_add(col).saturating_add(1)).unwrap_or(u32::MAX);
+            tris.push((v00, v01, v10));
+            tris.push((v10, v01, v11));
+        }
+    }
+    tris
 }
 
 /// Barycentric weights of `p` inside triangle `a b c`, or `None` if outside.
@@ -1445,5 +1531,25 @@ mod tests {
         let c = selis_geom::Point::new(0.0, 1.0);
         assert!(barycentric_weights(a, b, c, selis_geom::Point::new(0.25, 0.25)).is_some());
         assert!(barycentric_weights(a, b, c, selis_geom::Point::new(1.0, 1.0)).is_none());
+    }
+
+    /// A type-5 lattice mesh (2 columns) decodes its grid and triangulates
+    /// each 2×2 cell into two triangles.
+    #[test]
+    fn lattice_mesh_decodes_a_grid() {
+        let data = [0x24, 0x93, 0xF0];
+        let decode = [
+            0.0, 1.0, 0.0, 1.0, // x, y ranges
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // rgb ranges
+        ];
+        let lattice = parse_lattice_shading(&data, 1, 1, &decode, 3, 2).expect("lattice");
+        assert_eq!(lattice.vertices.len(), 4);
+        assert_eq!(lattice.cols, 2);
+        assert_eq!(lattice.vertices[0].point, selis_geom::Point::new(0.0, 0.0));
+        assert_eq!(lattice.vertices[3].point, selis_geom::Point::new(1.0, 1.0));
+        let tris = lattice_triangles(&lattice);
+        assert_eq!(tris.len(), 2);
+        assert_eq!(tris[0], (0, 1, 2));
+        assert_eq!(tris[1], (2, 1, 3));
     }
 }
