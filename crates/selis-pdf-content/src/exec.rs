@@ -13,7 +13,7 @@ use selis_sandbox::BudgetGuard;
 use crate::dispatch::{Dispatch, Interpreter, Operand};
 use crate::display_list::{DisplayList, GlyphRun, Op, ResolvedState};
 use crate::gstate::{GState, GStateStack};
-use crate::path::{PaintOp, Path};
+use crate::path::{ClipRule, PaintOp, Path};
 use crate::text::{self, TextState};
 
 /// An XObject target resolved from a `Do` resource name.
@@ -88,7 +88,6 @@ fn execute_inner(
     let mut text_state = TextState::default();
     let mut current_path = Path::new();
     let mut paint_op = PaintOp::None;
-    let mut clip_op = None;
 
     for dispatch in &interp.ops {
         let (op_name, operands) = match dispatch {
@@ -171,9 +170,8 @@ fn execute_inner(
 
             // Path construction.
             "m" => {
-                flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
+                flush_path(&mut *dl, &mut current_path, paint_op, &*gstate);
                 paint_op = PaintOp::None;
-                clip_op = None;
                 current_path.move_to(Point::new(num(operands, 0), num(operands, 1)));
             }
             "l" => current_path.line_to(Point::new(num(operands, 0), num(operands, 1))),
@@ -198,9 +196,8 @@ fn execute_inner(
             }
             "h" => current_path.close(),
             "re" => {
-                flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
+                flush_path(&mut *dl, &mut current_path, paint_op, &*gstate);
                 paint_op = PaintOp::None;
-                clip_op = None;
                 current_path.rectangle(Rect::new(
                     num(operands, 0),
                     num(operands, 1),
@@ -223,14 +220,28 @@ fn execute_inner(
                     _ => PaintOp::None,
                 };
                 if !current_path.is_degenerate() {
-                    flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
+                    flush_path(&mut *dl, &mut current_path, paint_op, &*gstate);
                 }
                 current_path = Path::new();
                 paint_op = PaintOp::None;
-                clip_op = None;
             }
-            "W" => clip_op = Some(false), // non-zero
-            "W*" => clip_op = Some(true), // even-odd
+            "W" => {
+                // `W` sets the clip to the current path (which stays current
+                // so a following paint op fills it too). The clip is part of
+                // the graphics state, saved/restored by q/Q.
+                if !current_path.is_degenerate() {
+                    gstate
+                        .clip
+                        .push((current_path.clone(), ClipRule::NonZero));
+                }
+            }
+            "W*" => {
+                if !current_path.is_degenerate() {
+                    gstate
+                        .clip
+                        .push((current_path.clone(), ClipRule::EvenOdd));
+                }
+            }
 
             // Text.
             "BT" => text_state = TextState::default(),
@@ -307,7 +318,7 @@ fn execute_inner(
         }
     }
     // Flush any remaining path.
-    flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
+    flush_path(&mut *dl, &mut current_path, paint_op, &*gstate);
     Ok(())
 }
 
@@ -323,7 +334,6 @@ fn flush_path(
     dl: &mut DisplayList,
     path: &mut Path,
     paint: PaintOp,
-    clip: Option<bool>,
     gs: &GState,
 ) {
     if path.is_degenerate() || !paint.paints() {
@@ -340,6 +350,7 @@ fn flush_path(
         alpha_fill: gs.alpha_fill,
         alpha_stroke: gs.alpha_stroke,
         blend: selis_color::BlendMode::from_name(&gs.blend_mode),
+        clip: gs.clip.clone(),
     };
     let op = match paint {
         PaintOp::Fill | PaintOp::FillEvenOdd => Op::Fill { path, state },
@@ -531,6 +542,32 @@ mod tests {
             assert!(state.fill[2].abs() < 0.01, "blue should be 0.0");
         } else {
             panic!("expected text");
+        }
+    }
+
+    /// A `W` clip is carried into the next paint op's resolved state, and a
+    /// `Q` restores it (the clip is part of the graphics state).
+    #[test]
+    fn clip_is_carried_into_op_state_and_restored() {
+        let mut g = guard();
+        // clip rect (0,0)-(100,100), then paint a path (clipped), Q, paint again
+        // (no clip).
+        let content = b"0 0 m 100 0 l 100 100 l 0 100 l h q W 10 10 m 90 90 l 0 g f Q 0 0 m 50 0 l 50 50 l 0 50 l h 0 g f";
+        let dl = execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+            .expect("execute");
+        assert_eq!(dl.ops.len(), 2);
+        if let Op::Fill { state, .. } = &dl.ops[0] {
+            assert_eq!(state.clip.len(), 1, "first fill is clipped");
+        } else {
+            panic!("expected fill 0");
+        }
+        if let Op::Fill { state, .. } = &dl.ops[1] {
+            assert!(
+                state.clip.is_empty(),
+                "after Q the second fill is unclipped"
+            );
+        } else {
+            panic!("expected fill 1");
         }
     }
 }

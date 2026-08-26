@@ -15,7 +15,7 @@ use selis_color::BlendMode;
 use selis_geom::{Matrix, Point, Rect};
 
 use crate::gstate::GState;
-use crate::path::Path;
+use crate::path::{ClipRule, Path};
 
 /// The graphics state snapshot an op was painted with (resolved, not
 /// referenced).
@@ -39,6 +39,8 @@ pub struct ResolvedState {
     pub alpha_stroke: f64,
     /// The blend mode (from `/ExtGState /BM`).
     pub blend: BlendMode,
+    /// The clip paths active at the op, innermost last (from `W`/`W*`).
+    pub clip: Vec<(Path, ClipRule)>,
 }
 
 impl From<&GState> for ResolvedState {
@@ -53,6 +55,7 @@ impl From<&GState> for ResolvedState {
             alpha_fill: g.alpha_fill,
             alpha_stroke: g.alpha_stroke,
             blend: BlendMode::from_name(&g.blend_mode),
+            clip: g.clip.clone(),
         }
     }
 }

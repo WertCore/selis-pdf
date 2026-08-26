@@ -9,6 +9,8 @@ use selis_error::{err, Code, Result};
 use selis_geom::Matrix;
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::path::{ClipRule, Path};
+
 /// The graphics state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GState {
@@ -36,6 +38,9 @@ pub struct GState {
     pub blend_mode: selis_bytes::Bytes,
     /// The soft mask (an `SMask` reference or `None`).
     pub soft_mask: Option<selis_bytes::Bytes>,
+    /// The accumulated clip paths, innermost last (`W`/`W*`). Saved and
+    /// restored with `q`/`Q` as part of the graphics state.
+    pub clip: Vec<(Path, ClipRule)>,
     /// The constant alpha for stroking.
     pub alpha_stroke: f64,
     /// The constant alpha for non-stroking.
@@ -85,6 +90,7 @@ impl Default for GState {
             stroke_adjust: false,
             blend_mode: selis_bytes::Bytes::copy_from_slice(b"Normal"),
             soft_mask: None,
+            clip: Vec::new(),
             alpha_stroke: 1.0,
             alpha_fill: 1.0,
             alpha_is_shape: false,

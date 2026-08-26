@@ -127,6 +127,15 @@ impl Path {
     }
 }
 
+/// The fill rule for a clipping path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipRule {
+    /// `W` — nonzero winding.
+    NonZero,
+    /// `W*` — even-odd.
+    EvenOdd,
+}
+
 /// The result of painting or clipping a path.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaintOp {

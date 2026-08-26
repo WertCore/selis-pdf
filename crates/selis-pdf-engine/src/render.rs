@@ -10,7 +10,7 @@
 
 use selis_color::Rgba;
 use selis_geom::{Matrix, Point};
-use selis_pdf_content::display_list::{DisplayList, Op};
+use selis_pdf_content::display_list::{DisplayList, Op, ResolvedState};
 use selis_pdf_content::path::{Path as ContentPath, Segment};
 use selis_raster::{
     Backend, FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, StrokeSpec,
@@ -32,20 +32,32 @@ pub fn render_display_list(
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     g: &mut BudgetGuard<'_>,
 ) {
-    // The blend mode is per-op resolved state; emit `set_blend` only when it
-    // changes so the backend stays in sync without redundant calls.
+    // The blend mode and clip are per-op resolved state; emit `set_blend` and
+    // re-establish the clip only when they change so the backend stays in sync
+    // without redundant work.
     let mut current_blend = selis_color::BlendMode::Normal;
+    let mut current_clip: Vec<(selis_pdf_content::path::Path, selis_pdf_content::path::ClipRule)> =
+        Vec::new();
     for op in &dl.ops {
-        let blend = match op {
-            Op::Fill { state, .. }
-            | Op::Stroke { state, .. }
-            | Op::FillStroke { state, .. }
-            | Op::Text { state, .. }
-            | Op::Image { state, .. } => state.blend,
-        };
-        if blend != current_blend {
-            backend.set_blend(blend);
-            current_blend = blend;
+        let state = op_state(op);
+        if state.blend != current_blend {
+            backend.set_blend(state.blend);
+            current_blend = state.blend;
+        }
+        if state.clip != current_clip {
+            backend.clear_clip();
+            for (path, rule) in &state.clip {
+                if let Some(p) = to_raster_path(path) {
+                    backend.clip(
+                        &p,
+                        match rule {
+                            selis_pdf_content::path::ClipRule::NonZero => FillRule::NonZero,
+                            selis_pdf_content::path::ClipRule::EvenOdd => FillRule::EvenOdd,
+                        },
+                    );
+                }
+            }
+            current_clip = state.clip.clone();
         }
         match op {
             Op::Fill { path, state } => {
@@ -233,6 +245,17 @@ fn raster_path_from_commands(commands: &[PathCmd]) -> Option<RasterPath> {
     })
 }
 
+/// The resolved state of any display-list op.
+fn op_state(op: &Op) -> &ResolvedState {
+    match op {
+        Op::Fill { state, .. }
+        | Op::Stroke { state, .. }
+        | Op::FillStroke { state, .. }
+        | Op::Text { state, .. }
+        | Op::Image { state, .. } => state,
+    }
+}
+
 /// The raster paint for a device-RGB colour.
 fn paint(rgb: &[f64; 3], alpha: f64) -> RasterPaint {
     RasterPaint {
@@ -394,5 +417,30 @@ mod tests {
             data[centre]
         );
         assert_eq!(data[centre + 1], 0, "green should be zero");
+    }
+
+    /// A clipped fill only paints inside the clip rectangle; pixels outside
+    /// the clip stay white.
+    #[test]
+    fn clip_restricts_rendered_pixels() {
+        let mut g = guard();
+        // Fill the whole canvas gray, then clip to a 50×50 rect and paint
+        // red inside it. Pixels outside the clip should be gray, not red.
+        let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 0.5 g f \
+                        0 0 m 50 0 l 50 50 l 0 50 l h W \
+                        0 0 m 100 0 l 100 100 l 0 100 l h 1 0 0 rg f";
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+            .expect("execute");
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &mut g);
+        let data = backend.pixmap().data();
+        // Inside the clip (25, 25): red (the red fill covers the clip area).
+        let inside = (25 * 100 + 25) * 4;
+        assert_eq!(&data[inside..inside + 3], &[255, 0, 0], "inside clip should be red");
+        // Outside the clip (75, 75): gray (0.5 → 127), not red.
+        let outside = (75 * 100 + 75) * 4;
+        assert_eq!(data[outside], 127, "outside clip should be gray");
+        assert_eq!(data[outside + 1], 127);
+        assert_eq!(data[outside + 2], 127);
     }
 }

@@ -26,6 +26,8 @@ pub struct TinySkiaBackend {
     soft_mask: Option<tiny_skia::Mask>,
     /// The blend mode for subsequent ops.
     blend: crate::BlendMode,
+    /// The accumulated clip mask (intersection of all `clip` calls), if any.
+    clip_mask: Option<tiny_skia::Mask>,
 }
 
 impl TinySkiaBackend {
@@ -39,6 +41,7 @@ impl TinySkiaBackend {
             height,
             soft_mask: None,
             blend: crate::BlendMode::Normal,
+            clip_mask: None,
         })
     }
 
@@ -208,9 +211,11 @@ impl Backend for TinySkiaBackend {
         let mut ts_paint = to_ts_paint_sub(paint);
         ts_paint.blend_mode = to_ts_blend(self.blend);
         let rule = to_ts_fill_rule(rule);
+        let clip = self.clip_mask.take();
         self.with_soft_mask(|mut layer| {
-            layer.fill_path(&ts_path, &ts_paint, rule, Transform::identity(), None);
+            layer.fill_path(&ts_path, &ts_paint, rule, Transform::identity(), clip.as_ref());
         });
+        self.clip_mask = clip;
     }
 
     fn stroke(&mut self, path: &Path, paint: &crate::Paint, stroke: &crate::Stroke) {
@@ -220,9 +225,11 @@ impl Backend for TinySkiaBackend {
         let mut ts_paint = to_ts_paint_sub(paint);
         ts_paint.blend_mode = to_ts_blend(self.blend);
         let ts_stroke = to_ts_stroke(stroke);
+        let clip = self.clip_mask.take();
         self.with_soft_mask(|mut layer| {
-            layer.stroke_path(&ts_path, &ts_paint, &ts_stroke, Transform::identity(), None);
+            layer.stroke_path(&ts_path, &ts_paint, &ts_stroke, Transform::identity(), clip.as_ref());
         });
+        self.clip_mask = clip;
     }
 
     fn draw_image(&mut self, image: &Image, placement: &ImagePlacement) {
@@ -242,9 +249,11 @@ impl Backend for TinySkiaBackend {
             blend_mode: to_ts_blend(self.blend),
             ..PixmapPaint::default()
         };
+        let clip = self.clip_mask.take();
         self.with_soft_mask(|mut layer| {
-            layer.draw_pixmap(0, 0, src.as_ref(), &paint, ts, None);
+            layer.draw_pixmap(0, 0, src.as_ref(), &paint, ts, clip.as_ref());
         });
+        self.clip_mask = clip;
     }
 
     fn push_layer(&mut self, _blend: crate::BlendMode, _alpha: f64) {
@@ -253,10 +262,26 @@ impl Backend for TinySkiaBackend {
 
     fn pop_layer(&mut self) {}
 
-    fn clip(&mut self, _path: &Path, _rule: crate::FillRule) {
-        // tiny-skia 0.11 clips via the mask parameter on fill/stroke
-        // (RAST.03 wires it through); a standalone clip op is recorded by the
-        // RecordingBackend and enforced here once masks are threaded.
+    fn clip(&mut self, path: &Path, rule: crate::FillRule) {
+        let Some(ts_path) = to_ts_path(path) else {
+            return;
+        };
+        let rule = to_ts_fill_rule(rule);
+        // The clip mask is the intersection of every clip path; tiny-skia's
+        // `intersect_path` keeps the white (inside) region of the new path.
+        match self.clip_mask.as_mut() {
+            Some(mask) => mask.intersect_path(&ts_path, rule, true, Transform::identity()),
+            None => {
+                if let Some(mut mask) = tiny_skia::Mask::new(self.width, self.height) {
+                    mask.fill_path(&ts_path, rule, true, Transform::identity());
+                    self.clip_mask = Some(mask);
+                }
+            }
+        }
+    }
+
+    fn clear_clip(&mut self) {
+        self.clip_mask = None;
     }
 
     fn set_blend(&mut self, blend: crate::BlendMode) {

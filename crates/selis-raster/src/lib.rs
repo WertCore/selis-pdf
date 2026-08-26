@@ -125,6 +125,11 @@ pub trait Backend {
     /// painted while the mask is active has its alpha modulated by the mask
     /// value at each device pixel (SL-2.RAST.05).
     fn set_soft_mask(&mut self, mask: Option<&Mask>);
+
+    /// Clear the clip mask, so no clipping is applied to subsequent ops.
+    /// The clip is re-established by calling [`clip`](Backend::clip) for each
+    /// active clip path (the renderer drives this on state changes).
+    fn clear_clip(&mut self);
 }
 
 /// Stroke parameters (PDF §8.4.3).
@@ -206,6 +211,8 @@ pub enum Call {
     SetBlend(BlendMode),
     /// `set_soft_mask`.
     SetSoftMask(Option<Mask>),
+    /// `clear_clip`.
+    ClearClip,
 }
 
 impl Backend for RecordingBackend {
@@ -248,6 +255,10 @@ impl Backend for RecordingBackend {
 
     fn set_soft_mask(&mut self, mask: Option<&Mask>) {
         self.calls.push(Call::SetSoftMask(mask.cloned()));
+    }
+
+    fn clear_clip(&mut self) {
+        self.calls.push(Call::ClearClip);
     }
 }
 
