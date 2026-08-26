@@ -270,6 +270,19 @@ fn execute_inner(
                 }
             }
 
+            "sh" => {
+                // Paint a shading (`/Name sh`): the engine resolves the
+                // /Shading resource and rasterises it at render time.
+                if let Some(Operand::Name(name)) = operands.first() {
+                    let state = ResolvedState::from(&*gstate);
+                    dl.push(Op::Shading {
+                        name: name.clone(),
+                        state,
+                    });
+                    g.charge_one(selis_sandbox::Resource::Objects)?;
+                }
+            }
+
             "BI" => {
                 // Inline image: the dispatcher extracted `ID … EI`. The raw
                 // data is decoded to RGBA by the engine at render time.

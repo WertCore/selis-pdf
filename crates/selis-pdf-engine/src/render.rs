@@ -36,6 +36,12 @@ pub fn render_display_list(
         u32,
         selis_bytes::Bytes,
     )>,
+    resolve_shading: &dyn Fn(&selis_bytes::Bytes, &ResolvedState) -> Option<(
+        u32,
+        u32,
+        selis_bytes::Bytes,
+        selis_geom::Rect,
+    )>,
     g: &mut BudgetGuard<'_>,
 ) {
     // The blend mode, clip, and soft mask are per-op resolved state; emit
@@ -173,6 +179,18 @@ pub fn render_display_list(
                 };
                 backend.draw_image(&img, &placement);
             }
+            Op::Shading { name, state } => {
+                let Some((w, h, rgba8, rect)) = resolve_shading(name, state) else {
+                    continue;
+                };
+                let img = selis_raster::Image {
+                    width: w,
+                    height: h,
+                    rgba8: rgba8.as_slice().to_vec(),
+                };
+                let placement = selis_raster::ImagePlacement { rect };
+                backend.draw_image(&img, &placement);
+            }
             Op::PushLayer { .. } | Op::PopLayer => {
                 // Handled before the paint dispatch; unreachable here.
             }
@@ -296,7 +314,8 @@ fn op_state(op: &Op) -> &ResolvedState {
         | Op::FillStroke { state, .. }
         | Op::Text { state, .. }
         | Op::Image { state, .. }
-        | Op::InlineImage { state, .. } => state,
+        | Op::InlineImage { state, .. }
+        | Op::Shading { state, .. } => state,
         Op::PushLayer { .. } | Op::PopLayer => {
             unreachable!("group ops are handled before op_state")
         }
@@ -364,6 +383,13 @@ mod tests {
         None
     }
 
+    fn no_shading(
+        _name: &selis_bytes::Bytes,
+        _state: &ResolvedState,
+    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -378,7 +404,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         // The centre pixel should be opaque red.
         let idx = (50 * 100 + 50) * 4;
@@ -400,7 +426,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         // Centre (50,50) is red; corner (5,5) is blue.
         let centre = (50 * 100 + 50) * 4;
@@ -432,7 +458,7 @@ mod tests {
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         // Top-left (10,10) is red; bottom-right (90,90) is blue.
         let tl = (10 * 100 + 10) * 4;
@@ -464,7 +490,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
@@ -490,7 +516,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         // Inside the clip (25, 25): red (the red fill covers the clip area).
         let inside = (25 * 100 + 25) * 4;
@@ -523,7 +549,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
@@ -570,7 +596,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &no_shading, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // The black fill is 50% alpha (mask 128), not fully opaque.
@@ -616,11 +642,59 @@ let resolve_inline =
                 Some((w, h, selis_bytes::Bytes::copy_from_slice(&rgba)))
             };
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &no_shading, &mut g);
         let data = backend.pixmap().data();
         let tl = (10 * 100 + 10) * 4;
         let br = (90 * 100 + 90) * 4;
         assert_eq!(&data[tl..tl + 3], &[255, 0, 0], "top-left red");
         assert_eq!(&data[br..br + 3], &[0, 0, 255], "bottom-right blue");
+    }
+
+    /// A shading (`/Name sh`) is resolved and rasterised by the engine, then
+    /// drawn as an image.
+    #[test]
+    fn shading_renders() {
+        let mut g = guard();
+        let content = b"/GS1 sh";
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert!(matches!(dl.ops[0], Op::Shading { .. }));
+        let resolve_shading =
+            |name: &selis_bytes::Bytes,
+             _state: &ResolvedState|
+             -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
+                if name.as_slice() == b"GS1" {
+                    let rgba: Vec<u8> = (0..10_000u32)
+                        .flat_map(|_| [255u8, 0, 0, 255])
+                        .collect();
+                    Some((
+                        100,
+                        100,
+                        selis_bytes::Bytes::copy_from_slice(&rgba),
+                        selis_geom::Rect::new(0.0, 0.0, 100.0, 100.0),
+                    ))
+                } else {
+                    None
+                }
+            };
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &resolve_shading,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let centre = (50 * 100 + 50) * 4;
+        assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "shading fills red");
     }
 }

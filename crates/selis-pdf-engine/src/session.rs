@@ -98,10 +98,23 @@ impl Session {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             resolve_inline_image_inner(dict, data, &mut bg)
         };
+        let resolve_shading = move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            resolve_shading_inner(&mut res, page, name, state, &mut bg)
+        };
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
         // transparent black — fill the canvas before painting content.
         fill_page_backdrop(backend);
-        render_display_list(&dl, backend, &font_data, &resolve_smask, &resolve_inline_image, g);
+        render_display_list(
+            &dl,
+            backend,
+            &font_data,
+            &resolve_smask,
+            &resolve_inline_image,
+            &resolve_shading,
+            g,
+        );
         Ok(())
     }
 
@@ -625,6 +638,240 @@ fn resolve_inline_image_inner(
     let decode = Decode::identity(usize::from(components));
     let img = decode_image(width, height, components, bpc, &unfiltered, &decode, g).ok()?;
     Some((img.width, img.height, selis_bytes::Bytes::copy_from_slice(&img.rgba8)))
+}
+
+/// Resolve a shading resource to a rasterised RGBA image in device space.
+fn resolve_shading_inner(
+    resolver: &mut Resolver<'_>,
+    page: &selis_pdf_doc::Page,
+    name: &Bytes,
+    state: &selis_pdf_content::display_list::ResolvedState,
+    g: &mut BudgetGuard<'_>,
+) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
+    use selis_geom::Rect;
+    fn o<'a>(dict: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+        dict.iter().find(|(k, _)| k.as_slice() == key).map(|(_, v)| v)
+    }
+    fn on(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<f64> {
+        match o(dict, key)? {
+            Obj::Int(n) => Some(*n as f64),
+            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    }
+    fn arr_n(arr: &[Obj], i: usize) -> Option<f64> {
+        match arr.get(i) {
+            Some(Obj::Int(v)) => Some(*v as f64),
+            Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    }
+    fn arr_to_rect(arr: &[Obj]) -> Option<Rect> {
+        Some(Rect::new(arr_n(arr, 0)?, arr_n(arr, 1)?, arr_n(arr, 2)?, arr_n(arr, 3)?))
+    }
+    fn arr_to_matrix(arr: &[Obj]) -> Option<selis_geom::Matrix> {
+        Some(selis_geom::Matrix::new(arr_n(arr, 0)?, arr_n(arr, 1)?, arr_n(arr, 2)?, arr_n(arr, 3)?, arr_n(arr, 4)?, arr_n(arr, 5)?))
+    }
+    // Resolve the shading dict from /Shading resources.
+    let resources = page.resources.as_ref()?;
+    let shadings = dict_get(resources, b"Shading")?;
+    let obj = match dict_get(shadings, name.as_slice())? {
+        Obj::Ref(r) => resolver.resolve(*r, g).ok()?,
+        o => o.clone(),
+    };
+    let Obj::Dict(pairs) = &obj else { return None };
+    let shading_type = on(pairs, b"ShadingType")? as i64;
+    let bbox = match o(pairs, b"BBox") {
+        Some(Obj::Array(arr)) => arr_to_rect(arr)?,
+        _ => Rect::new(0.0, 0.0, 1.0, 1.0),
+    };
+    // /Matrix maps user space → shading space.
+    let shading_matrix = match o(pairs, b"Matrix") {
+        Some(Obj::Array(arr)) => arr_to_matrix(arr)?,
+        _ => selis_geom::Matrix::IDENTITY,
+    };
+    // Device → shading = ctm_inv ∘ shading_matrix
+    let ctm_inv = state.ctm.invert()?;
+    let to_shading = ctm_inv.then(shading_matrix);
+    // Shading → device = shading_matrix_inv ∘ ctm
+    let shading_matrix_inv = shading_matrix.invert()?;
+    let to_device = shading_matrix_inv.then(state.ctm);
+    // Compute the device rect from the BBox.
+    let corners = [
+        to_device.apply(selis_geom::Point::new(bbox.x0, bbox.y0)),
+        to_device.apply(selis_geom::Point::new(bbox.x1, bbox.y0)),
+        to_device.apply(selis_geom::Point::new(bbox.x0, bbox.y1)),
+        to_device.apply(selis_geom::Point::new(bbox.x1, bbox.y1)),
+    ];
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in &corners {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    let dev_rect = Rect::new(min_x, min_y, max_x, max_y);
+    let w = (dev_rect.width().ceil() as u32).max(1);
+    let h = (dev_rect.height().ceil() as u32).max(1);
+    // Parse /Function and /ColorSpace.
+    let func = parse_shading_function(o(pairs, b"Function")?)?;
+    let color_space = match o(pairs, b"ColorSpace") {
+        Some(Obj::Name(n)) => n.as_slice(),
+        _ => b"DeviceRGB",
+    };
+    // Parse /Domain and /Extend (axial/radial).
+    let domain = match o(pairs, b"Domain") {
+        Some(Obj::Array(arr)) => (arr_n(arr, 0).unwrap_or(0.0), arr_n(arr, 1).unwrap_or(1.0)),
+        _ => (0.0, 1.0),
+    };
+    let extend = match o(pairs, b"Extend") {
+        Some(Obj::Array(arr)) => (arr_n(arr, 0).unwrap_or(0.0) != 0.0, arr_n(arr, 1).unwrap_or(0.0) != 0.0),
+        _ => (false, false),
+    };
+    // Parse /Coords.
+    let coords = match o(pairs, b"Coords") {
+        Some(Obj::Array(arr)) => arr,
+        _ => return None,
+    };
+    let mut rgba = Vec::with_capacity(
+        usize::try_from(w).unwrap_or(0).saturating_mul(usize::try_from(h).unwrap_or(0)).saturating_mul(4),
+    );
+    for py in 0..h {
+        for px in 0..w {
+            let dev_x = dev_rect.x0 + (f64::from(px) + 0.5) / f64::from(w) * dev_rect.width();
+            let dev_y = dev_rect.y0 + (f64::from(py) + 0.5) / f64::from(h) * dev_rect.height();
+            let in_shading = to_shading.apply(selis_geom::Point::new(dev_x, dev_y));
+            let components = match shading_type {
+                2 => selis_raster::shading::axial_colour(
+                    &selis_raster::shading::AxialShading {
+                        start: selis_geom::Point::new(arr_n(coords, 0)?, arr_n(coords, 1)?),
+                        end: selis_geom::Point::new(arr_n(coords, 2)?, arr_n(coords, 3)?),
+                        domain,
+                        function: func.clone(),
+                        extend_start: extend.0,
+                        extend_end: extend.1,
+                    },
+                    in_shading,
+                ),
+                3 => match selis_raster::shading::radial_colour(
+                    &selis_raster::shading::RadialShading {
+                        start: selis_geom::Point::new(arr_n(coords, 0)?, arr_n(coords, 1)?),
+                        start_radius: arr_n(coords, 2)?,
+                        end: selis_geom::Point::new(arr_n(coords, 3)?, arr_n(coords, 4)?),
+                        end_radius: arr_n(coords, 5)?,
+                        domain,
+                        function: func.clone(),
+                        extend_start: extend.0,
+                        extend_end: extend.1,
+                    },
+                    in_shading,
+                ) {
+                    Some(c) => c,
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let rgb = components_to_rgb(&components, color_space);
+            let r = (rgb[0].clamp(0.0, 1.0) * 255.0) as u8;
+            let g = (rgb[1].clamp(0.0, 1.0) * 255.0) as u8;
+            let b = (rgb[2].clamp(0.0, 1.0) * 255.0) as u8;
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b);
+            rgba.push(255);
+        }
+    }
+    if rgba.is_empty() {
+        return None;
+    }
+    Some((w, h, Bytes::from(rgba), dev_rect))
+}
+
+/// Parse a /Function obj into a `Function`, handling type 2 (exponential).
+fn parse_shading_function(obj: &Obj) -> Option<selis_color::function::Function> {
+    match obj {
+        Obj::Dict(pairs) => {
+            let ft = match pairs.iter().find(|(k, _)| k.as_slice() == b"FunctionType") {
+                Some((_, Obj::Int(n))) => *n,
+                _ => return None,
+            };
+            match ft {
+                2 => {
+                    let get = |key: &[u8]| -> Option<f64> {
+                        pairs.iter().find(|(k, _)| k.as_slice() == key).and_then(|(_, v)| match v {
+                            Obj::Int(n) => Some(*n as f64),
+                            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                            _ => None,
+                        })
+                    };
+                    let get_arr = |key: &[u8]| -> Option<Vec<f64>> {
+                        match pairs.iter().find(|(k, _)| k.as_slice() == key) {
+                            Some((_, Obj::Array(arr))) => {
+                                arr.iter().map(|v| match v {
+                                    Obj::Int(n) => Some(*n as f64),
+                                    Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                                    _ => None,
+                                }).collect()
+                            }
+                            _ => None,
+                        }
+                    };
+                    let n = get(b"N")?;
+                    let c0 = get_arr(b"C0").unwrap_or_else(|| vec![0.0]);
+                    let c1 = get_arr(b"C1").unwrap_or_else(|| vec![1.0]);
+                    let outputs = c0.len().max(c1.len());
+                    // The exponential function: a = c1 - c0, b = n, c = c0.
+                    // f(x) = (c1 - c0) * x^n + c0 for each output.
+                    // But the ExponentialFunction stores a, b, c per output.
+                    let a: Vec<f64> = (0..outputs).map(|i| {
+                        c1.get(i).copied().unwrap_or(1.0) - c0.get(i).copied().unwrap_or(0.0)
+                    }).collect();
+                    let b = vec![n; outputs];
+                    let c: Vec<f64> = (0..outputs).map(|i| c0.get(i).copied().unwrap_or(0.0)).collect();
+                    Some(selis_color::function::Function::Exponential(
+                        selis_color::function::ExponentialFunction {
+                            inputs: 1,
+                            outputs,
+                            a,
+                            b,
+                            c,
+                            domain: vec![(0.0, 1.0)],
+                            range: None,
+                        }
+                    ))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Convert colour components to sRGB [0, 1].
+fn components_to_rgb(components: &[f64], color_space: &[u8]) -> [f64; 3] {
+    match color_space {
+        b"DeviceGray" | b"G" => {
+            let g = components.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            [g, g, g]
+        }
+        b"DeviceCMYK" | b"CMYK" => {
+            let c = components.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let m = components.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let y = components.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let k = components.get(3).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let r = 1.0 - (c * (1.0 - k) + k);
+            let g = 1.0 - (m * (1.0 - k) + k);
+            let b = 1.0 - (y * (1.0 - k) + k);
+            [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+        }
+        _ => {
+            // DeviceRGB or other: treat first 3 components as RGB.
+            let r = components.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let g = components.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let b = components.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            [r, g, b]
+        }
+    }
 }
 
 /// Resolve a `/ExtGState` resource name to its dictionary as `Operand` pairs,

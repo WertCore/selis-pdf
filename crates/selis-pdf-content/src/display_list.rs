@@ -121,6 +121,14 @@ pub enum Op {
         /// The resolved state at paint time.
         state: ResolvedState,
     },
+    /// A shading (type 1–7), named by the `/Shading` resource. The engine
+    /// resolves and rasterises it to RGBA at render time.
+    Shading {
+        /// The shading resource name (e.g. `GS1` for `/GS1 sh`).
+        name: selis_bytes::Bytes,
+        /// The resolved state at paint time.
+        state: ResolvedState,
+    },
     /// Push a transparency group (`BDC`/`BMC`): subsequent ops paint into a
     /// layer that is composited back with `blend` and `alpha`.
     PushLayer {
@@ -189,6 +197,7 @@ impl DisplayList {
                 }
                 Op::Image { rgba8, .. } => rgba8.len().saturating_mul(4),
                 Op::InlineImage { data, .. } => data.len().saturating_mul(4),
+                Op::Shading { .. } => 16,
                 Op::PushLayer { .. } | Op::PopLayer => 0,
             });
         }
@@ -286,6 +295,13 @@ fn op_diff(a: &Op, b: &Op) -> Option<String> {
                 None
             }
         }
+        (Op::Shading { name: x, .. }, Op::Shading { name: y, .. }) => {
+            if x != y {
+                Some("shading changed".to_string())
+            } else {
+                None
+            }
+        }
         (Op::PushLayer { blend: x, alpha: xa }, Op::PushLayer { blend: y, alpha: ya }) => {
             if x != y || xa != ya {
                 Some("group blend or alpha changed".to_string())
@@ -306,6 +322,7 @@ fn op_name(op: &Op) -> &'static str {
         Op::Text { .. } => "text",
         Op::Image { .. } => "image",
         Op::InlineImage { .. } => "inline-image",
+        Op::Shading { .. } => "shading",
         Op::PushLayer { .. } => "push-layer",
         Op::PopLayer => "pop-layer",
     }
