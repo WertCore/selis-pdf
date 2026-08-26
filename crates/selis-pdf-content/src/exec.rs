@@ -512,4 +512,25 @@ mod tests {
             panic!("expected fill");
         }
     }
+
+    /// A `Text` op carries the current device-RGB fill colour, not black.
+    #[test]
+    fn text_carries_the_current_fill_colour() {
+        let mut g = guard();
+        let dl = execute(
+            b"1 0 0 rg BT /F1 12 Tf 0 0 Td (A) Tj ET",
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        if let Op::Text { state, .. } = &dl.ops[0] {
+            assert!((state.fill[0] - 1.0).abs() < 0.01, "red should be 1.0");
+            assert!(state.fill[1].abs() < 0.01, "green should be 0.0");
+            assert!(state.fill[2].abs() < 0.01, "blue should be 0.0");
+        } else {
+            panic!("expected text");
+        }
+    }
 }

@@ -43,15 +43,13 @@ pub struct ResolvedState {
 
 impl From<&GState> for ResolvedState {
     fn from(g: &GState) -> Self {
-        // Phase 2.1 has no colour spaces yet; device RGB with the current
-        // defaults. Colour resolution lands with SL-2.CONT.09.
         Self {
             ctm: g.ctm,
             line_width: g.line_width,
             line_cap: g.line_cap,
             line_join: g.line_join,
-            fill: [0.0, 0.0, 0.0],
-            stroke: [0.0, 0.0, 0.0],
+            fill: g.fill_colour,
+            stroke: g.stroke_colour,
             alpha_fill: g.alpha_fill,
             alpha_stroke: g.alpha_stroke,
             blend: BlendMode::from_name(&g.blend_mode),
