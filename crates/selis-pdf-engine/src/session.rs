@@ -73,10 +73,16 @@ impl Session {
         let budget_copy = *budget;
         let font_width = move |font_name: &Bytes, code: u16| -> f64 {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            font_width_inner(&self.doc, &self.src, budget, page, font_name, code, &mut bg)
-                .unwrap_or(0.0)
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            font_width_inner(&mut res, page, font_name, code, &mut bg).unwrap_or(0.0)
         };
-        let resolve_do = move |_name: &Bytes| -> Option<selis_pdf_content::exec::DoTarget> { None };
+        let resolve_do = move |name: &Bytes| -> Option<selis_pdf_content::exec::DoTarget> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            resolve_xobject_inner(&mut res, page, name, &mut bg)
+                .ok()
+                .flatten()
+        };
         let dl = selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, g)?;
         render_display_list(&dl, backend, &|_| None, g);
         Ok(())
@@ -182,23 +188,19 @@ fn resolve_stream(
 }
 
 fn font_width_inner(
-    doc: &Doc,
-    src: &[u8],
-    budget: &Budget,
+    resolver: &mut Resolver<'_>,
     page: &selis_pdf_doc::Page,
     font_name: &Bytes,
     code: u16,
     g: &mut BudgetGuard<'_>,
 ) -> Option<f64> {
-    let font_dict = resolve_font_dict(doc, src, budget, page, font_name, g)?;
+    let font_dict = resolve_font_dict(resolver, page, font_name, g)?;
     let resolved = selis_font::resolve_widths(&font_dict, g).ok()?;
     Some(resolved.width(u32::from(code)))
 }
 
 fn resolve_font_dict(
-    doc: &Doc,
-    src: &[u8],
-    budget: &Budget,
+    resolver: &mut Resolver<'_>,
     page: &selis_pdf_doc::Page,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
@@ -208,18 +210,15 @@ fn resolve_font_dict(
     let font_obj = dict_get(fonts, font_name.as_slice())?;
     let font_ref = match font_obj {
         Obj::Ref(r) => *r,
-        Obj::Dict(_) => return Some(parse_font_dict(doc, src, budget, font_obj, g)),
+        Obj::Dict(_) => return Some(parse_font_dict(resolver, font_obj, g)),
         _ => return None,
     };
-    let mut resolver = Resolver::new(doc, src, budget);
     let font_obj = resolver.resolve(font_ref, g).ok()?;
-    Some(parse_font_dict(doc, src, budget, &font_obj, g))
+    Some(parse_font_dict(resolver, &font_obj, g))
 }
 
 fn parse_font_dict(
-    doc: &Doc,
-    src: &[u8],
-    budget: &Budget,
+    resolver: &mut Resolver<'_>,
     obj: &Obj,
     g: &mut BudgetGuard<'_>,
 ) -> selis_font::FontDict {
@@ -262,7 +261,6 @@ fn parse_font_dict(
         }
     }
     if let Some(Obj::Ref(r)) = dict_get_obj(dict, b"FontDescriptor") {
-        let mut resolver = Resolver::new(doc, src, budget);
         if let Ok(Obj::Dict(desc)) = resolver.resolve(*r, g) {
             let mut descriptor = selis_font::FontDescriptor::default();
             if let Some(Obj::Int(v)) = dict_get_obj(&desc, b"Flags") {
@@ -289,14 +287,10 @@ fn parse_font_dict(
                 ),
             ] {
                 if let Some(Obj::Ref(r)) = dict_get_obj(&desc, tag) {
-                    let mut res = Resolver::new(doc, src, budget);
-                    if let Ok(obj) = res.resolve(*r, g) {
-                        if let Obj::Stream { ref data, .. } = &obj {
-                            let unfiltered = unfilter_stream(&obj, data, g);
-                            fd.font_file =
-                                Some(make_font_file(Bytes::copy_from_slice(&unfiltered)));
-                            break;
-                        }
+                    if let Ok(Some((dict, data))) = resolve_stream(resolver, *r, g) {
+                        let unfiltered = unfilter_stream_data(&dict, &data, g);
+                        fd.font_file = Some(make_font_file(Bytes::copy_from_slice(&unfiltered)));
+                        break;
                     }
                 }
             }
@@ -306,18 +300,88 @@ fn parse_font_dict(
     fd
 }
 
-fn unfilter_stream(obj: &Obj, data: &Bytes, g: &mut BudgetGuard<'_>) -> Vec<u8> {
-    let dict = match obj {
-        Obj::Stream { dict, .. } => dict,
-        _ => return data.as_slice().to_vec(),
-    };
+/// Unfilter stream data given its dictionary.
+fn unfilter_stream_data(dict: &[(Bytes, Obj)], data: &[u8], g: &mut BudgetGuard<'_>) -> Vec<u8> {
     if let Some(Obj::Name(n)) = dict_get_obj(dict, b"Filter") {
         let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
-        if let Ok(decoded) = selis_pdf_filter::decode(filt, data.as_slice(), u64::MAX, g) {
+        if let Ok(decoded) = selis_pdf_filter::decode(filt, data, u64::MAX, g) {
             return decoded;
         }
     }
-    data.as_slice().to_vec()
+    data.to_vec()
+}
+
+/// Resolve an image XObject from the page's resources into decoded RGBA.
+fn resolve_xobject_inner(
+    resolver: &mut Resolver<'_>,
+    page: &selis_pdf_doc::Page,
+    name: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<selis_pdf_content::exec::DoTarget>> {
+    let resources = match &page.resources {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    let xobjects = match dict_get(resources, b"XObject") {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    let xobj = match dict_get(xobjects, name.as_slice()) {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    let r = match xobj {
+        Obj::Ref(r) => *r,
+        _ => return Ok(None),
+    };
+    let Some((dict, data)) = resolve_stream(resolver, r, g)? else {
+        return Ok(None);
+    };
+    // Only image XObjects are handled (form XObjects land with the worklist).
+    let is_image = matches!(
+        dict_get_obj(&dict, b"Subtype"),
+        Some(Obj::Name(n)) if n.as_slice() == b"Image"
+    );
+    if !is_image {
+        return Ok(None);
+    }
+    let width = dict_get_obj(&dict, b"Width")
+        .and_then(|v| match v {
+            Obj::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let height = dict_get_obj(&dict, b"Height")
+        .and_then(|v| match v {
+            Obj::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let bpc = dict_get_obj(&dict, b"BitsPerComponent")
+        .and_then(|v| match v {
+            Obj::Int(n) => u8::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(8);
+    // Component count from the colour space (DeviceRGB/Gray/CMYK; others fall
+    // back to RGB).
+    let components: u8 = match dict_get_obj(&dict, b"ColorSpace") {
+        Some(Obj::Name(n)) => match n.as_slice() {
+            b"DeviceGray" => 1,
+            b"DeviceCMYK" => 4,
+            _ => 3,
+        },
+        _ => 3,
+    };
+    let unfiltered = unfilter_stream_data(&dict, &data, g);
+    let decode = selis_raster::image::Decode::identity(usize::from(components));
+    let img =
+        selis_raster::image::decode_image(width, height, components, bpc, &unfiltered, &decode, g)?;
+    Ok(Some(selis_pdf_content::exec::DoTarget::Image {
+        width: img.width,
+        height: img.height,
+        rgba8: Bytes::copy_from_slice(&img.rgba8),
+    }))
 }
 
 fn dict_get<'a>(obj: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
@@ -359,5 +423,24 @@ mod tests {
         let idx = (50 * 100 + 50) * 4;
         assert_eq!(&data[idx..idx + 3], &[0, 0, 0]);
         assert_eq!(data[idx + 3], 255);
+    }
+
+    /// A PDF with a 2×2 DeviceGray image XObject renders it scaled to the
+    /// page.
+    #[test]
+    fn session_renders_an_image_xobject() {
+        let src = include_bytes!("fixtures/image.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget).expect("open");
+        assert_eq!(session.len(), 1);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
+        session
+            .render_page(0, &mut backend, &budget, &mut g)
+            .expect("render");
+        let data = backend.pixmap().data();
+        // The top-left pixel is white (255 gray); the rest are black.
+        assert_eq!(&data[0..3], &[255, 255, 255]);
+        assert_eq!(&data[8..11], &[0, 0, 0]);
     }
 }
