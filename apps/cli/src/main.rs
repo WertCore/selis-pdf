@@ -7,6 +7,7 @@
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod extract;
 mod inspect;
 mod render;
 
@@ -42,6 +43,17 @@ enum Command {
         /// The output PPM file.
         output: String,
     },
+    /// Extract a page's text (text|json|md|html).
+    Extract {
+        /// The PDF file to extract from.
+        path: String,
+        /// The page number (0-based; default 0).
+        #[arg(long, default_value_t = 0)]
+        page: usize,
+        /// The output format.
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -49,6 +61,7 @@ fn main() {
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render { path, page, output } => render::run(&path, page, &output),
+        Command::Extract { path, page, format } => extract::run(&path, page, &format),
     };
     match result {
         Ok(()) => {}

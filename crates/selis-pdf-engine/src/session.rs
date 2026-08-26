@@ -69,17 +69,42 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<()> {
+        let dl = self.page_display_list(page_num, budget, g)?;
+        let budget_copy = *budget;
+        let page = self.document.pages.get(page_num).ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "session-render",
+                detail = "page index"
+            )
+        })?;
+        let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            font_data_inner(&mut res, page, font_name, &mut bg)
+        };
+        render_display_list(&dl, backend, &font_data, g);
+        Ok(())
+    }
+
+    /// The display list of a page (no rasterisation).
+    pub fn page_display_list(
+        &self,
+        page_num: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<selis_pdf_content::display_list::DisplayList> {
         let Some(page) = self.document.pages.get(page_num) else {
             return Err(err!(
                 Code::ObjUnexpected,
-                during = "session-render",
+                during = "session-page",
                 detail = "page index"
             ));
         };
         let mut resolver = Resolver::new(&self.doc, &self.src, budget);
         let content = resolve_page_content(&mut resolver, page, g)?;
         if content.is_empty() {
-            return Ok(());
+            return Ok(selis_pdf_content::display_list::DisplayList::default());
         }
         let budget_copy = *budget;
         let font_width = move |font_name: &Bytes, code: u16| -> f64 {
@@ -94,14 +119,7 @@ impl Session {
                 .ok()
                 .flatten()
         };
-        let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-            font_data_inner(&mut res, page, font_name, &mut bg)
-        };
-        let dl = selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, g)?;
-        render_display_list(&dl, backend, &font_data, g);
-        Ok(())
+        selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, g)
     }
 }
 
