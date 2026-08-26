@@ -209,6 +209,20 @@ fn f64_to_u8(v: f64) -> u8 {
     }
 }
 
+/// A non-negative f64 as a u32 (saturating).
+fn f64_to_u32(v: f64) -> u32 {
+    let v = v.max(0.0);
+    if v >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        // The value is bounded to [0, u32::MAX], so the narrowing is exact.
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        {
+            v as u32
+        }
+    }
+}
+
 /// The embedded font program bytes for a font resource name.
 fn font_data_inner(
     resolver: &mut Resolver<'_>,
@@ -749,7 +763,12 @@ fn resolve_shading_inner(
         Obj::Ref(r) => resolver.resolve(*r, g).ok()?,
         o => o.clone(),
     };
-    let Obj::Dict(pairs) = &obj else { return None };
+    // The shading is a dict, or (types 4–7) a stream carrying the mesh data.
+    let (pairs, mesh_data) = match &obj {
+        Obj::Dict(pairs) => (pairs, None),
+        Obj::Stream { dict, data } => (dict, Some(data.as_slice())),
+        _ => return None,
+    };
     let shading_type = match dict_get_obj(pairs, b"ShadingType") {
         Some(Obj::Int(n)) => *n,
         _ => return None,
@@ -801,10 +820,38 @@ fn resolve_shading_inner(
         Some(Obj::Array(arr)) => (arr_n(arr, 0).unwrap_or(0.0) != 0.0, arr_n(arr, 1).unwrap_or(0.0) != 0.0),
         _ => (false, false),
     };
-    // Parse /Coords.
-    let coords = match o(pairs, b"Coords") {
-        Some(Obj::Array(arr)) => arr,
-        _ => return None,
+    let coords: &[Obj] = match o(pairs, b"Coords") {
+        Some(Obj::Array(arr)) => arr.as_slice(),
+        _ => &[],
+    };
+    // Type 4 (free-form Gouraud mesh): decode the packed vertex stream.
+    let gouraud = if shading_type == 4 {
+        let data = mesh_data?;
+        let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
+        let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
+        let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
+        let decode: Vec<f64> = match o(pairs, b"Decode") {
+            Some(Obj::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    Obj::Int(n) => Some(*n as f64),
+                    Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let components = match color_space {
+            b"DeviceGray" | b"G" => 1,
+            b"DeviceCMYK" | b"CMYK" => 4,
+            _ => 3,
+        };
+        parse_gouraud_shading(data, bpc, bpc_color, bpf, &decode, components)?
+    } else {
+        selis_raster::shading::GouraudShading {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        }
     };
     let mut rgba = Vec::with_capacity(
         usize::try_from(w).unwrap_or(0).saturating_mul(usize::try_from(h).unwrap_or(0)).saturating_mul(4),
@@ -842,6 +889,36 @@ fn resolve_shading_inner(
                     Some(c) => c,
                     None => continue,
                 },
+                4 => {
+                    // Find the triangle containing the point and interpolate
+                    // the vertex colours (barycentric).
+                    let mut found: Option<Vec<f64>> = None;
+                    for tri in &gouraud.triangles {
+                        let (Some(a), Some(b), Some(c)) = (
+                            gouraud.vertices.get(tri.0 as usize),
+                            gouraud.vertices.get(tri.1 as usize),
+                            gouraud.vertices.get(tri.2 as usize),
+                        ) else {
+                            continue;
+                        };
+                        if let Some((u, v, w)) = barycentric_weights(a.point, b.point, c.point, in_shading)
+                        {
+                            found = Some(
+                                a.components
+                                    .iter()
+                                    .zip(&b.components)
+                                    .zip(&c.components)
+                                    .map(|((&ca, &cb), &cc)| ca * u + cb * v + cc * w)
+                                    .collect(),
+                            );
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(c) => c,
+                        None => continue,
+                    }
+                }
                 _ => continue,
             };
             let rgb = components_to_rgb(&components, color_space);
@@ -944,6 +1021,148 @@ fn components_to_rgb(components: &[f64], color_space: &[u8]) -> [f64; 3] {
             let b = components.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             [r, g, b]
         }
+    }
+}
+
+/// A big-endian bit reader over a byte buffer.
+struct BitReader<'a> {
+    data: &'a [u8],
+    bit_pos: u64,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, bit_pos: 0 }
+    }
+
+    fn read(&mut self, bits: u32) -> Option<u64> {
+        if bits > 63 {
+            return None;
+        }
+        let mut value = 0u64;
+        for _ in 0..bits {
+            let byte = *self.data.get(usize::try_from(self.bit_pos >> 3).unwrap_or(0))?;
+            let bit = 7u32.wrapping_sub((self.bit_pos % 8) as u32);
+            value = (value << 1) | u64::from((byte >> bit) & 1);
+            self.bit_pos = self.bit_pos.saturating_add(1);
+        }
+        Some(value)
+    }
+}
+
+/// Map a raw integer to its decoded range (PDF `/Decode` semantics).
+fn decode_raw(raw: u64, bits: u32, lo: f64, hi: f64) -> f64 {
+    if bits == 0 {
+        return lo;
+    }
+    let max = (1u64 << bits).saturating_sub(1);
+    if max == 0 {
+        return lo;
+    }
+    let t = raw as f64 / max as f64;
+    lo + (hi - lo) * t
+}
+
+/// Decode a type-4 free-form Gouraud triangle mesh from its packed bit stream.
+fn parse_gouraud_shading(
+    data: &[u8],
+    bpc: u32,
+    bpc_color: u32,
+    bpf: u32,
+    decode: &[f64],
+    components: usize,
+) -> Option<selis_raster::shading::GouraudShading> {
+    use selis_geom::Point;
+    use selis_raster::shading::{GouraudShading, ShadingPoint};
+    let mut r = BitReader::new(data);
+    let mut vertices: Vec<ShadingPoint> = Vec::new();
+    let mut triangles: Vec<(u32, u32, u32)> = Vec::new();
+    let mut pending: Vec<u32> = Vec::new();
+    let coords = |decode: &[f64], x_raw: u64, y_raw: u64| -> (f64, f64) {
+        (
+            decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
+            decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+        )
+    };
+    loop {
+        let Some(flag) = r.read(bpf.max(1)) else { break };
+        let count = match flag {
+            0 => 3,
+            1 => 1,
+            2 => 2,
+            _ => return None,
+        };
+        let mut new_indices = Vec::new();
+        for _ in 0..count {
+            let Some(x_raw) = r.read(bpc.max(1)) else { break };
+            let Some(y_raw) = r.read(bpc.max(1)) else { break };
+            let (x, y) = coords(decode, x_raw, y_raw);
+            let mut comps = Vec::with_capacity(components);
+            let mut colour_ok = true;
+            for c in 0..components {
+                let Some(raw) = r.read(bpc_color.max(1)) else {
+                    colour_ok = false;
+                    break;
+                };
+                let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
+                let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+                comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
+            }
+            if !colour_ok {
+                break;
+            }
+            let idx = u32::try_from(vertices.len()).ok()?;
+            vertices.push(ShadingPoint {
+                point: Point::new(x, y),
+                components: comps,
+            });
+            new_indices.push(idx);
+        }
+        if new_indices.len() != count {
+            break;
+        }
+        let tri = match flag {
+            0 => (
+                *new_indices.get(0)?,
+                *new_indices.get(1)?,
+                *new_indices.get(2)?,
+            ),
+            1 => {
+                (*pending.get(0)?, *pending.get(1)?, *new_indices.get(0)?)
+            }
+            2 => {
+                (*pending.get(0)?, *new_indices.get(0)?, *new_indices.get(1)?)
+            }
+            _ => return None,
+        };
+        triangles.push(tri);
+        pending = vec![tri.1, tri.2];
+    }
+    if vertices.is_empty() {
+        None
+    } else {
+        Some(GouraudShading { vertices, triangles })
+    }
+}
+
+/// Barycentric weights of `p` inside triangle `a b c`, or `None` if outside.
+fn barycentric_weights(
+    a: selis_geom::Point,
+    b: selis_geom::Point,
+    c: selis_geom::Point,
+    p: selis_geom::Point,
+) -> Option<(f64, f64, f64)> {
+    let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let u = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / den;
+    let v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / den;
+    let w = 1.0 - u - v;
+    if u >= -1e-9 && v >= -1e-9 && w >= -1e-9 {
+        Some((u, v, w))
+    } else {
+        None
     }
 }
 
@@ -1195,5 +1414,36 @@ mod tests {
         let parms = decode_parms_from_obj(Some(&arr));
         assert_eq!(parms.len(), 1);
         assert_eq!(parms[0].predictor, 2);
+    }
+
+    /// A type-4 Gouraud mesh with one triangle decodes from the packed bit
+    /// stream: flag 0, then three (x, y, rgb) vertices.
+    #[test]
+    fn gouraud_mesh_decodes_a_single_triangle() {
+        let data = [0x12, 0x49];
+        let decode = [
+            0.0, 1.0, 0.0, 1.0, // x, y ranges
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // rgb ranges
+        ];
+        let mesh = parse_gouraud_shading(&data, 1, 1, 1, &decode, 3).expect("mesh");
+        assert_eq!(mesh.triangles.len(), 1);
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.vertices[0].point, selis_geom::Point::new(0.0, 0.0));
+        assert_eq!(mesh.vertices[0].components, vec![1.0, 0.0, 0.0]);
+        assert_eq!(mesh.vertices[1].point, selis_geom::Point::new(1.0, 0.0));
+        assert_eq!(mesh.vertices[1].components, vec![0.0, 1.0, 0.0]);
+        assert_eq!(mesh.vertices[2].point, selis_geom::Point::new(0.0, 1.0));
+        assert_eq!(mesh.vertices[2].components, vec![0.0, 0.0, 1.0]);
+    }
+
+    /// Barycentric weights are positive inside a triangle and negative/`None`
+    /// outside.
+    #[test]
+    fn barycentric_weights_identify_inside_points() {
+        let a = selis_geom::Point::new(0.0, 0.0);
+        let b = selis_geom::Point::new(1.0, 0.0);
+        let c = selis_geom::Point::new(0.0, 1.0);
+        assert!(barycentric_weights(a, b, c, selis_geom::Point::new(0.25, 0.25)).is_some());
+        assert!(barycentric_weights(a, b, c, selis_geom::Point::new(1.0, 1.0)).is_none());
     }
 }
