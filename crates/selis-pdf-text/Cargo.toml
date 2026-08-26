@@ -17,3 +17,4 @@ selis-bytes = { workspace = true }
 selis-geom = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-font = { workspace = true }
+unicode-normalization = { workspace = true }

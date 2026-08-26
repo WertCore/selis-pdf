@@ -151,7 +151,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 - [x] **SL-3.TEXT.05 — Selection geometry and hit testing** · deps: TEXT.03 · owner: AI
   - **Do:** Character-level quads for selection highlighting, caret positions, word/line/paragraph
     expansion, and RTL-correct selection ranges.
-- [ ] **SL-3.TEXT.06 — Search** · deps: TEXT.03 · owner: AI
+- [x] **SL-3.TEXT.06 — Search** · deps: TEXT.03 · owner: AI
   - **Do:** Normalised search (case, diacritics, ligature decomposition, soft hyphens, and
     cross-line matches), incremental index built per resident page only.
   - **DoD:** Finds "ﬁrst" when searching "first"; finds a term broken across a line break.
