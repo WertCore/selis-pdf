@@ -11,6 +11,7 @@ mod convert;
 mod extract;
 mod inspect;
 mod render;
+mod search;
 
 #[derive(Parser)]
 #[command(
@@ -68,6 +69,16 @@ enum Command {
         #[arg(long)]
         last: Option<usize>,
     },
+    /// Search a page's text for a query.
+    Search {
+        /// The PDF file to search.
+        path: String,
+        /// The query string.
+        query: String,
+        /// The page number (0-based; default 0).
+        #[arg(long, default_value_t = 0)]
+        page: usize,
+    },
 }
 
 fn main() {
@@ -77,6 +88,7 @@ fn main() {
         Command::Render { path, page, output } => render::run(&path, page, &output),
         Command::Extract { path, page, format } => extract::run(&path, page, &format),
         Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
+        Command::Search { path, query, page } => search::run(&path, &query, page),
     };
     match result {
         Ok(()) => {}

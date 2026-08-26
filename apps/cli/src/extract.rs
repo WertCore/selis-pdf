@@ -39,26 +39,7 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
         return extract_images(&dl, page);
     }
 
-    // Collect the positioned glyphs from the text ops.
-    let mut glyphs = Vec::new();
-    for op in &dl.ops {
-        if let Op::Text { at, runs, .. } = op {
-            for run in runs {
-                for &code in &run.glyphs {
-                    glyphs.push(TextGlyph {
-                        code,
-                        at: *at,
-                        font: run.font.clone(),
-                        size: run.size,
-                    });
-                }
-            }
-        }
-    }
-
-    let lines = selis_pdf_text::assemble(glyphs);
-    let line_texts: Vec<String> = lines.iter().map(line_text).collect();
-
+    let (lines, line_texts) = page_lines(&dl);
     let out = match format {
         "json" => {
             // Per-run text (parallel to each line's flattened runs) so the
@@ -87,6 +68,31 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
     };
     print!("{out}");
     Ok(())
+}
+
+/// The assembled text lines and their recovered Unicode texts for a display
+/// list.
+pub(crate) fn page_lines(
+    dl: &selis_pdf_content::display_list::DisplayList,
+) -> (Vec<selis_pdf_text::TextLine>, Vec<String>) {
+    let mut glyphs = Vec::new();
+    for op in &dl.ops {
+        if let Op::Text { at, runs, .. } = op {
+            for run in runs {
+                for &code in &run.glyphs {
+                    glyphs.push(TextGlyph {
+                        code,
+                        at: *at,
+                        font: run.font.clone(),
+                        size: run.size,
+                    });
+                }
+            }
+        }
+    }
+    let lines = selis_pdf_text::assemble(glyphs);
+    let line_texts: Vec<String> = lines.iter().map(line_text).collect();
+    (lines, line_texts)
 }
 
 /// Extract every image XObject used on the page as a PPM file, printing a
