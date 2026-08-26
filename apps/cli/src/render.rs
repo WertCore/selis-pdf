@@ -60,7 +60,7 @@ fn dim(v: f64) -> u32 {
         c as u32
     }
 }
-fn write_ppm(path: &str, rgba: &[u8], w: u32, h: u32) -> CliResult<()> {
+pub(crate) fn write_ppm(path: &str, rgba: &[u8], w: u32, h: u32) -> CliResult<()> {
     let header = format!("P6\n{w} {h}\n255\n");
     let pixel_count = (w as usize).saturating_mul(h as usize);
     let mut ppm = Vec::with_capacity(header.len().saturating_add(pixel_count.saturating_mul(3)));

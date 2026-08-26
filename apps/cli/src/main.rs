@@ -43,14 +43,14 @@ enum Command {
         /// The output PPM file.
         output: String,
     },
-    /// Extract a page's text (text|json|md|html).
+    /// Extract a page's content (text|json|md|html|image).
     Extract {
         /// The PDF file to extract from.
         path: String,
         /// The page number (0-based; default 0).
         #[arg(long, default_value_t = 0)]
         page: usize,
-        /// The output format.
+        /// The output format: text|json|md|html|image.
         #[arg(long, default_value = "text")]
         format: String,
     },

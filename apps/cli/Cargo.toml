@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
+selis-geom = { workspace = true }
 selis-io = { workspace = true, features = ["native-io"] }
 selis-sandbox = { workspace = true }
 selis-log = { workspace = true }

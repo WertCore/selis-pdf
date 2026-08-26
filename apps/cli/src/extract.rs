@@ -1,8 +1,9 @@
-//! The `selis extract` command: recover a page's text.
+//! The `selis extract` command: recover a page's text or images.
 //!
 //! Executes the page's content stream into a display list, groups the
 //! positioned glyphs into lines, and emits them as plain text, JSON,
-//! Markdown, or HTML.
+//! Markdown, or HTML.  With `--format=image`, writes each image XObject
+//! used on the page to a PPM file and prints a JSON manifest.
 
 use selis_pdf_content::display_list::Op;
 use selis_pdf_content::text::TextGlyph;
@@ -11,8 +12,9 @@ use selis_pdf_text::TextLine;
 use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
 
 use crate::{read_file, CliError, CliResult};
+use crate::render::write_ppm;
 
-/// Extract a page's text.
+/// Extract a page's text or images.
 ///
 /// # Errors
 ///
@@ -32,6 +34,10 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
     let dl = session
         .page_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
+
+    if format == "image" {
+        return extract_images(&dl, page);
+    }
 
     // Collect the positioned glyphs from the text ops.
     let mut glyphs = Vec::new();
@@ -64,6 +70,122 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
     };
     print!("{out}");
     Ok(())
+}
+
+/// Extract every image XObject used on the page as a PPM file, printing a
+/// newline-delimited JSON manifest of `{"index", "width", "height", "file"}`.
+fn extract_images(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> CliResult<()> {
+    let images = image_manifest(dl, page);
+    let mut manifest = String::new();
+    for (index, entry) in images.iter().enumerate() {
+        write_ppm(&entry.file, &entry.rgba8, entry.width, entry.height)?;
+        if !manifest.is_empty() {
+            manifest.push('\n');
+        }
+        manifest.push_str(&entry.json(index));
+    }
+    println!("{manifest}");
+    eprintln!("extracted {} image(s) from page {page}", images.len());
+    Ok(())
+}
+
+/// One extracted image.
+struct ExtractedImage {
+    /// The output filename.
+    file: String,
+    /// The RGBA8 samples.
+    rgba8: Vec<u8>,
+    /// The image width in pixels.
+    width: u32,
+    /// The image height in pixels.
+    height: u32,
+}
+
+impl ExtractedImage {
+    /// The manifest line: `{"index":N,"width":W,"height":H,"file":"F"}`.
+    fn json(&self, index: usize) -> String {
+        format!(
+            r#"{{"index":{index},"width":{},"height":{},"file":"{}"}}"#,
+            self.width, self.height, self.file
+        )
+    }
+}
+
+/// Collect the image XObjects used on a page, in content order.
+fn image_manifest(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> Vec<ExtractedImage> {
+    let mut out = Vec::new();
+    for (index, op) in dl.ops.iter().enumerate() {
+        if let Op::Image {
+            rgba8,
+            width,
+            height,
+            ..
+        } = op
+        {
+            out.push(ExtractedImage {
+                file: format!("page-{page}-{index}.ppm"),
+                rgba8: rgba8.as_slice().to_vec(),
+                width: *width,
+                height: *height,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use selis_pdf_content::display_list::{DisplayList, Op, ResolvedState};
+    use selis_pdf_content::gstate::GState;
+    use selis_pdf_content::path::Path;
+
+    use super::*;
+
+    fn image_op(rgba8: &[u8], width: u32, height: u32) -> Op {
+        Op::Image {
+            rgba8: selis_bytes::Bytes::copy_from_slice(rgba8),
+            width,
+            height,
+            rect: selis_geom::Rect::new(0.0, 0.0, 1.0, 1.0),
+            state: ResolvedState::from(&GState::new()),
+        }
+    }
+
+    #[test]
+    fn image_manifest_lists_each_image_in_order() {
+        let dl = DisplayList {
+            ops: vec![
+                image_op(&[255, 0, 0, 255], 1, 1),
+                image_op(&[0, 0, 255, 255], 2, 2),
+            ],
+        };
+        let imgs = image_manifest(&dl, 3);
+        assert_eq!(imgs.len(), 2);
+        assert_eq!(imgs[0].file, "page-3-0.ppm");
+        assert_eq!(imgs[0].width, 1);
+        assert_eq!(imgs[1].file, "page-3-1.ppm");
+        assert_eq!(imgs[1].height, 2);
+        assert_eq!(imgs[0].json(0), r#"{"index":0,"width":1,"height":1,"file":"page-3-0.ppm"}"#);
+    }
+
+    #[test]
+    fn image_manifest_ignores_non_image_ops() {
+        let g = GState::new();
+        let mut st = ResolvedState::from(&g);
+        st.fill = [1.0, 0.0, 0.0];
+        let dl = DisplayList {
+            ops: vec![
+                Op::Fill {
+                    path: Path::new(),
+                    state: st,
+                },
+                image_op(&[1, 2, 3, 4], 1, 1),
+            ],
+        };
+        let imgs = image_manifest(&dl, 0);
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].file, "page-0-1.ppm");
+    }
 }
 
 /// The recovered text of a line (code → Unicode char).

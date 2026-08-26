@@ -828,6 +828,7 @@ dependencies = [
  "clap",
  "selis-bytes",
  "selis-error",
+ "selis-geom",
  "selis-io",
  "selis-job",
  "selis-log",
