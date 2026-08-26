@@ -148,7 +148,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     two-column document and produce interleaved nonsense.
   - **DoD:** 100% match against tagged order on the tagged corpus; a measured accuracy number on
     the untagged multi-column corpus, published in the conformance report.
-- [ ] **SL-3.TEXT.05 — Selection geometry and hit testing** · deps: TEXT.03 · owner: AI
+- [x] **SL-3.TEXT.05 — Selection geometry and hit testing** · deps: TEXT.03 · owner: AI
   - **Do:** Character-level quads for selection highlighting, caret positions, word/line/paragraph
     expansion, and RTL-correct selection ranges.
 - [ ] **SL-3.TEXT.06 — Search** · deps: TEXT.03 · owner: AI
