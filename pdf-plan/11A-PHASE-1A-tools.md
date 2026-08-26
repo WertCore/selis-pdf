@@ -177,9 +177,8 @@ operation is available identically in the CLI, the web app, and the extension.
 - [ ] **SL-1A.TOOL.11 — Batch mode** · deps: TOOL.01, TOOL.07 · owner: AI+
   - **Do:** Apply any tool across a file set, with per-file isolation so one bad document never
     kills the batch, plus a machine-readable report.
-- [ ] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
-  - **Note:** The one tool in this list that genuinely needs the renderer. Ships at G2, not G1.5.
-    Listed here so the product surface is complete in one place.
+- [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
+  - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
 
 ---
 
