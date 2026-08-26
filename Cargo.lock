@@ -971,18 +971,22 @@ name = "selis-pdf-engine"
 version = "0.1.0"
 dependencies = [
  "selis-bytes",
+ "selis-color",
  "selis-error",
+ "selis-font",
  "selis-geom",
  "selis-image",
  "selis-io",
  "selis-job",
  "selis-log",
+ "selis-pdf-content",
  "selis-pdf-cos",
  "selis-pdf-doc",
  "selis-pdf-edit",
  "selis-pdf-filter",
  "selis-pdf-optimize",
  "selis-policy",
+ "selis-raster",
  "selis-sandbox",
 ]
 

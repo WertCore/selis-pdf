@@ -25,3 +25,7 @@ selis-pdf-optimize = { workspace = true }
 selis-image = { workspace = true }
 selis-policy = { workspace = true }
 selis-job = { workspace = true }
+selis-pdf-content = { workspace = true }
+selis-font = { workspace = true }
+selis-raster = { workspace = true }
+selis-color = { workspace = true }

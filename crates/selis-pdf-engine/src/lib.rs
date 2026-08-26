@@ -8,5 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cache;
+pub mod render;
 
 pub use cache::{matrix_id, CacheKey, LruCache};
+pub use render::render_display_list;
