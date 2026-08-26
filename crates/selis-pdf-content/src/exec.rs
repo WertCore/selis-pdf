@@ -270,6 +270,20 @@ fn execute_inner(
                 }
             }
 
+            "BI" => {
+                // Inline image: the dispatcher extracted `ID … EI`. The raw
+                // data is decoded to RGBA by the engine at render time.
+                if let Some(Operand::InlineImage(img)) = operands.first() {
+                    let state = ResolvedState::from(&*gstate);
+                    dl.push(Op::InlineImage {
+                        dict: img.dict.clone(),
+                        data: img.data.clone(),
+                        state,
+                    });
+                    g.charge_one(selis_sandbox::Resource::Objects)?;
+                }
+            }
+
             // XObjects.
             "Do" => {
                 if let Some(Operand::Name(name)) = operands.first() {
@@ -657,5 +671,29 @@ mod tests {
         }
         assert!(matches!(dl.ops[1], Op::Fill { .. }));
         assert!(matches!(dl.ops[2], Op::PopLayer));
+    }
+
+    /// A `BI`…`EI` inline image is extracted into an `Op::InlineImage` with
+    /// its dictionary and raw data.
+    #[test]
+    fn inline_image_produces_an_inline_image_op() {
+        let mut g = guard();
+        let dl = execute(
+            b"BI /W 2 /H 2 /BPC 8 /CS /RGB /L 12 ID \
+              \x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff EI",
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 1, "one inline-image op");
+        if let Op::InlineImage { dict, data, .. } = &dl.ops[0] {
+            assert_eq!(data.len(), 12, "12 raw RGB bytes");
+            assert!(dict.iter().any(|(k, _)| k.as_slice() == b"W"));
+            assert!(dict.iter().any(|(k, _)| k.as_slice() == b"CS"));
+        } else {
+            panic!("expected inline image");
+        }
     }
 }

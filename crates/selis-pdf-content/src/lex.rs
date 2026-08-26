@@ -69,6 +69,12 @@ impl<'a> Lexer<'a> {
         self.pos
     }
 
+    /// Jump to a byte offset (used by the inline-image extractor to skip past
+    /// the `ID` … `EI` block).
+    pub fn set_pos(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }

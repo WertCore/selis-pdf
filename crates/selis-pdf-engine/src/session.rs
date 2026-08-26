@@ -94,10 +94,14 @@ impl Session {
             let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
             resolve_smask_inner(&mut res, key, &mut bg)
         };
+        let resolve_inline_image = move |dict: &[(Bytes, Bytes)], data: &[u8]| {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            resolve_inline_image_inner(dict, data, &mut bg)
+        };
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
         // transparent black — fill the canvas before painting content.
         fill_page_backdrop(backend);
-        render_display_list(&dl, backend, &font_data, &resolve_smask, g);
+        render_display_list(&dl, backend, &font_data, &resolve_smask, &resolve_inline_image, g);
         Ok(())
     }
 
@@ -584,6 +588,43 @@ fn dict_backdrop(pairs: &[(selis_bytes::Bytes, Obj)]) -> Rgba {
         nums.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
         1.0,
     )
+}
+
+/// Decode an inline image (`BI`/…/`EI`) to straight RGBA8 samples.
+fn resolve_inline_image_inner(
+    dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+    data: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Option<(u32, u32, selis_bytes::Bytes)> {
+    let get = |key: &[u8]| -> Option<&selis_bytes::Bytes> {
+        dict.iter().find(|(k, _)| k.as_slice() == key).map(|(_, v)| v)
+    };
+    let parse_u32 = |v: &selis_bytes::Bytes| -> Option<u32> {
+        let s = std::str::from_utf8(v.as_slice()).ok()?;
+        s.trim().parse().ok()
+    };
+    let width = get(b"W").and_then(parse_u32)?;
+    let height = get(b"H").and_then(parse_u32)?;
+    let bpc = get(b"BPC").and_then(|v| parse_u32(v).map(|n| n.min(16) as u8)).unwrap_or(8);
+    let components: u8 = match get(b"CS") {
+        Some(v) if v.as_slice().strip_prefix(b"/").unwrap_or(v.as_slice()) == b"G" => 1,
+        Some(v) if v.as_slice().strip_prefix(b"/").unwrap_or(v.as_slice()) == b"RGB" => 3,
+        Some(v) if v.as_slice().strip_prefix(b"/").unwrap_or(v.as_slice()) == b"CMYK" => 4,
+        _ => 3,
+    };
+    let unfiltered = match get(b"F").or_else(|| get(b"Filter")) {
+        Some(filt) => {
+            let name = std::str::from_utf8(
+                filt.as_slice().strip_prefix(b"/").unwrap_or(filt.as_slice()),
+            )
+            .unwrap_or("");
+            selis_pdf_filter::decode(name, data, u64::MAX, g).unwrap_or_else(|_| data.to_vec())
+        }
+        None => data.to_vec(),
+    };
+    let decode = Decode::identity(usize::from(components));
+    let img = decode_image(width, height, components, bpc, &unfiltered, &decode, g).ok()?;
+    Some((img.width, img.height, selis_bytes::Bytes::copy_from_slice(&img.rgba8)))
 }
 
 /// Resolve a `/ExtGState` resource name to its dictionary as `Operand` pairs,

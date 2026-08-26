@@ -39,6 +39,8 @@ pub enum Operand {
     Arr(Vec<Operand>),
     /// A dictionary of name→value.
     Dict(Vec<(selis_bytes::Bytes, Operand)>),
+    /// An inline image (extracted from `BI`…`EI` by the interpreter).
+    InlineImage(Box<crate::inline_image::InlineImage>),
 }
 
 /// The operand count an operator consumes, per ISO 32000-2 Table 50.
@@ -72,6 +74,8 @@ pub enum Dispatch {
 /// zero operands and are recorded.
 fn arity(name: &str) -> Arity {
     match name {
+        // Inline image (the interpreter extracts `ID … EI` into one operand).
+        "BI" => Arity::N(1),
         // Graphics state.
         "w" | "J" | "j" | "M" | "ri" | "gs" | "i" | "sh" => Arity::N(1),
         "d" => Arity::N(2),
@@ -127,6 +131,7 @@ fn dispatch_one(op: Operator) -> Dispatch {
         }
         "BT" | "ET" | "Tj" | "TJ" | "'" | "\"" | "Td" | "TD" | "Tm" => Dispatch::Handled(op),
         "Do" => Dispatch::Handled(op),
+        "BI" => Dispatch::Handled(op),
         // Colour and state operators are implemented in CONT.02/03; they are
         // dispatched now so the token stream is complete.
         "w" | "J" | "j" | "M" | "ri" | "gs" | "cs" | "CS" | "SC" | "SCN" | "sc" | "scn" | "G"
@@ -202,8 +207,21 @@ impl<'a> Interpreter<'a> {
                     let pairs = self.collect_dict(g)?;
                     self.pending.push(Operand::Dict(pairs));
                 }
-                Some(Tok::BI) | Some(Tok::ID) | Some(Tok::EI) => {
-                    // Inline images are consumed as data (CONT.06).
+                Some(Tok::BI) => {
+                    // Inline image: extract `ID … EI` from the raw bytes and
+                    // dispatch it as a `BI` operator, skipping the block.
+                    let bi_pos = self.lexer.pos();
+                    match crate::inline_image::extract_inline_image(self.src, bi_pos) {
+                        Some((img, after)) => {
+                            self.pending.push(Operand::InlineImage(Box::new(img)));
+                            self.lexer.set_pos(after);
+                            self.dispatch_operator("BI".to_string(), g)?;
+                        }
+                        None => self.pending.clear(),
+                    }
+                }
+                Some(Tok::ID) | Some(Tok::EI) => {
+                    // Stray markers outside a handled inline image: no effect.
                     self.pending.clear();
                 }
                 Some(Tok::ArrEnd) | Some(Tok::DictEnd) => {}

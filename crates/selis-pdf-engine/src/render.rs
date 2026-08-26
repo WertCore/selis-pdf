@@ -31,6 +31,11 @@ pub fn render_display_list(
     backend: &mut TinySkiaBackend,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
+    resolve_inline_image: &dyn Fn(&[(selis_bytes::Bytes, selis_bytes::Bytes)], &[u8]) -> Option<(
+        u32,
+        u32,
+        selis_bytes::Bytes,
+    )>,
     g: &mut BudgetGuard<'_>,
 ) {
     // The blend mode, clip, and soft mask are per-op resolved state; emit
@@ -150,6 +155,22 @@ pub fn render_display_list(
                     rgba8: rgba8.as_slice().to_vec(),
                 };
                 let placement = selis_raster::ImagePlacement { rect: *rect };
+                backend.draw_image(&img, &placement);
+            }
+            Op::InlineImage { dict, data, state } => {
+                let Some((w, h, rgba8)) = resolve_inline_image(dict, data) else {
+                    continue;
+                };
+                let p0 = state.ctm.apply(Point::new(0.0, 0.0));
+                let p1 = state.ctm.apply(Point::new(1.0, 1.0));
+                let img = selis_raster::Image {
+                    width: w,
+                    height: h,
+                    rgba8: rgba8.as_slice().to_vec(),
+                };
+                let placement = selis_raster::ImagePlacement {
+                    rect: selis_geom::Rect::new(p0.x, p0.y, p1.x, p1.y),
+                };
                 backend.draw_image(&img, &placement);
             }
             Op::PushLayer { .. } | Op::PopLayer => {
@@ -274,7 +295,8 @@ fn op_state(op: &Op) -> &ResolvedState {
         | Op::Stroke { state, .. }
         | Op::FillStroke { state, .. }
         | Op::Text { state, .. }
-        | Op::Image { state, .. } => state,
+        | Op::Image { state, .. }
+        | Op::InlineImage { state, .. } => state,
         Op::PushLayer { .. } | Op::PopLayer => {
             unreachable!("group ops are handled before op_state")
         }
@@ -335,6 +357,13 @@ mod tests {
         None
     }
 
+    fn no_inline_image(
+        _dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+        _data: &[u8],
+    ) -> Option<(u32, u32, selis_bytes::Bytes)> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -349,7 +378,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         // The centre pixel should be opaque red.
         let idx = (50 * 100 + 50) * 4;
@@ -371,7 +400,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         // Centre (50,50) is red; corner (5,5) is blue.
         let centre = (50 * 100 + 50) * 4;
@@ -403,7 +432,7 @@ mod tests {
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         // Top-left (10,10) is red; bottom-right (90,90) is blue.
         let tl = (10 * 100 + 10) * 4;
@@ -435,7 +464,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
@@ -461,7 +490,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         // Inside the clip (25, 25): red (the red fill covers the clip area).
         let inside = (25 * 100 + 25) * 4;
@@ -494,7 +523,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
@@ -541,11 +570,57 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // The black fill is 50% alpha (mask 128), not fully opaque.
         assert_eq!(data[centre], 0, "black");
         assert_eq!(data[centre + 3], 128, "alpha halved by the mask");
+    }
+
+    /// An inline image (`BI`/`ID`/`EI`) is decoded and rendered.
+    #[test]
+    fn inline_image_renders() {
+        let mut g = guard();
+        // 2x2 RGB: top-left red, rest blue, scaled to fill the canvas.
+        let content = b"100 0 0 100 0 0 cm \
+                        BI /W 2 /H 2 /BPC 8 /CS /RGB /L 12 ID \
+                        \xff\x00\x00\x00\x00\xff\x00\x00\xff\x00\x00\xff EI";
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+let resolve_inline =
+            |dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+             data: &[u8]|
+             -> Option<(u32, u32, selis_bytes::Bytes)> {
+                let parse = |key: &[u8]| -> Option<u32> {
+                    dict.iter()
+                        .find(|(k, _)| k.as_slice() == key)
+                        .and_then(|(_, v)| {
+                            std::str::from_utf8(v.as_slice()).ok()?.trim().parse().ok()
+                        })
+                };
+                let w = parse(b"W")?;
+                let h = parse(b"H")?;
+                // The raw data is RGB (3 bytes/pixel); pad to RGBA.
+                let mut rgba = Vec::with_capacity(data.len() / 3 * 4);
+                for chunk in data.chunks(3) {
+                    rgba.extend_from_slice(chunk);
+                    rgba.push(255);
+                }
+                Some((w, h, selis_bytes::Bytes::copy_from_slice(&rgba)))
+            };
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &mut g);
+        let data = backend.pixmap().data();
+        let tl = (10 * 100 + 10) * 4;
+        let br = (90 * 100 + 90) * 4;
+        assert_eq!(&data[tl..tl + 3], &[255, 0, 0], "top-left red");
+        assert_eq!(&data[br..br + 3], &[0, 0, 255], "bottom-right blue");
     }
 }
