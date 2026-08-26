@@ -9,6 +9,8 @@
 
 pub mod cache;
 pub mod render;
+pub mod session;
 
 pub use cache::{matrix_id, CacheKey, LruCache};
 pub use render::render_display_list;
+pub use session::Session;

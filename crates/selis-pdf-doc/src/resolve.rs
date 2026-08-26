@@ -36,6 +36,18 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The latest revision view (for reading stream bodies directly).
+    #[must_use]
+    pub fn at_revision(&self) -> Option<selis_pdf_cos::RevisionView> {
+        self.doc.at_revision(self.doc.len().saturating_sub(1))
+    }
+
+    /// The source bytes (for reading stream bodies directly).
+    #[must_use]
+    pub fn src(&self) -> &'a [u8] {
+        self.src
+    }
+
     /// Resolve a reference to its object value.
     ///
     /// # Budget
