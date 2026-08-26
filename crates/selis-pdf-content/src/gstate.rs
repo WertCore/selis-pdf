@@ -57,6 +57,10 @@ pub struct GState {
     pub fill_colour: [f64; 3],
     /// The stroking colour (device RGB, 0..1).
     pub stroke_colour: [f64; 3],
+    /// The non-stroking colour space name (`cs`; default `DeviceRGB`).
+    pub fill_cs: selis_bytes::Bytes,
+    /// The stroking colour space name (`CS`; default `DeviceRGB`).
+    pub stroke_cs: selis_bytes::Bytes,
     /// Text state: the font resource name.
     pub text_font: Option<selis_bytes::Bytes>,
     /// Text size.
@@ -99,6 +103,8 @@ impl Default for GState {
             overprint_mode: 0,
             fill_colour: [0.0, 0.0, 0.0],
             stroke_colour: [0.0, 0.0, 0.0],
+            fill_cs: selis_bytes::Bytes::copy_from_slice(b"DeviceRGB"),
+            stroke_cs: selis_bytes::Bytes::copy_from_slice(b"DeviceRGB"),
             text_font: None,
             text_size: 0.0,
             char_spacing: 0.0,

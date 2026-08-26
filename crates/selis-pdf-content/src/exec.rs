@@ -164,8 +164,35 @@ fn execute_inner(
                 let k = num(operands, 3);
                 gstate.fill_colour = cmyk_to_rgb(c, m, y, k);
             }
-            "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
-                // Colour space handling — deferred to SL-2.CONT.09.
+            "cs" => {
+                if let Some(Operand::Name(n)) = operands.first() {
+                    gstate.fill_cs = n.clone();
+                }
+            }
+            "CS" => {
+                if let Some(Operand::Name(n)) = operands.first() {
+                    gstate.stroke_cs = n.clone();
+                }
+            }
+            "sc" | "scn" => {
+                let comps: Vec<f64> = operands
+                    .iter()
+                    .filter_map(|o| match o {
+                        Operand::Num(v) => Some(*v),
+                        _ => None,
+                    })
+                    .collect();
+                gstate.fill_colour = colour_to_rgb(&comps, &gstate.fill_cs);
+            }
+            "SC" | "SCN" => {
+                let comps: Vec<f64> = operands
+                    .iter()
+                    .filter_map(|o| match o {
+                        Operand::Num(v) => Some(*v),
+                        _ => None,
+                    })
+                    .collect();
+                gstate.stroke_colour = colour_to_rgb(&comps, &gstate.stroke_cs);
             }
 
             // Path construction.
@@ -473,6 +500,29 @@ fn cmyk_to_rgb(c: f64, m: f64, y: f64, k: f64) -> [f64; 3] {
     [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
 }
 
+/// Convert colour-space components to device RGB for the current colour space
+/// name. DeviceGray/CMYK convert; everything else is treated as RGB.
+fn colour_to_rgb(comps: &[f64], cs: &Bytes) -> [f64; 3] {
+    match cs.as_slice() {
+        b"DeviceGray" | b"G" => {
+            let g = comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            [g, g, g]
+        }
+        b"DeviceCMYK" | b"CMYK" => cmyk_to_rgb(
+            comps.get(0).copied().unwrap_or(0.0),
+            comps.get(1).copied().unwrap_or(0.0),
+            comps.get(2).copied().unwrap_or(0.0),
+            comps.get(3).copied().unwrap_or(0.0),
+        ),
+        _ => {
+            let r = comps.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let g = comps.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let b = comps.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            [r, g, b]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
@@ -684,6 +734,26 @@ mod tests {
         }
         assert!(matches!(dl.ops[1], Op::Fill { .. }));
         assert!(matches!(dl.ops[2], Op::PopLayer));
+    }
+
+    /// `cs`/`CS` select the colour space and `scn` sets the colour in the
+    /// current space: DeviceGray → 0.5 → RGB (128, 128, 128).
+    #[test]
+    fn colour_space_operators_affect_fill() {
+        let mut g = guard();
+        let dl = execute(
+            b"/DeviceGray cs 0.5 scn 0 0 m 0 100 l 100 100 l 100 0 l h f",
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        if let Op::Fill { state, .. } = &dl.ops[0] {
+            assert!((state.fill[0] - 0.5).abs() < 0.01, "gray fill");
+        } else {
+            panic!("expected fill");
+        }
     }
 
     /// A `BI`…`EI` inline image is extracted into an `Op::InlineImage` with
