@@ -75,7 +75,9 @@ fn arity(name: &str) -> Arity {
         // Graphics state.
         "w" | "J" | "j" | "M" | "ri" | "gs" | "i" | "sh" => Arity::N(1),
         "d" => Arity::N(2),
-        "cs" | "CS" | "G" | "g" | "RG" | "rg" | "K" | "k" => Arity::N(1),
+        "cs" | "CS" | "G" | "g" => Arity::N(1),
+        "RG" | "rg" => Arity::N(3),
+        "K" | "k" => Arity::N(4),
         "SC" | "SCN" | "sc" | "scn" => Arity::Var,
         // Path construction.
         "m" | "l" => Arity::N(2),
@@ -85,13 +87,15 @@ fn arity(name: &str) -> Arity {
             Arity::N(0)
         }
         // Text.
-        "Td" | "TD" | "Tm" => Arity::N(6),
+        "Td" | "TD" => Arity::N(2),
+        "Tm" => Arity::N(6),
         "Tz" | "TL" | "Ts" | "Tw" | "Tc" => Arity::N(1),
         "Tf" => Arity::N(2),
         "Tr" => Arity::N(1),
         "\"" => Arity::N(3),
         "TJ" => Arity::N(1),
-        "BT" | "ET" | "T*" | "Tj" | "'" => Arity::N(0),
+        "BT" | "ET" | "T*" => Arity::N(0),
+        "Tj" | "'" => Arity::N(1),
         // XObjects.
         "Do" => Arity::N(1),
         // Marked content.
@@ -128,19 +132,8 @@ fn dispatch_one(op: Operator) -> Dispatch {
         "w" | "J" | "j" | "M" | "ri" | "gs" | "cs" | "CS" | "SC" | "SCN" | "sc" | "scn" | "G"
         | "g" | "RG" | "rg" | "K" | "k" | "d" | "i" | "sh" | "BMC" | "BDC" | "EMC" | "MP"
         | "DP" => Dispatch::Handled(op),
-        // Deliberately ignored, with reason.
-        "Tz" => Dispatch::Ignored {
-            op,
-            why: "horizontal scaling affects glyph placement (CONT.05)",
-        },
-        "TL" | "Tr" | "Ts" | "Tw" | "Tc" => Dispatch::Ignored {
-            op,
-            why: "text state detail lands in CONT.05",
-        },
-        "Tf" => Dispatch::Ignored {
-            op,
-            why: "font selection lands in CONT.05",
-        },
+        // Text state operators (SL-3.TEXT.01).
+        "Tz" | "TL" | "Tr" | "Ts" | "Tw" | "Tc" | "Tf" => Dispatch::Handled(op),
         "d0" | "d1" => Dispatch::Ignored {
             op,
             why: "type-3 glyph metrics land in CONT.05",

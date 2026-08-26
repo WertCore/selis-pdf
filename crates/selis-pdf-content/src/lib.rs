@@ -10,6 +10,7 @@
 
 pub mod dispatch;
 pub mod display_list;
+pub mod exec;
 pub mod form;
 pub mod gstate;
 pub mod inline_image;

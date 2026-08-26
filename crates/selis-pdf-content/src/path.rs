@@ -128,7 +128,7 @@ impl Path {
 }
 
 /// The result of painting or clipping a path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaintOp {
     /// `S` — stroke the path.
     Stroke,

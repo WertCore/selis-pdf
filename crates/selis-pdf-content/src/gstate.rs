@@ -48,6 +48,10 @@ pub struct GState {
     pub overprint_fill: bool,
     /// Overprint mode (`/OPM`); 0 or 1.
     pub overprint_mode: u8,
+    /// The non-stroking colour (device RGB, 0..1).
+    pub fill_colour: [f64; 3],
+    /// The stroking colour (device RGB, 0..1).
+    pub stroke_colour: [f64; 3],
     /// Text state: the font resource name.
     pub text_font: Option<selis_bytes::Bytes>,
     /// Text size.
@@ -87,6 +91,8 @@ impl Default for GState {
             overprint_stroke: false,
             overprint_fill: false,
             overprint_mode: 0,
+            fill_colour: [0.0, 0.0, 0.0],
+            stroke_colour: [0.0, 0.0, 0.0],
             text_font: None,
             text_size: 0.0,
             char_spacing: 0.0,
