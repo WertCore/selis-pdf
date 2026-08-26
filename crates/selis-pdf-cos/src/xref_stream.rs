@@ -36,32 +36,44 @@ pub struct XrefStream {
 
 impl XrefStream {
     /// Apply the decoded entries into an index, honoring `/Prev` at the caller.
+    ///
+    /// Walks the `/Index` subsection ranges (each pair is `start count`; the
+    /// default `[0 /Size]` is filled in by the parser), so non-zero or
+    /// non-contiguous subsections land on the correct object numbers.
     pub fn apply(&self, index: &mut BTreeMap<u32, XrefEntry>) {
-        let mut obj = 0u32;
-        for (i, &(ty, f2, f3)) in self.entries.iter().enumerate() {
-            // The subsection index may cover a sub-range; walk it.
-            let _ = i;
-            let entry = match ty {
-                0 => XrefEntry::Free {
-                    next_free: u32::try_from(f2).unwrap_or(u32::MAX),
-                    gen: u16::try_from(f3).unwrap_or(u16::MAX),
-                },
-                1 => XrefEntry::InUse {
-                    offset: f2,
-                    gen: u16::try_from(f3).unwrap_or(u16::MAX),
-                },
-                2 => XrefEntry::Compressed {
-                    objstm: u32::try_from(f2).unwrap_or(u32::MAX),
-                    index: u32::try_from(f3).unwrap_or(u32::MAX),
-                },
-                _ => continue, // unknown type: skip the entry
+        // `/Index` is a sequence of (start, count) pairs; default `[0 /Size]`.
+        let ranges: &[u32] = if self.index.len() >= 2 {
+            &self.index
+        } else {
+            &[0, u32::try_from(self.entries.len()).unwrap_or(u32::MAX)]
+        };
+        let mut entries = self.entries.iter();
+        'ranges: for pair in ranges.chunks(2) {
+            let (Some(&start), Some(&count)) = (pair.first(), pair.get(1)) else {
+                continue;
             };
-            index.insert(obj, entry);
-            obj = obj.saturating_add(1);
+            for k in 0..count {
+                let Some(&(ty, f2, f3)) = entries.next() else {
+                    break 'ranges;
+                };
+                let entry = match ty {
+                    0 => XrefEntry::Free {
+                        next_free: u32::try_from(f2).unwrap_or(u32::MAX),
+                        gen: u16::try_from(f3).unwrap_or(u16::MAX),
+                    },
+                    1 => XrefEntry::InUse {
+                        offset: f2,
+                        gen: u16::try_from(f3).unwrap_or(u16::MAX),
+                    },
+                    2 => XrefEntry::Compressed {
+                        objstm: u32::try_from(f2).unwrap_or(u32::MAX),
+                        index: u32::try_from(f3).unwrap_or(u32::MAX),
+                    },
+                    _ => continue, // unknown type: consume the slot, no entry
+                };
+                index.insert(start.saturating_add(k), entry);
+            }
         }
-        // Re-apply the subsection ranges for correctness when `/Index` spans
-        // non-contiguous ranges. This is replaced by a proper walk in a follow-up;
-        // for now entries are numbered from 0, which matches `/Index [0 N]`.
     }
 }
 
@@ -392,9 +404,61 @@ mod tests {
         );
     }
 
+    /// A non-zero, non-contiguous `/Index` subsection lands entries on the
+    /// declared object numbers, not from 0.
+    #[test]
+    fn xref_stream_applies_subsection_index() {
+        // /Index [5 1 8 2]: object 5 (in-use), objects 8, 9 (compressed).
+        let payload = [
+            1u8, 0, 0, 0, 50, 0, 0, // entry 0: type 1, offset 50
+            2, 0, 0, 0, 6, 0, 0, // entry 1: type 2, objstm 6, index 0
+            2, 0, 0, 0, 6, 0, 1, // entry 2: type 2, objstm 6, index 1
+        ];
+        let d = dict(vec![
+            (
+                b"W",
+                Obj::Array(vec![Obj::Int(1), Obj::Int(4), Obj::Int(2)]),
+            ),
+            (b"Size", Obj::Int(10)),
+            (
+                b"Index",
+                Obj::Array(vec![Obj::Int(5), Obj::Int(1), Obj::Int(8), Obj::Int(2)]),
+            ),
+        ]);
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let xs = parse_xref_stream(&d, &payload, &budget, &mut g).expect("parse");
+        assert_eq!(xs.index, vec![5, 1, 8, 2]);
+        let mut index = BTreeMap::new();
+        xs.apply(&mut index);
+        assert_eq!(
+            index.get(&5),
+            Some(&XrefEntry::InUse {
+                offset: 50,
+                gen: 0
+            })
+        );
+        assert_eq!(
+            index.get(&8),
+            Some(&XrefEntry::Compressed {
+                objstm: 6,
+                index: 0
+            })
+        );
+        assert_eq!(
+            index.get(&9),
+            Some(&XrefEntry::Compressed {
+                objstm: 6,
+                index: 1
+            })
+        );
+        // Objects outside the subsections are absent.
+        assert!(index.get(&0).is_none());
+        assert!(index.get(&6).is_none());
+    }
+
     #[test]
     fn xref_stream_zero_width_field() {
-        // /W [1 0 2]: field2 is zero-width, defaults to 0.
         let payload = [1u8, 0, 42, 1, 0, 43];
         let d = dict(vec![
             (
