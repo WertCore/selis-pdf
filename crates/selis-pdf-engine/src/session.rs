@@ -5,12 +5,13 @@
 //! and images resolved from the document's resources.
 
 use selis_bytes::Bytes;
+use selis_color::Rgba;
 use selis_error::{err, Code, Result};
-use selis_geom::Matrix;
+use selis_geom::{Matrix, Point};
 use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
-use selis_raster::TinySkiaBackend;
+use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
 
 use crate::render::render_display_list;
@@ -84,6 +85,9 @@ impl Session {
             let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
             font_data_inner(&mut res, page, font_name, &mut bg)
         };
+        // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
+        // transparent black — fill the canvas before painting content.
+        fill_page_backdrop(backend);
         render_display_list(&dl, backend, &font_data, g);
         Ok(())
     }
@@ -130,6 +134,27 @@ impl Session {
             };
         selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
     }
+}
+
+/// Fill the canvas with the page's initial backdrop: opaque white.
+fn fill_page_backdrop(backend: &mut TinySkiaBackend) {
+    let (w, h) = backend.dimensions();
+    if w == 0 || h == 0 {
+        return;
+    }
+    let path = RasterPath {
+        commands: vec![
+            PathCmd::Move(Point::new(0.0, 0.0)),
+            PathCmd::Line(Point::new(f64::from(w), 0.0)),
+            PathCmd::Line(Point::new(f64::from(w), f64::from(h))),
+            PathCmd::Line(Point::new(0.0, f64::from(h))),
+            PathCmd::Close,
+        ],
+    };
+    let paint = RasterPaint {
+        colour: Rgba::new(1.0, 1.0, 1.0, 1.0),
+    };
+    let _ = selis_raster::render::fill(backend, &path, FillRule::NonZero, &paint);
 }
 
 /// The embedded font program bytes for a font resource name.
