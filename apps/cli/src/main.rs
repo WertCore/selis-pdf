@@ -7,6 +7,7 @@
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod convert;
 mod extract;
 mod inspect;
 mod render;
@@ -54,6 +55,19 @@ enum Command {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Convert a page range to PPM images in an output directory.
+    Convert {
+        /// The PDF file to convert.
+        path: String,
+        /// The output directory.
+        output: String,
+        /// The first page (0-based; default 0).
+        #[arg(long, default_value_t = 0)]
+        first: usize,
+        /// The last page (0-based; default: the last page).
+        #[arg(long)]
+        last: Option<usize>,
+    },
 }
 
 fn main() {
@@ -62,6 +76,7 @@ fn main() {
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render { path, page, output } => render::run(&path, page, &output),
         Command::Extract { path, page, format } => extract::run(&path, page, &format),
+        Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
     };
     match result {
         Ok(()) => {}

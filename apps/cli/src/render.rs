@@ -46,7 +46,7 @@ pub(crate) fn run(path: &str, page_num: usize, output: &str) -> CliResult<()> {
 }
 
 /// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
-fn dim(v: f64) -> u32 {
+pub(crate) fn dim(v: f64) -> u32 {
     if !v.is_finite() || v < 0.0 {
         return 0;
     }
