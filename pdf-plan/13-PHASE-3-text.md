@@ -142,7 +142,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     relative to the font's space width, and assemble lines by baseline clustering.
   - **DoD:** Word segmentation matches PDFium on the extraction corpus; a test for the
     "no space characters in the content stream at all" case, which is common in generated PDFs.
-- [ ] **SL-3.TEXT.04 — Reading order: structure-first, geometry-fallback** · deps: TEXT.03, SL-1.DOC.06 · owner: AI+
+- [x] **SL-3.TEXT.04 — Reading order: structure-first, geometry-fallback** · deps: TEXT.03, SL-1.DOC.06 · owner: AI+
   - **Do:** When a structure tree exists, use it (ADR-P0031). Otherwise infer with column detection
     and an XY-cut or similar layout analysis. Return a confidence; never silently guess on a
     two-column document and produce interleaved nonsense.
