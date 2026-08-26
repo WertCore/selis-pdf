@@ -6,6 +6,7 @@
 
 use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
+use selis_geom::Matrix;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
 use selis_raster::TinySkiaBackend;
@@ -364,12 +365,23 @@ fn resolve_xobject_inner(
     let Some((dict, data)) = resolve_stream(resolver, r, g)? else {
         return Ok(None);
     };
-    // Only image XObjects are handled (form XObjects land with the worklist).
-    let is_image = matches!(
-        dict_get_obj(&dict, b"Subtype"),
-        Some(Obj::Name(n)) if n.as_slice() == b"Image"
-    );
-    if !is_image {
+    let subtype = match dict_get_obj(&dict, b"Subtype") {
+        Some(Obj::Name(n)) => n.as_slice(),
+        _ => return Ok(None),
+    };
+    if subtype == b"Form" {
+        // A form XObject: content + /Matrix. The form's own /Resources
+        // scoping is a refinement; the page's resources are used here.
+        let content = unfilter_stream_data(&dict, &data, g);
+        let matrix = dict_get_obj(&dict, b"Matrix")
+            .and_then(matrix_from_obj)
+            .unwrap_or(Matrix::IDENTITY);
+        return Ok(Some(selis_pdf_content::exec::DoTarget::Form {
+            content,
+            matrix,
+        }));
+    }
+    if subtype != b"Image" {
         return Ok(None);
     }
     let width = dict_get_obj(&dict, b"Width")
@@ -426,6 +438,31 @@ fn dict_get_obj<'a>(pairs: &'a [(selis_bytes::Bytes, Obj)], key: &[u8]) -> Optio
         .iter()
         .find(|(k, _)| k.as_slice() == key)
         .map(|(_, v)| v)
+}
+
+/// A 6-element `/Matrix` array as a `Matrix`.
+fn matrix_from_obj(obj: &Obj) -> Option<selis_geom::Matrix> {
+    let Obj::Array(items) = obj else {
+        return None;
+    };
+    if items.len() != 6 {
+        return None;
+    }
+    let get = |i: usize| -> Option<f64> {
+        match items.get(i)? {
+            Obj::Int(v) => Some(*v as f64),
+            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    };
+    Some(selis_geom::Matrix::new(
+        get(0)?,
+        get(1)?,
+        get(2)?,
+        get(3)?,
+        get(4)?,
+        get(5)?,
+    ))
 }
 
 #[cfg(test)]
@@ -495,5 +532,23 @@ mod tests {
             painted > 100,
             "expected painted glyph pixels, got {painted}"
         );
+    }
+
+    /// A PDF with a form XObject renders its content (a red square).
+    #[test]
+    fn session_renders_a_form_xobject() {
+        let src = include_bytes!("fixtures/form.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget).expect("open");
+        assert_eq!(session.len(), 1);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        session
+            .render_page(0, &mut backend, &budget, &mut g)
+            .expect("render");
+        let data = backend.pixmap().data();
+        // The form's red square fills the page: the centre pixel is red.
+        let idx = (50 * 100 + 50) * 4;
+        assert_eq!(&data[idx..idx + 3], &[255, 0, 0]);
     }
 }

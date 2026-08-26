@@ -28,7 +28,17 @@ pub enum DoTarget {
         /// The decoded RGBA8 samples.
         rgba8: Bytes,
     },
+    /// A form XObject's content and `/Matrix`.
+    Form {
+        /// The form's content stream (unfiltered).
+        content: Vec<u8>,
+        /// The form's `/Matrix` (form space → user space).
+        matrix: Matrix,
+    },
 }
+
+/// The maximum form-XObject nesting depth (a hostile form must terminate).
+const MAX_FORM_DEPTH: usize = 32;
 
 /// Execute a content stream into a display list.
 ///
@@ -41,10 +51,25 @@ pub fn execute(
     resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DisplayList> {
-    let mut interp = Interpreter::new(content);
-    interp.run(g)?;
     let mut dl = DisplayList::new();
     let mut gstate = GState::new();
+    execute_inner(content, font_width, resolve_do, g, &mut gstate, 0, &mut dl)?;
+    Ok(dl)
+}
+
+/// The recursive execution core: `q`/`Q` stack, text state, and form
+/// XObjects (bounded by `depth`).
+fn execute_inner(
+    content: &[u8],
+    font_width: &dyn Fn(&Bytes, u16) -> f64,
+    resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
+    g: &mut BudgetGuard<'_>,
+    gstate: &mut GState,
+    depth: usize,
+    dl: &mut DisplayList,
+) -> Result<()> {
+    let mut interp = Interpreter::new(content);
+    interp.run(g)?;
     let mut stack = GStateStack::new();
     let mut text_state = TextState::default();
     let mut current_path = Path::new();
@@ -59,11 +84,11 @@ pub fn execute(
         match op_name.as_str() {
             // Graphics state.
             "q" => {
-                stack.push(&gstate, g)?;
+                stack.push(&*gstate, g)?;
             }
             "Q" => {
                 if let Ok(gs) = stack.pop() {
-                    gstate = gs;
+                    *gstate = gs;
                 }
             }
             "cm" => {
@@ -126,7 +151,7 @@ pub fn execute(
 
             // Path construction.
             "m" => {
-                flush_path(&mut dl, &mut current_path, paint_op, clip_op, &gstate);
+                flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
                 paint_op = PaintOp::None;
                 clip_op = None;
                 current_path.move_to(Point::new(num(operands, 0), num(operands, 1)));
@@ -153,7 +178,7 @@ pub fn execute(
             }
             "h" => current_path.close(),
             "re" => {
-                flush_path(&mut dl, &mut current_path, paint_op, clip_op, &gstate);
+                flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
                 paint_op = PaintOp::None;
                 clip_op = None;
                 current_path.rectangle(Rect::new(
@@ -178,7 +203,7 @@ pub fn execute(
                     _ => PaintOp::None,
                 };
                 if !current_path.is_degenerate() {
-                    flush_path(&mut dl, &mut current_path, paint_op, clip_op, &gstate);
+                    flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
                 }
                 current_path = Path::new();
                 paint_op = PaintOp::None;
@@ -198,7 +223,7 @@ pub fn execute(
                     font_width(font_slice, code)
                 });
                 for glyph in glyphs {
-                    let state = ResolvedState::from(&gstate);
+                    let state = ResolvedState::from(&*gstate);
                     // gstate.ctm is the CTM in user space; the text glyph's
                     // `at` is in user space (the text matrix maps text → user).
                     dl.push(Op::Text {
@@ -217,25 +242,41 @@ pub fn execute(
             // XObjects.
             "Do" => {
                 if let Some(Operand::Name(name)) = operands.first() {
-                    if let Some(DoTarget::Image {
-                        width,
-                        height,
-                        rgba8,
-                    }) = resolve_do(name)
-                    {
-                        // The image fills the unit square in user space,
-                        // transformed by the CTM.
-                        let p0 = gstate.ctm.apply(Point::new(0.0, 0.0));
-                        let p1 = gstate.ctm.apply(Point::new(1.0, 1.0));
-                        let state = ResolvedState::from(&gstate);
-                        dl.push(Op::Image {
-                            rgba8,
+                    match resolve_do(name) {
+                        Some(DoTarget::Image {
                             width,
                             height,
-                            rect: Rect::new(p0.x, p0.y, p1.x, p1.y),
-                            state,
-                        });
-                        g.charge_one(selis_sandbox::Resource::Objects)?;
+                            rgba8,
+                        }) => {
+                            let p0 = gstate.ctm.apply(Point::new(0.0, 0.0));
+                            let p1 = gstate.ctm.apply(Point::new(1.0, 1.0));
+                            let state = ResolvedState::from(&*gstate);
+                            dl.push(Op::Image {
+                                rgba8,
+                                width,
+                                height,
+                                rect: Rect::new(p0.x, p0.y, p1.x, p1.y),
+                                state,
+                            });
+                            g.charge_one(selis_sandbox::Resource::Objects)?;
+                        }
+                        Some(DoTarget::Form { content, matrix }) => {
+                            if depth >= MAX_FORM_DEPTH {
+                                continue; // deviation: skip the form
+                            }
+                            let mut form_gstate = gstate.clone();
+                            form_gstate.ctm = form_gstate.ctm.then(matrix);
+                            execute_inner(
+                                &content,
+                                font_width,
+                                resolve_do,
+                                g,
+                                &mut form_gstate,
+                                depth.saturating_add(1),
+                                dl,
+                            )?;
+                        }
+                        None => {}
                     }
                 }
             }
@@ -245,8 +286,8 @@ pub fn execute(
         }
     }
     // Flush any remaining path.
-    flush_path(&mut dl, &mut current_path, paint_op, clip_op, &gstate);
-    Ok(dl)
+    flush_path(&mut *dl, &mut current_path, paint_op, clip_op, &*gstate);
+    Ok(())
 }
 
 /// The set of text operator names.
