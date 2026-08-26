@@ -2,6 +2,7 @@
 //! parse the value. Bridges the xref index (which knows WHERE each object is)
 //! and the object model (which needs WHAT each object says).
 
+use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -12,6 +13,8 @@ use crate::parse::ObjectParser;
 /// Read the object at byte offset `pos` from the buffer.
 ///
 /// Skips the `N G obj` header, parses the value, and stops at `endobj`.
+/// For stream objects (`<< … >> stream … endstream`) it returns the dict
+/// plus the raw (unfiltered) stream body as [`Obj::Stream`].
 ///
 /// # Budget
 ///
@@ -66,33 +69,86 @@ pub fn resolve_object(
         ));
     }
 
-    // Parse the value.
-    let toks = lex_tokens_until(&mut lexer, g, &[crate::Token::EndObj])?;
-    let mut parser = ObjectParser::new(&toks, budget);
-    let obj = parser.parse(g)?;
-
-    Ok(obj)
-}
-
-/// Lex tokens until one of the stop tokens is encountered (it is consumed).
-fn lex_tokens_until(
-    lexer: &mut Lexer<'_>,
-    g: &mut BudgetGuard<'_>,
-    stop: &[crate::Token],
-) -> Result<Vec<crate::Token>> {
-    let mut out = Vec::new();
+    // Lex tokens until `endobj` — or, for a stream object, at the `stream`
+    // keyword (the body is read from the source, not lexed).
+    let mut toks = Vec::new();
     loop {
         let Some(tok) = lexer.next_token(g)? else {
             return Err(err!(
                 Code::ObjUnexpected,
-                during = "lex-tokens",
-                detail = "reached end of input before stop token"
+                during = "resolve-object",
+                at = pos,
+                detail = "reached end of input before 'endobj'"
             ));
         };
-        if stop.contains(&tok) {
+        if matches!(tok, crate::Token::EndObj) {
             break;
         }
-        out.push(tok);
+        if matches!(tok, crate::Token::Stream) {
+            // The lexer consumed `stream`; its position is right after the
+            // keyword.  Read the stream body from the source bytes.
+            let body_off = p.saturating_add(usize::try_from(lexer.pos()).unwrap_or(0));
+            let mut parser = ObjectParser::new(&toks, budget);
+            let dict = parser.parse(g)?;
+            let dict_pairs = match dict {
+                Obj::Dict(pairs) => pairs,
+                _ => {
+                    return Err(err!(
+                        Code::ObjUnexpected,
+                        during = "resolve-object",
+                        at = pos,
+                        detail = "stream dict is not a dictionary",
+                    ));
+                }
+            };
+            let length = stream_length(&dict_pairs)?;
+            let data = read_stream_body(src, body_off, length)?;
+            return Ok(Obj::Stream {
+                dict: dict_pairs,
+                data,
+            });
+        }
+        toks.push(tok);
     }
-    Ok(out)
+
+    let mut parser = ObjectParser::new(&toks, budget);
+    let obj = parser.parse(g)?;
+    Ok(obj)
+}
+
+/// Extract the `/Length` from a stream dictionary.
+fn stream_length(dict: &[(Bytes, Obj)]) -> Result<usize> {
+    dict.iter()
+        .find(|(k, _)| k.as_slice() == b"Length")
+        .and_then(|(_, v)| match v {
+            Obj::Int(n) => usize::try_from(*n).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "resolve-object",
+                detail = "stream without /Length"
+            )
+        })
+}
+
+/// Read `length` bytes from `src` starting at `body`, skipping the single
+/// EOL (`\r\n` or `\n`) that follows the `stream` keyword.
+fn read_stream_body(src: &[u8], mut body: usize, length: usize) -> Result<Bytes> {
+    if src.get(body) == Some(&b'\r') {
+        body = body.saturating_add(1);
+    }
+    if src.get(body) == Some(&b'\n') {
+        body = body.saturating_add(1);
+    }
+    let end = body.saturating_add(length);
+    let data = src.get(body..end).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "resolve-object",
+            detail = "stream body out of range"
+        )
+    })?;
+    Ok(Bytes::copy_from_slice(data))
 }

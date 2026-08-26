@@ -11,6 +11,8 @@ use selis_geom::Rect;
 use selis_pdf_cos::{resolve_object, Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::resolve::resolve_compressed;
+
 /// A resolved page: its attributes after inheritance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page {
@@ -139,17 +141,13 @@ fn resolve_ref(
                 detail = "no revisions"
             )
         })?;
-    let offset = match view.xref.get(&r.num) {
-        Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
-        Some(selis_pdf_cos::XrefEntry::Compressed { .. }) => {
-            // Compressed objects (in object streams) need stream decoding;
-            // that is a later phase (SL-1.COS.04 follow-up).
-            return Err(err!(
-                Code::ObjUnexpected,
-                during = "doc-resolve",
-                object = r.num,
-                detail = "compressed object resolution not yet wired"
-            ));
+    let obj = match view.xref.get(&r.num) {
+        Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
+            resolve_object(src, *offset, budget, g)?
+        }
+        Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
+            // The object lives in an object stream (/ObjStm).
+            resolve_compressed(doc, src, *objstm, *index, budget, g)?
         }
         Some(_) | None => {
             return Err(err!(
@@ -159,7 +157,7 @@ fn resolve_ref(
             ));
         }
     };
-    resolve_object(src, offset, budget, g)
+    Ok(obj)
 }
 
 fn dict_ref(dict: &Obj, key: &[u8]) -> Option<Ref> {

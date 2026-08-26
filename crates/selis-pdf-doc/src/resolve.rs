@@ -77,15 +77,17 @@ impl<'a> Resolver<'a> {
             .doc
             .at_revision(self.doc.len().saturating_sub(1))
             .ok_or_else(|| err!(Code::ObjUnexpected, during = "doc-resolve", object = r.num))?;
-        let offset = match view.xref.get(&r.num) {
-            Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
-            Some(selis_pdf_cos::XrefEntry::Compressed { .. }) => {
-                return Err(err!(
-                    Code::ObjUnexpected,
-                    during = "doc-resolve",
-                    object = r.num,
-                    detail = "compressed object resolution not yet wired"
-                ));
+        let obj = match view.xref.get(&r.num) {
+            Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
+                g.charge_one(selis_sandbox::Resource::Objects)?;
+                resolve_object(self.src, *offset, self.budget, g)?
+            }
+            Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
+                // The object lives in an object stream (/ObjStm): resolve the
+                // stream, parse its (number, range) index, and parse the
+                // object at that range.
+                g.charge_one(selis_sandbox::Resource::Objects)?;
+                resolve_compressed(self.doc, self.src, *objstm, *index, self.budget, g)?
             }
             Some(_) | None => {
                 return Err(err!(
@@ -95,13 +97,137 @@ impl<'a> Resolver<'a> {
                 ));
             }
         };
-        g.charge_one(selis_sandbox::Resource::Objects)?;
-        let obj = resolve_object(self.src, offset, self.budget, g)?;
 
         self.depth = self.depth.saturating_sub(1);
         self.visited.remove(&r.num);
         Ok(obj)
     }
+}
+
+/// Resolve an object stored in an object stream (`/ObjStm`).
+pub(crate) fn resolve_compressed(
+    doc: &Doc,
+    src: &[u8],
+    objstm: u32,
+    index: u32,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Obj> {
+    let view = doc
+        .at_revision(doc.len().saturating_sub(1))
+        .ok_or_else(|| err!(Code::ObjUnexpected, during = "objstm", detail = "no revision"))?;
+    let offset = match view.xref.get(&objstm) {
+        Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
+        _ => {
+            return Err(err!(
+                Code::ObjstmMalformed,
+                during = "objstm",
+                detail = "object stream not a direct object"
+            ));
+        }
+    };
+    let obj = resolve_object(src, offset, budget, g)?;
+    let (dict, payload) = match &obj {
+        Obj::Stream { dict, data } => (dict, data.as_slice()),
+        _ => {
+            return Err(err!(
+                Code::ObjstmMalformed,
+                during = "objstm",
+                detail = "referenced object is not a stream"
+            ));
+        }
+    };
+    // Unfilter the object stream data.
+    let payload = if let Some(Obj::Name(n)) = dict.iter().find(|(k, _)| k.as_slice() == b"Filter").map(|(_, v)| v) {
+        let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
+        selis_pdf_filter::decode(filt, payload, u64::MAX, g).unwrap_or_else(|_| payload.to_vec())
+    } else {
+        payload.to_vec()
+    };
+    // The (number, range) index of the objects in the stream.
+    let pairs = selis_pdf_cos::parse_object_stream(dict, &payload, budget, g)?;
+    // The stream's object at the requested index.
+    let mut i = 0u64;
+    for (_, range) in pairs {
+        if i == u64::from(index) {
+            return parse_value_at(&payload, range, budget, g);
+        }
+        i = i.saturating_add(1);
+    }
+    Err(err!(
+        Code::ObjstmMalformed,
+        during = "objstm",
+        detail = "index out of range"
+    ))
+}
+
+/// Parse an object value at a byte range (object-stream objects have no
+/// `N G obj` header — they are bare values, and the caller supplies the exact
+/// `start..end` span from the `/ObjStm` index).
+fn parse_value_at(
+    data: &[u8],
+    range: std::ops::Range<u64>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Obj> {
+    let start = usize::try_from(range.start).unwrap_or(0);
+    let end = usize::try_from(range.end).unwrap_or(data.len());
+    let slice = data
+        .get(start..end)
+        .ok_or_else(|| err!(Code::ObjUnexpected, during = "objstm-value", at = range.start))?;
+    let mut lexer = selis_pdf_cos::Lexer::new(slice);
+    // Lex one complete value, tracking `[`/`<<` nesting depth: a composite
+    // value (`[1 2 3]`, `<< /A [1] >>`) is only complete once every opener
+    // has been closed. A bare scalar closes immediately — except a leading
+    // `N G R` reference, whose integer tokens must be kept together until the
+    // `R` arrives (or the range runs out).
+    let mut toks = Vec::new();
+    let mut depth = 0u32;
+    let mut pending_ref_nums = 0u32;
+    loop {
+        let Some(tok) = lexer.next_token(g)? else {
+            break;
+        };
+        g.charge_one(selis_sandbox::Resource::Objects)?;
+        match tok {
+            selis_pdf_cos::Token::ArrayStart | selis_pdf_cos::Token::DictStart => {
+                depth = depth.saturating_add(1);
+            }
+            selis_pdf_cos::Token::ArrayEnd | selis_pdf_cos::Token::DictEnd => {
+                if depth == 0 {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        let complete = if depth > 0 {
+            false
+        } else if matches!(
+            tok,
+            selis_pdf_cos::Token::Number(selis_pdf_cos::Number::Int(_))
+        ) && pending_ref_nums < 2
+        {
+            // Could be the start of `N G R`; keep reading.
+            pending_ref_nums = pending_ref_nums.saturating_add(1);
+            false
+        } else {
+            true
+        };
+        toks.push(tok);
+        if complete {
+            break;
+        }
+    }
+    if toks.is_empty() {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "objstm-value",
+            detail = "no tokens"
+        ));
+    }
+    let mut parser = selis_pdf_cos::ObjectParser::new(&toks, budget);
+    parser.parse(g)
 }
 
 #[cfg(test)]
@@ -147,5 +273,62 @@ mod tests {
         let mut r = Resolver::new(&doc, src, &budget);
         let e = r.resolve(Ref::new(99, 0), &mut g).expect_err("missing");
         assert_eq!(e.code(), Code::ObjUnexpected);
+    }
+
+    /// An object-stream array value must parse whole, not stop at its first
+    /// number token.
+    #[test]
+    fn objstm_value_array_parses_whole() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let data = b"[1 2 3]";
+        let obj = parse_value_at(data, 0..data.len() as u64, &budget, &mut g).expect("array");
+        assert!(matches!(obj, Obj::Array(v) if v.len() == 3));
+    }
+
+    /// Nested composites close only when the depth returns to zero.
+    #[test]
+    fn objstm_value_nested_composite_parses_whole() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let data = b"<< /A [1 << /B true >> 2] /C null >>";
+        let obj =
+            parse_value_at(data, 0..data.len() as u64, &budget, &mut g).expect("dict");
+        let Obj::Dict(pairs) = obj else {
+            panic!("expected dict");
+        };
+        assert_eq!(pairs.len(), 2);
+    }
+
+    /// A bare `N G R` reference is one value, not a truncated number.
+    #[test]
+    fn objstm_value_ref_is_not_truncated() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let data = b"7 0 R";
+        let obj = parse_value_at(data, 0..data.len() as u64, &budget, &mut g).expect("ref");
+        assert_eq!(obj, Obj::Ref(Ref::new(7, 0)));
+    }
+
+    /// A scalar at a non-zero offset (the common object-stream layout).
+    #[test]
+    fn objstm_value_scalar_at_offset() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let obj = parse_value_at(b"xx42", 2..4, &budget, &mut g).expect("int");
+        assert_eq!(obj, Obj::Int(42));
+    }
+
+    /// A scalar object stops at its range end: it must not swallow the next
+    /// object's bytes (e.g. a following `N G R` reference).
+    #[test]
+    fn objstm_value_is_bounded_by_range() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let data = b"42 7 0 R";
+        let obj = parse_value_at(data, 0..3, &budget, &mut g).expect("int");
+        assert_eq!(obj, Obj::Int(42));
+        let obj = parse_value_at(data, 3..data.len() as u64, &budget, &mut g).expect("ref");
+        assert_eq!(obj, Obj::Ref(Ref::new(7, 0)));
     }
 }

@@ -184,6 +184,7 @@ fn resolve_stream(
     let obj = resolver.resolve(r, g)?;
     let dict = match &obj {
         Obj::Dict(d) => d.clone(),
+        Obj::Stream { dict, .. } => dict.clone(),
         _ => return Ok(None),
     };
     // The object's byte offset in the source: from the xref.

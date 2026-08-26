@@ -234,10 +234,11 @@ pub(crate) fn read_startxref_value(src: &[u8], after_kw: usize) -> Result<(u64, 
     Ok((u64::try_from(off).unwrap_or(u64::MAX), next))
 }
 
-/// Parse exactly one classic xref table + trailer at `cursor`.
+/// Parse exactly one revision (classic xref table or xref stream) at `cursor`.
 ///
 /// Returns `(entries, trailer, /Prev)` — the per-revision data SL-1.COS.05
-/// keeps addressable.
+/// keeps addressable.  Dispatches automatically between classic tables and
+/// xref streams based on the first non-whitespace bytes at the cursor.
 pub(crate) fn parse_one_revision(
     src: &[u8],
     cursor: u64,
@@ -249,14 +250,38 @@ pub(crate) fn parse_one_revision(
     Option<u64>,
 )> {
     let pos = usize::try_from(cursor).unwrap_or(usize::MAX);
-    let slice = src
+    let _ = src
         .get(pos..)
         .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-table", at = cursor))?;
 
-    // Skip whitespace then expect `xref`.
-    let xref_kw = find_keyword(slice, b"xref")
-        .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-table", at = cursor))?;
-    let mut p = pos.saturating_add(xref_kw).saturating_add(4);
+    // Skip whitespace and detect the revision type.
+    let p = skip_ws(src, pos);
+
+    if src.get(p..p.saturating_add(4)) == Some(b"xref") {
+        parse_classic_revision(src, p.saturating_add(4), budget, g)
+    } else if src.get(p).is_some_and(|&b| b.is_ascii_digit()) {
+        parse_xref_stream_revision(src, cursor, p, budget, g)
+    } else {
+        Err(err!(
+            Code::XrefMalformed,
+            during = "xref-table",
+            at = cursor
+        ))
+    }
+}
+
+/// Parse a classic xref table that starts at byte `p` (after the `xref`
+/// keyword, which has already been consumed from the cursor).
+fn parse_classic_revision(
+    src: &[u8],
+    mut p: usize,
+    budget: &selis_sandbox::Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> Result<(
+    BTreeMap<u32, XrefEntry>,
+    Vec<(selis_bytes::Bytes, Obj)>,
+    Option<u64>,
+)> {
 
     let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
 
@@ -295,6 +320,59 @@ pub(crate) fn parse_one_revision(
         .find(|(k, _)| k.as_slice() == b"Prev")
         .and_then(|(_, v)| match v {
             Obj::Int(p) => Some(u64::try_from(*p).unwrap_or(u64::MAX)),
+            _ => None,
+        });
+    Ok((entries, trailer, prev))
+}
+
+/// Parse an xref stream (`/Type /XRef`) that starts at byte `p` (the object
+/// number of the stream object).
+fn parse_xref_stream_revision(
+    src: &[u8],
+    cursor: u64,
+    p: usize,
+    budget: &selis_sandbox::Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> Result<(
+    BTreeMap<u32, XrefEntry>,
+    Vec<(selis_bytes::Bytes, Obj)>,
+    Option<u64>,
+)> {
+    // Resolve the stream object: dict plus raw (unfiltered) body.
+    let offset = u64::try_from(p).unwrap_or(cursor);
+    let obj = crate::resolve::resolve_object(src, offset, budget, g)?;
+    let (dict, data) = match &obj {
+        Obj::Stream { dict, data } => (dict, data.as_slice()),
+        _ => {
+            return Err(err!(
+                Code::XrefMalformed,
+                during = "xref-stream",
+                at = offset,
+                detail = "not an xref stream object"
+            ));
+        }
+    };
+    // Decode the payload (xref streams are typically /FlateDecode).
+    let payload = if let Some(Obj::Name(n)) = dict
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Filter")
+        .map(|(_, v)| v)
+    {
+        let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
+        selis_pdf_filter::decode(filt, data, budget.bytes, g)
+            .unwrap_or_else(|_| data.to_vec())
+    } else {
+        data.to_vec()
+    };
+    let xs = crate::xref_stream::parse_xref_stream(dict, &payload, budget, g)?;
+    let mut entries = BTreeMap::new();
+    xs.apply(&mut entries);
+    let trailer = xs.trailer;
+    let prev = trailer
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Prev")
+        .and_then(|(_, v)| match v {
+            Obj::Int(prev) => Some(u64::try_from(*prev).unwrap_or(u64::MAX)),
             _ => None,
         });
     Ok((entries, trailer, prev))
