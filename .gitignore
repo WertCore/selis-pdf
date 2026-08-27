@@ -21,3 +21,5 @@ Thumbs.db
 # Python / misc tooling
 __pycache__/
 *.pyc
+
+tmp_*
