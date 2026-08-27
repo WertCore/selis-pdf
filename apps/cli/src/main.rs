@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod check;
 mod convert;
 mod extract;
 mod inspect;
@@ -84,6 +85,14 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         page: usize,
     },
+    /// Evaluate the conformance rules for a PDF.
+    Check {
+        /// The PDF file to check.
+        path: String,
+        /// The conformance profile: readable|ua.
+        #[arg(long, default_value = "readable")]
+        profile: String,
+    },
 }
 
 fn main() {
@@ -94,6 +103,7 @@ fn main() {
         Command::Extract { path, page, format, output } => extract::run(&path, page, &format, output.as_deref()),
         Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
+        Command::Check { path, profile } => check::run(&path, &profile),
     };
     match result {
         Ok(()) => {}

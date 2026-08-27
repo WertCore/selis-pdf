@@ -101,6 +101,19 @@ impl Session {
         Ok(tree.mcid_order())
     }
 
+    /// Evaluate the conformance rules for a profile.
+    pub fn conformance(
+        &self,
+        profile: selis_pdf_doc::Profile,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<selis_pdf_doc::RuleResult>> {
+        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        let meta = selis_pdf_doc::Metadata::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        Ok(selis_pdf_doc::evaluate(&self.document, &self.document.catalog, &tree, &meta, profile, budget, g))
+    }
+
     /// Render a page onto a backend.
     pub fn render_page(
         &self,
