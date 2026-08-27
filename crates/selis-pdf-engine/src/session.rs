@@ -109,7 +109,7 @@ impl Session {
         let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-            font_data_inner(&mut res, page, font_name, &mut bg)
+            font_data_inner(&mut res, page.resources.as_ref(), font_name, &mut bg)
         };
         let resolve_smask = move |key: &Bytes| -> Option<Mask> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
@@ -123,7 +123,11 @@ impl Session {
         let resolve_shading = move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-            resolve_shading_inner(&mut res, page, name, state, &mut bg)
+            resolve_shading_inner(&mut res, page.resources.as_ref(), name, state, &mut bg)
+        };
+        let resolve_pattern = move |name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            resolve_pattern_inner(self, page.resources.as_ref(), name, &budget_copy, &mut bg)
         };
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
         // transparent black — fill the canvas before painting content.
@@ -135,6 +139,7 @@ impl Session {
             &resolve_smask,
             &resolve_inline_image,
             &resolve_shading,
+            &resolve_pattern,
             g,
         );
         Ok(())
@@ -159,29 +164,148 @@ impl Session {
         if content.is_empty() {
             return Ok(selis_pdf_content::display_list::DisplayList::default());
         }
-        let budget_copy = *budget;
-        let font_width = move |font_name: &Bytes, code: u16| -> f64 {
+        build_display_list(self, content, page.resources.as_ref(), budget, g)
+    }
+}
+
+/// Build a display list from a content stream against a resource dictionary.
+/// The resource closures (fonts, XObjects, ExtGState) resolve against
+/// `resources`, which the page and pattern tiles both provide.
+fn build_display_list(
+    session: &Session,
+    content: Vec<u8>,
+    resources: Option<&Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<selis_pdf_content::display_list::DisplayList> {
+    let budget_copy = *budget;
+    let font_width = move |font_name: &Bytes, code: u16| -> f64 {
+        let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+        let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+        font_width_inner(&mut res, resources, font_name, code, &mut bg).unwrap_or(0.0)
+    };
+    let resolve_do = move |name: &Bytes| -> Option<selis_pdf_content::exec::DoTarget> {
+        let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+        let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+        resolve_xobject_inner(&mut res, resources, name, &mut bg)
+            .ok()
+            .flatten()
+    };
+    let resolve_ext_gstate =
+        move |name: &Bytes| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-            font_width_inner(&mut res, page, font_name, code, &mut bg).unwrap_or(0.0)
-        };
-        let resolve_do = move |name: &Bytes| -> Option<selis_pdf_content::exec::DoTarget> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-            resolve_xobject_inner(&mut res, page, name, &mut bg)
+            let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+            resolve_ext_gstate_inner(&mut res, resources, name, &mut bg)
                 .ok()
                 .flatten()
         };
-        let resolve_ext_gstate =
-            move |name: &Bytes| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
-                let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-                let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
-                resolve_ext_gstate_inner(&mut res, page, name, &mut bg)
-                    .ok()
-                    .flatten()
-            };
-        selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
+    selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
+}
+
+/// Resolve a tiling pattern (colour-space pattern, `/PatternType 1`) from the
+/// resources: render the pattern's content into a tile, and return the
+/// tiling-pattern (tile + steps + matrix) for placement.
+fn resolve_pattern_inner(
+    session: &Session,
+    resources: Option<&Obj>,
+    name: &Bytes,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Option<selis_raster::pattern::TilingPattern> {
+    use selis_raster::pattern::{PatternTile, PatternType, TilingPattern};
+    let caller_resources = resources;
+    let resources = resources?;
+    let patterns = dict_get(resources, b"Pattern")?;
+    let pattern_obj = dict_get(patterns, name.as_slice())?;
+    let pattern_obj = match pattern_obj {
+        Obj::Ref(r) => {
+            let mut res = Resolver::new(&session.doc, &session.src, budget);
+            res.resolve(*r, g).ok()?
+        }
+        o => o.clone(),
+    };
+    let (pairs, data) = match &pattern_obj {
+        Obj::Stream { dict, data } => (dict, data.as_slice()),
+        _ => return None,
+    };
+    let int = |key: &[u8]| -> Option<i64> {
+        dict_get_obj(pairs, key).and_then(|v| match v {
+            Obj::Int(n) => Some(*n),
+            _ => None,
+        })
+    };
+    let num = |key: &[u8]| -> Option<f64> {
+        match dict_get_obj(pairs, key) {
+            Some(Obj::Int(n)) => Some(*n as f64),
+            Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    };
+    // Only tiling patterns (type 1); shading patterns (2) are not patterns in
+    // this colour-space sense.
+    if int(b"PatternType") != Some(1) {
+        return None;
     }
+    let paint_type = if int(b"PaintType") == Some(2) {
+        PatternType::Uncoloured
+    } else {
+        PatternType::Coloured
+    };
+    let bbox = match dict_get_obj(pairs, b"BBox") {
+        Some(Obj::Array(arr)) => {
+            let n = |i: usize| match arr.get(i) {
+                Some(Obj::Int(v)) => Some(*v as f64),
+                Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                _ => None,
+            };
+            selis_geom::Rect::new(n(0)?, n(1)?, n(2)?, n(3)?)
+        }
+        _ => return None,
+    };
+    let x_step = num(b"XStep").unwrap_or(bbox.width());
+    let y_step = num(b"YStep").unwrap_or(bbox.height());
+    let matrix = match dict_get_obj(pairs, b"Matrix") {
+        Some(Obj::Array(arr)) => {
+            let n = |i: usize| match arr.get(i) {
+                Some(Obj::Int(v)) => Some(*v as f64),
+                Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                _ => None,
+            };
+            selis_geom::Matrix::new(n(0)?, n(1)?, n(2)?, n(3)?, n(4)?, n(5)?)
+        }
+        _ => selis_geom::Matrix::IDENTITY,
+    };
+    if !(x_step > 0.0) || !(y_step > 0.0) {
+        return None;
+    }
+    // The pattern's content, executed against its own /Resources (falling
+    // back to the caller's).
+    let content = unfilter_stream_data(pairs, data, g);
+    let pattern_resources = dict_get_obj(pairs, b"Resources")
+        .map(|o| o.clone())
+        .or_else(|| caller_resources.map(Obj::clone));
+    let dl = build_display_list(session, content, pattern_resources.as_ref(), budget, g).ok()?;
+    let w = dim_ceil(bbox.width()).max(1);
+    let h = dim_ceil(bbox.height()).max(1);
+    let mut tile = TinySkiaBackend::new(w, h)?;
+    let no_font = |_name: &Bytes| -> Option<Vec<u8>> { None };
+    let no_smask = |_key: &Bytes| -> Option<Mask> { None };
+    let no_inline = |_d: &[(Bytes, Bytes)], _data: &[u8]| -> Option<(u32, u32, Bytes)> { None };
+    let no_shading =
+        |_n: &Bytes, _s: &selis_pdf_content::display_list::ResolvedState| -> Option<(u32, u32, Bytes, selis_geom::Rect)> { None };
+    let no_pattern = |_name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> { None };
+    crate::render::render_display_list(&dl, &mut tile, &no_font, &no_smask, &no_inline, &no_shading, &no_pattern, g);
+    Some(TilingPattern {
+        paint_type,
+        tile: PatternTile {
+            width: w,
+            height: h,
+            rgba8: tile.pixmap().data().to_vec(),
+        },
+        x_step,
+        y_step,
+        matrix,
+    })
 }
 
 /// Fill the canvas with the page's initial backdrop: opaque white.
@@ -248,11 +372,11 @@ fn f64_to_u32(v: f64) -> u32 {
 /// The embedded font program bytes for a font resource name.
 fn font_data_inner(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Option<Vec<u8>> {
-    let font_dict = resolve_font_dict(resolver, page, font_name, g)?;
+    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
     let font_file = font_dict.font_file?;
     Some(font_file.data().as_slice().to_vec())
 }
@@ -358,23 +482,23 @@ fn resolve_stream(
 
 fn font_width_inner(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     font_name: &Bytes,
     code: u16,
     g: &mut BudgetGuard<'_>,
 ) -> Option<f64> {
-    let font_dict = resolve_font_dict(resolver, page, font_name, g)?;
+    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
     let resolved = selis_font::resolve_widths(&font_dict, g).ok()?;
     Some(resolved.width(u32::from(code)))
 }
 
 fn resolve_font_dict(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Option<selis_font::FontDict> {
-    let resources = page.resources.as_ref()?;
+    let resources = resources?;
     let fonts = dict_get(resources, b"Font")?;
     let font_obj = dict_get(fonts, font_name.as_slice())?;
     let font_ref = match font_obj {
@@ -524,16 +648,15 @@ fn decode_parms_from_obj(obj: Option<&Obj>) -> Vec<selis_pdf_filter::DecodeParms
     }
 }
 
-/// Resolve an image XObject from the page's resources into decoded RGBA.
+/// Resolve an image XObject from the resources into decoded RGBA.
 fn resolve_xobject_inner(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<selis_pdf_content::exec::DoTarget>> {
-    let resources = match &page.resources {
-        Some(r) => r,
-        None => return Ok(None),
+    let Some(resources) = resources else {
+        return Ok(None);
     };
     let xobjects = match dict_get(resources, b"XObject") {
         Some(o) => o,
@@ -749,7 +872,7 @@ fn resolve_inline_image_inner(
 /// Resolve a shading resource to a rasterised RGBA image in device space.
 fn resolve_shading_inner(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     name: &Bytes,
     state: &selis_pdf_content::display_list::ResolvedState,
     g: &mut BudgetGuard<'_>,
@@ -779,8 +902,7 @@ fn resolve_shading_inner(
         Some(selis_geom::Matrix::new(arr_n(arr, 0)?, arr_n(arr, 1)?, arr_n(arr, 2)?, arr_n(arr, 3)?, arr_n(arr, 4)?, arr_n(arr, 5)?))
     }
     // Resolve the shading dict from /Shading resources.
-    let resources = page.resources.as_ref()?;
-    let shadings = dict_get(resources, b"Shading")?;
+    let shadings = dict_get(resources?, b"Shading")?;
     let obj = match dict_get(shadings, name.as_slice())? {
         Obj::Ref(r) => resolver.resolve(*r, g).ok()?,
         o => o.clone(),
@@ -1519,13 +1641,12 @@ fn barycentric_weights(
 /// a hostile ExtGState never aborts the page.
 fn resolve_ext_gstate_inner(
     resolver: &mut Resolver<'_>,
-    page: &selis_pdf_doc::Page,
+    resources: Option<&Obj>,
     name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Vec<(Bytes, Operand)>>> {
-    let resources = match &page.resources {
-        Some(r) => r,
-        None => return Ok(None),
+    let Some(resources) = resources else {
+        return Ok(None);
     };
     let ext = match dict_get(resources, b"ExtGState") {
         Some(o) => o,

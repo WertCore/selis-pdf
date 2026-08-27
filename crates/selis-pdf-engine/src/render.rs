@@ -42,6 +42,7 @@ pub fn render_display_list(
         selis_bytes::Bytes,
         selis_geom::Rect,
     )>,
+    resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
     g: &mut BudgetGuard<'_>,
 ) {
     // The blend mode, clip, and soft mask are per-op resolved state; emit
@@ -93,6 +94,12 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
+                if let Some(pattern_name) = &state.fill_pattern {
+                    if let Some(pattern) = resolve_pattern(pattern_name) {
+                        draw_pattern(backend, &pattern, &p, state, g);
+                        continue;
+                    }
+                }
                 let paint = paint(&state.fill, state.alpha_fill);
                 selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
             }
@@ -307,8 +314,7 @@ fn raster_path_from_commands(commands: &[PathCmd]) -> Option<RasterPath> {
 
 /// The resolved state of any paint op (the caller handles group boundaries
 /// before calling this).
-fn op_state(op: &Op) -> &ResolvedState {
-    match op {
+fn op_state(op: &Op) -> &ResolvedState {    match op {
         Op::Fill { state, .. }
         | Op::Stroke { state, .. }
         | Op::FillStroke { state, .. }
@@ -320,6 +326,69 @@ fn op_state(op: &Op) -> &ResolvedState {
             unreachable!("group ops are handled before op_state")
         }
     }
+}
+
+/// Draw a tiling pattern over a fill region (the path's device bounding box):
+/// plan the tile instances and draw each.
+fn draw_pattern(
+    backend: &mut TinySkiaBackend,
+    pattern: &selis_raster::pattern::TilingPattern,
+    path: &selis_raster::Path,
+    state: &ResolvedState,
+    g: &mut BudgetGuard<'_>,
+) {
+    let Some(user_rect) = path_bounds(path) else {
+        return;
+    };
+    let p0 = state.ctm.apply(Point::new(user_rect.x0, user_rect.y0));
+    let p1 = state.ctm.apply(Point::new(user_rect.x1, user_rect.y1));
+    let region = selis_geom::Rect::new(
+        p0.x.min(p1.x),
+        p0.y.min(p1.y),
+        p0.x.max(p1.x),
+        p0.y.max(p1.y),
+    );
+    let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, state.ctm, region, g) else {
+        return;
+    };
+    let img = selis_raster::Image {
+        width: pattern.tile.width,
+        height: pattern.tile.height,
+        rgba8: pattern.tile.rgba8.clone(),
+    };
+    for inst in &plan.instances {
+        let placement = selis_raster::ImagePlacement { rect: inst.rect };
+        backend.draw_image(&img, &placement);
+    }
+}
+
+/// The axis-aligned bounding box of a raster path (user space).
+fn path_bounds(path: &selis_raster::Path) -> Option<selis_geom::Rect> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for cmd in &path.commands {
+        let p = match cmd {
+            selis_raster::PathCmd::Move(p) | selis_raster::PathCmd::Line(p) => Some(*p),
+            selis_raster::PathCmd::Cubic(a, b, c) => {
+                min_x = min_x.min(a.x).min(b.x);
+                min_y = min_y.min(a.y).min(b.y);
+                Some(*c)
+            }
+            selis_raster::PathCmd::Close => None,
+        };
+        if let Some(p) = p {
+            min_x = min_x.min(p.x);
+            min_y = min_y.min(p.y);
+            max_x = max_x.max(p.x);
+            max_y = max_y.max(p.y);
+        }
+    }
+    if min_x > max_x {
+        return None;
+    }
+    Some(selis_geom::Rect::new(min_x, min_y, max_x, max_y))
 }
 
 /// The raster paint for a device-RGB colour.
@@ -390,6 +459,10 @@ mod tests {
         None
     }
 
+    fn no_pattern(_name: &selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern> {
+        None
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -404,7 +477,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         // The centre pixel should be opaque red.
         let idx = (50 * 100 + 50) * 4;
@@ -426,7 +499,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         // Centre (50,50) is red; corner (5,5) is blue.
         let centre = (50 * 100 + 50) * 4;
@@ -458,7 +531,7 @@ mod tests {
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         // Top-left (10,10) is red; bottom-right (90,90) is blue.
         let tl = (10 * 100 + 10) * 4;
@@ -490,7 +563,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
@@ -516,7 +589,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         // Inside the clip (25, 25): red (the red fill covers the clip area).
         let inside = (25 * 100 + 25) * 4;
@@ -549,7 +622,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
@@ -596,7 +669,7 @@ mod tests {
         )
         .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // The black fill is 50% alpha (mask 128), not fully opaque.
@@ -642,7 +715,7 @@ let resolve_inline =
                 Some((w, h, selis_bytes::Bytes::copy_from_slice(&rgba)))
             };
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &no_shading, &mut g);
+        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &no_shading, &no_pattern, &mut g);
         let data = backend.pixmap().data();
         let tl = (10 * 100 + 10) * 4;
         let br = (90 * 100 + 90) * 4;
@@ -691,6 +764,7 @@ let resolve_inline =
             &no_smask,
             &no_inline_image,
             &resolve_shading,
+            &no_pattern,
             &mut g,
         );
         let data = backend.pixmap().data();
