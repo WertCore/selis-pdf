@@ -34,6 +34,10 @@ pub enum DoTarget {
         content: Vec<u8>,
         /// The form's `/Matrix` (form space → user space).
         matrix: Matrix,
+        /// The form's `/Resources` object reference as a key (e.g. `12 0`),
+        /// so resource resolution inside the form uses the form's own
+        /// resources. `None` inherits the caller's resources.
+        resources: Option<Bytes>,
     },
 }
 
@@ -50,9 +54,9 @@ const MAX_FORM_DEPTH: usize = 32;
 /// resources.
 pub fn execute(
     content: &[u8],
-    font_width: &dyn Fn(&Bytes, u16) -> f64,
-    resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
-    resolve_ext_gstate: &dyn Fn(&Bytes) -> Option<Vec<(Bytes, Operand)>>,
+    font_width: &dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64,
+    resolve_do: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget>,
+    resolve_ext_gstate: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DisplayList> {
     let mut dl = DisplayList::new();
@@ -62,6 +66,7 @@ pub fn execute(
         font_width,
         resolve_do,
         resolve_ext_gstate,
+        None,
         g,
         &mut gstate,
         0,
@@ -71,12 +76,15 @@ pub fn execute(
 }
 
 /// The recursive execution core: `q`/`Q` stack, text state, and form
-/// XObjects (bounded by `depth`).
+/// XObjects (bounded by `depth`). `resources` is the current resource
+/// dictionary key (the enclosing form's `/Resources` reference, if any); the
+/// resource closures resolve against it.
 fn execute_inner(
     content: &[u8],
-    font_width: &dyn Fn(&Bytes, u16) -> f64,
-    resolve_do: &dyn Fn(&Bytes) -> Option<DoTarget>,
-    resolve_ext_gstate: &dyn Fn(&Bytes) -> Option<Vec<(Bytes, Operand)>>,
+    font_width: &dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64,
+    resolve_do: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget>,
+    resolve_ext_gstate: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>>,
+    resources: Option<&Bytes>,
     g: &mut BudgetGuard<'_>,
     gstate: &mut GState,
     depth: usize,
@@ -140,7 +148,7 @@ fn execute_inner(
                 // `/GS1 gs` — resolve the ExtGState dictionary (blend mode,
                 // alpha, soft mask, overprint) and merge it into the state.
                 if let Some(Operand::Name(name)) = operands.first() {
-                    if let Some(pairs) = resolve_ext_gstate(name) {
+                    if let Some(pairs) = resolve_ext_gstate(name, resources) {
                         gstate.merge_ext_gstate(&pairs);
                     }
                 }
@@ -296,7 +304,7 @@ fn execute_inner(
                 let empty = Bytes::new();
                 let font_slice: &Bytes = font.as_ref().unwrap_or(&empty);
                 let glyphs = text::process(&mut text_state, n, operands, false, &|code| {
-                    font_width(font_slice, code)
+                    font_width(font_slice, code, resources)
                 });
                 for glyph in glyphs {
                     let state = ResolvedState::from(&*gstate);
@@ -345,7 +353,7 @@ fn execute_inner(
             // XObjects.
             "Do" => {
                 if let Some(Operand::Name(name)) = operands.first() {
-                    match resolve_do(name) {
+                    match resolve_do(name, resources) {
                         Some(DoTarget::Image {
                             width,
                             height,
@@ -363,7 +371,7 @@ fn execute_inner(
                             });
                             g.charge_one(selis_sandbox::Resource::Objects)?;
                         }
-                        Some(DoTarget::Form { content, matrix }) => {
+                        Some(DoTarget::Form { content, matrix, resources }) => {
                             if depth >= MAX_FORM_DEPTH {
                                 continue; // deviation: skip the form
                             }
@@ -374,6 +382,7 @@ fn execute_inner(
                                 font_width,
                                 resolve_do,
                                 resolve_ext_gstate,
+                                resources.as_ref(),
                                 g,
                                 &mut form_gstate,
                                 depth.saturating_add(1),
@@ -418,7 +427,7 @@ fn execute_inner(
                 let mut blend = selis_color::BlendMode::from_name(&gstate.blend_mode);
                 let mut alpha = gstate.alpha_fill;
                 if let Some(Operand::Name(name)) = operands.first() {
-                    if let Some(pairs) = resolve_ext_gstate(name) {
+                    if let Some(pairs) = resolve_ext_gstate(name, resources) {
                         if let Some(b) = ext_gstate_blend(&pairs) {
                             blend = b;
                         }
@@ -593,15 +602,15 @@ mod tests {
         Budget::unlimited().guard()
     }
 
-    fn const_width(_font: &Bytes, _code: u16) -> f64 {
+    fn const_width(_font: &Bytes, _code: u16, _key: Option<&Bytes>) -> f64 {
         500.0
     }
 
-    fn no_do(_name: &Bytes) -> Option<DoTarget> {
+    fn no_do(_name: &Bytes, _key: Option<&Bytes>) -> Option<DoTarget> {
         None
     }
 
-    fn no_ext_gstate(_name: &Bytes) -> Option<Vec<(Bytes, Operand)>> {
+    fn no_ext_gstate(_name: &Bytes, _key: Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>> {
         None
     }
 
@@ -686,7 +695,7 @@ mod tests {
     #[test]
     fn gs_resolves_ext_gstate_blend_mode() {
         let mut g = guard();
-        let ext = |name: &Bytes| -> Option<Vec<(Bytes, Operand)>> {
+        let ext = |name: &Bytes, _key: Option<&Bytes>| -> Option<Vec<(Bytes, Operand)>> {
             if name.as_slice() == b"GS1" {
                 Some(vec![(
                     Bytes::copy_from_slice(b"BM"),
@@ -763,7 +772,7 @@ mod tests {
     #[test]
     fn bdc_emc_produce_group_ops() {
         let mut g = guard();
-        let ext = |name: &Bytes| -> Option<Vec<(Bytes, Operand)>> {
+        let ext = |name: &Bytes, _key: Option<&Bytes>| -> Option<Vec<(Bytes, Operand)>> {
             if name.as_slice() == b"GS1" {
                 Some(vec![
                     (

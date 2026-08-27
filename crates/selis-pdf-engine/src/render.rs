@@ -451,7 +451,7 @@ mod tests {
         Budget::unlimited().guard()
     }
 
-    fn const_width(_font: &selis_bytes::Bytes, _code: u16) -> f64 {
+    fn const_width(_font: &selis_bytes::Bytes, _code: u16, _key: Option<&selis_bytes::Bytes>) -> f64 {
         500.0
     }
 
@@ -459,11 +459,11 @@ mod tests {
         None
     }
 
-    fn no_do(_name: &selis_bytes::Bytes) -> Option<selis_pdf_content::exec::DoTarget> {
+    fn no_do(_name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>) -> Option<selis_pdf_content::exec::DoTarget> {
         None
     }
 
-    fn no_ext_gstate(_name: &selis_bytes::Bytes) -> Option<Vec<(selis_bytes::Bytes, selis_pdf_content::dispatch::Operand)>> {
+    fn no_ext_gstate(_name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>) -> Option<Vec<(selis_bytes::Bytes, selis_pdf_content::dispatch::Operand)>> {
         None
     }
 
@@ -543,7 +543,7 @@ mod tests {
         let rgba8 = vec![
             255u8, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
         ];
-        let do_image = |_name: &selis_bytes::Bytes| {
+        let do_image = |_name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>| {
             Some(DoTarget::Image {
                 width: 2,
                 height: 2,
@@ -574,7 +574,7 @@ mod tests {
         // Gray page, then red on top with /Multiply: red = 0.5 × 1.0 = 0.5.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 g f \
                         /GS1 gs 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
-        let ext = |name: &selis_bytes::Bytes| {
+        let ext = |name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>| {
             if name.as_slice() == b"GS1" {
                 Some(vec![(
                     selis_bytes::Bytes::copy_from_slice(b"BM"),
@@ -635,7 +635,7 @@ mod tests {
         // Fill the canvas red, then a group tagged /GS1 (alpha 0.5) fills blue.
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 1 0 0 rg f \
                         /GS1 BDC 0 0 m 100 0 l 100 100 l 0 100 l h 0 0 1 rg f EMC";
-        let ext = |name: &selis_bytes::Bytes| {
+        let ext = |name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>| {
             if name.as_slice() == b"GS1" {
                 Some(vec![(
                     selis_bytes::Bytes::copy_from_slice(b"ca"),
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn soft_mask_modulates_alpha() {
         let mut g = guard();
-        let ext = |name: &selis_bytes::Bytes| {
+        let ext = |name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>| {
             if name.as_slice() == b"GS1" {
                 Some(vec![(
                     selis_bytes::Bytes::copy_from_slice(b"SMask"),

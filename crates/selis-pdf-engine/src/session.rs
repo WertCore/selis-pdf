@@ -204,27 +204,53 @@ fn build_display_list(
     g: &mut BudgetGuard<'_>,
 ) -> Result<selis_pdf_content::display_list::DisplayList> {
     let budget_copy = *budget;
-    let font_width = move |font_name: &Bytes, code: u16| -> f64 {
+    let font_width = move |font_name: &Bytes, code: u16, key: Option<&Bytes>| -> f64 {
         let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
         let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
-        font_width_inner(&mut res, resources, font_name, code, &mut bg).unwrap_or(0.0)
+        let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
+        font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0)
     };
-    let resolve_do = move |name: &Bytes| -> Option<selis_pdf_content::exec::DoTarget> {
+    let resolve_do = move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
         let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
         let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
-        resolve_xobject_inner(&mut res, resources, name, &mut bg)
+        let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
+        resolve_xobject_inner(&mut res, r.as_ref(), name, &mut bg)
             .ok()
             .flatten()
     };
     let resolve_ext_gstate =
-        move |name: &Bytes| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
+        move |name: &Bytes, key: Option<&Bytes>| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
-            resolve_ext_gstate_inner(&mut res, resources, name, &mut bg)
+            let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
+            resolve_ext_gstate_inner(&mut res, r.as_ref(), name, &mut bg)
                 .ok()
                 .flatten()
         };
     selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
+}
+
+/// Resolve the resources dict for a resource key (a form XObject's object
+/// reference): its `/Resources` when present, else the caller's fallback.
+fn resolve_resources_for_key(
+    resolver: &mut Resolver<'_>,
+    key: Option<&Bytes>,
+    fallback: Option<&Obj>,
+    g: &mut BudgetGuard<'_>,
+) -> Option<Obj> {
+    let key = match key {
+        Some(k) => k,
+        None => return fallback.map(Obj::clone),
+    };
+    let key_str = std::str::from_utf8(key.as_slice()).ok()?;
+    let mut it = key_str.split_whitespace();
+    let num: u32 = it.next()?.parse().ok()?;
+    let gen: u16 = it.next()?.parse().ok()?;
+    let form = resolver.resolve(selis_pdf_cos::Ref::new(num, gen), g).ok()?;
+    match &form {
+        Obj::Stream { dict, .. } => dict_get_obj(dict, b"Resources").map(Obj::clone),
+        _ => fallback.map(Obj::clone),
+    }
 }
 
 /// Resolve a tiling pattern (colour-space pattern, `/PatternType 1`) from the
@@ -703,15 +729,19 @@ fn resolve_xobject_inner(
         _ => return Ok(None),
     };
     if subtype == b"Form" {
-        // A form XObject: content + /Matrix. The form's own /Resources
-        // scoping is a refinement; the page's resources are used here.
+        // A form XObject: content + /Matrix. The form's own /Resources are
+        // resolved by the engine via the form's object ref.
         let content = unfilter_stream_data(&dict, &data, g);
         let matrix = dict_get_obj(&dict, b"Matrix")
             .and_then(matrix_from_obj)
             .unwrap_or(Matrix::IDENTITY);
+        // The resources key is the form's object ref (e.g. "12 0"), which
+        // the engine resolves to the form's /Resources dict.
+        let resources = Some(Bytes::copy_from_slice(format!("{} {}", r.num, r.gen).as_bytes()));
         return Ok(Some(selis_pdf_content::exec::DoTarget::Form {
             content,
             matrix,
+            resources,
         }));
     }
     if subtype != b"Image" {
