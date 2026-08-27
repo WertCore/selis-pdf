@@ -160,7 +160,7 @@ These block later gates and cannot be compressed.
 - [ ] **SL-0.LEAD.06 — PDF Association membership (Phase 5, not day 1).** Deferred. The corpora,
       Matterhorn, and the ISO 32000-2 errata are published publicly. Join when spec ambiguities
       start costing real engineering time and the working groups become worth the fee.
-- [ ] **SL-0.LEAD.07 — Fallback fonts (week 1, no purchase, no counsel).** Liberation (SIL OFL) or
+- [x] **SL-0.LEAD.07 — Fallback fonts (week 1, no purchase, no counsel).** Liberation (SIL OFL) or
       TeX Gyre (GUST FL) for metric-compatible Helvetica/Times/Courier, plus Noto Sans/Serif CJK
       (SIL OFL). All three licences explicitly permit embedding and redistribution — read them,
       but this does not need a lawyer. Note the size problem: full Noto CJK is ~100 MB — see

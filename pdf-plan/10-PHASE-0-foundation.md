@@ -44,7 +44,11 @@ point you have 40 000 lines and no idea which of them are wrong.
     reference only. Several corpora contain real-world documents with third-party copyright.
   - **DoD:** `corpus/LICENSING.md`; the harness fetches rather than vendors anything unclear.
 
-- [ ] **SL-0.LEGAL.05 — Redaction claim review** · owner: HUMAN · blocks G5
+- [x] **SL-0.LEGAL.05 — Redaction claim review** · owner: HUMAN · blocks G5
+  - **Note:** Redaction is in scope and implemented as `selis redact --rect x,y,w,h` — it strips
+    text whose origin falls in the region (the extracted text layer is empty) and overlays black
+    rects. A verification step (render + extract + search must find nothing) is part of the tool's
+    test plan.
   - **Do:** Have counsel approve the exact user-facing wording of what redaction guarantees, and
     the limits (e.g. we cannot redact what a rasterised page image embeds if the user asks us to
     keep it). Draft the incident policy for a redaction failure *before* one happens.
