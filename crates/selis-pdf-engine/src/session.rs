@@ -28,6 +28,9 @@ pub struct Session {
     src: Vec<u8>,
     /// The resolved document model (pages, resources).
     document: selis_pdf_doc::Document,
+    /// The encryption key (bytes, revision, AES flag), if the document is
+    /// password-protected and the (user) password authenticated.
+    key: Option<(Vec<u8>, u8, bool)>,
 }
 
 impl Session {
@@ -42,9 +45,48 @@ impl Session {
             )
         })?;
         let doc = selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g)?;
+        // Detect encryption; authenticate with the (empty) user password.
+        let key = {
+            let parse_result = doc
+                .revisions()
+                .last()
+                .and_then(|v| v.encrypt)
+                .map(|r| selis_pdf_cos::encrypt::parse_encrypt(&src, Some(r), budget, &mut g));
+            let encrypt_info = match parse_result {
+                Some(Ok(Some(info))) => Some(info),
+                _ => None,
+            };
+            match encrypt_info {
+                Some(info) => {
+                    let id = doc
+                        .revisions()
+                        .last()
+                        .map(|v| v.trailer.clone())
+                        .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                        .unwrap_or_default();
+                    let auth = selis_pdf_cos::encrypt::authenticate(&info, &id, b"");
+                    auth.map(|k| (k, info.r, info.aes))
+                }
+                _ => None,
+            }
+        };
         let document = selis_pdf_doc::Document::resolve(&doc, &src, budget, &mut g)?;
         let _ = g;
-        Ok(Self { doc, src, document })
+        Ok(Self {
+            doc,
+            src,
+            document,
+            key,
+        })
+    }
+
+    /// A resolver for this document, with the encryption key applied.
+    fn new_resolver<'a>(&'a self, budget: &'a Budget) -> Resolver<'a> {
+        let mut res = Resolver::new(&self.doc, &self.src, budget);
+        if let Some((k, r, aes)) = &self.key {
+            res.set_key(k.clone(), *r, *aes);
+        }
+        res
     }
 
     /// The number of pages.
@@ -74,7 +116,7 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<Vec<selis_pdf_doc::Attachment>> {
-        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let mut resolver = self.new_resolver(budget);
         selis_pdf_doc::embedded_files(&mut resolver, &self.document.catalog, budget, g)
     }
 
@@ -85,7 +127,7 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<Option<Vec<u8>>> {
-        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let mut resolver = self.new_resolver(budget);
         selis_pdf_doc::embedded_file_data(&mut resolver, &self.document.catalog, key, budget, g)
     }
 
@@ -96,7 +138,7 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<Vec<u32>> {
-        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let mut resolver = self.new_resolver(budget);
         let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
         Ok(tree.mcid_order())
     }
@@ -108,7 +150,7 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<Vec<selis_pdf_doc::RuleResult>> {
-        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let mut resolver = self.new_resolver(budget);
         let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
         let meta = selis_pdf_doc::Metadata::resolve(&mut resolver, &self.document.catalog, budget, g)?;
         Ok(selis_pdf_doc::evaluate(&self.document, &self.document.catalog, &tree, &meta, profile, budget, g))
@@ -133,12 +175,12 @@ impl Session {
         })?;
         let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            let mut res = self.new_resolver(&budget_copy);
             font_data_inner(&mut res, page.resources.as_ref(), font_name, &mut bg)
         };
         let resolve_smask = move |key: &Bytes| -> Option<Mask> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            let mut res = self.new_resolver(&budget_copy);
             resolve_smask_inner(&mut res, key, &mut bg)
         };
         let resolve_inline_image = move |dict: &[(Bytes, Bytes)], data: &[u8]| {
@@ -147,7 +189,7 @@ impl Session {
         };
         let resolve_shading = move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&self.doc, &self.src, &budget_copy);
+            let mut res = self.new_resolver(&budget_copy);
             resolve_shading_inner(&mut res, page.resources.as_ref(), name, state, &mut bg)
         };
         let resolve_pattern = move |name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> {
@@ -184,7 +226,7 @@ impl Session {
                 detail = "page index"
             ));
         };
-        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let mut resolver = self.new_resolver(budget);
         let content = resolve_page_content(&mut resolver, page, g)?;
         if content.is_empty() {
             return Ok(selis_pdf_content::display_list::DisplayList::default());
@@ -206,13 +248,13 @@ fn build_display_list(
     let budget_copy = *budget;
     let font_width = move |font_name: &Bytes, code: u16, key: Option<&Bytes>| -> f64 {
         let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-        let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+        let mut res = session.new_resolver(&budget_copy);
         let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
         font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0)
     };
     let resolve_do = move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
         let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-        let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+        let mut res = session.new_resolver(&budget_copy);
         let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
         resolve_xobject_inner(&mut res, r.as_ref(), name, &mut bg)
             .ok()
@@ -221,7 +263,7 @@ fn build_display_list(
     let resolve_ext_gstate =
         move |name: &Bytes, key: Option<&Bytes>| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = Resolver::new(&session.doc, &session.src, &budget_copy);
+            let mut res = session.new_resolver(&budget_copy);
             let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
             resolve_ext_gstate_inner(&mut res, r.as_ref(), name, &mut bg)
                 .ok()
@@ -270,7 +312,7 @@ fn resolve_pattern_inner(
     let pattern_obj = dict_get(patterns, name.as_slice())?;
     let pattern_obj = match pattern_obj {
         Obj::Ref(r) => {
-            let mut res = Resolver::new(&session.doc, &session.src, budget);
+            let mut res = session.new_resolver(budget);
             res.resolve(*r, g).ok()?
         }
         o => o.clone(),
@@ -484,56 +526,56 @@ fn resolve_stream(
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<(Vec<(Bytes, Obj)>, Vec<u8>)>> {
     let obj = resolver.resolve(r, g)?;
-    let dict = match &obj {
-        Obj::Dict(d) => d.clone(),
-        Obj::Stream { dict, .. } => dict.clone(),
-        _ => return Ok(None),
-    };
-    // The object's byte offset in the source: from the xref.
-    let offset = {
-        let view = resolver.at_revision().ok_or_else(|| {
-            err!(
-                Code::ObjUnexpected,
-                during = "session-stream",
-                detail = "no revision"
-            )
-        })?;
-        match view.xref.get(&r.num) {
-            Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
-            _ => return Ok(None),
+    match &obj {
+        // The resolver decrypts stream bodies, so use its data directly.
+        Obj::Stream { dict, data } => {
+            Ok(Some((dict.clone(), data.as_slice().to_vec())))
         }
-    };
-    // Find the "stream" keyword after the object header.
-    let start = usize::try_from(offset).unwrap_or(0);
-    let rest = resolver.src().get(start..).unwrap_or(&[]);
-    let Some(stream_pos) = rest.windows(6).position(|w| w == b"stream") else {
-        return Ok(None); // not a stream
-    };
-    let mut data_start = stream_pos.saturating_add(6); // after "stream"
-                                                       // Skip the EOL.
-    if rest.get(data_start) == Some(&b'\r') {
-        data_start = data_start.saturating_add(1);
+        // A plain dict: read the stream body from the source at the xref offset.
+        Obj::Dict(d) => {
+            let offset = {
+                let view = resolver.at_revision().ok_or_else(|| {
+                    err!(
+                        Code::ObjUnexpected,
+                        during = "session-stream",
+                        detail = "no revision"
+                    )
+                })?;
+                match view.xref.get(&r.num) {
+                    Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
+                    _ => return Ok(None),
+                }
+            };
+            let start = usize::try_from(offset).unwrap_or(0);
+            let rest = resolver.src().get(start..).unwrap_or(&[]);
+            let Some(stream_pos) = rest.windows(6).position(|w| w == b"stream") else {
+                return Ok(None); // not a stream
+            };
+            let mut data_start = stream_pos.saturating_add(6);
+            if rest.get(data_start) == Some(&b'\r') {
+                data_start = data_start.saturating_add(1);
+            }
+            if rest.get(data_start) == Some(&b'\n') {
+                data_start = data_start.saturating_add(1);
+            }
+            let length = d
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Length")
+                .and_then(|(_, v)| match v {
+                    Obj::Int(n) => u64::try_from(*n).ok(),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let length = usize::try_from(length).unwrap_or(0);
+            let data = rest
+                .get(data_start..data_start.saturating_add(length).min(rest.len()))
+                .unwrap_or(&[])
+                .to_vec();
+            let _ = g;
+            Ok(Some((d.clone(), data)))
+        }
+        _ => Ok(None),
     }
-    if rest.get(data_start) == Some(&b'\n') {
-        data_start = data_start.saturating_add(1);
-    }
-    // Read /Length bytes.
-    let length = dict
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Length")
-        .and_then(|(_, v)| match v {
-            Obj::Int(n) => u64::try_from(*n).ok(),
-            _ => None,
-        })
-        .unwrap_or(0);
-    let length = usize::try_from(length).unwrap_or(0);
-    let end = data_start.saturating_add(length);
-    let data = rest
-        .get(data_start..end.min(rest.len()))
-        .unwrap_or(&[])
-        .to_vec();
-    let _ = g;
-    Ok(Some((dict, data)))
 }
 
 fn font_width_inner(

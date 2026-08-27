@@ -18,3 +18,4 @@ selis-geom = { workspace = true }
 selis-io = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
+selis-crypto = { workspace = true }

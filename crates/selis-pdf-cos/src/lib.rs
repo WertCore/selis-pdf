@@ -21,6 +21,7 @@
 pub mod copy;
 pub mod deviation;
 pub mod doc_writer;
+pub mod encrypt;
 pub mod lex;
 pub mod linearise;
 pub mod obj;

@@ -33,6 +33,8 @@ pub struct Revision {
     pub trailer: Vec<(selis_bytes::Bytes, Obj)>,
     /// This revision's `/Root` reference, when present.
     pub root: Option<Ref>,
+    /// This revision's `/Encrypt` reference, when present.
+    pub encrypt: Option<Ref>,
     /// This revision's `/Prev` offset, when present.
     pub prev: Option<u64>,
 }
@@ -68,12 +70,20 @@ impl Doc {
                 Obj::Ref(r) => Some(*r),
                 _ => None,
             });
+        let encrypt = trailer
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Encrypt")
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            });
         Self {
             revisions: vec![Revision {
                 byte_range: 0..u64::MAX,
                 entries,
                 trailer,
                 root,
+                encrypt,
                 prev: None,
             }],
         }
@@ -174,12 +184,20 @@ pub fn parse_revisions(
                 Obj::Ref(r) => Some(*r),
                 _ => None,
             });
+        let encrypt = trailer
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Encrypt")
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            });
 
         newest_first.push(Revision {
             byte_range: 0..0, // filled after the loop
             entries,
             trailer,
             root,
+            encrypt,
             prev,
         });
 
