@@ -19,6 +19,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod deviation;
+pub mod doc_writer;
 pub mod lex;
 pub mod linearise;
 pub mod obj;
