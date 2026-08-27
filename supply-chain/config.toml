@@ -20,6 +20,10 @@ url = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/aud
 version = "2.0.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.aes]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+
 [[exemptions.aho-corasick]]
 version = "1.1.5"
 criteria = "safe-to-deploy"
@@ -67,6 +71,10 @@ criteria = "safe-to-run"
 [[exemptions.bitflags]]
 version = "2.13.1"
 criteria = "safe-to-run"
+
+[[exemptions.block-buffer]]
+version = "0.10.4"
+criteria = "safe-to-deploy"
 
 [[exemptions.bytemuck]]
 version = "1.25.2"
@@ -116,6 +124,10 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
+[[exemptions.cpufeatures]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+
 [[exemptions.crc32fast]]
 version = "1.5.1"
 criteria = "safe-to-deploy"
@@ -142,6 +154,14 @@ criteria = "safe-to-deploy"
 
 [[exemptions.crunchy]]
 version = "0.2.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.crypto-common]]
+version = "0.1.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.digest]]
+version = "0.10.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.either]]
@@ -176,6 +196,10 @@ criteria = "safe-to-deploy"
 version = "0.3.34"
 criteria = "safe-to-deploy"
 
+[[exemptions.generic-array]]
+version = "0.14.7"
+criteria = "safe-to-deploy"
+
 [[exemptions.getrandom]]
 version = "0.3.4"
 criteria = "safe-to-run"
@@ -198,6 +222,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.indexmap]]
 version = "2.14.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.inout]]
+version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.is-terminal]]
@@ -230,6 +258,10 @@ criteria = "safe-to-run"
 
 [[exemptions.log]]
 version = "0.4.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.md-5]]
+version = "0.10.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.memchr]]
@@ -360,6 +392,10 @@ criteria = "safe-to-deploy"
 version = "0.6.9"
 criteria = "safe-to-deploy"
 
+[[exemptions.sha2]]
+version = "0.10.9"
+criteria = "safe-to-deploy"
+
 [[exemptions.simd-adler32]]
 version = "0.3.10"
 criteria = "safe-to-deploy"
@@ -432,6 +468,10 @@ criteria = "safe-to-deploy"
 version = "0.1.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.typenum]]
+version = "1.20.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.unicode-ident]]
 version = "1.0.24"
 criteria = "safe-to-deploy"
@@ -442,6 +482,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.unicode-script]]
 version = "0.5.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.version_check]]
+version = "0.9.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.wait-timeout]]
