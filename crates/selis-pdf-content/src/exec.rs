@@ -770,6 +770,29 @@ mod tests {
         }
     }
 
+    /// `scn` with a trailing pattern name (operands precede the operator)
+    /// selects a pattern colour space.
+    #[test]
+    fn scn_trailing_name_sets_pattern() {
+        let mut g = guard();
+        let dl = execute(
+            b"/Pattern cs 0.5 /Pat1 scn 0 0 m 0 100 l 100 100 l 100 0 l h f",
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        if let Op::Fill { state, .. } = &dl.ops[0] {
+            assert_eq!(
+                state.fill_pattern,
+                Some(selis_bytes::Bytes::copy_from_slice(b"Pat1"))
+            );
+        } else {
+            panic!("expected fill");
+        }
+    }
+
     /// A `BI`…`EI` inline image is extracted into an `Op::InlineImage` with
     /// its dictionary and raw data.
     #[test]
