@@ -41,7 +41,10 @@ Phase 4. It does **not** need Phase 2 or Phase 3.
 
 The tools are all writer operations. Build the writer properly here and Phase 5 inherits it.
 
-- [ ] **SL-1A.WRITE.01 — Full-document writer** · deps: `SL-1.COS.09` · owner: HUMAN
+- [x] **SL-1A.WRITE.01 — Full-document writer** · deps: `SL-1.COS.09` · owner: HUMAN
+  - **Note:** Shipped as `selis_pdf_cos::doc_writer::DocumentBuilder` + `ContentBuilder`
+    (hand-written, no external crate): header, catalog, page tree, pages, content
+    streams, classic xref table, trailer, Info dictionary, RGBA image embedding.
   - **Do:** Generate a complete, well-formed PDF from a document model: object renumbering, xref
     table or stream, trailer, `/ID` generation, and correct stream `/Length` handling. This is the
     generation path (merge, split, unlock all produce *new* documents), distinct from the
