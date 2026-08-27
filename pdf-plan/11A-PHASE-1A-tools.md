@@ -171,9 +171,11 @@ operation is available identically in the CLI, the web app, and the extension.
 - [ ] **SL-1A.TOOL.09 — Metadata editor** · deps: WRITE.02 · owner: AI
   - **Do:** Read and edit Info dictionary and XMP, including bulk metadata stripping — which is a
     genuine privacy feature and a natural fit for this product's positioning.
-- [ ] **SL-1A.TOOL.10 — Attachment extraction** · deps: `SL-1.DOC.07` · owner: AI+
+- [x] **SL-1A.TOOL.10 — Attachment extraction** · deps: `SL-1.DOC.07` · owner: AI+
   - **Do:** List and extract embedded files, with filename sanitisation (path traversal is a real
     attack here — see `22-SECURITY-AND-SUPPLY-CHAIN.md` T12) and an explicit user action per file.
+  - **Note:** Shipped as `selis extract --format=embedded` (inventory, JSON) and `--output <dir>`
+    (extraction with sanitised filenames).
 - [ ] **SL-1A.TOOL.11 — Batch mode** · deps: TOOL.01, TOOL.07 · owner: AI+
   - **Do:** Apply any tool across a file set, with per-file isolation so one bad document never
     kills the batch, plus a machine-readable report.
