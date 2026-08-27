@@ -200,6 +200,33 @@ impl DocumentBuilder {
         page_ref
     }
 
+    /// Deduplicate byte-identical objects already collected in the builder
+    /// (WRITE.03: identical resources across merged inputs collapse to one).
+    /// Page refs are remapped at the survivors and the pages tree is rebuilt,
+    /// so subsequent [`write`](DocumentBuilder::write) output is consistent.
+    /// Returns the number of objects removed.
+    ///
+    /// # Budget
+    ///
+    /// Charges each serialisation pass; see
+    /// [`dedup_objects`](crate::copy::dedup_objects).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: operates on builder-owned objects only.
+    pub fn dedup(&mut self, budget: &Budget, g: &mut BudgetGuard<'_>) -> usize {
+        let objects = std::mem::take(&mut self.objects);
+        let (survivors, remap, removed) = crate::copy::dedup_objects(objects, budget, g);
+        self.objects = survivors;
+        if removed > 0 {
+            for r in &mut self.page_refs {
+                r.num = remap.get(&r.num).copied().unwrap_or(r.num);
+            }
+            self.update_pages_tree();
+        }
+        removed
+    }
+
     /// Serialise the whole document to bytes.
     ///
     /// # Budget
@@ -289,7 +316,8 @@ impl DocumentBuilder {
         Ok(out)
     }
 
-    fn allocate(&mut self) -> u32 {
+    /// Allocate the next object number, advancing the counter.
+    pub fn allocate(&mut self) -> u32 {
         let n = self.next_num;
         self.next_num = self.next_num.saturating_add(1);
         n
@@ -467,6 +495,95 @@ pub fn embed_image_rgba(
     Ref::new(num, 0)
 }
 
+/// Write a complete single-revision PDF from pre-built objects (the output
+/// path for optimisation/rewriting tools such as SL-1A.TOOL.07, where the
+/// object graph already exists and only needs serialising with a valid xref).
+///
+/// `objects` may be sparse (gaps become free xref entries) but must not
+/// contain duplicate object numbers; `root` is the trailer's `/Root`.
+///
+/// # Budget
+///
+/// Charges the serialised output bytes and one object unit per object.
+///
+/// # Malformed Input
+///
+/// `BUDGET_BYTES` on exhaustion; `OBJ_UNEXPECTED` on duplicate object numbers.
+pub fn write_objects_as_document(
+    objects: &[(u32, Obj)],
+    root: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let mut max_num = 0u32;
+    for (num, _) in objects {
+        max_num = max_num.max(*num);
+    }
+    let mut offsets: Vec<Option<u64>> =
+        vec![None; usize::try_from(max_num).map_or(usize::MAX, |n| n.saturating_add(1))];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+
+    for (num, obj) in objects {
+        let num_us = usize::try_from(*num).unwrap_or(usize::MAX);
+        let slot = offsets.get_mut(num_us).ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-write",
+                detail = "duplicate object number"
+            )
+        })?;
+        if slot.is_some() {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "doc-write",
+                object = *num,
+                detail = "duplicate object number"
+            ));
+        }
+        *slot = Some(u64::try_from(out.len()).unwrap_or(u64::MAX));
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        let mut w = Writer::new(budget);
+        out.extend_from_slice(&w.to_bytes(obj, g)?);
+        out.push(b'\n');
+        out.extend_from_slice(b"endobj\n");
+    }
+
+    let size = u64::try_from(offsets.len()).unwrap_or(u64::MAX);
+    let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    for (i, off) in offsets.iter().enumerate() {
+        match off {
+            Some(off) if i > 0 => {
+                out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+            }
+            _ => out.extend_from_slice(b"0000000000 65535 f \n"),
+        }
+    }
+    out.extend_from_slice(b"trailer\n");
+    let trailer = dict(&[
+        (
+            b"Size".to_vec(),
+            Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+        ),
+        (b"Root".to_vec(), Obj::Ref(root)),
+    ]);
+    let mut tw = Writer::new(budget);
+    out.extend_from_slice(&tw.to_bytes(&trailer, g)?);
+    out.push(b'\n');
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+    Ok(out)
+}
+
 /// A real number object.
 fn real(v: f64) -> Obj {
     let max = 9_223_372_036_854_775_807i64;
@@ -550,5 +667,145 @@ mod tests {
         let budget = selis_sandbox::Budget::unlimited();
         let bytes = b.write(&budget, &mut g).expect("write");
         assert!(String::from_utf8_lossy(&bytes).contains("/Subtype /Image"));
+    }
+
+    #[test]
+    fn write_objects_as_document_opens_with_sparse_numbers() {
+        // Objects 1 (catalog), 5 (pages), 7 (page) — gaps must become free
+        // xref entries and the trailer must point at the given root.
+        let objects = vec![
+            (
+                1,
+                dict(&[
+                    (b"Type".to_vec(), Obj::Name(bytes(b"Catalog"))),
+                    (b"Pages".to_vec(), Obj::Ref(Ref::new(5, 0))),
+                ]),
+            ),
+            (
+                5,
+                dict(&[
+                    (b"Type".to_vec(), Obj::Name(bytes(b"Pages"))),
+                    (b"Kids".to_vec(), Obj::Array(vec![Obj::Ref(Ref::new(7, 0))])),
+                    (b"Count".to_vec(), Obj::Int(1)),
+                ]),
+            ),
+            (
+                7,
+                dict(&[
+                    (b"Type".to_vec(), Obj::Name(bytes(b"Page"))),
+                    (b"Parent".to_vec(), Obj::Ref(Ref::new(5, 0))),
+                    (
+                        b"MediaBox".to_vec(),
+                        Obj::Array(vec![
+                            Obj::Int(0),
+                            Obj::Int(0),
+                            Obj::Int(100),
+                            Obj::Int(100),
+                        ]),
+                    ),
+                ]),
+            ),
+        ];
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let out = write_objects_as_document(&objects, Ref::new(1, 0), &budget, &mut g)
+            .expect("write");
+        let startxref = crate::xref::find_startxref(&out, 2048).expect("startxref");
+        let doc = crate::parse_revisions(&out, startxref, &budget, &mut g).expect("open");
+        assert_eq!(doc.revisions().len(), 1);
+        let rev = &doc.revisions()[0];
+        assert_eq!(rev.root, Some(Ref::new(1, 0)));
+        assert!(rev.entries.get(&1).is_some());
+        assert!(rev.entries.get(&5).is_some());
+        assert!(rev.entries.get(&7).is_some());
+        // A gap (object 2) is a free entry, not in use.
+        assert!(matches!(
+            rev.entries.get(&2),
+            None | Some(crate::XrefEntry::Free { .. })
+        ));
+    }
+
+    #[test]
+    fn write_objects_as_document_rejects_duplicate_numbers() {
+        let objects = vec![(1u32, Obj::Int(1)), (1u32, Obj::Int(2))];
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let err = write_objects_as_document(&objects, Ref::new(1, 0), &budget, &mut g)
+            .expect_err("duplicate numbers rejected");
+        assert_eq!(err.code(), Code::ObjUnexpected);
+    }
+
+    #[test]
+    fn builder_dedup_merges_identical_pages_and_keeps_count() {
+        // Two identical pages share an identical content stream, which dedup
+        // merges — but the page dicts themselves are page-tree nodes and must
+        // stay distinct (merging them would read as a cycle in the tree).
+        let mut b = DocumentBuilder::new();
+        let mut c = ContentBuilder::new();
+        c.set_fill(0.0, 0.0, 1.0).fill_rect(0.0, 0.0, 50.0, 50.0);
+        b.add_page(100.0, 100.0, c.to_bytes().as_slice());
+        b.add_page(100.0, 100.0, c.to_bytes().as_slice());
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let removed = b.dedup(&budget, &mut g);
+        assert_eq!(removed, 1, "only the shared content stream merges: {removed}");
+        let bytes = b.write(&budget, &mut g).expect("write");
+        // The output parses and still reports two pages.
+        assert_eq!(
+            pages_count(&bytes, &budget, &mut g),
+            2,
+            "both pages survive dedup"
+        );
+        // The two page dicts must be distinct objects.
+        let startxref = crate::xref::find_startxref(&bytes, 2048).expect("startxref");
+        let doc = crate::parse_revisions(&bytes, startxref, &budget, &mut g).expect("open");
+        let mut page_nums: Vec<u32> = Vec::new();
+        for rev in doc.revisions() {
+            for (num, e) in &rev.entries {
+                if let crate::XrefEntry::InUse { offset, .. } = e {
+                    if let Ok(Obj::Dict(pairs)) = crate::resolve_object(&bytes, *offset, &budget, &mut g)
+                    {
+                        if pairs.iter().any(|(k, v)| {
+                            k.as_slice() == b"Type"
+                                && matches!(v, Obj::Name(n) if n.as_slice() == b"Page")
+                        }) {
+                            page_nums.push(*num);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(page_nums.len(), 2, "two distinct page objects: {page_nums:?}");
+    }
+
+    /// Parse `src` and return the `/Count` of its `/Type /Pages` object.
+    fn pages_count(src: &[u8], budget: &Budget, g: &mut BudgetGuard<'_>) -> i64 {
+        let startxref = crate::xref::find_startxref(src, 2048).expect("startxref");
+        let doc = crate::parse_revisions(src, startxref, budget, g).expect("open");
+        let mut offsets: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+        for rev in doc.revisions() {
+            for (num, e) in &rev.entries {
+                if let crate::XrefEntry::InUse { offset, .. } = e {
+                    offsets.insert(*num, *offset);
+                }
+            }
+        }
+        for off in offsets.values() {
+            let Ok(obj) = crate::resolve_object(src, *off, budget, g) else {
+                continue;
+            };
+            let Obj::Dict(pairs) = obj else { continue };
+            let is_pages = pairs
+                .iter()
+                .any(|(k, v)| k.as_slice() == b"Type" && matches!(v, Obj::Name(n) if n.as_slice() == b"Pages"));
+            if is_pages {
+                if let Some((_, Obj::Int(n))) =
+                    pairs.iter().find(|(k, _)| k.as_slice() == b"Count")
+                {
+                    return *n;
+                }
+            }
+        }
+        0
     }
 }

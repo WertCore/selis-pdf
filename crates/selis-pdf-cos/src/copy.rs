@@ -202,6 +202,13 @@ fn collect_refs(obj: &Obj, pending: &mut Vec<Ref>) {
     }
 }
 
+/// Renumber all refs in an object according to the remap table. Numbers not
+/// present in the map are kept as-is.
+#[must_use]
+pub fn renumber(obj: Obj, remap: &HashMap<u32, u32>) -> Obj {
+    renumber_refs(obj, remap)
+}
+
 /// Renumber all refs in an object according to the remap table.
 fn renumber_refs(obj: Obj, remap: &HashMap<u32, u32>) -> Obj {
     match obj {
@@ -227,6 +234,111 @@ fn renumber_refs(obj: Obj, remap: &HashMap<u32, u32>) -> Obj {
         },
         other => other,
     }
+}
+
+/// Collapse byte-identical objects to a single representative (WRITE.03:
+/// "identical fonts across inputs deduplicate"). Objects serialise
+/// identically only when they are the same value — same primitives, same
+/// stream bytes, same refs — so merging them never changes meaning; every
+/// reference to a removed object is redirected at its survivor.
+///
+/// Page-tree nodes (`/Type /Page`, `/Type /Pages`) and annotations
+/// (`/Type /Annot`) are never merged: their position or page affiliation is
+/// structural, and collapsing two of them onto one object would look like a
+/// cycle to a tree walker or attach one annotation to two pages.
+///
+/// Deduplication runs to a fixpoint: once two identical leaves (e.g. font
+/// files) merge, their parents (font descriptors, resource dicts) often
+/// become identical too and merge on a later pass. Each pass strictly
+/// reduces the object count, so this terminates.
+///
+/// Returns the surviving objects (original numbers preserved), the composite
+/// remap (removed number → surviving number, fully resolved across passes),
+/// and the number of objects removed.
+///
+/// # Budget
+///
+/// Each pass serialises every object once; serialisation charges the budget.
+/// An object that fails to serialise is left untouched (never merged).
+///
+/// # Malformed Input
+///
+/// None: dedup only transforms caller-owned, already-parsed objects.
+pub fn dedup_objects(
+    mut objects: Vec<(u32, Obj)>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> (Vec<(u32, Obj)>, HashMap<u32, u32>, usize) {
+    let mut total: HashMap<u32, u32> = HashMap::new();
+    let mut removed_total = 0usize;
+    loop {
+        let mut canonical: HashMap<Vec<u8>, u32> = HashMap::new();
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        for (num, obj) in &objects {
+            // Page-tree nodes and annotations carry structural identity — a
+            // page's position in `/Kids` is what makes it, and an annotation
+            // belongs to exactly one page — so merging two of them onto one
+            // object referenced twice would look like a cycle to a tree
+            // walker or attach one annotation to two pages. Value objects
+            // (streams, fonts, descriptors) merge.
+            if has_structural_identity(obj) {
+                continue;
+            }
+            let mut w = crate::Writer::new(budget);
+            let Ok(bytes) = w.to_bytes(obj, g) else {
+                // Cannot serialise: keep the object, never merge it.
+                continue;
+            };
+            match canonical.get(&bytes) {
+                Some(&first) if first != *num => {
+                    remap.insert(*num, first);
+                }
+                Some(_) => {}
+                None => {
+                    canonical.insert(bytes, *num);
+                }
+            }
+        }
+        if remap.is_empty() {
+            break;
+        }
+        // Fold this pass into the composite remap. A value recorded by an
+        // earlier pass may itself have been merged now; redirect it. (A
+        // remap value is a canonical of this pass and therefore never a key
+        // of this pass, so one lookup resolves it.)
+        for v in total.values_mut() {
+            if let Some(next) = remap.get(v) {
+                *v = *next;
+            }
+        }
+        for (&dup, &canon) in &remap {
+            total.insert(dup, canon);
+        }
+        removed_total = removed_total.saturating_add(remap.len());
+        objects = objects
+            .into_iter()
+            .filter(|(num, _)| !remap.contains_key(num))
+            .map(|(num, obj)| (num, renumber_refs(obj, &remap)))
+            .collect();
+    }
+    (objects, total, removed_total)
+}
+
+/// True when `obj` carries structural identity and must not be merged by
+/// dedup: page-tree nodes (`/Type /Page`, `/Type /Pages`) and annotations
+/// (`/Type /Annot`), which each belong to exactly one page.
+fn has_structural_identity(obj: &Obj) -> bool {
+    let pairs: &[(selis_bytes::Bytes, Obj)] = match obj {
+        Obj::Dict(pairs) | Obj::Stream { dict: pairs, .. } => pairs,
+        _ => return false,
+    };
+    pairs.iter().any(|(k, v)| {
+        k.as_slice() == b"Type"
+            && matches!(v, Obj::Name(n) if matches!(
+                n.as_slice(),
+                b"Page" | b"Pages" | b"Annot"
+            ))
+    })
 }
 
 #[cfg(test)]
@@ -342,5 +454,108 @@ mod tests {
             objects.iter().any(|(num, _)| *num == remap[&10]),
             "remapped image object missing from output"
         );
+    }
+
+    fn name_obj(n: &[u8]) -> Obj {
+        Obj::Name(selis_bytes::Bytes::copy_from_slice(n))
+    }
+
+    /// Dedup runs to a fixpoint: merging identical font files makes their
+    /// font descriptors identical, which makes the resource dicts identical —
+    /// three levels collapse across passes, and the composite remap resolves
+    /// every removed number to the final survivor.
+    #[test]
+    fn dedup_cascades_to_a_fixpoint() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let stream = |num: u32| {
+            (
+                num,
+                Obj::Stream {
+                    dict: vec![],
+                    data: selis_bytes::Bytes::copy_from_slice(b"identical font file bytes"),
+                },
+            )
+        };
+        let descriptor = |num: u32, file: u32| {
+            (
+                num,
+                Obj::Dict(vec![
+                    (
+                        selis_bytes::Bytes::copy_from_slice(b"FontFile"),
+                        Obj::Ref(Ref::new(file, 0)),
+                    ),
+                    (
+                        selis_bytes::Bytes::copy_from_slice(b"FontName"),
+                        name_obj(b"F1"),
+                    ),
+                ]),
+            )
+        };
+        let resources = |num: u32, font: u32| {
+            (
+                num,
+                Obj::Dict(vec![(
+                    selis_bytes::Bytes::copy_from_slice(b"F1"),
+                    Obj::Ref(Ref::new(font, 0)),
+                )]),
+            )
+        };
+        let objects = vec![
+            stream(10),
+            stream(20),
+            descriptor(11, 10),
+            descriptor(21, 20),
+            resources(12, 11),
+            resources(22, 21),
+        ];
+        let (survivors, remap, removed) = dedup_objects(objects, &budget, &mut g);
+        assert_eq!(removed, 3, "one object removed per level: {remap:?}");
+        assert_eq!(survivors.len(), 3);
+        // Every removed number resolves to its final survivor.
+        assert_eq!(remap[&20], 10, "font file merged at level 1");
+        assert_eq!(remap[&21], 11, "descriptor merged once files matched");
+        assert_eq!(remap[&22], 12, "resources merged once descriptors matched");
+        // The surviving resources dict points at the surviving descriptor.
+        let surviving = survivors
+            .iter()
+            .find(|(num, _)| *num == 12)
+            .map(|(_, o)| o)
+            .expect("surviving resources");
+        let Obj::Dict(pairs) = surviving else {
+            panic!("dict");
+        };
+        assert_eq!(
+            pairs.first().map(|(_, v)| v),
+            Some(&Obj::Ref(Ref::new(11, 0))),
+            "refs redirect at the final survivor"
+        );
+    }
+
+    /// Objects that are not byte-identical (different payloads) never merge.
+    #[test]
+    fn dedup_keeps_distinct_objects() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let objects = vec![
+            (
+                1u32,
+                Obj::Stream {
+                    dict: vec![],
+                    data: selis_bytes::Bytes::copy_from_slice(b"aaa"),
+                },
+            ),
+            (
+                2u32,
+                Obj::Stream {
+                    dict: vec![],
+                    data: selis_bytes::Bytes::copy_from_slice(b"bbb"),
+                },
+            ),
+        ];
+        let (survivors, remap, removed) = dedup_objects(objects, &budget, &mut g);
+        assert_eq!(removed, 0);
+        assert!(remap.is_empty());
+        assert_eq!(survivors.len(), 2);
     }
 }

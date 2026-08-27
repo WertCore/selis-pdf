@@ -30,11 +30,17 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
         }
     }
 
+    // WRITE.03: identical resources across inputs collapse to one object.
+    let deduplicated = merged.dedup(&budget, &mut g);
     let bytes = merged
         .write(&budget, &mut g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
     std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
-    eprintln!("merged {} file(s) into {output}", inputs.len());
+    eprintln!(
+        "merged {} file(s) into {output} ({} duplicate object(s) removed)",
+        inputs.len(),
+        deduplicated
+    );
     Ok(())
 }
 
@@ -252,13 +258,10 @@ fn copy_page_extra(
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
     let _ = rev;
-    let (media, content_refs, resources_ref, _rotate) = page_info(src, &doc, page_ref, budget, g)?;
-    let mut roots: Vec<Ref> = content_refs.clone();
-    if let Some(r) = resources_ref {
-        roots.push(r);
-    }
+    let (media, content_refs, resources, _rotate, annots) =
+        page_info(src, &doc, page_ref, budget, g)?;
     let (objects, remap) =
-        selis_pdf_cos::copy::collect_objects(src, &roots, merged.next_num_mut(), budget, g)
+        selis_pdf_cos::copy::collect_objects(src, &content_refs, merged.next_num_mut(), budget, g)
             .map_err(|e| format!("copy objects: {e}"))?;
     for (num, obj) in objects {
         merged.add_object(num, obj);
@@ -267,20 +270,117 @@ fn copy_page_extra(
         .iter()
         .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
         .collect();
-    let new_resources =
-        resources_ref.map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen));
+    let new_resources = materialize_resources(merged, src, resources, budget, g)?;
+    // Carry the page's annotations (WRITE.03 DoD) alongside the caller's extra
+    // page-dictionary entries.
+    let mut extra = extra;
+    if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
+        extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
+    }
     merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra);
     Ok(())
 }
 
-/// The page's (media box, content refs, resources ref, existing /Rotate).
+/// Carry a page's `/Resources` into `merged`, returning the reference the
+/// copied page should point at (WRITE.03). See [`materialize_object`].
+fn materialize_resources(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    resources: Option<Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Ref>, String> {
+    materialize_object(merged, src, resources, budget, g)
+}
+
+/// Carry an arbitrary page-level value (resources, annotations, group) into
+/// `merged` and return a reference to it, or `None` when absent (WRITE.03).
+///
+/// Handles the forms a page entry may take: an indirect reference (copy its
+/// subgraph and remap), or an inline value — a dictionary or an array of
+/// references (copy the objects it references, renumber the value, and store
+/// it as its own object so the page holds a valid indirect reference).
+/// Dropping these loses the page's fonts/XObjects/annotations.
+fn materialize_object(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    value: Option<Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Ref>, String> {
+    let Some(val) = value else {
+        return Ok(None);
+    };
+    match val {
+        Obj::Ref(r) => {
+            let (objects, remap) =
+                selis_pdf_cos::copy::collect_objects(src, &[r], merged.next_num_mut(), budget, g)
+                    .map_err(|e| format!("copy object: {e}"))?;
+            for (num, obj) in objects {
+                merged.add_object(num, obj);
+            }
+            Ok(Some(Ref::new(
+                remap.get(&r.num).copied().unwrap_or(r.num),
+                r.gen,
+            )))
+        }
+        inline @ (Obj::Dict(_) | Obj::Array(_)) => {
+            let mut sub_refs = Vec::new();
+            collect_refs_in(&inline, &mut sub_refs);
+            let remap = if sub_refs.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let (objects, remap) = selis_pdf_cos::copy::collect_objects(
+                    src,
+                    &sub_refs,
+                    merged.next_num_mut(),
+                    budget,
+                    g,
+                )
+                .map_err(|e| format!("copy inline object: {e}"))?;
+                for (num, obj) in objects {
+                    merged.add_object(num, obj);
+                }
+                remap
+            };
+            let renumbered = selis_pdf_cos::copy::renumber(inline, &remap);
+            let num = merged.allocate();
+            merged.add_object(num, renumbered);
+            Ok(Some(Ref::new(num, 0)))
+        }
+        // Anything else (a primitive, or an unexpected stream) is skipped.
+        _ => Ok(None),
+    }
+}
+
+/// Gather every reference reachable inside `obj`.
+fn collect_refs_in(obj: &Obj, out: &mut Vec<Ref>) {
+    match obj {
+        Obj::Ref(r) => out.push(*r),
+        Obj::Array(items) => {
+            for item in items {
+                collect_refs_in(item, out);
+            }
+        }
+        Obj::Dict(pairs) | Obj::Stream { dict: pairs, .. } => {
+            for (_, v) in pairs {
+                collect_refs_in(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The page's (media box, content refs, resources value, existing /Rotate,
+/// annotations value). The resources and annotations values are the raw page
+/// entries: an indirect reference, an inline dictionary/array, or absent.
 fn page_info(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     page_ref: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<((f64, f64), Vec<Ref>, Option<Ref>, i64), String> {
+) -> Result<((f64, f64), Vec<Ref>, Option<Obj>, i64, Option<Obj>), String> {
     let page = resolve_ref_obj(src, doc, page_ref, budget, g)?;
     let Obj::Dict(pairs) = &page else {
         return Err("page is not a dict".to_string());
@@ -315,10 +415,11 @@ fn page_info(
     let resources = pairs
         .iter()
         .find(|(k, _)| k.as_slice() == b"Resources")
-        .and_then(|(_, v)| match v {
-            Obj::Ref(r) => Some(*r),
-            _ => None,
-        });
+        .map(|(_, v)| v.clone());
+    let annots = pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Annots")
+        .map(|(_, v)| v.clone());
     let rotate = pairs
         .iter()
         .find(|(k, _)| k.as_slice() == b"Rotate")
@@ -327,7 +428,7 @@ fn page_info(
             _ => None,
         })
         .unwrap_or(0);
-    Ok((media, contents, resources, rotate))
+    Ok((media, contents, resources, rotate, annots))
 }
 
 /// Copy a page, appending black rects over `rects` and stripping text that
@@ -348,7 +449,8 @@ fn copy_page_redacted(
         .revisions()
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
-    let (media, content_refs, resources_ref, rotate) = page_info(src, &doc, page_ref, budget, g)?;
+    let (media, content_refs, resources_ref, rotate, annots) =
+        page_info(src, &doc, page_ref, budget, g)?;
 
     // Rebuild the content streams with redaction: strip text inside the
     // regions, then append black fills over them.
@@ -369,8 +471,7 @@ fn copy_page_redacted(
     rebuilt.extend_from_slice(&cb.to_bytes());
 
     // Copy the (rebuilt) content as a fresh stream, then the resources.
-    let content_num = *merged.next_num_mut();
-    *merged.next_num_mut() = merged.next_num_mut().saturating_add(1);
+    let content_num = merged.allocate();
     merged.add_object(
         content_num,
         Obj::Stream {
@@ -381,19 +482,11 @@ fn copy_page_redacted(
             data: selis_bytes::Bytes::from(rebuilt),
         },
     );
-    let mut roots = Vec::new();
-    if let Some(r) = resources_ref {
-        roots.push(r);
+    let new_resources = materialize_resources(merged, src, resources_ref, budget, g)?;
+    let mut extra = rotate_extra(rotate);
+    if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
+        extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
-    let (objects, remap) =
-        selis_pdf_cos::copy::collect_objects(src, &roots, merged.next_num_mut(), budget, g)
-            .map_err(|e| format!("copy resources: {e}"))?;
-    for (num, obj) in objects {
-        merged.add_object(num, obj);
-    }
-    let new_resources =
-        resources_ref.map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen));
-    let extra = rotate_extra(rotate);
     merged.add_page_with_extra(
         media.0,
         media.1,
@@ -543,7 +636,7 @@ fn page_rotate(
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
-    let (_, _, _, rotate) = page_info(src, &doc, page_ref, budget, g)?;
+    let (_, _, _, rotate, _) = page_info(src, &doc, page_ref, budget, g)?;
     Ok(rotate)
 }
 
@@ -791,4 +884,72 @@ fn emit(out: &mut Vec<u8>, toks: &[selis_pdf_cos::Token]) {
         }
     }
     out.extend_from_slice(&buf);
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    /// Build a one-page PDF whose page carries an inline `/Resources` and an
+    /// `/Annots` array referencing one annotation object. Offsets are computed
+    /// so the bytes reparse cleanly.
+    fn annotated_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (1, b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>\nendobj\n",
+            ),
+            (4, b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                5,
+                b"5 0 obj\n<< /Type /Annot /Subtype /Square /Rect [10 10 50 50] >>\nendobj\n",
+            ),
+        ];
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets: Vec<(u32, u64)> = Vec::new();
+        for (num, body) in numbered {
+            offsets.push((*num, u64::try_from(out.len()).unwrap_or(0)));
+            out.extend_from_slice(body);
+        }
+        offsets.sort_by_key(|(num, _)| *num);
+        let xref_at = u64::try_from(out.len()).unwrap_or(0);
+        out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for (_, off) in &offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n");
+        out.extend_from_slice(format!("{xref_at}\n").as_bytes());
+        out.extend_from_slice(b"%%EOF\n");
+        out
+    }
+
+    /// Merging a page must carry its annotations (WRITE.03 DoD): the output
+    /// keeps an `/Annots` entry whose target resolves to an annotation object.
+    #[test]
+    fn merge_carries_annotations() {
+        let dir = std::env::temp_dir().join("selis-merge-annot-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out = dir.join("out.pdf");
+        std::fs::write(&a, annotated_source()).unwrap();
+        std::fs::write(&b, annotated_source()).unwrap();
+        super::merge(
+            &[a.display().to_string(), b.display().to_string()],
+            &out.display().to_string(),
+        )
+        .expect("merge");
+        let bytes = std::fs::read(&out).expect("output");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/Annots"), "annotations carried into the merge");
+        // The output parses and the annotation subgraph resolved (two
+        // annotations — one per page).
+        assert_eq!(text.matches("/Type /Annot").count(), 2);
+    }
 }

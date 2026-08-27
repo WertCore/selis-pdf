@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod batch;
 mod check;
+mod compress;
 mod convert;
 mod extract;
 mod img2pdf;
@@ -224,6 +226,25 @@ enum Command {
         #[arg(long)]
         title: Option<String>,
     },
+    /// Compress / optimise a PDF (lossless: no pixel changes).
+    Compress {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Run a tool over many files with per-file isolation + a JSON report.
+    Batch {
+        /// The tool to run across the set: `compress`.
+        tool: String,
+        /// The input files.
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// The output directory (results + report.json).
+        #[arg(long)]
+        outdir: String,
+    },
 }
 
 fn main() {
@@ -317,6 +338,17 @@ fn main() {
             page_size,
             title,
         } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
+        Command::Compress { path, output } => compress::run(&path, &output),
+        Command::Batch {
+            tool,
+            inputs,
+            outdir,
+        } => match tool.as_str() {
+            "compress" => batch::batch_compress(&inputs, &outdir),
+            other => Err(CliError(format!(
+                "unknown batch tool `{other}` (supported: compress)"
+            ))),
+        },
     };
     match result {
         Ok(()) => {}
@@ -437,6 +469,15 @@ pub(crate) fn read_file(path: &str) -> CliResult<Vec<u8>> {
             selis_error::Error::with(Code::IoReadFailed, ctx)
         })
         .map_err(CliError::from)
+}
+
+/// Write `bytes` to `path`.
+///
+/// # Errors
+///
+/// A CLI error with the I/O detail when the file cannot be written.
+pub(crate) fn write_file(path: &str, bytes: &[u8]) -> CliResult<()> {
+    std::fs::write(path, bytes).map_err(|e| CliError(format!("cannot write {path}: {e}")))
 }
 
 fn parse_budget() -> selis_sandbox::Budget {

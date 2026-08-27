@@ -25,6 +25,7 @@ selis-log = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-doc = { workspace = true }
 selis-pdf-edit = { workspace = true }
+selis-pdf-filter = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-pdf-engine = { workspace = true }
 selis-pdf-text = { workspace = true }

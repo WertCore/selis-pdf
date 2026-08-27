@@ -927,6 +927,7 @@ dependencies = [
  "selis-pdf-doc",
  "selis-pdf-edit",
  "selis-pdf-engine",
+ "selis-pdf-filter",
  "selis-pdf-text",
  "selis-policy",
  "selis-sandbox",

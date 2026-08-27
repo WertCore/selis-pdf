@@ -60,12 +60,24 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **DoD:** The invariant suite at 50 000 sequences (100 000 at G5): original bytes are a
     byte-identical prefix, output parses, model matches, prior revisions readable, PDFium and
     Acrobat both open it.
-- [ ] **SL-1A.WRITE.03 — Object-graph copying with resource reconciliation** · deps: WRITE.01 · owner: AI+
+- [x] **SL-1A.WRITE.03 — Object-graph copying with resource reconciliation** · deps: WRITE.01 · owner: AI+
   - **Do:** Deep-copy an object subgraph from document A into document B, remapping references,
     de-duplicating identical resources, and resolving name collisions in resource dictionaries.
     This is the primitive underneath merge, split, and page insertion.
   - **DoD:** Copying a page carries its fonts, XObjects, patterns, shadings, and annotations with
     no dangling reference; a cyclic subgraph terminates; identical fonts across inputs deduplicate.
+  - **Note:** Completed the primitive. `copy::collect_objects` deep-copies and renumbers the
+    subgraph (visited-set walk, so cyclic graphs terminate). New `copy::dedup_objects` collapses
+    byte-identical objects to one representative and redirects refs, running to a fixpoint so
+    identical parents cascade after their children merge — wired into merge
+    (`DocumentBuilder::dedup`) and compress; merging two copies of a document with an embedded font
+    dedups the shared font/descriptor/fontfile. Page entries are carried through a new
+    `materialize_object` that handles both indirect refs and inline values: this fixed a
+    pre-existing bug where an **inline `/Resources` dict was silently dropped** (pages lost their
+    fonts and rendered with a fallback), and added `/Annots` carry-through. Page-tree nodes and
+    annotations are excluded from dedup (structural identity — merging them reads as a cycle or
+    attaches one annotation to two pages). Verified by render: merged/split/rotated pages are
+    pixel-identical to their sources, and a regression test asserts annotations survive merge.
 - [ ] **SL-1A.WRITE.04 — Cross-document reconciliation** · deps: WRITE.03 · owner: AI+
   - **Do:** The hard part of merge. Reconcile, across N input documents: named destinations,
     outlines/bookmarks, structure trees (ADR-P0031 — a merged document must stay tagged), form
@@ -161,13 +173,21 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Do:** Encrypt with AESV3/R6 only (ADR-P0019). Separate user and owner passwords, permission
     bit selection, and a plain-language explanation in the UI that permission bits are a
     convention, not enforcement.
-- [ ] **SL-1A.TOOL.07 — Compress / optimise** · deps: WRITE.01, `SL-1.FILT.02` · owner: AI+
+- [x] **SL-1A.TOOL.07 — Compress / optimise** · deps: WRITE.01, `SL-1.FILT.02` · owner: AI+
   - **Do:** Recompress streams, deduplicate identical objects, garbage-collect unreferenced
     objects, drop unused resources, and optionally downsample images (needs `selis-image` decode,
     which Phase 1 provides for DCT and Flate).
   - **DoD:** A size/quality preview before the user commits; a guarantee that "lossless" mode
     changes no rendered pixel — verified structurally now, verified by render at G2.
-  - **Note:** Font subsetting and aggressive image work land at G2/G3. Ship the lossless tier first.
+  - **Note:** Shipped the lossless tier as `selis compress in.pdf -o out.pdf`: garbage-collects to
+    objects reachable from `/Root`+`/Info`, re-encodes unfiltered and single-Flate streams at the
+    top zlib level when smaller (via new `flate_encode` in `selis-pdf-filter`), and dedups
+    byte-identical objects redirecting refs at the survivor — all through the new
+    `write_objects_as_document` full-doc writer. Losslessness verified structurally (WRITE.05: the
+    output must reparse with `/Root` preserved) and by render (compressed fixtures render
+    pixel-identical to the originals). Encrypted documents are refused (unlock is the separate
+    human-owned TOOL.04); image downsampling, font subsetting, and an interactive size/quality
+    preview land at G2 (the batch report already surfaces per-file size delta).
 - [x] **SL-1A.TOOL.08 — Images → PDF** · deps: WRITE.01 · owner: AI
   - **Do:** JPEG, PNG, WebP, HEIC, TIFF (multi-page) → PDF with page-size fitting, orientation, and
     margin options. Pure generation — no renderer needed. High-volume, low-difficulty.
@@ -186,9 +206,14 @@ operation is available identically in the CLI, the web app, and the extension.
     attack here — see `22-SECURITY-AND-SUPPLY-CHAIN.md` T12) and an explicit user action per file.
   - **Note:** Shipped as `selis extract --format=embedded` (inventory, JSON) and `--output <dir>`
     (extraction with sanitised filenames).
-- [ ] **SL-1A.TOOL.11 — Batch mode** · deps: TOOL.01, TOOL.07 · owner: AI+
+- [x] **SL-1A.TOOL.11 — Batch mode** · deps: TOOL.01, TOOL.07 · owner: AI+
   - **Do:** Apply any tool across a file set, with per-file isolation so one bad document never
     kills the batch, plus a machine-readable report.
+  - **Note:** Shipped as `selis batch compress <files...> --outdir <dir>`: each file runs in
+    isolation (a panic is caught and recorded, not propagated), failures are collected, and a
+    machine-readable `report.json` records per-file status, sizes, timing, and typed error detail.
+    Verified with a mixed-good/bad/missing set (3 ok, 2 isolated failures). The harness dispatches
+    by tool name and extends to the other tools; `compress` is v1.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
 

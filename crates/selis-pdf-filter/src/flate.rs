@@ -7,9 +7,13 @@
 //!   an error (SL-1.FILT.02 Risk: "truncated Flate yields what it decoded so
 //!   far" is what every other reader does).
 
+use miniz_oxide::deflate::compress_to_vec_zlib;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use selis_error::{err, Code, Result};
 use selis_sandbox::BudgetGuard;
+
+/// The highest zlib compression level accepted by [`flate_encode`].
+pub const FLATE_LEVEL_MAX: u8 = 10;
 
 /// The outcome of a bounded Flate decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +124,25 @@ fn is_zlib_header(data: &[u8]) -> bool {
         && header.wrapping_rem(31) == 0
 }
 
+/// Deflate `data` into a zlib-wrapped stream (`FlateDecode`-ready).
+///
+/// `level` is clamped to miniz_oxide's `0..=10`; higher is smaller and slower.
+/// The output carries a standard zlib header and trailing Adler-32, so
+/// [`flate_decode_bounded`] round-trips it.
+///
+/// # Budget
+///
+/// No charge; this is an encode of caller-owned data (SL-1A.TOOL.07 wires the
+/// allocation cost through the caller's budget).
+///
+/// # Malformed Input
+///
+/// None: encoding cannot fail on valid input bytes.
+#[must_use]
+pub fn flate_encode(data: &[u8], level: u8) -> Vec<u8> {
+    compress_to_vec_zlib(data, level.min(FLATE_LEVEL_MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +159,20 @@ mod tests {
         let compressed = compress_to_vec_zlib(&data, 6);
         let out = flate_decode(&compressed).expect("inflate");
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn encode_round_trips_through_decode() {
+        let data = b"The quick brown fox jumps over the lazy dog. ".repeat(50);
+        for level in [0u8, 6, 10] {
+            let encoded = flate_encode(&data, level);
+            assert!(is_zlib_header(&encoded), "encode emits a zlib header");
+            let out = flate_decode(&encoded).expect("inflate");
+            assert_eq!(out, data, "level {level} round-trips");
+        }
+        // Levels above the max clamp to the max instead of panicking.
+        let encoded = flate_encode(&data, 250);
+        assert_eq!(flate_decode(&encoded).expect("inflate"), data);
     }
 
     #[test]

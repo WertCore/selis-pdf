@@ -32,7 +32,7 @@ pub mod pipeline;
 pub use ascii::{ascii85_decode, ascii_hex_decode, runlength_decode};
 pub use dct::{dct_decode, DctImage};
 pub use fax::{ccitt_decode, FaxParms};
-pub use flate::{flate_decode, flate_decode_bounded, FlateDecodeError};
+pub use flate::{flate_decode, flate_decode_bounded, flate_encode, FlateDecodeError};
 pub use jbig2::jbig2_decode;
 pub use jbig2_full::{
     decode_symbol_dictionary, decode_text_region, Symbol, SymbolDictionary, TextRegion,
