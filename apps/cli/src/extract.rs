@@ -78,7 +78,7 @@ pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -
 }
 
 /// The assembled text lines and their recovered Unicode texts for a display
-/// list.
+/// list, in reading order (column-aware geometry).
 pub(crate) fn page_lines(
     dl: &selis_pdf_content::display_list::DisplayList,
 ) -> (Vec<selis_pdf_text::TextLine>, Vec<String>) {
@@ -98,8 +98,14 @@ pub(crate) fn page_lines(
         }
     }
     let lines = selis_pdf_text::assemble(glyphs);
-    let line_texts: Vec<String> = lines.iter().map(line_text).collect();
-    (lines, line_texts)
+    // Reading order: column detection + XY-cut (no structure-tree MCIDs).
+    let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
+        .into_iter()
+        .map(|line| selis_pdf_text::LineWithMcid { line, mcid: None })
+        .collect();
+    let ordered = selis_pdf_text::order_lines(mcid_lines, None);
+    let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
+    (ordered.lines, line_texts)
 }
 
 /// List the document's embedded files (metadata only, newline-delimited JSON),
