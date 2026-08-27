@@ -536,6 +536,12 @@ fn colour_to_rgb(comps: &[f64], cs: &Bytes) -> [f64; 3] {
             let g = comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
             [g, g, g]
         }
+        b"Pattern" => {
+            // A pattern tint: the underlying colour space for uncoloured
+            // patterns is usually DeviceGray, so a single component is gray.
+            let g = comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            [g, g, g]
+        }
         b"DeviceCMYK" | b"CMYK" => cmyk_to_rgb(
             comps.get(0).copied().unwrap_or(0.0),
             comps.get(1).copied().unwrap_or(0.0),

@@ -96,7 +96,7 @@ pub fn render_display_list(
                 };
                 if let Some(pattern_name) = &state.fill_pattern {
                     if let Some(pattern) = resolve_pattern(pattern_name) {
-                        draw_pattern(backend, &pattern, &p, state, g);
+                        draw_pattern(backend, &pattern, &p, &state.fill, state, g);
                         continue;
                     }
                 }
@@ -329,11 +329,13 @@ fn op_state(op: &Op) -> &ResolvedState {    match op {
 }
 
 /// Draw a tiling pattern over a fill region (the path's device bounding box):
-/// plan the tile instances and draw each.
+/// plan the tile instances and draw each. Uncoloured patterns (type 2) are
+/// tinted by the current fill colour.
 fn draw_pattern(
     backend: &mut TinySkiaBackend,
     pattern: &selis_raster::pattern::TilingPattern,
     path: &selis_raster::Path,
+    tint: &[f64; 3],
     state: &ResolvedState,
     g: &mut BudgetGuard<'_>,
 ) {
@@ -351,15 +353,39 @@ fn draw_pattern(
     let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, state.ctm, region, g) else {
         return;
     };
+    let tile_rgba = if pattern.paint_type == selis_raster::pattern::PatternType::Uncoloured {
+        tint_tile(&pattern.tile, tint)
+    } else {
+        pattern.tile.rgba8.clone()
+    };
     let img = selis_raster::Image {
         width: pattern.tile.width,
         height: pattern.tile.height,
-        rgba8: pattern.tile.rgba8.clone(),
+        rgba8: tile_rgba,
     };
     for inst in &plan.instances {
         let placement = selis_raster::ImagePlacement { rect: inst.rect };
         backend.draw_image(&img, &placement);
     }
+}
+
+/// Tint an uncoloured-pattern tile: the stencil's coverage (alpha) is painted
+/// in `tint` instead of black.
+fn tint_tile(tile: &selis_raster::pattern::PatternTile, tint: &[f64; 3]) -> Vec<u8> {
+    // The tint is clamped to [0, 1] before the narrowing, so it is exact.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let cv = |v: f64| -> u8 { (v.clamp(0.0, 1.0) * 255.0) as u8 };
+    let r = cv(tint[0]);
+    let g = cv(tint[1]);
+    let b = cv(tint[2]);
+    let mut out = Vec::with_capacity(tile.rgba8.len());
+    for px in tile.rgba8.chunks(4) {
+        out.push(r);
+        out.push(g);
+        out.push(b);
+        out.push(px.get(3).copied().unwrap_or(0));
+    }
+    out
 }
 
 /// The axis-aligned bounding box of a raster path (user space).
