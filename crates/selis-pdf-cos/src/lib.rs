@@ -26,6 +26,7 @@ pub mod lex;
 pub mod linearise;
 pub mod obj;
 pub mod parse;
+pub mod reconcile;
 pub mod reconstruct;
 pub mod resolve;
 pub mod resume;

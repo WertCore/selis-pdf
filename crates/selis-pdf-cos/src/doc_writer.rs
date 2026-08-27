@@ -22,6 +22,11 @@ pub struct DocumentBuilder {
     page_refs: Vec<Ref>,
     /// `/Info` fields (e.g. `Title`, `Author`).
     info: Vec<(Vec<u8>, Obj)>,
+    /// Extra catalog entries appended at write time (SL-1A.WRITE.04:
+    /// `/Outlines`, `/Names`, `/PageLabels`, …).
+    catalog_extra: Vec<(Vec<u8>, Obj)>,
+    /// The trailer `/ID` pair, when set.
+    id: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl DocumentBuilder {
@@ -33,6 +38,8 @@ impl DocumentBuilder {
             next_num: 1,
             page_refs: Vec::new(),
             info: Vec::new(),
+            catalog_extra: Vec::new(),
+            id: None,
         };
         b.objects.push((
             1,
@@ -52,6 +59,37 @@ impl DocumentBuilder {
         ));
         b.next_num = 3;
         b
+    }
+
+    /// Mutable access to the collected objects. Used by the reconciliation
+    /// pass (SL-1A.WRITE.04) to rewrite copied structures in place — e.g.
+    /// re-pointing outline `/Parent` entries at the merged outline root.
+    ///
+    /// Callers must not remove objects or introduce duplicate numbers; doing so
+    /// corrupts the xref written by [`write`](DocumentBuilder::write).
+    pub fn objects_mut(&mut self) -> &mut Vec<(u32, Obj)> {
+        &mut self.objects
+    }
+
+    /// Add (or replace) a catalog entry appended at write time.
+    ///
+    /// # Budget
+    ///
+    /// No charge: the value is buffered and charged by
+    /// [`write`](DocumentBuilder::write).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: `key` and `value` are caller-provided, written verbatim.
+    pub fn add_catalog_entry(&mut self, key: &[u8], value: Obj) {
+        self.catalog_extra.retain(|(k, _)| k.as_slice() != key);
+        self.catalog_extra.push((key.to_vec(), value));
+    }
+
+    /// Set the trailer `/ID` pair (two byte strings; conventionally the file
+    /// identifier at creation time and its value at the last modification).
+    pub fn set_id(&mut self, first: Vec<u8>, second: Vec<u8>) {
+        self.id = Some((first, second));
     }
 
     /// Set an `/Info` field (e.g. `Title`, `Author`).
@@ -267,6 +305,22 @@ impl DocumentBuilder {
             }
         }
 
+        // Extra catalog entries collected by reconciliation (WRITE.04).
+        if !self.catalog_extra.is_empty() {
+            let extras = self
+                .catalog_extra
+                .iter()
+                .map(|(k, v)| (bytes(k), v.clone()))
+                .collect::<Vec<_>>();
+            for (num, obj) in &mut self.objects {
+                if *num == 1 {
+                    if let Obj::Dict(pairs) = obj {
+                        pairs.extend(extras.clone());
+                    }
+                }
+            }
+        }
+
         // Write objects sequentially into `out`, recording absolute offsets.
         let mut offsets: Vec<Option<u64>> = Vec::new();
         for (num, obj) in &self.objects {
@@ -284,26 +338,40 @@ impl DocumentBuilder {
             out.extend_from_slice(b"endobj\n");
         }
 
-        // Classic xref table.
+        // Classic xref table. Object numbers with no written object (e.g.
+        // removed by dedup) become free entries — an in-use entry pointing at
+        // offset 0 would be malformed.
         let size = u64::try_from(offsets.len()).unwrap_or(u64::MAX);
         let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
         out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
         for (i, off) in offsets.iter().enumerate() {
-            if i == 0 {
-                out.extend_from_slice(b"0000000000 65535 f \n");
-            } else {
-                let off = off.unwrap_or(0);
-                out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+            match off {
+                Some(off) if i > 0 => {
+                    out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+                }
+                _ => out.extend_from_slice(b"0000000000 65535 f \n"),
             }
         }
         out.extend_from_slice(b"trailer\n");
-        let trailer = dict(&[
+        let mut trailer_pairs: Vec<(Vec<u8>, Obj)> = vec![
             (
                 b"Size".to_vec(),
                 Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
             ),
             (b"Root".to_vec(), Obj::Ref(Ref::new(1, 0))),
-        ]);
+        ];
+        if let Some((first, second)) = &self.id {
+            trailer_pairs.push((
+                b"ID".to_vec(),
+                Obj::Array(vec![Obj::String(bytes(first)), Obj::String(bytes(second))]),
+            ));
+        }
+        let trailer = Obj::Dict(
+            trailer_pairs
+                .into_iter()
+                .map(|(k, v)| (bytes(&k), v))
+                .collect(),
+        );
         let mut tw = Writer::new(budget);
         out.extend_from_slice(&tw.to_bytes(&trailer, g)?);
         out.push(b'\n');
@@ -696,20 +764,15 @@ mod tests {
                     (b"Parent".to_vec(), Obj::Ref(Ref::new(5, 0))),
                     (
                         b"MediaBox".to_vec(),
-                        Obj::Array(vec![
-                            Obj::Int(0),
-                            Obj::Int(0),
-                            Obj::Int(100),
-                            Obj::Int(100),
-                        ]),
+                        Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(100), Obj::Int(100)]),
                     ),
                 ]),
             ),
         ];
         let budget = selis_sandbox::Budget::unlimited();
         let mut g = guard();
-        let out = write_objects_as_document(&objects, Ref::new(1, 0), &budget, &mut g)
-            .expect("write");
+        let out =
+            write_objects_as_document(&objects, Ref::new(1, 0), &budget, &mut g).expect("write");
         let startxref = crate::xref::find_startxref(&out, 2048).expect("startxref");
         let doc = crate::parse_revisions(&out, startxref, &budget, &mut g).expect("open");
         assert_eq!(doc.revisions().len(), 1);
@@ -748,7 +811,10 @@ mod tests {
         let budget = selis_sandbox::Budget::unlimited();
         let mut g = guard();
         let removed = b.dedup(&budget, &mut g);
-        assert_eq!(removed, 1, "only the shared content stream merges: {removed}");
+        assert_eq!(
+            removed, 1,
+            "only the shared content stream merges: {removed}"
+        );
         let bytes = b.write(&budget, &mut g).expect("write");
         // The output parses and still reports two pages.
         assert_eq!(
@@ -763,7 +829,8 @@ mod tests {
         for rev in doc.revisions() {
             for (num, e) in &rev.entries {
                 if let crate::XrefEntry::InUse { offset, .. } = e {
-                    if let Ok(Obj::Dict(pairs)) = crate::resolve_object(&bytes, *offset, &budget, &mut g)
+                    if let Ok(Obj::Dict(pairs)) =
+                        crate::resolve_object(&bytes, *offset, &budget, &mut g)
                     {
                         if pairs.iter().any(|(k, v)| {
                             k.as_slice() == b"Type"
@@ -775,7 +842,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(page_nums.len(), 2, "two distinct page objects: {page_nums:?}");
+        assert_eq!(
+            page_nums.len(),
+            2,
+            "two distinct page objects: {page_nums:?}"
+        );
     }
 
     /// Parse `src` and return the `/Count` of its `/Type /Pages` object.
@@ -795,12 +866,11 @@ mod tests {
                 continue;
             };
             let Obj::Dict(pairs) = obj else { continue };
-            let is_pages = pairs
-                .iter()
-                .any(|(k, v)| k.as_slice() == b"Type" && matches!(v, Obj::Name(n) if n.as_slice() == b"Pages"));
+            let is_pages = pairs.iter().any(|(k, v)| {
+                k.as_slice() == b"Type" && matches!(v, Obj::Name(n) if n.as_slice() == b"Pages")
+            });
             if is_pages {
-                if let Some((_, Obj::Int(n))) =
-                    pairs.iter().find(|(k, _)| k.as_slice() == b"Count")
+                if let Some((_, Obj::Int(n))) = pairs.iter().find(|(k, _)| k.as_slice() == b"Count")
                 {
                     return *n;
                 }

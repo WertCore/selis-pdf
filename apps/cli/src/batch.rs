@@ -93,9 +93,7 @@ pub(crate) fn batch_compress(inputs: &[String], outdir: &str) -> CliResult<()> {
     }
     eprintln!(
         "batch: {} ok, {} failed of {} — report at {outdir}/report.json",
-        ok,
-        failed,
-        report.total
+        ok, failed, report.total
     );
     Ok(())
 }
@@ -109,7 +107,12 @@ fn run_one(input: &str, outdir: &str) -> FileReport {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_string());
-    let out_path = format!("{}", std::path::Path::new(outdir).join(format!("{stem}.pdf")).display());
+    let out_path = format!(
+        "{}",
+        std::path::Path::new(outdir)
+            .join(format!("{stem}.pdf"))
+            .display()
+    );
 
     // Per-file isolation: run the tool and catch any failure.
     let outcome = std::panic::catch_unwind(|| compress::optimise_file(input, &out_path));

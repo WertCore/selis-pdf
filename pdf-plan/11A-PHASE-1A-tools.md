@@ -78,13 +78,28 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
     annotations are excluded from dedup (structural identity — merging them reads as a cycle or
     attaches one annotation to two pages). Verified by render: merged/split/rotated pages are
     pixel-identical to their sources, and a regression test asserts annotations survive merge.
-- [ ] **SL-1A.WRITE.04 — Cross-document reconciliation** · deps: WRITE.03 · owner: AI+
+- [x] **SL-1A.WRITE.04 — Cross-document reconciliation** · deps: WRITE.03 · owner: AI+
   - **Do:** The hard part of merge. Reconcile, across N input documents: named destinations,
     outlines/bookmarks, structure trees (ADR-P0031 — a merged document must stay tagged), form
     field name collisions, optional-content groups, embedded files, page labels, and `/ID`.
   - **DoD:** Merging two tagged, formed, outlined documents produces a result where every one of
     those features survives and validates. **This single test catches more bugs than any other in
     the phase.**
+  - **Note:** Shipped in `selis merge` via the new `selis_pdf_cos::reconcile` module: outlines
+    are stitched into one tree, named destinations (both `/Names/Dests` and legacy direct
+    `/Dests`) and embedded files merge into one `/Names` tree with collisions renamed, page
+    labels shift by page offset, `/AcroForm` fields concatenate with colliding `/T` names
+    renamed and `/DA`/`/DR`/`/CO` merged first-wins, `/OCProperties` groups and default
+    configuration arrays concatenate, and the structure tree stays tagged — `/K` copies with
+    `/Pg` remapped at merged pages, `/StructParents` ids shift per input so marked content
+    stays registered, `/ParentTree` values redirect at the same merged elements `/K` produced
+    (cache-shared copy), and role/class maps union. The merged document carries a fresh
+    deterministic trailer `/ID`. Verified structurally (merge output reparses; page counts,
+    field names, struct-parents ids, parent-tree identity, and OCG counts asserted in
+    `merge_reconciles_document_structures` / `merge_reconciles_forms_structure_and_layers`) and
+    by the existing render-identity tests. Refinements for later: nested field-name collisions,
+    `/IDMap` carry-over, and `OBJR` targets pointing at page annotations rather than re-copied
+    ones; XFA forms are excluded deliberately (deprecated in PDF 2.0).
 - [ ] **SL-1A.WRITE.05 — Structural verification** · deps: WRITE.01 · owner: HUMAN
   - **Do:** `save_rewritten()`'s verification obligation (`23-EDIT-MODEL-SPEC.md §7`) requires a
     renderer, which does not exist yet. Until G2, verify structurally instead: reparse the output,

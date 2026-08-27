@@ -96,11 +96,7 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
     // Garbage-collect: walk from the catalog root (plus /Info when present).
     // `collect_objects` renumbers every reachable object to fresh numbers.
     let mut roots = vec![root];
-    if let Some((_, Obj::Ref(info))) = rev
-        .trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Info")
-    {
+    if let Some((_, Obj::Ref(info))) = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
         roots.push(*info);
     }
     let mut next_num = 1u32;
@@ -136,8 +132,7 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
         )));
     }
 
-    std::fs::write(output, &bytes)
-        .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
     Ok(Report {
         objects: object_count,
         deduplicated,
@@ -182,8 +177,7 @@ fn recode_stream(obj: &mut Obj, _budget: &Budget, g: &mut BudgetGuard<'_>) -> bo
         }
         // A single FlateDecode filter: re-encode at the top level if smaller.
         Some(Obj::Name(n)) if n.as_slice() == b"FlateDecode" || n.as_slice() == b"Fl" => {
-            let Ok(decoded) = selis_pdf_filter::flate_decode_bounded(data, RECODE_LIMIT, g)
-            else {
+            let Ok(decoded) = selis_pdf_filter::flate_decode_bounded(data, RECODE_LIMIT, g) else {
                 return false;
             };
             let encoded = selis_pdf_filter::flate_encode(&decoded, RECODE_LEVEL);
@@ -247,9 +241,7 @@ mod tests {
         let Obj::Stream { dict, data } = &obj else {
             panic!("still a stream");
         };
-        assert!(dict
-            .iter()
-            .any(|(k, _)| k.as_slice() == b"Filter"));
+        assert!(dict.iter().any(|(k, _)| k.as_slice() == b"Filter"));
         assert!(data.len() < raw.len(), "re-encoded stream is smaller");
         // The payload decodes back to the exact original bytes (lossless).
         let decoded = selis_pdf_filter::flate_decode(data).expect("decode");
@@ -327,7 +319,10 @@ mod tests {
         let objs = [
             (1u32, b"<< /Type /Catalog /Pages 2 0 R >>" as &[u8]),
             (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+            ),
             (4, b"<< /Filter /Standard /V 1 /R 2 /Length 40 >>"),
         ];
         let mut out = Vec::new();
@@ -343,7 +338,7 @@ mod tests {
         let count = objs.len() + 1;
         out.extend_from_slice(format!("xref\n0 {count}\n").as_bytes());
         out.extend_from_slice(b"0000000000 65535 f \n");
-        for i in 1..count as u32 {
+        for i in 1..u32::try_from(count).expect("fits u32") {
             let off = offsets[&i];
             out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
         }

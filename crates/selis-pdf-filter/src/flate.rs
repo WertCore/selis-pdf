@@ -118,10 +118,7 @@ fn is_zlib_header(data: &[u8]) -> bool {
         return false;
     };
     let header = u32::from(cmf).wrapping_shl(8) | u32::from(flg);
-    cmf & 0x0F == 8
-        && cmf >> 4 <= 7
-        && flg & 0x20 == 0
-        && header.wrapping_rem(31) == 0
+    cmf & 0x0F == 8 && cmf >> 4 <= 7 && flg & 0x20 == 0 && header.wrapping_rem(31) == 0
 }
 
 /// Deflate `data` into a zlib-wrapped stream (`FlateDecode`-ready).

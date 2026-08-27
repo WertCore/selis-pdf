@@ -10,7 +10,17 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::{read_file, CliError, CliResult};
 
-/// Merge several PDFs into one (SL-1A.TOOL.01).
+/// A parsed merge input with its source-page → merged-page mapping.
+struct MergeInput {
+    src: Vec<u8>,
+    doc: selis_pdf_cos::Doc,
+    page_map: std::collections::HashMap<u32, Ref>,
+    pages: usize,
+}
+
+/// Merge several PDFs into one (SL-1A.TOOL.01 + SL-1A.WRITE.04: outlines,
+/// named destinations, page labels, and embedded files survive and are
+/// reconciled across the inputs).
 pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
     if inputs.len() < 2 {
         return Err(CliError("merge needs at least two input files".to_string()));
@@ -20,15 +30,31 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
     let mut merged = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
 
+    let mut parsed: Vec<MergeInput> = Vec::with_capacity(inputs.len());
     for path in inputs {
         let src = read_file(path)?;
+        let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+            .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
         let page_refs =
             open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
-        for page_ref in page_refs {
-            copy_page(&mut merged, &src, page_ref, &budget, &mut g, &mut next_num)
-                .map_err(|e| CliError(format!("{path}: {e}")))?;
+        let mut page_map = std::collections::HashMap::new();
+        for page_ref in &page_refs {
+            let merged_ref =
+                copy_page(&mut merged, &src, *page_ref, &budget, &mut g, &mut next_num)
+                    .map_err(|e| CliError(format!("{path}: {e}")))?;
+            page_map.insert(page_ref.num, merged_ref);
         }
+        parsed.push(MergeInput {
+            src,
+            doc,
+            page_map,
+            pages: page_refs.len(),
+        });
     }
+
+    // WRITE.04: reconcile document-level structures across the inputs.
+    reconcile_inputs(&mut merged, &parsed, &budget, &mut g).map_err(CliError)?;
 
     // WRITE.03: identical resources across inputs collapse to one object.
     let deduplicated = merged.dedup(&budget, &mut g);
@@ -42,6 +68,927 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
         deduplicated
     );
     Ok(())
+}
+
+/// Reconcile the merged document's catalog-level structures (WRITE.04):
+/// outlines (bookmarks), page labels, named destinations, embedded files,
+/// form fields, the structure tree (ADR-P0031 — a merged document stays
+/// tagged), optional-content groups, and the trailer `/ID`. Each input's
+/// page references are redirected at the merged pages.
+fn reconcile_inputs(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    inputs: &[MergeInput],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+
+    let mut chains: Vec<OutlineChain> = Vec::new();
+    let mut old_outline_roots: Vec<u32> = Vec::new();
+    let mut label_trees: Vec<(Vec<(i64, Obj)>, i64)> = Vec::new();
+    let mut dest_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut file_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut page_offset = 0i64;
+
+    // Form fields (WRITE.04 DoD).
+    let mut field_refs: Vec<Ref> = Vec::new();
+    let mut seen_field_names: std::collections::HashMap<Vec<u8>, u32> =
+        std::collections::HashMap::new();
+    let mut default_appearance: Option<Obj> = None;
+    let mut need_appearances = false;
+    let mut form_resources: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut calc_order: Vec<Obj> = Vec::new();
+
+    // Structure tree (ADR-P0031): a merged document must stay tagged.
+    let mut struct_kids: Vec<Obj> = Vec::new();
+    let mut parent_pairs: Vec<(i64, Obj)> = Vec::new();
+    let mut role_map: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut class_map: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut old_struct_roots: Vec<u32> = Vec::new();
+    let mut id_base = 0i64;
+
+    // Optional-content groups.
+    let mut ocg_refs: Vec<Obj> = Vec::new();
+    let mut oc_defaults: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+
+    for input in inputs {
+        let mut cache = std::collections::HashMap::new();
+
+        // Outlines: copy the tree, harvesting its top-level chain.
+        if let Some(Obj::Ref(root_ref)) =
+            rec::catalog_entry(&input.src, &input.doc, b"Outlines", budget, g)
+                .map_err(|e| e.to_string())?
+        {
+            let copied = rec::copy_value_into(
+                merged,
+                &input.src,
+                &input.doc,
+                &input.page_map,
+                &mut cache,
+                &Obj::Ref(root_ref),
+                budget,
+                g,
+            )
+            .map_err(|e| e.to_string())?;
+            if let Obj::Ref(new_root) = copied {
+                if let Some(chain) = harvest_outline_chain(merged, new_root.num) {
+                    old_outline_roots.push(new_root.num);
+                    chains.push(chain);
+                }
+            }
+        }
+
+        // Page labels: shift each input's keys by the pages merged before it.
+        if let Some(labels) = rec::catalog_entry(&input.src, &input.doc, b"PageLabels", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            if let Ok(pairs) = rec::number_tree_pairs(&labels, &input.src, &input.doc, budget, g) {
+                if !pairs.is_empty() {
+                    label_trees.push((pairs, page_offset));
+                }
+            }
+        }
+
+        // Named destinations and embedded files from the /Names tree.
+        if let Some(names) = rec::catalog_entry(&input.src, &input.doc, b"Names", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            let names = resolve_shallow(&input.src, &input.doc, names, budget, g);
+            if let Obj::Dict(pairs) = &names {
+                for (k, v) in pairs {
+                    if k.as_slice() == b"Dests" {
+                        let v = resolve_shallow(&input.src, &input.doc, v.clone(), budget, g);
+                        if let Ok(found) =
+                            rec::name_tree_pairs(&v, &input.src, &input.doc, budget, g)
+                        {
+                            for (name, value) in found {
+                                let value = rec::copy_value_into(
+                                    merged,
+                                    &input.src,
+                                    &input.doc,
+                                    &input.page_map,
+                                    &mut cache,
+                                    &value,
+                                    budget,
+                                    g,
+                                )
+                                .map_err(|e| e.to_string())?;
+                                dest_pairs.push((name, value));
+                            }
+                        }
+                    } else if k.as_slice() == b"EmbeddedFiles" {
+                        let v = resolve_shallow(&input.src, &input.doc, v.clone(), budget, g);
+                        if let Ok(found) =
+                            rec::name_tree_pairs(&v, &input.src, &input.doc, budget, g)
+                        {
+                            for (name, value) in found {
+                                let value = rec::copy_value_into(
+                                    merged,
+                                    &input.src,
+                                    &input.doc,
+                                    &input.page_map,
+                                    &mut cache,
+                                    &value,
+                                    budget,
+                                    g,
+                                )
+                                .map_err(|e| e.to_string())?;
+                                file_pairs.push((name, value));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Legacy direct /Dests dictionary.
+        if let Some(dests) = rec::catalog_entry(&input.src, &input.doc, b"Dests", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            let dests = resolve_shallow(&input.src, &input.doc, dests, budget, g);
+            if let Obj::Dict(pairs) = &dests {
+                for (name, v) in pairs {
+                    let value = rec::copy_value_into(
+                        merged,
+                        &input.src,
+                        &input.doc,
+                        &input.page_map,
+                        &mut cache,
+                        v,
+                        budget,
+                        g,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    dest_pairs.push((name.clone(), value));
+                }
+            }
+        }
+
+        // Form fields (WRITE.04 DoD): field roots are copied with their page
+        // references remapped at the merged pages, colliding field names are
+        // renamed, and default appearance / resources are merged first-wins.
+        if let Some(form) = rec::catalog_entry(&input.src, &input.doc, b"AcroForm", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            let form = resolve_shallow(&input.src, &input.doc, form, budget, g);
+            if let Obj::Dict(pairs) = &form {
+                for (k, v) in pairs {
+                    match k.as_slice() {
+                        b"Fields" => {
+                            if let Obj::Array(items) = v {
+                                for f in items {
+                                    let copied = rec::copy_value_into(
+                                        merged,
+                                        &input.src,
+                                        &input.doc,
+                                        &input.page_map,
+                                        &mut cache,
+                                        f,
+                                        budget,
+                                        g,
+                                    )
+                                    .map_err(|e| e.to_string())?;
+                                    if let Obj::Ref(r) = copied {
+                                        rename_field_collision(
+                                            merged,
+                                            r.num,
+                                            &mut seen_field_names,
+                                        );
+                                        field_refs.push(r);
+                                    }
+                                }
+                            }
+                        }
+                        b"DA" if default_appearance.is_none() => {
+                            default_appearance = Some(v.clone());
+                        }
+                        b"NeedAppearances" => {
+                            if matches!(v, Obj::Bool(true)) {
+                                need_appearances = true;
+                            }
+                        }
+                        b"CO" => {
+                            let copied = rec::copy_value_into(
+                                merged,
+                                &input.src,
+                                &input.doc,
+                                &input.page_map,
+                                &mut cache,
+                                v,
+                                budget,
+                                g,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            if let Obj::Array(items) = copied {
+                                calc_order.extend(items);
+                            }
+                        }
+                        b"DR" => {
+                            let copied = rec::copy_value_into(
+                                merged,
+                                &input.src,
+                                &input.doc,
+                                &input.page_map,
+                                &mut cache,
+                                v,
+                                budget,
+                                g,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            if let Obj::Dict(dr) = copied {
+                                union_dicts(&mut form_resources, dr);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Structure tree (ADR-P0031): `/K` is copied with page references
+        // remapped, `/ParentTree` keys shift by the running struct-parents
+        // id base, and each merged page's `/StructParents` is shifted to
+        // match so marked-content stays registered with the parent tree.
+        if let Some(struct_root) =
+            rec::catalog_entry(&input.src, &input.doc, b"StructTreeRoot", budget, g)
+                .map_err(|e| e.to_string())?
+        {
+            let src_root_ref = match &struct_root {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            };
+            let struct_root = resolve_shallow(&input.src, &input.doc, struct_root, budget, g);
+            if let Obj::Dict(pairs) = &struct_root {
+                // Shift each merged page's struct-parents id and find the
+                // input's highest id.
+                let mut max_sp = 0i64;
+                for (&src_num, &merged_ref) in &input.page_map {
+                    let page = resolve_shallow(
+                        &input.src,
+                        &input.doc,
+                        Obj::Ref(Ref::new(src_num, 0)),
+                        budget,
+                        g,
+                    );
+                    let Obj::Dict(pp) = &page else { continue };
+                    let Some(sp) = pp
+                        .iter()
+                        .find(|(k, _)| k.as_slice() == b"StructParents")
+                        .and_then(|(_, v)| match v {
+                            Obj::Int(n) => Some(*n),
+                            _ => None,
+                        })
+                    else {
+                        continue;
+                    };
+                    max_sp = max_sp.max(sp);
+                    edit_dict_entry(
+                        merged,
+                        merged_ref.num,
+                        b"StructParents",
+                        Obj::Int(sp.saturating_add(id_base)),
+                    );
+                }
+                // Copy `/K` first so its elements register in the cache; the
+                // `/ParentTree` values then redirect at the same objects.
+                if let Some((_, k)) = pairs.iter().find(|(k, _)| k.as_slice() == b"K") {
+                    let copied = rec::copy_value_into(
+                        merged,
+                        &input.src,
+                        &input.doc,
+                        &input.page_map,
+                        &mut cache,
+                        k,
+                        budget,
+                        g,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    match copied {
+                        Obj::Array(items) => struct_kids.extend(items),
+                        other => struct_kids.push(other),
+                    }
+                }
+                if let Some((_, pt)) = pairs.iter().find(|(k, _)| k.as_slice() == b"ParentTree") {
+                    if let Ok(found) =
+                        rec::number_tree_pairs_unresolved(pt, &input.src, &input.doc, budget, g)
+                    {
+                        for (key, value) in found {
+                            let copied = rec::copy_value_into(
+                                merged,
+                                &input.src,
+                                &input.doc,
+                                &input.page_map,
+                                &mut cache,
+                                &value,
+                                budget,
+                                g,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            parent_pairs.push((key.saturating_add(id_base), copied));
+                        }
+                    }
+                }
+                if let Some((_, rm)) = pairs.iter().find(|(k, _)| k.as_slice() == b"RoleMap") {
+                    let copied = rec::copy_value_into(
+                        merged,
+                        &input.src,
+                        &input.doc,
+                        &input.page_map,
+                        &mut cache,
+                        rm,
+                        budget,
+                        g,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    if let Obj::Dict(d) = copied {
+                        union_dicts(&mut role_map, d);
+                    }
+                }
+                if let Some((_, cm)) = pairs.iter().find(|(k, _)| k.as_slice() == b"ClassMap") {
+                    let copied = rec::copy_value_into(
+                        merged,
+                        &input.src,
+                        &input.doc,
+                        &input.page_map,
+                        &mut cache,
+                        cm,
+                        budget,
+                        g,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    if let Obj::Dict(d) = copied {
+                        union_dicts(&mut class_map, d);
+                    }
+                }
+                id_base = id_base.saturating_add(max_sp.saturating_add(1));
+                // The copied source root's kids are re-parented at the merged
+                // root below; record it for removal so it does not linger.
+                if let Some(r) = src_root_ref {
+                    if let Some(&copied_num) = cache.get(&(r.num, r.gen)) {
+                        old_struct_roots.push(copied_num);
+                    }
+                }
+            }
+        }
+
+        // Optional-content groups: OCGs are copied and concatenated; the
+        // default configuration's arrays (Order, ON, OFF, …) are
+        // concatenated across inputs, scalars kept first-wins.
+        if let Some(oc) = rec::catalog_entry(&input.src, &input.doc, b"OCProperties", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            let oc = resolve_shallow(&input.src, &input.doc, oc, budget, g);
+            if let Obj::Dict(pairs) = &oc {
+                if let Some((_, Obj::Array(items))) =
+                    pairs.iter().find(|(k, _)| k.as_slice() == b"OCGs")
+                {
+                    for item in items {
+                        let copied = rec::copy_value_into(
+                            merged,
+                            &input.src,
+                            &input.doc,
+                            &input.page_map,
+                            &mut cache,
+                            item,
+                            budget,
+                            g,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        ocg_refs.push(copied);
+                    }
+                }
+                if let Some((_, d)) = pairs.iter().find(|(k, _)| k.as_slice() == b"D") {
+                    let d = resolve_shallow(&input.src, &input.doc, d.clone(), budget, g);
+                    if let Obj::Dict(dpairs) = &d {
+                        for (k, v) in dpairs {
+                            let copied = rec::copy_value_into(
+                                merged,
+                                &input.src,
+                                &input.doc,
+                                &input.page_map,
+                                &mut cache,
+                                v,
+                                budget,
+                                g,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            if let Some((_, slot)) = oc_defaults
+                                .iter_mut()
+                                .find(|(ak, _)| ak.as_slice() == k.as_slice())
+                            {
+                                if let (Obj::Array(a), Obj::Array(items)) = (&mut *slot, &copied) {
+                                    a.extend(items.iter().cloned());
+                                }
+                            } else {
+                                oc_defaults.push((k.clone(), copied));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        page_offset = page_offset.saturating_add(i64::try_from(input.pages).unwrap_or(i64::MAX));
+    }
+
+    attach_outlines(merged, &chains, &old_outline_roots);
+    attach_page_labels(merged, &label_trees);
+    attach_names(merged, dest_pairs, file_pairs);
+    attach_acroform(
+        merged,
+        &field_refs,
+        default_appearance,
+        need_appearances,
+        form_resources,
+        calc_order,
+    );
+    let top_level_elements: Vec<u32> = struct_kids
+        .iter()
+        .filter_map(|k| match k {
+            Obj::Ref(r) => Some(r.num),
+            _ => None,
+        })
+        .collect();
+    let struct_root_num =
+        attach_struct_tree(merged, struct_kids, parent_pairs, role_map, class_map);
+    if let Some(root_num) = struct_root_num {
+        // Top-level elements' `/P` pointed at the copied source roots; repoint
+        // it at the merged root, then drop the source roots.
+        for num in top_level_elements {
+            edit_dict_entry(merged, num, b"P", Obj::Ref(Ref::new(root_num, 0)));
+        }
+        merged
+            .objects_mut()
+            .retain(|(num, _)| !old_struct_roots.contains(num));
+    }
+    attach_ocproperties(merged, ocg_refs, oc_defaults);
+
+    // A fresh /ID: the merged document is a new identity (WRITE.04).
+    let id = document_id(inputs);
+    merged.set_id(id.to_vec(), id.to_vec());
+    Ok(())
+}
+
+/// Resolve a value one level: indirect references become their object,
+/// everything else passes through.
+fn resolve_shallow(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    obj: Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Obj {
+    match obj {
+        Obj::Ref(r) => {
+            selis_pdf_cos::copy::resolve_ref(src, doc, r, budget, g).unwrap_or(Obj::Null)
+        }
+        other => other,
+    }
+}
+
+/// A harvested top-level outline chain: its first/last items, visible count,
+/// and the item object numbers in order.
+struct OutlineChain {
+    first: u32,
+    last: u32,
+    count: i64,
+    items: Vec<u32>,
+}
+
+/// Walk the top-level items of a copied outline root, returning the chain.
+fn harvest_outline_chain(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    root_num: u32,
+) -> Option<OutlineChain> {
+    let (first, count) = {
+        let (_, root) = merged
+            .objects_mut()
+            .iter()
+            .find(|(num, _)| *num == root_num)?;
+        let Obj::Dict(pairs) = root else { return None };
+        let first = pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"First")
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            })?;
+        let count = pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Count")
+            .and_then(|(_, v)| match v {
+                Obj::Int(n) => Some(*n),
+                _ => None,
+            })
+            .unwrap_or(0);
+        (first, count)
+    };
+    let mut items = Vec::new();
+    let mut cur = first;
+    let mut last = first.num;
+    for _ in 0..10_000 {
+        items.push(cur.num);
+        last = cur.num;
+        let next = {
+            let Some((_, obj)) = merged.objects_mut().iter().find(|(num, _)| *num == cur.num)
+            else {
+                break;
+            };
+            let Obj::Dict(pairs) = obj else { break };
+            pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Next")
+                .and_then(|(_, v)| match v {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                })
+        };
+        let Some(next) = next else { break };
+        if items.contains(&next.num) {
+            break;
+        }
+        cur = next;
+    }
+    Some(OutlineChain {
+        first: first.num,
+        last,
+        count,
+        items,
+    })
+}
+
+/// Build the merged outlines root and stitch each input's chain into one
+/// top-level sequence, re-pointing `/Parent` entries at the new root. The
+/// per-input copied outline roots are then dropped: their items have been
+/// re-parented at the merged root, so nothing references them anymore.
+fn attach_outlines(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    chains: &[OutlineChain],
+    old_roots: &[u32],
+) {
+    if chains.is_empty() {
+        return;
+    }
+    let root_num = merged.allocate();
+    merged.add_object(root_num, Obj::Dict(Vec::new()));
+
+    let mut prev_last: Option<u32> = None;
+    for chain in chains {
+        // Re-parent every top-level item at the merged root.
+        for &item_num in &chain.items {
+            edit_dict_entry(merged, item_num, b"Parent", Obj::Ref(Ref::new(root_num, 0)));
+        }
+        // Stitch onto the previous chain.
+        if let Some(pl) = prev_last {
+            edit_dict_entry(merged, pl, b"Next", Obj::Ref(Ref::new(chain.first, 0)));
+            if let Some((_, prev_obj)) = merged
+                .objects_mut()
+                .iter_mut()
+                .find(|(num, _)| *num == chain.first)
+            {
+                if !dict_has(prev_obj, b"Prev") {
+                    if let Obj::Dict(pairs) = prev_obj {
+                        pairs.push((
+                            selis_bytes::Bytes::copy_from_slice(b"Prev"),
+                            Obj::Ref(Ref::new(pl, 0)),
+                        ));
+                    }
+                }
+            }
+        }
+        prev_last = Some(chain.last);
+    }
+
+    let total: i64 = chains
+        .iter()
+        .map(|c| {
+            if c.count > 0 {
+                c.count
+            } else {
+                i64::try_from(c.items.len()).unwrap_or(i64::MAX)
+            }
+        })
+        .sum();
+    let first = chains.first().map(|c| c.first).unwrap_or(0);
+    let last = chains.last().map(|c| c.last).unwrap_or(0);
+    edit_dict_entry(
+        merged,
+        root_num,
+        b"Type",
+        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Outlines")),
+    );
+    edit_dict_entry(merged, root_num, b"First", Obj::Ref(Ref::new(first, 0)));
+    edit_dict_entry(merged, root_num, b"Last", Obj::Ref(Ref::new(last, 0)));
+    edit_dict_entry(merged, root_num, b"Count", Obj::Int(total));
+    merged.add_catalog_entry(b"Outlines", Obj::Ref(Ref::new(root_num, 0)));
+
+    // Drop the per-input copied outline roots (now unreferenced).
+    merged
+        .objects_mut()
+        .retain(|(num, _)| !old_roots.contains(num));
+}
+
+/// Merge the inputs' page-label number trees into one, offset by page index.
+fn attach_page_labels(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    trees: &[(Vec<(i64, Obj)>, i64)],
+) {
+    if trees.is_empty() {
+        return;
+    }
+    let tree = selis_pdf_cos::reconcile::merge_number_trees(trees);
+    let num = merged.allocate();
+    merged.add_object(num, tree);
+    merged.add_catalog_entry(b"PageLabels", Obj::Ref(Ref::new(num, 0)));
+}
+
+/// Build the merged `/Names` tree (named destinations + embedded files),
+/// renaming collisions so no name is lost.
+fn attach_names(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    dests: Vec<(selis_bytes::Bytes, Obj)>,
+    files: Vec<(selis_bytes::Bytes, Obj)>,
+) {
+    let mut names_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    if !dests.is_empty() {
+        let tree = selis_pdf_cos::reconcile::build_name_tree(unique_names(dests));
+        let num = merged.allocate();
+        merged.add_object(num, tree);
+        names_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"Dests"),
+            Obj::Ref(Ref::new(num, 0)),
+        ));
+    }
+    if !files.is_empty() {
+        let tree = selis_pdf_cos::reconcile::build_name_tree(unique_names(files));
+        let num = merged.allocate();
+        merged.add_object(num, tree);
+        names_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"EmbeddedFiles"),
+            Obj::Ref(Ref::new(num, 0)),
+        ));
+    }
+    if !names_pairs.is_empty() {
+        let names = Obj::Dict(names_pairs);
+        let num = merged.allocate();
+        merged.add_object(num, names);
+        merged.add_catalog_entry(b"Names", Obj::Ref(Ref::new(num, 0)));
+    }
+}
+
+/// Rename a copied field root when its `/T` (partial name) collides with an
+/// earlier input's field, mirroring the name-tree rename: no field is lost.
+fn rename_field_collision(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    num: u32,
+    seen: &mut std::collections::HashMap<Vec<u8>, u32>,
+) {
+    let name = {
+        let Some((_, obj)) = merged.objects_mut().iter().find(|(n, _)| *n == num) else {
+            return;
+        };
+        let Obj::Dict(pairs) = obj else { return };
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"T")
+            .and_then(|(_, v)| match v {
+                Obj::String(s) => Some(s.as_slice().to_vec()),
+                Obj::Name(n) => Some(n.as_slice().to_vec()),
+                _ => None,
+            })
+    };
+    let Some(name) = name else {
+        return;
+    };
+    let count = seen.entry(name.clone()).or_insert(0);
+    *count = count.saturating_add(1);
+    if *count > 1 {
+        let renamed = format!("{}-{}", String::from_utf8_lossy(&name), count);
+        edit_dict_entry(
+            merged,
+            num,
+            b"T",
+            Obj::String(selis_bytes::Bytes::copy_from_slice(renamed.as_bytes())),
+        );
+    }
+}
+
+/// Union `extra` into `acc` (first-wins per key); colliding sub-dictionaries
+/// are unioned entry-wise so resources like `/DR` or `/RoleMap` keep entries
+/// from every input.
+fn union_dicts(acc: &mut Vec<(selis_bytes::Bytes, Obj)>, extra: Vec<(selis_bytes::Bytes, Obj)>) {
+    for (k, v) in extra {
+        if let Some((_, slot)) = acc.iter_mut().find(|(ak, _)| ak.as_slice() == k.as_slice()) {
+            if let (Obj::Dict(existing), Obj::Dict(incoming)) = (&mut *slot, &v) {
+                for (ik, iv) in incoming {
+                    if !existing
+                        .iter()
+                        .any(|(ek, _)| ek.as_slice() == ik.as_slice())
+                    {
+                        existing.push((ik.clone(), iv.clone()));
+                    }
+                }
+            }
+        } else {
+            acc.push((k, v));
+        }
+    }
+}
+
+/// Build the merged `/AcroForm` from the reconciled pieces (WRITE.04): one
+/// field list spanning all inputs, first-wins default appearance,
+/// any-true `/NeedAppearances`, unioned default resources.
+fn attach_acroform(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    field_refs: &[Ref],
+    default_appearance: Option<Obj>,
+    need_appearances: bool,
+    form_resources: Vec<(selis_bytes::Bytes, Obj)>,
+    calc_order: Vec<Obj>,
+) {
+    if field_refs.is_empty() {
+        return;
+    }
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![(
+        selis_bytes::Bytes::copy_from_slice(b"Fields"),
+        Obj::Array(field_refs.iter().map(|r| Obj::Ref(*r)).collect()),
+    )];
+    if let Some(da) = default_appearance {
+        pairs.push((selis_bytes::Bytes::copy_from_slice(b"DA"), da));
+    }
+    if need_appearances {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"NeedAppearances"),
+            Obj::Bool(true),
+        ));
+    }
+    if !form_resources.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"DR"),
+            Obj::Dict(form_resources),
+        ));
+    }
+    if !calc_order.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"CO"),
+            Obj::Array(calc_order),
+        ));
+    }
+    let num = merged.allocate();
+    merged.add_object(num, Obj::Dict(pairs));
+    merged.add_catalog_entry(b"AcroForm", Obj::Ref(Ref::new(num, 0)));
+}
+
+/// Build the merged `/StructTreeRoot` from the reconciled pieces
+/// (ADR-P0031): `/K` kids from every input, the shifted `/ParentTree`,
+/// unioned role and class maps. Returns the merged root's object number so
+/// callers can re-point the top-level elements' `/P` at it.
+fn attach_struct_tree(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    struct_kids: Vec<Obj>,
+    parent_pairs: Vec<(i64, Obj)>,
+    role_map: Vec<(selis_bytes::Bytes, Obj)>,
+    class_map: Vec<(selis_bytes::Bytes, Obj)>,
+) -> Option<u32> {
+    if struct_kids.is_empty() && parent_pairs.is_empty() {
+        return None;
+    }
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![(
+        selis_bytes::Bytes::copy_from_slice(b"Type"),
+        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"StructTreeRoot")),
+    )];
+    if !struct_kids.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"K"),
+            Obj::Array(struct_kids),
+        ));
+    }
+    if !parent_pairs.is_empty() {
+        let next_key = parent_pairs
+            .iter()
+            .map(|(k, _)| *k)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let tree = selis_pdf_cos::reconcile::merge_number_trees(&[(parent_pairs, 0)]);
+        let num = merged.allocate();
+        merged.add_object(num, tree);
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ParentTree"),
+            Obj::Ref(Ref::new(num, 0)),
+        ));
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ParentTreeNextKey"),
+            Obj::Int(next_key),
+        ));
+    }
+    if !role_map.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"RoleMap"),
+            Obj::Dict(role_map),
+        ));
+    }
+    if !class_map.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ClassMap"),
+            Obj::Dict(class_map),
+        ));
+    }
+    let num = merged.allocate();
+    merged.add_object(num, Obj::Dict(pairs));
+    merged.add_catalog_entry(b"StructTreeRoot", Obj::Ref(Ref::new(num, 0)));
+    Some(num)
+}
+
+/// Build the merged `/OCProperties` from the reconciled pieces: one OCG
+/// list, default configuration with concatenated arrays.
+fn attach_ocproperties(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    ocg_refs: Vec<Obj>,
+    defaults: Vec<(selis_bytes::Bytes, Obj)>,
+) {
+    if ocg_refs.is_empty() {
+        return;
+    }
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![(
+        selis_bytes::Bytes::copy_from_slice(b"OCGs"),
+        Obj::Array(ocg_refs),
+    )];
+    if !defaults.is_empty() {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"D"),
+            Obj::Dict(defaults),
+        ));
+    }
+    let num = merged.allocate();
+    merged.add_object(num, Obj::Dict(pairs));
+    merged.add_catalog_entry(b"OCProperties", Obj::Ref(Ref::new(num, 0)));
+}
+
+/// Rename duplicate names with a `-2`, `-3`, … suffix so every entry keeps a
+/// unique key in the merged name tree.
+fn unique_names(pairs: Vec<(selis_bytes::Bytes, Obj)>) -> Vec<(selis_bytes::Bytes, Obj)> {
+    let mut seen: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(pairs.len());
+    for (name, value) in pairs {
+        let count = seen.entry(name.as_slice().to_vec()).or_insert(0);
+        *count = count.saturating_add(1);
+        let unique = if *count == 1 {
+            name
+        } else {
+            selis_bytes::Bytes::copy_from_slice(
+                format!("{}-{}", String::from_utf8_lossy(name.as_slice()), count).as_bytes(),
+            )
+        };
+        out.push((unique, value));
+    }
+    out
+}
+
+/// Set or replace a key in the dictionary object numbered `num`.
+fn edit_dict_entry(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    num: u32,
+    key: &[u8],
+    value: Obj,
+) {
+    if let Some((_, obj)) = merged.objects_mut().iter_mut().find(|(n, _)| *n == num) {
+        if let Obj::Dict(pairs) = obj {
+            let key_b = selis_bytes::Bytes::copy_from_slice(key);
+            if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_slice() == key) {
+                slot.1 = value;
+            } else {
+                pairs.push((key_b, value));
+            }
+        }
+    }
+}
+
+/// True when the dictionary object carries `key`.
+fn dict_has(obj: &Obj, key: &[u8]) -> bool {
+    matches!(obj, Obj::Dict(pairs) if pairs.iter().any(|(k, _)| k.as_slice() == key))
+}
+
+/// A deterministic 16-byte document ID derived from the merged inputs (file
+/// identities are stable across runs for the same inputs).
+fn document_id(inputs: &[MergeInput]) -> [u8; 16] {
+    fn fnv(data: &[u8], seed: u64) -> u64 {
+        let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
+        for &b in data {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+    let mut blob = Vec::new();
+    for input in inputs {
+        blob.extend_from_slice(format!("{};", input.src.len()).as_bytes());
+        blob.extend_from_slice(&input.src[..input.src.len().min(4096)]);
+    }
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&fnv(&blob, 1).to_le_bytes());
+    id[8..].copy_from_slice(&fnv(&blob, 2).to_le_bytes());
+    id
 }
 
 /// Split a PDF: extract the pages in `page_range` (inclusive, 0-based) into a
@@ -227,7 +1174,8 @@ fn walk_pages(
 }
 
 /// Copy a leaf page (content + resources) into the output document, with
-/// optional extra page-dictionary entries (e.g. `/Rotate`).
+/// optional extra page-dictionary entries (e.g. `/Rotate`). Returns the
+/// merged page's reference (needed by reconciliation, SL-1A.WRITE.04).
 fn copy_page(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -235,7 +1183,7 @@ fn copy_page(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
     _next_num: &mut u32,
-) -> Result<(), String> {
+) -> Result<Ref, String> {
     copy_page_extra(merged, src, page_ref, budget, g, _next_num, Vec::new())
 }
 
@@ -249,7 +1197,7 @@ fn copy_page_extra(
     g: &mut BudgetGuard<'_>,
     _next_num: &mut u32,
     extra: Vec<(Vec<u8>, Obj)>,
-) -> Result<(), String> {
+) -> Result<Ref, String> {
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
@@ -277,8 +1225,7 @@ fn copy_page_extra(
     if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
-    merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra);
-    Ok(())
+    Ok(merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra))
 }
 
 /// Carry a page's `/Resources` into `merged`, returning the reference the
@@ -890,6 +1837,8 @@ fn emit(out: &mut Vec<u8>, toks: &[selis_pdf_cos::Token]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
+    use super::{Obj, Ref};
+
     /// Build a one-page PDF whose page carries an inline `/Resources` and an
     /// `/Annots` array referencing one annotation object. Offsets are computed
     /// so the bytes reparse cleanly.
@@ -947,9 +1896,393 @@ mod tests {
         .expect("merge");
         let bytes = std::fs::read(&out).expect("output");
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("/Annots"), "annotations carried into the merge");
+        assert!(
+            text.contains("/Annots"),
+            "annotations carried into the merge"
+        );
         // The output parses and the annotation subgraph resolved (two
         // annotations — one per page).
         assert_eq!(text.matches("/Type /Annot").count(), 2);
+    }
+
+    /// A one-page PDF with outlines (one item destinating its page), page
+    /// labels, and a named destination. Offsets computed for a valid xref.
+    fn outlined_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (
+                1,
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R /PageLabels 7 0 R /Dests << /Top [3 0 R /Fit] >> >>\nendobj\n",
+            ),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>\nendobj\n",
+            ),
+            (4, b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                5,
+                b"5 0 obj\n<< /Type /Outlines /First 6 0 R /Last 6 0 R /Count 1 >>\nendobj\n",
+            ),
+            (
+                6,
+                b"6 0 obj\n<< /Title (Chapter) /Parent 5 0 R /Dest [3 0 R /Fit] >>\nendobj\n",
+            ),
+            (7, b"7 0 obj\n<< /Nums [0 << /S /r >>] >>\nendobj\n"),
+        ];
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets: Vec<(u32, u64)> = Vec::new();
+        for (num, body) in numbered {
+            offsets.push((*num, u64::try_from(out.len()).unwrap_or(0)));
+            out.extend_from_slice(body);
+        }
+        offsets.sort_by_key(|(num, _)| *num);
+        let xref_at = u64::try_from(out.len()).unwrap_or(0);
+        out.extend_from_slice(b"xref\n0 8\n0000000000 65535 f \n");
+        for (_, off) in &offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(b"trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n");
+        out.extend_from_slice(format!("{xref_at}\n").as_bytes());
+        out.extend_from_slice(b"%%EOF\n");
+        out
+    }
+
+    /// Merging outlined documents reconciles outlines, page labels, and named
+    /// destinations (WRITE.04): the merged output carries one outline tree,
+    /// shifted label keys, both named destinations, and a trailer /ID.
+    #[test]
+    fn merge_reconciles_document_structures() {
+        let dir = std::env::temp_dir().join("selis-merge-reconcile-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out = dir.join("out.pdf");
+        std::fs::write(&a, outlined_source()).unwrap();
+        std::fs::write(&b, outlined_source()).unwrap();
+        super::merge(
+            &[a.display().to_string(), b.display().to_string()],
+            &out.display().to_string(),
+        )
+        .expect("merge");
+        let bytes = std::fs::read(&out).expect("output");
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Outlines survive: two top-level items (one per input) under one
+        // merged root, each destinating its own merged page.
+        assert!(text.contains("/Type /Outlines"), "merged outline root");
+        assert_eq!(
+            text.matches("/Type /Outlines").count(),
+            1,
+            "one merged outline root; per-input roots dropped"
+        );
+        assert_eq!(
+            text.matches("(Chapter)").count(),
+            2,
+            "one outline item per input"
+        );
+
+        // Page labels: input 2's label shifts to page index 1.
+        assert!(text.contains("/PageLabels"), "page labels carried");
+        assert!(
+            text.contains("[0 <</S /r>> 1 <</S /r>>]"),
+            "label keys offset by page count: {text}"
+        );
+
+        // Named destinations: both inputs' /Top survive (second renamed).
+        assert!(text.contains("(Top)"), "first named destination kept");
+        assert!(text.contains("(Top-2)"), "collision renamed, not lost");
+
+        // A trailer /ID is present.
+        assert!(text.contains("/ID"), "merged document carries an /ID");
+
+        // The output still parses.
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("reparses");
+        assert_eq!(doc.revisions().len(), 1);
+    }
+
+    /// A one-page tagged, formed PDF: an `/AcroForm` with one text field
+    /// (widget on the page), a `/StructTreeRoot` whose element covers the
+    /// page via `/Pg` and the parent tree via `/StructParents 0`, and one
+    /// optional-content group. Object numbers skip (5–7, 10 unused) to
+    /// exercise a sparse xref.
+    fn formed_tagged_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (
+                1,
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm 8 0 R /StructTreeRoot 9 0 R /OCProperties 11 0 R >>\nendobj\n",
+            ),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /StructParents 0 >>\nendobj\n",
+            ),
+            (4, b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                8,
+                b"8 0 obj\n<< /Fields [12 0 R] /DA (/Helv 0 Tf 0 g) /NeedAppearances true >>\nendobj\n",
+            ),
+            (
+                9,
+                b"9 0 obj\n<< /Type /StructTreeRoot /K 13 0 R /ParentTree 14 0 R /ParentTreeNextKey 2 /RoleMap << /Artifact /Artifact >> >>\nendobj\n",
+            ),
+            (
+                11,
+                b"11 0 obj\n<< /OCGs [15 0 R] /D << /Order [15 0 R] /ON [15 0 R] >> >>\nendobj\n",
+            ),
+            (
+                12,
+                b"12 0 obj\n<< /T (name) /FT /Tx /Rect [0 0 10 10] /P 3 0 R >>\nendobj\n",
+            ),
+            (
+                13,
+                b"13 0 obj\n<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K << /Type /MCR /Pg 3 0 R /MCID 0 >> >>\nendobj\n",
+            ),
+            (14, b"14 0 obj\n<< /Nums [0 [13 0 R]] >>\nendobj\n"),
+            (15, b"15 0 obj\n<< /Type /OCG /Name (Layer) >>\nendobj\n"),
+        ];
+        let max_num = numbered.iter().map(|(n, _)| *n).max().unwrap_or(1);
+        let size = usize::try_from(max_num.saturating_add(1)).unwrap();
+        let by_num: std::collections::HashMap<u32, &[u8]> = numbered.iter().copied().collect();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets: Vec<Option<u64>> = vec![None; size];
+        for num in 1..=max_num {
+            let Some(body) = by_num.get(&num) else {
+                continue;
+            };
+            offsets[usize::try_from(num).unwrap()] = Some(u64::try_from(out.len()).unwrap_or(0));
+            out.extend_from_slice(body);
+        }
+        let xref_at = u64::try_from(out.len()).unwrap_or(0);
+        out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+        for off in offsets.iter().skip(1) {
+            match off {
+                Some(off) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
+                None => out.extend_from_slice(b"0000000000 65535 f \n"),
+            }
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n").as_bytes(),
+        );
+        out.extend_from_slice(format!("{xref_at}\n").as_bytes());
+        out.extend_from_slice(b"%%EOF\n");
+        out
+    }
+
+    /// Merging two tagged, formed documents keeps every feature and it still
+    /// validates (WRITE.04 DoD): one form with both fields (collision
+    /// renamed), one structure tree with both elements, shifted
+    /// struct-parents ids, parent-tree values pointing at the merged
+    /// elements, and both OCGs under one configuration.
+    #[test]
+    fn merge_reconciles_forms_structure_and_layers() {
+        let dir = std::env::temp_dir().join("selis-merge-formed-tagged-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out = dir.join("out.pdf");
+        std::fs::write(&a, formed_tagged_source()).unwrap();
+        std::fs::write(&b, formed_tagged_source()).unwrap();
+        super::merge(
+            &[a.display().to_string(), b.display().to_string()],
+            &out.display().to_string(),
+        )
+        .expect("merge");
+        let bytes = std::fs::read(&out).expect("output");
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Field collision renamed, not lost.
+        assert!(text.contains("(name)"), "first field name kept");
+        assert!(text.contains("(name-2)"), "field name collision renamed");
+
+        // Structural validation: reparse and walk the merged graph.
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("reparses");
+        assert_eq!(doc.revisions().len(), 1);
+        let resolve =
+            |r: Ref, g: &mut _| selis_pdf_cos::copy::resolve_ref(&bytes, &doc, r, &budget, g);
+
+        let root_ref = doc
+            .revisions()
+            .iter()
+            .rev()
+            .find_map(|rev| rev.root)
+            .expect("trailer root");
+        let catalog = resolve(root_ref, &mut g).expect("catalog");
+        let cat = pairs_of(&catalog);
+
+        // Pages: two, with struct-parents ids 0 and 1 (second input shifted).
+        let page_refs: Vec<Ref> = {
+            let Obj::Ref(r) = dict_entry(cat, b"Pages").expect("/Pages") else {
+                panic!("pages ref");
+            };
+            let pages = resolve(*r, &mut g).expect("pages");
+            let kids = dict_entry(pairs_of(&pages), b"Kids").expect("/Kids");
+            let Obj::Array(items) = kids else {
+                panic!("kids array");
+            };
+            items
+                .iter()
+                .filter_map(|o| match o {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(page_refs.len(), 2, "two merged pages");
+        let struct_parents: Vec<i64> = page_refs
+            .iter()
+            .map(|r| {
+                let page = resolve(*r, &mut g).expect("page");
+                let Some(Obj::Int(n)) = dict_entry(pairs_of(&page), b"StructParents") else {
+                    panic!("page /StructParents");
+                };
+                *n
+            })
+            .collect();
+        assert_eq!(
+            struct_parents,
+            vec![0, 1],
+            "struct-parents shifted per input"
+        );
+
+        // Form: one /AcroForm listing both field roots, names intact.
+        let acro = {
+            let Obj::Ref(r) = dict_entry(cat, b"AcroForm").expect("/AcroForm") else {
+                panic!("acroform ref");
+            };
+            resolve(*r, &mut g).expect("acroform")
+        };
+        let field_refs: Vec<Ref> = {
+            let Obj::Array(items) = dict_entry(pairs_of(&acro), b"Fields").expect("/Fields") else {
+                panic!("fields array");
+            };
+            items
+                .iter()
+                .filter_map(|o| match o {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(field_refs.len(), 2, "both fields listed");
+        let mut field_names: Vec<String> = field_refs
+            .iter()
+            .filter_map(|r| {
+                let field = resolve(*r, &mut g).ok()?;
+                match dict_entry(pairs_of(&field), b"T")? {
+                    Obj::String(s) => Some(String::from_utf8_lossy(s.as_slice()).into_owned()),
+                    _ => None,
+                }
+            })
+            .collect();
+        field_names.sort();
+        assert_eq!(field_names, vec!["name", "name-2"]);
+
+        // Structure tree: one merged root, both elements re-parented at it,
+        // the parent tree's values the very objects `/K` references.
+        let st_ref = match dict_entry(cat, b"StructTreeRoot").expect("/StructTreeRoot") {
+            Obj::Ref(r) => *r,
+            _ => panic!("struct root ref"),
+        };
+        let st = resolve(st_ref, &mut g).expect("struct root");
+        let st = pairs_of(&st);
+        let kid_refs: Vec<Ref> = match dict_entry(st, b"K").expect("/K") {
+            Obj::Array(items) => items
+                .iter()
+                .filter_map(|o| match o {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                })
+                .collect(),
+            Obj::Ref(r) => vec![*r],
+            _ => panic!("kids"),
+        };
+        assert_eq!(kid_refs.len(), 2, "both structure elements under /K");
+        for (i, kid) in kid_refs.iter().enumerate() {
+            let elem = resolve(*kid, &mut g).expect("element");
+            let elem = pairs_of(&elem);
+            assert_eq!(
+                dict_entry(elem, b"P"),
+                Some(&Obj::Ref(st_ref)),
+                "element {} re-parented at the merged root",
+                i
+            );
+            assert_eq!(
+                dict_entry(elem, b"Pg"),
+                Some(&Obj::Ref(page_refs[i])),
+                "element {} lands on its merged page",
+                i
+            );
+        }
+        let parent_tree = {
+            let Obj::Ref(r) = dict_entry(st, b"ParentTree").expect("/ParentTree") else {
+                panic!("parent tree ref");
+            };
+            resolve(*r, &mut g).expect("parent tree")
+        };
+        {
+            let Obj::Array(nums) = dict_entry(pairs_of(&parent_tree), b"Nums").expect("/Nums")
+            else {
+                panic!("nums");
+            };
+            // [key, values] pairs: keys 0 and 1, values redirecting at the
+            // merged elements (the cache-shared copy, not fresh duplicates).
+            let mut it = nums.iter();
+            let mut by_key: std::collections::HashMap<i64, &Obj> = std::collections::HashMap::new();
+            while let Some(k) = it.next() {
+                if let (Obj::Int(n), Some(v)) = (k, it.next()) {
+                    by_key.insert(*n, v);
+                }
+            }
+            for (key, kid) in [(0i64, &kid_refs[0]), (1, &kid_refs[1])] {
+                let Some(Obj::Array(values)) = by_key.get(&key) else {
+                    panic!("parent-tree key {key} missing");
+                };
+                assert!(
+                    values.contains(&Obj::Ref(*kid)),
+                    "parent-tree value {key} redirects at the merged element"
+                );
+            }
+        }
+
+        // Optional content: both groups listed under one configuration.
+        let oc = {
+            let Obj::Ref(r) = dict_entry(cat, b"OCProperties").expect("/OCProperties") else {
+                panic!("oc ref");
+            };
+            resolve(*r, &mut g).expect("oc properties")
+        };
+        let ocgs = dict_entry(pairs_of(&oc), b"OCGs").expect("/OCGs");
+        let Obj::Array(groups) = ocgs else {
+            panic!("ocgs array");
+        };
+        assert_eq!(groups.len(), 2, "both OCG references listed");
+    }
+
+    fn dict_entry<'a>(pairs: &'a [(selis_bytes::Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
+    }
+
+    fn pairs_of(obj: &Obj) -> &[(selis_bytes::Bytes, Obj)] {
+        match obj {
+            Obj::Dict(p) => p.as_slice(),
+            other => panic!("expected dict, got {}", other.type_name()),
+        }
     }
 }
