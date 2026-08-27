@@ -1,9 +1,10 @@
 //! `selis inspect` (SL-1.COS.10): the structural dump the qpdf oracle
 //! compares against. Revisions, xref entries, and deviations, as JSON.
 
+use std::collections::BTreeMap;
+
 use super::{CliError, CliResult, InspectDoc, InspectRevision};
 use selis_pdf_cos::{self, Deviation};
-
 /// Run `inspect` on a file.
 ///
 /// # Budget
@@ -50,6 +51,7 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
         reconstructed: false,
         attachments: Vec::new(),
         structure: None,
+        metadata: None,
     };
 
     for rev in doc.revisions() {
@@ -100,6 +102,13 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
                     });
                 }
             }
+            if let Ok(meta) = selis_pdf_doc::Metadata::resolve(&mut resolver, &catalog, &budget, &mut g) {
+                let mut fields = BTreeMap::new();
+                for (k, fv) in &meta.fields {
+                    fields.insert(k.clone(), fv.value.clone());
+                }
+                out.metadata = Some(fields);
+            }
         }
     }
 
@@ -111,8 +120,7 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
     }
     all.extend(lex.deviations().iter().copied());
     // Deduplicate by (name, offset).
-    let mut seen = std::collections::BTreeSet::new();
-    for d in all {
+    let mut seen = std::collections::BTreeSet::new();    for d in all {
         if seen.insert((d.name(), d.offset())) {
             out.deviations.push(super::deviation_json(&d));
         }

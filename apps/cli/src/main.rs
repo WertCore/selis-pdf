@@ -4,6 +4,8 @@
 //! `selis inspect --json <file>` dumps revisions, xref entries, and
 //! deviations. Everything else comes with the phases that own it.
 
+use std::collections::BTreeMap;
+
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
@@ -144,6 +146,8 @@ struct InspectDoc {
     attachments: Vec<InspectAttachment>,
     /// The tagged structure tree, when present.
     structure: Option<InspectStructure>,
+    /// Document metadata (Info dictionary and XMP fields).
+    metadata: Option<BTreeMap<String, String>>,
 }
 
 #[derive(serde::Serialize)]
