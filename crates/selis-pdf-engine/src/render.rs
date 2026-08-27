@@ -94,6 +94,7 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
+                let p = transform_raster_path(&p, state.ctm);
                 if let Some(pattern_name) = &state.fill_pattern {
                     if let Some(pattern) = resolve_pattern(pattern_name) {
                         draw_pattern(backend, &pattern, &p, &state.fill, state, g);
@@ -107,6 +108,7 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
+                let p = transform_raster_path(&p, state.ctm);
                 let paint = paint(&state.stroke, state.alpha_stroke);
                 let spec = stroke_spec(state);
                 selis_raster::render::stroke(backend, &p, &spec, &paint);
@@ -115,6 +117,7 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
+                let p = transform_raster_path(&p, state.ctm);
                 let fill_paint = paint(&state.fill, state.alpha_fill);
                 selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
                 let stroke_paint = paint(&state.stroke, state.alpha_stroke);
@@ -312,6 +315,23 @@ fn raster_path_from_commands(commands: &[PathCmd]) -> Option<RasterPath> {
     })
 }
 
+/// Transform a raster path from user space into device space with the CTM.
+fn transform_raster_path(path: &RasterPath, m: Matrix) -> RasterPath {
+    let commands = path
+        .commands
+        .iter()
+        .map(|c| match c {
+            selis_raster::PathCmd::Move(p) => selis_raster::PathCmd::Move(m.apply(*p)),
+            selis_raster::PathCmd::Line(p) => selis_raster::PathCmd::Line(m.apply(*p)),
+            selis_raster::PathCmd::Cubic(a, b, c) => {
+                selis_raster::PathCmd::Cubic(m.apply(*a), m.apply(*b), m.apply(*c))
+            }
+            selis_raster::PathCmd::Close => selis_raster::PathCmd::Close,
+        })
+        .collect();
+    RasterPath { commands }
+}
+
 /// The resolved state of any paint op (the caller handles group boundaries
 /// before calling this).
 fn op_state(op: &Op) -> &ResolvedState {    match op {
@@ -330,7 +350,8 @@ fn op_state(op: &Op) -> &ResolvedState {    match op {
 
 /// Draw a tiling pattern over a fill region (the path's device bounding box):
 /// plan the tile instances and draw each. Uncoloured patterns (type 2) are
-/// tinted by the current fill colour.
+/// tinted by the current fill colour. The path is already in device space
+/// (transformed by the CTM).
 fn draw_pattern(
     backend: &mut TinySkiaBackend,
     pattern: &selis_raster::pattern::TilingPattern,
@@ -339,17 +360,9 @@ fn draw_pattern(
     state: &ResolvedState,
     g: &mut BudgetGuard<'_>,
 ) {
-    let Some(user_rect) = path_bounds(path) else {
+    let Some(region) = path_bounds(path) else {
         return;
     };
-    let p0 = state.ctm.apply(Point::new(user_rect.x0, user_rect.y0));
-    let p1 = state.ctm.apply(Point::new(user_rect.x1, user_rect.y1));
-    let region = selis_geom::Rect::new(
-        p0.x.min(p1.x),
-        p0.y.min(p1.y),
-        p0.x.max(p1.x),
-        p0.y.max(p1.y),
-    );
     let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, state.ctm, region, g) else {
         return;
     };
