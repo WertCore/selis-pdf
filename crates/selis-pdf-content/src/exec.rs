@@ -183,6 +183,8 @@ fn execute_inner(
                     })
                     .collect();
                 gstate.fill_colour = colour_to_rgb(&comps, &gstate.fill_cs);
+                // A trailing name operand selects a pattern colour space.
+                gstate.fill_pattern = trailing_name(operands);
             }
             "SC" | "SCN" => {
                 let comps: Vec<f64> = operands
@@ -193,6 +195,7 @@ fn execute_inner(
                     })
                     .collect();
                 gstate.stroke_colour = colour_to_rgb(&comps, &gstate.stroke_cs);
+                gstate.stroke_pattern = trailing_name(operands);
             }
 
             // Path construction.
@@ -435,6 +438,8 @@ fn flush_path(
         blend: selis_color::BlendMode::from_name(&gs.blend_mode),
         clip: gs.clip.clone(),
         soft_mask: gs.soft_mask.clone(),
+        fill_pattern: gs.fill_pattern.clone(),
+        stroke_pattern: gs.stroke_pattern.clone(),
     };
     let op = match paint {
         PaintOp::Fill | PaintOp::FillEvenOdd => Op::Fill { path, state },
@@ -476,6 +481,15 @@ fn num(operands: &[Operand], i: usize) -> f64 {
     match operands.get(i) {
         Some(Operand::Num(v)) => *v,
         _ => 0.0,
+    }
+}
+
+/// The trailing name operand (`scn`/`SCN` selects a pattern by a trailing
+/// name), or `None`.
+fn trailing_name(operands: &[Operand]) -> Option<Bytes> {
+    match operands.iter().rev().next() {
+        Some(Operand::Name(n)) => Some(n.clone()),
+        _ => None,
     }
 }
 fn clamp_u8(v: f64) -> u8 {

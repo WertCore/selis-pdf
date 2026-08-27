@@ -44,6 +44,11 @@ pub struct ResolvedState {
     /// The soft-mask key (a stable reference to the `/SMask` dict), if one is
     /// active. The engine resolves it to a per-pixel mask at render time.
     pub soft_mask: Option<selis_bytes::Bytes>,
+    /// The fill pattern resource name (from `scn` with a trailing name), if
+    /// the fill colour space is a pattern.
+    pub fill_pattern: Option<selis_bytes::Bytes>,
+    /// The stroke pattern resource name.
+    pub stroke_pattern: Option<selis_bytes::Bytes>,
 }
 
 impl From<&GState> for ResolvedState {
@@ -60,6 +65,8 @@ impl From<&GState> for ResolvedState {
             blend: BlendMode::from_name(&g.blend_mode),
             clip: g.clip.clone(),
             soft_mask: g.soft_mask.clone(),
+            fill_pattern: g.fill_pattern.clone(),
+            stroke_pattern: g.stroke_pattern.clone(),
         }
     }
 }

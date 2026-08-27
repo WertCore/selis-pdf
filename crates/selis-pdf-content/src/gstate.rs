@@ -61,6 +61,11 @@ pub struct GState {
     pub fill_cs: selis_bytes::Bytes,
     /// The stroking colour space name (`CS`; default `DeviceRGB`).
     pub stroke_cs: selis_bytes::Bytes,
+    /// The fill pattern resource name (from `scn` with a trailing name), if
+    /// the current colour space is a pattern.
+    pub fill_pattern: Option<selis_bytes::Bytes>,
+    /// The stroke pattern resource name.
+    pub stroke_pattern: Option<selis_bytes::Bytes>,
     /// Text state: the font resource name.
     pub text_font: Option<selis_bytes::Bytes>,
     /// Text size.
@@ -105,6 +110,8 @@ impl Default for GState {
             stroke_colour: [0.0, 0.0, 0.0],
             fill_cs: selis_bytes::Bytes::copy_from_slice(b"DeviceRGB"),
             stroke_cs: selis_bytes::Bytes::copy_from_slice(b"DeviceRGB"),
+            fill_pattern: None,
+            stroke_pattern: None,
             text_font: None,
             text_size: 0.0,
             char_spacing: 0.0,
