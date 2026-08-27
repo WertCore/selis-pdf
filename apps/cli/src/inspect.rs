@@ -89,8 +89,7 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
                         .elements
                         .iter()
                         .map(|e| {
-                            e.ty
-                                .as_ref()
+                            e.ty.as_ref()
                                 .map(|b| String::from_utf8_lossy(b.as_slice()).to_string())
                                 .unwrap_or_default()
                         })
@@ -102,7 +101,9 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
                     });
                 }
             }
-            if let Ok(meta) = selis_pdf_doc::Metadata::resolve(&mut resolver, &catalog, &budget, &mut g) {
+            if let Ok(meta) =
+                selis_pdf_doc::Metadata::resolve(&mut resolver, &catalog, &budget, &mut g)
+            {
                 let mut fields = BTreeMap::new();
                 for (k, fv) in &meta.fields {
                     fields.insert(k.clone(), fv.value.clone());
@@ -120,7 +121,8 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
     }
     all.extend(lex.deviations().iter().copied());
     // Deduplicate by (name, offset).
-    let mut seen = std::collections::BTreeSet::new();    for d in all {
+    let mut seen = std::collections::BTreeSet::new();
+    for d in all {
         if seen.insert((d.name(), d.offset())) {
             out.deviations.push(super::deviation_json(&d));
         }

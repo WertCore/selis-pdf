@@ -31,25 +31,24 @@ pub fn render_display_list(
     backend: &mut TinySkiaBackend,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
-    resolve_inline_image: &dyn Fn(&[(selis_bytes::Bytes, selis_bytes::Bytes)], &[u8]) -> Option<(
-        u32,
-        u32,
-        selis_bytes::Bytes,
-    )>,
-    resolve_shading: &dyn Fn(&selis_bytes::Bytes, &ResolvedState) -> Option<(
-        u32,
-        u32,
-        selis_bytes::Bytes,
-        selis_geom::Rect,
-    )>,
+    resolve_inline_image: &dyn Fn(
+        &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+        &[u8],
+    ) -> Option<(u32, u32, selis_bytes::Bytes)>,
+    resolve_shading: &dyn Fn(
+        &selis_bytes::Bytes,
+        &ResolvedState,
+    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)>,
     resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
     g: &mut BudgetGuard<'_>,
 ) {
     // The blend mode, clip, and soft mask are per-op resolved state; emit
     // backend state only when they change.
     let mut current_blend = selis_color::BlendMode::Normal;
-    let mut current_clip: Vec<(selis_pdf_content::path::Path, selis_pdf_content::path::ClipRule)> =
-        Vec::new();
+    let mut current_clip: Vec<(
+        selis_pdf_content::path::Path,
+        selis_pdf_content::path::ClipRule,
+    )> = Vec::new();
     let mut current_smask: Option<selis_bytes::Bytes> = None;
     for op in &dl.ops {
         // Transparency group boundaries have no per-op paint state.
@@ -332,7 +331,8 @@ fn transform_raster_path(path: &RasterPath, m: Matrix) -> RasterPath {
 
 /// The resolved state of any paint op (the caller handles group boundaries
 /// before calling this).
-fn op_state(op: &Op) -> &ResolvedState {    match op {
+fn op_state(op: &Op) -> &ResolvedState {
+    match op {
         Op::Fill { state, .. }
         | Op::Stroke { state, .. }
         | Op::FillStroke { state, .. }
@@ -462,7 +462,11 @@ mod tests {
         Budget::unlimited().guard()
     }
 
-    fn const_width(_font: &selis_bytes::Bytes, _code: u16, _key: Option<&selis_bytes::Bytes>) -> f64 {
+    fn const_width(
+        _font: &selis_bytes::Bytes,
+        _code: u16,
+        _key: Option<&selis_bytes::Bytes>,
+    ) -> f64 {
         500.0
     }
 
@@ -470,11 +474,17 @@ mod tests {
         None
     }
 
-    fn no_do(_name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>) -> Option<selis_pdf_content::exec::DoTarget> {
+    fn no_do(
+        _name: &selis_bytes::Bytes,
+        _key: Option<&selis_bytes::Bytes>,
+    ) -> Option<selis_pdf_content::exec::DoTarget> {
         None
     }
 
-    fn no_ext_gstate(_name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>) -> Option<Vec<(selis_bytes::Bytes, selis_pdf_content::dispatch::Operand)>> {
+    fn no_ext_gstate(
+        _name: &selis_bytes::Bytes,
+        _key: Option<&selis_bytes::Bytes>,
+    ) -> Option<Vec<(selis_bytes::Bytes, selis_pdf_content::dispatch::Operand)>> {
         None
     }
 
@@ -505,16 +515,20 @@ mod tests {
     fn a_filled_rectangle_renders_pixels() {
         let mut g = guard();
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &no_ext_gstate,
-            &mut g,
-        )
-        .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         // The centre pixel should be opaque red.
         let idx = (50 * 100 + 50) * 4;
@@ -527,16 +541,20 @@ mod tests {
         let mut g = guard();
         // Fill the whole page blue first, then a red square in the centre.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0 0 1 rg f 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &no_ext_gstate,
-            &mut g,
-        )
-        .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         // Centre (50,50) is red; corner (5,5) is blue.
         let centre = (50 * 100 + 50) * 4;
@@ -563,12 +581,27 @@ mod tests {
         };
         // Scale the unit square to 0..100 so the image fills the canvas.
         let content = b"100 0 0 100 0 0 cm /Im1 Do";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &do_image, &no_ext_gstate, &mut g)
-            .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &do_image,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Image { .. }));
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         // Top-left (10,10) is red; bottom-right (90,90) is blue.
         let tl = (10 * 100 + 10) * 4;
@@ -600,7 +633,16 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
@@ -623,14 +665,28 @@ mod tests {
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 0.5 g f \
                         0 0 m 50 0 l 50 50 l 0 50 l h W \
                         0 0 m 100 0 l 100 100 l 0 100 l h 1 0 0 rg f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-            .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         // Inside the clip (25, 25): red (the red fill covers the clip area).
         let inside = (25 * 100 + 25) * 4;
-        assert_eq!(&data[inside..inside + 3], &[255, 0, 0], "inside clip should be red");
+        assert_eq!(
+            &data[inside..inside + 3],
+            &[255, 0, 0],
+            "inside clip should be red"
+        );
         // Outside the clip (75, 75): gray (0.5 → 127), not red.
         let outside = (75 * 100 + 75) * 4;
         assert_eq!(data[outside], 127, "outside clip should be gray");
@@ -659,7 +715,16 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
             .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
@@ -697,16 +762,19 @@ mod tests {
             }
         };
         let content = b"/GS1 gs 0 0 m 100 0 l 100 100 l 0 100 l h 0 g f";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &ext,
-            &mut g,
-        )
-        .expect("execute");
+        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
+            .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &resolve_smask, &no_inline_image, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &resolve_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         // The black fill is 50% alpha (mask 128), not fully opaque.
@@ -722,37 +790,38 @@ mod tests {
         let content = b"100 0 0 100 0 0 cm \
                         BI /W 2 /H 2 /BPC 8 /CS /RGB /L 12 ID \
                         \xff\x00\x00\x00\x00\xff\x00\x00\xff\x00\x00\xff EI";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &no_ext_gstate,
-            &mut g,
-        )
-        .expect("execute");
-let resolve_inline =
-            |dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
-             data: &[u8]|
-             -> Option<(u32, u32, selis_bytes::Bytes)> {
-                let parse = |key: &[u8]| -> Option<u32> {
-                    dict.iter()
-                        .find(|(k, _)| k.as_slice() == key)
-                        .and_then(|(_, v)| {
-                            std::str::from_utf8(v.as_slice()).ok()?.trim().parse().ok()
-                        })
-                };
-                let w = parse(b"W")?;
-                let h = parse(b"H")?;
-                // The raw data is RGB (3 bytes/pixel); pad to RGBA.
-                let mut rgba = Vec::with_capacity(data.len() / 3 * 4);
-                for chunk in data.chunks(3) {
-                    rgba.extend_from_slice(chunk);
-                    rgba.push(255);
-                }
-                Some((w, h, selis_bytes::Bytes::copy_from_slice(&rgba)))
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let resolve_inline = |dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+                              data: &[u8]|
+         -> Option<(u32, u32, selis_bytes::Bytes)> {
+            let parse = |key: &[u8]| -> Option<u32> {
+                dict.iter()
+                    .find(|(k, _)| k.as_slice() == key)
+                    .and_then(|(_, v)| std::str::from_utf8(v.as_slice()).ok()?.trim().parse().ok())
             };
+            let w = parse(b"W")?;
+            let h = parse(b"H")?;
+            // The raw data is RGB (3 bytes/pixel); pad to RGBA.
+            let mut rgba = Vec::with_capacity(data.len().saturating_mul(4).saturating_div(3));
+            for chunk in data.chunks(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            Some((w, h, selis_bytes::Bytes::copy_from_slice(&rgba)))
+        };
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
-        render_display_list(&dl, &mut backend, &no_font, &no_smask, &resolve_inline, &no_shading, &no_pattern, &mut g);
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &resolve_inline,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
         let data = backend.pixmap().data();
         let tl = (10 * 100 + 10) * 4;
         let br = (90 * 100 + 90) * 4;
@@ -766,14 +835,9 @@ let resolve_inline =
     fn pattern_fill_renders_tiles() {
         let mut g = guard();
         let content = b"/Pattern cs /Pat1 scn 0 0 m 100 0 l 100 100 l 0 100 l h f";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &no_ext_gstate,
-            &mut g,
-        )
-        .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
         let resolve_pattern = |name: &selis_bytes::Bytes| {
             if name.as_slice() == b"Pat1" {
                 Some(selis_raster::pattern::TilingPattern {
@@ -804,7 +868,11 @@ let resolve_inline =
         );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
-assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "pattern tile fills red");
+        assert_eq!(
+            &data[centre..centre + 3],
+            &[255, 0, 0],
+            "pattern tile fills red"
+        );
     }
 
     /// A shading (`/Name sh`) is resolved and rasterised by the engine, then
@@ -813,33 +881,25 @@ assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "pattern tile fills red");
     fn shading_renders() {
         let mut g = guard();
         let content = b"/GS1 sh";
-        let dl = selis_pdf_content::exec::execute(
-            content,
-            &const_width,
-            &no_do,
-            &no_ext_gstate,
-            &mut g,
-        )
-        .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
         assert!(matches!(dl.ops[0], Op::Shading { .. }));
-        let resolve_shading =
-            |name: &selis_bytes::Bytes,
-             _state: &ResolvedState|
-             -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
-                if name.as_slice() == b"GS1" {
-                    let rgba: Vec<u8> = (0..10_000u32)
-                        .flat_map(|_| [255u8, 0, 0, 255])
-                        .collect();
-                    Some((
-                        100,
-                        100,
-                        selis_bytes::Bytes::copy_from_slice(&rgba),
-                        selis_geom::Rect::new(0.0, 0.0, 100.0, 100.0),
-                    ))
-                } else {
-                    None
-                }
-            };
+        let resolve_shading = |name: &selis_bytes::Bytes,
+                               _state: &ResolvedState|
+         -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
+            if name.as_slice() == b"GS1" {
+                let rgba: Vec<u8> = (0..10_000u32).flat_map(|_| [255u8, 0, 0, 255]).collect();
+                Some((
+                    100,
+                    100,
+                    selis_bytes::Bytes::copy_from_slice(&rgba),
+                    selis_geom::Rect::new(0.0, 0.0, 100.0, 100.0),
+                ))
+            } else {
+                None
+            }
+        };
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,

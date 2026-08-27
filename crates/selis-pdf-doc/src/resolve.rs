@@ -128,14 +128,16 @@ fn decrypt_obj_inner(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool, depth: u1
     }
     match obj {
         Obj::Stream { dict, data } => {
-            let decrypted = selis_crypto::decrypt_data(key, r.num, r.gen, data.as_slice(), rev, aes);
+            let decrypted =
+                selis_crypto::decrypt_data(key, r.num, r.gen, data.as_slice(), rev, aes);
             Obj::Stream {
                 dict: decrypt_dict(dict, r, key, rev, aes, depth),
                 data: selis_bytes::Bytes::from(decrypted),
             }
         }
         Obj::String(bytes) => {
-            let decrypted = selis_crypto::decrypt_data(key, r.num, r.gen, bytes.as_slice(), rev, aes);
+            let decrypted =
+                selis_crypto::decrypt_data(key, r.num, r.gen, bytes.as_slice(), rev, aes);
             Obj::String(selis_bytes::Bytes::from(decrypted))
         }
         Obj::Dict(pairs) => Obj::Dict(decrypt_dict(pairs, r, key, rev, aes, depth)),
@@ -160,7 +162,12 @@ fn decrypt_dict(
 ) -> Vec<(selis_bytes::Bytes, Obj)> {
     pairs
         .into_iter()
-        .map(|(k, v)| (k, decrypt_obj_inner(v, r, key, rev, aes, depth.saturating_add(1))))
+        .map(|(k, v)| {
+            (
+                k,
+                decrypt_obj_inner(v, r, key, rev, aes, depth.saturating_add(1)),
+            )
+        })
         .collect()
 }
 
@@ -175,7 +182,13 @@ pub(crate) fn resolve_compressed(
 ) -> Result<Obj> {
     let view = doc
         .at_revision(doc.len().saturating_sub(1))
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "objstm", detail = "no revision"))?;
+        .ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "objstm",
+                detail = "no revision"
+            )
+        })?;
     let offset = match view.xref.get(&objstm) {
         Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
         _ => {
@@ -198,7 +211,11 @@ pub(crate) fn resolve_compressed(
         }
     };
     // Unfilter the object stream data.
-    let payload = if let Some(Obj::Name(n)) = dict.iter().find(|(k, _)| k.as_slice() == b"Filter").map(|(_, v)| v) {
+    let payload = if let Some(Obj::Name(n)) = dict
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Filter")
+        .map(|(_, v)| v)
+    {
         let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
         selis_pdf_filter::decode(filt, payload, u64::MAX, g).unwrap_or_else(|_| payload.to_vec())
     } else {
@@ -232,9 +249,13 @@ fn parse_value_at(
 ) -> Result<Obj> {
     let start = usize::try_from(range.start).unwrap_or(0);
     let end = usize::try_from(range.end).unwrap_or(data.len());
-    let slice = data
-        .get(start..end)
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "objstm-value", at = range.start))?;
+    let slice = data.get(start..end).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "objstm-value",
+            at = range.start
+        )
+    })?;
     let mut lexer = selis_pdf_cos::Lexer::new(slice);
     // Lex one complete value, tracking `[`/`<<` nesting depth: a composite
     // value (`[1 2 3]`, `<< /A [1] >>`) is only complete once every opener
@@ -352,8 +373,7 @@ mod tests {
         let budget = Budget::unlimited();
         let mut g = guard();
         let data = b"<< /A [1 << /B true >> 2] /C null >>";
-        let obj =
-            parse_value_at(data, 0..data.len() as u64, &budget, &mut g).expect("dict");
+        let obj = parse_value_at(data, 0..data.len() as u64, &budget, &mut g).expect("dict");
         let Obj::Dict(pairs) = obj else {
             panic!("expected dict");
         };

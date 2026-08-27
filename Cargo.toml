@@ -85,6 +85,7 @@ selis-shape        = { path = "crates/selis-shape", version = "0.1.0" }
 selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0" }
 selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
 selis-job        = { path = "crates/selis-job", version = "0.1.0" }
+selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # Lints — 03-CONVENTIONS.md §1. The hostile-input set.

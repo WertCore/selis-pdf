@@ -294,7 +294,13 @@ fn walk_pages(
         let media_box = inherited.media_box;
         let crop_box = inherited.crop_box;
         let rotate = inherited.rotate;
-        let resources = inherited.resources.clone();
+        // `/Resources` may be an indirect reference (writers commonly emit
+        // `/Resources N 0 R`); consumers need the dictionary, so resolve it
+        // here rather than threading a bare reference to every call site.
+        let resources = match inherited.resources.as_ref() {
+            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, g).ok(),
+            other => other.cloned(),
+        };
         let contents = dict_get(&node, b"Contents").and_then(contents_refs);
         out.push(Page {
             num: node_ref.num,
@@ -425,6 +431,58 @@ mod tests {
         );
         assert_eq!(document.pages[0].num, 3);
         assert_eq!(document.pages[1].num, 4);
+    }
+
+    /// An indirect `/Resources` reference on a tree node must resolve to the
+    /// dictionary by the time the page is materialised — consumers (fonts,
+    /// XObjects, …) expect a dict, not a bare reference.
+    #[test]
+    fn indirect_resources_resolve_to_the_dictionary() {
+        let mut out = Vec::new();
+        let mut entries = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let off = out.len() as u64;
+        out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        entries.push((1, off));
+        // Object 2: page tree root whose /Resources is an indirect reference.
+        let off = out.len() as u64;
+        out.extend_from_slice(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources 5 0 R >>\nendobj\n",
+        );
+        entries.push((2, off));
+        let off = out.len() as u64;
+        out.extend_from_slice(b"3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n");
+        entries.push((3, off));
+        let off = out.len() as u64;
+        out.extend_from_slice(b"5 0 obj\n<< /XObject << /Im7 9 0 R >> >>\nendobj\n");
+        entries.push((5, off));
+
+        let mut g = guard();
+        let budget = Budget::unlimited();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, off) in &entries {
+            xref.insert(
+                *num,
+                XrefEntry::InUse {
+                    offset: *off,
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = Doc::from_single_revision(xref, trailer);
+        let document = Document::resolve(&doc, &out, &budget, &mut g).expect("resolve");
+        assert_eq!(document.len(), 1);
+        let resources = document.pages[0].resources.as_ref().expect("resources");
+        assert!(
+            matches!(resources, Obj::Dict(_)),
+            "resources must be a dict, got {resources:?}"
+        );
+        let xobjects = dict_get(resources, b"XObject").expect("XObject dict");
+        assert!(dict_get(xobjects, b"Im7").is_some());
     }
 
     /// A cyclic page tree must terminate with OBJ_CYCLE, not hang.

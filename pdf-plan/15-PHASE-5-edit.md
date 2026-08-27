@@ -250,10 +250,15 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.CONV.02 — Images → PDF** · deps: CONV.01 · owner: AI
 - [ ] **SL-5.CONV.03 — PDF → text / Markdown / structured JSON** · deps: SL-3.TEXT.07 · owner: AI
 - [ ] **SL-5.CONV.04 — PDF → HTML with layout fidelity** · deps: SL-2.CONT.07 · owner: AI+
-- [ ] **SL-5.CONV.05 — HTML → PDF** · owner: AI+
+- [x] **SL-5.CONV.05 — HTML → PDF** · owner: AI+
   - **Note:** Decide deliberately: a real HTML engine is out of scope, so either restrict to a
     documented subset or drive a headless browser server-side as part of the Server SKU. Do not
     ship a half-working general HTML renderer.
+  - **Note:** Shipped early (Phase 1A timeframe) as `selis topdf` via `selis-pdf-convert`: the
+    documented-subset route — Markdown (headings, paragraphs, bold/italic/code, lists,
+    blockquotes, fenced code, hr) and an HTML subset (h1–h6, p, b/i/em/strong, code/pre, ul/ol/li)
+    laid out on Letter/A4 with standard-14 fonts via the WRITE.01 writer. A general HTML engine
+    remains deliberately out of scope; the headless-browser route stays with the Server SKU.
 - [ ] **SL-5.CONV.06 — Optimise / compress** · deps: SL-5.EDIT.05 · owner: AI+
   - **Do:** Downsample images, recompress streams, subset fonts, dedupe objects, GC unreferenced
     objects, linearise. With a preview of the quality/size trade-off.

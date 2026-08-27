@@ -298,7 +298,14 @@ fn op_diff(a: &Op, b: &Op) -> Option<String> {
                 None
             }
         }
-        (Op::InlineImage { dict: x, data: xd, .. }, Op::InlineImage { dict: y, data: yd, .. }) => {
+        (
+            Op::InlineImage {
+                dict: x, data: xd, ..
+            },
+            Op::InlineImage {
+                dict: y, data: yd, ..
+            },
+        ) => {
             if x != y || xd != yd {
                 Some("inline image changed".to_string())
             } else {
@@ -312,7 +319,16 @@ fn op_diff(a: &Op, b: &Op) -> Option<String> {
                 None
             }
         }
-        (Op::PushLayer { blend: x, alpha: xa }, Op::PushLayer { blend: y, alpha: ya }) => {
+        (
+            Op::PushLayer {
+                blend: x,
+                alpha: xa,
+            },
+            Op::PushLayer {
+                blend: y,
+                alpha: ya,
+            },
+        ) => {
             if x != y || xa != ya {
                 Some("group blend or alpha changed".to_string())
             } else {

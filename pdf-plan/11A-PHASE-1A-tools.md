@@ -115,12 +115,16 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Note:** Shipped as `selis split in.pdf --first N --last M -o out.pdf` — page range split
     with per-page resource copying. every-N / by-size / by-bookmark modes and resource-pruning
     measurement are refinements.
-- [ ] **SL-1A.TOOL.03 — Page operations** · deps: WRITE.02 · owner: AI+
+- [x] **SL-1A.TOOL.03 — Page operations** · deps: WRITE.02 · owner: AI+
   - **Do:** Rotate, delete, reorder, duplicate, and insert blank pages — as **incremental updates**
     where the input is a single document, so a 200 MB file rotates one page in milliseconds and
     keeps its signatures valid.
   - **DoD:** Rotating one page in a 200 MB document appends < 2 KB and meets the
     `03-CONVENTIONS.md §12` incremental-save budget.
+  - **Note:** Shipped as `selis rotate`/`delete`/`reorder` on the WRITE.01 full-rewrite path:
+    rotate adds to any existing `/Rotate` (mod 360) with page selection, delete refuses to remove
+    every page, reorder validates a full permutation. Duplicate/insert-blank and the incremental
+    (WRITE.02) path with its < 2 KB append budget are refinements pending the incremental writer.
 - [ ] **SL-1A.TOOL.04 — Unlock: remove password** · deps: WRITE.01, `SL-1.ENC.02` · owner: HUMAN
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
@@ -164,9 +168,14 @@ operation is available identically in the CLI, the web app, and the extension.
   - **DoD:** A size/quality preview before the user commits; a guarantee that "lossless" mode
     changes no rendered pixel — verified structurally now, verified by render at G2.
   - **Note:** Font subsetting and aggressive image work land at G2/G3. Ship the lossless tier first.
-- [ ] **SL-1A.TOOL.08 — Images → PDF** · deps: WRITE.01 · owner: AI
+- [x] **SL-1A.TOOL.08 — Images → PDF** · deps: WRITE.01 · owner: AI
   - **Do:** JPEG, PNG, WebP, HEIC, TIFF (multi-page) → PDF with page-size fitting, orientation, and
     margin options. Pure generation — no renderer needed. High-volume, low-difficulty.
+  - **Note:** Shipped as `selis img2pdf a.png b.jpg -o out.pdf` for JPEG + PNG (`selis-image`
+    decode → `embed_image_rgba` via the WRITE.01 writer), with `--page-size fit|letter|a4` and
+    `--margin`. WebP/HEIC/TIFF need new codec dependencies — held under the "no new dependency
+    without proposal" rule (00-INDEX §agent template); file them with a licence justification to
+    complete the format list.
 - [x] **SL-1A.TOOL.09 — Metadata editor** · deps: WRITE.02 · owner: AI
   - **Note:** Shipped as `selis set-metadata --field K=V -o out.pdf` — rewrites the document with
     the Info dict set and the catalog `/Info` wired. XMP editing is a refinement.

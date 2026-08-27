@@ -56,7 +56,10 @@ pub fn parse_encrypt(
         return Ok(None);
     };
     let get = |key: &[u8]| -> Option<&Obj> {
-        pairs.iter().find(|(k, _)| k.as_slice() == key).map(|(_, v)| v)
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
     };
     let int = |key: &[u8]| -> Option<i64> {
         match get(key) {
@@ -73,7 +76,9 @@ pub fn parse_encrypt(
     }
     let r = int(b"R").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
     let v = int(b"V").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
-    let length = int(b"Length").and_then(|v| usize::try_from(v).ok()).unwrap_or(40);
+    let length = int(b"Length")
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(40);
     let o = match get(b"O") {
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => return Ok(None),
@@ -134,6 +139,15 @@ pub fn document_id(trailer: &[(selis_bytes::Bytes, Obj)]) -> Vec<u8> {
 }
 
 /// Authenticate the user password and return the encryption key.
+///
+/// # Budget
+///
+/// No budget: fixed-cost hash work over caller-supplied values.
+///
+/// # Malformed Input
+///
+/// A wrong password or damaged `/O`/`/U` values yield `None`, never an error
+/// and never a partial key.
 pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<Vec<u8>> {
     selis_crypto::authenticate_user(
         &info.o,
@@ -148,6 +162,16 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
 }
 
 /// Decrypt a stream/string value for a specific object.
+///
+/// # Budget
+///
+/// No budget: the crypto layer walks the caller-supplied buffer once.
+///
+/// # Malformed Input
+///
+/// Truncated ciphertext yields the partial plaintext the block mode allows;
+/// callers re-validate the result when decoding it (stream filters, string
+/// parsing) rather than trusting length.
 pub fn decrypt_data(info: &EncryptInfo, key: &[u8], objnum: u32, gen: u16, data: &[u8]) -> Vec<u8> {
     selis_crypto::decrypt_data(key, objnum, gen, data, info.r, info.aes)
 }
@@ -161,5 +185,9 @@ fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Re
             return Ok(*offset);
         }
     }
-    Err(err!(Code::ObjUnexpected, during = "encrypt", object = r.num))
+    Err(err!(
+        Code::ObjUnexpected,
+        during = "encrypt",
+        object = r.num
+    ))
 }

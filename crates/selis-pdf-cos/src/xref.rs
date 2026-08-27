@@ -282,7 +282,6 @@ fn parse_classic_revision(
     Vec<(selis_bytes::Bytes, Obj)>,
     Option<u64>,
 )> {
-
     let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
 
     // Subsection entries: `N COUNT` then COUNT 20-byte lines.
@@ -359,8 +358,7 @@ fn parse_xref_stream_revision(
         .map(|(_, v)| v)
     {
         let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
-        selis_pdf_filter::decode(filt, data, budget.bytes, g)
-            .unwrap_or_else(|_| data.to_vec())
+        selis_pdf_filter::decode(filt, data, budget.bytes, g).unwrap_or_else(|_| data.to_vec())
     } else {
         data.to_vec()
     };

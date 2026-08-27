@@ -42,16 +42,11 @@ pub fn fallback_bytes(font_name: &str) -> Option<&'static [u8]> {
 /// `Times-Roman`).
 #[must_use]
 fn base_family(name: &str) -> Option<&'static str> {
-    let family = if name == "Courier"
-        || name.starts_with("Courier-")
-    {
+    let family = if name == "Courier" || name.starts_with("Courier-") {
         "Courier"
     } else if name == "Helvetica" || name.starts_with("Helvetica-") {
         "Helvetica"
-    } else if name == "Times-Roman"
-        || name.starts_with("Times-")
-        || name == "Times"
-    {
+    } else if name == "Times-Roman" || name.starts_with("Times-") || name == "Times" {
         "Times-Roman"
     } else {
         return None;
@@ -205,9 +200,15 @@ mod tests {
         let hints = style_hints("Times-BoldItalic");
         assert_eq!(hints.italic, true);
         assert_eq!(hints.weight, 700);
-        assert_eq!(substitute("Times-Roman", &hints), Some("LiberationSerif-BoldItalic"));
+        assert_eq!(
+            substitute("Times-Roman", &hints),
+            Some("LiberationSerif-BoldItalic")
+        );
         let hints = style_hints("Helvetica");
-        assert_eq!(substitute("Helvetica", &hints), Some("LiberationSans-Regular"));
+        assert_eq!(
+            substitute("Helvetica", &hints),
+            Some("LiberationSans-Regular")
+        );
     }
 
     #[test]

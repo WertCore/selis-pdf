@@ -30,6 +30,8 @@ selis-pdf-engine = { workspace = true }
 selis-pdf-text = { workspace = true }
 selis-policy = { workspace = true }
 selis-job = { workspace = true }
+selis-image = { workspace = true }
+selis-pdf-convert = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

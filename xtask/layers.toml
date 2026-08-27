@@ -41,6 +41,7 @@ selis-pdf-sign     = 2 # planned — Phase 5
 selis-pdf-engine = 3
 selis-policy     = 3
 selis-job        = 3
+selis-pdf-convert = 3
 
 # L4 — Bindings
 selis-pdf-wasm = 4

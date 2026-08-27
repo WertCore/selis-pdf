@@ -234,7 +234,13 @@ impl Backend for TinySkiaBackend {
         let rule = to_ts_fill_rule(rule);
         let clip = self.clip_mask.take();
         self.with_soft_mask(|mut layer| {
-            layer.fill_path(&ts_path, &ts_paint, rule, Transform::identity(), clip.as_ref());
+            layer.fill_path(
+                &ts_path,
+                &ts_paint,
+                rule,
+                Transform::identity(),
+                clip.as_ref(),
+            );
         });
         self.clip_mask = clip;
     }
@@ -248,7 +254,13 @@ impl Backend for TinySkiaBackend {
         let ts_stroke = to_ts_stroke(stroke);
         let clip = self.clip_mask.take();
         self.with_soft_mask(|mut layer| {
-            layer.stroke_path(&ts_path, &ts_paint, &ts_stroke, Transform::identity(), clip.as_ref());
+            layer.stroke_path(
+                &ts_path,
+                &ts_paint,
+                &ts_stroke,
+                Transform::identity(),
+                clip.as_ref(),
+            );
         });
         self.clip_mask = clip;
     }

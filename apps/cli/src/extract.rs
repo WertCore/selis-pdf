@@ -11,8 +11,8 @@ use selis_pdf_engine::Session;
 use selis_pdf_text::TextLine;
 use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
 
-use crate::{read_file, CliError, CliResult};
 use crate::render::write_ppm;
+use crate::{read_file, CliError, CliResult};
 
 /// Extract a page's text or images.
 ///
@@ -124,9 +124,11 @@ pub(crate) fn page_lines(
     let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
         .into_iter()
         .map(|line| {
-            let mcid = line.words.iter().flat_map(|w| w.runs.iter()).find_map(|r| {
-                r.glyphs.first().and_then(|g| g.mcid)
-            });
+            let mcid = line
+                .words
+                .iter()
+                .flat_map(|w| w.runs.iter())
+                .find_map(|r| r.glyphs.first().and_then(|g| g.mcid));
             selis_pdf_text::LineWithMcid { line, mcid }
         })
         .collect();
@@ -147,11 +149,13 @@ fn extract_embedded(
         .attachments(budget, g)
         .map_err(|e| CliError(format!("cannot read embedded files: {e}")))?;
     if let Some(dir) = output {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CliError(format!("cannot create {dir}: {e}")))?;
+        std::fs::create_dir_all(dir).map_err(|e| CliError(format!("cannot create {dir}: {e}")))?;
         let mut written = 0usize;
         for a in &attachments {
-            let raw = a.name.as_ref().map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
+            let raw = a
+                .name
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
             let base = sanitise_filename(raw.as_deref().unwrap_or(&a.key));
             let file = format!("{dir}/{base}");
             let data = session
@@ -175,7 +179,10 @@ fn extract_embedded(
         if !out.is_empty() {
             out.push('\n');
         }
-        let name = a.name.as_ref().map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
+        let name = a
+            .name
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
         let size = a.size.unwrap_or(-1);
         out.push_str(&format!(
             r#"{{"name":{},"size":{},"key":{}}}"#,
@@ -220,7 +227,8 @@ fn json_str(s: &str) -> String {
 
 /// Extract every image XObject used on the page as a PPM file, printing a
 /// newline-delimited JSON manifest of `{"index", "width", "height", "file"}`.
-fn extract_images(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> CliResult<()> {    let images = image_manifest(dl, page);
+fn extract_images(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> CliResult<()> {
+    let images = image_manifest(dl, page);
     let mut manifest = String::new();
     for (index, entry) in images.iter().enumerate() {
         write_ppm(&entry.file, &entry.rgba8, entry.width, entry.height)?;
@@ -257,7 +265,10 @@ impl ExtractedImage {
 }
 
 /// Collect the image XObjects used on a page, in content order.
-fn image_manifest(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> Vec<ExtractedImage> {
+fn image_manifest(
+    dl: &selis_pdf_content::display_list::DisplayList,
+    page: usize,
+) -> Vec<ExtractedImage> {
     let mut out = Vec::new();
     for (index, op) in dl.ops.iter().enumerate() {
         if let Op::Image {
@@ -310,7 +321,10 @@ mod tests {
         assert_eq!(imgs[0].width, 1);
         assert_eq!(imgs[1].file, "page-3-1.ppm");
         assert_eq!(imgs[1].height, 2);
-        assert_eq!(imgs[0].json(0), r#"{"index":0,"width":1,"height":1,"file":"page-3-0.ppm"}"#);
+        assert_eq!(
+            imgs[0].json(0),
+            r#"{"index":0,"width":1,"height":1,"file":"page-3-0.ppm"}"#
+        );
     }
 
     #[test]

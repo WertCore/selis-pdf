@@ -55,12 +55,30 @@ impl DocumentBuilder {
     }
 
     /// Set an `/Info` field (e.g. `Title`, `Author`).
+    ///
+    /// # Budget
+    ///
+    /// No charge: the value is buffered and charged by
+    /// [`write`](DocumentBuilder::write).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: `key` and `value` are caller-provided metadata, written verbatim.
     pub fn set_info(&mut self, key: &[u8], value: &str) {
         self.info
             .push((key.to_vec(), Obj::String(bytes(value.as_bytes()))));
     }
 
     /// Add a page with a content stream. Returns the page's object reference.
+    ///
+    /// # Budget
+    ///
+    /// No charge: the content bytes are buffered and charged by
+    /// [`write`](DocumentBuilder::write).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: `content` is a caller-generated content stream, embedded as-is.
     pub fn add_page(&mut self, width: f64, height: f64, content: &[u8]) -> Ref {
         let content_num = self.allocate();
         self.objects.push((
@@ -82,16 +100,19 @@ impl DocumentBuilder {
                 (
                     b"MediaBox".to_vec(),
                     Obj::Array(vec![
-                        Obj::Real { scaled: 0, scale: 0 },
-                        Obj::Real { scaled: 0, scale: 0 },
+                        Obj::Real {
+                            scaled: 0,
+                            scale: 0,
+                        },
+                        Obj::Real {
+                            scaled: 0,
+                            scale: 0,
+                        },
                         real(width),
                         real(height),
                     ]),
                 ),
-                (
-                    b"Contents".to_vec(),
-                    Obj::Ref(Ref::new(content_num, 0)),
-                ),
+                (b"Contents".to_vec(), Obj::Ref(Ref::new(content_num, 0))),
                 (b"Resources".to_vec(), Obj::Dict(Vec::new())),
             ]),
         ));
@@ -125,6 +146,20 @@ impl DocumentBuilder {
         content_refs: &[Ref],
         resources: Option<Ref>,
     ) -> Ref {
+        self.add_page_with_extra(width, height, content_refs, resources, Vec::new())
+    }
+
+    /// Add a page referencing existing content-stream objects, with extra
+    /// page-dictionary entries appended after the standard keys (used by the
+    /// page operations to carry `/Rotate`).
+    pub fn add_page_with_extra(
+        &mut self,
+        width: f64,
+        height: f64,
+        content_refs: &[Ref],
+        resources: Option<Ref>,
+        extra: Vec<(Vec<u8>, Obj)>,
+    ) -> Ref {
         let contents = if content_refs.len() == 1 {
             match content_refs.first() {
                 Some(r) => Obj::Ref(*r),
@@ -139,8 +174,14 @@ impl DocumentBuilder {
             (
                 b"MediaBox".to_vec(),
                 Obj::Array(vec![
-                    Obj::Real { scaled: 0, scale: 0 },
-                    Obj::Real { scaled: 0, scale: 0 },
+                    Obj::Real {
+                        scaled: 0,
+                        scale: 0,
+                    },
+                    Obj::Real {
+                        scaled: 0,
+                        scale: 0,
+                    },
                     real(width),
                     real(height),
                 ]),
@@ -150,6 +191,7 @@ impl DocumentBuilder {
         if let Some(r) = resources {
             pairs.push((b"Resources".to_vec(), Obj::Ref(r)));
         }
+        pairs.extend(extra);
         let page_num = self.allocate();
         self.objects.push((page_num, dict(&pairs)));
         let page_ref = Ref::new(page_num, 0);
@@ -172,22 +214,27 @@ impl DocumentBuilder {
         // object count.
         let mut out = Vec::new();
         out.extend_from_slice(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
-        g.charge(selis_sandbox::Resource::Bytes, u64::try_from(out.len()).unwrap_or(u64::MAX))?;
+        g.charge(
+            selis_sandbox::Resource::Bytes,
+            u64::try_from(out.len()).unwrap_or(u64::MAX),
+        )?;
 
         // Info dictionary (if set) is appended before the xref table and the
         // catalog references it.
         if !self.info.is_empty() {
             let info_num = self.allocate();
-            let info = Obj::Dict(self.info.iter().map(|(k, v)| (bytes(k), v.clone())).collect());
+            let info = Obj::Dict(
+                self.info
+                    .iter()
+                    .map(|(k, v)| (bytes(k), v.clone()))
+                    .collect(),
+            );
             self.objects.push((info_num, info));
             // Point the catalog's /Info at it.
             for (num, obj) in &mut self.objects {
                 if *num == 1 {
                     if let Obj::Dict(pairs) = obj {
-                        pairs.push((
-                            bytes(b"Info"),
-                            Obj::Ref(Ref::new(info_num, 0)),
-                        ));
+                        pairs.push((bytes(b"Info"), Obj::Ref(Ref::new(info_num, 0))));
                     }
                 }
             }
@@ -224,7 +271,10 @@ impl DocumentBuilder {
         }
         out.extend_from_slice(b"trailer\n");
         let trailer = dict(&[
-            (b"Size".to_vec(), Obj::Int(i64::try_from(size).unwrap_or(i64::MAX))),
+            (
+                b"Size".to_vec(),
+                Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+            ),
             (b"Root".to_vec(), Obj::Ref(Ref::new(1, 0))),
         ]);
         let mut tw = Writer::new(budget);
@@ -310,16 +360,44 @@ impl ContentBuilder {
         self
     }
 
-    /// Move the text origin (user space).
+    /// Move the text origin (user space), relative to the current line start
+    /// (PDF `Td`). Repeated calls accumulate; for absolute positioning use
+    /// [`set_text_matrix`](Self::set_text_matrix).
     pub fn text_at(&mut self, x: f64, y: f64) -> &mut Self {
         self.push_fmt(format!("{} {} Td\n", trim(x), trim(y)));
         self
     }
 
+    /// Set the text matrix to an absolute position (PDF `Tm` with an identity
+    /// rotation/scale). Each call places the text origin at exactly `(x, y)`
+    /// in user space, independent of any earlier text positioning.
+    pub fn set_text_matrix(&mut self, x: f64, y: f64) -> &mut Self {
+        self.push_fmt(format!("1 0 0 1 {} {} Tm\n", trim(x), trim(y)));
+        self
+    }
+
     /// Show a text string (parentheses-escaped).
     pub fn show_text(&mut self, text: &str) -> &mut Self {
+        self.show_raw(text.as_bytes())
+    }
+
+    /// Show raw bytes as a parentheses-escaped PDF string literal.
+    ///
+    /// Used for pre-encoded text (e.g. WinAnsiEncoding bytes produced by the
+    /// conversion layout engine), where the bytes are not necessarily valid
+    /// UTF-8.
+    ///
+    /// # Budget
+    ///
+    /// No charge: the bytes are appended to the content stream and charged by
+    /// [`write`](DocumentBuilder::write).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: the bytes are escaped verbatim, never parsed.
+    pub fn show_raw(&mut self, text: &[u8]) -> &mut Self {
         self.push(b"(");
-        for b in text.bytes() {
+        for &b in text {
             match b {
                 b'(' => self.push(b"\\("),
                 b')' => self.push(b"\\)"),
@@ -361,7 +439,11 @@ pub fn embed_image_rgba(
     rgba8: &[u8],
 ) -> Ref {
     // Convert RGBA → RGB (PDF DeviceRGB).
-    let mut rgb = Vec::with_capacity((width as usize).saturating_mul(height as usize).saturating_mul(3));
+    let mut rgb = Vec::with_capacity(
+        (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(3),
+    );
     for px in rgba8.chunks(4) {
         rgb.extend_from_slice(px.get(..3).unwrap_or(&[]));
     }

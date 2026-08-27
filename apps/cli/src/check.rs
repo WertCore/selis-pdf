@@ -32,9 +32,9 @@ pub(crate) fn run(path: &str, profile: &str) -> CliResult<()> {
         .conformance(profile, &budget, &mut g)
         .map_err(|e| CliError(format!("conformance: {e}")))?;
     for (i, rule) in selis_pdf_doc::registry().iter().enumerate() {
-        let outcome = results.get(i).ok_or_else(|| {
-            CliError(format!("conformance: no result for rule {}", rule.id))
-        })?;
+        let outcome = results
+            .get(i)
+            .ok_or_else(|| CliError(format!("conformance: no result for rule {}", rule.id)))?;
         let status = match outcome {
             selis_pdf_doc::RuleResult::Pass => "pass".to_string(),
             selis_pdf_doc::RuleResult::Fail { detail } => {

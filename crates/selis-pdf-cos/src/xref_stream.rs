@@ -433,10 +433,7 @@ mod tests {
         xs.apply(&mut index);
         assert_eq!(
             index.get(&5),
-            Some(&XrefEntry::InUse {
-                offset: 50,
-                gen: 0
-            })
+            Some(&XrefEntry::InUse { offset: 50, gen: 0 })
         );
         assert_eq!(
             index.get(&8),

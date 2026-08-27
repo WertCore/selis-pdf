@@ -4,6 +4,17 @@
 //! `selis inspect --json <file>` dumps revisions, xref entries, and
 //! deviations. Everything else comes with the phases that own it.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic
+    )
+)]
+
 use std::collections::BTreeMap;
 
 use clap::{Parser, Subcommand};
@@ -12,10 +23,12 @@ use selis_error::{Code, Result};
 mod check;
 mod convert;
 mod extract;
+mod img2pdf;
 mod inspect;
 mod render;
 mod search;
 mod tools;
+mod topdf;
 
 #[derive(Parser)]
 #[command(
@@ -142,6 +155,75 @@ enum Command {
         #[arg(short, long)]
         output: String,
     },
+    /// Rotate pages of a PDF (adds to any existing /Rotate).
+    Rotate {
+        /// The input PDF.
+        path: String,
+        /// The rotation angle: 90, 180 or 270 (clockwise degrees).
+        #[arg(short, long)]
+        angle: i64,
+        /// The pages to rotate (`0,2,5-7`; 0-based); default: all pages.
+        #[arg(long)]
+        pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Delete pages from a PDF.
+    Delete {
+        /// The input PDF.
+        path: String,
+        /// The pages to delete (`0,2,5-7`; 0-based).
+        #[arg(long, required = true)]
+        pages: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Reorder the pages of a PDF.
+    Reorder {
+        /// The input PDF.
+        path: String,
+        /// The new page order, every page exactly once (`2,0,1` or `3-5,0`).
+        #[arg(long, required = true)]
+        order: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Convert images (JPEG/PNG) to a PDF, one page per image.
+    #[command(name = "img2pdf")]
+    Img2Pdf {
+        /// The input images.
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The page size: fit (page = image + margin), letter or a4.
+        #[arg(long, default_value = "fit")]
+        page_size: String,
+        /// The page margin in points (default 36).
+        #[arg(long, default_value_t = 36.0)]
+        margin: f64,
+    },
+    /// Convert a Markdown or HTML file to PDF (documented subset).
+    Topdf {
+        /// The input file (.md/.markdown or .html/.htm).
+        input: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The input format: auto, md or html.
+        #[arg(long, default_value = "auto")]
+        format: String,
+        /// The page size: letter or a4.
+        #[arg(long, default_value = "letter")]
+        page_size: String,
+        /// The document title recorded in the /Info dictionary.
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 fn main() {
@@ -149,20 +231,42 @@ fn main() {
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render { path, page, output } => render::run(&path, page, &output),
-        Command::Extract { path, page, last, format, output } => extract::run(&path, page, last, &format, output.as_deref()),
-        Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
+        Command::Extract {
+            path,
+            page,
+            last,
+            format,
+            output,
+        } => extract::run(&path, page, last, &format, output.as_deref()),
+        Command::Convert {
+            path,
+            output,
+            first,
+            last,
+        } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
         Command::Check { path, profile } => check::run(&path, &profile),
         Command::Merge { inputs, output } => tools::merge(&inputs, &output),
-        Command::Split { path, first, last, output } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
-        Command::SetMetadata { path, fields, output } => {
-            let parsed: Vec<(&str, &str)> = fields
-                .iter()
-                .filter_map(|f| f.split_once('='))
-                .collect();
+        Command::Split {
+            path,
+            first,
+            last,
+            output,
+        } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
+        Command::SetMetadata {
+            path,
+            fields,
+            output,
+        } => {
+            let parsed: Vec<(&str, &str)> =
+                fields.iter().filter_map(|f| f.split_once('=')).collect();
             tools::set_metadata(&path, &parsed, &output)
         }
-        Command::Redact { path, rects, output } => {
+        Command::Redact {
+            path,
+            rects,
+            output,
+        } => {
             let parsed: Vec<(f64, f64, f64, f64)> = rects
                 .iter()
                 .filter_map(|r| {
@@ -181,6 +285,38 @@ fn main() {
                 .collect();
             tools::redact(&path, &parsed, &output)
         }
+        Command::Rotate {
+            path,
+            angle,
+            pages,
+            output,
+        } => tools::rotate(&path, angle, pages.as_deref(), &output),
+        Command::Delete {
+            path,
+            pages,
+            output,
+        } => tools::delete(&path, &pages, &output),
+        Command::Reorder {
+            path,
+            order,
+            output,
+        } => tools::reorder(&path, &order, &output),
+        Command::Img2Pdf {
+            inputs,
+            output,
+            page_size,
+            margin,
+        } => match img2pdf::PageFit::parse(&page_size) {
+            Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
+            Err(e) => Err(e),
+        },
+        Command::Topdf {
+            input,
+            output,
+            format,
+            page_size,
+            title,
+        } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
     };
     match result {
         Ok(()) => {}

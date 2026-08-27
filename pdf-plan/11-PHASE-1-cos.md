@@ -116,6 +116,10 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **DoD:** Round-trip property test; corpus `filter-flate`; a truncated-stream test.
   - **Risk:** "Truncated Flate yields what it decoded so far" is what every other reader does and
     what users expect. Diverging here means files that "only fail in Selis".
+  - **Note (found via PNG smoke test):** a zlib header is valid for any CMF with the deflate
+    method, window ≤ 32 KiB, no dictionary, and a passing mod-31 checksum — not only the common
+    `0x78`. `smoke.png`'s IDAT used `0x68 0x43` (16 KiB window); header detection now validates
+    per RFC 1950 (`flate::is_zlib_header`) instead of matching `0x78` alone.
 
 - [x] **SL-1.FILT.03 — LZWDecode** · deps: FILT.01 · owner: AI
   - **Do:** Including `/EarlyChange` 0 and 1, and the early-code-reuse malformation.

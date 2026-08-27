@@ -91,11 +91,10 @@ pub fn flate_decode_bounded(
 /// Returns `Ok(out)` or `Err(partial)`.
 ///
 /// `decompress_to_vec_with_limit` inflates raw deflate (no zlib header). A
-/// zlib stream's 2-byte header is stripped first; the trailing Adler-32 is
-/// harmless trailing input that raw inflate stops before.
+/// validated zlib header (RFC 1950) is stripped first; the trailing Adler-32
+/// is harmless trailing input that raw inflate stops before.
 fn inflate_once(data: &[u8], limit: usize) -> std::result::Result<Vec<u8>, Vec<u8>> {
-    // A zlib stream begins with 0x78 (CMF for the common window sizes).
-    let body = if data.len() >= 2 && data.first() == Some(&0x78) {
+    let body = if is_zlib_header(data) {
         data.get(2..).unwrap_or(&[])
     } else {
         data
@@ -106,10 +105,26 @@ fn inflate_once(data: &[u8], limit: usize) -> std::result::Result<Vec<u8>, Vec<u
     }
 }
 
+/// A valid, dictionary-free zlib header per RFC 1950: deflate method, window
+/// ≤ 32 KiB, no preset dictionary, and a passing header checksum. Window
+/// sizes other than the common 32 KiB (`0x78`) are legal — e.g. `0x68 0x43`
+/// for a 16 KiB window.
+fn is_zlib_header(data: &[u8]) -> bool {
+    let (Some(&cmf), Some(&flg)) = (data.first(), data.get(1)) else {
+        return false;
+    };
+    let header = u32::from(cmf).wrapping_shl(8) | u32::from(flg);
+    cmf & 0x0F == 8
+        && cmf >> 4 <= 7
+        && flg & 0x20 == 0
+        && header.wrapping_rem(31) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use miniz_oxide::deflate::{compress_to_vec, compress_to_vec_zlib};
+    use miniz_oxide::{mz_adler32_oxide, MZ_ADLER32_INIT};
 
     fn guard() -> BudgetGuard<'static> {
         selis_sandbox::Budget::unlimited().guard()
@@ -132,6 +147,35 @@ mod tests {
         let raw = zlib.get(2..zlib.len().saturating_sub(4)).unwrap_or(&[]);
         let out = flate_decode(raw).expect("raw inflate");
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn non_standard_zlib_window_header_is_still_a_header() {
+        // smoke.png's IDAT used `68 43`, a valid zlib header (CMF=0x68 →
+        // deflate, 16 KiB window) rather than the common `78 xx`. The old
+        // strip logic matched only 0x78 and fed `68 43 ...` straight to the
+        // raw inflater, corrupting the stream. Regress that.
+        let data = b"non-standard header ".repeat(40);
+        let raw = compress_to_vec(&data, 6); // raw deflate, no wrapper
+        let mut zlib = vec![0x68u8, 0x43];
+        zlib.extend_from_slice(&raw);
+        zlib.extend_from_slice(&mz_adler32_oxide(MZ_ADLER32_INIT, &data).to_be_bytes());
+        assert!(is_zlib_header(&zlib));
+        let out = flate_decode(&zlib).expect("0x68-header inflate");
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn zlib_header_validation() {
+        assert!(is_zlib_header(&[0x78, 0x9C])); // typical
+        assert!(is_zlib_header(&[0x68, 0x43])); // 16 KiB window, no dict
+        assert!(is_zlib_header(&[0x08, 0x1D])); // smallest window, valid check
+        assert!(is_zlib_header(&[0x78, 0xDA, 0x00])); // only bytes 0-1 matter
+        assert!(!is_zlib_header(&[0x08])); // too short
+        assert!(!is_zlib_header(&[0x88, 0x13])); // CINFO 8 > allowed 7
+        assert!(!is_zlib_header(&[0x78, 0x3E])); // FDICT set (dictionary)
+        assert!(!is_zlib_header(&[0x08, 0x1E])); // checksum does not validate
+        assert!(!is_zlib_header(&[0x09, 0x21])); // CM != deflate
     }
 
     #[test]

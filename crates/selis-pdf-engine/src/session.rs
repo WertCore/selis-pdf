@@ -11,11 +11,9 @@ use selis_geom::{Matrix, Point};
 use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
-use selis_raster::{
-    FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend,
-};
 use selis_raster::image::{decode_image, Decode, DecodedImage};
 use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
+use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
 
 use crate::render::render_display_list;
@@ -133,13 +131,10 @@ impl Session {
 
     /// The structure tree's marked-content order (reading order), or an empty
     /// list when the document is untagged.
-    pub fn mcid_order(
-        &self,
-        budget: &Budget,
-        g: &mut BudgetGuard<'_>,
-    ) -> Result<Vec<u32>> {
+    pub fn mcid_order(&self, budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<Vec<u32>> {
         let mut resolver = self.new_resolver(budget);
-        let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        let tree =
+            selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
         Ok(tree.mcid_order())
     }
 
@@ -151,9 +146,19 @@ impl Session {
         g: &mut BudgetGuard<'_>,
     ) -> Result<Vec<selis_pdf_doc::RuleResult>> {
         let mut resolver = self.new_resolver(budget);
-        let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
-        let meta = selis_pdf_doc::Metadata::resolve(&mut resolver, &self.document.catalog, budget, g)?;
-        Ok(selis_pdf_doc::evaluate(&self.document, &self.document.catalog, &tree, &meta, profile, budget, g))
+        let tree =
+            selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        let meta =
+            selis_pdf_doc::Metadata::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        Ok(selis_pdf_doc::evaluate(
+            &self.document,
+            &self.document.catalog,
+            &tree,
+            &meta,
+            profile,
+            budget,
+            g,
+        ))
     }
 
     /// Render a page onto a backend.
@@ -187,11 +192,12 @@ impl Session {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             resolve_inline_image_inner(dict, data, &mut bg)
         };
-        let resolve_shading = move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-            let mut res = self.new_resolver(&budget_copy);
-            resolve_shading_inner(&mut res, page.resources.as_ref(), name, state, &mut bg)
-        };
+        let resolve_shading =
+            move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
+                let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+                let mut res = self.new_resolver(&budget_copy);
+                resolve_shading_inner(&mut res, page.resources.as_ref(), name, state, &mut bg)
+            };
         let resolve_pattern = move |name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             resolve_pattern_inner(self, page.resources.as_ref(), name, &budget_copy, &mut bg)
@@ -252,16 +258,19 @@ fn build_display_list(
         let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
         font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0)
     };
-    let resolve_do = move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
-        let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
-        let mut res = session.new_resolver(&budget_copy);
-        let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
-        resolve_xobject_inner(&mut res, r.as_ref(), name, &mut bg)
-            .ok()
-            .flatten()
-    };
+    let resolve_do =
+        move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
+            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut res = session.new_resolver(&budget_copy);
+            let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
+            resolve_xobject_inner(&mut res, r.as_ref(), name, &mut bg)
+                .ok()
+                .flatten()
+        };
     let resolve_ext_gstate =
-        move |name: &Bytes, key: Option<&Bytes>| -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
+        move |name: &Bytes,
+              key: Option<&Bytes>|
+              -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
             let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
             let mut res = session.new_resolver(&budget_copy);
             let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
@@ -288,7 +297,9 @@ fn resolve_resources_for_key(
     let mut it = key_str.split_whitespace();
     let num: u32 = it.next()?.parse().ok()?;
     let gen: u16 = it.next()?.parse().ok()?;
-    let form = resolver.resolve(selis_pdf_cos::Ref::new(num, gen), g).ok()?;
+    let form = resolver
+        .resolve(selis_pdf_cos::Ref::new(num, gen), g)
+        .ok()?;
     match &form {
         Obj::Stream { dict, .. } => dict_get_obj(dict, b"Resources").map(Obj::clone),
         _ => fallback.map(Obj::clone),
@@ -348,7 +359,9 @@ fn resolve_pattern_inner(
         Some(Obj::Array(arr)) => {
             let n = |i: usize| match arr.get(i) {
                 Some(Obj::Int(v)) => Some(*v as f64),
-                Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                Some(Obj::Real { scaled, scale }) => {
+                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                }
                 _ => None,
             };
             selis_geom::Rect::new(n(0)?, n(1)?, n(2)?, n(3)?)
@@ -361,7 +374,9 @@ fn resolve_pattern_inner(
         Some(Obj::Array(arr)) => {
             let n = |i: usize| match arr.get(i) {
                 Some(Obj::Int(v)) => Some(*v as f64),
-                Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                Some(Obj::Real { scaled, scale }) => {
+                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                }
                 _ => None,
             };
             selis_geom::Matrix::new(n(0)?, n(1)?, n(2)?, n(3)?, n(4)?, n(5)?)
@@ -384,10 +399,20 @@ fn resolve_pattern_inner(
     let no_font = |_name: &Bytes| -> Option<Vec<u8>> { None };
     let no_smask = |_key: &Bytes| -> Option<Mask> { None };
     let no_inline = |_d: &[(Bytes, Bytes)], _data: &[u8]| -> Option<(u32, u32, Bytes)> { None };
-    let no_shading =
-        |_n: &Bytes, _s: &selis_pdf_content::display_list::ResolvedState| -> Option<(u32, u32, Bytes, selis_geom::Rect)> { None };
+    let no_shading = |_n: &Bytes,
+                      _s: &selis_pdf_content::display_list::ResolvedState|
+     -> Option<(u32, u32, Bytes, selis_geom::Rect)> { None };
     let no_pattern = |_name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> { None };
-    crate::render::render_display_list(&dl, &mut tile, &no_font, &no_smask, &no_inline, &no_shading, &no_pattern, g);
+    crate::render::render_display_list(
+        &dl,
+        &mut tile,
+        &no_font,
+        &no_smask,
+        &no_inline,
+        &no_shading,
+        &no_pattern,
+        g,
+    );
     Some(TilingPattern {
         paint_type,
         tile: PatternTile {
@@ -528,9 +553,7 @@ fn resolve_stream(
     let obj = resolver.resolve(r, g)?;
     match &obj {
         // The resolver decrypts stream bodies, so use its data directly.
-        Obj::Stream { dict, data } => {
-            Ok(Some((dict.clone(), data.as_slice().to_vec())))
-        }
+        Obj::Stream { dict, data } => Ok(Some((dict.clone(), data.as_slice().to_vec()))),
         // A plain dict: read the stream body from the source at the xref offset.
         Obj::Dict(d) => {
             let offset = {
@@ -725,12 +748,21 @@ fn decode_parms_from_obj(obj: Option<&Obj>) -> Vec<selis_pdf_filter::DecodeParms
                 _ => None,
             })
         };
-        p.predictor = int(b"Predictor").and_then(|n| u16::try_from(n).ok()).unwrap_or(1);
-        p.columns = int(b"Columns").and_then(|n| u32::try_from(n).ok()).unwrap_or(1);
-        p.colors = int(b"Colors").and_then(|n| u32::try_from(n).ok()).unwrap_or(1);
-        p.bits_per_component =
-            int(b"BitsPerComponent").and_then(|n| u32::try_from(n).ok()).unwrap_or(8);
-        p.early_change = int(b"EarlyChange").and_then(|n| u8::try_from(n).ok()).unwrap_or(0);
+        p.predictor = int(b"Predictor")
+            .and_then(|n| u16::try_from(n).ok())
+            .unwrap_or(1);
+        p.columns = int(b"Columns")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(1);
+        p.colors = int(b"Colors")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(1);
+        p.bits_per_component = int(b"BitsPerComponent")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(8);
+        p.early_change = int(b"EarlyChange")
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(0);
         p
     };
     match obj {
@@ -784,7 +816,9 @@ fn resolve_xobject_inner(
             .unwrap_or(Matrix::IDENTITY);
         // The resources key is the form's object ref (e.g. "12 0"), which
         // the engine resolves to the form's /Resources dict.
-        let resources = Some(Bytes::copy_from_slice(format!("{} {}", r.num, r.gen).as_bytes()));
+        let resources = Some(Bytes::copy_from_slice(
+            format!("{} {}", r.num, r.gen).as_bytes(),
+        ));
         return Ok(Some(selis_pdf_content::exec::DoTarget::Form {
             content,
             matrix,
@@ -881,7 +915,9 @@ fn resolve_smask_inner(
     let mut it = key_str.split_whitespace();
     let num: u32 = it.next()?.parse().ok()?;
     let gen: u16 = it.next()?.parse().ok()?;
-    let obj = resolver.resolve(selis_pdf_cos::Ref::new(num, gen), g).ok()?;
+    let obj = resolver
+        .resolve(selis_pdf_cos::Ref::new(num, gen), g)
+        .ok()?;
     let Obj::Dict(pairs) = &obj else {
         return None;
     };
@@ -918,9 +954,7 @@ fn dict_backdrop(pairs: &[(selis_bytes::Bytes, Obj)]) -> Rgba {
             .iter()
             .filter_map(|o| match o {
                 Obj::Int(v) => Some(*v as f64),
-                Obj::Real { scaled, scale } => {
-                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
-                }
+                Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
                 _ => None,
             })
             .collect(),
@@ -941,7 +975,9 @@ fn resolve_inline_image_inner(
     g: &mut BudgetGuard<'_>,
 ) -> Option<(u32, u32, selis_bytes::Bytes)> {
     let get = |key: &[u8]| -> Option<&selis_bytes::Bytes> {
-        dict.iter().find(|(k, _)| k.as_slice() == key).map(|(_, v)| v)
+        dict.iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
     };
     let parse_u32 = |v: &selis_bytes::Bytes| -> Option<u32> {
         let s = std::str::from_utf8(v.as_slice()).ok()?;
@@ -949,7 +985,9 @@ fn resolve_inline_image_inner(
     };
     let width = get(b"W").and_then(parse_u32)?;
     let height = get(b"H").and_then(parse_u32)?;
-    let bpc = get(b"BPC").and_then(|v| parse_u32(v).map(|n| n.min(16) as u8)).unwrap_or(8);
+    let bpc = get(b"BPC")
+        .and_then(|v| parse_u32(v).map(|n| n.min(16) as u8))
+        .unwrap_or(8);
     let components: u8 = match get(b"CS") {
         Some(v) if v.as_slice().strip_prefix(b"/").unwrap_or(v.as_slice()) == b"G" => 1,
         Some(v) if v.as_slice().strip_prefix(b"/").unwrap_or(v.as_slice()) == b"RGB" => 3,
@@ -959,7 +997,9 @@ fn resolve_inline_image_inner(
     let unfiltered = match get(b"F").or_else(|| get(b"Filter")) {
         Some(filt) => {
             let name = std::str::from_utf8(
-                filt.as_slice().strip_prefix(b"/").unwrap_or(filt.as_slice()),
+                filt.as_slice()
+                    .strip_prefix(b"/")
+                    .unwrap_or(filt.as_slice()),
             )
             .unwrap_or("");
             selis_pdf_filter::decode(name, data, u64::MAX, g).unwrap_or_else(|_| data.to_vec())
@@ -968,7 +1008,11 @@ fn resolve_inline_image_inner(
     };
     let decode = Decode::identity(usize::from(components));
     let img = decode_image(width, height, components, bpc, &unfiltered, &decode, g).ok()?;
-    Some((img.width, img.height, selis_bytes::Bytes::copy_from_slice(&img.rgba8)))
+    Some((
+        img.width,
+        img.height,
+        selis_bytes::Bytes::copy_from_slice(&img.rgba8),
+    ))
 }
 
 /// Resolve a shading resource to a rasterised RGBA image in device space.
@@ -981,7 +1025,9 @@ fn resolve_shading_inner(
 ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)> {
     use selis_geom::Rect;
     fn o<'a>(dict: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
-        dict.iter().find(|(k, _)| k.as_slice() == key).map(|(_, v)| v)
+        dict.iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
     }
     fn on(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<f64> {
         match o(dict, key)? {
@@ -998,10 +1044,22 @@ fn resolve_shading_inner(
         }
     }
     fn arr_to_rect(arr: &[Obj]) -> Option<Rect> {
-        Some(Rect::new(arr_n(arr, 0)?, arr_n(arr, 1)?, arr_n(arr, 2)?, arr_n(arr, 3)?))
+        Some(Rect::new(
+            arr_n(arr, 0)?,
+            arr_n(arr, 1)?,
+            arr_n(arr, 2)?,
+            arr_n(arr, 3)?,
+        ))
     }
     fn arr_to_matrix(arr: &[Obj]) -> Option<selis_geom::Matrix> {
-        Some(selis_geom::Matrix::new(arr_n(arr, 0)?, arr_n(arr, 1)?, arr_n(arr, 2)?, arr_n(arr, 3)?, arr_n(arr, 4)?, arr_n(arr, 5)?))
+        Some(selis_geom::Matrix::new(
+            arr_n(arr, 0)?,
+            arr_n(arr, 1)?,
+            arr_n(arr, 2)?,
+            arr_n(arr, 3)?,
+            arr_n(arr, 4)?,
+            arr_n(arr, 5)?,
+        ))
     }
     // Resolve the shading dict from /Shading resources.
     let shadings = dict_get(resources?, b"Shading")?;
@@ -1041,7 +1099,12 @@ fn resolve_shading_inner(
         to_device.apply(selis_geom::Point::new(bbox.x0, bbox.y1)),
         to_device.apply(selis_geom::Point::new(bbox.x1, bbox.y1)),
     ];
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
     for p in &corners {
         min_x = min_x.min(p.x);
         min_y = min_y.min(p.y);
@@ -1063,7 +1126,10 @@ fn resolve_shading_inner(
         _ => (0.0, 1.0),
     };
     let extend = match o(pairs, b"Extend") {
-        Some(Obj::Array(arr)) => (arr_n(arr, 0).unwrap_or(0.0) != 0.0, arr_n(arr, 1).unwrap_or(0.0) != 0.0),
+        Some(Obj::Array(arr)) => (
+            arr_n(arr, 0).unwrap_or(0.0) != 0.0,
+            arr_n(arr, 1).unwrap_or(0.0) != 0.0,
+        ),
         _ => (false, false),
     };
     let coords: &[Obj] = match o(pairs, b"Coords") {
@@ -1072,95 +1138,108 @@ fn resolve_shading_inner(
     };
     // Types 4/5 (Gouraud and lattice meshes): decode the packed vertex stream
     // into a common (vertices, triangles) mesh.
-    let mesh: Option<(Vec<selis_raster::shading::ShadingPoint>, Vec<(u32, u32, u32)>)> =
-        match shading_type {
-            4 | 5 => {
-                let data = mesh_data?;
-                let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
-                let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
-                let decode: Vec<f64> = match o(pairs, b"Decode") {
-                    Some(Obj::Array(arr)) => arr
-                        .iter()
-                        .filter_map(|v| match v {
-                            Obj::Int(n) => Some(*n as f64),
-                            Obj::Real { scaled, scale } => {
-                                Some(*scaled as f64 / 10f64.powi(*scale as i32))
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let components = match color_space {
-                    b"DeviceGray" | b"G" => 1,
-                    b"DeviceCMYK" | b"CMYK" => 4,
-                    _ => 3,
-                };
-                if shading_type == 4 {
-                    let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
-                    let m = parse_gouraud_shading(data, bpc, bpc_color, bpf, &decode, components)?;
-                    Some((m.vertices, m.triangles))
-                } else {
-                    let cols = f64_to_u32(on(pairs, b"VerticesPerRow").unwrap_or(2.0));
-                    let m =
-                        parse_lattice_shading(data, bpc, bpc_color, &decode, components, cols as usize)?;
-                    let tris = lattice_triangles(&m);
-                    Some((m.vertices, tris))
-                }
-            }
-            6 | 7 => {
-                let data = mesh_data?;
-                let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
-                let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
-                let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
-                let decode: Vec<f64> = match o(pairs, b"Decode") {
-                    Some(Obj::Array(arr)) => arr
-                        .iter()
-                        .filter_map(|v| match v {
-                            Obj::Int(n) => Some(*n as f64),
-                            Obj::Real { scaled, scale } => {
-                                Some(*scaled as f64 / 10f64.powi(*scale as i32))
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let components = match color_space {
-                    b"DeviceGray" | b"G" => 1,
-                    b"DeviceCMYK" | b"CMYK" => 4,
-                    _ => 3,
-                };
-                let is_tensor = shading_type == 7;
-                let patches =
-                    parse_patch_shading(data, bpc, bpc_color, bpf, &decode, components, is_tensor)?;
-                // Tessellate each patch into a (grid+1)² mesh and connect the
-                // cells into triangle pairs.
-                let grid = 8usize;
-                let stride = grid.saturating_add(1);
-                let mut vertices = Vec::new();
-                let mut triangles = Vec::new();
-                for patch in &patches {
-                    let base = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
-                    vertices.extend(tessellate_patch(patch, is_tensor, grid));
-                    for j in 0..grid {
-                        for i in 0..grid {
-                            let v00 = base
-                                .saturating_add(u32::try_from(j.saturating_mul(stride).saturating_add(i)).unwrap_or(u32::MAX));
-                            let v01 = v00.saturating_add(1);
-                            let v10 = v00.saturating_add(u32::try_from(stride).unwrap_or(u32::MAX));
-                            let v11 = v10.saturating_add(1);
-                            triangles.push((v00, v01, v10));
-                            triangles.push((v10, v01, v11));
+    let mesh: Option<(
+        Vec<selis_raster::shading::ShadingPoint>,
+        Vec<(u32, u32, u32)>,
+    )> = match shading_type {
+        4 | 5 => {
+            let data = mesh_data?;
+            let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
+            let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
+            let decode: Vec<f64> = match o(pairs, b"Decode") {
+                Some(Obj::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Obj::Int(n) => Some(*n as f64),
+                        Obj::Real { scaled, scale } => {
+                            Some(*scaled as f64 / 10f64.powi(*scale as i32))
                         }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let components = match color_space {
+                b"DeviceGray" | b"G" => 1,
+                b"DeviceCMYK" | b"CMYK" => 4,
+                _ => 3,
+            };
+            if shading_type == 4 {
+                let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
+                let m = parse_gouraud_shading(data, bpc, bpc_color, bpf, &decode, components)?;
+                Some((m.vertices, m.triangles))
+            } else {
+                let cols = f64_to_u32(on(pairs, b"VerticesPerRow").unwrap_or(2.0));
+                let m = parse_lattice_shading(
+                    data,
+                    bpc,
+                    bpc_color,
+                    &decode,
+                    components,
+                    cols as usize,
+                )?;
+                let tris = lattice_triangles(&m);
+                Some((m.vertices, tris))
+            }
+        }
+        6 | 7 => {
+            let data = mesh_data?;
+            let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
+            let bpc_color = f64_to_u32(on(pairs, b"BitsPerComponent").unwrap_or(8.0));
+            let bpf = f64_to_u32(on(pairs, b"BitsPerFlag").unwrap_or(8.0));
+            let decode: Vec<f64> = match o(pairs, b"Decode") {
+                Some(Obj::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Obj::Int(n) => Some(*n as f64),
+                        Obj::Real { scaled, scale } => {
+                            Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let components = match color_space {
+                b"DeviceGray" | b"G" => 1,
+                b"DeviceCMYK" | b"CMYK" => 4,
+                _ => 3,
+            };
+            let is_tensor = shading_type == 7;
+            let patches =
+                parse_patch_shading(data, bpc, bpc_color, bpf, &decode, components, is_tensor)?;
+            // Tessellate each patch into a (grid+1)² mesh and connect the
+            // cells into triangle pairs.
+            let grid = 8usize;
+            let stride = grid.saturating_add(1);
+            let mut vertices = Vec::new();
+            let mut triangles = Vec::new();
+            for patch in &patches {
+                let base = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
+                vertices.extend(tessellate_patch(patch, is_tensor, grid));
+                for j in 0..grid {
+                    for i in 0..grid {
+                        let v00 = base.saturating_add(
+                            u32::try_from(j.saturating_mul(stride).saturating_add(i))
+                                .unwrap_or(u32::MAX),
+                        );
+                        let v01 = v00.saturating_add(1);
+                        let v10 = v00.saturating_add(u32::try_from(stride).unwrap_or(u32::MAX));
+                        let v11 = v10.saturating_add(1);
+                        triangles.push((v00, v01, v10));
+                        triangles.push((v10, v01, v11));
                     }
                 }
-                Some((vertices, triangles))
             }
-            _ => None,
-        };
+            Some((vertices, triangles))
+        }
+        _ => None,
+    };
     let mut rgba = Vec::with_capacity(
-        usize::try_from(w).unwrap_or(0).saturating_mul(usize::try_from(h).unwrap_or(0)).saturating_mul(4),
+        usize::try_from(w)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(h).unwrap_or(0))
+            .saturating_mul(4),
     );
     for py in 0..h {
         for px in 0..w {
@@ -1198,7 +1277,9 @@ fn resolve_shading_inner(
                 4 | 5 | 6 | 7 => {
                     // Find the triangle containing the point and interpolate
                     // the vertex colours (barycentric).
-                    let Some((vertices, triangles)) = &mesh else { continue };
+                    let Some((vertices, triangles)) = &mesh else {
+                        continue;
+                    };
                     let mut found: Option<Vec<f64>> = None;
                     for tri in triangles {
                         let (Some(a), Some(b), Some(c)) = (
@@ -1256,21 +1337,29 @@ fn parse_shading_function(obj: &Obj) -> Option<selis_color::function::Function> 
             match ft {
                 2 => {
                     let get = |key: &[u8]| -> Option<f64> {
-                        pairs.iter().find(|(k, _)| k.as_slice() == key).and_then(|(_, v)| match v {
-                            Obj::Int(n) => Some(*n as f64),
-                            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
-                            _ => None,
-                        })
+                        pairs
+                            .iter()
+                            .find(|(k, _)| k.as_slice() == key)
+                            .and_then(|(_, v)| match v {
+                                Obj::Int(n) => Some(*n as f64),
+                                Obj::Real { scaled, scale } => {
+                                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                                }
+                                _ => None,
+                            })
                     };
                     let get_arr = |key: &[u8]| -> Option<Vec<f64>> {
                         match pairs.iter().find(|(k, _)| k.as_slice() == key) {
-                            Some((_, Obj::Array(arr))) => {
-                                arr.iter().map(|v| match v {
+                            Some((_, Obj::Array(arr))) => arr
+                                .iter()
+                                .map(|v| match v {
                                     Obj::Int(n) => Some(*n as f64),
-                                    Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                                    Obj::Real { scaled, scale } => {
+                                        Some(*scaled as f64 / 10f64.powi(*scale as i32))
+                                    }
                                     _ => None,
-                                }).collect()
-                            }
+                                })
+                                .collect(),
                             _ => None,
                         }
                     };
@@ -1281,11 +1370,15 @@ fn parse_shading_function(obj: &Obj) -> Option<selis_color::function::Function> 
                     // The exponential function: a = c1 - c0, b = n, c = c0.
                     // f(x) = (c1 - c0) * x^n + c0 for each output.
                     // But the ExponentialFunction stores a, b, c per output.
-                    let a: Vec<f64> = (0..outputs).map(|i| {
-                        c1.get(i).copied().unwrap_or(1.0) - c0.get(i).copied().unwrap_or(0.0)
-                    }).collect();
+                    let a: Vec<f64> = (0..outputs)
+                        .map(|i| {
+                            c1.get(i).copied().unwrap_or(1.0) - c0.get(i).copied().unwrap_or(0.0)
+                        })
+                        .collect();
                     let b = vec![n; outputs];
-                    let c: Vec<f64> = (0..outputs).map(|i| c0.get(i).copied().unwrap_or(0.0)).collect();
+                    let c: Vec<f64> = (0..outputs)
+                        .map(|i| c0.get(i).copied().unwrap_or(0.0))
+                        .collect();
                     Some(selis_color::function::Function::Exponential(
                         selis_color::function::ExponentialFunction {
                             inputs: 1,
@@ -1295,7 +1388,7 @@ fn parse_shading_function(obj: &Obj) -> Option<selis_color::function::Function> 
                             c,
                             domain: vec![(0.0, 1.0)],
                             range: None,
-                        }
+                        },
                     ))
                 }
                 _ => None,
@@ -1349,7 +1442,9 @@ impl<'a> BitReader<'a> {
         }
         let mut value = 0u64;
         for _ in 0..bits {
-            let byte = *self.data.get(usize::try_from(self.bit_pos >> 3).unwrap_or(0))?;
+            let byte = *self
+                .data
+                .get(usize::try_from(self.bit_pos >> 3).unwrap_or(0))?;
             let bit = 7u32.wrapping_sub((self.bit_pos % 8) as u32);
             value = (value << 1) | u64::from((byte >> bit) & 1);
             self.bit_pos = self.bit_pos.saturating_add(1);
@@ -1388,12 +1483,24 @@ fn parse_gouraud_shading(
     let mut pending: Vec<u32> = Vec::new();
     let coords = |decode: &[f64], x_raw: u64, y_raw: u64| -> (f64, f64) {
         (
-            decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
-            decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+            decode_raw(
+                x_raw,
+                bpc,
+                decode.get(0).copied().unwrap_or(0.0),
+                decode.get(1).copied().unwrap_or(0.0),
+            ),
+            decode_raw(
+                y_raw,
+                bpc,
+                decode.get(2).copied().unwrap_or(0.0),
+                decode.get(3).copied().unwrap_or(0.0),
+            ),
         )
     };
     loop {
-        let Some(flag) = r.read(bpf.max(1)) else { break };
+        let Some(flag) = r.read(bpf.max(1)) else {
+            break;
+        };
         let count = match flag {
             0 => 3,
             1 => 1,
@@ -1402,8 +1509,12 @@ fn parse_gouraud_shading(
         };
         let mut new_indices = Vec::new();
         for _ in 0..count {
-            let Some(x_raw) = r.read(bpc.max(1)) else { break };
-            let Some(y_raw) = r.read(bpc.max(1)) else { break };
+            let Some(x_raw) = r.read(bpc.max(1)) else {
+                break;
+            };
+            let Some(y_raw) = r.read(bpc.max(1)) else {
+                break;
+            };
             let (x, y) = coords(decode, x_raw, y_raw);
             let mut comps = Vec::with_capacity(components);
             let mut colour_ok = true;
@@ -1412,8 +1523,14 @@ fn parse_gouraud_shading(
                     colour_ok = false;
                     break;
                 };
-                let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
-                let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+                let lo = decode
+                    .get(c.saturating_mul(2).saturating_add(4))
+                    .copied()
+                    .unwrap_or(0.0);
+                let hi = decode
+                    .get(c.saturating_mul(2).saturating_add(5))
+                    .copied()
+                    .unwrap_or(1.0);
                 comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
             }
             if !colour_ok {
@@ -1435,12 +1552,8 @@ fn parse_gouraud_shading(
                 *new_indices.get(1)?,
                 *new_indices.get(2)?,
             ),
-            1 => {
-                (*pending.get(0)?, *pending.get(1)?, *new_indices.get(0)?)
-            }
-            2 => {
-                (*pending.get(0)?, *new_indices.get(0)?, *new_indices.get(1)?)
-            }
+            1 => (*pending.get(0)?, *pending.get(1)?, *new_indices.get(0)?),
+            2 => (*pending.get(0)?, *new_indices.get(0)?, *new_indices.get(1)?),
             _ => return None,
         };
         triangles.push(tri);
@@ -1449,7 +1562,10 @@ fn parse_gouraud_shading(
     if vertices.is_empty() {
         None
     } else {
-        Some(GouraudShading { vertices, triangles })
+        Some(GouraudShading {
+            vertices,
+            triangles,
+        })
     }
 }
 
@@ -1469,11 +1585,25 @@ fn parse_lattice_shading(
     let mut r = BitReader::new(data);
     let mut vertices: Vec<ShadingPoint> = Vec::new();
     loop {
-        let Some(x_raw) = r.read(bpc.max(1)) else { break };
-        let Some(y_raw) = r.read(bpc.max(1)) else { break };
+        let Some(x_raw) = r.read(bpc.max(1)) else {
+            break;
+        };
+        let Some(y_raw) = r.read(bpc.max(1)) else {
+            break;
+        };
         let (x, y) = (
-            decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
-            decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+            decode_raw(
+                x_raw,
+                bpc,
+                decode.get(0).copied().unwrap_or(0.0),
+                decode.get(1).copied().unwrap_or(0.0),
+            ),
+            decode_raw(
+                y_raw,
+                bpc,
+                decode.get(2).copied().unwrap_or(0.0),
+                decode.get(3).copied().unwrap_or(0.0),
+            ),
         );
         let mut comps = Vec::with_capacity(components);
         let mut ok = true;
@@ -1482,8 +1612,14 @@ fn parse_lattice_shading(
                 ok = false;
                 break;
             };
-            let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
-            let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+            let lo = decode
+                .get(c.saturating_mul(2).saturating_add(4))
+                .copied()
+                .unwrap_or(0.0);
+            let hi = decode
+                .get(c.saturating_mul(2).saturating_add(5))
+                .copied()
+                .unwrap_or(1.0);
             comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
         }
         if !ok {
@@ -1504,9 +1640,7 @@ fn parse_lattice_shading(
 }
 
 /// Triangulate a lattice-form mesh into its (vertex-index) triangles.
-fn lattice_triangles(
-    l: &selis_raster::shading::LatticeShading,
-) -> Vec<(u32, u32, u32)> {
+fn lattice_triangles(l: &selis_raster::shading::LatticeShading) -> Vec<(u32, u32, u32)> {
     let cols = usize::try_from(l.cols).unwrap_or(0);
     if cols < 2 {
         return Vec::new();
@@ -1515,10 +1649,27 @@ fn lattice_triangles(
     let mut tris = Vec::new();
     for row in 0..rows.saturating_sub(1) {
         for col in 0..cols.saturating_sub(1) {
-            let v00 = u32::try_from(row.saturating_mul(cols).saturating_add(col)).unwrap_or(u32::MAX);
-            let v01 = u32::try_from(row.saturating_mul(cols).saturating_add(col).saturating_add(1)).unwrap_or(u32::MAX);
-            let v10 = u32::try_from(row.saturating_add(1).saturating_mul(cols).saturating_add(col)).unwrap_or(u32::MAX);
-            let v11 = u32::try_from(row.saturating_add(1).saturating_mul(cols).saturating_add(col).saturating_add(1)).unwrap_or(u32::MAX);
+            let v00 =
+                u32::try_from(row.saturating_mul(cols).saturating_add(col)).unwrap_or(u32::MAX);
+            let v01 = u32::try_from(
+                row.saturating_mul(cols)
+                    .saturating_add(col)
+                    .saturating_add(1),
+            )
+            .unwrap_or(u32::MAX);
+            let v10 = u32::try_from(
+                row.saturating_add(1)
+                    .saturating_mul(cols)
+                    .saturating_add(col),
+            )
+            .unwrap_or(u32::MAX);
+            let v11 = u32::try_from(
+                row.saturating_add(1)
+                    .saturating_mul(cols)
+                    .saturating_add(col)
+                    .saturating_add(1),
+            )
+            .unwrap_or(u32::MAX);
             tris.push((v00, v01, v10));
             tris.push((v10, v01, v11));
         }
@@ -1542,7 +1693,10 @@ fn bernstein(i: usize, t: f64) -> f64 {
 fn bezier3(a: &[f64], b: &[f64], c: &[f64], d: &[f64], t: f64) -> Vec<f64> {
     (0..a.len())
         .map(|k| {
-            bernstein(0, t) * a[k] + bernstein(1, t) * b[k] + bernstein(2, t) * c[k] + bernstein(3, t) * d[k]
+            bernstein(0, t) * a[k]
+                + bernstein(1, t) * b[k]
+                + bernstein(2, t) * c[k]
+                + bernstein(3, t) * d[k]
         })
         .collect()
 }
@@ -1587,10 +1741,7 @@ fn coons_patch(points: &[selis_raster::shading::ShadingPoint], u: f64, v: f64) -
     let w = bottom.len();
     (0..w)
         .map(|k| {
-            (1.0 - v) * bottom[k]
-                + v * top[k]
-                + (1.0 - u) * left[k]
-                + u * right[k]
+            (1.0 - v) * bottom[k] + v * top[k] + (1.0 - u) * left[k] + u * right[k]
                 - (1.0 - u) * (1.0 - v) * c0[k]
                 - u * (1.0 - v) * c3[k]
                 - u * v * c6[k]
@@ -1648,7 +1799,10 @@ fn tessellate_patch(
             } else {
                 coons_patch(patch, u, v)
             };
-            let point = Point::new(s.get(0).copied().unwrap_or(0.0), s.get(1).copied().unwrap_or(0.0));
+            let point = Point::new(
+                s.get(0).copied().unwrap_or(0.0),
+                s.get(1).copied().unwrap_or(0.0),
+            );
             let components = s.get(2..).map(|c| c.to_vec()).unwrap_or_default();
             out.push(ShadingPoint { point, components });
         }
@@ -1674,17 +1828,33 @@ fn parse_patch_shading(
     let mut r = BitReader::new(data);
     let mut patches: Vec<Vec<ShadingPoint>> = Vec::new();
     loop {
-        let Some(flag) = r.read(bpf.max(1)) else { break };
+        let Some(flag) = r.read(bpf.max(1)) else {
+            break;
+        };
         if flag != 0 {
             break; // patch-reuse flags are a refinement; skip the shading
         }
         let mut points = Vec::with_capacity(per_patch);
         for _ in 0..per_patch {
-            let Some(x_raw) = r.read(bpc.max(1)) else { break };
-            let Some(y_raw) = r.read(bpc.max(1)) else { break };
+            let Some(x_raw) = r.read(bpc.max(1)) else {
+                break;
+            };
+            let Some(y_raw) = r.read(bpc.max(1)) else {
+                break;
+            };
             let (x, y) = (
-                decode_raw(x_raw, bpc, decode.get(0).copied().unwrap_or(0.0), decode.get(1).copied().unwrap_or(0.0)),
-                decode_raw(y_raw, bpc, decode.get(2).copied().unwrap_or(0.0), decode.get(3).copied().unwrap_or(0.0)),
+                decode_raw(
+                    x_raw,
+                    bpc,
+                    decode.get(0).copied().unwrap_or(0.0),
+                    decode.get(1).copied().unwrap_or(0.0),
+                ),
+                decode_raw(
+                    y_raw,
+                    bpc,
+                    decode.get(2).copied().unwrap_or(0.0),
+                    decode.get(3).copied().unwrap_or(0.0),
+                ),
             );
             let mut comps = Vec::with_capacity(components);
             let mut ok = true;
@@ -1693,8 +1863,14 @@ fn parse_patch_shading(
                     ok = false;
                     break;
                 };
-                let lo = decode.get(c.saturating_mul(2).saturating_add(4)).copied().unwrap_or(0.0);
-                let hi = decode.get(c.saturating_mul(2).saturating_add(5)).copied().unwrap_or(1.0);
+                let lo = decode
+                    .get(c.saturating_mul(2).saturating_add(4))
+                    .copied()
+                    .unwrap_or(0.0);
+                let hi = decode
+                    .get(c.saturating_mul(2).saturating_add(5))
+                    .copied()
+                    .unwrap_or(1.0);
                 comps.push(decode_raw(raw, bpc_color.max(1), lo, hi));
             }
             if !ok {
@@ -1788,7 +1964,9 @@ fn resolve_ext_gstate_inner(
 /// masks are a refinement; most producers reference the dictionary).
 fn smask_ref_key(obj: &Obj) -> Option<Bytes> {
     match obj {
-        Obj::Ref(r) => Some(Bytes::copy_from_slice(format!("{} {}", r.num, r.gen).as_bytes())),
+        Obj::Ref(r) => Some(Bytes::copy_from_slice(
+            format!("{} {}", r.num, r.gen).as_bytes(),
+        )),
         _ => None,
     }
 }
@@ -1797,7 +1975,9 @@ fn smask_ref_key(obj: &Obj) -> Option<Bytes> {
 fn obj_to_operand(obj: &Obj) -> Option<Operand> {
     match obj {
         Obj::Int(v) => Some(Operand::Num(*v as f64)),
-        Obj::Real { scaled, scale } => Some(Operand::Num(*scaled as f64 / 10f64.powi(*scale as i32))),
+        Obj::Real { scaled, scale } => {
+            Some(Operand::Num(*scaled as f64 / 10f64.powi(*scale as i32)))
+        }
         Obj::Name(n) => Some(Operand::Name(n.clone())),
         Obj::Bool(b) => Some(Operand::Bool(*b)),
         Obj::Array(items) => {
@@ -1879,6 +2059,25 @@ mod tests {
     #[test]
     fn session_renders_an_image_xobject() {
         let src = include_bytes!("fixtures/image.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget).expect("open");
+        assert_eq!(session.len(), 1);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
+        session
+            .render_page(0, &mut backend, &budget, &mut g)
+            .expect("render");
+        let data = backend.pixmap().data();
+        // The top-left pixel is white (255 gray); the rest are black.
+        assert_eq!(&data[0..3], &[255, 255, 255]);
+        assert_eq!(&data[8..11], &[0, 0, 0]);
+    }
+
+    /// The same image, but with `/Resources` as an indirect reference (as
+    /// `selis`'s own writer emits): the dictionary must still resolve.
+    #[test]
+    fn session_renders_an_image_xobject_with_indirect_resources() {
+        let src = include_bytes!("fixtures/image-indirect-resources.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
         let session = Session::open(src.to_vec(), &budget).expect("open");
         assert_eq!(session.len(), 1);

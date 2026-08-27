@@ -5,6 +5,13 @@
 //! `parse_revisions` (detects xref stream) → `Document::resolve` →
 //! `resolve_ref` → `resolve_compressed` → `parse_value_at`.
 
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing
+)]
+
 use selis_pdf_cos::Obj;
 use selis_pdf_doc::{Document, Resolver};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
@@ -19,8 +26,7 @@ fn xref_stream_objstm_resolves_end_to_end() {
     let budget = Budget::unlimited();
     let mut g = guard();
 
-    let startxref =
-        selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
+    let startxref = selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
     let doc =
         selis_pdf_cos::parse_revisions(src, startxref, &budget, &mut g).expect("parse revisions");
     assert_eq!(doc.len(), 1, "one revision");
@@ -32,10 +38,7 @@ fn xref_stream_objstm_resolves_end_to_end() {
 
     // The page's content stream (object 5, direct) resolves to a stream.
     let page = document.pages.first().expect("page");
-    let content_refs = page
-        .contents
-        .clone()
-        .expect("page has /Contents");
+    let content_refs = page.contents.clone().expect("page has /Contents");
     let mut resolver = Resolver::new(&doc, src, &budget);
     let content = resolver
         .resolve(content_refs[0], &mut g)

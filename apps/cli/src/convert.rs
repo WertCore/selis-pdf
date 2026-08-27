@@ -31,7 +31,9 @@ pub(crate) fn run(
         return Err(CliError("document has no pages".to_string()));
     }
     let page_count = session.len();
-    let last = last.unwrap_or(page_count.saturating_sub(1)).min(page_count.saturating_sub(1));
+    let last = last
+        .unwrap_or(page_count.saturating_sub(1))
+        .min(page_count.saturating_sub(1));
     if first > last {
         return Err(CliError(format!(
             "page range {first}..{last} is empty (document has {page_count} pages)"

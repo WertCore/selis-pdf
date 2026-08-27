@@ -283,16 +283,12 @@ fn execute_inner(
                 // so a following paint op fills it too). The clip is part of
                 // the graphics state, saved/restored by q/Q.
                 if !current_path.is_degenerate() {
-                    gstate
-                        .clip
-                        .push((current_path.clone(), ClipRule::NonZero));
+                    gstate.clip.push((current_path.clone(), ClipRule::NonZero));
                 }
             }
             "W*" => {
                 if !current_path.is_degenerate() {
-                    gstate
-                        .clip
-                        .push((current_path.clone(), ClipRule::EvenOdd));
+                    gstate.clip.push((current_path.clone(), ClipRule::EvenOdd));
                 }
             }
 
@@ -371,7 +367,11 @@ fn execute_inner(
                             });
                             g.charge_one(selis_sandbox::Resource::Objects)?;
                         }
-                        Some(DoTarget::Form { content, matrix, resources }) => {
+                        Some(DoTarget::Form {
+                            content,
+                            matrix,
+                            resources,
+                        }) => {
                             if depth >= MAX_FORM_DEPTH {
                                 continue; // deviation: skip the form
                             }
@@ -463,12 +463,7 @@ fn text_op_names() -> &'static [&'static str] {
 }
 
 /// Flush the current path (if non-degenerate and has a paint op).
-fn flush_path(
-    dl: &mut DisplayList,
-    path: &mut Path,
-    paint: PaintOp,
-    gs: &GState,
-) {
+fn flush_path(dl: &mut DisplayList, path: &mut Path, paint: PaintOp, gs: &GState) {
     if path.is_degenerate() || !paint.paints() {
         return;
     }
@@ -503,10 +498,13 @@ fn flush_path(
 
 /// The `/BM` blend mode from a resolved ExtGState dictionary.
 fn ext_gstate_blend(pairs: &[(Bytes, Operand)]) -> Option<selis_color::BlendMode> {
-    pairs.iter().find(|(k, _)| k.as_slice() == b"BM").and_then(|(_, v)| match v {
-        Operand::Name(n) => Some(selis_color::BlendMode::from_name(n.as_slice())),
-        _ => None,
-    })
+    pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"BM")
+        .and_then(|(_, v)| match v {
+            Operand::Name(n) => Some(selis_color::BlendMode::from_name(n.as_slice())),
+            _ => None,
+        })
 }
 
 /// The constant alpha from a resolved ExtGState dictionary (`ca` fill, else
@@ -749,8 +747,7 @@ mod tests {
         // clip rect (0,0)-(100,100), then paint a path (clipped), Q, paint again
         // (no clip).
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h q W 10 10 m 90 90 l 0 g f Q 0 0 m 50 0 l 50 50 l 0 50 l h 0 g f";
-        let dl = execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-            .expect("execute");
+        let dl = execute(content, &const_width, &no_do, &no_ext_gstate, &mut g).expect("execute");
         assert_eq!(dl.ops.len(), 2);
         if let Op::Fill { state, .. } = &dl.ops[0] {
             assert_eq!(state.clip.len(), 1, "first fill is clipped");

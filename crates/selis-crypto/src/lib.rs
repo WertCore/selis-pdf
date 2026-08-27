@@ -22,9 +22,8 @@ use md5::{Digest, Md5};
 
 /// The 32-byte padding string (ISO 32000-2 §7.6.3.3, Algorithm 2).
 const PAD: [u8; 32] = [
-    0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01,
-    0x08, 0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53,
-    0x69, 0x7A,
+    0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+    0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
 ];
 
 /// Pad a password (truncated to 32 bytes) with the standard padding.
@@ -144,14 +143,7 @@ pub fn authenticate_user(
 ///
 /// `r` is the security handler revision; `aes` selects AES-128-CBC over RC4.
 #[must_use]
-pub fn decrypt_data(
-    key: &[u8],
-    objnum: u32,
-    gen: u16,
-    data: &[u8],
-    r: u8,
-    aes: bool,
-) -> Vec<u8> {
+pub fn decrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: bool) -> Vec<u8> {
     let obj_key = if r >= 3 {
         // Key is salted with the object number and generation (Algorithm 1).
         let mut hasher = Md5::new();
@@ -217,7 +209,10 @@ mod tests {
     #[test]
     fn rc4_matches_known_vector() {
         // Classic "Key"/"Plaintext" and "Key"/"pedia" vectors.
-        assert_eq!(rc4(b"Key", b"Plaintext"), b"\xBB\xF3\x16\xE8\xD9\x40\xAF\x0A\xD3");
+        assert_eq!(
+            rc4(b"Key", b"Plaintext"),
+            b"\xBB\xF3\x16\xE8\xD9\x40\xAF\x0A\xD3"
+        );
         assert_eq!(rc4(b"Key", b"pedia"), b"\x9B\xFA\x13\xE8\xD6");
     }
 

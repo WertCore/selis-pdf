@@ -22,4 +22,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# Corpus PDFs — fetched via `xtask corpus fetch`, never committed (SL-0.CORP.01)
+/corpus/pdfs/
+
 tmp_*
