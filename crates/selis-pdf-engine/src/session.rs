@@ -89,6 +89,18 @@ impl Session {
         selis_pdf_doc::embedded_file_data(&mut resolver, &self.document.catalog, key, budget, g)
     }
 
+    /// The structure tree's marked-content order (reading order), or an empty
+    /// list when the document is untagged.
+    pub fn mcid_order(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<u32>> {
+        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        let tree = selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        Ok(tree.mcid_order())
+    }
+
     /// Render a page onto a backend.
     pub fn render_page(
         &self,

@@ -59,6 +59,23 @@ pub struct StructTree {
 }
 
 impl StructTree {
+    /// The marked-content identifiers in structure-tree walk order (reading
+    /// order for the text layer). Includes MCIDs from `Mcid` and `Objr` kids.
+    #[must_use]
+    pub fn mcid_order(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        for el in &self.elements {
+            for kid in &el.kids {
+                match kid {
+                    StructKid::Mcid(mcid) => out.push(*mcid),
+                    StructKid::Objr { mcid, .. } => out.push(*mcid),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
     /// Parse the structure tree from the catalog.
     ///
     /// # Budget
