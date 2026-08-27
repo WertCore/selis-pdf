@@ -207,6 +207,7 @@ mod tests {
             at: Point::new(x, y),
             font: Bytes::copy_from_slice(font.as_bytes()),
             size,
+            mcid: None,
         }
     }
 

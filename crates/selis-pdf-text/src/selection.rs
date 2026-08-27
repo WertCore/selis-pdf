@@ -166,6 +166,7 @@ mod tests {
             at: Point::new(x, y),
             font: Bytes::copy_from_slice(b"F1"),
             size,
+            mcid: None,
         }
     }
 

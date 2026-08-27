@@ -39,6 +39,8 @@ pub struct TextState {
     pub font: Option<Bytes>,
     /// `/Tf` — the font size.
     pub font_size: f64,
+    /// The marked-content id (`/MCID`) of the enclosing `BDC`/`EMC` span.
+    pub mcid: Option<u32>,
 }
 
 impl Default for TextState {
@@ -54,6 +56,7 @@ impl Default for TextState {
             render_mode: 0,
             font: None,
             font_size: 0.0,
+            mcid: None,
         }
     }
 }
@@ -69,6 +72,8 @@ pub struct TextGlyph {
     pub font: Bytes,
     /// The font size.
     pub size: f64,
+    /// The marked-content id of the enclosing `BDC`/`EMC` span, if any.
+    pub mcid: Option<u32>,
 }
 
 /// Process a text operator against the text state.
@@ -203,6 +208,7 @@ fn show_string(
             at,
             font: font.clone(),
             size,
+            mcid: state.mcid,
         });
         state.matrix = state.matrix.then(Matrix::translate(advance, 0.0));
     }

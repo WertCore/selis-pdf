@@ -88,6 +88,7 @@ fn execute_inner(
     let mut text_state = TextState::default();
     let mut current_path = Path::new();
     let mut paint_op = PaintOp::None;
+    let mut mcid_stack: Vec<Option<u32>> = Vec::new();
 
     for dispatch in &interp.ops {
         let (op_name, operands) = match dispatch {
@@ -395,7 +396,20 @@ fn execute_inner(
             }
             "BDC" => {
                 // Tagged marked content: the tag may name an /ExtGState that
-                // carries the group's blend mode and alpha.
+                // carries the group's blend mode and alpha; the properties
+                // dict (second operand) may carry the /MCID.
+                mcid_stack.push(gstate.mcid);
+                if let Some(Operand::Dict(props)) = operands.get(1) {
+                    if let Some(Operand::Num(m)) = props
+                        .iter()
+                        .find(|(k, _)| k.as_slice() == b"MCID")
+                        .map(|(_, v)| v)
+                    {
+                        if m.is_finite() && *m >= 0.0 {
+                            gstate.mcid = Some(*m as u32);
+                        }
+                    }
+                }
                 let mut blend = selis_color::BlendMode::from_name(&gstate.blend_mode);
                 let mut alpha = gstate.alpha_fill;
                 if let Some(Operand::Name(name)) = operands.first() {
@@ -410,7 +424,12 @@ fn execute_inner(
                 }
                 dl.push(Op::PushLayer { blend, alpha });
             }
-            "EMC" => dl.push(Op::PopLayer),
+            "EMC" => {
+                dl.push(Op::PopLayer);
+                if let Some(m) = mcid_stack.pop() {
+                    gstate.mcid = m;
+                }
+            }
             "MP" | "DP" => {} // marked-content points: no grouping
 
             // Everything else — ignored.
@@ -454,6 +473,7 @@ fn flush_path(
         soft_mask: gs.soft_mask.clone(),
         fill_pattern: gs.fill_pattern.clone(),
         stroke_pattern: gs.stroke_pattern.clone(),
+        mcid: gs.mcid,
     };
     let op = match paint {
         PaintOp::Fill | PaintOp::FillEvenOdd => Op::Fill { path, state },

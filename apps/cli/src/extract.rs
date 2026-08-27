@@ -84,7 +84,8 @@ pub(crate) fn page_lines(
 ) -> (Vec<selis_pdf_text::TextLine>, Vec<String>) {
     let mut glyphs = Vec::new();
     for op in &dl.ops {
-        if let Op::Text { at, runs, .. } = op {
+        if let Op::Text { at, state, runs } = op {
+            let mcid = state.mcid;
             for run in runs {
                 for &code in &run.glyphs {
                     glyphs.push(TextGlyph {
@@ -92,6 +93,7 @@ pub(crate) fn page_lines(
                         at: *at,
                         font: run.font.clone(),
                         size: run.size,
+                        mcid,
                     });
                 }
             }
@@ -101,7 +103,12 @@ pub(crate) fn page_lines(
     // Reading order: column detection + XY-cut (no structure-tree MCIDs).
     let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
         .into_iter()
-        .map(|line| selis_pdf_text::LineWithMcid { line, mcid: None })
+        .map(|line| {
+            let mcid = line.words.iter().flat_map(|w| w.runs.iter()).find_map(|r| {
+                r.glyphs.first().and_then(|g| g.mcid)
+            });
+            selis_pdf_text::LineWithMcid { line, mcid }
+        })
         .collect();
     let ordered = selis_pdf_text::order_lines(mcid_lines, None);
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
@@ -312,6 +319,7 @@ mod tests {
             at: selis_geom::Point::new(x, 0.0),
             font: selis_bytes::Bytes::copy_from_slice(b"F1"),
             size: 12.0,
+            mcid: None,
         };
         let word = |codes: &[u16], x: f64| selis_pdf_text::TextWord {
             runs: vec![selis_pdf_text::TextRun {

@@ -49,6 +49,8 @@ pub struct ResolvedState {
     pub fill_pattern: Option<selis_bytes::Bytes>,
     /// The stroke pattern resource name.
     pub stroke_pattern: Option<selis_bytes::Bytes>,
+    /// The marked-content id of the enclosing `BDC`/`EMC` span, if any.
+    pub mcid: Option<u32>,
 }
 
 impl From<&GState> for ResolvedState {
@@ -67,6 +69,7 @@ impl From<&GState> for ResolvedState {
             soft_mask: g.soft_mask.clone(),
             fill_pattern: g.fill_pattern.clone(),
             stroke_pattern: g.stroke_pattern.clone(),
+            mcid: g.mcid,
         }
     }
 }

@@ -220,6 +220,7 @@ mod tests {
             at: Point::new(x0, y0),
             font: Bytes::copy_from_slice(b"F1"),
             size: 12.0,
+            mcid: None,
         };
         let run = crate::assembly::TextRun {
             glyphs: vec![g],

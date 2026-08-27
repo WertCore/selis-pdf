@@ -66,6 +66,9 @@ pub struct GState {
     pub fill_pattern: Option<selis_bytes::Bytes>,
     /// The stroke pattern resource name.
     pub stroke_pattern: Option<selis_bytes::Bytes>,
+    /// The marked-content id (`/MCID`) of the enclosing `BDC`/`EMC` span, if
+    /// any (used for structure-based reading order).
+    pub mcid: Option<u32>,
     /// Text state: the font resource name.
     pub text_font: Option<selis_bytes::Bytes>,
     /// Text size.
@@ -112,6 +115,7 @@ impl Default for GState {
             stroke_cs: selis_bytes::Bytes::copy_from_slice(b"DeviceRGB"),
             fill_pattern: None,
             stroke_pattern: None,
+            mcid: None,
             text_font: None,
             text_size: 0.0,
             char_spacing: 0.0,

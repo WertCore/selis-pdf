@@ -244,6 +244,7 @@ mod tests {
             at: Point::new(0.0, 0.0),
             font: Bytes::copy_from_slice(font.as_bytes()),
             size,
+            mcid: None,
         }
     }
 
