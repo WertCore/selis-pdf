@@ -24,6 +24,13 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
     let budget = Budget::profile(Surface::Viewer);
     let session =
         Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+
+    // Document-level formats don't need a page.
+    if format == "embedded" {
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        return extract_embedded(&session, &budget, &mut g);
+    }
+
     if page >= session.len() {
         return Err(CliError(format!(
             "page {page} out of range (document has {} pages)",
@@ -95,10 +102,46 @@ pub(crate) fn page_lines(
     (lines, line_texts)
 }
 
+/// List the document's embedded files (metadata only, newline-delimited JSON).
+fn extract_embedded(
+    session: &Session,
+    budget: &Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> CliResult<()> {
+    let attachments = session
+        .attachments(budget, g)
+        .map_err(|e| CliError(format!("cannot read embedded files: {e}")))?;
+    let mut out = String::new();
+    for a in &attachments {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let name = a.name.as_ref().map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
+        let size = a.size.unwrap_or(-1);
+        out.push_str(&format!(
+            r#"{{"name":{},"size":{},"key":{}}}"#,
+            json_str(name.as_deref().unwrap_or("")),
+            size,
+            json_str(&a.key),
+        ));
+    }
+    println!("{out}");
+    Ok(())
+}
+
+/// A JSON string literal (quoted, escaped).
+fn json_str(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    format!("\"{escaped}\"")
+}
+
 /// Extract every image XObject used on the page as a PPM file, printing a
 /// newline-delimited JSON manifest of `{"index", "width", "height", "file"}`.
-fn extract_images(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> CliResult<()> {
-    let images = image_manifest(dl, page);
+fn extract_images(dl: &selis_pdf_content::display_list::DisplayList, page: usize) -> CliResult<()> {    let images = image_manifest(dl, page);
     let mut manifest = String::new();
     for (index, entry) in images.iter().enumerate() {
         write_ppm(&entry.file, &entry.rgba8, entry.width, entry.height)?;

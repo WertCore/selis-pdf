@@ -42,10 +42,13 @@ pub fn embedded_files(
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<Attachment>> {
     let mut out = Vec::new();
-    let Some(Obj::Ref(names_root)) = catalog_dict(catalog, b"Names") else {
-        return Ok(out);
+    // `/Names` is usually a dict whose `/EmbeddedFiles` is a tree root ref,
+    // but may itself be a ref to the tree.
+    let names = match catalog_dict(catalog, b"Names") {
+        Some(Obj::Ref(r)) => resolver.resolve(*r, g)?,
+        Some(o) => o.clone(),
+        None => return Ok(out),
     };
-    let names = resolver.resolve(*names_root, g)?;
     let Some(Obj::Ref(embedded_root)) = dict_get(&names, b"EmbeddedFiles") else {
         return Ok(out);
     };
@@ -67,23 +70,25 @@ pub fn embedded_files(
             }
             _ => None,
         });
-        let (name, desc, size, subtype) = match stream_ref {
-            Some(sr) => {
-                let stream = resolver.resolve(sr, g).ok();
-                match stream {
-                    Some(Obj::Dict(pairs)) => {
-                        let stream_dict = Obj::Dict(pairs);
-                        (
-                            dict_value(&stream_dict, b"Name"),
-                            dict_value(&stream_dict, b"Desc"),
-                            dict_value_int(&stream_dict, b"Length"),
-                            dict_value(&stream_dict, b"Subtype"),
-                        )
-                    }
-                    _ => (None, None, None, None),
+        // The display name and description live in the Filespec dict; the
+        // declared size lives in the embedded-file stream's `/Length`.
+        let name = dict_value(&dict, b"Name").or_else(|| dict_value(&dict, b"F"));
+        let desc = dict_value(&dict, b"Desc");
+        let size = match stream_ref {
+            Some(sr) => resolver
+                .resolve(sr, g)
+                .ok()
+                .and_then(|o| stream_length(&o)),
+            None => None,
+        };
+        let subtype = match stream_ref {
+            Some(sr) => resolver.resolve(sr, g).ok().and_then(|o| match o {
+                Obj::Stream { dict, .. } | Obj::Dict(dict) => {
+                    dict_value(&Obj::Dict(dict), b"Subtype")
                 }
-            }
-            None => (None, None, None, None),
+                _ => None,
+            }),
+            None => None,
         };
         out.push(Attachment {
             key,
@@ -94,6 +99,16 @@ pub fn embedded_files(
         });
     }
     Ok(out)
+}
+
+/// The `/Length` of a stream object (or `None`).
+fn stream_length(obj: &Obj) -> Option<i64> {
+    let pairs = match obj {
+        Obj::Stream { dict, .. } => dict,
+        Obj::Dict(pairs) => pairs,
+        _ => return None,
+    };
+    dict_value_int(&Obj::Dict(pairs.clone()), b"Length")
 }
 
 fn as_dict<'a>(

@@ -67,6 +67,17 @@ impl Session {
             .map(|r| (r.width(), r.height()))
     }
 
+    /// The embedded-file inventory (metadata only — extraction is policy
+    /// gated).
+    pub fn attachments(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<selis_pdf_doc::Attachment>> {
+        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        selis_pdf_doc::embedded_files(&mut resolver, &self.document.catalog, budget, g)
+    }
+
     /// Render a page onto a backend.
     pub fn render_page(
         &self,
