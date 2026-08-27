@@ -220,9 +220,10 @@ mod tests {
 
     #[test]
     fn bounded_decode_respects_the_limit() {
-        let data = vec![0u8; 100_000];
-        let compressed = compress_to_vec(&data, 6);
         let mut g = guard();
+        let data =
+            selis_sandbox::alloc::vec_filled(&mut g, 100_000, 0u8).expect("unlimited budget");
+        let compressed = compress_to_vec(&data, 6);
         let e = flate_decode_bounded(&compressed, 1000, &mut g).expect_err("limit");
         assert_eq!(e.code(), Code::FlateCorrupt);
     }

@@ -534,12 +534,9 @@ pub fn embed_image_rgba(
     height: u32,
     rgba8: &[u8],
 ) -> Ref {
-    // Convert RGBA → RGB (PDF DeviceRGB).
-    let mut rgb = Vec::with_capacity(
-        (width as usize)
-            .saturating_mul(height as usize)
-            .saturating_mul(3),
-    );
+    // Convert RGBA → RGB (PDF DeviceRGB). Grows incrementally over the
+    // already-resident source buffer; the writer carries no budget guard.
+    let mut rgb = Vec::new();
     for px in rgba8.chunks(4) {
         rgb.extend_from_slice(px.get(..3).unwrap_or(&[]));
     }

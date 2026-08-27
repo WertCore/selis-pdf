@@ -12,7 +12,7 @@
 //! implements.
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 const CLEAR: u32 = 256;
 const EOD: u32 = 257;
@@ -31,7 +31,7 @@ const MAX_ENTRIES: usize = 4096; // 12-bit table
 pub fn lzw_decode(data: &[u8], early_change: u8, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
     // Dictionary: entries indexed by code. Codes 0..=255 are single bytes,
     // 256 = clear, 257 = EOD, 258+ grow.
-    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(MAX_ENTRIES);
+    let mut dict: Vec<Vec<u8>> = alloc::vec_with_capacity(g, MAX_ENTRIES)?;
     for i in 0..256u32 {
         dict.push(vec![u8::try_from(i).unwrap_or(0)]);
     }

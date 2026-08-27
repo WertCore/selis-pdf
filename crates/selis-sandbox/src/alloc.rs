@@ -111,6 +111,24 @@ pub fn boxed_slice<T: Clone>(g: &mut BudgetGuard<'_>, len: usize, value: T) -> R
     Ok(v.into_boxed_slice())
 }
 
+/// Allocate a `Vec<T>` of `len` elements initialised to `value`, charging
+/// first.
+///
+/// The `vec![value; n]` replacement for document-derived `n` where the caller
+/// needs a growable `Vec` rather than a boxed slice.
+///
+/// # Errors
+///
+/// `BUDGET_BYTES` when `len * size_of::<T>()` exceeds the remaining budget.
+/// On error **nothing is allocated**.
+pub fn vec_filled<T: Clone>(g: &mut BudgetGuard<'_>, len: usize, value: T) -> Result<Vec<T>> {
+    charge_len::<T>(g, len)?;
+    let mut v = Vec::new();
+    v.try_reserve(len).map_err(|_| exceeded(len))?;
+    v.resize(len, value);
+    Ok(v)
+}
+
 /// Copy `src` into a freshly budgeted `Vec<T>`.
 ///
 /// Charges the source's byte size, then copies. The caller keeps `src`.
@@ -202,6 +220,23 @@ mod tests {
         assert_eq!(s.len(), 10);
         assert!(s.iter().all(|&b| b == 7));
         assert_eq!(g.usage().bytes, 10);
+    }
+
+    #[test]
+    fn vec_filled_charges_and_initialises() {
+        let mut g = Budget {
+            bytes: 1000,
+            wall: u64::MAX,
+            depth: 100,
+            objects: u32::MAX,
+            pixels: u64::MAX,
+        }
+        .guard();
+        let v: Vec<u8> = vec_filled(&mut g, 10, 7).expect("10 bytes fits");
+        assert_eq!(v.len(), 10);
+        assert!(v.iter().all(|&b| b == 7));
+        assert_eq!(g.usage().bytes, 10);
+        assert!(vec_filled::<u8>(&mut g, 2000, 0).is_err(), "over budget");
     }
 
     #[test]

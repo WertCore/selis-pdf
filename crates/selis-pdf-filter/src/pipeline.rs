@@ -10,7 +10,7 @@
 //! the chain hits the budget, not memory.
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 use crate::decode;
 
@@ -125,7 +125,7 @@ fn tiff_predictor(
     let row_bytes = colors
         .saturating_mul(columns)
         .saturating_mul(bytes_per_sample);
-    let mut out = Vec::with_capacity(data.len());
+    let mut out = alloc::vec_with_capacity(g, data.len())?;
     let mut rows = data.chunks(row_bytes.max(1));
     // First row is stored raw.
     if let Some(first) = rows.next() {

@@ -146,7 +146,9 @@ fn endless_string_terminates() {
 #[test]
 fn flate_bomb_is_bounded() {
     // Use miniz to make a real 100 MB of zeros compressed tiny.
-    let zeros = vec![0u8; 100 * 1024 * 1024];
+    let mut setup = Budget::unlimited().guard();
+    let zeros = selis_sandbox::alloc::vec_filled(&mut setup, 100 * 1024 * 1024, 0u8)
+        .expect("unlimited budget");
     let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 6);
     // The compressed stream is small.
     assert!(

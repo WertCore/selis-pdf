@@ -13,7 +13,7 @@
 //! byte is charged.
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 const WHITE_RUNS: &[(&[u8], u16)] = &[
     (b"00110101", 0),
@@ -319,7 +319,7 @@ fn decode_g4(
     if bits.starts_with(G4_EOL) {
         bits.consume(G4_EOL.len());
     }
-    let mut prev_row = vec![0u8; columns];
+    let mut prev_row = alloc::vec_filled(g, columns, 0u8)?;
     while row_count < max_rows && !bits.is_exhausted() {
         // End-of-fax-block marker: EOL + 001. Stop cleanly.
         if bits.starts_with(G4_EOFB) {
@@ -327,7 +327,7 @@ fn decode_g4(
         }
         let mut cur = Vec::new();
         decode_2d_row(bits, &mut prev_row, &mut cur, columns, black_bit, g)?;
-        out.extend_from_slice(&pack_row(&cur, row_bytes));
+        out.extend_from_slice(&pack_row(&cur, row_bytes, g)?);
         prev_row = cur;
         row_count = row_count.saturating_add(1);
     }
@@ -346,7 +346,7 @@ fn decode_g3_2d(
     // Simplified G3 2-D: alternating 1-D reference lines and 2-D lines.
     let mut row_count = 0u32;
     let max_rows = if rows == 0 { u32::MAX } else { rows };
-    let mut prev_row = vec![0u8; columns];
+    let mut prev_row = alloc::vec_filled(g, columns, 0u8)?;
     while row_count < max_rows && !bits.is_exhausted() {
         bits.find_pattern(EOL);
         if bits.is_exhausted() {
@@ -354,13 +354,13 @@ fn decode_g3_2d(
         }
         // The bit after EOL: 1 = 1-D row, 0 = 2-D row.
         let is_1d = bits.read_bit() == 1;
-        let mut cur = vec![0u8; columns];
+        let mut cur = alloc::vec_filled(g, columns, 0u8)?;
         if is_1d {
             decode_1d_into(bits, &mut cur, columns, black_bit, g)?;
         } else {
             decode_2d_row(bits, &prev_row, &mut cur, columns, black_bit, g)?;
         }
-        out.extend_from_slice(&pack_row(&cur, row_bytes));
+        out.extend_from_slice(&pack_row(&cur, row_bytes, g)?);
         prev_row = cur;
         row_count = row_count.saturating_add(1);
     }
@@ -374,7 +374,7 @@ fn decode_1d_row(
     black_bit: u8,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
-    let mut row = Vec::with_capacity(columns);
+    let mut row = alloc::vec_with_capacity(g, columns)?;
     decode_1d_into(bits, &mut row, columns, black_bit, g)?;
     Ok(row)
 }
@@ -624,8 +624,8 @@ fn next_change(row: &[u8], start: usize, _colour: u8) -> usize {
     row.len()
 }
 
-fn pack_row(row: &[u8], row_bytes: usize) -> Vec<u8> {
-    let mut out = vec![0u8; row_bytes];
+fn pack_row(row: &[u8], row_bytes: usize, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
+    let mut out = alloc::vec_filled(g, row_bytes, 0u8)?;
     for (i, &pixel) in row.iter().enumerate() {
         if pixel != 0 {
             let byte = i.wrapping_div(8);
@@ -635,7 +635,7 @@ fn pack_row(row: &[u8], row_bytes: usize) -> Vec<u8> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// A big-endian bit reader over a byte buffer.
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn eol_find_works() {
         // Build a buffer with an EOL near the start.
-        let mut buf = vec![0u8; 4];
+        let mut buf = [0u8; 4];
         // "000000000001" followed by 00110101 (white 0).
         let bits_str = format!("{}{}", "000000000001", "00110101");
         for (i, ch) in bits_str.chars().enumerate() {
@@ -750,7 +750,7 @@ mod tests {
         let mut g = guard();
         // Just the initial G4 EOL then nothing: terminates cleanly, emitting
         // at most one blank row from the trailing padding.
-        let mut buf = vec![0u8; 2];
+        let mut buf = [0u8; 2];
         for (i, ch) in G4_EOL.iter().enumerate() {
             if *ch == b'1' {
                 buf[i / 8] |= 1 << (7 - (i % 8));

@@ -125,10 +125,10 @@ mod tests {
 
     /// A minimal ICC header for an RGB profile.
     fn rgb_profile() -> Vec<u8> {
-        let mut h = vec![0u8; 128];
+        let mut h = [0u8; 128];
         h[16..20].copy_from_slice(b"RGB ");
         h[36..40].copy_from_slice(b"acsp");
-        h
+        h.to_vec()
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn cmyk_profile_uses_naive_fallback() {
-        let mut h = vec![0u8; 128];
+        let mut h = [0u8; 128];
         h[16..20].copy_from_slice(b"CMYK");
         h[36..40].copy_from_slice(b"acsp");
         let engine = IccEngine::new(Some(&h));

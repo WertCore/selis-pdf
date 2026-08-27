@@ -54,7 +54,8 @@ impl OverprintParams {
 #[must_use]
 pub fn overprint_mode0(backdrop: &[f64], source: &[f64]) -> Vec<f64> {
     let n = backdrop.len().min(source.len());
-    let mut out = Vec::with_capacity(n);
+    // Component vectors are small (≤ 4); grows incrementally.
+    let mut out = Vec::new();
     for i in 0..n {
         let src = source.get(i).copied().unwrap_or(0.0);
         let bkd = backdrop.get(i).copied().unwrap_or(0.0);
@@ -78,7 +79,8 @@ pub fn overprint_mode0(backdrop: &[f64], source: &[f64]) -> Vec<f64> {
 #[must_use]
 pub fn overprint_mode1(backdrop: &[f64], source: &[f64]) -> Vec<f64> {
     let n = backdrop.len().min(source.len());
-    let mut out = Vec::with_capacity(n);
+    // Component vectors are small (≤ 4); grows incrementally.
+    let mut out = Vec::new();
     for i in 0..n {
         let src = source.get(i).copied().unwrap_or(0.0);
         let bkd = backdrop.get(i).copied().unwrap_or(0.0);

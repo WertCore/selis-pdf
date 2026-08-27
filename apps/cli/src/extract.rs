@@ -60,7 +60,7 @@ pub(crate) fn run(
             .mcid_order(&budget, &mut g)
             .ok()
             .filter(|v| !v.is_empty());
-        let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref());
+        let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref(), &mut g)?;
         let page_out = match format {
             "json" => {
                 let run_texts: Vec<Vec<String>> = lines
@@ -98,10 +98,15 @@ pub(crate) fn run(
 /// list, in reading order. `mcid_order` (the structure tree's marked-content
 /// order) enables structure-first ordering for tagged PDFs; `None` falls back
 /// to column-aware geometry.
+///
+/// # Errors
+///
+/// `BUDGET_BYTES` when the reading-order ranking buffer cannot be budgeted.
 pub(crate) fn page_lines(
     dl: &selis_pdf_content::display_list::DisplayList,
     mcid_order: Option<&[u32]>,
-) -> (Vec<selis_pdf_text::TextLine>, Vec<String>) {
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> CliResult<(Vec<selis_pdf_text::TextLine>, Vec<String>)> {
     let mut glyphs = Vec::new();
     for op in &dl.ops {
         if let Op::Text { at, state, runs } = op {
@@ -132,9 +137,10 @@ pub(crate) fn page_lines(
             selis_pdf_text::LineWithMcid { line, mcid }
         })
         .collect();
-    let ordered = selis_pdf_text::order_lines(mcid_lines, mcid_order);
+    let ordered = selis_pdf_text::order_lines(mcid_lines, mcid_order, g)
+        .map_err(|e| CliError(format!("cannot order text: {e}")))?;
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
-    (ordered.lines, line_texts)
+    Ok((ordered.lines, line_texts))
 }
 
 /// List the document's embedded files (metadata only, newline-delimited JSON),

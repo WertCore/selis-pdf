@@ -1235,12 +1235,14 @@ fn resolve_shading_inner(
         }
         _ => None,
     };
-    let mut rgba = Vec::with_capacity(
+    let mut rgba = selis_sandbox::alloc::vec_with_capacity::<u8>(
+        g,
         usize::try_from(w)
             .unwrap_or(0)
             .saturating_mul(usize::try_from(h).unwrap_or(0))
             .saturating_mul(4),
-    );
+    )
+    .ok()?;
     for py in 0..h {
         for px in 0..w {
             let dev_x = dev_rect.x0 + (f64::from(px) + 0.5) / f64::from(w) * dev_rect.width();
@@ -1516,7 +1518,7 @@ fn parse_gouraud_shading(
                 break;
             };
             let (x, y) = coords(decode, x_raw, y_raw);
-            let mut comps = Vec::with_capacity(components);
+            let mut comps = Vec::new();
             let mut colour_ok = true;
             for c in 0..components {
                 let Some(raw) = r.read(bpc_color.max(1)) else {
@@ -1605,7 +1607,7 @@ fn parse_lattice_shading(
                 decode.get(3).copied().unwrap_or(0.0),
             ),
         );
-        let mut comps = Vec::with_capacity(components);
+        let mut comps = Vec::new();
         let mut ok = true;
         for c in 0..components {
             let Some(raw) = r.read(bpc_color.max(1)) else {
@@ -1769,9 +1771,8 @@ fn tensor_patch(points: &[selis_raster::shading::ShadingPoint], u: f64, v: f64) 
 }
 
 /// A shading point as a (x, y, colours) vector.
-#[allow(clippy::arithmetic_side_effects)]
 fn pts_vec(sp: &selis_raster::shading::ShadingPoint) -> Vec<f64> {
-    let mut v = Vec::with_capacity(sp.components.len() + 2);
+    let mut v = Vec::new();
     v.push(sp.point.x);
     v.push(sp.point.y);
     v.extend_from_slice(&sp.components);
@@ -1789,7 +1790,8 @@ fn tessellate_patch(
     use selis_geom::Point;
     use selis_raster::shading::ShadingPoint;
     let g = grid.max(1);
-    let mut out = Vec::with_capacity((g + 1) * (g + 1));
+    // Grid is a caller-bounded constant (8); grows incrementally.
+    let mut out = Vec::new();
     for j in 0..=g {
         for i in 0..=g {
             let u = i as f64 / g as f64;
@@ -1834,7 +1836,8 @@ fn parse_patch_shading(
         if flag != 0 {
             break; // patch-reuse flags are a refinement; skip the shading
         }
-        let mut points = Vec::with_capacity(per_patch);
+        // per_patch is a spec constant (≤ 16 for types 6/7).
+        let mut points = Vec::new();
         for _ in 0..per_patch {
             let Some(x_raw) = r.read(bpc.max(1)) else {
                 break;
@@ -1856,7 +1859,7 @@ fn parse_patch_shading(
                     decode.get(3).copied().unwrap_or(0.0),
                 ),
             );
-            let mut comps = Vec::with_capacity(components);
+            let mut comps = Vec::new();
             let mut ok = true;
             for c in 0..components {
                 let Some(raw) = r.read(bpc_color.max(1)) else {

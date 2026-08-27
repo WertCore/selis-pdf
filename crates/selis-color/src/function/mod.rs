@@ -131,7 +131,8 @@ impl SampledFunction {
             return Err(err!(Code::FunctionInputCount, during = "function-eval"));
         }
         // Normalise each input to the domain, then to sample coordinates.
-        let mut coords: Vec<f64> = Vec::with_capacity(self.inputs);
+        // `inputs` is a parse-bounded component count; grows incrementally.
+        let mut coords: Vec<f64> = Vec::new();
         for (i, &v) in input.iter().enumerate() {
             let (lo, hi) = self.domain.get(i).copied().unwrap_or((0.0, 1.0));
             let n = if hi > lo { (v - lo) / (hi - lo) } else { 0.0 };
@@ -226,7 +227,7 @@ impl ExponentialFunction {
         if input.len() != self.inputs {
             return Err(err!(Code::FunctionInputCount, during = "function-eval"));
         }
-        let mut out = Vec::with_capacity(self.outputs);
+        let mut out = Vec::new();
         for o in 0..self.outputs {
             let a = self.a.get(o).copied().unwrap_or(0.0);
             let b = self.b.get(o).copied().unwrap_or(1.0);

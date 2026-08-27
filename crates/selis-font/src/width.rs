@@ -188,7 +188,7 @@ fn standard14_widths(dict: &FontDict) -> Option<WidthsArray> {
     // widths keyed by the StandardEncoding glyph name (SL-3.FONT.03). The
     // range covers 0–255 regardless of /FirstChar//LastChar (usually absent).
     // Glyphs absent from the AFM table (e.g. ".notdef") get a 0 width.
-    let mut values = Vec::with_capacity(256);
+    let mut values = Vec::new();
     for code in 0u32..=255 {
         let idx = usize::try_from(code).unwrap_or(0);
         let width = crate::tables::StandardEncoding

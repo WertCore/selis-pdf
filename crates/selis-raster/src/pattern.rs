@@ -242,10 +242,13 @@ mod tests {
     }
 
     fn tile(w: u32, h: u32) -> PatternTile {
+        let mut g = guard();
+        let rgba8 = selis_sandbox::alloc::vec_filled(&mut g, w as usize * h as usize * 4, 0u8)
+            .expect("unlimited budget");
         PatternTile {
             width: w,
             height: h,
-            rgba8: vec![0u8; w as usize * h as usize * 4],
+            rgba8,
         }
     }
 
@@ -338,11 +341,13 @@ mod tests {
     #[test]
     fn invalid_tile_buffer_is_malformed() {
         let mut g = guard();
+        let short_tile =
+            selis_sandbox::alloc::vec_filled(&mut g, 4, 0u8).expect("unlimited budget");
         let pattern = TilingPattern {
             tile: PatternTile {
                 width: 2,
                 height: 2,
-                rgba8: vec![0u8; 4], // needs 16
+                rgba8: short_tile, // needs 16
             },
             ..identity_pattern(10.0, 10.0)
         };

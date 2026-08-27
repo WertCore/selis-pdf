@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
-use selis_sandbox::{Budget, BudgetGuard};
+use selis_sandbox::{alloc, Budget, BudgetGuard};
 
 use crate::copy::resolve_ref;
 use crate::doc_writer::DocumentBuilder;
@@ -73,7 +73,7 @@ pub fn copy_value_into(
             Ok(Obj::Ref(Ref::new(num, 0)))
         }
         Obj::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
+            let mut out = alloc::vec_with_capacity(g, items.len())?;
             for item in items {
                 out.push(copy_value_into(
                     builder, src, doc, page_map, cache, item, budget, g,
@@ -82,7 +82,7 @@ pub fn copy_value_into(
             Ok(Obj::Array(out))
         }
         Obj::Dict(pairs) => {
-            let mut out = Vec::with_capacity(pairs.len());
+            let mut out = alloc::vec_with_capacity(g, pairs.len())?;
             for (k, v) in pairs {
                 out.push((
                     k.clone(),
@@ -92,7 +92,7 @@ pub fn copy_value_into(
             Ok(Obj::Dict(out))
         }
         Obj::Stream { dict, data } => {
-            let mut out = Vec::with_capacity(dict.len());
+            let mut out = alloc::vec_with_capacity(g, dict.len())?;
             for (k, v) in dict {
                 out.push((
                     k.clone(),
@@ -307,7 +307,9 @@ pub fn merge_number_trees(inputs: &[(Vec<(i64, Obj)>, i64)]) -> Obj {
         }
     }
     all.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut nums: Vec<Obj> = Vec::with_capacity(all.len().saturating_mul(2));
+    // Grows incrementally over already-resident pairs: no budget guard is
+    // available on this `#[must_use]` assembly helper.
+    let mut nums: Vec<Obj> = Vec::new();
     for (k, v) in all {
         nums.push(Obj::Int(k));
         nums.push(v);
@@ -320,7 +322,9 @@ pub fn merge_number_trees(inputs: &[(Vec<(i64, Obj)>, i64)]) -> Obj {
 #[must_use]
 pub fn build_name_tree(mut pairs: Vec<(Bytes, Obj)>) -> Obj {
     pairs.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
-    let mut names: Vec<Obj> = Vec::with_capacity(pairs.len().saturating_mul(2));
+    // Grows incrementally over already-resident pairs: no budget guard is
+    // available on this `#[must_use]` assembly helper.
+    let mut names: Vec<Obj> = Vec::new();
     for (k, v) in pairs {
         names.push(Obj::String(k));
         names.push(v);

@@ -122,7 +122,7 @@ impl RangeSet {
         if start >= end {
             return;
         }
-        let mut kept: Vec<Range<u64>> = Vec::with_capacity(self.ranges.len());
+        let mut kept: Vec<Range<u64>> = Vec::new();
         for r in self.ranges.drain(..) {
             if r.end <= start || r.start >= end {
                 kept.push(r);

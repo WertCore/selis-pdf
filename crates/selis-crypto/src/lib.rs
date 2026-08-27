@@ -47,7 +47,9 @@ pub fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
         j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
         s.swap(i, usize::from(j));
     }
-    let mut out = Vec::with_capacity(data.len());
+    // Grows incrementally: the output is bounded by the already-resident
+    // input, and the caller owns the budget for decrypted stream bytes.
+    let mut out = Vec::new();
     let mut i: u8 = 0;
     let mut j: u8 = 0;
     for &b in data {
@@ -182,7 +184,7 @@ fn aes_cbc_decrypt(key: &[u8], data: &[u8]) -> Vec<u8> {
             blocks.push(block);
         }
     }
-    let mut out = Vec::with_capacity(blocks.len() * 16);
+    let mut out = Vec::new();
     let mut prev = [0u8; 16];
     for (i, block) in blocks.iter().enumerate() {
         let mut plain = [0u8; 16];

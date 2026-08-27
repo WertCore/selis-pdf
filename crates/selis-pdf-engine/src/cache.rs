@@ -211,6 +211,12 @@ mod tests {
         CacheKey::new(page, Matrix::IDENTITY, 7, 1)
     }
 
+    /// A zero-filled buffer through the sanctioned allocator.
+    fn zeros(n: usize) -> Vec<u8> {
+        let mut g = selis_sandbox::Budget::unlimited().guard();
+        selis_sandbox::alloc::vec_filled(&mut g, n, 0u8).expect("unlimited budget")
+    }
+
     #[test]
     fn insert_get_roundtrip() {
         let mut cache = LruCache::new(1000);
@@ -224,12 +230,12 @@ mod tests {
     fn lru_evicts_the_oldest_under_budget() {
         // Budget 10 bytes; inserting a third 4-byte value forces eviction.
         let mut cache = LruCache::new(10);
-        cache.insert(key(0), vec![0u8; 4], 4);
-        cache.insert(key(1), vec![0u8; 4], 4);
+        cache.insert(key(0), zeros(4), 4);
+        cache.insert(key(1), zeros(4), 4);
         // Touch page 0 so page 1 is the oldest.
         cache.get(&key(0));
-        cache.insert(key(2), vec![0u8; 4], 4); // would be 12 > 10
-                                               // Page 1 (oldest) is gone; pages 0 and 2 remain.
+        cache.insert(key(2), zeros(4), 4); // would be 12 > 10
+                                           // Page 1 (oldest) is gone; pages 0 and 2 remain.
         assert!(cache.get(&key(1)).is_none());
         assert!(cache.get(&key(0)).is_some());
         assert!(cache.get(&key(2)).is_some());
@@ -239,8 +245,8 @@ mod tests {
     #[test]
     fn replacing_a_value_adjusts_the_budget() {
         let mut cache = LruCache::new(100);
-        cache.insert(key(0), vec![0u8; 4], 4);
-        cache.insert(key(0), vec![0u8; 8], 8); // replace
+        cache.insert(key(0), zeros(4), 4);
+        cache.insert(key(0), zeros(8), 8); // replace
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.used_bytes(), 8);
     }
@@ -249,9 +255,9 @@ mod tests {
     #[test]
     fn invalidate_page_is_exact() {
         let mut cache = LruCache::new(1000);
-        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), vec![0u8; 4], 4);
-        cache.insert(CacheKey::new(1, Matrix::IDENTITY, 7, 1), vec![0u8; 4], 4);
-        cache.insert(CacheKey::new(1, Matrix::IDENTITY, 8, 1), vec![0u8; 4], 4);
+        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), zeros(4), 4);
+        cache.insert(CacheKey::new(1, Matrix::IDENTITY, 7, 1), zeros(4), 4);
+        cache.insert(CacheKey::new(1, Matrix::IDENTITY, 8, 1), zeros(4), 4);
         // Edit touches page 1.
         cache.invalidate_page(1);
         // Page 0 survives; both page-1 entries (any params) are gone.
@@ -270,9 +276,9 @@ mod tests {
     #[test]
     fn revision_distinguishes_stale_entries() {
         let mut cache = LruCache::new(1000);
-        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), vec![0u8; 4], 4);
+        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), zeros(4), 4);
         // After an edit, the engine renders with revision 2.
-        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 2), vec![0u8; 4], 4);
+        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 2), zeros(4), 4);
         // The stale revision-1 entry is not the current one.
         assert!(cache
             .get(&CacheKey::new(0, Matrix::IDENTITY, 7, 2))
@@ -283,12 +289,8 @@ mod tests {
     #[test]
     fn different_matrix_ids_are_distinct_keys() {
         let mut cache = LruCache::new(1000);
-        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), vec![0u8; 4], 4);
-        cache.insert(
-            CacheKey::new(0, Matrix::scale(2.0, 2.0), 7, 1),
-            vec![0u8; 4],
-            4,
-        );
+        cache.insert(CacheKey::new(0, Matrix::IDENTITY, 7, 1), zeros(4), 4);
+        cache.insert(CacheKey::new(0, Matrix::scale(2.0, 2.0), 7, 1), zeros(4), 4);
         assert_eq!(cache.len(), 2);
         assert_ne!(
             matrix_id(Matrix::IDENTITY),

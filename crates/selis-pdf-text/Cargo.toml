@@ -15,6 +15,7 @@ workspace = true
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-geom = { workspace = true }
+selis-sandbox = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-font = { workspace = true }
 unicode-normalization = { workspace = true }

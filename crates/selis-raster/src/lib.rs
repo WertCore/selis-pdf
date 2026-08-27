@@ -335,10 +335,13 @@ mod tests {
     #[test]
     fn draw_image_records_size_and_placement() {
         let mut backend = RecordingBackend::default();
+        let mut g = selis_sandbox::Budget::unlimited().guard();
+        let rgba8 =
+            selis_sandbox::alloc::vec_filled(&mut g, 4 * 4 * 4, 0u8).expect("unlimited budget");
         let image = Image {
             width: 4,
             height: 4,
-            rgba8: vec![0u8; 4 * 4 * 4],
+            rgba8,
         };
         let placement = ImagePlacement {
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),

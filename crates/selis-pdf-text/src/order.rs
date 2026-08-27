@@ -9,6 +9,9 @@
 //! The structure tree (SL-1.DOC.06) exposes the marked-content ids in logical
 //! order; the caller associates each assembled line with its MCID.
 
+use selis_error::Result;
+use selis_sandbox::{alloc, BudgetGuard};
+
 use crate::assembly::TextLine;
 
 /// The reading-order strategy.
@@ -49,11 +52,27 @@ pub struct OrderResult {
 /// MCID's position in that walk; lines without an MCID sort after. Otherwise
 /// a layout analysis (column detection + XY-cut) orders them, with a
 /// confidence.
-#[must_use]
-pub fn order_lines(lines: Vec<LineWithMcid>, mcid_order: Option<&[u32]>) -> OrderResult {
+///
+/// # Budget
+///
+/// The ranking buffer is charged against `Bytes` before it is allocated.
+///
+/// # Malformed Input
+///
+/// None: ordering is total over any input; budget exhaustion is the only
+/// failure.
+///
+/// # Errors
+///
+/// `BUDGET_BYTES` when the ranking buffer cannot be budgeted.
+pub fn order_lines(
+    lines: Vec<LineWithMcid>,
+    mcid_order: Option<&[u32]>,
+    g: &mut BudgetGuard<'_>,
+) -> Result<OrderResult> {
     if let Some(order) = mcid_order {
         // Structure-first: rank by the MCID position in the structure walk.
-        let mut ranked: Vec<(u64, TextLine)> = Vec::with_capacity(lines.len());
+        let mut ranked: Vec<(u64, TextLine)> = alloc::vec_with_capacity(g, lines.len())?;
         for l in lines {
             let rank = match l.mcid {
                 Some(mcid) => position(order, mcid).unwrap_or(u64::MAX),
@@ -62,21 +81,21 @@ pub fn order_lines(lines: Vec<LineWithMcid>, mcid_order: Option<&[u32]>) -> Orde
             ranked.push((rank, l.line));
         }
         ranked.sort_by_key(|(rank, _)| *rank);
-        return OrderResult {
+        return Ok(OrderResult {
             lines: ranked.into_iter().map(|(_, l)| l).collect(),
             strategy: ReadingOrder::Structure,
             confidence: 1.0,
-        };
+        });
     }
 
     // Geometry: column detection then XY-cut ordering.
     let (columns, confidence) = detect_columns(&lines);
     let ordered = xy_cut_order(lines, &columns);
-    OrderResult {
+    Ok(OrderResult {
         lines: ordered,
         strategy: ReadingOrder::Geometry,
         confidence,
-    }
+    })
 }
 
 /// The index of `mcid` in `order`, or `None`.
@@ -214,6 +233,10 @@ mod tests {
     use selis_geom::Point;
     use selis_pdf_content::text::TextGlyph;
 
+    fn budget_guard() -> selis_sandbox::BudgetGuard<'static> {
+        selis_sandbox::Budget::unlimited().guard()
+    }
+
     fn line_at(x0: f64, y0: f64, x1: f64, y1: f64) -> TextLine {
         let g = TextGlyph {
             code: 65,
@@ -248,7 +271,7 @@ mod tests {
                 mcid: None,
             },
         ];
-        let result = order_lines(lines, None);
+        let result = order_lines(lines, None, &mut budget_guard()).expect("budget");
         assert_eq!(result.strategy, ReadingOrder::Geometry);
         assert!(result.confidence > 0.7);
         assert!(result.lines[0].bbox.y0 > result.lines[1].bbox.y0);
@@ -266,7 +289,7 @@ mod tests {
                 mcid: Some(2),
             },
         ];
-        let result = order_lines(lines, Some(&[2, 1]));
+        let result = order_lines(lines, Some(&[2, 1]), &mut budget_guard()).expect("budget");
         assert_eq!(result.strategy, ReadingOrder::Structure);
         assert_eq!(result.confidence, 1.0);
         assert!(result.lines[0].bbox.y0 > result.lines[1].bbox.y0);
@@ -292,7 +315,7 @@ mod tests {
                 mcid: None,
             },
         ];
-        let result = order_lines(lines, None);
+        let result = order_lines(lines, None, &mut budget_guard()).expect("budget");
         assert_eq!(result.strategy, ReadingOrder::Geometry);
         // Left column first: the two left lines (top then bottom), then right.
         assert!(result.lines[0].bbox.x0 < 100.0);
@@ -314,13 +337,13 @@ mod tests {
                 mcid: Some(1),
             },
         ];
-        let result = order_lines(lines, Some(&[1]));
+        let result = order_lines(lines, Some(&[1]), &mut budget_guard()).expect("budget");
         assert!(result.lines[0].bbox.y0 > result.lines[1].bbox.y0);
     }
 
     #[test]
     fn empty_input_is_empty() {
-        let result = order_lines(Vec::new(), None);
+        let result = order_lines(Vec::new(), None, &mut budget_guard()).expect("budget");
         assert!(result.lines.is_empty());
     }
 }

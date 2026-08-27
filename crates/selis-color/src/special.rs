@@ -93,7 +93,7 @@ impl Indexed {
         let n = usize::from(self.base_components);
         let idx = usize::from(index).min(self.hival as usize);
         let base = idx.saturating_mul(n);
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
         for i in 0..n {
             let b = self
                 .lookup

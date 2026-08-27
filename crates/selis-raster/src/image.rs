@@ -12,7 +12,7 @@
 
 use selis_error::{err, Code, Result};
 use selis_geom::Rect;
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 use crate::{Backend, Image, ImagePlacement};
 
@@ -66,7 +66,6 @@ pub fn decode_image(
 ) -> Result<DecodedImage> {
     // Reject absurd dimensions before any allocation (the 20kÃ—20k guard).
     let pixel_count = u64::from(width).saturating_mul(u64::from(height));
-    let bytes_needed = pixel_count.saturating_mul(4);
     if pixel_count > u64::from(u32::MAX) {
         return Err(err!(
             Code::ImageMalformed,
@@ -74,7 +73,6 @@ pub fn decode_image(
             detail = "image dimensions overflow"
         ));
     }
-    g.charge(selis_sandbox::Resource::Bytes, bytes_needed)?;
 
     let per_pixel = usize::from(components.max(1));
     let expected = pixel_count.saturating_mul(per_pixel as u64);
@@ -86,7 +84,10 @@ pub fn decode_image(
         ));
     }
 
-    let mut rgba = Vec::with_capacity(usize::try_from(pixel_count).unwrap_or(0).saturating_mul(4));
+    let mut rgba = alloc::vec_with_capacity::<u8>(
+        g,
+        usize::try_from(pixel_count).unwrap_or(0).saturating_mul(4),
+    )?;
     let bpc = usize::from(bits_per_component.max(1));
     let bytes_per_sample = if bpc <= 8 { 1 } else { 2 };
 
@@ -220,7 +221,6 @@ pub fn decode_image_scaled(
             detail = "destination dimensions overflow"
         ));
     }
-    g.charge(selis_sandbox::Resource::Bytes, dest_bytes)?;
 
     let per_pixel = usize::from(components.max(1));
     let src_pixels = u64::from(src_w).saturating_mul(u64::from(src_h));
@@ -241,7 +241,10 @@ pub fn decode_image_scaled(
     let dest_h64 = u64::from(dest_h_safe);
     let src_w64 = u64::from(src_w);
     let src_h64 = u64::from(src_h);
-    let mut rgba = Vec::with_capacity(usize::try_from(dest_pixels).unwrap_or(0).saturating_mul(4));
+    let mut rgba = alloc::vec_with_capacity::<u8>(
+        g,
+        usize::try_from(dest_pixels).unwrap_or(0).saturating_mul(4),
+    )?;
     for dy in 0..dest_h {
         for dx in 0..dest_w {
             // Point-sample the source at the corresponding pixel.
@@ -352,7 +355,9 @@ mod tests {
         // A 20kÃ—20k grayscale source (400M samples).
         let src_w = 20_000u32;
         let src_h = 20_000u32;
-        let samples: Vec<u8> = vec![0u8; src_w as usize * src_h as usize];
+        let samples: Vec<u8> =
+            selis_sandbox::alloc::vec_filled(&mut g, src_w as usize * src_h as usize, 0u8)
+                .expect("unlimited budget");
         // Drawn at 1% (200Ã—200 destination).
         let dest = decode_image_scaled(src_w, src_h, 1, &samples, 200, 200, &mut g)
             .expect("scaled decode");

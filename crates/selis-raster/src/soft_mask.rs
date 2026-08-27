@@ -20,7 +20,7 @@
 
 use selis_color::{Function, FunctionBudget, Rgba};
 use selis_error::{err, Code, Result};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 /// The soft-mask subtype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,10 +185,10 @@ pub fn build_mask(sm: &SoftMask, g: &mut BudgetGuard<'_>) -> Result<Mask> {
             detail = "mask group buffer has the wrong length"
         ));
     }
-    g.charge(selis_sandbox::Resource::Bytes, pixels)?;
 
     let mut transfer_budget = FunctionBudget::default();
-    let mut alpha8 = Vec::with_capacity(usize::try_from(pixels).unwrap_or(0));
+    let mut alpha8 =
+        alloc::vec_with_capacity::<u8>(g, usize::try_from(pixels).unwrap_or(usize::MAX))?;
     let mut i = 0usize;
     for _ in 0..pixels {
         let base = i.saturating_mul(4);
@@ -364,11 +364,13 @@ mod tests {
     #[test]
     fn malformed_group_length_is_a_typed_error() {
         let mut g = guard();
+        let short_group =
+            selis_sandbox::alloc::vec_filled(&mut g, 4, 0u8).expect("unlimited budget");
         let sm = SoftMask {
             kind: SoftMaskType::Alpha,
             backdrop: Rgba::new(0.0, 0.0, 0.0, 1.0),
             transfer: None,
-            group: group(2, 2, vec![0u8; 4]), // needs 16 bytes
+            group: group(2, 2, short_group), // needs 16 bytes
         };
         let e = build_mask(&sm, &mut g).expect_err("wrong length");
         assert_eq!(e.code(), Code::SmaskMalformed);

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use selis_bytes::Bytes;
 use selis_error::Result;
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider, Tag};
 
@@ -168,9 +168,9 @@ pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Res
         ("name", name_data),
         ("post", &new_post),
     ];
-    let output = assemble_sfnt(&tables)?;
+    // assemble_sfnt charges the output buffer through the sandbox allocator.
+    let output = assemble_sfnt(&tables, g)?;
 
-    g.charge(selis_sandbox::Resource::Bytes, output.len() as u64)?;
     let patched = patch_checksum(&output);
     Ok(Some(Bytes::copy_from_slice(&patched)))
 }
@@ -316,9 +316,9 @@ pub fn add_glyph(
         ("name", name_data),
         ("post", &new_post),
     ];
-    let output = assemble_sfnt(&tables)?;
+    // assemble_sfnt charges the output buffer through the sandbox allocator.
+    let output = assemble_sfnt(&tables, g)?;
 
-    g.charge(selis_sandbox::Resource::Bytes, output.len() as u64)?;
     let patched = patch_checksum(&output);
     Ok(Some(Bytes::copy_from_slice(&patched)))
 }
@@ -652,9 +652,9 @@ fn build_cmap_format12_from_map(code_to_new: &BTreeMap<u32, u16>) -> Vec<u8> {
 }
 
 fn build_post_format3() -> Vec<u8> {
-    let mut out = vec![0u8; 32];
+    let mut out = [0u8; 32];
     set_u32(&mut out, 0, 3); // formatType
-    out
+    out.to_vec()
 }
 
 fn set_u32(data: &mut [u8], off: usize, value: u32) {
@@ -666,7 +666,7 @@ fn set_u32(data: &mut [u8], off: usize, value: u32) {
     }
 }
 
-fn assemble_sfnt(tables: &[(&str, &[u8])]) -> Result<Vec<u8>> {
+fn assemble_sfnt(tables: &[(&str, &[u8])], g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
     let num_tables = u16::try_from(tables.len()).unwrap_or(u16::MAX);
     let dir_size = 12u32.saturating_add(u32::from(num_tables).saturating_mul(16));
     let mut offset = dir_size;
@@ -677,7 +677,7 @@ fn assemble_sfnt(tables: &[(&str, &[u8])]) -> Result<Vec<u8>> {
         entries.push((tag.as_bytes(), data, padded_len, offset));
         offset = offset.saturating_add(padded_len);
     }
-    let mut out = vec![0u8; usize::try_from(offset).unwrap_or(0)];
+    let mut out = alloc::vec_filled(g, usize::try_from(offset).unwrap_or(usize::MAX), 0u8)?;
     set_bytes(&mut out, 0, b"\x00\x01\x00\x00");
     set_u16(&mut out, 4, num_tables);
     let mut pos = 12usize;

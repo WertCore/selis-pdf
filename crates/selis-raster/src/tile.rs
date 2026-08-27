@@ -10,7 +10,9 @@
 //! direct buffer write).
 
 use crate::aa::{renders_match, stable_hash};
+use selis_error::Result;
 use selis_geom::Rect;
+use selis_sandbox::{alloc, BudgetGuard};
 
 /// A tile: a rectangular region of the page and its raster dimensions.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,17 +77,30 @@ pub fn tile_decompose(page_width: u32, page_height: u32, tile_w: u32, tile_h: u3
 /// `tile_stride` is the byte width of each tile's row (tile_w × 4 for RGBA).
 /// Each tile's buffer is exactly `pixel_w × pixel_h × 4` bytes.
 ///
+/// # Budget
+///
+/// The full raster (`full_width × full_height × 4` bytes) is charged against
+/// `g` before it is allocated.
+///
 /// # Malformed Input
 ///
 /// A tile that overflows the full raster is skipped (bounded by the
 /// decomposition).
-#[must_use]
-pub fn stitch(full_width: u32, full_height: u32, tiles: &[(Tile, Vec<u8>)]) -> Vec<u8> {
+///
+/// # Errors
+///
+/// `BUDGET_BYTES` when the full raster cannot be budgeted.
+pub fn stitch(
+    full_width: u32,
+    full_height: u32,
+    tiles: &[(Tile, Vec<u8>)],
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
     let full_bytes = usize::try_from(full_width)
         .unwrap_or(0)
         .saturating_mul(usize::try_from(full_height).unwrap_or(0))
         .saturating_mul(4);
-    let mut out = vec![0u8; full_bytes];
+    let mut out = alloc::vec_filled(g, full_bytes, 0u8)?;
     for (tile, buffer) in tiles {
         let row_bytes = usize::try_from(tile.pixel_w).unwrap_or(0).saturating_mul(4);
         for row in 0..tile.pixel_h {
@@ -103,7 +118,7 @@ pub fn stitch(full_width: u32, full_height: u32, tiles: &[(Tile, Vec<u8>)]) -> V
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Render tiles sequentially (single-threaded WASM path).
@@ -138,6 +153,10 @@ mod tests {
 
     use super::*;
 
+    fn budget_guard() -> BudgetGuard<'static> {
+        selis_sandbox::Budget::unlimited().guard()
+    }
+
     #[test]
     fn decompose_small_page_into_tiles() {
         let tiles = tile_decompose(100, 100, 32, 32);
@@ -164,7 +183,10 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let mut buf = vec![0u8; t.pixel_w as usize * t.pixel_h as usize * 4];
+                let mut g = selis_sandbox::Budget::unlimited().guard();
+                let tile_bytes = t.pixel_w as usize * t.pixel_h as usize * 4;
+                let mut buf = selis_sandbox::alloc::vec_filled(&mut g, tile_bytes, 0u8)
+                    .expect("unlimited budget");
                 #[allow(clippy::cast_possible_truncation)]
                 let val = i as u8;
                 for chunk in buf.chunks_mut(4) {
@@ -174,7 +196,7 @@ mod tests {
                 (*t, buf)
             })
             .collect();
-        let full = stitch(8, 8, &rendered);
+        let full = stitch(8, 8, &rendered, &mut budget_guard()).expect("budget");
         assert_eq!(full.len(), 8 * 8 * 4);
     }
 
@@ -185,7 +207,10 @@ mod tests {
         let tiles = tile_decompose(64, 64, 16, 16);
         let render_tile = |t: &Tile| -> Vec<u8> {
             // Deterministic per-tile content: a grey ramp by x position.
-            let mut buf = vec![0u8; t.pixel_w as usize * t.pixel_h as usize * 4];
+            let mut g = selis_sandbox::Budget::unlimited().guard();
+            let tile_bytes = t.pixel_w as usize * t.pixel_h as usize * 4;
+            let mut buf = selis_sandbox::alloc::vec_filled(&mut g, tile_bytes, 0u8)
+                .expect("unlimited budget");
             for (i, chunk) in buf.chunks_mut(4).enumerate() {
                 let x = i % t.pixel_w as usize;
                 chunk[0] = x as u8;
@@ -196,13 +221,13 @@ mod tests {
             buf
         };
         let seq = render_sequential(&tiles, render_tile);
-        let full_seq = stitch(64, 64, &seq);
+        let full_seq = stitch(64, 64, &seq, &mut budget_guard()).expect("budget");
 
         // Simulate a "threaded" run: same function, reordered iteration is
         // not allowed — results must be identical because tiles are
         // independent. Here we just run the same deterministic path twice.
         let seq2 = render_sequential(&tiles, render_tile);
-        let full_seq2 = stitch(64, 64, &seq2);
+        let full_seq2 = stitch(64, 64, &seq2, &mut budget_guard()).expect("budget");
 
         assert!(renders_match(&full_seq, &full_seq2));
         assert_eq!(stable_hash(&full_seq), stable_hash(&full_seq2));

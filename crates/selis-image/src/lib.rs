@@ -18,7 +18,7 @@
 #![forbid(unsafe_code)]
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::{BudgetGuard, Resource};
+use selis_sandbox::{alloc, BudgetGuard, Resource};
 
 /// The PNG file signature (ISO/IEC 15948 §5.2).
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -83,14 +83,14 @@ pub fn decode_jpeg(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
         .saturating_mul(usize::try_from(dct.height).unwrap_or(usize::MAX));
     let rgba = match dct.channels {
         1 => {
-            let mut out = Vec::with_capacity(pixels.saturating_mul(4));
+            let mut out = alloc::vec_with_capacity::<u8>(g, pixels.saturating_mul(4))?;
             for &gray in &dct.data {
                 out.extend_from_slice(&[gray, gray, gray, 255]);
             }
             out
         }
         3 => {
-            let mut out = Vec::with_capacity(pixels.saturating_mul(4));
+            let mut out = alloc::vec_with_capacity::<u8>(g, pixels.saturating_mul(4))?;
             for px in dct.data.chunks_exact(3) {
                 let r = px.first().copied().unwrap_or(0);
                 let g_ch = px.get(1).copied().unwrap_or(0);
@@ -100,7 +100,7 @@ pub fn decode_jpeg(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
             out
         }
         4 => {
-            let mut out = Vec::with_capacity(pixels.saturating_mul(4));
+            let mut out = alloc::vec_with_capacity::<u8>(g, pixels.saturating_mul(4))?;
             for px in dct.data.chunks_exact(4) {
                 let rgb = cmyk_to_rgb(
                     px.first().copied().unwrap_or(0),
@@ -357,8 +357,8 @@ pub fn decode_png(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
         ));
     }
 
-    let unfiltered = unfilter(&raw, header.height, row_bytes, bpp)?;
-    let rgba = to_rgba(&unfiltered, header, &palette, &trns)?;
+    let unfiltered = unfilter(&raw, header.height, row_bytes, bpp, g)?;
+    let rgba = to_rgba(&unfiltered, header, &palette, &trns, g)?;
     let pixels = usize::try_from(header.width)
         .unwrap_or(usize::MAX)
         .saturating_mul(usize::try_from(header.height).unwrap_or(usize::MAX));
@@ -446,10 +446,16 @@ fn be_u32(bytes: &[u8], offset: usize) -> u32 {
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
-fn unfilter(raw: &[u8], height: u32, row_bytes: usize, bpp: usize) -> Result<Vec<u8>> {
+fn unfilter(
+    raw: &[u8],
+    height: u32,
+    row_bytes: usize,
+    bpp: usize,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
     let height_us = usize::try_from(height).unwrap_or(usize::MAX);
     let stride = row_bytes + 1;
-    let mut out = vec![0u8; row_bytes.saturating_mul(height_us)];
+    let mut out = alloc::vec_filled(g, row_bytes.saturating_mul(height_us), 0u8)?;
     for row in 0..height_us {
         let filter = *raw.get(row * stride).ok_or_else(|| {
             err!(
@@ -521,9 +527,18 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
 
 /// Convert unfiltered 8-bit samples to RGBA8.
 #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-fn to_rgba(samples: &[u8], header: PngHeader, palette: &[[u8; 3]], trns: &[u8]) -> Result<Vec<u8>> {
+fn to_rgba(
+    samples: &[u8],
+    header: PngHeader,
+    palette: &[[u8; 3]],
+    trns: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
     let bpp = header.bytes_per_pixel()?;
-    let mut rgba = Vec::with_capacity(samples.len().saturating_mul(4).saturating_div(bpp.max(1)));
+    let mut rgba = alloc::vec_with_capacity::<u8>(
+        g,
+        samples.len().saturating_mul(4).saturating_div(bpp.max(1)),
+    )?;
     match header.color_type {
         0 => {
             for &gray in samples {

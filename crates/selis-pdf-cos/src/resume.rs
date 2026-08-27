@@ -17,7 +17,7 @@
 
 use selis_error::{Code, Result};
 use selis_io::{Availability, DocSource, RangeSet};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 use crate::deviation::Deviation;
 use crate::lex::{Lexer, Token};
@@ -186,8 +186,9 @@ impl<'a> ResumableLexer<'a> {
     fn fetch(&mut self, g: &mut BudgetGuard<'_>) -> Result<FetchResult> {
         let off = self.file_len();
         let want = usize::try_from(self.read_ahead).unwrap_or(usize::MAX);
-        let mut buf = vec![0u8; want];
-        g.charge(selis_sandbox::Resource::Bytes, self.read_ahead)?;
+        // Charge-before-allocate: a hostile read-ahead cannot outrun the
+        // byte budget (sandbox alloc charges, then allocates).
+        let mut buf = alloc::vec_filled(g, want, 0u8)?;
         match self.source.read_at(off, &mut buf)? {
             Availability::Filled(n) => {
                 if n == 0 {

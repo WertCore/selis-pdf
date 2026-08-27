@@ -1134,6 +1134,7 @@ dependencies = [
  "selis-font",
  "selis-geom",
  "selis-pdf-content",
+ "selis-sandbox",
  "unicode-normalization",
 ]
 

@@ -389,7 +389,8 @@ fn tint_tile(tile: &selis_raster::pattern::PatternTile, tint: &[f64; 3]) -> Vec<
     let r = cv(tint[0]);
     let g = cv(tint[1]);
     let b = cv(tint[2]);
-    let mut out = Vec::with_capacity(tile.rgba8.len());
+    // Grows incrementally over the already-resident tile buffer.
+    let mut out = Vec::new();
     for px in tile.rgba8.chunks(4) {
         out.push(r);
         out.push(g);
@@ -804,7 +805,7 @@ mod tests {
             let w = parse(b"W")?;
             let h = parse(b"H")?;
             // The raw data is RGB (3 bytes/pixel); pad to RGBA.
-            let mut rgba = Vec::with_capacity(data.len().saturating_mul(4).saturating_div(3));
+            let mut rgba = Vec::new();
             for chunk in data.chunks(3) {
                 rgba.extend_from_slice(chunk);
                 rgba.push(255);

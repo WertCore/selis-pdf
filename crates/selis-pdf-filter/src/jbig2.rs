@@ -12,7 +12,7 @@
 //! module reuses the fax decoder's changing-element machinery.
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{alloc, BudgetGuard};
 
 use crate::fax::FaxParms;
 
@@ -142,27 +142,28 @@ fn decode_generic_region(
     // ccitt_decode returns rows of ceil(columns/8) bytes; JBIG2 MMR rows may
     // not be byte-aligned per row (G4 coding is bit-continuous). Re-pack rows
     // to width bits to be exact.
-    out = repack_rows(&out, width, height);
+    out = repack_rows(&out, width, height, g)?;
     Ok(out)
 }
 
 /// Re-pack decoded rows so each output row is exactly `width` bits, with rows
 /// byte-aligned in the output (matching what the image layer expects).
-fn repack_rows(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+fn repack_rows(data: &[u8], width: u32, height: u32, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
     let w = usize::try_from(width).unwrap_or(usize::MAX);
     let h = usize::try_from(height).unwrap_or(usize::MAX);
     let row_bytes = w.saturating_add(7).wrapping_div(8);
-    let mut out = Vec::with_capacity(row_bytes.saturating_mul(h));
     // ccitt_decode packed rows to ceil(width/8); the fax G4 decoder fills a
     // row then packs. The data may already be row-packed; verify the size and
     // pass through if it matches.
     if data.len() == row_bytes.saturating_mul(h) {
-        return data.to_vec();
+        return Ok(data.to_vec());
     }
+    let mut out = alloc::vec_with_capacity::<u8>(g, row_bytes.saturating_mul(h))?;
     // Otherwise treat the stream as bit-continuous and re-pack.
     let mut bit_pos = 0usize;
     for _ in 0..h {
-        let mut row = vec![0u8; row_bytes];
+        g.tick()?;
+        let mut row = alloc::vec_filled(g, row_bytes, 0u8)?;
         for b in 0..w {
             let value = get_bit(data, bit_pos);
             bit_pos = bit_pos.saturating_add(1);
@@ -176,7 +177,7 @@ fn repack_rows(data: &[u8], width: u32, height: u32) -> Vec<u8> {
         }
         out.extend_from_slice(&row);
     }
-    out
+    Ok(out)
 }
 
 fn get_bit(data: &[u8], pos: usize) -> bool {
@@ -281,7 +282,8 @@ mod tests {
     #[test]
     fn repack_passthrough_matches() {
         let data = vec![0xffu8, 0x00, 0xff];
-        let out = repack_rows(&data, 8, 3);
+        let mut g = guard();
+        let out = repack_rows(&data, 8, 3, &mut g).expect("budget");
         assert_eq!(out, data);
     }
 }

@@ -123,7 +123,10 @@ fn to_ts_mask(mask: &Mask, canvas_w: u32, canvas_h: u32) -> Option<tiny_skia::Ma
     if mask.width == w && mask.height == h && mask.alpha8.len() == expected {
         return tiny_skia::Mask::from_vec(mask.alpha8.clone(), size);
     }
-    let mut data = Vec::with_capacity(expected);
+    // Grow incrementally: the size is bounded by the canvas pixmap that this
+    // backend already holds (w × h bytes ≤ the pixmap's w × h × 4), and the
+    // Backend trait carries no budget guard to charge a sized pre-allocation.
+    let mut data = Vec::new();
     for y in 0..h {
         for x in 0..w {
             data.push(mask.sample(x, y));
