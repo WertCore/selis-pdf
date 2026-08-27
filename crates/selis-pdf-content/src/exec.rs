@@ -405,8 +405,13 @@ fn execute_inner(
                         .find(|(k, _)| k.as_slice() == b"MCID")
                         .map(|(_, v)| v)
                     {
-                        if m.is_finite() && *m >= 0.0 {
-                            gstate.mcid = Some(*m as u32);
+                        if m.is_finite() && *m >= 0.0 && *m <= f64::from(u32::MAX) {
+                            // The value is bounded to u32::MAX, so the
+                            // narrowing is exact.
+                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                            {
+                                gstate.mcid = Some(*m as u32);
+                            }
                         }
                     }
                 }
