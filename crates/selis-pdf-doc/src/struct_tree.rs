@@ -161,32 +161,41 @@ fn walk_element(
     let attrs = dict_get(&dict, b"A").cloned();
 
     let mut kids = Vec::new();
-    if let Some(Obj::Array(items)) = dict_get(&dict, b"K") {
-        for item in items {
-            match item {
-                Obj::Ref(r) => kids.push(StructKid::Element(*r)),
-                Obj::Int(m) => kids.push(StructKid::Mcid(u32::try_from(*m).unwrap_or(u32::MAX))),
-                // An OBJR object: << /Type /OBJR /Obj <mcid> /Pg <page> >>
-                Obj::Dict(pairs) => {
-                    let mcid = pairs.iter().find(|(k, _)| k.as_slice() == b"Obj").and_then(
-                        |(_, v)| match v {
-                            Obj::Int(i) => u32::try_from(*i).ok(),
-                            _ => None,
-                        },
-                    );
-                    let page = pairs.iter().find(|(k, _)| k.as_slice() == b"Pg").and_then(
-                        |(_, v)| match v {
-                            Obj::Ref(r) => Some(*r),
-                            _ => None,
-                        },
-                    );
-                    if let Some(m) = mcid {
-                        kids.push(StructKid::Objr { mcid: m, page });
-                    }
+    let mut push_kid = |item: &Obj, kids: &mut Vec<StructKid>| match item {
+        Obj::Ref(r) => kids.push(StructKid::Element(*r)),
+        Obj::Int(m) => {
+            kids.push(StructKid::Mcid(u32::try_from(*m).unwrap_or(u32::MAX)));
+        }
+        // An OBJR object: << /Type /OBJR /Obj <mcid> /Pg <page> >>
+        Obj::Dict(pairs) => {
+            let mcid = pairs.iter().find(|(k, _)| k.as_slice() == b"Obj").and_then(|(_, v)| {
+                match v {
+                    Obj::Int(i) => u32::try_from(*i).ok(),
+                    _ => None,
                 }
-                _ => {}
+            });
+            let page = pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Pg")
+                .and_then(|(_, v)| match v {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                });
+            if let Some(mcid) = mcid {
+                kids.push(StructKid::Objr { mcid, page });
             }
         }
+        _ => {}
+    };
+    // `/K` is a single MCID/OBJR/element, or an array of them.
+    match dict_get(&dict, b"K") {
+        Some(Obj::Array(items)) => {
+            for item in items {
+                push_kid(item, &mut kids);
+            }
+        }
+        Some(k) => push_kid(k, &mut kids),
+        None => {}
     }
 
     out.push(StructElement {

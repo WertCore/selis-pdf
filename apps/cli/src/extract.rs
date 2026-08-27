@@ -46,7 +46,11 @@ pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -
         return extract_images(&dl, page);
     }
 
-    let (lines, line_texts) = page_lines(&dl);
+    let mcid_order = session
+        .mcid_order(&budget, &mut g)
+        .ok()
+        .filter(|v| !v.is_empty());
+    let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref());
     let out = match format {
         "json" => {
             // Per-run text (parallel to each line's flattened runs) so the
@@ -78,9 +82,12 @@ pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -
 }
 
 /// The assembled text lines and their recovered Unicode texts for a display
-/// list, in reading order (column-aware geometry).
+/// list, in reading order. `mcid_order` (the structure tree's marked-content
+/// order) enables structure-first ordering for tagged PDFs; `None` falls back
+/// to column-aware geometry.
 pub(crate) fn page_lines(
     dl: &selis_pdf_content::display_list::DisplayList,
+    mcid_order: Option<&[u32]>,
 ) -> (Vec<selis_pdf_text::TextLine>, Vec<String>) {
     let mut glyphs = Vec::new();
     for op in &dl.ops {
@@ -110,7 +117,7 @@ pub(crate) fn page_lines(
             selis_pdf_text::LineWithMcid { line, mcid }
         })
         .collect();
-    let ordered = selis_pdf_text::order_lines(mcid_lines, None);
+    let ordered = selis_pdf_text::order_lines(mcid_lines, mcid_order);
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
     (ordered.lines, line_texts)
 }

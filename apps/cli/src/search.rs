@@ -30,7 +30,11 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
         .page_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
 
-    let (lines, line_texts) = page_lines(&dl);
+    let mcid_order = session
+        .mcid_order(&budget, &mut g)
+        .ok()
+        .filter(|v| !v.is_empty());
+    let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref());
     let matches = selis_pdf_text::search_lines(&lines, &line_texts, query);
     if matches.is_empty() {
         return Ok(());
