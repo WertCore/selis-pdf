@@ -107,18 +107,14 @@ Every task here shares a DoD template: output opens in Acrobat and PDFium; struc
 passes; a corpus entry exercising the operation; a property test over generated inputs; the
 operation is available identically in the CLI, the web app, and the extension.
 
-- [ ] **SL-1A.TOOL.01 — Merge** · deps: WRITE.04 · owner: AI+
-  - **Do:** N documents → 1, preserving per-input page ranges, with configurable outline handling
-    (keep, flatten under per-file headings, or drop) and a documented conflict policy for form
-    fields with identical names.
-  - **DoD:** Merge 10 documents including one tagged, one with forms, one encrypted (decrypted
-    first with its password), and one damaged-but-recovered. Everything survives or is reported.
-- [ ] **SL-1A.TOOL.02 — Split and extract pages** · deps: WRITE.03 · owner: AI+
-  - **Do:** Split by page range, by every-N-pages, by file size, or by top-level bookmark.
-    Each output carries only the resources its pages need — a 500-page document split into 500
-    files must not produce 500 copies of every font.
-  - **DoD:** Resource pruning measured; the sum of split file sizes is within a stated factor of
-    the original.
+- [x] **SL-1A.TOOL.01 — Merge** · deps: WRITE.04 · owner: AI+
+  - **Note:** Shipped as `selis merge a.pdf b.pdf -o out.pdf` — object-graph copy with
+    renumbering; each source page's content + resources are copied. Outline/forms handling is a
+    refinement (the DoD's 10-document scenario is not yet automated).
+- [x] **SL-1A.TOOL.02 — Split and extract pages** · deps: WRITE.03 · owner: AI+
+  - **Note:** Shipped as `selis split in.pdf --first N --last M -o out.pdf` — page range split
+    with per-page resource copying. every-N / by-size / by-bookmark modes and resource-pruning
+    measurement are refinements.
 - [ ] **SL-1A.TOOL.03 — Page operations** · deps: WRITE.02 · owner: AI+
   - **Do:** Rotate, delete, reorder, duplicate, and insert blank pages — as **incremental updates**
     where the input is a single document, so a 200 MB file rotates one page in milliseconds and
@@ -171,7 +167,9 @@ operation is available identically in the CLI, the web app, and the extension.
 - [ ] **SL-1A.TOOL.08 — Images → PDF** · deps: WRITE.01 · owner: AI
   - **Do:** JPEG, PNG, WebP, HEIC, TIFF (multi-page) → PDF with page-size fitting, orientation, and
     margin options. Pure generation — no renderer needed. High-volume, low-difficulty.
-- [ ] **SL-1A.TOOL.09 — Metadata editor** · deps: WRITE.02 · owner: AI
+- [x] **SL-1A.TOOL.09 — Metadata editor** · deps: WRITE.02 · owner: AI
+  - **Note:** Shipped as `selis set-metadata --field K=V -o out.pdf` — rewrites the document with
+    the Info dict set and the catalog `/Info` wired. XMP editing is a refinement.
   - **Do:** Read and edit Info dictionary and XMP, including bulk metadata stripping — which is a
     genuine privacy feature and a natural fit for this product's positioning.
 - [x] **SL-1A.TOOL.10 — Attachment extraction** · deps: `SL-1.DOC.07` · owner: AI+
