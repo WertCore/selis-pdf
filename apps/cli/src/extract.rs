@@ -19,7 +19,13 @@ use crate::render::write_ppm;
 /// # Errors
 ///
 /// `IO_READ_FAILED` when the PDF cannot be read.
-pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -> CliResult<()> {
+pub(crate) fn run(
+    path: &str,
+    page: usize,
+    last: Option<usize>,
+    format: &str,
+    output: Option<&str>,
+) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
     let session =
@@ -31,6 +37,7 @@ pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -
         return extract_embedded(&session, &budget, &mut g, output);
     }
 
+    let last = last.unwrap_or(page).min(session.len().saturating_sub(1));
     if page >= session.len() {
         return Err(CliError(format!(
             "page {page} out of range (document has {} pages)",
@@ -38,46 +45,52 @@ pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -
         )));
     }
     let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
-    let dl = session
-        .page_display_list(page, &budget, &mut g)
-        .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
+    let mut first_output = true;
+    for p in page..=last {
+        let dl = session
+            .page_display_list(p, &budget, &mut g)
+            .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
 
-    if format == "image" {
-        return extract_images(&dl, page);
-    }
-
-    let mcid_order = session
-        .mcid_order(&budget, &mut g)
-        .ok()
-        .filter(|v| !v.is_empty());
-    let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref());
-    let out = match format {
-        "json" => {
-            // Per-run text (parallel to each line's flattened runs) so the
-            // JSON spans carry only their own glyphs, not the whole line.
-            let run_texts: Vec<Vec<String>> = lines
-                .iter()
-                .map(|line| {
-                    line.words
-                        .iter()
-                        .flat_map(|w| w.runs.iter())
-                        .map(|run| {
-                            run.glyphs
-                                .iter()
-                                .filter_map(|g| char::from_u32(u32::from(g.code)))
-                                .collect()
-                        })
-                        .collect()
-                })
-                .collect();
-            let s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
-            selis_pdf_text::to_json(&s)
+        if format == "image" {
+            extract_images(&dl, p)?;
+            continue;
         }
-        "md" => selis_pdf_text::to_markdown(&lines, &line_texts),
-        "html" => selis_pdf_text::to_html(&lines, &line_texts),
-        _ => selis_pdf_text::to_text(&lines, &line_texts),
-    };
-    print!("{out}");
+
+        let mcid_order = session
+            .mcid_order(&budget, &mut g)
+            .ok()
+            .filter(|v| !v.is_empty());
+        let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref());
+        let page_out = match format {
+            "json" => {
+                let run_texts: Vec<Vec<String>> = lines
+                    .iter()
+                    .map(|line| {
+                        line.words
+                            .iter()
+                            .flat_map(|w| w.runs.iter())
+                            .map(|run| {
+                                run.glyphs
+                                    .iter()
+                                    .filter_map(|g| char::from_u32(u32::from(g.code)))
+                                    .collect()
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
+                selis_pdf_text::to_json(&s)
+            }
+            "md" => selis_pdf_text::to_markdown(&lines, &line_texts),
+            "html" => selis_pdf_text::to_html(&lines, &line_texts),
+            _ => selis_pdf_text::to_text(&lines, &line_texts),
+        };
+        if !first_output && page != last {
+            println!();
+        }
+        print!("{page_out}");
+        first_output = false;
+    }
     Ok(())
 }
 

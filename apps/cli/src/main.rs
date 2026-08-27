@@ -52,9 +52,12 @@ enum Command {
     Extract {
         /// The PDF file to extract from.
         path: String,
-        /// The page number (0-based; default 0).
+        /// The first page (0-based; default 0).
         #[arg(long, default_value_t = 0)]
         page: usize,
+        /// The last page (0-based; default: the first page).
+        #[arg(long)]
+        last: Option<usize>,
         /// The output format: text|json|md|html|image|embedded.
         #[arg(long, default_value = "text")]
         format: String,
@@ -100,7 +103,7 @@ fn main() {
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render { path, page, output } => render::run(&path, page, &output),
-        Command::Extract { path, page, format, output } => extract::run(&path, page, &format, output.as_deref()),
+        Command::Extract { path, page, last, format, output } => extract::run(&path, page, last, &format, output.as_deref()),
         Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
         Command::Check { path, profile } => check::run(&path, &profile),
