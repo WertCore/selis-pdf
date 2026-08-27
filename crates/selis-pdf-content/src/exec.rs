@@ -146,16 +146,29 @@ fn execute_inner(
             }
 
             // Colour — device RGB.
-            "G" => gstate.stroke_colour = [num(operands, 0), num(operands, 0), num(operands, 0)],
-            "g" => gstate.fill_colour = [num(operands, 0), num(operands, 0), num(operands, 0)],
-            "RG" => gstate.stroke_colour = [num(operands, 0), num(operands, 1), num(operands, 2)],
-            "rg" => gstate.fill_colour = [num(operands, 0), num(operands, 1), num(operands, 2)],
+            "G" => {
+                gstate.stroke_colour = [num(operands, 0), num(operands, 0), num(operands, 0)];
+                gstate.stroke_pattern = None;
+            }
+            "g" => {
+                gstate.fill_colour = [num(operands, 0), num(operands, 0), num(operands, 0)];
+                gstate.fill_pattern = None;
+            }
+            "RG" => {
+                gstate.stroke_colour = [num(operands, 0), num(operands, 1), num(operands, 2)];
+                gstate.stroke_pattern = None;
+            }
+            "rg" => {
+                gstate.fill_colour = [num(operands, 0), num(operands, 1), num(operands, 2)];
+                gstate.fill_pattern = None;
+            }
             "K" => {
                 let c = num(operands, 0);
                 let m = num(operands, 1);
                 let y = num(operands, 2);
                 let k = num(operands, 3);
                 gstate.stroke_colour = cmyk_to_rgb(c, m, y, k);
+                gstate.stroke_pattern = None;
             }
             "k" => {
                 let c = num(operands, 0);
@@ -163,6 +176,7 @@ fn execute_inner(
                 let y = num(operands, 2);
                 let k = num(operands, 3);
                 gstate.fill_colour = cmyk_to_rgb(c, m, y, k);
+                gstate.fill_pattern = None;
             }
             "cs" => {
                 if let Some(Operand::Name(n)) = operands.first() {

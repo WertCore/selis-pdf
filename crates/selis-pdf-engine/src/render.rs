@@ -723,6 +723,53 @@ let resolve_inline =
         assert_eq!(&data[br..br + 3], &[0, 0, 255], "bottom-right blue");
     }
 
+    /// A fill with an active tiling pattern renders the pattern's tiles over
+    /// the fill region instead of a solid colour.
+    #[test]
+    fn pattern_fill_renders_tiles() {
+        let mut g = guard();
+        let content = b"/Pattern cs /Pat1 scn 0 0 m 100 0 l 100 100 l 0 100 l h f";
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        let resolve_pattern = |name: &selis_bytes::Bytes| {
+            if name.as_slice() == b"Pat1" {
+                Some(selis_raster::pattern::TilingPattern {
+                    paint_type: selis_raster::pattern::PatternType::Coloured,
+                    tile: selis_raster::pattern::PatternTile {
+                        width: 50,
+                        height: 50,
+                        rgba8: (0..2500).flat_map(|_| [255u8, 0, 0, 255]).collect(),
+                    },
+                    x_step: 50.0,
+                    y_step: 50.0,
+                    matrix: selis_geom::Matrix::IDENTITY,
+                })
+            } else {
+                None
+            }
+        };
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &resolve_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let centre = (50 * 100 + 50) * 4;
+assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "pattern tile fills red");
+    }
+
     /// A shading (`/Name sh`) is resolved and rasterised by the engine, then
     /// drawn as an image.
     #[test]
