@@ -15,6 +15,7 @@ mod extract;
 mod inspect;
 mod render;
 mod search;
+mod tools;
 
 #[derive(Parser)]
 #[command(
@@ -96,6 +97,51 @@ enum Command {
         #[arg(long, default_value = "readable")]
         profile: String,
     },
+    /// Merge several PDFs into one.
+    Merge {
+        /// The input PDFs.
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Extract a page range into a new PDF.
+    Split {
+        /// The input PDF.
+        path: String,
+        /// The first page (0-based).
+        #[arg(long, default_value_t = 0)]
+        first: usize,
+        /// The last page (0-based; default: the last page).
+        #[arg(long)]
+        last: Option<usize>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Set metadata fields and rewrite a PDF.
+    SetMetadata {
+        /// The input PDF.
+        path: String,
+        /// A `Key=Value` metadata field (repeatable).
+        #[arg(long = "field")]
+        fields: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Redact regions of a PDF (cover + strip text).
+    Redact {
+        /// The input PDF.
+        path: String,
+        /// A `x,y,w,h` rectangle (repeatable).
+        #[arg(long = "rect", required = true)]
+        rects: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -107,6 +153,34 @@ fn main() {
         Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
         Command::Check { path, profile } => check::run(&path, &profile),
+        Command::Merge { inputs, output } => tools::merge(&inputs, &output),
+        Command::Split { path, first, last, output } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
+        Command::SetMetadata { path, fields, output } => {
+            let parsed: Vec<(&str, &str)> = fields
+                .iter()
+                .filter_map(|f| f.split_once('='))
+                .collect();
+            tools::set_metadata(&path, &parsed, &output)
+        }
+        Command::Redact { path, rects, output } => {
+            let parsed: Vec<(f64, f64, f64, f64)> = rects
+                .iter()
+                .filter_map(|r| {
+                    let parts: Vec<&str> = r.split(',').collect();
+                    if parts.len() == 4 {
+                        Some((
+                            parts.get(0)?.trim().parse().unwrap_or(0.0),
+                            parts.get(1)?.trim().parse().unwrap_or(0.0),
+                            parts.get(2)?.trim().parse().unwrap_or(0.0),
+                            parts.get(3)?.trim().parse().unwrap_or(0.0),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            tools::redact(&path, &parsed, &output)
+        }
     };
     match result {
         Ok(()) => {}

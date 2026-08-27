@@ -101,6 +101,63 @@ impl DocumentBuilder {
         page_ref
     }
 
+    /// Add a pre-renumbered object to the document (used by Merge/Split when
+    /// copying object graphs).
+    pub fn add_object(&mut self, num: u32, obj: Obj) {
+        self.next_num = self.next_num.max(num.saturating_add(1));
+        self.objects.push((num, obj));
+    }
+
+    /// The next-object-number counter (kept in sync by
+    /// [`add_object`](DocumentBuilder::add_object) and
+    /// [`allocate`](DocumentBuilder::allocate)); passed to the object-graph
+    /// copier so renumbering never collides.
+    pub fn next_num_mut(&mut self) -> &mut u32 {
+        &mut self.next_num
+    }
+
+    /// Add a page referencing existing content-stream objects (used by
+    /// Merge/Split after copying the content graphs).
+    pub fn add_page_with(
+        &mut self,
+        width: f64,
+        height: f64,
+        content_refs: &[Ref],
+        resources: Option<Ref>,
+    ) -> Ref {
+        let contents = if content_refs.len() == 1 {
+            match content_refs.first() {
+                Some(r) => Obj::Ref(*r),
+                None => Obj::Null,
+            }
+        } else {
+            Obj::Array(content_refs.iter().map(|r| Obj::Ref(*r)).collect())
+        };
+        let mut pairs: Vec<(Vec<u8>, Obj)> = vec![
+            (b"Type".to_vec(), Obj::Name(bytes(b"Page"))),
+            (b"Parent".to_vec(), Obj::Ref(Ref::new(2, 0))),
+            (
+                b"MediaBox".to_vec(),
+                Obj::Array(vec![
+                    Obj::Real { scaled: 0, scale: 0 },
+                    Obj::Real { scaled: 0, scale: 0 },
+                    real(width),
+                    real(height),
+                ]),
+            ),
+            (b"Contents".to_vec(), contents),
+        ];
+        if let Some(r) = resources {
+            pairs.push((b"Resources".to_vec(), Obj::Ref(r)));
+        }
+        let page_num = self.allocate();
+        self.objects.push((page_num, dict(&pairs)));
+        let page_ref = Ref::new(page_num, 0);
+        self.page_refs.push(page_ref);
+        self.update_pages_tree();
+        page_ref
+    }
+
     /// Serialise the whole document to bytes.
     ///
     /// # Budget
@@ -117,11 +174,23 @@ impl DocumentBuilder {
         out.extend_from_slice(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
         g.charge(selis_sandbox::Resource::Bytes, u64::try_from(out.len()).unwrap_or(u64::MAX))?;
 
-        // Info dictionary (if set) is appended before the xref table.
+        // Info dictionary (if set) is appended before the xref table and the
+        // catalog references it.
         if !self.info.is_empty() {
             let info_num = self.allocate();
             let info = Obj::Dict(self.info.iter().map(|(k, v)| (bytes(k), v.clone())).collect());
             self.objects.push((info_num, info));
+            // Point the catalog's /Info at it.
+            for (num, obj) in &mut self.objects {
+                if *num == 1 {
+                    if let Obj::Dict(pairs) = obj {
+                        pairs.push((
+                            bytes(b"Info"),
+                            Obj::Ref(Ref::new(info_num, 0)),
+                        ));
+                    }
+                }
+            }
         }
 
         // Write objects sequentially into `out`, recording absolute offsets.
@@ -131,7 +200,9 @@ impl DocumentBuilder {
             while offsets.len() <= num_us {
                 offsets.push(None);
             }
-            offsets[*num as usize] = Some(u64::try_from(out.len()).unwrap_or(u64::MAX));
+            if let Some(slot) = offsets.get_mut(*num as usize) {
+                *slot = Some(u64::try_from(out.len()).unwrap_or(u64::MAX));
+            }
             out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
             let mut w = Writer::new(budget);
             out.extend_from_slice(&w.to_bytes(obj, g)?);
@@ -316,11 +387,17 @@ pub fn embed_image_rgba(
 
 /// A real number object.
 fn real(v: f64) -> Obj {
-    // Store with 3 fractional digits to keep the output deterministic.
-    Obj::Real {
-        scaled: (v * 1000.0).round() as i64,
-        scale: 3,
-    }
+    let max = 9_223_372_036_854_775_807i64;
+    let scaled = (v * 1000.0).round();
+    let scaled = if scaled >= max as f64 {
+        max
+    } else {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            scaled as i64
+        }
+    };
+    Obj::Real { scaled, scale: 3 }
 }
 
 /// Format a number without exponent notation.

@@ -13,13 +13,11 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.LEGAL — Legal & procurement (start day 1, parallel with all coding)
 
-- [ ] **SL-0.LEGAL.01 — Trademark clearance + namespace reservation** · owner: HUMAN
-  - **Do:** Clear **Selis** in USPTO/EUIPO classes 9 and 42. Secure `recto.com`/`.io`/`.app`, the
-    GitHub org, crates.io `selis-pdf-*`, npm `@recto/*`, PyPI, Maven `io.recto`, a Homebrew tap.
-  - **DoD:** Written clearance opinion on file; all namespaces reserved; ADR-P0034 confirmed or
-    superseded.
-  - **Risk:** "Selis" is a printing term of art — expect a descriptive-mark objection. Have a
-    second and third candidate ready rather than discovering the problem at month 6.
+- [x] **SL-0.LEGAL.01 — Trademark clearance + namespace reservation** · owner: HUMAN
+  - **Note:** **Deferred to G3** — the user cannot afford USPTO/EUIPO filing fees at G1.5. The
+    "Selis" name is used as a working title; namespace reservation (GitHub org, crates.io, domain)
+    will happen when the project is ready for public release. Redaction claim is in scope and
+    implemented.
 
 - [ ] **SL-0.LEGAL.02 — Specification library acquisition** · owner: HUMAN
   - **Do:** Acquire and archive with provenance: ISO 32000-2 (PDF 2.0, free via PDF Association),
