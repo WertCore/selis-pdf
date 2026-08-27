@@ -78,6 +78,17 @@ impl Session {
         selis_pdf_doc::embedded_files(&mut resolver, &self.document.catalog, budget, g)
     }
 
+    /// An embedded file's decoded bytes by name-tree key.
+    pub fn embedded_file_data(
+        &self,
+        key: &str,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut resolver = Resolver::new(&self.doc, &self.src, budget);
+        selis_pdf_doc::embedded_file_data(&mut resolver, &self.document.catalog, key, budget, g)
+    }
+
     /// Render a page onto a backend.
     pub fn render_page(
         &self,

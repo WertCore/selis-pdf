@@ -19,7 +19,7 @@ use crate::render::write_ppm;
 /// # Errors
 ///
 /// `IO_READ_FAILED` when the PDF cannot be read.
-pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
+pub(crate) fn run(path: &str, page: usize, format: &str, output: Option<&str>) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
     let session =
@@ -28,7 +28,7 @@ pub(crate) fn run(path: &str, page: usize, format: &str) -> CliResult<()> {
     // Document-level formats don't need a page.
     if format == "embedded" {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
-        return extract_embedded(&session, &budget, &mut g);
+        return extract_embedded(&session, &budget, &mut g, output);
     }
 
     if page >= session.len() {
@@ -102,15 +102,41 @@ pub(crate) fn page_lines(
     (lines, line_texts)
 }
 
-/// List the document's embedded files (metadata only, newline-delimited JSON).
+/// List the document's embedded files (metadata only, newline-delimited JSON),
+/// or extract them to `output` when given.
 fn extract_embedded(
     session: &Session,
     budget: &Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
+    output: Option<&str>,
 ) -> CliResult<()> {
     let attachments = session
         .attachments(budget, g)
         .map_err(|e| CliError(format!("cannot read embedded files: {e}")))?;
+    if let Some(dir) = output {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| CliError(format!("cannot create {dir}: {e}")))?;
+        let mut written = 0usize;
+        for a in &attachments {
+            let raw = a.name.as_ref().map(|b| String::from_utf8_lossy(b.as_slice()).to_string());
+            let base = sanitise_filename(raw.as_deref().unwrap_or(&a.key));
+            let file = format!("{dir}/{base}");
+            let data = session
+                .embedded_file_data(&a.key, budget, g)
+                .map_err(|e| CliError(format!("cannot read embedded file {}: {e}", a.key)))?;
+            match data {
+                Some(bytes) => {
+                    std::fs::write(&file, &bytes)
+                        .map_err(|e| CliError(format!("cannot write {file}: {e}")))?;
+                    eprintln!("wrote {} ({} bytes)", file, bytes.len());
+                    written = written.saturating_add(1);
+                }
+                None => eprintln!("skipped {}: could not decode", a.key),
+            }
+        }
+        eprintln!("extracted {written} embedded file(s) to {dir}");
+        return Ok(());
+    }
     let mut out = String::new();
     for a in &attachments {
         if !out.is_empty() {
@@ -127,6 +153,26 @@ fn extract_embedded(
     }
     println!("{out}");
     Ok(())
+}
+
+/// Make a filename safe to write: strip path separators and traversal
+/// components, collapse runs of unsafe characters.
+fn sanitise_filename(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        let ok = matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | ' ');
+        if ok {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim().trim_start_matches('.').trim();
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// A JSON string literal (quoted, escaped).

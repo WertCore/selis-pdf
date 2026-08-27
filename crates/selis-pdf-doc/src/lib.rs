@@ -18,7 +18,7 @@ mod resolve;
 mod struct_tree;
 mod tree;
 
-pub use attachments::{embedded_files, Attachment};
+pub use attachments::{embedded_file_data, embedded_files, Attachment};
 pub use conformance::{evaluate, registry, Area, EvaluationCtx, Level, Profile, Rule, RuleResult};
 pub use doc::{Document, Page};
 pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};

@@ -45,16 +45,19 @@ enum Command {
         /// The output PPM file.
         output: String,
     },
-    /// Extract a page's content (text|json|md|html|image).
+    /// Extract a page's content (text|json|md|html|image|embedded).
     Extract {
         /// The PDF file to extract from.
         path: String,
         /// The page number (0-based; default 0).
         #[arg(long, default_value_t = 0)]
         page: usize,
-        /// The output format: text|json|md|html|image.
+        /// The output format: text|json|md|html|image|embedded.
         #[arg(long, default_value = "text")]
         format: String,
+        /// The output directory (for format=embedded, writes the files).
+        #[arg(long)]
+        output: Option<String>,
     },
     /// Convert a page range to PPM images in an output directory.
     Convert {
@@ -86,7 +89,7 @@ fn main() {
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render { path, page, output } => render::run(&path, page, &output),
-        Command::Extract { path, page, format } => extract::run(&path, page, &format),
+        Command::Extract { path, page, format, output } => extract::run(&path, page, &format, output.as_deref()),
         Command::Convert { path, output, first, last } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
     };

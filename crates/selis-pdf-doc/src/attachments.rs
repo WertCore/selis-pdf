@@ -42,43 +42,18 @@ pub fn embedded_files(
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<Attachment>> {
     let mut out = Vec::new();
-    // `/Names` is usually a dict whose `/EmbeddedFiles` is a tree root ref,
-    // but may itself be a ref to the tree.
-    let names = match catalog_dict(catalog, b"Names") {
-        Some(Obj::Ref(r)) => resolver.resolve(*r, g)?,
-        Some(o) => o.clone(),
-        None => return Ok(out),
-    };
-    let Some(Obj::Ref(embedded_root)) = dict_get(&names, b"EmbeddedFiles") else {
-        return Ok(out);
-    };
-    let tree = crate::walk_name_tree(resolver, *embedded_root, budget, g)?;
-    for (key, value) in tree {
+    for (key, value) in embedded_files_tree(resolver, catalog, budget, g)? {
         let Some(dict) = as_dict(resolver, &value, g) else {
             continue;
         };
         // /EF /F points at the embedded-file stream.
-        let stream_ref = dict_get(&dict, b"EF").and_then(|ef| match ef {
-            Obj::Dict(pairs) => {
-                pairs
-                    .iter()
-                    .find(|(k, _)| k.as_slice() == b"F")
-                    .and_then(|(_, v)| match v {
-                        Obj::Ref(r) => Some(*r),
-                        _ => None,
-                    })
-            }
-            _ => None,
-        });
+        let stream_ref = filespec_stream_ref(&dict);
         // The display name and description live in the Filespec dict; the
         // declared size lives in the embedded-file stream's `/Length`.
         let name = dict_value(&dict, b"Name").or_else(|| dict_value(&dict, b"F"));
         let desc = dict_value(&dict, b"Desc");
         let size = match stream_ref {
-            Some(sr) => resolver
-                .resolve(sr, g)
-                .ok()
-                .and_then(|o| stream_length(&o)),
+            Some(sr) => resolver.resolve(sr, g).ok().and_then(|o| stream_length(&o)),
             None => None,
         };
         let subtype = match stream_ref {
@@ -99,6 +74,93 @@ pub fn embedded_files(
         });
     }
     Ok(out)
+}
+
+/// Extract an embedded file's decoded bytes by name-tree key.
+///
+/// # Budget
+///
+/// Bounded by the name-tree walk and the filter decode.
+///
+/// # Malformed Input
+///
+/// `None` when the key is absent or the stream cannot be decoded.
+pub fn embedded_file_data(
+    resolver: &mut Resolver<'_>,
+    catalog: &Obj,
+    key: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Vec<u8>>> {
+    for (k, value) in embedded_files_tree(resolver, catalog, budget, g)? {
+        if k != key {
+            continue;
+        }
+        let Some(dict) = as_dict(resolver, &value, g) else {
+            continue;
+        };
+        let Some(stream_ref) = filespec_stream_ref(&dict) else {
+            continue;
+        };
+        let Some(obj) = resolver.resolve(stream_ref, g).ok() else {
+            continue;
+        };
+        let (pairs, data) = match &obj {
+            Obj::Stream { dict, data } => (dict, data.as_slice()),
+            _ => continue,
+        };
+        let stream = Obj::Dict(pairs.clone());
+        let filters: Vec<String> = match dict_get(&stream, b"Filter") {
+            Some(Obj::Name(n)) => vec![String::from_utf8_lossy(n.as_slice()).to_string()],
+            Some(Obj::Array(arr)) => arr
+                .iter()
+                .filter_map(|o| match o {
+                    Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if filters.is_empty() {
+            return Ok(Some(data.to_vec()));
+        }
+        return Ok(selis_pdf_filter::decode_chain(&filters, &[], data, u64::MAX, g).ok());
+    }
+    Ok(None)
+}
+
+/// The `/Names /EmbeddedFiles` name-tree entries.
+fn embedded_files_tree(
+    resolver: &mut Resolver<'_>,
+    catalog: &Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<crate::NameTree> {
+    // `/Names` is usually a dict whose `/EmbeddedFiles` is a tree root ref,
+    // but may itself be a ref to the tree.
+    let names = match catalog_dict(catalog, b"Names") {
+        Some(Obj::Ref(r)) => resolver.resolve(*r, g)?,
+        Some(o) => o.clone(),
+        None => return Ok(crate::NameTree::new()),
+    };
+    let Some(Obj::Ref(embedded_root)) = dict_get(&names, b"EmbeddedFiles") else {
+        return Ok(crate::NameTree::new());
+    };
+    crate::walk_name_tree(resolver, *embedded_root, budget, g)
+}
+
+/// The `/EF /F` stream reference of a Filespec dict.
+fn filespec_stream_ref(dict: &Obj) -> Option<selis_pdf_cos::Ref> {
+    dict_get(dict, b"EF").and_then(|ef| match ef {
+        Obj::Dict(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"F")
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            }),
+        _ => None,
+    })
 }
 
 /// The `/Length` of a stream object (or `None`).
