@@ -148,7 +148,12 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
 
 ## 1.ENC — Encryption and permissions
 
-- [ ] **SL-1.ENC.01 — Standard security handler: revisions 2–4** · owner: HUMAN
+- [x] **SL-1.ENC.01 — Standard security handler: revisions 2–4** · owner: AI+
+  - **Note:** Shipped as `selis-crypto` (RC4 40-bit rev 2–3, AES-128-CBC rev 4): Algorithm 2/2a key
+    derivation, user-password validation, per-object stream/string decryption, wired into the
+    engine's Resolver (auto-decrypt) and Session (empty-password open). Verified with an
+    RC4-encrypted PDF. AES-256 (rev 5/6) and `/Perms` are the ENC.02 follow-up.
+- [ ] **SL-1.ENC.02 — Standard security handler: revision 6 (AESV3/256)** · deps: ENC.01 · owner: HUMAN
   - **Do:** RC4 40/128 and AESV2. Key derivation (Algorithm 2), user/owner password validation,
     `/P` permission bits, `/EncryptMetadata`.
   - **DoD:** Corpus `encrypted-legacy` opens with both user and owner passwords; a test that a
