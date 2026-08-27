@@ -130,8 +130,6 @@ pub fn render_display_list(
                         continue;
                     };
                     let fb = selis_bytes::Bytes::from(font_bytes);
-                    // The outline coordinates are in font units; the text
-                    // transform scales them by size/upem and positions them.
                     let upem = selis_font::units_per_em(&fb)
                         .map(f64::from)
                         .unwrap_or(1000.0);
@@ -147,8 +145,8 @@ pub fn render_display_list(
                         };
                         let m = state
                             .ctm
-                            .then(Matrix::translate(at.x, at.y))
-                            .then(Matrix::scale(scale, scale));
+                            .then(Matrix::scale(scale, scale))
+                            .then(Matrix::translate(at.x, at.y));
                         let transformed = transform_outline(&outline, m);
                         let Some(p) = raster_path_from_commands(&transformed) else {
                             continue;

@@ -119,10 +119,13 @@ pub fn resolve(dict: &FontDict, g: &mut BudgetGuard<'_>) -> Result<ResolvedFont>
         dict
     };
 
-    let widths = target.widths_sized().map(|values| WidthsArray {
-        first: target.first_char,
-        values: values.to_vec(),
-    });
+    let widths = target
+        .widths_sized()
+        .map(|values| WidthsArray {
+            first: target.first_char,
+            values: values.to_vec(),
+        })
+        .or_else(|| standard14_widths(target));
     let embedded = match &target.font_file {
         Some(FontFile::TrueType(data)) => {
             parse_ttf_metrics(data, g)?.map(EmbeddedMetrics::TrueType)
@@ -171,12 +174,39 @@ pub fn parse_ttf_metrics(data: &Bytes, g: &mut BudgetGuard<'_>) -> Result<Option
     }))
 }
 
+/// The `/MissingWidth` fallback of a font dict.
+#[must_use]
+fn standard14_widths(dict: &FontDict) -> Option<WidthsArray> {
+    // Standard-14 Type1 fonts carry no /Widths in the dict; use the AFM
+    // widths keyed by the StandardEncoding glyph name (SL-3.FONT.03).
+    if dict.subtype != crate::model::FontSubtype::Type1
+        || !crate::standard14::is_standard(&dict.base_font)
+    {
+        return None;
+    }
+    // Standard-14 Type1 fonts carry no /Widths in the dict; use the AFM
+    // widths keyed by the StandardEncoding glyph name (SL-3.FONT.03). The
+    // range covers 0–255 regardless of /FirstChar//LastChar (usually absent).
+    // Glyphs absent from the AFM table (e.g. ".notdef") get a 0 width.
+    let mut values = Vec::with_capacity(256);
+    for code in 0u32..=255 {
+        let idx = usize::try_from(code).unwrap_or(0);
+        let width = crate::tables::StandardEncoding
+            .get(idx)
+            .and_then(|name| crate::standard14::width(&dict.base_font, name))
+            .map(f64::from)
+            .unwrap_or(0.0);
+        values.push(width);
+    }
+    Some(WidthsArray { first: 0, values })
+}
+
 impl ResolvedFont {
     /// The resolved width for `code`.
     ///
-    /// Order: `/Widths` array → embedded metrics → `/MissingWidth`. Every code
-    /// resolves (never `None`); the final fallback is `/MissingWidth`, which
-    /// defaults to 0.
+    /// Order: `/Widths` array → embedded metrics → standard-14 AFM →
+    /// `/MissingWidth`. Every code resolves (never `None`); the final
+    /// fallback is `/MissingWidth`, which defaults to 0.
     #[must_use]
     pub fn width(&self, code: u32) -> f64 {
         self.widths

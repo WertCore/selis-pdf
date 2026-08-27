@@ -427,9 +427,14 @@ fn font_data_inner(
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Option<Vec<u8>> {
+    // Prefer the embedded font program.
     let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
-    let font_file = font_dict.font_file?;
-    Some(font_file.data().as_slice().to_vec())
+    if let Some(font_file) = font_dict.font_file {
+        return Some(font_file.data().as_slice().to_vec());
+    }
+    // A non-embedded standard-14 font falls back to the bundled Liberation
+    // font (SL-0.LEAD.07), keyed by the /BaseFont name.
+    selis_font::fallback::fallback_bytes(&font_dict.base_font).map(|bytes| bytes.to_vec())
 }
 
 fn resolve_page_content(

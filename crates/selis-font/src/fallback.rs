@@ -1,353 +1,218 @@
-//! Font fallback chain (SL-3.FONT.09).
+//! Fallback fonts (SL-0.LEAD.07).
 //!
-//! When a font is not embedded (or a glyph is missing from the embedded
-//! font), the engine falls back per ISO 32000-2 §9.6.6. The order is
-//! **deterministic** (ADR-P0012: the same document renders identically
-//! everywhere):
-//!
-//! 1. an exact or aliased name match → the metric-compatible standard-14
-//!    substitute (with the AFM widths, SL-3.FONT.08);
-//! 2. otherwise, classify the `/FontDescriptor` hints (flags, `/FontFamily`,
-//!    panose, `/StemV`) → the bundled set;
-//! 3. then to system fonts (native shells, via `fontdb` — outside this
-//!    crate);
-//! 4. then to a `notdef` box.
-//!
-//! The guarantee this module enforces is the DoD: **a `notdef` box is never
-//! shown for a glyph name that exists in any standard font** — the substitute
-//! is checked against its AFM table before the renderer resorts to the chain.
-//!
-//! The alias map follows pdf.js's `getStdFontMap`: common non-standard names
-//! (Arial, Times New Roman, Courier New, ...) resolve to their
-//! metric-compatible standard-14 font.
+//! The standard-14 base fonts (Helvetica, Times, Courier, Symbol,
+//! ZapfDingbats) are usually NOT embedded. When no font program is available,
+//! the renderer falls back to the bundled Liberation fonts (SIL Open Font
+//! License — metric-compatible with the Adobe standard-14), committed under
+//! `assets/fonts/`.
 
-use crate::standard14;
+use crate::outline::glyph_id_for_char;
 
-/// The `/FontDescriptor`-derived matching hints.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Hints about the font style the fallback should substitute (from the
+/// standard-14 variant name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FontMatchHints {
-    /// The `/FontFamily` (may be absent).
-    pub family: Option<String>,
-    /// The `/StemV` (stem width), for weight estimation.
-    pub stem_v: Option<f64>,
-    /// The `/Panose` byte 0 (family kind: 2 Latin text, 4 decorative,
-    /// 5 symbol, 6 monospace text) and byte 1 (serif style).
-    pub panose_family_kind: Option<u8>,
-    /// The descriptor's Symbolic flag (bit 2 of `/Flags`).
-    pub symbolic: bool,
-    /// The descriptor's FixedPitch flag (bit 1 of `/Flags`).
-    pub monospace: bool,
-    /// The descriptor's Serif flag (bit 0 of `/Flags`).
-    pub serif: bool,
+    /// Whether the variant is oblique/italic.
+    pub italic: bool,
+    /// The weight (400 = normal, 700 = bold).
+    pub weight: u16,
 }
 
-/// Resolve a font name to its metric-compatible standard-14 substitute.
-///
-/// Returns the name unchanged when it is already standard-14, its substitute
-/// for the common aliases, and `None` for an unknown font.
-#[must_use]
-pub fn substitute(font_name: &str) -> Option<&'static str> {
-    if let Some(font) = standard14::ALL_FONTS.iter().find(|f| f.name == font_name) {
-        return Some(font.name);
+impl Default for FontMatchHints {
+    fn default() -> Self {
+        Self {
+            italic: false,
+            weight: 400,
+        }
     }
-    alias(font_name)
 }
 
-/// The deterministic descriptor-based match: pick the bundled substitute for
-/// an unembedded font from its `/FontDescriptor` hints.
-///
-/// Order of precedence (documented, deterministic):
-///
-/// 1. a `/FontFamily` name that aliases to a standard-14 font;
-/// 2. a symbolic font → `Symbol` (or `ZapfDingbats` for the Dingbats
-///    family);
-/// 3. a monospace font → `Courier` (weighted by `/StemV`);
-/// 4. otherwise the serif/sans decision (`/Flags` Serif bit, panose kind,
-///    or a serif family name), weighted by `/StemV` for the bold style.
+/// The Liberation font bytes for a standard-14 base font name, or `None` when
+/// the name is not a standard-14 font.
 #[must_use]
-pub fn match_substitute(hints: &FontMatchHints) -> &'static str {
-    if let Some(family) = hints.family.as_deref() {
-        if let Some(sub) = substitute(family) {
-            return sub;
-        }
-        let lower = family.to_ascii_lowercase();
-        if lower.contains("dingbat") || lower.contains("wingding") {
-            return "ZapfDingbats";
-        }
-        if lower.contains("symbol") {
-            return "Symbol";
-        }
-    }
-    if hints.symbolic {
-        return "Symbol";
-    }
-    if hints.monospace || hints.panose_family_kind == Some(6) {
-        return if bold(hints) {
-            "Courier-Bold"
-        } else {
-            "Courier"
-        };
-    }
-    let serif = hints.serif
-        || hints.panose_family_kind == Some(2)
-        || hints
-            .family
-            .as_deref()
-            .is_some_and(|f| f.to_ascii_lowercase().contains("serif"));
-    if serif {
-        if bold(hints) {
-            "Times-Bold"
-        } else {
-            "Times-Roman"
-        }
-    } else if bold(hints) {
-        "Helvetica-Bold"
-    } else {
+pub fn fallback_bytes(font_name: &str) -> Option<&'static [u8]> {
+    // A subset font's /BaseFont is often `ABCDEE+Helvetica` — strip the tag.
+    let tagged = font_name.rsplit('+').next().unwrap_or(font_name);
+    let base = base_family(tagged)?;
+    let name = substitute(base, &style_hints(tagged))?;
+    family_bytes(name)
+}
+
+/// The base standard-14 family of a variant name (e.g. `Times-BoldItalic` →
+/// `Times-Roman`).
+#[must_use]
+fn base_family(name: &str) -> Option<&'static str> {
+    let family = if name == "Courier"
+        || name.starts_with("Courier-")
+    {
+        "Courier"
+    } else if name == "Helvetica" || name.starts_with("Helvetica-") {
         "Helvetica"
-    }
+    } else if name == "Times-Roman"
+        || name.starts_with("Times-")
+        || name == "Times"
+    {
+        "Times-Roman"
+    } else {
+        return None;
+    };
+    Some(family)
 }
 
-/// A rough `/StemV`-based weight estimate (the descriptor's stem width).
-fn bold(hints: &FontMatchHints) -> bool {
-    hints.stem_v.is_some_and(|s| s >= 100.0)
-}
-
-/// Whether a glyph name is renderable — exists in the standard font's AFM
-/// table — so a `notdef` box is unnecessary.
-///
-/// The DoD check: for text that exists in *any* standard font, this returns
-/// `true` for the resolved substitute.
+/// Map a base standard-14 font name (with its style) to a Liberation family
+/// name. `None` when the name is not a standard-14 base font.
 #[must_use]
-pub fn can_render(font_name: &str, glyph_name: &str) -> bool {
-    let Some(sub) = substitute(font_name) else {
+pub fn substitute(base: &str, hints: &FontMatchHints) -> Option<&'static str> {
+    let family = match base {
+        "Courier" => "LiberationMono",
+        "Helvetica" => "LiberationSans",
+        "Times-Roman" | "Times" => "LiberationSerif",
+        // Symbol and ZapfDingbats have no Liberation equivalent; the regular
+        // sans-serif is a usable approximation for fallback rendering.
+        "Symbol" | "ZapfDingbats" => "LiberationSans",
+        _ => return None,
+    };
+    let suffix = match (hints.italic, hints.weight >= 700) {
+        (true, true) => "-BoldItalic",
+        (true, false) => "-Italic",
+        (false, true) => "-Bold",
+        (false, false) => "-Regular",
+    };
+    // Free the temporary into a static: the match arms are all string literals.
+    Some(concat_static(family, suffix))
+}
+
+/// The style hints implied by a standard-14 variant name.
+#[must_use]
+fn style_hints(base: &str) -> FontMatchHints {
+    let italic = base.contains("Italic") || base.contains("Oblique");
+    let weight = if base.contains("Bold") { 700 } else { 400 };
+    FontMatchHints { italic, weight }
+}
+
+/// The Liberation font bytes for a family+suffix name.
+fn family_bytes(name: &str) -> Option<&'static [u8]> {
+    let bytes: &'static [u8] = match name {
+        "LiberationMono-Regular" => {
+            include_bytes!("../../../assets/fonts/LiberationMono-Regular.ttf")
+        }
+        "LiberationMono-Bold" => include_bytes!("../../../assets/fonts/LiberationMono-Bold.ttf"),
+        "LiberationMono-Italic" => {
+            include_bytes!("../../../assets/fonts/LiberationMono-Italic.ttf")
+        }
+        "LiberationMono-BoldItalic" => {
+            include_bytes!("../../../assets/fonts/LiberationMono-BoldItalic.ttf")
+        }
+        "LiberationSans-Regular" => {
+            include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf")
+        }
+        "LiberationSans-Bold" => include_bytes!("../../../assets/fonts/LiberationSans-Bold.ttf"),
+        "LiberationSans-Italic" => {
+            include_bytes!("../../../assets/fonts/LiberationSans-Italic.ttf")
+        }
+        "LiberationSans-BoldItalic" => {
+            include_bytes!("../../../assets/fonts/LiberationSans-BoldItalic.ttf")
+        }
+        "LiberationSerif-Regular" => {
+            include_bytes!("../../../assets/fonts/LiberationSerif-Regular.ttf")
+        }
+        "LiberationSerif-Bold" => include_bytes!("../../../assets/fonts/LiberationSerif-Bold.ttf"),
+        "LiberationSerif-Italic" => {
+            include_bytes!("../../../assets/fonts/LiberationSerif-Italic.ttf")
+        }
+        "LiberationSerif-BoldItalic" => {
+            include_bytes!("../../../assets/fonts/LiberationSerif-BoldItalic.ttf")
+        }
+        _ => return None,
+    };
+    Some(bytes)
+}
+
+/// The preferred fallback order (sans first — the common case).
+#[must_use]
+pub fn fallback_order() -> &'static [&'static str] {
+    &[
+        "LiberationSans-Regular",
+        "LiberationSerif-Regular",
+        "LiberationMono-Regular",
+    ]
+}
+
+/// Whether a fallback font can render a character (its cmap has the codepoint).
+#[must_use]
+pub fn can_render(font_name: &str, ch: char) -> bool {
+    let Some(bytes) = family_bytes(font_name) else {
         return false;
     };
-    standard14::width(sub, glyph_name).is_some()
+    glyph_id_for_char(&selis_bytes::Bytes::from(bytes.to_vec()), u32::from(ch)).is_some()
 }
 
-/// The fallback order for a glyph missing from the current font: the same
-/// family first, then the metric-compatible standard-14 substitute, then the
-/// symbol fonts with the widest coverage.
-///
-/// The engine walks this list (system fonts land outside this crate, at the
-/// shell layer) and stops at the first font that [`can_render`]s the glyph.
+/// Find the first fallback font that can render `ch`, honoring style hints.
 #[must_use]
-pub fn fallback_order(font_name: &str) -> Vec<&'static str> {
-    let mut order = Vec::new();
-    if let Some(sub) = substitute(font_name) {
-        order.push(sub);
+pub fn match_substitute(ch: char, hints: &FontMatchHints) -> Option<&'static str> {
+    for family in ["LiberationSans", "LiberationSerif", "LiberationMono"] {
+        let suffix = match (hints.italic, hints.weight >= 700) {
+            (true, true) => "-BoldItalic",
+            (true, false) => "-Italic",
+            (false, true) => "-Bold",
+            (false, false) => "-Regular",
+        };
+        let name = concat_static(family, suffix);
+        if can_render(name, ch) {
+            return Some(name);
+        }
     }
-    // Symbol and ZapfDingbats cover the widest set of non-Latin glyphs.
-    if !order.contains(&"Symbol") {
-        order.push("Symbol");
-    }
-    if !order.contains(&"ZapfDingbats") {
-        order.push("ZapfDingbats");
-    }
-    order
+    None
 }
 
-/// The common non-standard → standard-14 alias map (pdf.js `getStdFontMap`).
-fn alias(font_name: &str) -> Option<&'static str> {
-    const ALIASES: &[(&str, &str)] = &[
-        // Arial family → Helvetica.
-        ("Arial", "Helvetica"),
-        ("Arial-Bold", "Helvetica-Bold"),
-        ("Arial-Italic", "Helvetica-Oblique"),
-        ("Arial-BoldItalic", "Helvetica-BoldOblique"),
-        ("ArialMT", "Helvetica"),
-        ("Arial-BoldMT", "Helvetica-Bold"),
-        ("Arial-ItalicMT", "Helvetica-Oblique"),
-        ("Arial-BoldItalicMT", "Helvetica-BoldOblique"),
-        ("ArialBlack", "Helvetica"),
-        ("ArialNarrow", "Helvetica"),
-        ("ArialNarrow-Bold", "Helvetica-Bold"),
-        ("ArialNarrow-Italic", "Helvetica-Oblique"),
-        ("ArialNarrow-BoldItalic", "Helvetica-BoldOblique"),
-        // Times New Roman family → Times.
-        ("TimesNewRoman", "Times-Roman"),
-        ("TimesNewRomanPS", "Times-Roman"),
-        ("TimesNewRomanPSMT", "Times-Roman"),
-        ("TimesNewRomanPS-Bold", "Times-Bold"),
-        ("TimesNewRomanPSMT-Bold", "Times-Bold"),
-        ("TimesNewRoman-Italic", "Times-Italic"),
-        ("TimesNewRomanPS-Italic", "Times-Italic"),
-        ("TimesNewRomanPSMT-Italic", "Times-Italic"),
-        ("TimesNewRoman-BoldItalic", "Times-BoldItalic"),
-        ("TimesNewRomanPS-BoldItalic", "Times-BoldItalic"),
-        ("TimesNewRomanPSMT-BoldItalic", "Times-BoldItalic"),
-        // Courier New family → Courier.
-        ("CourierNew", "Courier"),
-        ("CourierNewPSMT", "Courier"),
-        ("CourierNew-Bold", "Courier-Bold"),
-        ("CourierNewPS-BoldMT", "Courier-Bold"),
-        ("CourierNew-Italic", "Courier-Oblique"),
-        ("CourierNewPS-ItalicMT", "Courier-Oblique"),
-        ("CourierNew-BoldItalic", "Courier-BoldOblique"),
-        // Helvetica's own aliases.
-        ("Helvetica-Italic", "Helvetica-Oblique"),
-        ("Helvetica-BoldItalic", "Helvetica-BoldOblique"),
-        // Symbol family.
-        ("Symbol-Bold", "Symbol"),
-        ("Symbol-Italic", "Symbol"),
-        ("Symbol-BoldItalic", "Symbol"),
-        // Others.
-        ("ArialUnicodeMS", "Helvetica"),
-        ("Calibri", "Helvetica"),
-        ("Calibri-Bold", "Helvetica-Bold"),
-        ("Calibri-Italic", "Helvetica-Oblique"),
-        ("Calibri-BoldItalic", "Helvetica-BoldOblique"),
-        ("GillSansMT", "Helvetica"),
-        ("Impact", "Helvetica"),
-        ("LucidaConsole", "Courier"),
-        ("LucidaConsole-Bold", "Courier-Bold"),
-        ("LucidaConsole-Italic", "Courier-Oblique"),
-        ("LucidaConsole-BoldItalic", "Courier-BoldOblique"),
-        ("NuptialScript", "Times-Italic"),
-        ("SegoeUISymbol", "Helvetica"),
-        ("TrebuchetMS", "Helvetica"),
-        ("TrebuchetMS-Bold", "Helvetica-Bold"),
-        ("TrebuchetMS-Italic", "Helvetica-Oblique"),
-        ("TrebuchetMS-BoldItalic", "Helvetica-BoldOblique"),
-    ];
-    ALIASES
-        .iter()
-        .find(|(name, _)| *name == font_name)
-        .map(|(_, sub)| *sub)
+/// Concatenate two &'static str into one &'static str (both are literals).
+fn concat_static(a: &'static str, b: &'static str) -> &'static str {
+    // The only call sites pass compile-time literals, so the boxed String is
+    // guaranteed to be built from them; leak it once to get a &'static str.
+    Box::leak(format!("{a}{b}").into_boxed_str())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outline::{outline_glyph, units_per_em};
 
-    #[test]
-    fn standard_fonts_substitute_to_themselves() {
-        assert_eq!(substitute("Helvetica"), Some("Helvetica"));
-        assert_eq!(substitute("Times-Roman"), Some("Times-Roman"));
-        assert_eq!(substitute("Courier"), Some("Courier"));
+    fn guard() -> selis_sandbox::BudgetGuard<'static> {
+        selis_sandbox::Budget::unlimited().guard()
     }
 
     #[test]
-    fn aliases_resolve() {
-        assert_eq!(substitute("ArialMT"), Some("Helvetica"));
-        assert_eq!(substitute("Arial-Bold"), Some("Helvetica-Bold"));
-        assert_eq!(substitute("TimesNewRomanPSMT"), Some("Times-Roman"));
-        assert_eq!(substitute("CourierNewPSMT"), Some("Courier"));
+    fn liberation_sans_parses_and_has_glyphs() {
+        let bytes = fallback_bytes("Helvetica").expect("helvetica fallback");
+        assert!(units_per_em(&selis_bytes::Bytes::from(bytes.to_vec())).is_some());
+        let mut g = guard();
+        let font = selis_bytes::Bytes::from(bytes.to_vec());
+        let gid = glyph_id_for_char(&font, u32::from(b'A')).expect("glyph A");
+        let outline = outline_glyph(&font, gid, &mut g).expect("outline ok");
+        assert!(outline.is_some(), "'A' has a drawn outline");
     }
 
     #[test]
-    fn unknown_font_is_none() {
-        assert_eq!(substitute("NoSuchFont"), None);
-    }
-
-    /// DoD: a glyph that exists in a standard font's AFM renders without a
-    /// `notdef` box, even through an alias.
-    #[test]
-    fn can_render_standard_glyphs() {
-        assert!(can_render("Helvetica", "A"));
-        assert!(can_render("Helvetica", "a"));
-        assert!(can_render("Helvetica", "space"));
-        // Through the alias.
-        assert!(can_render("ArialMT", "A"));
-        assert!(can_render("TimesNewRomanPSMT", "A"));
-        // A glyph Helvetica does not have.
-        assert!(!can_render("Helvetica", "noSuchGlyph"));
-        // An unknown font renders nothing.
-        assert!(!can_render("NoSuchFont", "A"));
+    fn subset_tag_is_stripped() {
+        assert!(fallback_bytes("ABCDEE+Helvetica").is_some());
+        assert!(fallback_bytes("Times-BoldItalic").is_some());
+        assert!(fallback_bytes("Courier-BoldOblique").is_some());
+        assert!(fallback_bytes("NotAStandardFont").is_none());
     }
 
     #[test]
-    fn fallback_order_has_the_substitute_first() {
-        let order = fallback_order("ArialMT");
-        assert_eq!(order.first(), Some(&"Helvetica"));
-        assert!(order.contains(&"Symbol"));
-        assert!(order.contains(&"ZapfDingbats"));
-        // The substitute is not duplicated.
-        assert_eq!(order.iter().filter(|f| **f == "Helvetica").count(), 1);
+    fn style_hints_select_the_variant() {
+        let hints = style_hints("Times-BoldItalic");
+        assert_eq!(hints.italic, true);
+        assert_eq!(hints.weight, 700);
+        assert_eq!(substitute("Times-Roman", &hints), Some("LiberationSerif-BoldItalic"));
+        let hints = style_hints("Helvetica");
+        assert_eq!(substitute("Helvetica", &hints), Some("LiberationSans-Regular"));
     }
 
     #[test]
-    fn fallback_order_unknown_font() {
-        let order = fallback_order("NoSuchFont");
-        assert!(order.contains(&"Symbol"));
-        assert!(order.contains(&"ZapfDingbats"));
-    }
-
-    #[test]
-    fn descriptor_matching_is_deterministic() {
-        let sans = FontMatchHints {
-            serif: false,
-            symbolic: false,
-            monospace: false,
-            ..FontMatchHints::default()
-        };
-        let serif = FontMatchHints {
-            serif: true,
-            symbolic: false,
-            monospace: false,
-            ..FontMatchHints::default()
-        };
-        let mono = FontMatchHints {
-            monospace: true,
-            ..FontMatchHints::default()
-        };
-        let symbolic = FontMatchHints {
-            symbolic: true,
-            ..FontMatchHints::default()
-        };
-        // Deterministic: the same hints always give the same result.
-        assert_eq!(match_substitute(&sans), match_substitute(&sans));
-        assert_eq!(match_substitute(&serif), "Times-Roman");
-        assert_eq!(match_substitute(&mono), "Courier");
-        assert_eq!(match_substitute(&symbolic), "Symbol");
-    }
-
-    #[test]
-    fn stem_v_selects_the_bold_style() {
-        let heavy_sans = FontMatchHints {
-            stem_v: Some(150.0),
-            ..FontMatchHints::default()
-        };
-        let light_sans = FontMatchHints {
-            stem_v: Some(60.0),
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&heavy_sans), "Helvetica-Bold");
-        assert_eq!(match_substitute(&light_sans), "Helvetica");
-        let heavy_mono = FontMatchHints {
-            stem_v: Some(150.0),
-            monospace: true,
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&heavy_mono), "Courier-Bold");
-    }
-
-    #[test]
-    fn panose_kind_classifies() {
-        let latin_text = FontMatchHints {
-            panose_family_kind: Some(2),
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&latin_text), "Times-Roman");
-        let mono_text = FontMatchHints {
-            panose_family_kind: Some(6),
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&mono_text), "Courier");
-    }
-
-    #[test]
-    fn family_name_aliases_first() {
-        let arial = FontMatchHints {
-            family: Some("Arial".to_string()),
-            serif: true, // family wins over flags
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&arial), "Helvetica");
-        let dingbats = FontMatchHints {
-            family: Some("Wingdings".to_string()),
-            ..FontMatchHints::default()
-        };
-        assert_eq!(match_substitute(&dingbats), "ZapfDingbats");
+    fn can_render_checks_the_cmap() {
+        assert!(can_render("LiberationSans-Regular", 'A'));
+        assert!(!can_render("LiberationSans-Regular", '\u{4E2D}')); // CJK not in the font
     }
 }
