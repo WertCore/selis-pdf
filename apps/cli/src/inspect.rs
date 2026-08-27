@@ -48,6 +48,8 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
             .map(|r| super::ref_str(&r)),
         size: None,
         reconstructed: false,
+        attachments: Vec::new(),
+        structure: None,
     };
 
     for rev in doc.revisions() {
@@ -56,6 +58,49 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
             entries: rev.entries.len(),
             objects: rev.entries.keys().copied().collect(),
         });
+    }
+
+    // Attachments + tagged structure tree from the resolved catalog.
+    if let Some(root_ref) = doc.revisions().last().and_then(|r| r.root) {
+        let mut resolver = selis_pdf_doc::Resolver::new(&doc, &data, &budget);
+        if let Ok(catalog) = resolver.resolve(root_ref, &mut g) {
+            if let Ok(attachments) =
+                selis_pdf_doc::embedded_files(&mut resolver, &catalog, &budget, &mut g)
+            {
+                for a in &attachments {
+                    out.attachments.push(super::InspectAttachment {
+                        name: a
+                            .name
+                            .as_ref()
+                            .map(|b| String::from_utf8_lossy(b.as_slice()).to_string())
+                            .unwrap_or_default(),
+                        size: a.size.unwrap_or(-1),
+                        key: a.key.clone(),
+                    });
+                }
+            }
+            if let Ok(tree) =
+                selis_pdf_doc::StructTree::resolve(&mut resolver, &catalog, &budget, &mut g)
+            {
+                if !tree.elements.is_empty() {
+                    let types: Vec<String> = tree
+                        .elements
+                        .iter()
+                        .map(|e| {
+                            e.ty
+                                .as_ref()
+                                .map(|b| String::from_utf8_lossy(b.as_slice()).to_string())
+                                .unwrap_or_default()
+                        })
+                        .collect();
+                    out.structure = Some(super::InspectStructure {
+                        elements: tree.elements.len(),
+                        types,
+                        mcid_order: tree.mcid_order(),
+                    });
+                }
+            }
+        }
     }
 
     // Deviations from a fresh lex (the revision walk is byte-level).

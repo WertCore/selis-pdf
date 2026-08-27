@@ -140,6 +140,30 @@ struct InspectDoc {
     size: Option<u64>,
     /// Whether the xref needed reconstruction.
     reconstructed: bool,
+    /// Embedded-file inventory (name, size, key).
+    attachments: Vec<InspectAttachment>,
+    /// The tagged structure tree, when present.
+    structure: Option<InspectStructure>,
+}
+
+#[derive(serde::Serialize)]
+struct InspectAttachment {
+    /// The display name.
+    name: String,
+    /// The declared size in bytes.
+    size: i64,
+    /// The name-tree key.
+    key: String,
+}
+
+#[derive(serde::Serialize)]
+struct InspectStructure {
+    /// The number of structure elements.
+    elements: usize,
+    /// The structure types (e.g. P, H1, Table), in walk order.
+    types: Vec<String>,
+    /// The marked-content ids in reading order.
+    mcid_order: Vec<u32>,
 }
 
 #[derive(serde::Serialize)]
