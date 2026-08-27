@@ -10,7 +10,6 @@ use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::obj::{Obj, Ref};
-use crate::resolve_object;
 
 /// Collect all objects reachable from `roots` in the source document, renumber
 /// them, and return the (renumbered) objects plus the remap (source object
@@ -88,7 +87,7 @@ pub fn resolve_ref(
     for view in doc.revisions() {
         match view.entries.get(&r.num) {
             Some(crate::XrefEntry::InUse { offset, .. }) => {
-                return crate::resolve_object(src, *offset, budget, g);
+                return crate::resolve::resolve_object_numbered(src, *offset, r.num, budget, g);
             }
             Some(crate::XrefEntry::Compressed { objstm, index }) => {
                 return resolve_compressed(src, doc, *objstm, *index, budget, g);
@@ -125,7 +124,7 @@ fn resolve_compressed(
             ));
         }
     };
-    let stream = crate::resolve_object(src, offset, budget, g)?;
+    let stream = crate::resolve::resolve_object_numbered(src, offset, objstm, budget, g)?;
     let (dict, data) = match &stream {
         Obj::Stream { dict, data } => (dict, data.as_slice()),
         _ => {
@@ -136,24 +135,10 @@ fn resolve_compressed(
             ));
         }
     };
-    // The object stream's payload is usually filtered; decode it.
-    let filters: Vec<String> = match dict_find(dict, b"Filter") {
-        Some(Obj::Name(n)) => vec![String::from_utf8_lossy(n.as_slice()).to_string()],
-        Some(Obj::Array(items)) => items
-            .iter()
-            .filter_map(|o| match o {
-                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    let payload = if filters.is_empty() {
-        data.to_vec()
-    } else {
-        selis_pdf_filter::decode_chain(&filters, &[], data, budget.bytes, g)
-            .unwrap_or_else(|_| data.to_vec())
-    };
+    // The object stream's payload is usually filtered; decode it (predictors
+    // included — a `/DecodeParms` PNG predictor must be undone before the
+    // `N G` offset header is readable).
+    let payload = crate::xref::decode_stream_payload(dict, data, budget, g);
     let pairs = crate::xref_stream::parse_object_stream(dict, &payload, budget, g)?;
     let (_, range) = pairs
         .get(usize::try_from(index).unwrap_or(usize::MAX))
@@ -170,13 +155,6 @@ fn resolve_compressed(
     }
     let mut parser = crate::parse::ObjectParser::new(&toks, budget);
     parser.parse(g)
-}
-
-/// Look up a key in a dict value's pairs.
-fn dict_find<'a>(dict: &'a [(selis_bytes::Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
-    dict.iter()
-        .find(|(k, _)| k.as_slice() == key)
-        .map(|(_, v)| v)
 }
 
 /// Collect all refs from an object for later resolution.

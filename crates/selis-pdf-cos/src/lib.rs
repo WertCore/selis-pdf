@@ -41,7 +41,7 @@ pub use linearise::Linearisation;
 pub use obj::{Obj, Ref};
 pub use parse::{parse_all, ObjectParser};
 pub use reconstruct::{reconstruct, reconstruct_index, recover_root, Reconstruction};
-pub use resolve::resolve_object;
+pub use resolve::{resolve_object, resolve_object_numbered};
 pub use resume::{ParseStep, ResumableLexer};
 pub use revision::{parse_revisions, Doc, Revision, RevisionView};
 pub use writer::{roundtrip, Writer};

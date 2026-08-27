@@ -261,6 +261,13 @@ pub(crate) fn parse_one_revision(
         parse_classic_revision(src, p.saturating_add(4), budget, g)
     } else if src.get(p).is_some_and(|&b| b.is_ascii_digit()) {
         parse_xref_stream_revision(src, cursor, p, budget, g)
+    } else if let Some(kw) = find_xref_keyword_near(src, p) {
+        // The `startxref` offset points before the real table (a stray EOL or
+        // `endobj` in between): resume from the `xref` keyword itself.
+        parse_classic_revision(src, kw.saturating_add(4), budget, g)
+    } else if let Some(obj_pos) = find_obj_header_near(src, p) {
+        // Same mis-aim, but the revision is an xref stream object.
+        parse_xref_stream_revision(src, cursor, obj_pos, budget, g)
     } else {
         Err(err!(
             Code::XrefMalformed,
@@ -351,17 +358,10 @@ fn parse_xref_stream_revision(
             ));
         }
     };
-    // Decode the payload (xref streams are typically /FlateDecode).
-    let payload = if let Some(Obj::Name(n)) = dict
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Filter")
-        .map(|(_, v)| v)
-    {
-        let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
-        selis_pdf_filter::decode(filt, data, budget.bytes, g).unwrap_or_else(|_| data.to_vec())
-    } else {
-        data.to_vec()
-    };
+    // Decode the payload through the `/Filter` chain with `/DecodeParms`:
+    // xref streams commonly pair `/FlateDecode` with a PNG predictor, and the
+    // entry fields are unusable unless the predictor is undone.
+    let payload = decode_stream_payload(dict, data, budget, g);
     let xs = crate::xref_stream::parse_xref_stream(dict, &payload, budget, g)?;
     let mut entries = BTreeMap::new();
     xs.apply(&mut entries);
@@ -548,6 +548,186 @@ fn find_keyword(src: &[u8], kw: &[u8]) -> Option<usize> {
     src.windows(kw.len()).position(|w| w == kw)
 }
 
+/// Decode a stream object's payload through its `/Filter` chain with
+/// `/DecodeParms` (predictors included). Falls back to the raw data when no
+/// filter is declared or the decode fails, so a damaged stream never aborts
+/// the revision walk.
+///
+/// # Budget
+///
+/// `decode_chain` bounds every stage at `budget.bytes`.
+///
+/// # Malformed Input
+///
+/// Never errors: a decode failure returns the raw (still filtered) data and
+/// the caller's structural checks decide what happens next.
+pub(crate) fn decode_stream_payload(
+    dict: &[(selis_bytes::Bytes, Obj)],
+    data: &[u8],
+    budget: &selis_sandbox::Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> Vec<u8> {
+    let filters: Vec<String> = match dict
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Filter")
+        .map(|(_, v)| v)
+    {
+        Some(Obj::Name(n)) => vec![String::from_utf8_lossy(n.as_slice()).to_string()],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .filter_map(|o| match o {
+                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => return data.to_vec(),
+    };
+    if filters.is_empty() {
+        return data.to_vec();
+    }
+    let parms = decode_parms_from_dict(dict);
+    selis_pdf_filter::decode_chain(&filters, &parms, data, budget.bytes, g)
+        .unwrap_or_else(|_| data.to_vec())
+}
+
+/// `/DecodeParms` from a stream dict: one dict, or an array aligned with the
+/// filter chain. Unknown or absent parameters keep their spec defaults.
+fn decode_parms_from_dict(
+    dict: &[(selis_bytes::Bytes, Obj)],
+) -> Vec<selis_pdf_filter::DecodeParms> {
+    let from_pairs = |pairs: &[(selis_bytes::Bytes, Obj)]| -> selis_pdf_filter::DecodeParms {
+        let int = |key: &[u8]| -> i64 {
+            pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == key)
+                .and_then(|(_, v)| match v {
+                    Obj::Int(n) => Some(*n),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+        selis_pdf_filter::DecodeParms {
+            predictor: u16::try_from(int(b"Predictor")).unwrap_or(1),
+            columns: u32::try_from(int(b"Columns")).unwrap_or(1),
+            colors: u32::try_from(int(b"Colors")).unwrap_or(1),
+            bits_per_component: u32::try_from(int(b"BitsPerComponent")).unwrap_or(8),
+            early_change: u8::try_from(int(b"EarlyChange")).unwrap_or(0),
+        }
+    };
+    match dict
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"DecodeParms")
+        .map(|(_, v)| v)
+    {
+        Some(Obj::Dict(pairs)) => vec![from_pairs(pairs)],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .map(|o| match o {
+                Obj::Dict(pairs) => from_pairs(pairs),
+                _ => selis_pdf_filter::DecodeParms::default(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// How far past a bad `startxref` offset to scan for the real xref section.
+const XREF_RECOVERY_WINDOW: usize = 4096;
+
+/// True when `src[idx]` begins a whole `xref` keyword: the byte before is not
+/// alphanumeric (rejecting the `xref` inside `startxref`) and neither is the
+/// byte after.
+fn xref_keyword_at(src: &[u8], idx: usize) -> bool {
+    if src.get(idx..idx.saturating_add(4)) != Some(b"xref") {
+        return false;
+    }
+    let before_ok = idx == 0
+        || src
+            .get(idx.saturating_sub(1))
+            .is_some_and(|&b| !b.is_ascii_alphanumeric());
+    let after_ok = src
+        .get(idx.saturating_add(4))
+        .is_none_or(|&b| !b.is_ascii_alphanumeric());
+    before_ok && after_ok
+}
+
+/// Scan a bounded window after `pos` for the `xref` keyword of a classic
+/// table.
+///
+/// A damaged writer can store a `startxref` offset a few bytes short of the
+/// real table (pointing at a stray EOL or the `endobj` before it). The strict
+/// cursor check rejects such files even though the table itself is intact, so
+/// recovery scans forward within [`XREF_RECOVERY_WINDOW`] and resumes from the
+/// first whole `xref` keyword.
+///
+/// # Budget
+///
+/// No heap allocation; scans at most `XREF_RECOVERY_WINDOW` bytes.
+#[must_use]
+fn find_xref_keyword_near(src: &[u8], pos: usize) -> Option<usize> {
+    let end = pos.saturating_add(XREF_RECOVERY_WINDOW).min(src.len());
+    let mut i = pos;
+    while i < end {
+        if xref_keyword_at(src, i) {
+            return Some(i);
+        }
+        i = i.saturating_add(1);
+    }
+    None
+}
+
+/// Scan a bounded window after `pos` for the byte offset of an `N G obj`
+/// header (the xref stream object a mis-aimed `startxref` points just before).
+///
+/// # Budget
+///
+/// No heap allocation; scans at most `XREF_RECOVERY_WINDOW` bytes.
+#[must_use]
+fn find_obj_header_near(src: &[u8], pos: usize) -> Option<usize> {
+    let end = pos.saturating_add(XREF_RECOVERY_WINDOW).min(src.len());
+    let slice = src.get(pos..end)?;
+    let mut from = 0usize;
+    while from < slice.len() {
+        let rel = slice.get(from..)?.windows(4).position(|w| w == b" obj")?;
+        let rel = from.saturating_add(rel);
+        // Walk back over the generation and object numbers.
+        let mut j = rel;
+        while j > 0
+            && slice
+                .get(j.saturating_sub(1))
+                .is_some_and(|b| b.is_ascii_digit())
+        {
+            j = j.saturating_sub(1);
+        }
+        let gen_digits = rel.saturating_sub(j);
+        if gen_digits > 0 && j > 0 && slice.get(j.saturating_sub(1)) == Some(&b' ') {
+            let mut k = j.saturating_sub(1);
+            while k > 0
+                && slice
+                    .get(k.saturating_sub(1))
+                    .is_some_and(|b| b.is_ascii_digit())
+            {
+                k = k.saturating_sub(1);
+            }
+            let num_digits = j.saturating_sub(1).saturating_sub(k);
+            let boundary_ok = k == 0
+                || slice
+                    .get(k.saturating_sub(1))
+                    .is_some_and(|b| !b.is_ascii_alphanumeric());
+            if num_digits > 0
+                && boundary_ok
+                && slice
+                    .get(rel.saturating_add(4))
+                    .is_none_or(|&b| b.is_ascii_whitespace())
+            {
+                return Some(pos.saturating_add(k));
+            }
+        }
+        from = rel.saturating_add(1);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -595,6 +775,83 @@ mod tests {
                 // Object 1 begins right after the header line `%PDF-1.4\n`.
                 assert_eq!(offset, "%PDF-1.4\n".len() as u64);
                 assert_eq!(gen, 0);
+            }
+            other => panic!("expected in-use entry, got {other:?}"),
+        }
+    }
+
+    /// `startxref` points at stray bytes (an `endobj`) before the real `xref`
+    /// keyword; the revision walk scans forward and recovers the table.
+    #[test]
+    fn misaimed_startxref_recovers_the_classic_table() {
+        let body = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+        let obj1_offset = "%PDF-1.4\n".len();
+        let mut out = body.to_vec();
+        let mis_aim = out.len(); // startxref lands here, 8 bytes short
+        out.extend_from_slice(b"endobj\n\n");
+        out.extend_from_slice(
+            format!(
+                "xref\n0 2\n0000000000 65535 f \n{:010} 00000 n \ntrailer\n<< /Size 2 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                obj1_offset, mis_aim
+            )
+            .as_bytes(),
+        );
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let startxref = find_startxref(&out, 2048).expect("startxref");
+        let doc = crate::parse_revisions(&out, startxref, &budget, &mut g).expect("recovers");
+        let rev = doc.revisions().last().expect("one revision");
+        assert_eq!(rev.root, Some(Ref::new(1, 0)));
+        match rev.entries.get(&1) {
+            Some(XrefEntry::InUse { offset, gen }) => {
+                assert_eq!(*offset, obj1_offset as u64);
+                assert_eq!(*gen, 0);
+            }
+            other => panic!("expected in-use entry, got {other:?}"),
+        }
+    }
+
+    /// Same mis-aim, but the revision is an xref stream object: the recovery
+    /// scan finds the `N G obj` header and parses the stream.
+    #[test]
+    fn misaimed_startxref_recovers_an_xref_stream() {
+        let body = b"%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+        let obj1_offset = "%PDF-1.5\n".len() as u64;
+        let mut out = body.to_vec();
+        let mis_aim = out.len();
+        out.extend_from_slice(b"endobj\n\n");
+        // One 4-byte row per entry, /W [1 2 1]:
+        //   entry 0: type 0 (free), entry 1: type 1 at obj1_offset.
+        let payload: [u8; 8] = [
+            0,
+            0,
+            0,
+            0,
+            1,
+            u8::try_from(obj1_offset >> 8).unwrap_or(0),
+            u8::try_from(obj1_offset & 0xff).unwrap_or(0),
+            0,
+        ];
+        out.extend_from_slice(
+            format!(
+                "7 0 obj\n<< /Type /XRef /Size 2 /Root 1 0 R /W [1 2 1] /Length {} >>\nstream\n",
+                payload.len()
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&payload);
+        out.extend_from_slice(b"\nendstream\nendobj\n");
+        out.extend_from_slice(format!("startxref\n{}\n%%EOF\n", mis_aim).as_bytes());
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let startxref = find_startxref(&out, 2048).expect("startxref");
+        let doc = crate::parse_revisions(&out, startxref, &budget, &mut g).expect("recovers");
+        let rev = doc.revisions().last().expect("one revision");
+        assert_eq!(rev.root, Some(Ref::new(1, 0)));
+        match rev.entries.get(&1) {
+            Some(XrefEntry::InUse { offset, gen }) => {
+                assert_eq!(*offset, obj1_offset);
+                assert_eq!(*gen, 0);
             }
             other => panic!("expected in-use entry, got {other:?}"),
         }

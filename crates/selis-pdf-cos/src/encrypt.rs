@@ -9,7 +9,7 @@ use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::obj::{Obj, Ref};
-use crate::resolve_object;
+use crate::resolve::resolve_object_numbered;
 
 /// The parsed `/Encrypt` dictionary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub fn parse_encrypt(
         return Ok(None);
     };
     let offset = offset_of(src, r, budget, g)?;
-    let obj = resolve_object(src, offset, budget, g)?;
+    let obj = resolve_object_numbered(src, offset, r.num, budget, g)?;
     let Obj::Dict(pairs) = &obj else {
         return Ok(None);
     };

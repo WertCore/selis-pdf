@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use selis_error::{err, Code, Result};
-use selis_pdf_cos::{resolve_object, Doc, Obj, Ref};
+use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
 /// A reference-resolving walker that refuses cycles.
@@ -90,7 +90,7 @@ impl<'a> Resolver<'a> {
         let obj = match view.xref.get(&r.num) {
             Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
                 g.charge_one(selis_sandbox::Resource::Objects)?;
-                resolve_object(self.src, *offset, self.budget, g)?
+                resolve_object_numbered(self.src, *offset, r.num, self.budget, g)?
             }
             Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
                 // The object lives in an object stream (/ObjStm): resolve the
@@ -199,7 +199,7 @@ pub(crate) fn resolve_compressed(
             ));
         }
     };
-    let obj = resolve_object(src, offset, budget, g)?;
+    let obj = resolve_object_numbered(src, offset, objstm, budget, g)?;
     let (dict, payload) = match &obj {
         Obj::Stream { dict, data } => (dict, data.as_slice()),
         _ => {
