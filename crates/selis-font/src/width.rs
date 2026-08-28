@@ -64,10 +64,15 @@ impl EmbeddedMetrics {
     }
 }
 
+/// The metrics extracted from a TrueType/OpenType font's `head` and `hmtx`
+/// tables: the binary font data and the `unitsPerEm` (for scaling width
+/// values to PDF glyph space).
 #[derive(Debug, Clone)]
-struct TtMetrics {
-    data: Bytes,
-    units_per_em: u16,
+pub struct TtMetrics {
+    /// The raw font data.
+    pub data: Bytes,
+    /// The font's `unitsPerEm` (from the `head` table).
+    pub units_per_em: u16,
 }
 
 impl TtMetrics {

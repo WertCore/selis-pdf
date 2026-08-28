@@ -395,4 +395,42 @@ mod tests {
                 .expect("each sibling parses at depth 3 under the depth-4 budget");
         }
     }
+
+    /// A deliberately hostile input (a deeply nested dictionary) must
+    /// terminate under the Fuzz budget with a typed budget error instead of
+    /// recursing to exhaustion — the SL-0.SEC.02 "slow input" proof that the
+    /// fuzz harness's budget assertion holds.
+    #[test]
+    fn hostile_nesting_terminates_under_the_fuzz_budget() {
+        let budget = selis_sandbox::Surface::Fuzz.budget();
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        // Build a deeply nested valid dict: << /A << /B << /C ... >> >> >>.
+        // Each level adds "<< /Key" which is a valid dict key-value pair where
+        // the value is itself a nested dict. 400 levels far exceeds the Fuzz
+        // depth budget (16), so the parse must terminate with BudgetDepth.
+        let mut src = Vec::new();
+        for i in 0..400u16 {
+            src.extend_from_slice(b"<< /K");
+            src.push(b'A' + u8::try_from(i % 26).expect("i%26 fits u8"));
+            src.push(b' ');
+        }
+        for _ in 0..400 {
+            src.extend_from_slice(b">> ");
+        }
+        let mut lexer = crate::Lexer::new(&src);
+        let mut toks = Vec::new();
+        while let Some(t) = lexer.next_token(&mut g).expect("lex") {
+            toks.push(t);
+        }
+        let mut p = ObjectParser::new(&toks, &budget);
+        let e = p.parse(&mut g).expect_err("budgeted out, not hung");
+        assert!(
+            matches!(
+                e.code(),
+                Code::BudgetDepth | Code::BudgetObjects | Code::BudgetBytes
+            ),
+            "unexpected code {:?}",
+            e.code()
+        );
+    }
 }

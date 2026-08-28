@@ -5,6 +5,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/cli", "xtask", "bench"]
+exclude = ["fuzz"]
 
 [workspace.package]
 edition      = "2021"

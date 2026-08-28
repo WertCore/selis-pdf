@@ -10,6 +10,7 @@ mod checks;
 mod codes;
 mod conformance;
 mod corpus;
+mod fuzz;
 mod layers;
 mod purity;
 mod sbom;
@@ -117,7 +118,7 @@ fn main() -> ExitCode {
             CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
         },
         Command::Oracle => not_in_phase_0("oracle"),
-        Command::Fuzz => not_in_phase_0("fuzz"),
+        Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),
         Command::Conformance => conformance::report(),
         Command::Sbom => sbom::sbom(),

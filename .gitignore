@@ -26,3 +26,8 @@ __pycache__/
 /corpus/pdfs/
 
 tmp_*
+
+# cargo-fuzz output (SL-0.SEC.02)
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/

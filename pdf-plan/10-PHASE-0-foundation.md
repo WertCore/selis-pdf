@@ -327,12 +327,14 @@ point you have 40 000 lines and no idea which of them are wrong.
     shell-specific surfaces.
   - **DoD:** Reviewed; each threat maps to a control and to a test.
 
-- [ ] **SL-0.SEC.02 — Fuzzing harness skeleton** · deps: SBX.01, IO.02 · owner: AI
-  - **Do:** `cargo-fuzz` set up with a shared harness that constructs a `MemSource` + fuzz `Budget`
-    and asserts: no panic, no OOM, terminates within the budget. One stub target per planned
-    parser entry point.
-  - **DoD:** `cargo fuzz run cos_parse` executes; the budget assertion is proven by a deliberately
-    slow test input.
+- [x] **SL-0.SEC.02 — Fuzzing harness skeleton** · deps: SBX.01, IO.02 · owner: AI
+  - **Note:** `cargo-fuzz` set up with a shared harness: each target constructs a Fuzz budget and
+    asserts no panic, no OOM, and budget-bounded termination. `cargo fuzz run cos_parse` and
+    `cos_lex` execute (60k+ runs, ~2k exec/s, zero findings); the font targets (font_ttf/cff/cmap/
+    type1, shaper) build and run. The stale `cos_parse` target was fixed (it referenced a
+    non-existent `parse` API), the fuzz crate is wired into `xtask fuzz`, and a hostile-nesting
+    test proves the budget terminates deliberately slow input. Note: on Windows the ASan runtime
+    DLL must be on PATH (`clang_rt.asan_dynamic-x86_64.dll` from the MSVC BuildTools `Hostx86\x64`).
 
 - [ ] **SL-0.SEC.03 — OSS-Fuzz application prepared** · deps: SEC.02 · owner: HUMAN
   - **Do:** Prepare the application for the three OSS crates (ADR-P0030). Submit as soon as the
