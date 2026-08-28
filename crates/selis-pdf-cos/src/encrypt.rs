@@ -26,7 +26,11 @@ pub struct EncryptInfo {
     pub u: Vec<u8>,
     /// `/P` (permission flags).
     pub p: u32,
-    /// Whether the stream/string crypt filters are AES.
+    /// `/StmF` — the name of the stream crypt filter (ISO 32000-1 §7.4.10).
+    pub stmf: String,
+    /// `/StrF` — the name of the string crypt filter.
+    pub strf: String,
+    /// Whether the standard crypt filter (`/StdCF`) uses AES (`/AESV2`/`/AESV3`).
     pub aes: bool,
     /// `/EncryptMetadata` (default true).
     pub encrypt_metadata: bool,
@@ -37,10 +41,61 @@ pub struct EncryptInfo {
 }
 
 impl EncryptInfo {
+    /// Whether the stream crypt filter is the standard handler (streams are
+    /// encrypted). `/Identity` streams are not.
+    #[must_use]
+    pub fn stream_encrypted(&self) -> bool {
+        self.stmf == "StdCF"
+    }
+
+    /// Whether the string crypt filter is the standard handler (strings are
+    /// encrypted). `/Identity` strings are not.
+    #[must_use]
+    pub fn string_encrypted(&self) -> bool {
+        self.strf == "StdCF"
+    }
+
     /// The stream crypt filter (`/StmF`) — currently only `/Identity` and
     /// `/StdCF` are supported.
     pub fn supports(&self) -> bool {
         self.v <= 5 && self.r >= 2 && self.r <= 6
+    }
+}
+
+/// The decryption policy of an authenticated encrypted document: the file
+/// key plus which objects are actually encrypted (ISO 32000-1 §7.4.10).
+///
+/// Streams use `/StmF`, strings use `/StrF`; either may be `/Identity`
+/// (not encrypted). The metadata stream is not encrypted when
+/// `/EncryptMetadata` is false.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecryptPolicy {
+    /// The file encryption key.
+    pub key: Vec<u8>,
+    /// The handler revision.
+    pub rev: u8,
+    /// Whether the standard stream filter is AES (`/AESV2`/`/AESV3`).
+    pub aes: bool,
+    /// Whether streams use the standard crypt filter (are encrypted).
+    pub stream_encrypted: bool,
+    /// Whether strings use the standard crypt filter (are encrypted).
+    pub string_encrypted: bool,
+    /// Whether the metadata stream is encrypted (`/EncryptMetadata`).
+    pub encrypt_metadata: bool,
+}
+
+impl DecryptPolicy {
+    /// Build the policy for an authenticated document.
+    #[must_use]
+    pub fn from_encrypt(info: &EncryptInfo, key: Vec<u8>) -> Self {
+        Self {
+            key,
+            rev: info.r,
+            aes: info.aes,
+            stream_encrypted: info.stream_encrypted(),
+            string_encrypted: info.string_encrypted(),
+            encrypt_metadata: info.encrypt_metadata,
+        }
     }
 }
 
@@ -93,7 +148,7 @@ pub fn parse_encrypt(
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => return Ok(None),
     };
-    // /P is a signed 32-bit integer (permission flags); the algorithms use
+// /P is a signed 32-bit integer (permission flags); the algorithms use
     // its two's-complement bit pattern as an unsigned little-endian value.
     let p = int(b"P")
         .and_then(|v| i32::try_from(v).ok())
@@ -104,17 +159,20 @@ pub fn parse_encrypt(
         Some(Obj::Bool(b)) => *b,
         _ => true,
     };
-    // AES is used when the stream crypt filter is AESV2/AESV3.
-    let aes = {
-        let stmf = match get(b"StmF") {
-            Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
-            _ => "Identity".to_string(),
-        };
-        let cf = match get(b"CF") {
-            Some(Obj::Dict(pairs)) => pairs.clone(),
-            _ => Vec::new(),
-        };
-        let std_cfm = cf
+    let stmf = match get(b"StmF") {
+        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
+        _ => "Identity".to_string(),
+    };
+    let strf = match get(b"StrF") {
+        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
+        _ => "Identity".to_string(),
+    };
+    // /CF may be a direct dict or an indirect reference. Resolve it when
+    // it's a Ref so per-stream filter selection works (SL-1.FILT.09).
+    let cf = resolve_cf_dict(src, budget, g, get(b"CF"));
+    // AES is used when the standard stream crypt filter is AESV2/AESV3.
+    let aes = stmf == "StdCF"
+        && cf
             .iter()
             .find(|(k, _)| k.as_slice() == b"StdCF")
             .and_then(|(_, v)| match v {
@@ -125,9 +183,7 @@ pub fn parse_encrypt(
                 Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
                 _ => None,
             })
-            .unwrap_or_default();
-        stmf == "StdCF" && (std_cfm == "AESV2" || std_cfm == "AESV3")
-    };
+            .is_some_and(|cfm| cfm == "AESV2" || cfm == "AESV3");
     let ue = match get(b"UE") {
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => Vec::new(),
@@ -143,11 +199,35 @@ pub fn parse_encrypt(
         o,
         u,
         p,
+        stmf,
+        strf,
         aes,
         encrypt_metadata,
         ue,
         oe,
     }))
+}
+
+/// Resolve the `/CF` dictionary, which may be a direct `<<...>>` or an
+/// indirect reference (`N G R`). Falls back to an empty dict on error.
+fn resolve_cf_dict(
+    src: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    cf_obj: Option<&Obj>,
+) -> Vec<(selis_bytes::Bytes, Obj)> {
+    match cf_obj {
+        Some(Obj::Dict(pairs)) => pairs.clone(),
+        Some(Obj::Ref(r)) => {
+            match offset_of(src, *r, budget, g)
+                .and_then(|off| resolve_object_numbered(src, off, r.num, budget, g))
+            {
+                Ok(Obj::Dict(pairs)) => pairs,
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Extract `/ID[0]` from the trailer (used in key derivation).

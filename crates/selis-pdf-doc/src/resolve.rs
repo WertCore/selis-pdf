@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 
 use selis_error::{err, Code, Result};
+use selis_pdf_cos::encrypt::DecryptPolicy;
 use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -21,9 +22,9 @@ pub struct Resolver<'a> {
     budget: &'a Budget,
     visited: BTreeSet<u32>,
     depth: u16,
-    /// The encryption key, revision, and AES flag (from /Encrypt), if the
-    /// document is encrypted.
-    key: Option<(Vec<u8>, u8, bool)>,
+    /// The decryption policy (key + crypt-filter selection) of an encrypted
+    /// document, if it authenticated.
+    key: Option<DecryptPolicy>,
 }
 
 impl<'a> Resolver<'a> {
@@ -40,10 +41,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Set the encryption key so resolved streams/strings are automatically
-    /// decrypted.
-    pub fn set_key(&mut self, key: Vec<u8>, r: u8, aes: bool) {
-        self.key = Some((key, r, aes));
+    /// Set the decryption policy so resolved streams/strings are automatically
+    /// decrypted per their crypt filter.
+    pub fn set_key(&mut self, key: DecryptPolicy) {
+        self.key = Some(key);
     }
 
     /// The latest revision view (for reading stream bodies directly).
@@ -131,51 +132,80 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The encryption key as a borrow, for [`resolve_compressed`].
-    fn key_ref(&self) -> Option<(&[u8], u8, bool)> {
-        self.key
-            .as_ref()
-            .map(|(k, rev, aes)| (k.as_slice(), *rev, *aes))
+    /// The decryption policy as a borrow, for [`resolve_compressed`].
+    fn key_ref(&self) -> Option<&DecryptPolicy> {
+        self.key.as_ref()
     }
 
-    /// Decrypt a directly-stored object when a key is set.
+    /// Decrypt a directly-stored object when a policy is set.
     fn apply_key(&self, obj: Obj, r: Ref) -> Obj {
-        if let Some((key, rev, aes)) = &self.key {
-            decrypt_obj(obj, r, key, *rev, *aes)
-        } else {
-            obj
+        match &self.key {
+            Some(policy) => decrypt_obj(obj, r, policy),
+            None => obj,
         }
     }
 }
 
-/// Decrypt the streams and strings in a resolved object.
-pub(crate) fn decrypt_obj(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool) -> Obj {
-    decrypt_obj_inner(obj, r, key, rev, aes, 0)
+/// Decrypt the streams and strings in a resolved object, respecting the
+/// document's crypt filters (`/StmF`, `/StrF`, `/EncryptMetadata`).
+pub(crate) fn decrypt_obj(obj: Obj, r: Ref, policy: &DecryptPolicy) -> Obj {
+    decrypt_obj_inner(obj, r, policy, 0)
 }
 
-fn decrypt_obj_inner(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool, depth: u16) -> Obj {
+fn decrypt_obj_inner(obj: Obj, r: Ref, policy: &DecryptPolicy, depth: u16) -> Obj {
     if depth > 32 {
         return obj;
     }
     match obj {
         Obj::Stream { dict, data } => {
-            let decrypted =
-                selis_crypto::decrypt_data(key, r.num, r.gen, data.as_slice(), rev, aes);
+            // The metadata stream is not encrypted when /EncryptMetadata is
+            // false (ISO 32000-1 §7.4.10); other streams follow /StmF.
+            let is_metadata = dict.iter().any(|(k, v)| {
+                k.as_slice() == b"Type"
+                    && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
+            });
+            let encrypted = if is_metadata && !policy.encrypt_metadata {
+                false
+            } else {
+                policy.stream_encrypted
+            };
+            let data = if encrypted {
+                selis_bytes::Bytes::from(selis_crypto::decrypt_data(
+                    &policy.key,
+                    r.num,
+                    r.gen,
+                    data.as_slice(),
+                    policy.rev,
+                    policy.aes,
+                ))
+            } else {
+                data
+            };
             Obj::Stream {
-                dict: decrypt_dict(dict, r, key, rev, aes, depth),
-                data: selis_bytes::Bytes::from(decrypted),
+                dict: decrypt_dict(dict, r, policy, depth),
+                data,
             }
         }
         Obj::String(bytes) => {
-            let decrypted =
-                selis_crypto::decrypt_data(key, r.num, r.gen, bytes.as_slice(), rev, aes);
-            Obj::String(selis_bytes::Bytes::from(decrypted))
+            let bytes = if policy.string_encrypted {
+                selis_bytes::Bytes::from(selis_crypto::decrypt_data(
+                    &policy.key,
+                    r.num,
+                    r.gen,
+                    bytes.as_slice(),
+                    policy.rev,
+                    policy.aes,
+                ))
+            } else {
+                bytes
+            };
+            Obj::String(bytes)
         }
-        Obj::Dict(pairs) => Obj::Dict(decrypt_dict(pairs, r, key, rev, aes, depth)),
+        Obj::Dict(pairs) => Obj::Dict(decrypt_dict(pairs, r, policy, depth)),
         Obj::Array(items) => Obj::Array(
             items
                 .into_iter()
-                .map(|i| decrypt_obj_inner(i, r, key, rev, aes, depth.saturating_add(1)))
+                .map(|i| decrypt_obj_inner(i, r, policy, depth.saturating_add(1)))
                 .collect(),
         ),
         other => other,
@@ -186,9 +216,7 @@ fn decrypt_obj_inner(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool, depth: u1
 fn decrypt_dict(
     pairs: Vec<(selis_bytes::Bytes, Obj)>,
     r: Ref,
-    key: &[u8],
-    rev: u8,
-    aes: bool,
+    policy: &DecryptPolicy,
     depth: u16,
 ) -> Vec<(selis_bytes::Bytes, Obj)> {
     pairs
@@ -196,7 +224,7 @@ fn decrypt_dict(
         .map(|(k, v)| {
             (
                 k,
-                decrypt_obj_inner(v, r, key, rev, aes, depth.saturating_add(1)),
+                decrypt_obj_inner(v, r, policy, depth.saturating_add(1)),
             )
         })
         .collect()
@@ -204,10 +232,11 @@ fn decrypt_dict(
 
 /// Resolve an object stored in an object stream (`/ObjStm`).
 ///
-/// When `key` is set (an encrypted document), the container stream is
-/// decrypted with the object stream's own number/generation before the
-/// `/Filter` chain runs — objects inside an object stream are never
-/// individually encrypted (32000-1 §7.5.7), only the container is.
+/// When a decryption policy is set (an encrypted document with encrypted
+/// streams), the container stream is decrypted with the object stream's own
+/// number/generation before the `/Filter` chain runs — objects inside an
+/// object stream are never individually encrypted (32000-1 §7.5.7), only the
+/// container is.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_compressed(
     doc: &Doc,
@@ -216,7 +245,7 @@ pub(crate) fn resolve_compressed(
     index: u32,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    key: Option<(&[u8], u8, bool)>,
+    key: Option<&DecryptPolicy>,
 ) -> Result<Obj> {
     let view = doc
         .at_revision(doc.len().saturating_sub(1))
@@ -249,10 +278,18 @@ pub(crate) fn resolve_compressed(
         }
     };
     // Decrypt the container stream before decoding, when the document is
-    // encrypted (the key is keyed to the object stream's own number/gen).
+    // encrypted and streams use the standard filter (the key is keyed to the
+    // object stream's own number/gen).
     let payload: Vec<u8> = match key {
-        Some((k, rev, aes)) => selis_crypto::decrypt_data(k, objstm, gen, payload, rev, aes),
-        None => payload.to_vec(),
+        Some(policy) if policy.stream_encrypted => selis_crypto::decrypt_data(
+            &policy.key,
+            objstm,
+            gen,
+            payload,
+            policy.rev,
+            policy.aes,
+        ),
+        _ => payload.to_vec(),
     };
     // Unfilter the object stream data. Per 32000-1 §7.4.1, `/Filter` is either
     // a single name or an array of names applied in order; writers commonly

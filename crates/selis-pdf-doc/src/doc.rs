@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use selis_error::{err, Code, Result};
 use selis_geom::Rect;
+use selis_pdf_cos::encrypt::DecryptPolicy;
 use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -59,7 +60,7 @@ impl Document {
         src: &[u8],
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
-        key: Option<&(Vec<u8>, u8, bool)>,
+        key: Option<&DecryptPolicy>,
     ) -> Result<Self> {
         let view = doc
             .at_revision(doc.len().saturating_sub(1))
@@ -145,7 +146,7 @@ fn resolve_ref(
     r: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    key: Option<&(Vec<u8>, u8, bool)>,
+    key: Option<&DecryptPolicy>,
 ) -> Result<Obj> {
     let view = doc
         .at_revision(doc.len().saturating_sub(1))
@@ -160,21 +161,13 @@ fn resolve_ref(
         Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
             let obj = resolve_object_numbered(src, *offset, r.num, budget, g)?;
             match key {
-                Some((k, rev, aes)) => crate::resolve::decrypt_obj(obj, r, k, *rev, *aes),
+                Some(policy) => crate::resolve::decrypt_obj(obj, r, policy),
                 None => obj,
             }
         }
         Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
             // The object lives in an object stream (/ObjStm).
-            resolve_compressed(
-                doc,
-                src,
-                *objstm,
-                *index,
-                budget,
-                g,
-                key.map(|(k, rev, aes)| (k.as_slice(), *rev, *aes)),
-            )?
+            resolve_compressed(doc, src, *objstm, *index, budget, g, key)?
         }
         Some(_) | None => {
             return Err(err!(
@@ -257,7 +250,7 @@ fn walk_pages(
     visited: &mut BTreeSet<u32>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    key: Option<&(Vec<u8>, u8, bool)>,
+    key: Option<&DecryptPolicy>,
 ) -> Result<()> {
     // A node already visited closes a cycle in the page tree. Tolerant
     // viewers skip the cyclic branch and keep the pages reachable outside it
@@ -363,7 +356,7 @@ fn materialize_page(
     src: &[u8],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    key: Option<&(Vec<u8>, u8, bool)>,
+    key: Option<&DecryptPolicy>,
 ) -> Result<Page> {
     let media_box = inherited.media_box;
     let crop_box = inherited.crop_box;
@@ -396,7 +389,7 @@ fn walk_inline_page(
     out: &mut Vec<Page>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    key: Option<&(Vec<u8>, u8, bool)>,
+    key: Option<&DecryptPolicy>,
 ) -> Result<()> {
     let mut d = selis_sandbox::DepthGuard::enter(g)?;
     apply_inherited(node, inherited);

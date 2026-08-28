@@ -28,7 +28,7 @@ pub struct Session {
     document: selis_pdf_doc::Document,
     /// The encryption key (bytes, revision, AES flag), if the document is
     /// password-protected and the (user) password authenticated.
-    key: Option<(Vec<u8>, u8, bool)>,
+    key: Option<selis_pdf_cos::encrypt::DecryptPolicy>,
 }
 
 impl Session {
@@ -68,8 +68,8 @@ impl Session {
             doc: &Doc,
             budget: &Budget,
             g: &mut BudgetGuard<'_>,
-        ) -> Result<(Doc, selis_pdf_doc::Document, Option<(Vec<u8>, u8, bool)>)> {
-            let key: Option<(Vec<u8>, u8, bool)> = {
+        ) -> Result<(Doc, selis_pdf_doc::Document, Option<selis_pdf_cos::encrypt::DecryptPolicy>)> {
+            let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
                 let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
                 match encrypt_ref {
                     None => None,
@@ -83,7 +83,7 @@ impl Session {
                                     .map(|t| selis_pdf_cos::encrypt::document_id(&t))
                                     .unwrap_or_default();
                                 selis_pdf_cos::encrypt::authenticate(&info, &id, b"")
-                                    .map(|k| (k, info.r, info.aes))
+                                    .map(|k| selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k))
                             }
                             // Unreadable or non-standard handler: open unencrypted.
                             Ok(None) => None,
@@ -131,8 +131,8 @@ impl Session {
     /// A resolver for this document, with the encryption key applied.
     fn new_resolver<'a>(&'a self, budget: &'a Budget) -> Resolver<'a> {
         let mut res = Resolver::new(&self.doc, &self.src, budget);
-        if let Some((k, r, aes)) = &self.key {
-            res.set_key(k.clone(), *r, *aes);
+        if let Some(policy) = &self.key {
+            res.set_key(policy.clone());
         }
         res
     }
