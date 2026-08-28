@@ -94,16 +94,19 @@ fn deep_array_nesting_terminates() {
 }
 
 /// An xref bomb: an absurd subsection count that would allocate unboundedly
-/// if trusted. The xref parser reads entries against the budget.
+/// if trusted. The parser never trusts the declared count: it reads only the
+/// entries actually shipped (each charged to the object budget) and stops at
+/// the trailer. Either a budget error or a tiny bounded table is acceptable —
+/// never an allocation proportional to the declared count, never a hang.
 #[test]
 fn xref_bomb_terminates() {
     let mut out = Vec::new();
     out.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
     let xref_off = out.len() as u64;
     // Declare a subsection with a count far beyond what the file holds.
-    out.extend_from_slice(format!("xref\n0 4294967295\n").as_bytes());
-    // Only supply one entry; the parser must hit the file end and error,
-    // bounded by the object budget.
+    out.extend_from_slice(b"xref\n0 4294967295\n");
+    // Only supply one entry; a robust parser stops at the trailer instead of
+    // iterating the declared billions.
     out.extend_from_slice(b"0000000009 00000 n \n");
     out.extend_from_slice(b"trailer\n<< /Size 2 /Root 1 0 R >>\n");
     out.extend_from_slice(format!("startxref\n{}\n%%EOF\n", xref_off).as_bytes());
@@ -116,10 +119,23 @@ fn xref_bomb_terminates() {
     let startxref = selis_pdf_cos::xref::find_startxref(&out, 4096).unwrap_or(0);
     let b = *g.budget();
     let result = selis_pdf_cos::parse_classic_xref(&out, startxref, &b, &mut g);
-    assert!(
-        result.is_err(),
-        "xref bomb must fail (file ends before the declared entries)"
-    );
+    match result {
+        Ok(index) => {
+            // The bomb is defused by not trusting the count: only the one
+            // shipped entry may appear, never billions of phantoms.
+            assert!(
+                index.entries.len() <= 2,
+                "declared count must not be trusted: {} entries",
+                index.entries.len()
+            );
+        }
+        Err(e) => {
+            // A typed failure is also a safe termination.
+            assert!(!e.is_pending(), "bomb must terminate, not pend");
+        }
+    }
+    // Either way the walk stayed within the object budget.
+    assert!(g.usage().objects <= 10_000, "object budget overrun");
 }
 
 /// A literal string that runs to the end of a huge buffer must terminate

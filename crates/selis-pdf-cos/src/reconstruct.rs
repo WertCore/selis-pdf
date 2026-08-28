@@ -58,17 +58,23 @@ pub fn reconstruct_index(
         let pos = i.saturating_add(rel);
         // Parse the numbers from the header.
         let header = src.get(pos..).unwrap_or(&[]);
-        let (num, gen, next) = read_obj_header(header)?;
-        g.charge_one(selis_sandbox::Resource::Objects)?;
-        let num = u32::try_from(num).unwrap_or(u32::MAX);
-        let _ = gen;
-        index.insert(num, pos as u64);
-        size = size.max(u64::from(num));
-        // Guard against a header that consumes nothing (a hang).
-        if next <= rel {
-            i = i.saturating_add(1);
-        } else {
-            i = pos.saturating_add(next);
+        match read_obj_header(header) {
+            Ok((num, _gen, next)) => {
+                g.charge_one(selis_sandbox::Resource::Objects)?;
+                let num = u32::try_from(num).unwrap_or(u32::MAX);
+                index.insert(num, pos as u64);
+                size = size.max(u64::from(num));
+                // Jump straight past the header. `next` is at least the width of
+                // ` obj`, so this always advances; the previous byte-at-a-time
+                // crawl re-discovered the same header O(n) times and exhausted
+                // both the object budget and the wall clock (SL-1.ROB.01).
+                i = pos.saturating_add(next.max(1));
+            }
+            // A malformed header: skip past its start and keep scanning rather
+            // than aborting the whole reconstruction.
+            Err(_) => {
+                i = pos.saturating_add(1);
+            }
         }
     }
 

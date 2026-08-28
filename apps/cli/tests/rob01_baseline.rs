@@ -21,10 +21,13 @@
 use selis_sandbox::{Budget, Surface};
 
 /// The minimum fraction of the wild corpus that must open under the Viewer
-/// budget. Ratched from the 897/977 pre-depth-fix baseline to 919/977 after
-/// the depth-leak fixes (parse/page-tree/name-tree/number-tree) and the
-/// tolerant tree walks. Raise this as more root causes land.
-const OPEN_RATE_FLOOR: f64 = 0.93;
+/// budget. Ratcheted from the 897/977 pre-depth-fix baseline to 919/977
+/// after the depth-leak fixes (parse/page-tree/name-tree/number-tree) and
+/// the tolerant tree walks, then to 956/977 after the stream `/Length`
+/// scan fallback, tolerant xref entry lines, the missing-`startxref`
+/// reconstruct fallback, and newest-wins multi-revision resolution. Raise
+/// this as more root causes land.
+const OPEN_RATE_FLOOR: f64 = 0.97;
 
 fn corpus_dir() -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -53,6 +56,7 @@ fn wild_corpus_open_sweep() {
     let mut opened = 0usize;
     let mut by_key: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
     for path in &files {
         let name = path
             .file_name()
@@ -66,6 +70,10 @@ fn wild_corpus_open_sweep() {
             Ok(_) => opened += 1,
             Err(e) => {
                 let key = format!("{:?} | during={:?}", e.code(), e.ctx().during);
+                failures.push(format!(
+                    "{key}|detail={:?}|{name}",
+                    e.ctx().detail.as_deref().unwrap_or("")
+                ));
                 by_key.entry(key).or_default().push(name);
             }
         }
@@ -80,6 +88,11 @@ fn wild_corpus_open_sweep() {
     for (key, names) in &groups {
         println!("  {key}  ({} files): {}", names.len(), names.join(", "));
     }
+    // Machine-readable dump for diffing between campaign runs.
+    let mut dump = failures;
+    dump.sort();
+    let dump_path = std::env::temp_dir().join("rob01_failures.txt");
+    std::fs::write(&dump_path, dump.join("\n")).expect("write failure dump");
 
     assert!(
         rate >= OPEN_RATE_FLOOR,

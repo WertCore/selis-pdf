@@ -140,35 +140,10 @@ pub fn parse_classic_xref(
             .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-table", at = cursor))?;
         let mut p = pos.saturating_add(xref_kw).saturating_add(4);
 
-        // Subsection entries: `N COUNT` then COUNT 20-byte lines.
-        loop {
-            // At the `trailer` keyword the table is done.
-            p = skip_ws(src, p);
-            if src.get(p..p.saturating_add(7)) == Some(b"trailer") {
-                break;
-            }
-            // Read the subsection header `N COUNT`.
-            let (start_num, count, next_p) = read_subsection_header(src, p)?;
-            p = next_p;
-            let start_num_u64 = u64::from(start_num);
-            for i in 0..count {
-                g.charge_one(selis_sandbox::Resource::Objects)?;
-                let (offset, gen, in_use, next_p) = read_entry_line(src, p)?;
-                p = next_p;
-                let num =
-                    u32::try_from(start_num_u64.saturating_add(u64::from(i))).unwrap_or(u32::MAX);
-                let entry = if in_use {
-                    XrefEntry::InUse { offset, gen }
-                } else {
-                    XrefEntry::Free {
-                        next_free: u32::try_from(offset).unwrap_or(u32::MAX),
-                        gen,
-                    }
-                };
-                // Newest revision wins.
-                index.entries.insert(num, entry);
-            }
-        }
+        // Subsection entries: `N COUNT` then COUNT entry lines.
+        let (entries, trailer_pos) = read_subsection_entries(src, p, budget, g)?;
+        p = trailer_pos;
+        index.entries.extend(entries);
 
         // Parse the trailer dictionary.
         let (trailer, _next_p) = parse_trailer(src, p, budget, g)?;
@@ -259,11 +234,15 @@ pub(crate) fn parse_one_revision(
 
     if src.get(p..p.saturating_add(4)) == Some(b"xref") {
         parse_classic_revision(src, p.saturating_add(4), budget, g)
-    } else if src.get(p).is_some_and(|&b| b.is_ascii_digit()) {
+    } else if src.get(p).is_some_and(|&b| b.is_ascii_digit())
+        && looks_like_object_header(src, p)
+    {
         parse_xref_stream_revision(src, cursor, p, budget, g)
     } else if let Some(kw) = find_xref_keyword_near(src, p) {
         // The `startxref` offset points before the real table (a stray EOL or
-        // `endobj` in between): resume from the `xref` keyword itself.
+        // `endobj` in between), or into unrelated bytes that merely start with
+        // a digit (a mis-aimed offset landing in a content stream): resume
+        // from the `xref` keyword itself.
         parse_classic_revision(src, kw.saturating_add(4), budget, g)
     } else if let Some(obj_pos) = find_obj_header_near(src, p) {
         // Same mis-aim, but the revision is an xref stream object.
@@ -291,33 +270,10 @@ fn parse_classic_revision(
 )> {
     let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
 
-    // Subsection entries: `N COUNT` then COUNT 20-byte lines.
-    loop {
-        // At the `trailer` keyword the table is done.
-        p = skip_ws(src, p);
-        if src.get(p..p.saturating_add(7)) == Some(b"trailer") {
-            break;
-        }
-        // Read the subsection header `N COUNT`.
-        let (start_num, count, next_p) = read_subsection_header(src, p)?;
-        p = next_p;
-        let start_num_u64 = u64::from(start_num);
-        for i in 0..count {
-            g.charge_one(selis_sandbox::Resource::Objects)?;
-            let (offset, gen, in_use, next_p) = read_entry_line(src, p)?;
-            p = next_p;
-            let num = u32::try_from(start_num_u64.saturating_add(u64::from(i))).unwrap_or(u32::MAX);
-            let entry = if in_use {
-                XrefEntry::InUse { offset, gen }
-            } else {
-                XrefEntry::Free {
-                    next_free: u32::try_from(offset).unwrap_or(u32::MAX),
-                    gen,
-                }
-            };
-            entries.insert(num, entry);
-        }
-    }
+    // Subsection entries: `N COUNT` then COUNT entry lines.
+    let (parsed, trailer_pos) = read_subsection_entries(src, p, budget, g)?;
+    entries.extend(parsed);
+    p = trailer_pos;
 
     // Parse the trailer dictionary.
     let (trailer, _next_p) = parse_trailer(src, p, budget, g)?;
@@ -453,32 +409,119 @@ fn read_subsection_header(src: &[u8], p: usize) -> Result<(u32, u32, usize)> {
     ))
 }
 
-/// Read one 20-byte xref entry line (offset, generation, `n`/`f`).
-fn read_entry_line(src: &[u8], p: usize) -> Result<(u64, u16, bool, usize)> {
-    let line = src
-        .get(p..p.saturating_add(20))
-        .ok_or_else(|| err!(Code::XrefMalformed, during = "xref-entry", at = p as u64))?;
-    let offset_str = line.get(0..10).unwrap_or(&[]);
-    let gen_str = line.get(11..16).unwrap_or(&[]);
-    let flag = line.get(17).copied().unwrap_or(b' ');
-
-    let parse_field = |field: &[u8]| -> i64 {
-        let mut v: i64 = 0;
-        for &b in field {
-            if b.is_ascii_digit() {
-                let d = i64::from(b.wrapping_sub(b'0'));
-                v = v.wrapping_mul(10).wrapping_add(d);
-            }
+/// Read subsection entries (`N COUNT` headers followed by entry lines) until
+/// the `trailer` keyword. Returns the entries and the `trailer` position.
+///
+/// A damaged writer can declare more entries than it ships; the loop stops
+/// early when it reaches `trailer` rather than reading past the table into
+/// the trailer dictionary (SL-1.ROB.01).
+fn read_subsection_entries(
+    src: &[u8],
+    mut p: usize,
+    budget: &selis_sandbox::Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) -> Result<(BTreeMap<u32, XrefEntry>, usize)> {
+    let _ = budget;
+    let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
+    loop {
+        p = skip_ws(src, p);
+        if src.get(p..p.saturating_add(7)) == Some(b"trailer") {
+            return Ok((entries, p));
         }
-        v
-    };
+        let (start_num, count, next_p) = read_subsection_header(src, p)?;
+        p = next_p;
+        let start_num_u64 = u64::from(start_num);
+        for i in 0..count {
+            // A misdeclared count can overshoot into the trailer.
+            let q = skip_ws(src, p);
+            if src.get(q..q.saturating_add(7)) == Some(b"trailer") {
+                return Ok((entries, q));
+            }
+            g.charge_one(selis_sandbox::Resource::Objects)?;
+            let (offset, gen, in_use, next_p) = read_entry_line(src, p)?;
+            p = next_p;
+            let num = u32::try_from(start_num_u64.saturating_add(u64::from(i))).unwrap_or(u32::MAX);
+            let entry = if in_use {
+                XrefEntry::InUse { offset, gen }
+            } else {
+                XrefEntry::Free {
+                    next_free: u32::try_from(offset).unwrap_or(u32::MAX),
+                    gen,
+                }
+            };
+            entries.insert(num, entry);
+        }
+    }
+}
 
-    let offset = parse_field(offset_str);
-    let gen_i = parse_field(gen_str);
-    let offset = u64::try_from(offset).unwrap_or(u64::MAX);
-    let gen = u16::try_from(gen_i).unwrap_or(u16::MAX);
+/// Read a bounded run of decimal digits: up to `max_digits`. Returns the digit
+/// count, the value, and the position after the last digit.
+fn read_decimal_field(src: &[u8], mut p: usize, max_digits: usize) -> (usize, u64, usize) {
+    let mut v: u64 = 0;
+    let mut n = 0usize;
+    while n < max_digits {
+        let Some(&b) = src.get(p) else {
+            break;
+        };
+        if !b.is_ascii_digit() {
+            break;
+        }
+        v = v
+            .saturating_mul(10)
+            .saturating_add(u64::from(b.wrapping_sub(b'0')));
+        n = n.saturating_add(1);
+        p = p.saturating_add(1);
+    }
+    (n, v, p)
+}
+
+/// Read one xref entry line starting at `p`, returning `(offset, gen,
+/// in_use, next_position)`.
+///
+/// The spec fixes entries at 20 bytes (10-digit offset, space, 5-digit
+/// generation, space, `n`/`f` flag, 2-byte EOL), but real writers deviate:
+/// a trailing space before CRLF makes 21-byte lines, a bare LF makes 19.
+/// The fields are therefore parsed individually and the remainder of the
+/// line consumed afterwards, instead of slicing a fixed 20-byte record
+/// (SL-1.ROB.01).
+fn read_entry_line(src: &[u8], p: usize) -> Result<(u64, u16, bool, usize)> {
+    let is_inline_ws = |b: &u8| matches!(b, b' ' | b'\t' | 0x0c | 0x00);
+    let mut i = p;
+    while src.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+        i = i.saturating_add(1);
+    }
+    // The offset field (at least one digit, at most ten).
+    let (offset_digits, offset, next) = read_decimal_field(src, i, 10);
+    if offset_digits == 0 {
+        return Err(err!(Code::XrefMalformed, during = "xref-entry", at = p as u64));
+    }
+    i = next;
+    while src.get(i).is_some_and(is_inline_ws) {
+        i = i.saturating_add(1);
+    }
+    // The generation field.
+    let (_gen_digits, gen, next) = read_decimal_field(src, i, 5);
+    i = next;
+    while src.get(i).is_some_and(is_inline_ws) {
+        i = i.saturating_add(1);
+    }
+    // The usage flag.
+    let flag = src.get(i).copied().unwrap_or(b' ');
     let in_use = flag == b'n';
-    Ok((offset, gen, in_use, p.saturating_add(20)))
+    if src.get(i).is_some() {
+        i = i.saturating_add(1);
+    }
+    // Trailing whitespace and the end-of-line (CRLF, LF, or CR).
+    while src.get(i).is_some_and(is_inline_ws) {
+        i = i.saturating_add(1);
+    }
+    if src.get(i) == Some(&b'\r') {
+        i = i.saturating_add(1);
+    }
+    if src.get(i) == Some(&b'\n') {
+        i = i.saturating_add(1);
+    }
+    Ok((offset, u16::try_from(gen).unwrap_or(u16::MAX), in_use, i))
 }
 
 /// Parse the `trailer << ... >>` dictionary.
@@ -650,6 +693,44 @@ fn xref_keyword_at(src: &[u8], idx: usize) -> bool {
         .is_none_or(|&b| !b.is_ascii_alphanumeric());
     before_ok && after_ok
 }
+
+/// True when `src[idx..]` starts with the shape of an indirect-object header:
+/// `N G obj` — digits, whitespace, digits, whitespace, then the `obj` keyword
+/// terminated by a non-word byte. Used to tell a real xref-stream object apart
+/// from unrelated digits a mis-aimed `startxref` can land on (SL-1.ROB.01).
+fn looks_like_object_header(src: &[u8], idx: usize) -> bool {
+    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x00);
+    let mut i = idx;
+    // The object number (at least one digit).
+    let num_start = i;
+    while src.get(i).is_some_and(|b| b.is_ascii_digit()) {
+        i = i.saturating_add(1);
+    }
+    if i == num_start || !src.get(i).is_some_and(is_ws) {
+        return false;
+    }
+    while src.get(i).is_some_and(is_ws) {
+        i = i.saturating_add(1);
+    }
+    // The generation number.
+    let gen_start = i;
+    while src.get(i).is_some_and(|b| b.is_ascii_digit()) {
+        i = i.saturating_add(1);
+    }
+    if i == gen_start || !src.get(i).is_some_and(is_ws) {
+        return false;
+    }
+    while src.get(i).is_some_and(is_ws) {
+        i = i.saturating_add(1);
+    }
+    if src.get(i..i.saturating_add(3)) != Some(b"obj") {
+        return false;
+    }
+    // The keyword must end there: `objx` is a word, not the keyword.
+    src.get(i.saturating_add(3))
+        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+}
+
 
 /// Scan a bounded window after `pos` for the `xref` keyword of a classic
 /// table.

@@ -101,8 +101,8 @@ pub fn resolve_object(
                     ));
                 }
             };
-            let length = stream_length(&dict_pairs)?;
-            let data = read_stream_body(src, body_off, length)?;
+            let length = stream_length(&dict_pairs);
+            let data = read_stream_body(src, body_off, length, g)?;
             return Ok(Obj::Stream {
                 dict: dict_pairs,
                 data,
@@ -116,40 +116,113 @@ pub fn resolve_object(
     Ok(obj)
 }
 
-/// Extract the `/Length` from a stream dictionary.
-fn stream_length(dict: &[(Bytes, Obj)]) -> Result<usize> {
+/// Extract the `/Length` from a stream dictionary as a direct integer.
+///
+/// Returns `None` when `/Length` is absent, an indirect reference, or any
+/// non-integer value — the caller then falls back to scanning for `endstream`.
+fn stream_length(dict: &[(Bytes, Obj)]) -> Option<usize> {
     dict.iter()
         .find(|(k, _)| k.as_slice() == b"Length")
         .and_then(|(_, v)| match v {
             Obj::Int(n) => usize::try_from(*n).ok(),
             _ => None,
         })
-        .ok_or_else(|| {
-            err!(
-                Code::ObjUnexpected,
-                during = "resolve-object",
-                detail = "stream without /Length"
-            )
-        })
 }
 
-/// Read `length` bytes from `src` starting at `body`, skipping the single
-/// EOL (`\r\n` or `\n`) that follows the `stream` keyword.
-fn read_stream_body(src: &[u8], mut body: usize, length: usize) -> Result<Bytes> {
+/// Read a stream body starting at `body` (skipping the single EOL after the
+/// `stream` keyword).
+///
+/// Prefers the declared `/Length` when it is usable (in range and followed by
+/// the `endstream` keyword). Real writers ship streams with a missing,
+/// indirect, or simply wrong `/Length`, so when the declared length is absent
+/// or does not verify, recovery scans forward for the `endstream` keyword and
+/// uses the bytes before it (SL-1.ROB.01).
+fn read_stream_body(
+    src: &[u8],
+    mut body: usize,
+    declared: Option<usize>,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Bytes> {
     if src.get(body) == Some(&b'\r') {
         body = body.saturating_add(1);
     }
     if src.get(body) == Some(&b'\n') {
         body = body.saturating_add(1);
     }
-    let end = body.saturating_add(length);
-    let data = src.get(body..end).ok_or_else(|| {
+    if let Some(length) = declared {
+        let end = body.saturating_add(length);
+        if end <= src.len() && endstream_follows(src, end) {
+            let data = src
+                .get(body..end)
+                .ok_or_else(|| {
+                    err!(
+                        Code::ObjUnexpected,
+                        during = "resolve-object",
+                        detail = "stream body out of range"
+                    )
+                })?;
+            return Ok(Bytes::copy_from_slice(data));
+        }
+    }
+    scan_to_endstream(src, body, g)
+}
+
+/// True when the `endstream` keyword follows byte `end`, allowing a single EOL
+/// (or run of whitespace) between the stream body and the keyword.
+fn endstream_follows(src: &[u8], mut end: usize) -> bool {
+    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x00);
+    while src.get(end).is_some_and(is_ws) {
+        end = end.saturating_add(1);
+    }
+    src.get(end..end.saturating_add(9)) == Some(b"endstream")
+}
+
+/// Scan forward from `start` for the `endstream` keyword and return the bytes
+/// before it (stripping the single trailing EOL the spec places there).
+fn scan_to_endstream(src: &[u8], start: usize, g: &mut BudgetGuard<'_>) -> Result<Bytes> {
+    let hay = src.get(start..).ok_or_else(|| {
         err!(
             Code::ObjUnexpected,
             during = "resolve-object",
             detail = "stream body out of range"
         )
     })?;
+    // Charge the scan per 4 KiB block so a huge stream cannot outrun the
+    // budget before the keyword check runs.
+    let mut rel: Option<usize> = None;
+    let mut i = 0usize;
+    while i < hay.len() {
+        if g.tick().is_err() {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "resolve-object",
+                detail = "stream scan exhausted"
+            ));
+        }
+        if hay.get(i..i.saturating_add(9)) == Some(b"endstream") {
+            rel = Some(i);
+            break;
+        }
+        i = i.saturating_add(1);
+    }
+    let rel = rel.ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "resolve-object",
+            detail = "no endstream keyword"
+        )
+    })?;
+    // Strip the single EOL (CR, LF, or CRLF) immediately before `endstream`.
+    let mut end = rel;
+    if end > 0 && hay.get(end.saturating_sub(1)) == Some(&b'\n') {
+        end = end.saturating_sub(1);
+        if end > 0 && hay.get(end.saturating_sub(1)) == Some(&b'\r') {
+            end = end.saturating_sub(1);
+        }
+    } else if end > 0 && hay.get(end.saturating_sub(1)) == Some(&b'\r') {
+        end = end.saturating_sub(1);
+    }
+    let data = hay.get(..end).unwrap_or(&[]);
     Ok(Bytes::copy_from_slice(data))
 }
 

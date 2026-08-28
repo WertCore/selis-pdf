@@ -35,40 +35,57 @@ impl Session {
     /// Open a PDF document from its source bytes.
     pub fn open(src: Vec<u8>, budget: &Budget) -> Result<Self> {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
-        let startxref = selis_pdf_cos::xref::find_startxref(&src, 2048).ok_or_else(|| {
-            err!(
-                Code::ObjUnexpected,
-                during = "session-open",
-                detail = "no startxref"
-            )
-        })?;
-        let doc = selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g)?;
-        // Detect encryption; authenticate with the (empty) user password.
-        let key = {
-            let parse_result = doc
-                .revisions()
-                .last()
-                .and_then(|v| v.encrypt)
-                .map(|r| selis_pdf_cos::encrypt::parse_encrypt(&src, Some(r), budget, &mut g));
-            let encrypt_info = match parse_result {
-                Some(Ok(Some(info))) => Some(info),
-                _ => None,
-            };
-            match encrypt_info {
-                Some(info) => {
-                    let id = doc
-                        .revisions()
-                        .last()
-                        .map(|v| v.trailer.clone())
-                        .map(|t| selis_pdf_cos::encrypt::document_id(&t))
-                        .unwrap_or_default();
-                    let auth = selis_pdf_cos::encrypt::authenticate(&info, &id, b"");
-                    auth.map(|k| (k, info.r, info.aes))
+        // Parse the revisions. When there is no `startxref` at all — truncated
+        // and fuzzed files commonly omit it — or the `startxref` is present but
+        // its target is damaged beyond the xref parser's recovery window, fall
+        // back to scanning for object headers and a `/Root` (SL-1.ROB.01)
+        // instead of refusing the document. Budget, cancellation, and pending
+        // errors propagate as-is; only malformed-input parse failures trigger
+        // the scan-based recovery.
+        let doc = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
+            Some(startxref) => {
+                match selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g) {
+                    Ok(doc) => doc,
+                    Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                        return Err(e);
+                    }
+                    Err(_) => selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0,
                 }
-                _ => None,
+            }
+            None => selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0,
+        };
+        // Detect encryption; authenticate with the (empty) user password.
+        //
+        // PDF encryption only encrypts strings and stream bodies — the page
+        // tree's structural tokens stay plaintext — so a document whose
+        // password we cannot supply still *opens* (catalog + page tree resolve)
+        // even without a key; content just won't decode. We therefore treat a
+        // failed authentication as "open unencrypted", matching tolerant
+        // viewers, rather than refusing the document (SL-1.ROB.01).
+        let key: Option<(Vec<u8>, u8, bool)> = {
+            let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
+            match encrypt_ref {
+                None => None,
+                Some(r) => {
+                    match selis_pdf_cos::encrypt::parse_encrypt(&src, Some(r), budget, &mut g) {
+                        Ok(Some(info)) => {
+                            let id = doc
+                                .revisions()
+                                .last()
+                                .map(|v| v.trailer.clone())
+                                .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                                .unwrap_or_default();
+                            selis_pdf_cos::encrypt::authenticate(&info, &id, b"")
+                                .map(|k| (k, info.r, info.aes))
+                        }
+                        // Unreadable or non-standard handler: open unencrypted.
+                        Ok(None) => None,
+                        Err(_) => None,
+                    }
+                }
             }
         };
-        let document = selis_pdf_doc::Document::resolve(&doc, &src, budget, &mut g)?;
+        let document = selis_pdf_doc::Document::resolve(&doc, &src, budget, &mut g, key.as_ref())?;
         let _ = g;
         Ok(Self {
             doc,
