@@ -2408,15 +2408,14 @@ fn copy_page_redacted(
     rects: &[(f64, f64, f64, f64)],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-    next_num: &mut u32,
+    _next_num: &mut u32,
 ) -> Result<Ref, String> {
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
-    let rev = doc
-        .revisions()
-        .last()
-        .ok_or_else(|| "no revisions".to_string())?;
+    if doc.revisions().last().is_none() {
+        return Err("no revisions".to_string());
+    }
     let (media, content_refs, resources_ref, rotate, annots) =
         page_info(src, &doc, page_ref, budget, g)?;
 

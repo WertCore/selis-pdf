@@ -5,7 +5,7 @@
 //! dependency needed.
 
 use selis_pdf_engine::{Session, TinySkiaBackend};
-use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock, Surface};
+use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
 
 use crate::{read_file, CliError, CliResult};
 

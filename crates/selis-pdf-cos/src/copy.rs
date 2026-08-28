@@ -67,7 +67,9 @@ fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Re
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = crate::parse_revisions(src, startxref, budget, g)
         .map_err(|_| err!(Code::ObjUnexpected, during = "copy", object = r.num))?;
-    for view in doc.revisions() {
+    // Newest revision wins: an incremental update redefining the object
+    // supersedes the older entry (ISO 32000-1 §7.5.8.3).
+    for view in doc.revisions().iter().rev() {
         if let Some(crate::XrefEntry::InUse { offset, .. }) = view.entries.get(&r.num) {
             return Ok(*offset);
         }
@@ -84,7 +86,9 @@ pub fn resolve_ref(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Obj> {
-    for view in doc.revisions() {
+    // Newest revision wins (ISO 32000-1 §7.5.8.3): an incremental update can
+    // redefine an object, and the redefinition is the live version.
+    for view in doc.revisions().iter().rev() {
         match view.entries.get(&r.num) {
             Some(crate::XrefEntry::InUse { offset, .. }) => {
                 return crate::resolve::resolve_object_numbered(src, *offset, r.num, budget, g);
@@ -107,23 +111,23 @@ fn resolve_compressed(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Obj> {
-    let view = doc.revisions().last().ok_or_else(|| {
-        err!(
-            Code::ObjUnexpected,
-            during = "objstm",
-            detail = "no revision"
-        )
-    })?;
-    let offset = match view.entries.get(&objstm) {
-        Some(crate::XrefEntry::InUse { offset, .. }) => *offset,
-        _ => {
-            return Err(err!(
+    // Locate the container newest-first: the object stream itself may have
+    // been shipped by an earlier revision than the entry that points into it.
+    let offset = doc
+        .revisions()
+        .iter()
+        .rev()
+        .find_map(|rev| match rev.entries.get(&objstm) {
+            Some(crate::XrefEntry::InUse { offset, .. }) => Some(*offset),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            err!(
                 Code::ObjstmMalformed,
                 during = "objstm",
                 detail = "object stream not a direct object"
-            ));
-        }
-    };
+            )
+        })?;
     let stream = crate::resolve::resolve_object_numbered(src, offset, objstm, budget, g)?;
     let (dict, data) = match &stream {
         Obj::Stream { dict, data } => (dict, data.as_slice()),
