@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -51,20 +51,21 @@ fn walk_name_node(
     g: &mut BudgetGuard<'_>,
 ) -> Result<()> {
     if !visited.insert(node.num) {
-        return Err(err!(
-            Code::ObjCycle,
-            during = "name-tree",
-            object = node.num
-        ));
+        // Shared or cyclic name tree: process each node once at first visit
+        // (see `walk_element` in `struct_tree` for rationale).
+        return Ok(());
     }
-    g.enter()?;
+    // Depth is scoped to this node's level: the RAII guard releases it on
+    // every exit path, so a tree with many sibling nodes does not accumulate
+    // one depth level per node visited.
+    let mut d = selis_sandbox::DepthGuard::enter(g)?;
 
-    let dict = resolver.resolve(node, g)?;
+    let dict = resolver.resolve(node, d.guard())?;
     // Kids (intermediate nodes).
     if let Some(Obj::Array(kids)) = dict_get(&dict, b"Kids") {
         for kid in kids {
             if let Obj::Ref(r) = kid {
-                walk_name_node(resolver, *r, visited, out, budget, g)?;
+                walk_name_node(resolver, *r, visited, out, budget, d.guard())?;
             }
         }
     }
@@ -110,19 +111,17 @@ fn walk_number_node(
     g: &mut BudgetGuard<'_>,
 ) -> Result<()> {
     if !visited.insert(node.num) {
-        return Err(err!(
-            Code::ObjCycle,
-            during = "number-tree",
-            object = node.num
-        ));
+        // Shared or cyclic number tree: process each node once (see above).
+        return Ok(());
     }
-    g.enter()?;
+    // Depth is scoped to this node's level (see `walk_name_node`).
+    let mut d = selis_sandbox::DepthGuard::enter(g)?;
 
-    let dict = resolver.resolve(node, g)?;
+    let dict = resolver.resolve(node, d.guard())?;
     if let Some(Obj::Array(kids)) = dict_get(&dict, b"Kids") {
         for kid in kids {
             if let Obj::Ref(r) = kid {
-                walk_number_node(resolver, *r, visited, out, _budget, g)?;
+                walk_number_node(resolver, *r, visited, out, _budget, d.guard())?;
             }
         }
     }

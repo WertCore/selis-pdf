@@ -238,9 +238,13 @@ fn walk_pages(
             object = node_ref.num
         ));
     }
-    g.enter()?;
+    // Depth is scoped to this node's level of the page tree: the RAII guard
+    // releases it on every exit path, so depth tracks the tree's actual
+    // height rather than accumulating one level per page visited. Without
+    // this, a document with more pages than the depth budget could not open.
+    let mut d = selis_sandbox::DepthGuard::enter(g)?;
 
-    let node = resolve_ref(doc, src, node_ref, budget, g)?;
+    let node = resolve_ref(doc, src, node_ref, budget, d.guard())?;
     let node_type = dict_get(&node, b"Type").and_then(|t| match t {
         Obj::Name(n) => Some(n.clone()),
         _ => None,
@@ -287,7 +291,16 @@ fn walk_pages(
                     ));
                 }
             };
-            walk_pages(doc, src, kid_ref, inherited, out, visited, budget, g)?;
+            walk_pages(
+                doc,
+                src,
+                kid_ref,
+                inherited,
+                out,
+                visited,
+                budget,
+                d.guard(),
+            )?;
         }
     } else {
         // A page node: materialise the resolved attributes.
@@ -298,7 +311,7 @@ fn walk_pages(
         // `/Resources N 0 R`); consumers need the dictionary, so resolve it
         // here rather than threading a bare reference to every call site.
         let resources = match inherited.resources.as_ref() {
-            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, g).ok(),
+            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, d.guard()).ok(),
             other => other.cloned(),
         };
         let contents = dict_get(&node, b"Contents").and_then(contents_refs);

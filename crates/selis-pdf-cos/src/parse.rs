@@ -154,7 +154,7 @@ impl<'a> ObjectParser<'a> {
             let item = self.parse(g)?;
             items.push(item);
         }
-        self.leave();
+        self.leave(g);
         Ok(Obj::Array(items))
     }
 
@@ -191,7 +191,7 @@ impl<'a> ObjectParser<'a> {
                 }
             }
         }
-        self.leave();
+        self.leave(g);
         Ok(Obj::Dict(pairs))
     }
 
@@ -221,8 +221,9 @@ impl<'a> ObjectParser<'a> {
         g.enter()
     }
 
-    fn leave(&mut self) {
+    fn leave(&mut self, g: &mut BudgetGuard<'_>) {
         self.depth = self.depth.saturating_sub(1);
+        g.leave();
     }
 }
 
@@ -366,5 +367,32 @@ mod tests {
         let mut p = ObjectParser::new(&toks, &shallow);
         let e = p.parse(&mut g).expect_err("depth must be exceeded");
         assert!(e.is_budget(), "expected a budget error, got {e}");
+    }
+
+    /// Parsing sibling objects in sequence must not accumulate depth in the
+    /// shared guard: every container `enter` is released by its `leave`.
+    /// Without the release, a document made of many shallow-but-nested objects
+    /// (e.g. a large page tree's worth of resource dictionaries) exhausts the
+    /// depth budget mid-open even though no single object is deep. Regression
+    /// guard from the SL-1.ROB.01 wild-corpus sweep.
+    #[test]
+    fn sibling_objects_do_not_accumulate_depth() {
+        let shallow = Budget {
+            depth: 4,
+            ..Budget::unlimited()
+        };
+        let mut g = shallow.guard_with(&FixedClock(0), CancelToken::new());
+        // A 3-deep nested dictionary; parse it repeatedly under one guard.
+        let src = b"<< /A << /B << /C 1 >> >> >>";
+        let mut lexer = crate::Lexer::new(src);
+        let mut toks = Vec::new();
+        while let Some(t) = lexer.next_token(&mut g).expect("lex") {
+            toks.push(t);
+        }
+        for _ in 0..32 {
+            let mut p = ObjectParser::new(&toks, &shallow);
+            p.parse(&mut g)
+                .expect("each sibling parses at depth 3 under the depth-4 budget");
+        }
     }
 }

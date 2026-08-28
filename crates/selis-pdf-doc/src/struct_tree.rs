@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -152,11 +152,13 @@ fn walk_element(
     g: &mut BudgetGuard<'_>,
 ) -> Result<()> {
     if !visited.insert(node.num) {
-        return Err(err!(
-            Code::ObjCycle,
-            during = "struct-tree",
-            object = node.num
-        ));
+        // Shared or cyclic structure: an element reachable from more than one
+        // path is processed once, at its first visit. Both malformed real-world
+        // files and the lossless writer's identical-object dedup (which merges
+        // byte-identical elements into one object referenced by two parents)
+        // produce such DAGs. Skipping instead of erroring keeps conformance
+        // evaluation robust and bounds the walk against genuine cycles.
+        return Ok(());
     }
     // Depth is scoped to this element's nesting level: the RAII guard
     // releases it on every exit path, so depth tracks the tree's actual
@@ -347,6 +349,49 @@ mod tests {
             Some(&b"hello"[..]),
             "direct /Alt is extracted"
         );
+    }
+
+    /// A structure element reachable from two parents (a DAG, as produced by
+    /// the lossless writer's identical-object dedup or by malformed real files)
+    /// must not abort the walk: it is processed once at its first visit, and
+    /// resolution succeeds rather than erroring with a cycle (SL-1.ROB.01).
+    #[test]
+    fn shared_element_is_processed_once_not_a_cycle() {
+        let src = b"%PDF-1.4\n\
+                    1 0 obj\n<< /Type /Catalog /StructTreeRoot 2 0 R >>\nendobj\n\
+                    2 0 obj\n<< /Type /StructTreeRoot /K [3 0 R 4 0 R] >>\nendobj\n\
+                    3 0 obj\n<< /S /Sect /K 5 0 R >>\nendobj\n\
+                    4 0 obj\n<< /S /Sect /K 5 0 R >>\nendobj\n\
+                    5 0 obj\n<< /S /P >>\nendobj\n";
+        let find =
+            |needle: &[u8]| src.windows(needle.len()).position(|w| w == needle).unwrap() as u64;
+        let mut xref = std::collections::BTreeMap::new();
+        for num in 1u32..=5 {
+            let needle = format!("{num} 0 obj").into_bytes();
+            xref.insert(
+                num,
+                selis_pdf_cos::XrefEntry::InUse {
+                    offset: find(&needle),
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = selis_pdf_cos::Doc::from_single_revision(xref, trailer);
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut resolver = Resolver::new(&doc, src, &budget);
+        let catalog = resolver.resolve(Ref::new(1, 0), &mut g).expect("catalog");
+        let tree =
+            StructTree::resolve(&mut resolver, &catalog, &budget, &mut g).expect("shared DAG ok");
+        // Elements 3, 4, and 5 each appear exactly once; 5 (reached via both
+        // parents) is not duplicated and did not trigger a cycle error.
+        let mut nums: Vec<u32> = tree.elements.iter().map(|e| e.ref_.num).collect();
+        nums.sort_unstable();
+        assert_eq!(nums, vec![3, 4, 5], "each element processed exactly once");
     }
 
     #[test]
