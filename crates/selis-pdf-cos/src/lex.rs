@@ -329,11 +329,10 @@ impl<'a> Lexer<'a> {
         }
 
         if overflow {
-            return Err(err!(
-                Code::LexNumberOverflow,
-                during = "lex-number",
-                at = start as u64
-            ));
+            digits = i64::MAX;
+            self.deviations.push(Deviation::NumberOverflow {
+                offset: start as u64,
+            });
         }
 
         let value = if sign < 0 {
@@ -723,11 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn number_overflow_is_a_typed_error() {
+    fn number_overflow_clamps_and_is_recorded() {
         let mut g = guard();
         let mut l = Lexer::new(b"99999999999999999999999999");
-        let err = l.next_token(&mut g).expect_err("overflow");
-        assert_eq!(err.code(), Code::LexNumberOverflow);
+        let tok = l.next_token(&mut g).expect("clamped, not failed");
+        assert!(matches!(tok, Some(Token::Number(_))));
+        assert!(l
+            .deviations()
+            .iter()
+            .any(|d| matches!(d, Deviation::NumberOverflow { .. })));
     }
 
     #[test]

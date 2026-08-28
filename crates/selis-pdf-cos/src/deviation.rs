@@ -59,6 +59,12 @@ pub enum Deviation {
         /// Byte offset of the word.
         offset: u64,
     },
+    /// A number too large for `i64`; the lexer clamped it to `i64::MAX`
+    /// instead of failing the parse (SL-1.ROB.01).
+    NumberOverflow {
+        /// Byte offset of the offending number.
+        offset: u64,
+    },
     /// A reserved delimiter (`{` or `}`) that was skipped.
     ReservedDelimiter {
         /// Byte offset of the delimiter.
@@ -87,6 +93,7 @@ impl Deviation {
             Deviation::BadNameEscape { .. } => "bad-name-escape",
             Deviation::EmptyName { .. } => "empty-name",
             Deviation::UnknownWord { .. } => "unknown-word",
+            Deviation::NumberOverflow { .. } => "number-overflow",
             Deviation::ReservedDelimiter { .. } => "reserved-delimiter",
             Deviation::ReconstructedIndex { .. } => "reconstructed-index",
         }
@@ -106,6 +113,7 @@ impl Deviation {
             | Deviation::BadNameEscape { offset }
             | Deviation::EmptyName { offset }
             | Deviation::UnknownWord { offset }
+            | Deviation::NumberOverflow { offset }
             | Deviation::ReservedDelimiter { offset }
             | Deviation::ReconstructedIndex { offset } => offset,
         }
