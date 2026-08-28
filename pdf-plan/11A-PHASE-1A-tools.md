@@ -115,7 +115,7 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **Do:** Kill the process at 500 random points during each tool operation; assert the output is
     always either absent, the untouched original, or a complete valid document.
 
-- [ ] **SL-1A.WRITE.07 — Conformance-friendly writer defaults** · deps: WRITE.01, `SL-1.DOC.09` · owner: AI+
+- [x] **SL-1A.WRITE.07 — Conformance-friendly writer defaults** · deps: WRITE.01, `SL-1.DOC.09` · owner: AI+
   - **Do:** Make the writer avoid, by default, everything that would make output non-conformant
     later: preserve and update XMP consistently with the Info dictionary, never introduce
     JavaScript or external references, never drop a structure tree that was present on input,
@@ -125,6 +125,17 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **Why now:** it costs almost nothing at this stage and is expensive to retrofit. A writer that
     silently strips tags or desynchronises metadata makes the Phase 9 compliance product much more
     work, and quietly damages users' documents in the meantime.
+  - **Note:** Shipped as the `cargo test` gate `no_tool_degrades_conformance_posture`
+    (`apps/cli/src/tool_conformance.rs`, wired in `main.rs`): it runs split / rotate / delete /
+    reorder / set-metadata / compress over every `corpus/pdfs` file and asserts no evaluable
+    `SL-1.DOC.09` rule flips Pass → Fail and every output still opens. The writer now never drops a
+    structure tree that was present on input (it prunes only structure belonging to deleted pages,
+    preserving the source `/K` shape), and the gate surfaced and fixed reader/conformance bugs that
+    made evaluation asymmetric: doc-resolver and struct-tree depth were leaking (no matched
+    `leave()`, so depth grew per object instead of per nesting level — fixed with `DepthGuard`),
+    single-ref root `/K` wasn't walked, and `alt-text`/`reading-order` ignored the element's direct
+    `/Alt`/single `/K` forms. Inputs that don't open under the Viewer budget, and clean tool
+    refusals, are skipped.
 
 ---
 

@@ -1,7 +1,12 @@
 //! The `selis` document tools: merge, split, set-metadata, redact, and the
 //! page operations (rotate, delete, reorder — SL-1A.TOOL.03).
 //!
-//! Built on the full-document writer + object-graph copy (WRITE.01/03/04).
+//! Built on the full-document writer + object-graph copy (WRITE.01/03/04),
+//! with conformance-friendly defaults (WRITE.07): the tools carry the
+//! input's tagged structure, output intents, metadata, outlines, page
+//! labels, form fields, and named destinations through the rewrite,
+//! pruning what only referenced deleted pages, and never introduce
+//! JavaScript, launch actions, or external references.
 
 #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
@@ -110,6 +115,16 @@ fn reconcile_inputs(
     // Optional-content groups.
     let mut ocg_refs: Vec<Obj> = Vec::new();
     let mut oc_defaults: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+
+    // WRITE.07: catalog-level conformance state carried through the merge.
+    // `/Lang`, `/MarkInfo`, `/ViewerPreferences`, `/PageMode`, `/PageLayout`
+    // come from the first input that has them (first-wins); `/OutputIntents`
+    // concatenate across the inputs. `/Metadata` (XMP) is deliberately not
+    // carried: no single XMP packet can describe a multi-document merge
+    // truthfully, and the merged document carries no Info dictionary either,
+    // so no Info/XMP conflict is introduced.
+    let mut first_scalars: Vec<(Vec<u8>, Obj)> = Vec::new();
+    let mut output_intents: Vec<Obj> = Vec::new();
 
     for input in inputs {
         let mut cache = std::collections::HashMap::new();
@@ -488,6 +503,57 @@ fn reconcile_inputs(
             }
         }
 
+        // WRITE.07: first-wins catalog scalars and concatenated
+        // `/OutputIntents` (see the declaration above).
+        for key in [
+            b"Lang".as_slice(),
+            b"MarkInfo".as_slice(),
+            b"ViewerPreferences".as_slice(),
+            b"PageMode".as_slice(),
+            b"PageLayout".as_slice(),
+        ] {
+            if first_scalars.iter().any(|(k, _)| k.as_slice() == key) {
+                continue;
+            }
+            if let Some(v) = rec::catalog_entry(&input.src, &input.doc, key, budget, g)
+                .map_err(|e| e.to_string())?
+            {
+                let copied = rec::copy_value_into(
+                    merged,
+                    &input.src,
+                    &input.doc,
+                    &input.page_map,
+                    &mut cache,
+                    &v,
+                    budget,
+                    g,
+                )
+                .map_err(|e| e.to_string())?;
+                first_scalars.push((key.to_vec(), copied));
+            }
+        }
+        if let Some(oi) = rec::catalog_entry(&input.src, &input.doc, b"OutputIntents", budget, g)
+            .map_err(|e| e.to_string())?
+        {
+            let oi = resolve_shallow(&input.src, &input.doc, oi, budget, g);
+            if let Obj::Array(items) = oi {
+                for item in items {
+                    let copied = rec::copy_value_into(
+                        merged,
+                        &input.src,
+                        &input.doc,
+                        &input.page_map,
+                        &mut cache,
+                        &item,
+                        budget,
+                        g,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    output_intents.push(copied);
+                }
+            }
+        }
+
         page_offset = page_offset.saturating_add(i64::try_from(input.pages).unwrap_or(i64::MAX));
     }
 
@@ -522,6 +588,17 @@ fn reconcile_inputs(
             .retain(|(num, _)| !old_struct_roots.contains(num));
     }
     attach_ocproperties(merged, ocg_refs, oc_defaults);
+
+    // WRITE.07: attach the first-wins catalog scalars and the concatenated
+    // output intents collected above.
+    for (key, value) in first_scalars {
+        merged.add_catalog_entry(&key, value);
+    }
+    if !output_intents.is_empty() {
+        let num = merged.allocate();
+        merged.add_object(num, Obj::Array(output_intents));
+        merged.add_catalog_entry(b"OutputIntents", Obj::Ref(Ref::new(num, 0)));
+    }
 
     // A fresh /ID: the merged document is a new identity (WRITE.04).
     let id = document_id(inputs);
@@ -925,6 +1002,911 @@ fn attach_ocproperties(
     merged.add_catalog_entry(b"OCProperties", Obj::Ref(Ref::new(num, 0)));
 }
 
+/// Carry one input's catalog-level structures into the output document
+/// (SL-1A.WRITE.07 — conformance-friendly writer defaults): a structure
+/// tree that was present on input is never dropped (ADR-P0031), output
+/// intents pass through, `/Lang` and the marking/viewer preferences
+/// survive, and outlines, page labels, form fields, and named destinations
+/// are kept where possible and pruned where they only reference deleted
+/// pages. The writer introduces nothing that degrades conformance: no
+/// JavaScript, no `/Launch` actions, no external references — the inputs'
+/// action-bearing `/Names` subtrees are never copied.
+///
+/// `all_pages` lists every source page; `kept` lists the surviving pages
+/// in output order as (old page index, old page object number, merged page
+/// reference). `carry_metadata` is false when the caller rewrote the
+/// `/Info` dictionary (`set-metadata`): the input's XMP packet is then
+/// stripped rather than left inconsistent with the new Info values (XMP
+/// editing is a TOOL.09 refinement).
+fn reconcile_single_input(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    all_pages: &[Ref],
+    kept: &[(usize, u32, Ref)],
+    carry_metadata: bool,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+
+    let page_map: std::collections::HashMap<u32, Ref> =
+        kept.iter().map(|(_, old, new)| (*old, *new)).collect();
+    let deleted: std::collections::HashSet<u32> = all_pages
+        .iter()
+        .map(|r| r.num)
+        .filter(|num| !page_map.contains_key(num))
+        .collect();
+    let mut cache = std::collections::HashMap::new();
+
+    // Simple carry-throughs (values that never reference pages).
+    let mut carry_keys: Vec<&[u8]> = vec![
+        b"Lang",
+        b"MarkInfo",
+        b"ViewerPreferences",
+        b"PageMode",
+        b"PageLayout",
+        b"OutputIntents",
+    ];
+    if carry_metadata {
+        carry_keys.push(b"Metadata");
+    }
+    for key in carry_keys {
+        if let Some(v) = rec::catalog_entry(src, doc, key, budget, g).map_err(|e| e.to_string())? {
+            let copied = rec::copy_value_into(out, src, doc, &page_map, &mut cache, &v, budget, g)
+                .map_err(|e| e.to_string())?;
+            out.add_catalog_entry(key, copied);
+        }
+    }
+
+    // Page labels: re-keyed at the surviving pages' new indices.
+    let mut new_idx_by_old: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for (new_idx, (old_idx, _, _)) in kept.iter().enumerate() {
+        new_idx_by_old.insert(*old_idx, new_idx);
+    }
+    if let Some(labels) =
+        rec::catalog_entry(src, doc, b"PageLabels", budget, g).map_err(|e| e.to_string())?
+    {
+        let labels = resolve_shallow(src, doc, labels, budget, g);
+        if let Ok(pairs) = rec::number_tree_pairs(&labels, src, doc, budget, g) {
+            let remapped = remap_page_label_keys(&pairs, &new_idx_by_old, all_pages.len());
+            if !remapped.is_empty() {
+                let tree = rec::merge_number_trees(&[(remapped, 0)]);
+                let num = out.allocate();
+                out.add_object(num, tree);
+                out.add_catalog_entry(b"PageLabels", Obj::Ref(Ref::new(num, 0)));
+            }
+        }
+    }
+
+    // Outlines: items destinating deleted pages are pruned.
+    prune_outlines(out, src, doc, &page_map, &deleted, &mut cache, budget, g)?;
+
+    // Form fields: roots whose widget page was deleted are dropped.
+    carry_acroform_single(out, src, doc, &page_map, &deleted, &mut cache, budget, g)?;
+
+    // Named destinations (pruned) and embedded files (kept); never actions.
+    carry_names_single(out, src, doc, &page_map, &deleted, &mut cache, budget, g)?;
+
+    // The structure tree (ADR-P0031): pruned at the deleted pages.
+    carry_struct_tree_single(
+        out, src, doc, kept, &page_map, &deleted, &mut cache, budget, g,
+    )?;
+
+    Ok(())
+}
+
+/// Re-key a single input's page-label pairs for a page selection: a label
+/// starting at key `k` covers `[k, next key)`; it survives anchored at the
+/// first kept page in that span, under that page's new index. Labels whose
+/// span holds no kept page are dropped.
+fn remap_page_label_keys(
+    pairs: &[(i64, Obj)],
+    new_idx_by_old: &std::collections::HashMap<usize, usize>,
+    page_count: usize,
+) -> Vec<(i64, Obj)> {
+    let mut sorted: Vec<(i64, Obj)> = pairs.to_vec();
+    sorted.sort_by_key(|(k, _)| *k);
+    let page_max = i64::try_from(page_count)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(1);
+    let mut out = Vec::new();
+    for (i, (key, value)) in sorted.iter().enumerate() {
+        let start = (*key).max(0);
+        let end = match sorted.get(i.saturating_add(1)) {
+            Some((next, _)) => next.saturating_sub(1),
+            None => i64::MAX,
+        }
+        .min(page_max);
+        let mut old = start;
+        while old <= end {
+            let idx = usize::try_from(old).unwrap_or(usize::MAX);
+            if let Some(&new_idx) = new_idx_by_old.get(&idx) {
+                out.push((i64::try_from(new_idx).unwrap_or(i64::MAX), value.clone()));
+                break;
+            }
+            old = old.saturating_add(1);
+        }
+    }
+    out
+}
+
+/// The document's named-destination tables flattened for destination
+/// lookups: the `/Names/Dests` name tree plus the legacy direct `/Dests`
+/// dictionary.
+struct NamedDests {
+    pairs: Vec<(selis_bytes::Bytes, Obj)>,
+}
+
+impl NamedDests {
+    /// Flatten both destination tables (best-effort: a damaged tree simply
+    /// contributes nothing and destinations are conservatively kept).
+    fn collect(
+        src: &[u8],
+        doc: &selis_pdf_cos::Doc,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Self {
+        use selis_pdf_cos::reconcile as rec;
+        let mut pairs = Vec::new();
+        if let Ok(Some(names)) = rec::catalog_entry(src, doc, b"Names", budget, g) {
+            let names = resolve_shallow(src, doc, names, budget, g);
+            if let Obj::Dict(np) = &names {
+                if let Some((_, dests)) = np.iter().find(|(k, _)| k.as_slice() == b"Dests") {
+                    let dests = resolve_shallow(src, doc, dests.clone(), budget, g);
+                    if let Ok(found) = rec::name_tree_pairs(&dests, src, doc, budget, g) {
+                        pairs.extend(found);
+                    }
+                }
+            }
+        }
+        if let Ok(Some(dests)) = rec::catalog_entry(src, doc, b"Dests", budget, g) {
+            let dests = resolve_shallow(src, doc, dests, budget, g);
+            if let Obj::Dict(dp) = &dests {
+                for (k, v) in dp {
+                    pairs.push((k.clone(), v.clone()));
+                }
+            }
+        }
+        NamedDests { pairs }
+    }
+
+    /// The page object number a named destination targets, when decidable.
+    fn page_of(&self, name: &[u8]) -> Option<u32> {
+        let (_, value) = self.pairs.iter().find(|(k, _)| k.as_slice() == name)?;
+        match value {
+            Obj::Array(items) => match items.first() {
+                Some(Obj::Ref(r)) => Some(r.num),
+                _ => None,
+            },
+            Obj::Dict(pairs) => {
+                pairs
+                    .iter()
+                    .find(|(k, _)| k.as_slice() == b"D")
+                    .and_then(|(_, v)| match v {
+                        Obj::Array(items) => match items.first() {
+                            Some(Obj::Ref(r)) => Some(r.num),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The page object number a destination value targets (an explicit
+/// `[page …]` array, or a named destination), when decidable.
+fn dest_page_num(dest: &Obj, named: &NamedDests) -> Option<u32> {
+    match dest {
+        Obj::Array(items) => match items.first() {
+            Some(Obj::Ref(r)) => Some(r.num),
+            _ => None,
+        },
+        Obj::String(s) => named.page_of(s.as_slice()),
+        Obj::Name(n) => named.page_of(n.as_slice()),
+        Obj::Dict(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"D")
+            .and_then(|(_, v)| dest_page_num(v, named)),
+        _ => None,
+    }
+}
+
+/// Carry the input's outlines into `out`, dropping items whose destination
+/// page was deleted (WRITE.07). Chain links (`First`/`Last`/`Next`/`Prev`/
+/// `Parent`/`Count`) are rebuilt over the kept items; every other entry of
+/// a kept item is copied through `copy_value_into`, so destinations remap
+/// at the surviving pages.
+fn prune_outlines(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+    let Some(root) =
+        rec::catalog_entry(src, doc, b"Outlines", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    let root_ref = match root {
+        Obj::Ref(r) => r,
+        _ => return Ok(()),
+    };
+    let named = NamedDests::collect(src, doc, budget, g);
+    let root_num = out.allocate();
+    out.add_object(root_num, Obj::Dict(Vec::new()));
+    let items = prune_outline_chain(
+        out, src, doc, page_map, deleted, cache, &named, root_ref, root_num, budget, g,
+    )?;
+    if items.is_empty() {
+        // Nothing survived: drop the empty root again.
+        out.objects_mut().retain(|(num, _)| *num != root_num);
+        return Ok(());
+    }
+    link_outline_chain(out, root_num, &items, true);
+    out.add_catalog_entry(b"Outlines", Obj::Ref(Ref::new(root_num, 0)));
+    Ok(())
+}
+
+/// Walk one chain of outline items (the `/First`/`/Next` sequence under
+/// `parent_ref`), keeping items whose destination survives, and return the
+/// kept items' new object numbers in order. `parent_num` is the object the
+/// caller will link the returned chain under.
+fn prune_outline_chain(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    named: &NamedDests,
+    parent_ref: Ref,
+    _parent_num: u32,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u32>, String> {
+    use selis_pdf_cos::reconcile as rec;
+    let parent = resolve_ref_obj(src, doc, parent_ref, budget, g)?;
+    let Obj::Dict(pairs) = &parent else {
+        return Ok(Vec::new());
+    };
+    let Some(Obj::Ref(first)) = pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"First")
+        .map(|(_, v)| v)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut items = Vec::new();
+    let mut cur = *first;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..10_000 {
+        if !seen.insert((cur.num, cur.gen)) {
+            break;
+        }
+        let obj = resolve_ref_obj(src, doc, cur, budget, g)?;
+        let next = match &obj {
+            Obj::Dict(p) => p
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Next")
+                .and_then(|(_, v)| match v {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                }),
+            _ => None,
+        };
+        if outline_item_kept(&obj, deleted, named) {
+            let original_count = match &obj {
+                Obj::Dict(p) => p
+                    .iter()
+                    .find(|(k, _)| k.as_slice() == b"Count")
+                    .and_then(|(_, v)| match v {
+                        Obj::Int(n) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(1),
+                _ => 1,
+            };
+            // Build the kept item without its chain links (rebuilt below).
+            let num = out.allocate();
+            cache.insert((cur.num, cur.gen), num);
+            let mut new_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+            if let Obj::Dict(p) = &obj {
+                for (k, v) in p {
+                    if matches!(
+                        k.as_slice(),
+                        b"First" | b"Last" | b"Next" | b"Prev" | b"Parent" | b"Count"
+                    ) {
+                        continue;
+                    }
+                    let copied = rec::copy_value_into(out, src, doc, page_map, cache, v, budget, g)
+                        .map_err(|e| e.to_string())?;
+                    new_pairs.push((k.clone(), copied));
+                }
+            }
+            out.add_object(num, Obj::Dict(new_pairs));
+            let children = prune_outline_chain(
+                out, src, doc, page_map, deleted, cache, named, cur, num, budget, g,
+            )?;
+            if !children.is_empty() {
+                link_outline_chain(out, num, &children, original_count >= 0);
+            }
+            items.push(num);
+        }
+        let Some(next) = next else { break };
+        cur = next;
+    }
+    Ok(items)
+}
+
+/// True when an outline item's destination survives the page selection.
+/// Items without a decidable destination are kept (never drop what cannot
+/// be classified).
+fn outline_item_kept(
+    obj: &Obj,
+    deleted: &std::collections::HashSet<u32>,
+    named: &NamedDests,
+) -> bool {
+    let Obj::Dict(pairs) = obj else {
+        return true;
+    };
+    let dest = pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Dest")
+        .map(|(_, v)| v.clone())
+        .or_else(|| {
+            pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"A")
+                .and_then(|(_, v)| match v {
+                    Obj::Dict(a) => {
+                        let goto = a.iter().any(|(k, v)| {
+                            let is_action_type = k.as_slice() == b"S";
+                            is_action_type && matches!(v, Obj::Name(n) if n.as_slice() == b"GoTo")
+                        });
+                        if !goto {
+                            return None;
+                        }
+                        a.iter()
+                            .find(|(k, _)| k.as_slice() == b"D")
+                            .map(|(_, v)| v.clone())
+                    }
+                    _ => None,
+                })
+        });
+    let Some(dest) = dest else {
+        return true;
+    };
+    match dest_page_num(&dest, named) {
+        Some(num) => !deleted.contains(&num),
+        None => true,
+    }
+}
+
+/// Link a kept outline chain under `parent_num`: `/Parent` for each item,
+/// `/Next`/`/Prev` between items, and `/First`/`/Last`/`/Count` on the
+/// parent. `positive` keeps the original open/closed state on `/Count`.
+fn link_outline_chain(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    parent_num: u32,
+    items: &[u32],
+    positive: bool,
+) {
+    let Some((&first, _)) = items.split_first() else {
+        return;
+    };
+    let last = *items.last().unwrap_or(&first);
+    let mut prev: Option<u32> = None;
+    for &item in items {
+        edit_dict_entry(out, item, b"Parent", Obj::Ref(Ref::new(parent_num, 0)));
+        if let Some(p) = prev {
+            edit_dict_entry(out, item, b"Prev", Obj::Ref(Ref::new(p, 0)));
+        }
+        prev = Some(item);
+    }
+    for i in 0..items.len().saturating_sub(1) {
+        let cur = items.get(i).copied().unwrap_or(0);
+        let nxt = items.get(i.saturating_add(1)).copied().unwrap_or(cur);
+        edit_dict_entry(out, cur, b"Next", Obj::Ref(Ref::new(nxt, 0)));
+    }
+    edit_dict_entry(out, parent_num, b"First", Obj::Ref(Ref::new(first, 0)));
+    edit_dict_entry(out, parent_num, b"Last", Obj::Ref(Ref::new(last, 0)));
+    let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
+    edit_dict_entry(
+        out,
+        parent_num,
+        b"Count",
+        Obj::Int(if positive {
+            count
+        } else {
+            count.saturating_neg()
+        }),
+    );
+}
+
+/// Carry the input's `/AcroForm` into `out`, dropping field roots whose
+/// widget page was deleted (WRITE.07). Default appearance, default
+/// resources, need-appearances, and calculation order pass through;
+/// `/XFA` is never carried (deprecated in PDF 2.0).
+fn carry_acroform_single(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+    let Some(form) =
+        rec::catalog_entry(src, doc, b"AcroForm", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    let form = resolve_shallow(src, doc, form, budget, g);
+    let Obj::Dict(pairs) = &form else {
+        return Ok(());
+    };
+    let mut field_refs: Vec<Ref> = Vec::new();
+    let mut default_appearance: Option<Obj> = None;
+    let mut need_appearances = false;
+    let mut form_resources: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut calc_order: Vec<Obj> = Vec::new();
+    for (k, v) in pairs {
+        match k.as_slice() {
+            b"Fields" => {
+                if let Obj::Array(items) = v {
+                    for f in items {
+                        if !field_survives(src, doc, f, deleted, 0, budget, g) {
+                            continue;
+                        }
+                        let copied =
+                            rec::copy_value_into(out, src, doc, page_map, cache, f, budget, g)
+                                .map_err(|e| e.to_string())?;
+                        if let Obj::Ref(r) = copied {
+                            field_refs.push(r);
+                        }
+                    }
+                }
+            }
+            b"DA" => {
+                default_appearance = Some(
+                    rec::copy_value_into(out, src, doc, page_map, cache, v, budget, g)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            b"NeedAppearances" => {
+                if matches!(v, Obj::Bool(true)) {
+                    need_appearances = true;
+                }
+            }
+            b"CO" => {
+                let copied = rec::copy_value_into(out, src, doc, page_map, cache, v, budget, g)
+                    .map_err(|e| e.to_string())?;
+                if let Obj::Array(items) = copied {
+                    calc_order.extend(items);
+                }
+            }
+            b"DR" => {
+                let copied = rec::copy_value_into(out, src, doc, page_map, cache, v, budget, g)
+                    .map_err(|e| e.to_string())?;
+                if let Obj::Dict(d) = copied {
+                    union_dicts(&mut form_resources, d);
+                }
+            }
+            b"XFA" => {} // deprecated in PDF 2.0; never introduced by the writer
+            _ => {}
+        }
+    }
+    if field_refs.is_empty() {
+        return Ok(());
+    }
+    attach_acroform(
+        out,
+        &field_refs,
+        default_appearance,
+        need_appearances,
+        form_resources,
+        calc_order,
+    );
+    Ok(())
+}
+
+/// True when a form field still has a home after the page selection: its
+/// `/P` page survived, or (for pure container fields) at least one
+/// descendant does. Unresolvable fields are kept — the writer never drops
+/// what it cannot classify.
+fn field_survives(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    obj: &Obj,
+    deleted: &std::collections::HashSet<u32>,
+    depth: usize,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> bool {
+    if depth > 32 {
+        return true;
+    }
+    let resolved = resolve_shallow(src, doc, obj.clone(), budget, g);
+    let Obj::Dict(pairs) = &resolved else {
+        return true;
+    };
+    if let Some((_, Obj::Ref(p))) = pairs.iter().find(|(k, _)| k.as_slice() == b"P") {
+        return !deleted.contains(&p.num);
+    }
+    if let Some((_, Obj::Array(kids))) = pairs.iter().find(|(k, _)| k.as_slice() == b"Kids") {
+        return kids
+            .iter()
+            .any(|kid| field_survives(src, doc, kid, deleted, depth.saturating_add(1), budget, g));
+    }
+    true
+}
+
+/// Carry the input's `/Names` tree into `out` (WRITE.07): named
+/// destinations whose target page was deleted are pruned, embedded files
+/// pass through, and everything else (`/JavaScript`, `/Launch`-bearing
+/// subtrees, …) is never copied — the writer introduces no actions.
+fn carry_names_single(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+    let Some(names) =
+        rec::catalog_entry(src, doc, b"Names", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    let names = resolve_shallow(src, doc, names, budget, g);
+    let Obj::Dict(pairs) = &names else {
+        return Ok(());
+    };
+    let named = NamedDests::collect(src, doc, budget, g);
+    let mut dest_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    let mut file_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    for (k, v) in pairs {
+        match k.as_slice() {
+            b"Dests" => {
+                let v = resolve_shallow(src, doc, v.clone(), budget, g);
+                let Ok(found) = rec::name_tree_pairs(&v, src, doc, budget, g) else {
+                    continue;
+                };
+                for (name, value) in found {
+                    if let Some(num) = dest_page_num(&value, &named) {
+                        if deleted.contains(&num) {
+                            continue; // the destination's page was deleted
+                        }
+                    }
+                    let copied =
+                        rec::copy_value_into(out, src, doc, page_map, cache, &value, budget, g)
+                            .map_err(|e| e.to_string())?;
+                    dest_pairs.push((name, copied));
+                }
+            }
+            b"EmbeddedFiles" => {
+                let v = resolve_shallow(src, doc, v.clone(), budget, g);
+                let Ok(found) = rec::name_tree_pairs(&v, src, doc, budget, g) else {
+                    continue;
+                };
+                for (name, value) in found {
+                    let copied =
+                        rec::copy_value_into(out, src, doc, page_map, cache, &value, budget, g)
+                            .map_err(|e| e.to_string())?;
+                    file_pairs.push((name, copied));
+                }
+            }
+            _ => {} // JavaScript, AP, …: never carried into tool output
+        }
+    }
+    attach_names(out, dest_pairs, file_pairs);
+    Ok(())
+}
+
+/// Carry the input's `/StructTreeRoot` into `out` (WRITE.07, ADR-P0031 —
+/// a rewritten document stays tagged): elements whose page was deleted are
+/// pruned (their marked content no longer exists), kept pages retain their
+/// `/StructParents` ids, and the `/ParentTree` keeps exactly those ids'
+/// entries with their values redirected at the pruned elements via the
+/// shared copy cache.
+fn carry_struct_tree_single(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    kept: &[(usize, u32, Ref)],
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    use selis_pdf_cos::reconcile as rec;
+    let Some(raw) =
+        rec::catalog_entry(src, doc, b"StructTreeRoot", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    let raw_ref = match &raw {
+        Obj::Ref(r) => Some(*r),
+        _ => None,
+    };
+    let root = resolve_shallow(src, doc, raw, budget, g);
+    let Obj::Dict(pairs) = &root else {
+        return Ok(());
+    };
+
+    // Reserve the merged root's number and pre-register the source root in
+    // the cache: copied elements' `/P` entries repoint at the merged root
+    // and the source root itself is never copied.
+    let root_num = out.allocate();
+    if let Some(r) = raw_ref {
+        cache.insert((r.num, r.gen), root_num);
+    }
+
+    // Kept pages retain their struct-parents ids (single input: no shift).
+    let mut kept_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for (_, old_num, new_ref) in kept {
+        let page = resolve_shallow(src, doc, Obj::Ref(Ref::new(*old_num, 0)), budget, g);
+        let Obj::Dict(pp) = &page else { continue };
+        let Some(sp) = pp
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"StructParents")
+            .and_then(|(_, v)| match v {
+                Obj::Int(n) => Some(*n),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        kept_ids.insert(sp);
+        edit_dict_entry(out, new_ref.num, b"StructParents", Obj::Int(sp));
+    }
+
+    let mut dropped: std::collections::HashSet<(u32, u16)> = std::collections::HashSet::new();
+
+    // `/K` first so kept elements register in the cache before the
+    // `/ParentTree` values are copied (they must redirect at the same
+    // objects, not resurrect pruned ones). The source shape (array vs a
+    // single element) is recorded and preserved on write: wrapping a lone
+    // element in a fresh array would nest the rewritten document one level
+    // deeper than the input, which trips the depth budget on deeply nested
+    // type-4/function documents.
+    let mut struct_kids: Vec<Obj> = Vec::new();
+    let mut k_was_array = true;
+    if let Some((_, k)) = pairs.iter().find(|(k, _)| k.as_slice() == b"K") {
+        let (kids, was_array): (Vec<Obj>, bool) = match k {
+            Obj::Array(items) => (items.clone(), true),
+            other => (vec![other.clone()], false),
+        };
+        k_was_array = was_array;
+        for kid in &kids {
+            if let Some(copied) = copy_struct_value(
+                out,
+                src,
+                doc,
+                page_map,
+                deleted,
+                cache,
+                &mut dropped,
+                kid,
+                budget,
+                g,
+            )? {
+                struct_kids.push(copied);
+            }
+        }
+    }
+
+    // `/ParentTree`: keep exactly the surviving pages' ids.
+    let mut parent_pairs: Vec<(i64, Obj)> = Vec::new();
+    if let Some((_, pt)) = pairs.iter().find(|(k, _)| k.as_slice() == b"ParentTree") {
+        if let Ok(found) = rec::number_tree_pairs_unresolved(pt, src, doc, budget, g) {
+            for (key, value) in found {
+                if !kept_ids.contains(&key) {
+                    continue;
+                }
+                if let Some(copied) = copy_struct_value(
+                    out,
+                    src,
+                    doc,
+                    page_map,
+                    deleted,
+                    cache,
+                    &mut dropped,
+                    &value,
+                    budget,
+                    g,
+                )? {
+                    parent_pairs.push((key, copied));
+                }
+            }
+        }
+    }
+
+    let mut role_map: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    if let Some((_, rm)) = pairs.iter().find(|(k, _)| k.as_slice() == b"RoleMap") {
+        let copied = rec::copy_value_into(out, src, doc, page_map, cache, rm, budget, g)
+            .map_err(|e| e.to_string())?;
+        if let Obj::Dict(d) = copied {
+            union_dicts(&mut role_map, d);
+        }
+    }
+    let mut class_map: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+    if let Some((_, cm)) = pairs.iter().find(|(k, _)| k.as_slice() == b"ClassMap") {
+        let copied = rec::copy_value_into(out, src, doc, page_map, cache, cm, budget, g)
+            .map_err(|e| e.to_string())?;
+        if let Obj::Dict(d) = copied {
+            union_dicts(&mut class_map, d);
+        }
+    }
+
+    // The input had a structure tree: the output keeps one, even when the
+    // page selection pruned every element (WRITE.07 — never drop a
+    // structure tree that was present on input).
+    let mut root_pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![(
+        selis_bytes::Bytes::copy_from_slice(b"Type"),
+        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"StructTreeRoot")),
+    )];
+    if !struct_kids.is_empty() {
+        let k_value = if k_was_array || struct_kids.len() != 1 {
+            Obj::Array(struct_kids)
+        } else {
+            // Preserve the source's single-element shape (see above).
+            struct_kids
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Obj::Array(Vec::new()))
+        };
+        root_pairs.push((selis_bytes::Bytes::copy_from_slice(b"K"), k_value));
+    }
+    if !parent_pairs.is_empty() {
+        let next_key = parent_pairs
+            .iter()
+            .map(|(k, _)| *k)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let tree = selis_pdf_cos::reconcile::merge_number_trees(&[(parent_pairs, 0)]);
+        let num = out.allocate();
+        out.add_object(num, tree);
+        root_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ParentTree"),
+            Obj::Ref(Ref::new(num, 0)),
+        ));
+        root_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ParentTreeNextKey"),
+            Obj::Int(next_key),
+        ));
+    }
+    if !role_map.is_empty() {
+        root_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"RoleMap"),
+            Obj::Dict(role_map),
+        ));
+    }
+    if !class_map.is_empty() {
+        root_pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ClassMap"),
+            Obj::Dict(class_map),
+        ));
+    }
+    out.add_object(root_num, Obj::Dict(root_pairs));
+    out.add_catalog_entry(b"StructTreeRoot", Obj::Ref(Ref::new(root_num, 0)));
+    Ok(())
+}
+
+/// Copy a structure-tree value into `out`, pruning everything that belongs
+/// to a deleted page (WRITE.07): an element whose `/Pg` page was deleted
+/// is dropped (its marked content is gone), an element whose `/K` kids are
+/// all pruned drops with them, and pairs referencing deleted pages are
+/// omitted. `dropped` remembers pruned source objects so the
+/// `/ParentTree` pass cannot resurrect them.
+fn copy_struct_value(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_map: &std::collections::HashMap<u32, Ref>,
+    deleted: &std::collections::HashSet<u32>,
+    cache: &mut std::collections::HashMap<(u32, u16), u32>,
+    dropped: &mut std::collections::HashSet<(u32, u16)>,
+    obj: &Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Obj>, String> {
+    match obj {
+        Obj::Ref(r) => {
+            if deleted.contains(&r.num) || dropped.contains(&(r.num, r.gen)) {
+                return Ok(None);
+            }
+            if let Some(&merged) = page_map.get(&r.num) {
+                return Ok(Some(Obj::Ref(merged)));
+            }
+            if let Some(&num) = cache.get(&(r.num, r.gen)) {
+                return Ok(Some(Obj::Ref(Ref::new(num, 0))));
+            }
+            let resolved = resolve_ref_obj(src, doc, *r, budget, g)?;
+            let num = out.allocate();
+            cache.insert((r.num, r.gen), num);
+            let copied = copy_struct_value(
+                out, src, doc, page_map, deleted, cache, dropped, &resolved, budget, g,
+            )?;
+            match copied {
+                Some(c) => {
+                    out.add_object(num, c);
+                    Ok(Some(Obj::Ref(Ref::new(num, 0))))
+                }
+                None => {
+                    cache.remove(&(r.num, r.gen));
+                    dropped.insert((r.num, r.gen));
+                    Ok(None)
+                }
+            }
+        }
+        Obj::Array(items) => {
+            let mut kept = Vec::new();
+            for item in items {
+                if let Some(c) = copy_struct_value(
+                    out, src, doc, page_map, deleted, cache, dropped, item, budget, g,
+                )? {
+                    kept.push(c);
+                }
+            }
+            Ok(Some(Obj::Array(kept)))
+        }
+        Obj::Dict(pairs) => {
+            // An element anchored at a deleted page vanishes with the page.
+            if let Some((_, Obj::Ref(pg))) = pairs.iter().find(|(k, _)| k.as_slice() == b"Pg") {
+                if deleted.contains(&pg.num) {
+                    return Ok(None);
+                }
+            }
+            let mut new_pairs: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+            let mut has_kids_key = false;
+            let mut kids_kept = 0usize;
+            for (k, v) in pairs {
+                let Ok(copied) = copy_struct_value(
+                    out, src, doc, page_map, deleted, cache, dropped, v, budget, g,
+                ) else {
+                    continue;
+                };
+                let Some(copied) = copied else {
+                    continue;
+                };
+                if k.as_slice() == b"K" {
+                    has_kids_key = true;
+                    match &copied {
+                        Obj::Array(items) => {
+                            kids_kept = kids_kept.saturating_add(items.len());
+                        }
+                        _ => kids_kept = kids_kept.saturating_add(1),
+                    }
+                }
+                new_pairs.push((k.clone(), copied));
+            }
+            if has_kids_key && kids_kept == 0 {
+                // Every kid was pruned: the element is empty.
+                return Ok(None);
+            }
+            Ok(Some(Obj::Dict(new_pairs)))
+        }
+        other => Ok(Some(other.clone())),
+    }
+}
+
 /// Rename duplicate names with a `-2`, `-3`, … suffix so every entry keeps a
 /// unique key in the merged name tree.
 fn unique_names(pairs: Vec<(selis_bytes::Bytes, Obj)>) -> Vec<(selis_bytes::Bytes, Obj)> {
@@ -997,8 +1979,11 @@ pub(crate) fn split(path: &str, first: usize, last: usize, output: &str) -> CliR
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     if last >= page_refs.len() || first > last {
         return Err(CliError(format!(
             "page range {first}..{last} out of range (document has {} pages)",
@@ -1007,14 +1992,23 @@ pub(crate) fn split(path: &str, first: usize, last: usize, output: &str) -> CliR
     }
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
-    for page_ref in page_refs[first..=last].iter() {
-        copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        if idx < first || idx > last {
+            continue;
+        }
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
             .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
     }
-    let bytes = out
-        .write(&budget, &mut g)
-        .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.07: carry the input's catalog-level structures through the page
+    // selection (structure tree, output intents, metadata, …), pruning what
+    // only referenced the deleted pages.
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    write_document(out, output, &budget, &mut g)?;
     eprintln!("split pages {first}..{last} into {output}");
     Ok(())
 }
@@ -1025,21 +2019,31 @@ pub(crate) fn set_metadata(path: &str, fields: &[(&str, &str)], output: &str) ->
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
     for (k, v) in fields {
         out.set_info(k.as_bytes(), v);
     }
-    for page_ref in &page_refs {
-        copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
             .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
     }
-    let bytes = out
-        .write(&budget, &mut g)
-        .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.07: catalog structures carry through; the input's XMP packet is
+    // stripped (`carry_metadata: false`) — the caller rewrote the Info
+    // dictionary, and stale XMP would contradict the new values (updating
+    // XMP in place is the TOOL.09 refinement).
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, false, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    write_document(out, output, &budget, &mut g)?;
     eprintln!("set {} metadata field(s) -> {output}", fields.len());
     Ok(())
 }
@@ -1050,12 +2054,16 @@ pub(crate) fn redact(path: &str, rects: &[(f64, f64, f64, f64)], output: &str) -
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
-    for page_ref in &page_refs {
-        copy_page_redacted(
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page_redacted(
             &mut out,
             &src,
             *page_ref,
@@ -1065,11 +2073,14 @@ pub(crate) fn redact(path: &str, rects: &[(f64, f64, f64, f64)], output: &str) -
             &mut next_num,
         )
         .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
     }
-    let bytes = out
-        .write(&budget, &mut g)
-        .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.07: catalog-level structures carry through the rewrite.
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    write_document(out, output, &budget, &mut g)?;
     eprintln!("redacted {} region(s) -> {output}", rects.len());
     Ok(())
 }
@@ -1083,13 +2094,23 @@ fn open_page_refs(
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
+    page_refs_of(src, &doc, budget, g)
+}
+
+/// The leaf page references of an already-parsed document.
+fn page_refs_of(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<Ref>, String> {
     let rev = doc
         .revisions()
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
     let catalog = selis_pdf_cos::copy::resolve_ref(
         src,
-        &doc,
+        doc,
         rev.root.ok_or_else(|| "no /Root".to_string())?,
         budget,
         g,
@@ -1106,7 +2127,7 @@ fn open_page_refs(
         _ => None,
     }
     .ok_or_else(|| "catalog has no /Pages".to_string())?;
-    walk_pages(src, &doc, pages_ref, budget, g, 0)
+    walk_pages(src, doc, pages_ref, budget, g, 0)
 }
 
 /// Resolve an object by its revision xref entry (handles compressed objects).
@@ -1379,7 +2400,7 @@ fn page_info(
 }
 
 /// Copy a page, appending black rects over `rects` and stripping text that
-/// falls within them.
+/// falls within them. Returns the redacted page's reference in `merged`.
 fn copy_page_redacted(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -1388,7 +2409,7 @@ fn copy_page_redacted(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
     next_num: &mut u32,
-) -> Result<(), String> {
+) -> Result<Ref, String> {
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
@@ -1434,14 +2455,13 @@ fn copy_page_redacted(
     if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
-    merged.add_page_with_extra(
+    Ok(merged.add_page_with_extra(
         media.0,
         media.1,
         &[Ref::new(content_num, 0)],
         new_resources,
         extra,
-    );
-    Ok(())
+    ))
 }
 
 /// The `/Rotate` page-dict entry when a non-zero rotation is present.
@@ -1467,8 +2487,11 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let selected = match pages {
         Some(spec) => parse_page_selection(spec, page_refs.len())
             .map_err(|e| CliError(format!("{path}: {e}")))?,
@@ -1476,6 +2499,7 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
     };
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
     for (idx, page_ref) in page_refs.iter().enumerate() {
         let existing = page_rotate(&src, &budget, &mut g, *page_ref)
             .map_err(|e| CliError(format!("{path}: {e}")))?;
@@ -1484,7 +2508,7 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
         } else {
             rotate_extra(existing)
         };
-        copy_page_extra(
+        let merged_ref = copy_page_extra(
             &mut out,
             &src,
             *page_ref,
@@ -1494,7 +2518,13 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
             extra,
         )
         .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
     }
+    // WRITE.07: catalog-level structures carry through the rewrite.
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
     write_document(out, output, &budget, &mut g)?;
     eprintln!(
         "rotated {} page(s) by {}° -> {output}",
@@ -1509,8 +2539,11 @@ pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let removed = parse_page_selection(pages, page_refs.len())
         .map_err(|e| CliError(format!("{path}: {e}")))?;
     if removed.len() >= page_refs.len() {
@@ -1521,14 +2554,29 @@ pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<()> {
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
     let mut kept = 0usize;
+    let mut kept_pages: Vec<(usize, u32, Ref)> = Vec::new();
     for (idx, page_ref) in page_refs.iter().enumerate() {
         if removed.contains(&idx) {
             continue;
         }
-        copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
             .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept_pages.push((idx, page_ref.num, merged_ref));
         kept += 1;
     }
+    // WRITE.07: catalog-level structures carry through the page selection,
+    // pruned where they only referenced deleted pages.
+    reconcile_single_input(
+        &mut out,
+        &src,
+        &doc,
+        &page_refs,
+        &kept_pages,
+        true,
+        &budget,
+        &mut g,
+    )
+    .map_err(CliError)?;
     write_document(out, output, &budget, &mut g)?;
     eprintln!("deleted {} page(s), kept {kept} -> {output}", removed.len());
     Ok(())
@@ -1540,20 +2588,31 @@ pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::unlimited();
     let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
-        open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let order =
         parse_page_order(order, page_refs.len()).map_err(|e| CliError(format!("{path}: {e}")))?;
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
     for idx in &order {
         let page_ref = page_refs
             .get(*idx)
             .copied()
             .ok_or_else(|| CliError(format!("page {idx} out of range")))?;
-        copy_page(&mut out, &src, page_ref, &budget, &mut g, &mut next_num)
+        let merged_ref = copy_page(&mut out, &src, page_ref, &budget, &mut g, &mut next_num)
             .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((*idx, page_ref.num, merged_ref));
     }
+    // WRITE.07: catalog-level structures carry through the rewrite; page
+    // labels re-key at the new indices, destinations remap at the pages.
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
     write_document(out, output, &budget, &mut g)?;
     eprintln!("reordered {} page(s) -> {output}", order.len());
     Ok(())

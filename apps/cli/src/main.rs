@@ -32,6 +32,9 @@ mod search;
 mod tools;
 mod topdf;
 
+#[cfg(test)]
+mod tool_conformance;
+
 #[derive(Parser)]
 #[command(
     name = "selis",
