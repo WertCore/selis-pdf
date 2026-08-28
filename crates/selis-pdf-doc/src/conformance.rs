@@ -281,15 +281,15 @@ fn rule_tag_hierarchy(ctx: &EvaluationCtx<'_>) -> RuleResult {
 }
 
 fn rule_reading_order(ctx: &EvaluationCtx<'_>) -> RuleResult {
-    let root_kids = match ctx
-        .struct_tree
-        .root
-        .as_dict()
-        .and_then(|p| p.iter().find(|(k, _)| k.as_slice() == b"K").map(|(_, v)| v))
-    {
-        Some(Obj::Array(_)) => true,
-        _ => false,
-    };
+    // `/K` may be an array of structure elements or a single one
+    // (32000-1 §14.4.2); either shape carries a reading order.
+    let root_kids = matches!(
+        ctx.struct_tree
+            .root
+            .as_dict()
+            .and_then(|p| p.iter().find(|(k, _)| k.as_slice() == b"K").map(|(_, v)| v)),
+        Some(Obj::Array(_)) | Some(Obj::Ref(_)) | Some(Obj::Dict(_))
+    );
     if root_kids {
         RuleResult::Pass
     } else {
@@ -300,7 +300,9 @@ fn rule_reading_order(ctx: &EvaluationCtx<'_>) -> RuleResult {
 }
 
 fn rule_alt_text(ctx: &EvaluationCtx<'_>) -> RuleResult {
-    // Figure/image elements must carry /Alt.
+    // Figure/image elements must carry /Alt. Per 32000-1 §14.9.3 the text
+    // is normally a direct `/Alt` entry on the element; it may also live in
+    // an `/A` attribute object. Either placement satisfies the rule.
     let missing = ctx
         .struct_tree
         .elements
@@ -309,11 +311,12 @@ fn rule_alt_text(ctx: &EvaluationCtx<'_>) -> RuleResult {
             let is_figure =
                 e.ty.as_ref()
                     .is_some_and(|t| matches!(t.as_slice(), b"Figure" | b"Image"));
-            is_figure
-                && !e.attrs.iter().any(|a| {
-                    a.as_dict()
-                        .is_some_and(|p| p.iter().any(|(k, _)| k.as_slice() == b"Alt"))
-                })
+            let has_direct_alt = e.alt.as_ref().is_some_and(|a| !a.is_empty());
+            let has_attr_alt = e.attrs.iter().any(|a| {
+                a.as_dict()
+                    .is_some_and(|p| p.iter().any(|(k, _)| k.as_slice() == b"Alt"))
+            });
+            is_figure && !has_direct_alt && !has_attr_alt
         })
         .count();
     if missing == 0 {
@@ -562,5 +565,165 @@ mod tests {
             rule_encryption(&ctx),
             RuleResult::Unevaluated { .. }
         ));
+    }
+
+    fn figure(ty: &[u8], direct_alt: Option<&[u8]>, attr_alt: bool) -> crate::StructElement {
+        let alt = direct_alt.map(|b| selis_bytes::Bytes::copy_from_slice(b));
+        let attrs = if attr_alt {
+            Some(dict(vec![
+                (
+                    b"O",
+                    Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Layout")),
+                ),
+                (
+                    b"Alt",
+                    Obj::String(selis_bytes::Bytes::copy_from_slice(b"from attrs")),
+                ),
+            ]))
+        } else {
+            None
+        };
+        crate::StructElement {
+            ref_: selis_pdf_cos::Ref::new(1, 0),
+            ty: Some(selis_bytes::Bytes::copy_from_slice(ty)),
+            title: None,
+            kids: Vec::new(),
+            attrs,
+            alt,
+        }
+    }
+
+    fn tree_with(root: Obj, elements: Vec<crate::StructElement>) -> crate::StructTree {
+        crate::StructTree {
+            root,
+            role_map: std::collections::BTreeMap::new(),
+            elements,
+        }
+    }
+
+    #[test]
+    fn alt_text_rule_honours_direct_alt() {
+        let catalog = dict(vec![(
+            b"Type",
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Catalog")),
+        )]);
+        let doc = crate::Document {
+            catalog: Obj::Null,
+            pages: Vec::new(),
+        };
+        let md = crate::Metadata {
+            info: None,
+            xmp: None,
+            fields: std::collections::BTreeMap::new(),
+        };
+        // A Figure carrying /Alt directly on the element satisfies the rule.
+        let st = tree_with(
+            Obj::Null,
+            vec![figure(b"Figure", Some(b"described"), false)],
+        );
+        let ctx = EvaluationCtx {
+            doc: &doc,
+            catalog: &catalog,
+            struct_tree: &st,
+            metadata: &md,
+            profile: Profile::PdfUa,
+        };
+        assert!(
+            matches!(rule_alt_text(&ctx), RuleResult::Pass),
+            "direct /Alt must pass"
+        );
+    }
+
+    #[test]
+    fn alt_text_rule_honours_attr_alt() {
+        let catalog = dict(vec![(
+            b"Type",
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Catalog")),
+        )]);
+        let doc = crate::Document {
+            catalog: Obj::Null,
+            pages: Vec::new(),
+        };
+        let md = crate::Metadata {
+            info: None,
+            xmp: None,
+            fields: std::collections::BTreeMap::new(),
+        };
+        // A Figure with /Alt in its /A attribute object also satisfies the rule.
+        let st = tree_with(Obj::Null, vec![figure(b"Figure", None, true)]);
+        let ctx = EvaluationCtx {
+            doc: &doc,
+            catalog: &catalog,
+            struct_tree: &st,
+            metadata: &md,
+            profile: Profile::PdfUa,
+        };
+        assert!(
+            matches!(rule_alt_text(&ctx), RuleResult::Pass),
+            "/A attrs /Alt must pass"
+        );
+    }
+
+    #[test]
+    fn alt_text_rule_fails_on_undocumented_figure() {
+        let catalog = dict(vec![(
+            b"Type",
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Catalog")),
+        )]);
+        let doc = crate::Document {
+            catalog: Obj::Null,
+            pages: Vec::new(),
+        };
+        let md = crate::Metadata {
+            info: None,
+            xmp: None,
+            fields: std::collections::BTreeMap::new(),
+        };
+        let st = tree_with(Obj::Null, vec![figure(b"Figure", None, false)]);
+        let ctx = EvaluationCtx {
+            doc: &doc,
+            catalog: &catalog,
+            struct_tree: &st,
+            metadata: &md,
+            profile: Profile::PdfUa,
+        };
+        assert!(
+            matches!(rule_alt_text(&ctx), RuleResult::Fail { .. }),
+            "a figure with no /Alt anywhere must fail"
+        );
+    }
+
+    #[test]
+    fn reading_order_rule_accepts_single_ref_k() {
+        let catalog = dict(vec![(
+            b"Type",
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Catalog")),
+        )]);
+        let doc = crate::Document {
+            catalog: Obj::Null,
+            pages: Vec::new(),
+        };
+        let md = crate::Metadata {
+            info: None,
+            xmp: None,
+            fields: std::collections::BTreeMap::new(),
+        };
+        // `/K` as a single structure element (not wrapped in an array) is a
+        // legal reading order (32000-1 §14.4.2).
+        let st = tree_with(
+            dict(vec![(b"K", Obj::Ref(selis_pdf_cos::Ref::new(2, 0)))]),
+            Vec::new(),
+        );
+        let ctx = EvaluationCtx {
+            doc: &doc,
+            catalog: &catalog,
+            struct_tree: &st,
+            metadata: &md,
+            profile: Profile::PdfUa,
+        };
+        assert!(
+            matches!(rule_reading_order(&ctx), RuleResult::Pass),
+            "single-ref /K must count as a reading order"
+        );
     }
 }

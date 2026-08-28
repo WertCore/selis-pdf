@@ -72,8 +72,26 @@ impl<'a> Resolver<'a> {
         if !self.visited.insert(r.num) {
             return Err(err!(Code::ObjCycle, during = "doc-resolve", object = r.num));
         }
-        g.enter()?;
+        // Depth is scoped to this resolution level: the RAII guard releases
+        // it on every exit path, so depth tracks the walk's actual nesting
+        // rather than accumulating one level per object resolved.
+        let mut d = selis_sandbox::DepthGuard::enter(g)?;
         self.depth = self.depth.saturating_add(1);
+        let obj = self.resolve_scoped(r, d.guard());
+        // Unwind the per-resolution state on every path, including errors.
+        self.depth = self.depth.saturating_sub(1);
+        self.visited.remove(&r.num);
+        obj.map(|o| {
+            if let Some((key, rev, aes)) = &self.key {
+                decrypt_obj(o, r, key, *rev, *aes)
+            } else {
+                o
+            }
+        })
+    }
+
+    /// The body of [`Resolver::resolve`] once depth and cycle state are set up.
+    fn resolve_scoped(&mut self, r: Ref, g: &mut BudgetGuard<'_>) -> Result<Obj> {
         let limit = self.budget.limit(selis_sandbox::Resource::Depth);
         if u64::from(self.depth) > limit {
             return Err(err!(
@@ -87,33 +105,24 @@ impl<'a> Resolver<'a> {
             .doc
             .at_revision(self.doc.len().saturating_sub(1))
             .ok_or_else(|| err!(Code::ObjUnexpected, during = "doc-resolve", object = r.num))?;
-        let obj = match view.xref.get(&r.num) {
+        match view.xref.get(&r.num) {
             Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
                 g.charge_one(selis_sandbox::Resource::Objects)?;
-                resolve_object_numbered(self.src, *offset, r.num, self.budget, g)?
+                resolve_object_numbered(self.src, *offset, r.num, self.budget, g)
             }
             Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
                 // The object lives in an object stream (/ObjStm): resolve the
                 // stream, parse its (number, range) index, and parse the
                 // object at that range.
                 g.charge_one(selis_sandbox::Resource::Objects)?;
-                resolve_compressed(self.doc, self.src, *objstm, *index, self.budget, g)?
+                resolve_compressed(self.doc, self.src, *objstm, *index, self.budget, g)
             }
-            Some(_) | None => {
-                return Err(err!(
-                    Code::ObjUnexpected,
-                    during = "doc-resolve",
-                    object = r.num
-                ));
-            }
-        };
-
-        self.depth = self.depth.saturating_sub(1);
-        self.visited.remove(&r.num);
-        if let Some((key, rev, aes)) = &self.key {
-            return Ok(decrypt_obj(obj, r, key, *rev, *aes));
+            Some(_) | None => Err(err!(
+                Code::ObjUnexpected,
+                during = "doc-resolve",
+                object = r.num
+            )),
         }
-        Ok(obj)
     }
 }
 
@@ -354,6 +363,37 @@ mod tests {
         let mut r = Resolver::new(&doc, src, &budget);
         let e = r.resolve(Ref::new(99, 0), &mut g).expect_err("missing");
         assert_eq!(e.code(), Code::ObjUnexpected);
+    }
+
+    /// Depth is scoped to each resolution: after resolving several sibling
+    /// objects the guard's depth returns to zero, so depth tracks nesting,
+    /// not the number of objects resolved (WRITE.07 — a document with many
+    /// shallow objects must not exhaust the depth budget).
+    #[test]
+    fn resolve_depth_is_released_between_siblings() {
+        let src = b"%PDF-1.4\n1 0 obj\n42\nendobj\n2 0 obj\n43\nendobj\n3 0 obj\n44\nendobj\n";
+        let mut xref = std::collections::BTreeMap::new();
+        xref.insert(1, XrefEntry::InUse { offset: 9, gen: 0 });
+        xref.insert(2, XrefEntry::InUse { offset: 27, gen: 0 });
+        xref.insert(3, XrefEntry::InUse { offset: 45, gen: 0 });
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = Doc::from_single_revision(xref, trailer);
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let mut r = Resolver::new(&doc, src, &budget);
+        for num in 1..=3u32 {
+            let obj = r.resolve(Ref::new(num, 0), &mut g).expect("resolve");
+            assert!(matches!(obj, Obj::Int(_)));
+            assert_eq!(
+                g.usage().depth,
+                0,
+                "depth must return to zero after resolving object {num}"
+            );
+        }
+        assert_eq!(g.usage().peak_depth, 1, "siblings must not stack depth");
     }
 
     /// An object-stream array value must parse whole, not stop at its first
