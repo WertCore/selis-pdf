@@ -106,11 +106,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// The next token, or `None` at end of stream.
+    /// The next token, or `None` at end of stream. Every call advances the
+    /// scan position, so the interpreter always makes progress.
     ///
     /// # Errors
     ///
-    /// `LEX_UNTERMINATED_STRING` when a string runs to end of stream.
+    /// A `BUDGET_*` code on resource exhaustion.
     pub fn next_token(&mut self, g: &mut BudgetGuard<'_>) -> Result<Option<Tok>> {
         loop {
             self.skip_ws_and_comments();
@@ -142,6 +143,15 @@ impl<'a> Lexer<'a> {
                         self.bump();
                         return Ok(Some(Tok::DictEnd));
                     }
+                    self.bump();
+                    continue;
+                }
+                // Delimiter bytes the content grammar does not use (`{`, `}`,
+                // and a stray `)`). They are delimiters, so `lex_word` would
+                // return an empty token without advancing — stalling the
+                // interpreter in an unbounded loop. Consume and continue so a
+                // hostile stream always makes progress (SL-2.CONT.01).
+                b')' | b'{' | b'}' => {
                     self.bump();
                     continue;
                 }
@@ -197,11 +207,7 @@ impl<'a> Lexer<'a> {
         let mut depth = 0u32;
         loop {
             let Some(b) = self.peek() else {
-                return Err(selis_error::err!(
-                    selis_error::Code::LexUnterminatedString,
-                    during = "content-lex",
-                    at = self.pos as u64
-                ));
+                break; // truncated at EOF: emit the partial string
             };
             self.bump();
             match b {
@@ -366,5 +372,32 @@ mod tests {
             toks[6],
             Tok::Str(selis_bytes::Bytes::copy_from_slice(b"str"))
         );
+    }
+
+    /// Hostile delimiters `)`, `{`, `}` must not stall the lexer: the
+    /// interpreter advances past them in bounded time (SL-2.CONT.01).
+    #[test]
+    fn stray_delimiter_bytes_do_not_stall() {
+        let mut g = guard();
+        let toks = tokenise(b"} ) { abc", &mut g).expect("stray delimiters advance");
+        // The delimiters are consumed; the token after them is `abc`.
+        let last = toks.last().expect("at least one token");
+        assert_eq!(
+            *last,
+            Tok::Name(selis_bytes::Bytes::copy_from_slice(b"abc"))
+        );
+    }
+
+    /// An unterminated string at EOF emits a partial token and does not
+    /// return an error, so a truncated content stream never aborts the page.
+    #[test]
+    fn unterminated_string_at_eof_is_tolerated() {
+        let mut g = guard();
+        let toks = tokenise(b"(hello world", &mut g).expect("truncated string");
+        if let Some(Tok::Str(s)) = toks.first() {
+            assert_eq!(s.as_slice(), b"hello world");
+        } else {
+            panic!("expected a truncated string token");
+        }
     }
 }
