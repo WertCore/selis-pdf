@@ -23,11 +23,12 @@ use selis_sandbox::{Budget, Surface};
 /// The minimum fraction of the wild corpus that must open under the Viewer
 /// budget. Ratcheted from the 897/977 pre-depth-fix baseline to 919/977
 /// after the depth-leak fixes (parse/page-tree/name-tree/number-tree) and
-/// the tolerant tree walks, then to 956/977 after the stream `/Length`
-/// scan fallback, tolerant xref entry lines, the missing-`startxref`
-/// reconstruct fallback, and newest-wins multi-revision resolution. Raise
-/// this as more root causes land.
-const OPEN_RATE_FLOOR: f64 = 0.97;
+/// the tolerant tree walks, to 956/977 after the stream `/Length` scan
+/// fallback, tolerant xref entry lines, the missing-`startxref` reconstruct
+/// fallback, and newest-wins multi-revision resolution, and to 963/977
+/// after the xref-stream entry-count cap and the document-resolve
+/// reconstruct retry. Raise this as more root causes land.
+const OPEN_RATE_FLOOR: f64 = 0.98;
 
 fn corpus_dir() -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

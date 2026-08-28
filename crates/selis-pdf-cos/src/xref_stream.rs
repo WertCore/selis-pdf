@@ -142,19 +142,22 @@ pub fn parse_xref_stream(
     let row_width = u64::from(w[0])
         .saturating_add(u64::from(w[1]))
         .saturating_add(u64::from(w[2]));
-    let needed = u64::from(total_fields).saturating_mul(row_width);
-    if u64::try_from(payload.len()).unwrap_or(u64::MAX) < needed {
-        return Err(err!(
-            Code::XrefMalformed,
-            during = "xref-stream",
-            detail = "payload too short"
-        ));
-    }
+    // A damaged writer can declare more entries than the payload ships
+    // (SL-1.ROB.01). Read only the entries that actually fit.
+    let max_fields = if row_width == 0 {
+        u64::from(total_fields)
+    } else {
+        let fit = u64::try_from(payload.len())
+            .unwrap_or(u64::MAX)
+            .checked_div(row_width)
+            .unwrap_or(0);
+        u64::from(total_fields).min(fit)
+    };
 
     // Decode each entry.
     let mut entries = Vec::new();
     let mut offset = 0usize;
-    for _ in 0..total_fields {
+    for _ in 0..max_fields {
         g.charge_one(selis_sandbox::Resource::Objects)?;
         let mut fields = [0u64; 3];
         for (i, width) in w.iter().copied().enumerate() {
@@ -226,7 +229,7 @@ pub fn parse_object_stream(
             )
         })?;
 
-    // Parse `num offset` pairs from the header.
+// Parse `num offset` pairs from the header.
     let mut pairs = Vec::new();
     let mut pos = 0usize;
     for _ in 0..n {
@@ -472,7 +475,11 @@ mod tests {
     }
 
     #[test]
-    fn payload_too_short_is_a_typed_error() {
+    fn payload_too_short_reads_the_entries_that_fit() {
+        // A damaged writer can declare /Size 10 (via the default /Index) while
+        // shipping only 3 payload bytes: the parser must not trust the count —
+        // it reads the 0 complete rows that fit instead of erroring
+        // (SL-1.ROB.01, mirroring the classic-xref bomb behaviour).
         let d = dict(vec![
             (
                 b"W",
@@ -482,8 +489,8 @@ mod tests {
         ]);
         let budget = Budget::unlimited();
         let mut g = guard();
-        let e = parse_xref_stream(&d, &[1, 2, 3], &budget, &mut g).expect_err("short");
-        assert_eq!(e.code(), Code::XrefMalformed);
+        let xs = parse_xref_stream(&d, &[1, 2, 3], &budget, &mut g).expect("parse");
+        assert!(xs.entries.is_empty(), "no complete row fits");
     }
 
     #[test]

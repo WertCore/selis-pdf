@@ -42,18 +42,19 @@ impl Session {
         // instead of refusing the document. Budget, cancellation, and pending
         // errors propagate as-is; only malformed-input parse failures trigger
         // the scan-based recovery.
-        let doc = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
+        let parsed = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
             Some(startxref) => {
                 match selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g) {
-                    Ok(doc) => doc,
+                    Ok(doc) => Some(doc),
                     Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
                         return Err(e);
                     }
-                    Err(_) => selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0,
+                    Err(_) => None,
                 }
             }
-            None => selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0,
+            None => None,
         };
+
         // Detect encryption; authenticate with the (empty) user password.
         //
         // PDF encryption only encrypts strings and stream bodies — the page
@@ -62,30 +63,62 @@ impl Session {
         // even without a key; content just won't decode. We therefore treat a
         // failed authentication as "open unencrypted", matching tolerant
         // viewers, rather than refusing the document (SL-1.ROB.01).
-        let key: Option<(Vec<u8>, u8, bool)> = {
-            let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
-            match encrypt_ref {
-                None => None,
-                Some(r) => {
-                    match selis_pdf_cos::encrypt::parse_encrypt(&src, Some(r), budget, &mut g) {
-                        Ok(Some(info)) => {
-                            let id = doc
-                                .revisions()
-                                .last()
-                                .map(|v| v.trailer.clone())
-                                .map(|t| selis_pdf_cos::encrypt::document_id(&t))
-                                .unwrap_or_default();
-                            selis_pdf_cos::encrypt::authenticate(&info, &id, b"")
-                                .map(|k| (k, info.r, info.aes))
+        fn open_doc(
+            src: &[u8],
+            doc: &Doc,
+            budget: &Budget,
+            g: &mut BudgetGuard<'_>,
+        ) -> Result<(Doc, selis_pdf_doc::Document, Option<(Vec<u8>, u8, bool)>)> {
+            let key: Option<(Vec<u8>, u8, bool)> = {
+                let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
+                match encrypt_ref {
+                    None => None,
+                    Some(r) => {
+                        match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
+                            Ok(Some(info)) => {
+                                let id = doc
+                                    .revisions()
+                                    .last()
+                                    .map(|v| v.trailer.clone())
+                                    .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                                    .unwrap_or_default();
+                                selis_pdf_cos::encrypt::authenticate(&info, &id, b"")
+                                    .map(|k| (k, info.r, info.aes))
+                            }
+                            // Unreadable or non-standard handler: open unencrypted.
+                            Ok(None) => None,
+                            Err(_) => None,
                         }
-                        // Unreadable or non-standard handler: open unencrypted.
-                        Ok(None) => None,
-                        Err(_) => None,
                     }
                 }
+            };
+            let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
+            Ok((doc.clone(), document, key))
+        }
+
+        // A parsed xref that resolves is preferred; when its document model
+        // cannot be built (the catalog's object is marked free or absent in a
+        // damaged table), retry against the scan-based reconstruction index,
+        // which recovers live object bodies regardless of the xref state
+        // (SL-1.ROB.01).
+        if let Some(doc) = &parsed {
+            match open_doc(&src, doc, budget, &mut g) {
+                Ok((doc, document, key)) => {
+                    return Ok(Self {
+                        doc,
+                        src,
+                        document,
+                        key,
+                    });
+                }
+                Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                    return Err(e);
+                }
+                Err(_) => {}
             }
-        };
-        let document = selis_pdf_doc::Document::resolve(&doc, &src, budget, &mut g, key.as_ref())?;
+        }
+        let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
+        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g)?;
         let _ = g;
         Ok(Self {
             doc,

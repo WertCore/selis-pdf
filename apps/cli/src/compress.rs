@@ -16,7 +16,7 @@
 use selis_pdf_cos::copy::collect_objects;
 use selis_pdf_cos::doc_writer::write_objects_as_document;
 use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
-use selis_sandbox::{Budget, BudgetGuard};
+use selis_sandbox::{Budget, BudgetGuard, Surface};
 
 use crate::{read_file, CliError, CliResult};
 
@@ -129,6 +129,16 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
     if parsed.revisions().last().and_then(|r| r.root) != Some(root_ref) {
         return Err(CliError(format!(
             "{path}: output failed verification (/Root not preserved)"
+        )));
+    }
+    // The output must also build a document model — a catalog with a usable
+    // page tree. A root graph that parses but has no /Pages (e.g. the input
+    // only opens through scan-based recovery) is not a compressible document;
+    // refuse rather than ship a broken file (WRITE.07).
+    let doc_budget = Budget::profile(selis_sandbox::Surface::Viewer);
+    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
+        return Err(CliError(format!(
+            "{path}: output failed verification (no usable document model)"
         )));
     }
 
