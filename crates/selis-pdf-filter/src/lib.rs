@@ -74,6 +74,10 @@ pub fn decode(
         "ASCIIHexDecode" | "AHx" => ascii_hex_decode(data, g),
         "ASCII85Decode" | "A85" => ascii85_decode(data, g),
         "RunLengthDecode" | "RL" => runlength_decode(data, g),
+        // /Crypt is a decryption marker, not a byte transform: the resolver
+        // already decrypted the stream body per its crypt filter, so the
+        // pipeline passes the data through unchanged (SL-1.FILT.09).
+        "Crypt" => Ok(data.to_vec()),
         other => Err(selis_error::err!(
             selis_error::Code::FilterUnknown,
             during = "filter-decode",

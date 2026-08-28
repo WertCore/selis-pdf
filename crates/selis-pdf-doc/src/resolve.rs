@@ -159,31 +159,15 @@ fn decrypt_obj_inner(obj: Obj, r: Ref, policy: &DecryptPolicy, depth: u16) -> Ob
     match obj {
         Obj::Stream { dict, data } => {
             // The metadata stream is not encrypted when /EncryptMetadata is
-            // false (ISO 32000-1 §7.4.10); other streams follow /StmF.
+            // false (ISO 32000-1 §7.4.10); other streams follow /StmF unless
+            // the stream selects its own crypt filter with /Crypt (SL-1.FILT.09).
             let is_metadata = dict.iter().any(|(k, v)| {
                 k.as_slice() == b"Type"
                     && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
             });
-            let encrypted = if is_metadata && !policy.encrypt_metadata {
-                false
-            } else {
-                policy.stream_encrypted
-            };
-            let data = if encrypted {
-                selis_bytes::Bytes::from(selis_crypto::decrypt_data(
-                    &policy.key,
-                    r.num,
-                    r.gen,
-                    data.as_slice(),
-                    policy.rev,
-                    policy.aes,
-                ))
-            } else {
-                data
-            };
             Obj::Stream {
+                data: decrypt_stream(&dict, data, r, policy, is_metadata),
                 dict: decrypt_dict(dict, r, policy, depth),
-                data,
             }
         }
         Obj::String(bytes) => {
@@ -406,6 +390,94 @@ fn parse_value_at(
     parser.parse(g)
 }
 
+/// Decrypt a stream's raw bytes per its crypt filter (SL-1.FILT.09).
+///
+/// A stream with `/Filter [/Crypt ...]` selects the crypt filter named by
+/// the `/DecodeParms` entry aligned with the `/Crypt` entry (ISO 32000-1
+/// §7.4.10), overriding the document-level `/StmF`. `/Identity` or an absent
+/// `/Name` means the stream is not encrypted. Streams without an explicit
+/// `/Crypt` follow `/StmF`, except the metadata stream when
+/// `/EncryptMetadata` is false.
+fn decrypt_stream(
+    dict: &[(selis_bytes::Bytes, Obj)],
+    data: selis_bytes::Bytes,
+    r: Ref,
+    policy: &DecryptPolicy,
+    is_metadata: bool,
+) -> selis_bytes::Bytes {
+    let per_stream = per_stream_crypt_name(dict);
+    let encrypted = match &per_stream {
+        Some(name) => name != "Identity",
+        None => {
+            if is_metadata && !policy.encrypt_metadata {
+                false
+            } else {
+                policy.stream_encrypted
+            }
+        }
+    };
+    if !encrypted {
+        return data;
+    }
+    let aes = per_stream
+        .as_deref()
+        .map(|name| policy.aes_for(name))
+        .unwrap_or(policy.aes);
+    selis_bytes::Bytes::from(selis_crypto::decrypt_data(
+        &policy.key,
+        r.num,
+        r.gen,
+        data.as_slice(),
+        policy.rev,
+        aes,
+    ))
+}
+
+/// The crypt filter name a stream selects with `/Filter [/Crypt ...]`, or
+/// `None` when the stream has no explicit `/Crypt` filter.
+///
+/// The `/Name` comes from the `/DecodeParms` entry aligned with the `/Crypt`
+/// entry in `/Filter`; a missing `/Name` defaults to `/Identity` (not
+/// encrypted, ISO 32000-1 §7.4.10).
+fn per_stream_crypt_name(dict: &[(selis_bytes::Bytes, Obj)]) -> Option<String> {
+    let filters: Vec<&selis_bytes::Bytes> = match dict.iter().find(|(k, _)| k.as_slice() == b"Filter")
+    {
+        Some((_, Obj::Name(n))) => vec![n],
+        Some((_, Obj::Array(items))) => items
+            .iter()
+            .filter_map(|v| match v {
+                Obj::Name(n) => Some(n),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    let i = filters
+        .iter()
+        .position(|n| n.as_slice() == b"Crypt")?;
+    let parm: Option<&[(selis_bytes::Bytes, Obj)]> =
+        match dict.iter().find(|(k, _)| k.as_slice() == b"DecodeParms") {
+            Some((_, Obj::Dict(pairs))) => Some(pairs),
+            Some((_, Obj::Array(items))) => items.get(i).and_then(|v| match v {
+                Obj::Dict(pairs) => Some(pairs.as_slice()),
+                _ => None,
+            }),
+            _ => None,
+        };
+    let name = parm
+        .and_then(|pairs: &[(selis_bytes::Bytes, Obj)]| {
+            pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Name")
+                .and_then(|(_, v)| match v {
+                    Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| "Identity".to_string());
+    Some(name)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
@@ -536,5 +608,185 @@ mod tests {
         assert_eq!(obj, Obj::Int(42));
         let obj = parse_value_at(data, 3..data.len() as u64, &budget, &mut g).expect("ref");
         assert_eq!(obj, Obj::Ref(Ref::new(7, 0)));
+    }
+
+    // ── per-stream /Crypt filter (SL-1.FILT.09) ──
+
+    #[test]
+    fn per_stream_crypt_no_filter_returns_none() {
+        let dict = vec![(b"Length".as_slice().into(), Obj::Int(42))];
+        assert_eq!(per_stream_crypt_name(&dict), None);
+    }
+
+    #[test]
+    fn per_stream_crypt_single_name_not_crypt_returns_none() {
+        let dict = vec![(b"Filter".as_slice().into(), Obj::Name(b"FlateDecode".as_slice().into()))];
+        assert_eq!(per_stream_crypt_name(&dict), None);
+    }
+
+    #[test]
+    fn per_stream_crypt_single_name_crypt_returns_identity_when_no_parms() {
+        let dict = vec![(b"Filter".as_slice().into(), Obj::Name(b"Crypt".as_slice().into()))];
+        assert_eq!(per_stream_crypt_name(&dict), Some("Identity".to_string()));
+    }
+
+    #[test]
+    fn per_stream_crypt_array_crypt_with_name() {
+        let dict = vec![
+            (b"Filter".as_slice().into(), Obj::Array(vec![
+                Obj::Name(b"Crypt".as_slice().into()),
+            ])),
+            (b"DecodeParms".as_slice().into(), Obj::Array(vec![
+                Obj::Dict(vec![
+                    (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
+                ]),
+            ])),
+        ];
+        assert_eq!(per_stream_crypt_name(&dict), Some("StdCF".to_string()));
+    }
+
+    #[test]
+    fn per_stream_crypt_array_crypt_with_flate_returns_name() {
+        let dict = vec![
+            (b"Filter".as_slice().into(), Obj::Array(vec![
+                Obj::Name(b"Crypt".as_slice().into()),
+                Obj::Name(b"FlateDecode".as_slice().into()),
+            ])),
+            (b"DecodeParms".as_slice().into(), Obj::Array(vec![
+                Obj::Dict(vec![
+                    (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
+                ]),
+                Obj::Dict(vec![
+                    (b"Predictor".as_slice().into(), Obj::Int(12)),
+                ]),
+            ])),
+        ];
+        assert_eq!(per_stream_crypt_name(&dict), Some("StdCF".to_string()));
+    }
+
+    /// decrypt_obj must decrypt a stream with per-stream /Crypt /StdCF even
+    /// when the policy says streams are not encrypted (/StmF /Identity).
+    #[test]
+    fn decrypt_obj_per_stream_crypt_decrypts_data() {
+        // Policy: /StmF /Identity, so stream_encrypted is false. The per-stream
+        // /Crypt /StdCF must override this. /CF has /StdCF with /CFM /AESV2.
+        let cf = vec![(
+            b"StdCF".as_slice().into(),
+            Obj::Dict(vec![(
+                b"CFM".as_slice().into(),
+                Obj::Name(b"AESV2".as_slice().into()),
+            )]),
+        )];
+        let policy = DecryptPolicy {
+            key: vec![0u8; 16],
+            rev: 4,
+            aes: false,
+            stream_encrypted: false,
+            string_encrypted: false,
+            encrypt_metadata: true,
+            cf,
+        };
+        let plaintext = b"Hello, World! This is a test of the per-stream Crypt filter.";
+        // Ciphertext: 16-byte zero IV + AES-128-CBC encrypted with derived key
+        // MD5(0x00*16 || objnum[0..3]=42 || gen[0..2]=0 || "sAlT")
+        let ciphertext: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            181, 227, 83, 188, 135, 201, 65, 49, 79, 253, 225, 115, 194, 27, 201, 254,
+            87, 243, 160, 206, 156, 16, 150, 249, 211, 36, 246, 232, 105, 216, 149, 64,
+            141, 105, 199, 29, 4, 28, 75, 74, 172, 76, 115, 216, 227, 137, 179, 109,
+            228, 186, 89, 169, 88, 122, 201, 217, 133, 245, 147, 134, 206, 174, 99, 51,
+        ];
+        let stream = Obj::Stream {
+            dict: vec![
+                (b"Filter".as_slice().into(), Obj::Array(vec![
+                    Obj::Name(b"Crypt".as_slice().into()),
+                ])),
+                (b"DecodeParms".as_slice().into(), Obj::Array(vec![
+                    Obj::Dict(vec![
+                        (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
+                    ]),
+                ])),
+                (b"Length".as_slice().into(), Obj::Int(80)),
+            ],
+            data: selis_bytes::Bytes::copy_from_slice(&ciphertext),
+        };
+        let r = Ref::new(42, 0);
+        let decrypted = decrypt_obj(stream, r, &policy);
+        let Obj::Stream { data, .. } = &decrypted else {
+            panic!("expected stream");
+        };
+        // The padding bytes (PKCS#7) are still present because decrypt_data
+        // does not strip them. Verify the plaintext prefix.
+        assert!(
+            data.as_slice().starts_with(plaintext),
+            "expected plaintext prefix, got {:?}",
+            data.as_slice().get(..plaintext.len())
+        );
+    }
+
+    /// A stream with /Filter [/Crypt] and /Name /Identity must NOT be decrypted.
+    #[test]
+    fn decrypt_obj_per_stream_identity_does_not_decrypt() {
+        let policy = DecryptPolicy {
+            key: vec![0u8; 16],
+            rev: 4,
+            aes: true,
+            stream_encrypted: true,
+            string_encrypted: false,
+            encrypt_metadata: true,
+            cf: Vec::new(),
+        };
+        let data = selis_bytes::Bytes::copy_from_slice(b"raw data");
+        let stream = Obj::Stream {
+            dict: vec![
+                (b"Filter".as_slice().into(), Obj::Array(vec![
+                    Obj::Name(b"Crypt".as_slice().into()),
+                ])),
+                (b"DecodeParms".as_slice().into(), Obj::Array(vec![
+                    Obj::Dict(vec![
+                        (b"Name".as_slice().into(), Obj::Name(b"Identity".as_slice().into())),
+                    ]),
+                ])),
+                (b"Length".as_slice().into(), Obj::Int(8)),
+            ],
+            data: data.clone(),
+        };
+        let r = Ref::new(1, 0);
+        let decrypted = decrypt_obj(stream, r, &policy);
+        let Obj::Stream { data: out, .. } = &decrypted else {
+            panic!("expected stream");
+        };
+        assert_eq!(out, &data, "Identity crypt filter must not decrypt");
+    }
+
+    /// A stream with /Filter [/Crypt] and no /DecodeParms must NOT be decrypted
+    /// (missing /Name defaults to /Identity).
+    #[test]
+    fn decrypt_obj_per_stream_no_parms_does_not_decrypt() {
+        let policy = DecryptPolicy {
+            key: vec![0u8; 16],
+            rev: 4,
+            aes: true,
+            stream_encrypted: true,
+            string_encrypted: false,
+            encrypt_metadata: true,
+            cf: Vec::new(),
+        };
+        let data = selis_bytes::Bytes::copy_from_slice(b"raw data");
+        let stream = Obj::Stream {
+            dict: vec![
+                (b"Filter".as_slice().into(), Obj::Array(vec![
+                    Obj::Name(b"Crypt".as_slice().into()),
+                ])),
+                (b"Length".as_slice().into(), Obj::Int(8)),
+            ],
+            data: data.clone(),
+        };
+        let r = Ref::new(1, 0);
+        let decrypted = decrypt_obj(stream, r, &policy);
+        let Obj::Stream { data: out, .. } = &decrypted else {
+            panic!("expected stream");
+        };
+        assert_eq!(out, &data, "missing /Name must default to /Identity (no decryption)");
     }
 }

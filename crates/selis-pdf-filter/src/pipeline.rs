@@ -316,4 +316,29 @@ mod tests {
         let e = apply_predictor(b"1234", p, &mut g).expect_err("bad predictor");
         assert_eq!(e.code(), Code::FilterParamInvalid);
     }
+
+    #[test]
+    fn crypt_filter_is_a_noop_in_decode_chain() {
+        let mut g = guard();
+        let data = b"Hello, Crypt filter!";
+        let out = decode_chain(&["Crypt".to_string()], &[], data, 1000, &mut g).expect("Crypt no-op");
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn crypt_filter_in_multi_chain_is_a_noop() {
+        let mut g = guard();
+        // filters = [Crypt, ASCIIHexDecode]: decode reverses, so
+        // ASCIIHexDecode runs first (decodes hex), then Crypt no-op.
+        let data = b"48656C6C6F";
+        let out = decode_chain(
+            &["Crypt".to_string(), "ASCIIHexDecode".to_string()],
+            &[],
+            data,
+            1000,
+            &mut g,
+        )
+        .expect("Crypt + ASCIIHex no-op");
+        assert_eq!(out, b"Hello");
+    }
 }
