@@ -91,7 +91,10 @@ impl Document {
         let mut pages = Vec::new();
         let mut visited = BTreeSet::new();
         let mut inherited = Inherited::default();
-        walk_pages(
+        // A broken or unresolvable /Pages reference yields an empty page list
+        // rather than refusing the whole document (SL-1.ROB.01 — the catalog
+        // itself is valid, the page tree is a phantom).
+        let pages_res = walk_pages(
             doc,
             src,
             pages_ref,
@@ -101,7 +104,12 @@ impl Document {
             budget,
             g,
             key,
-        )?;
+        );
+        if let Err(e) = &pages_res {
+            if e.is_budget() || e.is_cancelled() || e.is_pending() {
+                return Err(e.clone());
+            }
+        }
 
         Ok(Self { catalog, pages })
     }
@@ -316,7 +324,7 @@ fn walk_pages(
                     ));
                 }
             };
-            walk_pages(
+            match walk_pages(
                 doc,
                 src,
                 kid_ref,
@@ -326,7 +334,16 @@ fn walk_pages(
                 budget,
                 d.guard(),
                 key,
-            )?;
+            ) {
+                Ok(()) => {}
+                // A kid that cannot be resolved (a phantom page reference in a
+                // damaged document) drops that branch: the real pages still
+                // open (SL-1.ROB.01). Budget and cancellation always propagate.
+                Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                    return Err(e);
+                }
+                Err(_) => {}
+            }
         }
     } else {
         // A page node: materialise the resolved attributes.

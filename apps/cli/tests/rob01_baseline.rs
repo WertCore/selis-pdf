@@ -27,10 +27,12 @@ use selis_sandbox::{Budget, Surface};
 /// fallback, tolerant xref entry lines, the missing-`startxref` reconstruct
 /// fallback, and newest-wins multi-revision resolution, to 963/977 after
 /// the xref-stream entry-count cap and the document-resolve reconstruct
-/// retry, and to 966/977 after the inline-dict `/Root` recovery, cycle-
-/// tolerant page tree, and bare-value resolve-object fallback. Raise this
-/// as more root causes land.
-const OPEN_RATE_FLOOR: f64 = 0.985;
+/// retry, to 966/977 after the inline-dict `/Root` recovery, cycle-tolerant
+/// page tree, and bare-value resolve-object fallback, and to 973/977 after
+/// unresolvable `/Kids` and `/Pages` branches drop instead of refusing the
+/// document (damaged page trees open with the pages that remain). Raise
+/// this as more root causes land.
+const OPEN_RATE_FLOOR: f64 = 0.99;
 
 fn corpus_dir() -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
