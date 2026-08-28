@@ -144,9 +144,16 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     Never linked natively.
   - **DoD:** A malformed-JPX corpus is contained (no host crash, no unbounded memory); output
     matches Ghostscript within tolerance on the valid set.
-- [ ] **SL-1.FILT.09 — Crypt filter** · deps: FILT.01, ENC.02 · owner: AI+
-  - **Do:** The `/Crypt` filter and the identity crypt filter, including per-stream crypt filter
-    selection and the metadata-not-encrypted case.
+- [x] **SL-1.FILT.09 — Crypt filter** · deps: FILT.01, ENC.02 · owner: AI+
+  - **Note:** The `/Crypt` filter and the identity crypt filter. `EncryptInfo`/`DecryptPolicy`
+    carry the resolved `/CF` dict (indirect `/CF` resolved). A stream with `/Filter [/Crypt ...]`
+    selects the crypt filter named by the aligned `/DecodeParms /Name` (per-stream `/CFM`, e.g.
+    AESV3 under an `/Identity` `/StmF`); absent `/Name` defaults to `/Identity` (not encrypted).
+    Streams without `/Crypt` follow `/StmF`; strings follow `/StrF`; the metadata stream is not
+    decrypted when `/EncryptMetadata` is false. The filter pipeline treats `/Crypt` as a no-op
+    (the resolver decrypted the body). Verified against auth-event-ef-open (StmF Identity),
+    encrypted-attachment (embedded-file `/Crypt`), issue19484_1/2 (metadata `/Crypt`),
+    bug1782186 (standard StmF).
 
 ---
 
