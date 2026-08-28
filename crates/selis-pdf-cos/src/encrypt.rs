@@ -38,6 +38,9 @@ pub struct EncryptInfo {
     pub ue: Vec<u8>,
     /// `/OE` — the owner-wrapped file key for revisions 5–6.
     pub oe: Vec<u8>,
+    /// `/CF` — the crypt filter definitions, resolved when indirect. Used to
+    /// select a per-stream `/Crypt` filter's algorithm (SL-1.FILT.09).
+    pub cf: Vec<(selis_bytes::Bytes, Obj)>,
 }
 
 impl EncryptInfo {
@@ -67,14 +70,15 @@ impl EncryptInfo {
 ///
 /// Streams use `/StmF`, strings use `/StrF`; either may be `/Identity`
 /// (not encrypted). The metadata stream is not encrypted when
-/// `/EncryptMetadata` is false.
+/// `/EncryptMetadata` is false. Per-stream `/Crypt` filters (SL-1.FILT.09)
+/// are resolved from the `/CF` dictionary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecryptPolicy {
     /// The file encryption key.
     pub key: Vec<u8>,
     /// The handler revision.
     pub rev: u8,
-    /// Whether the standard stream filter is AES (`/AESV2`/`/AESV3`).
+    /// Whether the default stream filter (`/StmF`) is AES (`/AESV2`/`/AESV3`).
     pub aes: bool,
     /// Whether streams use the standard crypt filter (are encrypted).
     pub stream_encrypted: bool,
@@ -82,6 +86,8 @@ pub struct DecryptPolicy {
     pub string_encrypted: bool,
     /// Whether the metadata stream is encrypted (`/EncryptMetadata`).
     pub encrypt_metadata: bool,
+    /// The `/CF` dictionary entries, for per-stream `/Crypt` filter lookup.
+    pub cf: Vec<(selis_bytes::Bytes, Obj)>,
 }
 
 impl DecryptPolicy {
@@ -95,7 +101,26 @@ impl DecryptPolicy {
             stream_encrypted: info.stream_encrypted(),
             string_encrypted: info.string_encrypted(),
             encrypt_metadata: info.encrypt_metadata,
+            cf: info.cf.clone(),
         }
+    }
+
+    /// Whether the named crypt filter (from `/CF/<name>/CFM`) uses AES
+    /// (`/AESV2`/`/AESV3`). Names absent from `/CF` are not AES.
+    #[must_use]
+    pub fn aes_for(&self, name: &str) -> bool {
+        self.cf
+            .iter()
+            .find(|(k, _)| k.as_slice() == name.as_bytes())
+            .and_then(|(_, v)| match v {
+                Obj::Dict(p) => p.iter().find(|(k, _)| k.as_slice() == b"CFM"),
+                _ => None,
+            })
+            .and_then(|(_, v)| match v {
+                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                _ => None,
+            })
+            .is_some_and(|cfm| cfm == "AESV2" || cfm == "AESV3")
     }
 }
 
@@ -205,6 +230,7 @@ pub fn parse_encrypt(
         encrypt_metadata,
         ue,
         oe,
+        cf,
     }))
 }
 
