@@ -175,6 +175,13 @@ fn read_obj_header(src: &[u8]) -> Result<(i64, i64, usize)> {
 ///
 /// `TRAILER_MISSING_ROOT` when no `/Root` is found.
 pub fn recover_root(src: &[u8]) -> Result<Obj> {
+    Ok(recover_root_full(src)?.0)
+}
+
+/// [`recover_root`], also returning the byte offset of the `/Root` value when
+/// it is an inline dictionary (which cannot be referenced by number — the
+/// caller synthesises an index entry pointing at those bytes).
+fn recover_root_full(src: &[u8]) -> Result<(Obj, Option<u64>)> {
     // A cheap scan: look for `/Root` followed by a reference.
     let mut i = 0usize;
     while i.saturating_add(5) <= src.len() {
@@ -187,6 +194,22 @@ pub fn recover_root(src: &[u8]) -> Result<Obj> {
             {
                 p = p.saturating_add(1);
             }
+            if src.get(p) == Some(&b'<') && src.get(p.saturating_add(1)) == Some(&b'<') {
+                // An inline catalog dict: `<< /Pages <num> <gen> R >>`. Extract
+                // the /Pages pair and resolve the value bytes later (a dict
+                // cannot be an xref target). Trailing whitespace tolerated.
+                if let Some((pages, voff)) = inline_dict_pages(src, p) {
+                    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![(
+                        selis_bytes::Bytes::copy_from_slice(b"Type"),
+                        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Catalog")),
+                    )];
+                    pairs.push((
+                        selis_bytes::Bytes::copy_from_slice(b"Pages"),
+                        Obj::Ref(pages),
+                    ));
+                    return Ok((Obj::Dict(pairs), Some(voff)));
+                }
+            }
             if let Ok((num, next)) = read_int(src, p) {
                 let p2 = next;
                 if let Ok((gen, next2)) = read_int(src, p2) {
@@ -197,10 +220,13 @@ pub fn recover_root(src: &[u8]) -> Result<Obj> {
                     {
                         let r = after_ref.saturating_add(1);
                         if src.get(r..r.saturating_add(1)) == Some(b"R") {
-                            return Ok(Obj::Ref(crate::obj::Ref::new(
-                                u32::try_from(num).unwrap_or(u32::MAX),
-                                u16::try_from(gen).unwrap_or(u16::MAX),
-                            )));
+                            return Ok((
+                                Obj::Ref(crate::obj::Ref::new(
+                                    u32::try_from(num).unwrap_or(u32::MAX),
+                                    u16::try_from(gen).unwrap_or(u16::MAX),
+                                )),
+                                None,
+                            ));
                         }
                     }
                 }
@@ -213,6 +239,56 @@ pub fn recover_root(src: &[u8]) -> Result<Obj> {
         during = "recover-root",
         detail = "no /Root found"
     ))
+}
+
+/// Extract `/Pages <num> <gen> R` from an inline `/Root << ... >>` dict,
+/// returning the reference and the byte offset of the dict's opening `<<`.
+fn inline_dict_pages(src: &[u8], start: usize) -> Option<(crate::obj::Ref, u64)> {
+    // Track nesting to find the matching `>>`.
+    let mut depth = 0u32;
+    let mut p = start;
+    let mut pages_ref: Option<crate::obj::Ref> = None;
+    while p < src.len() {
+        if src.get(p..p.saturating_add(2)) == Some(b"<<") {
+            depth = depth.saturating_add(1);
+            p = p.saturating_add(2);
+        } else if src.get(p..p.saturating_add(2)) == Some(b">>") {
+            if depth == 0 {
+                break;
+            }
+            depth = depth.saturating_sub(1);
+            p = p.saturating_add(2);
+        } else if src.get(p..).is_some_and(|rest| rest.starts_with(b"/Pages")) {
+            let mut q = p.saturating_add(6);
+            while src
+                .get(q)
+                .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+            {
+                q = q.saturating_add(1);
+            }
+            if let Ok((num, n2)) = read_int(src, q) {
+                if let Ok((gen, n3)) = read_int(src, n2) {
+                    let r = n3;
+                    if src
+                        .get(r)
+                        .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                    {
+                        let rr = r.saturating_add(1);
+                        if src.get(rr..rr.saturating_add(1)) == Some(b"R") {
+                            pages_ref = Some(crate::obj::Ref::new(
+                                u32::try_from(num).unwrap_or(u32::MAX),
+                                u16::try_from(gen).unwrap_or(u16::MAX),
+                            ));
+                        }
+                    }
+                }
+            }
+            p = q;
+        } else {
+            p = p.saturating_add(1);
+        }
+    }
+    pages_ref.map(|r| (r, u64::try_from(start).unwrap_or(0)))
 }
 
 /// Reconstruct a full document from a damaged file.
@@ -231,7 +307,7 @@ pub fn reconstruct(
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Doc, crate::Deviation)> {
     let rec = reconstruct_index(src, budget, g)?;
-    let root = recover_root(src)?;
+    let (root, inline_offset) = recover_root_full(src)?;
     // Build a single-revision document whose index is the reconstruction.
     let mut entries = BTreeMap::new();
     for (num, offset) in &rec.index {
@@ -243,6 +319,28 @@ pub fn reconstruct(
             },
         );
     }
+    // An inline `/Root << ... >>` dict cannot be referenced by number:
+    // synthesize an index entry pointing at its value bytes so the catalog
+    // resolves from there (SL-1.ROB.01).
+    let root = match (root, inline_offset) {
+        (Obj::Dict(_), Some(off)) => {
+            let synthetic = entries
+                .keys()
+                .next_back()
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+            entries.insert(
+                synthetic,
+                XrefEntry::InUse {
+                    offset: off,
+                    gen: 0,
+                },
+            );
+            Obj::Ref(crate::obj::Ref::new(synthetic, 0))
+        }
+        (other, _) => other,
+    };
     let trailer = vec![(selis_bytes::Bytes::copy_from_slice(b"Root"), root)];
     let doc = Doc::from_single_revision(entries, trailer);
     let deviation = crate::Deviation::ReconstructedIndex { offset: 0 };

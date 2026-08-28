@@ -251,12 +251,11 @@ fn walk_pages(
     g: &mut BudgetGuard<'_>,
     key: Option<&(Vec<u8>, u8, bool)>,
 ) -> Result<()> {
+    // A node already visited closes a cycle in the page tree. Tolerant
+    // viewers skip the cyclic branch and keep the pages reachable outside it
+    // rather than refusing the whole document (SL-1.ROB.01).
     if !visited.insert(node_ref.num) {
-        return Err(err!(
-            Code::ObjCycle,
-            during = "doc-pages",
-            object = node_ref.num
-        ));
+        return Ok(());
     }
     // Depth is scoped to this node's level of the page tree: the RAII guard
     // releases it on every exit path, so depth tracks the tree's actual
@@ -302,6 +301,12 @@ fn walk_pages(
         for kid in kids {
             let kid_ref = match kid {
                 Obj::Ref(r) => *r,
+                // An inline page dict in `/Kids` (damaged writers embed the
+                // page body directly). Walk it in-place as a page node.
+                Obj::Dict(_) => {
+                    walk_inline_page(doc, src, kid, inherited, out, budget, d.guard(), key)?;
+                    continue;
+                }
                 _ => {
                     return Err(err!(
                         Code::ObjUnexpected,
@@ -325,26 +330,62 @@ fn walk_pages(
         }
     } else {
         // A page node: materialise the resolved attributes.
-        let media_box = inherited.media_box;
-        let crop_box = inherited.crop_box;
-        let rotate = inherited.rotate;
-        // `/Resources` may be an indirect reference (writers commonly emit
-        // `/Resources N 0 R`); consumers need the dictionary, so resolve it
-        // here rather than threading a bare reference to every call site.
-        let resources = match inherited.resources.as_ref() {
-            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, d.guard(), key).ok(),
-            other => other.cloned(),
-        };
-        let contents = dict_get(&node, b"Contents").and_then(contents_refs);
-        out.push(Page {
-            num: node_ref.num,
-            media_box,
-            crop_box,
-            rotate,
-            resources,
-            contents,
-        });
+        let page = materialize_page(&node, node_ref.num, inherited, doc, src, budget, d.guard(), key)?;
+        out.push(page);
     }
+    Ok(())
+}
+
+/// Materialise a resolved page node into a [`Page`], resolving indirect
+/// `/Resources` and collecting the content-stream references.
+fn materialize_page(
+    node: &Obj,
+    num: u32,
+    inherited: &Inherited,
+    doc: &Doc,
+    src: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    key: Option<&(Vec<u8>, u8, bool)>,
+) -> Result<Page> {
+    let media_box = inherited.media_box;
+    let crop_box = inherited.crop_box;
+    let rotate = inherited.rotate;
+    // `/Resources` may be an indirect reference (writers commonly emit
+    // `/Resources N 0 R`); consumers need the dictionary, so resolve it
+    // here rather than threading a bare reference to every call site.
+    let resources = match inherited.resources.as_ref() {
+        Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, g, key).ok(),
+        other => other.cloned(),
+    };
+    let contents = dict_get(node, b"Contents").and_then(contents_refs);
+    Ok(Page {
+        num,
+        media_box,
+        crop_box,
+        rotate,
+        resources,
+        contents,
+    })
+}
+
+/// Walk an inline page dict found directly inside a `/Kids` array (damaged
+/// writers embed the page body rather than a reference).
+fn walk_inline_page(
+    doc: &Doc,
+    src: &[u8],
+    node: &Obj,
+    inherited: &mut Inherited,
+    out: &mut Vec<Page>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    key: Option<&(Vec<u8>, u8, bool)>,
+) -> Result<()> {
+    let mut d = selis_sandbox::DepthGuard::enter(g)?;
+    apply_inherited(node, inherited);
+    // An inline page has no xref number; 0 never collides with a real object.
+    let page = materialize_page(node, 0, inherited, doc, src, budget, d.guard(), key)?;
+    out.push(page);
     Ok(())
 }
 
@@ -550,7 +591,10 @@ mod tests {
             Obj::Ref(Ref::new(1, 0)),
         )];
         let doc = Doc::from_single_revision(xref, trailer);
-        let e = Document::resolve(&doc, &out, &budget, &mut g, None).expect_err("cycle");
-        assert_eq!(e.code(), Code::ObjCycle);
+        // A cyclic branch is skipped, not fatal: the walk terminates with the
+        // pages reachable outside the cycle (here: none — the only kid is the
+        // node itself).
+        let document = Document::resolve(&doc, &out, &budget, &mut g, None).expect("resolve");
+        assert_eq!(document.len(), 0, "cyclic branch yields no pages");
     }
 }

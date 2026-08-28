@@ -264,8 +264,77 @@ pub fn resolve_object_numbered(
             let at = u64::try_from(found).unwrap_or(u64::MAX);
             resolve_object(src, at, budget, g)
         }
-        _ => direct,
+        // The offset may hold a bare value rather than an `N G obj` header —
+        // damaged files (and inline `/Root` dicts in a trailer) do this.
+        // Parse one complete value at the offset before giving up, but only
+        // when the bytes plausibly begin a value (a bare word like "junk" is
+        // a tolerated Name, not a value start).
+        _ => {
+            let mut q = p;
+            while src
+                .get(q)
+                .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x00))
+            {
+                q = q.saturating_add(1);
+            }
+            let is_value_start = src.get(q).is_some_and(|&b| {
+                matches!(b, b'<' | b'[' | b'(' | b'/' | b'0'..=b'9' | b't' | b'f' | b'n')
+            });
+            if is_value_start {
+                resolve_object_bare(src, pos, budget, g)
+            } else {
+                direct
+            }
+        }
     }
+}
+
+/// Parse one complete value at `pos` without an `N G obj` header.
+///
+/// Lexes until a scalar has closed or every `[`/`<<` opener has been
+/// matched, then parses that single value (SL-1.ROB.01 — mis-aimed offsets
+/// and inline dictionary values).
+fn resolve_object_bare(
+    src: &[u8],
+    pos: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Obj> {
+    let p = usize::try_from(pos).unwrap_or(usize::MAX);
+    let slice = src
+        .get(p..)
+        .ok_or_else(|| err!(Code::ObjUnexpected, during = "resolve-object", at = pos))?;
+    let mut lexer = Lexer::new(slice);
+    let mut toks = Vec::new();
+    let mut depth = 0u32;
+    loop {
+        let Some(tok) = lexer.next_token(g)? else {
+            break;
+        };
+        match tok {
+            crate::Token::ArrayStart | crate::Token::DictStart => {
+                depth = depth.saturating_add(1);
+            }
+            crate::Token::ArrayEnd | crate::Token::DictEnd => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        toks.push(tok);
+        if depth == 0 {
+            break;
+        }
+    }
+    if toks.is_empty() {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "resolve-object",
+            at = pos,
+            detail = "no value at offset"
+        ));
+    }
+    let mut parser = ObjectParser::new(&toks, budget);
+    parser.parse(g)
 }
 
 /// Scan a bounded window around `pos` for an `N G obj` header of object
