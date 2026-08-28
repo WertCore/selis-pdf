@@ -81,13 +81,7 @@ impl<'a> Resolver<'a> {
         // Unwind the per-resolution state on every path, including errors.
         self.depth = self.depth.saturating_sub(1);
         self.visited.remove(&r.num);
-        obj.map(|o| {
-            if let Some((key, rev, aes)) = &self.key {
-                decrypt_obj(o, r, key, *rev, *aes)
-            } else {
-                o
-            }
-        })
+        obj
     }
 
     /// The body of [`Resolver::resolve`] once depth and cycle state are set up.
@@ -108,14 +102,26 @@ impl<'a> Resolver<'a> {
         match view.xref.get(&r.num) {
             Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
                 g.charge_one(selis_sandbox::Resource::Objects)?;
-                resolve_object_numbered(self.src, *offset, r.num, self.budget, g)
+                let obj = resolve_object_numbered(self.src, *offset, r.num, self.budget, g)?;
+                Ok(self.apply_key(obj, r))
             }
             Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
                 // The object lives in an object stream (/ObjStm): resolve the
                 // stream, parse its (number, range) index, and parse the
-                // object at that range.
+                // object at that range. The container stream itself is
+                // decrypted inside `resolve_compressed`; objects inside an
+                // object stream are never individually encrypted (32000-1
+                // §7.5.7), so the returned value is used as-is.
                 g.charge_one(selis_sandbox::Resource::Objects)?;
-                resolve_compressed(self.doc, self.src, *objstm, *index, self.budget, g)
+                resolve_compressed(
+                    self.doc,
+                    self.src,
+                    *objstm,
+                    *index,
+                    self.budget,
+                    g,
+                    self.key_ref(),
+                )
             }
             Some(_) | None => Err(err!(
                 Code::ObjUnexpected,
@@ -124,10 +130,26 @@ impl<'a> Resolver<'a> {
             )),
         }
     }
+
+    /// The encryption key as a borrow, for [`resolve_compressed`].
+    fn key_ref(&self) -> Option<(&[u8], u8, bool)> {
+        self.key
+            .as_ref()
+            .map(|(k, rev, aes)| (k.as_slice(), *rev, *aes))
+    }
+
+    /// Decrypt a directly-stored object when a key is set.
+    fn apply_key(&self, obj: Obj, r: Ref) -> Obj {
+        if let Some((key, rev, aes)) = &self.key {
+            decrypt_obj(obj, r, key, *rev, *aes)
+        } else {
+            obj
+        }
+    }
 }
 
 /// Decrypt the streams and strings in a resolved object.
-fn decrypt_obj(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool) -> Obj {
+pub(crate) fn decrypt_obj(obj: Obj, r: Ref, key: &[u8], rev: u8, aes: bool) -> Obj {
     decrypt_obj_inner(obj, r, key, rev, aes, 0)
 }
 
@@ -181,6 +203,12 @@ fn decrypt_dict(
 }
 
 /// Resolve an object stored in an object stream (`/ObjStm`).
+///
+/// When `key` is set (an encrypted document), the container stream is
+/// decrypted with the object stream's own number/generation before the
+/// `/Filter` chain runs — objects inside an object stream are never
+/// individually encrypted (32000-1 §7.5.7), only the container is.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_compressed(
     doc: &Doc,
     src: &[u8],
@@ -188,6 +216,7 @@ pub(crate) fn resolve_compressed(
     index: u32,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
+    key: Option<(&[u8], u8, bool)>,
 ) -> Result<Obj> {
     let view = doc
         .at_revision(doc.len().saturating_sub(1))
@@ -198,8 +227,8 @@ pub(crate) fn resolve_compressed(
                 detail = "no revision"
             )
         })?;
-    let offset = match view.xref.get(&objstm) {
-        Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => *offset,
+    let (offset, gen) = match view.xref.get(&objstm) {
+        Some(selis_pdf_cos::XrefEntry::InUse { offset, gen }) => (*offset, *gen),
         _ => {
             return Err(err!(
                 Code::ObjstmMalformed,
@@ -219,17 +248,37 @@ pub(crate) fn resolve_compressed(
             ));
         }
     };
-    // Unfilter the object stream data.
-    let payload = if let Some(Obj::Name(n)) = dict
+    // Decrypt the container stream before decoding, when the document is
+    // encrypted (the key is keyed to the object stream's own number/gen).
+    let payload: Vec<u8> = match key {
+        Some((k, rev, aes)) => selis_crypto::decrypt_data(k, objstm, gen, payload, rev, aes),
+        None => payload.to_vec(),
+    };
+    // Unfilter the object stream data. Per 32000-1 §7.4.1, `/Filter` is either
+    // a single name or an array of names applied in order; writers commonly
+    // emit the one-element array form (`/Filter [/FlateDecode]`).
+    let filters: Vec<&[u8]> = match dict
         .iter()
         .find(|(k, _)| k.as_slice() == b"Filter")
         .map(|(_, v)| v)
     {
-        let filt = std::str::from_utf8(n.as_slice()).unwrap_or("");
-        selis_pdf_filter::decode(filt, payload, u64::MAX, g).unwrap_or_else(|_| payload.to_vec())
-    } else {
-        payload.to_vec()
+        Some(Obj::Name(n)) => vec![n.as_slice()],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                Obj::Name(n) => Some(n.as_slice()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     };
+    let mut payload = payload;
+    for filt in filters {
+        let name = std::str::from_utf8(filt).unwrap_or("");
+        if let Ok(decoded) = selis_pdf_filter::decode(name, &payload, u64::MAX, g) {
+            payload = decoded;
+        }
+    }
     // The (number, range) index of the objects in the stream.
     let pairs = selis_pdf_cos::parse_object_stream(dict, &payload, budget, g)?;
     // The stream's object at the requested index.

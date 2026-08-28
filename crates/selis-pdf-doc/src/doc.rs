@@ -51,11 +51,15 @@ impl Document {
     ///
     /// A missing or non-dict `/Root` yields `OBJ_UNEXPECTED`; a cyclic page
     /// tree terminates with `OBJ_CYCLE` rather than hanging.
+    ///
+    /// `key` carries the authenticated encryption key (bytes, revision, AES
+    /// flag) for password-protected documents; `None` opens clear documents.
     pub fn resolve(
         doc: &Doc,
         src: &[u8],
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
+        key: Option<&(Vec<u8>, u8, bool)>,
     ) -> Result<Self> {
         let view = doc
             .at_revision(doc.len().saturating_sub(1))
@@ -73,7 +77,7 @@ impl Document {
                 detail = "no /Root"
             )
         })?;
-        let catalog = resolve_ref(doc, src, root_ref, budget, g)?;
+        let catalog = resolve_ref(doc, src, root_ref, budget, g, key)?;
 
         // Walk the page tree from /Pages.
         let pages_ref = dict_ref(&catalog, b"Pages").ok_or_else(|| {
@@ -96,6 +100,7 @@ impl Document {
             &mut visited,
             budget,
             g,
+            key,
         )?;
 
         Ok(Self { catalog, pages })
@@ -124,13 +129,15 @@ struct Inherited {
 }
 
 /// Resolve a reference: find its byte offset in the newest xref, then read
-/// the object body.
+/// the object body. When `key` is set, a directly-stored object is decrypted
+/// and an object-stream container is decrypted inside `resolve_compressed`.
 fn resolve_ref(
     doc: &Doc,
     src: &[u8],
     r: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
+    key: Option<&(Vec<u8>, u8, bool)>,
 ) -> Result<Obj> {
     let view = doc
         .at_revision(doc.len().saturating_sub(1))
@@ -143,11 +150,23 @@ fn resolve_ref(
         })?;
     let obj = match view.xref.get(&r.num) {
         Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
-            resolve_object_numbered(src, *offset, r.num, budget, g)?
+            let obj = resolve_object_numbered(src, *offset, r.num, budget, g)?;
+            match key {
+                Some((k, rev, aes)) => crate::resolve::decrypt_obj(obj, r, k, *rev, *aes),
+                None => obj,
+            }
         }
         Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
             // The object lives in an object stream (/ObjStm).
-            resolve_compressed(doc, src, *objstm, *index, budget, g)?
+            resolve_compressed(
+                doc,
+                src,
+                *objstm,
+                *index,
+                budget,
+                g,
+                key.map(|(k, rev, aes)| (k.as_slice(), *rev, *aes)),
+            )?
         }
         Some(_) | None => {
             return Err(err!(
@@ -230,6 +249,7 @@ fn walk_pages(
     visited: &mut BTreeSet<u32>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
+    key: Option<&(Vec<u8>, u8, bool)>,
 ) -> Result<()> {
     if !visited.insert(node_ref.num) {
         return Err(err!(
@@ -244,7 +264,7 @@ fn walk_pages(
     // this, a document with more pages than the depth budget could not open.
     let mut d = selis_sandbox::DepthGuard::enter(g)?;
 
-    let node = resolve_ref(doc, src, node_ref, budget, d.guard())?;
+    let node = resolve_ref(doc, src, node_ref, budget, d.guard(), key)?;
     let node_type = dict_get(&node, b"Type").and_then(|t| match t {
         Obj::Name(n) => Some(n.clone()),
         _ => None,
@@ -300,6 +320,7 @@ fn walk_pages(
                 visited,
                 budget,
                 d.guard(),
+                key,
             )?;
         }
     } else {
@@ -311,7 +332,7 @@ fn walk_pages(
         // `/Resources N 0 R`); consumers need the dictionary, so resolve it
         // here rather than threading a bare reference to every call site.
         let resources = match inherited.resources.as_ref() {
-            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, d.guard()).ok(),
+            Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, d.guard(), key).ok(),
             other => other.cloned(),
         };
         let contents = dict_get(&node, b"Contents").and_then(contents_refs);
@@ -430,7 +451,7 @@ mod tests {
         )];
         let doc = Doc::from_single_revision(xref, trailer);
 
-        let document = Document::resolve(&doc, &src, &budget, &mut g).expect("resolve");
+        let document = Document::resolve(&doc, &src, &budget, &mut g, None).expect("resolve");
         assert_eq!(document.len(), 2);
         // Page 1 inherits MediaBox from /Pages.
         assert_eq!(
@@ -487,7 +508,7 @@ mod tests {
             Obj::Ref(Ref::new(1, 0)),
         )];
         let doc = Doc::from_single_revision(xref, trailer);
-        let document = Document::resolve(&doc, &out, &budget, &mut g).expect("resolve");
+        let document = Document::resolve(&doc, &out, &budget, &mut g, None).expect("resolve");
         assert_eq!(document.len(), 1);
         let resources = document.pages[0].resources.as_ref().expect("resources");
         assert!(
@@ -529,7 +550,7 @@ mod tests {
             Obj::Ref(Ref::new(1, 0)),
         )];
         let doc = Doc::from_single_revision(xref, trailer);
-        let e = Document::resolve(&doc, &out, &budget, &mut g).expect_err("cycle");
+        let e = Document::resolve(&doc, &out, &budget, &mut g, None).expect_err("cycle");
         assert_eq!(e.code(), Code::ObjCycle);
     }
 }

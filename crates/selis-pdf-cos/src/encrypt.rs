@@ -2,8 +2,8 @@
 //! (SL-1.ENC.01/02).
 //!
 //! Parses the `/Encrypt` dictionary, authenticates a password (user/owner
-//! passwords, revisions 2–4, RC4 and AES-128), and exposes the encryption key
-//! the resolver uses to decrypt streams and strings.
+//! passwords, revisions 2–6: RC4, AES-128, and AES-256), and exposes the
+//! encryption key the resolver uses to decrypt streams and strings.
 
 use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
@@ -16,7 +16,7 @@ use crate::resolve::resolve_object_numbered;
 pub struct EncryptInfo {
     /// The handler revision (`/R`).
     pub r: u8,
-    /// The algorithm (`/V`): 1 = RC4-40, 2 = RC4-128, 4 = AES-128.
+    /// The algorithm (`/V`): 1 = RC4-40, 2 = RC4-128, 4 = AES-128, 5 = AES-256.
     pub v: u8,
     /// The key length in bits (`/Length`; 40 for `/V 1`).
     pub length: usize,
@@ -28,13 +28,19 @@ pub struct EncryptInfo {
     pub p: u32,
     /// Whether the stream/string crypt filters are AES.
     pub aes: bool,
+    /// `/EncryptMetadata` (default true).
+    pub encrypt_metadata: bool,
+    /// `/UE` — the wrapped file key for revisions 5–6.
+    pub ue: Vec<u8>,
+    /// `/OE` — the owner-wrapped file key for revisions 5–6.
+    pub oe: Vec<u8>,
 }
 
 impl EncryptInfo {
     /// The stream crypt filter (`/StmF`) — currently only `/Identity` and
     /// `/StdCF` are supported.
     pub fn supports(&self) -> bool {
-        self.v <= 4 && self.r <= 4
+        self.v <= 5 && self.r >= 2 && self.r <= 6
     }
 }
 
@@ -87,8 +93,18 @@ pub fn parse_encrypt(
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => return Ok(None),
     };
-    let p = int(b"P").and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
-    // AES is used when /CF /StdCF /CFM is /AESV2 and /StmF is /StdCF.
+    // /P is a signed 32-bit integer (permission flags); the algorithms use
+    // its two's-complement bit pattern as an unsigned little-endian value.
+    let p = int(b"P")
+        .and_then(|v| i32::try_from(v).ok())
+        .map(|v| u32::from_ne_bytes(v.to_ne_bytes()))
+        .unwrap_or(0);
+    let encrypt_metadata = match get(b"EncryptMetadata") {
+        Some(Obj::Name(n)) => n.as_slice() != b"false",
+        Some(Obj::Bool(b)) => *b,
+        _ => true,
+    };
+    // AES is used when the stream crypt filter is AESV2/AESV3.
     let aes = {
         let stmf = match get(b"StmF") {
             Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
@@ -110,7 +126,15 @@ pub fn parse_encrypt(
                 _ => None,
             })
             .unwrap_or_default();
-        stmf == "StdCF" && std_cfm == "AESV2"
+        stmf == "StdCF" && (std_cfm == "AESV2" || std_cfm == "AESV3")
+    };
+    let ue = match get(b"UE") {
+        Some(Obj::String(b)) => b.as_slice().to_vec(),
+        _ => Vec::new(),
+    };
+    let oe = match get(b"OE") {
+        Some(Obj::String(b)) => b.as_slice().to_vec(),
+        _ => Vec::new(),
     };
     Ok(Some(EncryptInfo {
         r,
@@ -120,6 +144,9 @@ pub fn parse_encrypt(
         u,
         p,
         aes,
+        encrypt_metadata,
+        ue,
+        oe,
     }))
 }
 
@@ -157,6 +184,9 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
         info.r,
         info.length,
         info.aes,
+        info.encrypt_metadata,
+        &info.ue,
+        &info.oe,
         password,
     )
 }
@@ -180,7 +210,9 @@ pub fn decrypt_data(info: &EncryptInfo, key: &[u8], objnum: u32, gen: u16, data:
 fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<u64> {
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = crate::parse_revisions(src, startxref, budget, g)?;
-    for view in doc.revisions() {
+    // Newest revision wins: an incremental update redefining the object
+    // supersedes the older entry (ISO 32000-1 §7.5.8.3).
+    for view in doc.revisions().iter().rev() {
         if let Some(crate::XrefEntry::InUse { offset, .. }) = view.entries.get(&r.num) {
             return Ok(*offset);
         }

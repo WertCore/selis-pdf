@@ -33,7 +33,7 @@ fn xref_stream_objstm_resolves_end_to_end() {
 
     // Resolve the document model (catalog, page tree). Objects 1, 2, 4 are
     // compressed inside ObjStm 6.
-    let document = Document::resolve(&doc, src, &budget, &mut g).expect("resolve document");
+    let document = Document::resolve(&doc, src, &budget, &mut g, None).expect("resolve document");
     assert_eq!(document.len(), 1, "one page");
 
     // The page's content stream (object 5, direct) resolves to a stream.
