@@ -17,6 +17,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 selis-sandbox = { path = "../crates/selis-sandbox" }
 selis-pdf-cos = { path = "../crates/selis-pdf-cos" }
+selis-pdf-filter = { path = "../crates/selis-pdf-filter" }
 selis-bytes = { path = "../crates/selis-bytes" }
 selis-font = { path = "../crates/selis-font" }
 selis-shape = { path = "../crates/selis-shape" }
@@ -73,6 +74,13 @@ bench = false
 [[bin]]
 name = "doc_open"
 path = "fuzz_targets/doc_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filter_chain"
+path = "fuzz_targets/filter_chain.rs"
 test = false
 doc = false
 bench = false

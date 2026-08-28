@@ -310,6 +310,7 @@ dependencies = [
  "selis-bytes",
  "selis-font",
  "selis-pdf-cos",
+ "selis-pdf-filter",
  "selis-sandbox",
  "selis-shape",
 ]
