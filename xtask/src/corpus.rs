@@ -259,5 +259,46 @@ fn stats(entries: &[CorpusEntry]) -> Result<(), String> {
     for (tag, count) in &tags {
         println!("  {tag}: {count}");
     }
+    // Report the usable corpus: the flat corpus/pdfs files plus any
+    // extracted per-source subdirectories (SL-0.CORP.02 DoD: "total file
+    // count ... reported by xtask corpus stats").
+    let root = Path::new("corpus/pdfs");
+    let mut flat = 0usize;
+    let mut by_source: BTreeMap<String, usize> = BTreeMap::new();
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let n = count_pdfs(&path);
+                if n > 0 {
+                    by_source.insert(path.file_name().unwrap_or_default().to_string_lossy().into_owned(), n);
+                }
+            } else if path.extension().is_some_and(|e| e == "pdf") {
+                flat += 1;
+            }
+        }
+    }
+    println!("  total pdfs in corpus/pdfs: {}", flat + by_source.values().sum::<usize>());
+    println!("    flat: {flat}");
+    for (src, n) in &by_source {
+        println!("    {src}: {n}");
+    }
     Ok(())
+}
+
+/// Count `*.pdf` files under a directory, recursively.
+fn count_pdfs(dir: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut n = 0usize;
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            n = n.saturating_add(count_pdfs(&path));
+        } else if path.extension().is_some_and(|x| x == "pdf") {
+            n = n.saturating_add(1);
+        }
+    }
+    n
 }

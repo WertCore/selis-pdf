@@ -26,19 +26,10 @@ notes = "Primary pdf.js reference corpus; drives smoke + text tiers."
 id = "verapdf"
 name = "veraPDF corpus"
 source_url = "https://github.com/veraPDF/veraPDF-corpus/archive/refs/heads/master.tar.gz"
-sha256 = ""
+sha256 = "930be25dc4e30ea7908c274ff66164a0a18978b79159799ad7871bfa63a46480"
 licence = "CC0 / varied; fetch-only"
 tags = ["conformance", "pdfa"]
-notes = "PDF/A validation corpus for the conformance ladder."
-
-[[corpus]]
-id = "isartor"
-name = "Isartor PDF/A-1 test suite"
-source_url = "https://github.com/veraPDF/isartor/archive/refs/heads/master.tar.gz"
-sha256 = ""
-licence = "fetch-only (varied test documents)"
-tags = ["conformance", "pdfa", "negative"]
-notes = "PDF/A-1 negative tests: every rule violated somewhere."
+notes = "PDF/A validation corpus for the conformance ladder. Includes the Isartor PDF/A-1 test files as a subdirectory, so there is no separate isartor manifest entry."
 
 [[corpus]]
 id = "ghent"
@@ -47,7 +38,7 @@ source_url = "https://www.gwg.org/resources/"
 sha256 = ""
 licence = "fetch-only (commercial work samples)"
 tags = ["render", "cmyk", "huge"]
-notes = "Prepress files: CMYK, spot colours, transparency."
+notes = "Prepress files: CMYK, spot colours, transparency. No direct archive URL; needs a researched download link before fetch (TODO)."
 
 [[corpus]]
 id = "pdfassoc"
@@ -56,13 +47,13 @@ source_url = "https://www.pdfa.org/"
 sha256 = ""
 licence = "fetch-only"
 tags = ["smoke", "render", "text"]
-notes = "Spec-driven samples covering ISO 32000-2 constructs."
+notes = "Spec-driven samples covering ISO 32000-2 constructs. No direct archive URL; needs a researched download link before fetch (TODO)."
 
 [[corpus]]
 id = "govdocs1"
 name = "govdocs1 sample (fuzz seeds)"
-source_url = "https://digitalcorpora.org/corpora/govdocs1/"
+source_url = "https://downloads.digitalcorpora.org/corporas/govdocs1/"
 sha256 = ""
 licence = "Public domain (US federal works); fetch-only"
 tags = ["fuzz", "huge"]
-notes = "Fuzzing seed corpus; sample only, never the full set."
+notes = "Fuzzing seed corpus; sample only, never the full set. The S3 bucket uses a JS-rendered explorer (no raw listing); pick a single numbered zip once the exact URL pattern is confirmed (TODO)."
