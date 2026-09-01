@@ -1,18 +1,18 @@
 {
-  "name": "@selis/ui",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "@selis/ui-kit": "workspace:*"
-  },
-  "devDependencies": {
-    "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
-  }
+	"name": "@selis/ui",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@selis/ui-kit": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.0",
+		"vitest": "^2.0.0"
+	}
 }
