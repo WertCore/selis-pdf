@@ -306,6 +306,10 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** Calibrated so that two *oracles* compared against each other on the clean corpus score
     within the same tolerance we demand of ourselves. If PDFium and pdf.js cannot agree to 0.5%,
     our 0.5% target is wrong and this task must say so.
+  - **Note:** `xtask oracle compare-render --tool mutool --dpi N <file>` renders with selis and
+    mutool at the same DPI and compares per-pixel with CIE76 ΔE (threshold 2.3), reporting
+    differing-pixel percentage and writing a diff overlay. selis render gained a `--dpi` flag.
+    Calibration (two oracles agreeing) is deferred until the Phase 2 renderer is mature.
 
 - [ ] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,
