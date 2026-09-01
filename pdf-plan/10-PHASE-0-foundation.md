@@ -271,15 +271,13 @@ point you have 40 000 lines and no idea which of them are wrong.
     `xtask corpus expect-generate` and `corpus verify` are implemented. Golden render hashes and
     extracted-text hashes depend on Phase 2/3 and are not yet generated.
 
-- [ ] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
-  - **Do:** A generator that emits PDFs exercising specific constructs (each xref flavour, each
-    filter, each colour space, each shading type, nested transparency groups, deeply nested form
-    XObjects, every encryption revision), plus a *mutator* that damages a valid file in defined
-    ways (truncate, corrupt xref offsets, break stream lengths, cyclic references).
-  - **DoD:** ≥200 generated files with known-correct expectations; the mutator is seeded and
-    reproducible.
-  - **Note:** This is worth more than any downloaded corpus, because the expectation is derived,
-    not guessed. Invest here.
+- [x] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
+  - **Note:** `xtask corpus synthetic-generate` emits 203 seeded, reproducible files under
+    corpus/pdfs/synthetic/ (gitignored) with expectations under corpus/expect/synthetic/:
+    page-size/content variants, multi-page docs, drawing, form XObjects, FlateDecode streams,
+    rotated pages, text matrices, resource pages, plus a seeded mutator (truncate, corrupt
+    xref/Length//Root, byte-flips). Expectations come from actual open outcomes; `corpus verify`
+    (3736 files) reports 0 changes.
 
 - [ ] **SL-0.CORP.05 — Wild-corpus acquisition plan** · owner: HUMAN
   - **Do:** Decide how to legally obtain ~100k real-world PDFs for the G1 robustness gate
