@@ -12,6 +12,7 @@ mod conformance;
 mod corpus;
 mod fuzz;
 mod layers;
+mod synthetic;
 mod purity;
 mod sbom;
 mod unsafe_check;
@@ -100,6 +101,8 @@ enum CorpusSub {
     ExpectGenerate,
     /// Re-open every corpus PDF and diff against its expectation record.
     Verify,
+    /// Generate the synthetic corpus (SL-0.CORP.04).
+    SyntheticGenerate,
 }
 
 fn main() -> ExitCode {
@@ -122,6 +125,7 @@ fn main() -> ExitCode {
             CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
             CorpusSub::ExpectGenerate => corpus::run(corpus::CorpusCommand::ExpectGenerate),
             CorpusSub::Verify => corpus::run(corpus::CorpusCommand::Verify),
+            CorpusSub::SyntheticGenerate => synthetic::generate(),
         },
         Command::Oracle => not_in_phase_0("oracle"),
         Command::Fuzz => fuzz::check(),

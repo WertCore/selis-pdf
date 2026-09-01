@@ -1599,6 +1599,10 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "selis-bytes",
+ "selis-pdf-cos",
+ "selis-pdf-engine",
+ "selis-sandbox",
  "serde",
  "serde_json",
  "toml",
