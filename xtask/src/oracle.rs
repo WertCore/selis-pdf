@@ -39,6 +39,9 @@ pub enum OracleCommand {
     CompareRender { tool: String, dpi: u32, file: PathBuf },
     /// Compare text extracted by selis against an oracle (SL-0.ORACLE.04).
     CompareText { file: PathBuf },
+    /// Triage workflow: compare a sample of corpus files against qpdf and
+    /// group the disagreements by signature (SL-0.ORACLE.05).
+    Triage { sample: usize },
 }
 
 pub fn run(cmd: OracleCommand) -> Result<(), String> {
@@ -48,6 +51,7 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
         OracleCommand::Compare { file } => compare(&file),
         OracleCommand::CompareRender { tool, dpi, file } => compare_render(&tool, dpi, &file),
         OracleCommand::CompareText { file } => compare_text(&file),
+        OracleCommand::Triage { sample } => triage(sample),
     }
 }
 
@@ -680,4 +684,101 @@ fn edit_distance(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[n]
+}
+
+// ── Triage workflow (SL-0.ORACLE.05) ───────────────────────────────────────
+
+/// Run the structural comparison against qpdf over a sample of the corpus and
+/// group the disagreements by signature, so N failures collapse to a handful
+/// of root causes.
+fn triage(sample: usize) -> Result<(), String> {
+    let qpdf_bin = find_local("qpdf")
+        .ok_or_else(|| "qpdf not installed locally".to_string())?;
+    let selis_bin = find_local("selis")
+        .or_else(|| find_local("selis.exe"))
+        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
+
+    let mut pdfs = collect_corpus_pdfs()?;
+    pdfs.sort();
+    pdfs.truncate(sample.max(1));
+    if pdfs.is_empty() {
+        return Err("no corpus PDFs found under corpus/pdfs".to_string());
+    }
+
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for pdf in &pdfs {
+        let signature = structural_signature(&selis_bin, &qpdf_bin, pdf);
+        groups.entry(signature).or_default().push(
+            pdf.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        );
+    }
+
+    println!("oracle triage: {} files, {} signature groups:", pdfs.len(), groups.len());
+    for (sig, files) in &groups {
+        println!("  {sig}: {} file(s){}", files.len(), if files.len() <= 5 { format!(" — {}", files.join(", ")) } else { String::new() });
+    }
+    Ok(())
+}
+
+/// The signature of a file's structural agreement with qpdf: a short string
+/// summarising the diffs (or "match").
+fn structural_signature(selis_bin: &Path, qpdf_bin: &Path, file: &Path) -> String {
+    let file_str = file.to_str().unwrap_or_default();
+    let ours = run_json(selis_bin, &["inspect", "--json", file_str]).ok();
+    let theirs = run_json(qpdf_bin, &["--json", file_str]).ok();
+    match (ours, theirs) {
+        (Some(ours), Some(theirs)) => {
+            let our_objects = count_our_objects(&ours);
+            let their_objects = theirs["qpdf"]
+                .as_array()
+                .and_then(|a| a.get(0))
+                .and_then(|m| m["maxobjectid"].as_u64())
+                .unwrap_or(0);
+            let obj_delta = (our_objects as u64).abs_diff(their_objects);
+            if obj_delta == 0 {
+                "match".to_string()
+            } else {
+                format!("obj_delta={obj_delta}")
+            }
+        }
+        _ => "open_failed".to_string(),
+    }
+}
+
+/// Union of xref object numbers across all revisions in our inspect JSON.
+fn count_our_objects(ours: &serde_json::Value) -> usize {
+    let mut all = BTreeSet::new();
+    if let Some(revs) = ours["revisions"].as_array() {
+        for r in revs {
+            if let Some(objs) = r["objects"].as_array() {
+                for o in objs {
+                    if let Some(n) = o.as_u64() {
+                        all.insert(n);
+                    }
+                }
+            }
+        }
+    }
+    all.len()
+}
+
+/// Every `*.pdf` under `corpus/pdfs`, recursively.
+fn collect_corpus_pdfs() -> Result<Vec<PathBuf>, String> {
+    let root = PathBuf::from("corpus/pdfs");
+    let mut out = Vec::new();
+    collect_pdfs_rec(&root, &mut out)?;
+    Ok(out)
+}
+
+fn collect_pdfs_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("{dir:?}: {e}"))?;
+    for entry in rd {
+        let p = entry.map_err(|e| e.to_string())?.path();
+        if p.is_dir() {
+            collect_pdfs_rec(&p, out)?;
+        } else if p.extension().is_some_and(|x| x == "pdf") {
+            out.push(p);
+        }
+    }
+    Ok(())
 }

@@ -120,6 +120,11 @@ enum OracleSub {
     CompareText {
         file: std::path::PathBuf,
     },
+    /// Triage: run structural compare over a corpus sample and group disagreements (SL-0.ORACLE.05).
+    Triage {
+        #[arg(long, default_value = "100")]
+        sample: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +175,7 @@ fn main() -> ExitCode {
             OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
             OracleSub::CompareRender { tool, dpi, file } => oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file }),
             OracleSub::CompareText { file } => oracle::run(oracle::OracleCommand::CompareText { file }),
+            OracleSub::Triage { sample } => oracle::run(oracle::OracleCommand::Triage { sample }),
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),
