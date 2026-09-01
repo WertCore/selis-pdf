@@ -40,6 +40,8 @@ pub enum CorpusCommand {
     Fetch(Option<String>),
     List,
     Stats,
+    ExpectGenerate,
+    Verify,
 }
 
 pub fn run(cmd: CorpusCommand) -> Result<(), String> {
@@ -48,6 +50,8 @@ pub fn run(cmd: CorpusCommand) -> Result<(), String> {
         CorpusCommand::Fetch(tag) => fetch(&entries, tag.as_deref()),
         CorpusCommand::List => list(&entries),
         CorpusCommand::Stats => stats(&entries),
+        CorpusCommand::ExpectGenerate => expect_generate(),
+        CorpusCommand::Verify => verify(),
     }
 }
 
@@ -301,4 +305,128 @@ fn count_pdfs(dir: &Path) -> usize {
         }
     }
     n
+}
+
+/// Collect every `*.pdf` path under `corpus/pdfs`, returning paths relative to
+/// the pdfs root (used for both expectation ids and verification lookups).
+fn collect_pdfs() -> Vec<(String, PathBuf)> {
+    let root = PathBuf::from("corpus/pdfs");
+    let mut out = Vec::new();
+    collect_pdfs_inner(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+fn collect_pdfs_inner(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_pdfs_inner(root, &path, out);
+        } else if path.extension().is_some_and(|x| x == "pdf") {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let id = rel
+                .to_string_lossy()
+                .replace('\\', "/")
+                .replace(".pdf", "");
+            out.push((id, path));
+        }
+    }
+}
+
+/// The expected open outcome of one corpus file: `Ok` with a page count, or a
+/// typed error code (SL-0.CORP.03).
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct ExpectRecord {
+    open: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pages: Option<usize>,
+}
+
+fn open_outcome(path: &Path) -> ExpectRecord {
+    let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
+    match selis_pdf_engine::Session::open(
+        std::fs::read(path).unwrap_or_default(),
+        &budget,
+    ) {
+        Ok(session) => ExpectRecord {
+            open: "ok".to_string(),
+            code: None,
+            pages: Some(session.len()),
+        },
+        Err(e) => ExpectRecord {
+            open: "err".to_string(),
+            code: Some(format!("{:?}", e.code())),
+            pages: None,
+        },
+    }
+}
+
+/// Write open-outcome expectations for every corpus PDF (SL-0.CORP.03).
+fn expect_generate() -> Result<(), String> {
+    let expect_dir = Path::new("corpus/expect");
+    std::fs::create_dir_all(expect_dir).map_err(|e| format!("cannot create corpus/expect: {e}"))?;
+    let files = collect_pdfs();
+    let mut ok = 0usize;
+    let mut err = 0usize;
+    for (id, path) in &files {
+        let record = open_outcome(path);
+        if record.open == "ok" {
+            ok += 1;
+        } else {
+            err += 1;
+        }
+        let dest = expect_dir.join(format!("{id}.toml"));
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let text = toml::to_string(&record).map_err(|e| format!("{id}: {e}"))?;
+        std::fs::write(&dest, text).map_err(|e| format!("{id}: {e}"))?;
+    }
+    println!(
+        "corpus expect generate: {ok} ok, {err} err ({ok} pages-open of {} files)",
+        files.len()
+    );
+    Ok(())
+}
+
+/// Re-open every corpus PDF and diff against its expectation record,
+/// reporting any outcome changes as a typed diff (SL-0.CORP.03 DoD).
+fn verify() -> Result<(), String> {
+    let expect_dir = Path::new("corpus/expect");
+    let files = collect_pdfs();
+    let mut checked = 0usize;
+    let mut changed = 0usize;
+    for (id, path) in &files {
+        let expect_path = expect_dir.join(format!("{id}.toml"));
+        let expected: ExpectRecord = match std::fs::read_to_string(&expect_path) {
+            Ok(text) => toml::from_str(&text).map_err(|e| format!("{id}: {e}"))?,
+            Err(_) => {
+                println!("  {id}: NO EXPECTATION");
+                continue;
+            }
+        };
+        let actual = open_outcome(path);
+        let same = match (&expected, &actual) {
+            (a, b) if a.open != b.open => false,
+            (a, b) if a.code != b.code => false,
+            (a, b) if a.pages != b.pages => false,
+            _ => true,
+        };
+        checked += 1;
+        if !same {
+            changed += 1;
+            println!(
+                "  {id}: expected {:?} got {:?}",
+                expected,
+                actual
+            );
+        }
+    }
+    println!("corpus verify: {checked} checked, {changed} changed");
+    Ok(())
 }

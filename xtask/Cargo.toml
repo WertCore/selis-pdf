@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+selis-pdf-engine = { path = "../crates/selis-pdf-engine" }
+selis-sandbox = { path = "../crates/selis-sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

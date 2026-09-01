@@ -96,6 +96,10 @@ enum CorpusSub {
     List,
     /// Report total corpora and tag distribution.
     Stats,
+    /// Write open-outcome expectations for every corpus PDF (SL-0.CORP.03).
+    ExpectGenerate,
+    /// Re-open every corpus PDF and diff against its expectation record.
+    Verify,
 }
 
 fn main() -> ExitCode {
@@ -116,6 +120,8 @@ fn main() -> ExitCode {
             CorpusSub::Fetch { tag } => corpus::run(corpus::CorpusCommand::Fetch(tag)),
             CorpusSub::List => corpus::run(corpus::CorpusCommand::List),
             CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
+            CorpusSub::ExpectGenerate => corpus::run(corpus::CorpusCommand::ExpectGenerate),
+            CorpusSub::Verify => corpus::run(corpus::CorpusCommand::Verify),
         },
         Command::Oracle => not_in_phase_0("oracle"),
         Command::Fuzz => fuzz::check(),
