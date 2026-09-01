@@ -104,6 +104,10 @@ enum OracleSub {
     },
     /// Report which oracles are available locally and their pinned images.
     Check,
+    /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
+    Compare {
+        file: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +155,7 @@ fn main() -> ExitCode {
         Command::Oracle(args) => match args.sub {
             OracleSub::Render { tool, dpi, file } => oracle::run(oracle::OracleCommand::Render { tool, dpi, file }),
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
+            OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),
