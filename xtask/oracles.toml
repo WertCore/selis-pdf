@@ -1,0 +1,10 @@
+# Oracle tool pinning (SL-0.ORACLE.01).
+#
+# Each line records the container image used when the tool is NOT installed
+# locally. On the dev machine the local binary is used instead (local-first),
+# so these images are only for CI and machines without the tools installed.
+# The digest pins the exact tool version so comparisons are reproducible.
+
+qpdf = "ghcr.io/qpdf/qpdf:11.9.0"
+ghostscript = "ghcr.io/soscripted/soscripted:9.56.1"
+mupdf = "ghcr.io/mupdf/mupdf:1.23.9"

@@ -12,6 +12,7 @@ mod conformance;
 mod corpus;
 mod fuzz;
 mod layers;
+mod oracle;
 mod synthetic;
 mod purity;
 mod sbom;
@@ -59,8 +60,8 @@ enum Command {
     SizeCheck,
     /// Corpus fetch / stats / verify (SL-0.CORP.01-03).
     Corpus(CorpusArgs),
-    /// Oracle containers and comparisons (SL-0.ORACLE.01).
-    Oracle,
+    /// Oracle tools and comparisons (SL-0.ORACLE.01). Local-first, Docker fallback.
+    Oracle(OracleArgs),
     /// Fuzzing harness (SL-0.SEC.02).
     Fuzz,
     /// Criterion benchmarks (SL-0.PERF.01).
@@ -83,6 +84,26 @@ enum Command {
 struct CorpusArgs {
     #[command(subcommand)]
     sub: CorpusSub,
+}
+
+#[derive(clap::Args)]
+struct OracleArgs {
+    #[command(subcommand)]
+    sub: OracleSub,
+}
+
+#[derive(Subcommand)]
+enum OracleSub {
+    /// Render a PDF page to a PNG with the named oracle (local-first, Docker fallback).
+    Render {
+        #[arg(long)]
+        tool: String,
+        #[arg(long, default_value = "150")]
+        dpi: u32,
+        file: std::path::PathBuf,
+    },
+    /// Report which oracles are available locally and their pinned images.
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -127,7 +148,10 @@ fn main() -> ExitCode {
             CorpusSub::Verify => corpus::run(corpus::CorpusCommand::Verify),
             CorpusSub::SyntheticGenerate => synthetic::generate(),
         },
-        Command::Oracle => not_in_phase_0("oracle"),
+        Command::Oracle(args) => match args.sub {
+            OracleSub::Render { tool, dpi, file } => oracle::run(oracle::OracleCommand::Render { tool, dpi, file }),
+            OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
+        },
         Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),
         Command::Conformance => conformance::report(),
