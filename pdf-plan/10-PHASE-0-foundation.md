@@ -333,6 +333,10 @@ point you have 40 000 lines and no idea which of them are wrong.
     recorded in the expectation file.
   - **DoD:** The workflow documented in `21-TESTING-AND-ORACLES.md §5` and exercised on a seeded
     set of deliberate differences.
+  - **Note:** `xtask oracle triage --sample N` groups structural disagreements by signature
+    (obj_delta, open_failed). Tested on 30 files: 21 match (obj_delta=1, object 0), 1 obj_delta=2,
+    8 open_failed (4 unrecoverable wild files + 4 encrypted objstm files). Verdicts and the
+    documented workflow in `21-TESTING-AND-ORACLES.md` are pending.
 
 ---
 
