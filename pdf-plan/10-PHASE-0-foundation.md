@@ -294,6 +294,9 @@ point you have 40 000 lines and no idea which of them are wrong.
     pdf.js (headless), qpdf, MuPDF, and Ghostscript. `xtask/oracles.toml` records image digests.
     Nothing is linked into our build (ADR-P0009).
   - **DoD:** `xtask oracle render --tool pdfium --dpi 150 <file>` produces a PNG for each tool.
+  - **Note:** Local-first dispatch: `xtask oracle render` uses the local binary (qpdf/mutool/gs)
+    when installed, falling back to the pinned container. mutool render verified on this machine
+    (160F-2019.pdf, 150 DPI PNG). `xtask oracle check` reports availability.
 
 - [ ] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
   - **Do:** Compare our output to an oracle's with a *perceptual* metric, not exact bytes:
@@ -308,6 +311,9 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,
     page tree shape, xref entries, and stream lengths.
   - **DoD:** Comparator handles the known representational differences and documents each.
+  - **Note:** `xtask oracle compare <file>` compares object count (union vs qpdf's maxobjectid),
+    xref entries (all revisions vs final live), and stream lengths. Known differences documented
+    in the output. qpdf v2 JSON parsed (version 1 key support pending).
 
 - [ ] **SL-0.ORACLE.04 — Text-extraction oracle** · deps: ORACLE.01 · owner: AI
   - **Do:** Compare extracted text against PDFium and pdf.js by normalised edit distance, with
