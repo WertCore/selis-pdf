@@ -116,6 +116,10 @@ enum OracleSub {
         dpi: u32,
         file: std::path::PathBuf,
     },
+    /// Compare text extracted by selis and mutool (SL-0.ORACLE.04).
+    CompareText {
+        file: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -165,6 +169,7 @@ fn main() -> ExitCode {
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
             OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
             OracleSub::CompareRender { tool, dpi, file } => oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file }),
+            OracleSub::CompareText { file } => oracle::run(oracle::OracleCommand::CompareText { file }),
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),

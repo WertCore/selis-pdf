@@ -37,6 +37,8 @@ pub enum OracleCommand {
     /// Render with `selis` and an oracle at the same DPI and compare pixelwise
     /// (SL-0.ORACLE.02 foundation).
     CompareRender { tool: String, dpi: u32, file: PathBuf },
+    /// Compare text extracted by selis against an oracle (SL-0.ORACLE.04).
+    CompareText { file: PathBuf },
 }
 
 pub fn run(cmd: OracleCommand) -> Result<(), String> {
@@ -45,6 +47,7 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
         OracleCommand::Check => check(),
         OracleCommand::Compare { file } => compare(&file),
         OracleCommand::CompareRender { tool, dpi, file } => compare_render(&tool, dpi, &file),
+        OracleCommand::CompareText { file } => compare_text(&file),
     }
 }
 
@@ -595,4 +598,86 @@ fn srgb_to_lab(c: &[u8; 3]) -> [f64; 3] {
     let a = 500.0 * (fx - fy);
     let bb = 200.0 * (fy - fz);
     [l, a, bb]
+}
+
+// ── Text extraction comparison (SL-0.ORACLE.04) ────────────────────────────
+
+/// Compare text extracted by `selis extract` and `mutool draw -F txt`.
+fn compare_text(file: &Path) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    let selis_bin = find_local("selis")
+        .or_else(|| find_local("selis.exe"))
+        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
+    let mutool = find_local("mutool").ok_or_else(|| {
+        "mutool not installed locally; install with `winget install ArtifexSoftware.mutool`"
+            .to_string()
+    })?;
+
+    let selis_out = Command::new(&selis_bin)
+        .arg("extract")
+        .arg(file)
+        .arg("--format")
+        .arg("text")
+        .arg("--page")
+        .arg("0")
+        .output()
+        .map_err(|e| format!("selis extract: {e}"))?;
+    let our_text = String::from_utf8_lossy(&selis_out.stdout).to_string();
+
+    let mutool_out = Command::new(&mutool)
+        .arg("draw")
+        .arg("-F")
+        .arg("txt")
+        .arg(file)
+        .output()
+        .map_err(|e| format!("mutool draw: {e}"))?;
+    let their_text = String::from_utf8_lossy(&mutool_out.stdout).to_string();
+
+    let dist = edit_distance(&our_text, &their_text);
+    let max_len = our_text.len().max(their_text.len());
+    let similarity = if max_len > 0 {
+        (1.0 - dist as f64 / max_len as f64) * 100.0
+    } else {
+        100.0
+    };
+    println!(
+        "text comparison: selis={} chars, mutool={} chars, edit distance={}, similarity={:.1}%",
+        our_text.len(),
+        their_text.len(),
+        dist,
+        similarity
+    );
+    if similarity > 50.0 {
+        println!("text PASS (similarity > 50%)");
+    } else {
+        println!("text FAIL (similarity ≤ 50%, text extraction is Phase 3)");
+    }
+    Ok(())
+}
+
+/// Simple Levenshtein distance (character-level).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let m = a.len();
+    let n = b.len();
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (curr[j - 1] + 1).min(prev[j] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
