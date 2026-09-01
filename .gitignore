@@ -31,3 +31,7 @@ tmp_*
 /fuzz/target/
 /fuzz/corpus/
 /fuzz/artifacts/
+
+# pnpm / node (SL-0.WS.10)
+node_modules/
+dist/

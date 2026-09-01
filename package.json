@@ -1,0 +1,14 @@
+{
+  "name": "selis-web",
+  "private": true,
+  "description": "Selis web workspace (SL-0.WS.10). Started empty, per the plan note.",
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0"
+  }
+}
