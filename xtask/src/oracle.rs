@@ -450,12 +450,11 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
         for x in 0..cmp_w {
             let oi = (y * ours.width + x) as usize * 3;
             let ti = (y * theirs.width + x) as usize * 3;
-            let dr = (ours.rgb[oi] as i16 - theirs.rgb[ti] as i16).unsigned_abs() as u16;
-            let dg = (ours.rgb[oi + 1] as i16 - theirs.rgb[ti + 1] as i16).unsigned_abs() as u16;
-            let db = (ours.rgb[oi + 2] as i16 - theirs.rgb[ti + 2] as i16).unsigned_abs() as u16;
-            // Simple ΔE approximation: Euclidean distance in RGB.
-            let de = ((dr as u64).pow(2) + (dg as u64).pow(2) + (db as u64).pow(2)) as f64;
-            if de.sqrt() > 12.0 {
+            let ours_px = [ours.rgb[oi], ours.rgb[oi + 1], ours.rgb[oi + 2]];
+            let theirs_px = [theirs.rgb[ti], theirs.rgb[ti + 1], theirs.rgb[ti + 2]];
+            // CIE76 ΔE in Lab space (the plan's per-pixel metric).
+            let de = delta_e76(&ours_px, &theirs_px);
+            if de > 2.3 {
                 diff += 1;
             }
         }
@@ -463,7 +462,7 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
 
     let pct = diff as f64 / total as f64 * 100.0;
     println!(
-        "render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE≈12"
+        "render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE76≈2.3"
     );
     if pct < 0.5 {
         println!("render PASS (within 0.5% tolerance)");
@@ -553,4 +552,47 @@ fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
         height,
         rgb: data[pos..pos + expected].to_vec(),
     })
+}
+
+/// CIE76 ΔE between two sRGB pixels, computed in CIE Lab space.
+fn delta_e76(a: &[u8; 3], b: &[u8; 3]) -> f64 {
+    let la = srgb_to_lab(a);
+    let lb = srgb_to_lab(b);
+    let dl = la[0] - lb[0];
+    let da = la[1] - lb[1];
+    let db = la[2] - lb[2];
+    (dl * dl + da * da + db * db).sqrt()
+}
+
+/// sRGB (8-bit) → CIE Lab, via linearisation and the D65 reference white.
+fn srgb_to_lab(c: &[u8; 3]) -> [f64; 3] {
+    let lin = |v: u8| {
+        let s = f64::from(v) / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let r = lin(c[0]);
+    let g = lin(c[1]);
+    let b = lin(c[2]);
+    // sRGB → XYZ (D65).
+    let x = 0.412_456_4 * r + 0.357_576_1 * g + 0.180_437_5 * b;
+    let y = 0.212_672_9 * r + 0.715_152_2 * g + 0.072_175_0 * b;
+    let z = 0.019_333_9 * r + 0.119_192_0 * g + 0.950_304_1 * b;
+    let f = |t: f64| {
+        if t > 216.0 / 24389.0 {
+            t.cbrt()
+        } else {
+            (24389.0 / 27.0) * t + 16.0 / 116.0
+        }
+    };
+    let fx = f(x / 0.950_47);
+    let fy = f(y / 1.0);
+    let fz = f(z / 1.088_83);
+    let l = 116.0 * fy - 16.0;
+    let a = 500.0 * (fx - fy);
+    let bb = 200.0 * (fy - fz);
+    [l, a, bb]
 }
