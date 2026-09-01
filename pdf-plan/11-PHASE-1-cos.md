@@ -244,7 +244,9 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     poppler-742-0-fuzzed (degenerate structures: an unclosed dict with no `endobj`, and an
     xref table with no keywords plus a garbage root object) and REDHAT-1531897-0 and
     bug1978317 (trailer `/Root` pointing at objects that do not exist in the file). Floor
-    ratcheted 897→973 across the campaign; 0 panics, 0 hangs, 0 OOMs.
+    ratcheted 897→973 across the campaign; 0 panics, 0 hangs, 0 OOMs. The veraPDF corpus
+    (2556 PDF/A files, seeded under SL-0.CORP.02) opens 2556/2556 (100%) under the Viewer
+    budget.
 - [ ] **SL-1.ROB.02 — 24-hour fuzz campaign, all Phase-1 targets** · deps: SL-0.SEC.02 · owner: AI
   - **DoD:** Zero crashes; coverage report per target; new corpus entries minted from interesting
     inputs found.
