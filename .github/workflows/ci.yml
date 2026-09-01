@@ -81,3 +81,22 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo test --workspace
         timeout-minutes: 10
+
+  # ── fuzz-soak (nightly, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02 ──────────
+  fuzz-soak:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule'
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - run: cargo install cargo-fuzz --locked
+      - name: Soak cos_parse for 10 minutes
+        working-directory: fuzz
+        run: |
+          cargo +nightly fuzz run cos_parse -- -max_total_time=600
+          cargo +nightly fuzz run cos_lex -- -max_total_time=600
+          cargo +nightly fuzz run doc_open -- -max_total_time=600
+        timeout-minutes: 40
