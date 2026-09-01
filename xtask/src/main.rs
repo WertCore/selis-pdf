@@ -10,6 +10,7 @@ mod checks;
 mod codes;
 mod conformance;
 mod corpus;
+mod coverage;
 mod fuzz;
 mod layers;
 mod oracle;
@@ -58,6 +59,8 @@ enum Command {
     CheckFlags,
     /// WASM size budgets (SL-0.WS.09).
     SizeCheck,
+    /// Coverage floors per crate (SL-0.WS.08).
+    Coverage,
     /// Corpus fetch / stats / verify (SL-0.CORP.01-03).
     Corpus(CorpusArgs),
     /// Oracle tools and comparisons (SL-0.ORACLE.01). Local-first, Docker fallback.
@@ -161,6 +164,7 @@ fn main() -> ExitCode {
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::SizeCheck => not_in_phase_0("size-check"),
+        Command::Coverage => coverage::run(),
         Command::Corpus(args) => match args.sub {
             CorpusSub::Fetch { tag } => corpus::run(corpus::CorpusCommand::Fetch(tag)),
             CorpusSub::List => corpus::run(corpus::CorpusCommand::List),

@@ -1,0 +1,20 @@
+{
+  "selis-pdf-cos": 90,
+  "selis-pdf-filter": 90,
+  "selis-font": 90,
+  "selis-pdf-edit": 90,
+  "selis-pdf-redact": 90,
+  "selis-pdf-sign": 90,
+  "selis-sandbox": 90,
+  "selis-pdf-doc": 80,
+  "selis-pdf-content": 80,
+  "selis-pdf-engine": 80,
+  "selis-raster": 80,
+  "selis-color": 80,
+  "selis-pdf-text": 80,
+  "selis-bytes": 70,
+  "selis-error": 70,
+  "selis-crypto": 70,
+  "selis-io": 70,
+  "selis-geom": 70
+}
