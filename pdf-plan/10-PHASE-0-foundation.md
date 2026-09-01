@@ -323,6 +323,9 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** Compare extracted text against PDFium and pdf.js by normalised edit distance, with
     Unicode normalisation and whitespace policy defined once.
   - **DoD:** Baseline agreement between the two oracles measured and recorded first.
+  - **Note:** `xtask oracle compare-text <file>` compares selis text against mutool by normalised
+    edit distance. Baseline on 160F-2019.pdf: 6.4% similarity (text extraction is Phase 3, so the
+    gap is expected and recorded).
 
 - [ ] **SL-0.ORACLE.05 — Triage workflow** · deps: ORACLE.02 · owner: AI+
   - **Do:** `xtask oracle triage` groups disagreements by signature, so 4 000 failures collapse to
