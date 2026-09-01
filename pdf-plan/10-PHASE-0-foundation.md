@@ -267,6 +267,9 @@ point you have 40 000 lines and no idea which of them are wrong.
     error code), golden render hashes per DPI, expected extracted text hash, oracle-comparison
     tolerance, and an `annotation` field for "the oracle is wrong here, and why".
   - **DoD:** `xtask corpus verify` compares actual against expected and reports a typed diff.
+  - **Note:** Open-outcome expectations (3533 records, 3529 ok + 4 err) are written and verified;
+    `xtask corpus expect-generate` and `corpus verify` are implemented. Golden render hashes and
+    extracted-text hashes depend on Phase 2/3 and are not yet generated.
 
 - [ ] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
   - **Do:** A generator that emits PDFs exercising specific constructs (each xref flavour, each
