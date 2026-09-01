@@ -14,7 +14,7 @@ use crate::{read_file, CliError, CliResult};
 /// # Errors
 ///
 /// `IO_WRITE_FAILED` when the output file cannot be written.
-pub(crate) fn run(path: &str, page_num: usize, output: &str) -> CliResult<()> {
+pub(crate) fn run(path: &str, page_num: usize, output: &str, dpi: u32) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
     let session =
@@ -28,8 +28,10 @@ pub(crate) fn run(path: &str, page_num: usize, output: &str) -> CliResult<()> {
     let (w_pt, h_pt) = session
         .page_size(page_num)
         .ok_or_else(|| CliError(format!("page {page_num} has no media box")))?;
-    let w = dim(w_pt);
-    let h = dim(h_pt);
+    // Scale points to device pixels at the requested DPI (72 pt/in).
+    let scale = if dpi == 0 { 1.0 } else { f64::from(dpi) / 72.0 };
+    let w = dim(w_pt * scale);
+    let h = dim(h_pt * scale);
     if w == 0 || h == 0 {
         return Err(CliError(format!("page {page_num} has zero area")));
     }
@@ -41,7 +43,7 @@ pub(crate) fn run(path: &str, page_num: usize, output: &str) -> CliResult<()> {
         .map_err(|e| CliError(format!("render failed: {e}")))?;
     let data = backend.pixmap().data();
     write_ppm(output, data, w, h)?;
-    eprintln!("rendered page {page_num} to {output} ({w}x{h})");
+    eprintln!("rendered page {page_num} to {output} ({w}x{h}) at {dpi} DPI");
     Ok(())
 }
 

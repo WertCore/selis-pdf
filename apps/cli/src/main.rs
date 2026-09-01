@@ -66,6 +66,9 @@ enum Command {
         page: usize,
         /// The output PPM file.
         output: String,
+        /// The output resolution in DPI (default 72; 72 is 1pt = 1px).
+        #[arg(long, default_value_t = 72)]
+        dpi: u32,
     },
     /// Extract a page's content (text|json|md|html|image|embedded).
     Extract {
@@ -254,7 +257,7 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
-        Command::Render { path, page, output } => render::run(&path, page, &output),
+        Command::Render { path, page, output, dpi } => render::run(&path, page, &output, dpi),
         Command::Extract {
             path,
             page,

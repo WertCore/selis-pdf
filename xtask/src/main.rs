@@ -108,6 +108,14 @@ enum OracleSub {
     Compare {
         file: std::path::PathBuf,
     },
+    /// Render with selis and an oracle at the same DPI and compare (SL-0.ORACLE.02).
+    CompareRender {
+        #[arg(long)]
+        tool: String,
+        #[arg(long, default_value = "150")]
+        dpi: u32,
+        file: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -156,6 +164,7 @@ fn main() -> ExitCode {
             OracleSub::Render { tool, dpi, file } => oracle::run(oracle::OracleCommand::Render { tool, dpi, file }),
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
             OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
+            OracleSub::CompareRender { tool, dpi, file } => oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file }),
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench => not_in_phase_0("bench"),

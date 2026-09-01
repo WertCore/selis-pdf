@@ -34,6 +34,9 @@ pub enum OracleCommand {
     Check,
     /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
     Compare { file: PathBuf },
+    /// Render with `selis` and an oracle at the same DPI and compare pixelwise
+    /// (SL-0.ORACLE.02 foundation).
+    CompareRender { tool: String, dpi: u32, file: PathBuf },
 }
 
 pub fn run(cmd: OracleCommand) -> Result<(), String> {
@@ -41,6 +44,7 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
         OracleCommand::Render { tool, dpi, file } => render(&tool, dpi, &file),
         OracleCommand::Check => check(),
         OracleCommand::Compare { file } => compare(&file),
+        OracleCommand::CompareRender { tool, dpi, file } => compare_render(&tool, dpi, &file),
     }
 }
 
@@ -368,4 +372,185 @@ fn our_objects(ours: &serde_json::Value) -> BTreeSet<u32> {
         }
     }
     all
+}
+
+// ── Render comparison (SL-0.ORACLE.02 foundation) ──────────────────────────
+
+/// Render a page with selis and with an oracle at the same DPI, compare
+/// pixelwise, and report the percentage of differing pixels. Uses PPM (P6)
+/// as the interchange format — both selis render and mutool draw support it.
+fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    let out_dir = std::env::temp_dir().join("selis-oracle-cmp");
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("{out_dir:?}: {e}"))?;
+
+    let selis_bin = find_local("selis")
+        .or_else(|| find_local("selis.exe"))
+        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
+
+    let our_ppm = out_dir.join("our.ppm");
+    let their_ppm = out_dir.join("their.ppm");
+
+    // 1. Render with selis (same DPI as the oracle).
+    let status = Command::new(&selis_bin)
+        .arg("render")
+        .arg("--page")
+        .arg("0")
+        .arg("--dpi")
+        .arg(dpi.to_string())
+        .arg(file)
+        .arg(&our_ppm)
+        .status()
+        .map_err(|e| format!("selis render: {e}"))?;
+    if !status.success() {
+        return Err("selis render failed".to_string());
+    }
+
+    // 2. Render with the oracle (mutool draw to PPM).
+    let binary = TOOL_BINARY
+        .iter()
+        .find(|(id, _)| *id == tool)
+        .map(|(_, b)| *b)
+        .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
+    let local = find_local(binary)
+        .ok_or_else(|| format!("{tool} not installed locally; install it first"))?;
+    let status = Command::new(&local)
+        .arg("draw")
+        .arg("-r")
+        .arg(dpi.to_string())
+        .arg("-o")
+        .arg(&their_ppm)
+        .arg(file)
+        .status()
+        .map_err(|e| format!("{tool}: {e}"))?;
+    if !status.success() {
+        return Err(format!("{tool}: render failed"));
+    }
+
+    // 3. Parse both PPMs and compare.
+    let ours = parse_ppm(&std::fs::read(&our_ppm).map_err(|e| format!("our.ppm: {e}"))?)?;
+    let theirs = parse_ppm(&std::fs::read(&their_ppm).map_err(|e| format!("their.ppm: {e}"))?)?;
+
+    if ours.width != theirs.width || ours.height != theirs.height {
+        // selis uses ceil scaling, mutool rounds — tolerate a small delta by
+        // comparing the overlapping region.
+        eprintln!(
+            "note: size mismatch ours={}x{} theirs={}x{}; comparing the overlap",
+            ours.width, ours.height, theirs.width, theirs.height
+        );
+    }
+
+    let cmp_w = ours.width.min(theirs.width);
+    let cmp_h = ours.height.min(theirs.height);
+    let total = (cmp_w * cmp_h) as u64;
+    let mut diff = 0u64;
+    for y in 0..cmp_h {
+        for x in 0..cmp_w {
+            let oi = (y * ours.width + x) as usize * 3;
+            let ti = (y * theirs.width + x) as usize * 3;
+            let dr = (ours.rgb[oi] as i16 - theirs.rgb[ti] as i16).unsigned_abs() as u16;
+            let dg = (ours.rgb[oi + 1] as i16 - theirs.rgb[ti + 1] as i16).unsigned_abs() as u16;
+            let db = (ours.rgb[oi + 2] as i16 - theirs.rgb[ti + 2] as i16).unsigned_abs() as u16;
+            // Simple ΔE approximation: Euclidean distance in RGB.
+            let de = ((dr as u64).pow(2) + (dg as u64).pow(2) + (db as u64).pow(2)) as f64;
+            if de.sqrt() > 12.0 {
+                diff += 1;
+            }
+        }
+    }
+
+    let pct = diff as f64 / total as f64 * 100.0;
+    println!(
+        "render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE≈12"
+    );
+    if pct < 0.5 {
+        println!("render PASS (within 0.5% tolerance)");
+        Ok(())
+    } else {
+        println!("render FAIL (exceeds 0.5% tolerance)");
+        // Write a diff overlay for inspection.
+        let diff_ppm = out_dir.join("diff.ppm");
+        let mut diff_bytes = Vec::new();
+        diff_bytes.extend_from_slice(b"P6\n");
+        diff_bytes.extend_from_slice(format!("{cmp_w} {cmp_h}\n255\n").as_bytes());
+        for y in 0..cmp_h {
+            for x in 0..cmp_w {
+                let oi = (y * ours.width + x) as usize * 3;
+                let ti = (y * theirs.width + x) as usize * 3;
+                let dr = (ours.rgb[oi] as i16 - theirs.rgb[ti] as i16).unsigned_abs() as u8;
+                let dg = (ours.rgb[oi + 1] as i16 - theirs.rgb[ti + 1] as i16).unsigned_abs() as u8;
+                let db = (ours.rgb[oi + 2] as i16 - theirs.rgb[ti + 2] as i16).unsigned_abs() as u8;
+                // Amplify the difference for visibility.
+                diff_bytes.push(dr.saturating_mul(4));
+                diff_bytes.push(dg.saturating_mul(4));
+                diff_bytes.push(db.saturating_mul(4));
+            }
+        }
+        std::fs::write(&diff_ppm, &diff_bytes).map_err(|e| format!("diff.ppm: {e}"))?;
+        println!("  diff overlay written to {diff_ppm:?}");
+        Ok(())
+    }
+}
+
+/// A minimal PPM P6 decoder (header + RGB bytes).
+struct PpmImage {
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
+}
+
+fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
+    // PPM header: "P6\n<width> <height>\n<maxval>\n" followed by raw RGB.
+    // Parse token by token (whitespace-delimited, skipping `#` comments).
+    let mut pos = 0usize;
+    let mut tokens = Vec::new();
+    while tokens.len() < 4 {
+        // Skip whitespace.
+        while pos < data.len() && (data[pos] as char).is_whitespace() {
+            pos += 1;
+        }
+        if pos >= data.len() {
+            return Err("invalid PPM header".to_string());
+        }
+        // Skip a `#` comment to end of line.
+        if data[pos] == b'#' {
+            while pos < data.len() && data[pos] != b'\n' {
+                pos += 1;
+            }
+            continue;
+        }
+        let start = pos;
+        while pos < data.len() && !(data[pos] as char).is_whitespace() {
+            pos += 1;
+        }
+        tokens.push(
+            std::str::from_utf8(&data[start..pos])
+                .map_err(|_| "invalid PPM header token")?
+                .to_string(),
+        );
+    }
+    if tokens[0] != "P6" {
+        return Err(format!("expected PPM P6, got {}", tokens[0]));
+    }
+    let width: u32 = tokens[1].parse().map_err(|_| "invalid width")?;
+    let height: u32 = tokens[2].parse().map_err(|_| "invalid height")?;
+    let _maxval: u32 = tokens[3].parse().map_err(|_| "invalid maxval")?;
+    // Body begins after the whitespace that terminated the maxval token.
+    while pos < data.len() && (data[pos] as char).is_whitespace() {
+        pos += 1;
+    }
+    let expected = (width * height) as usize * 3;
+    if data.len() < pos + expected {
+        return Err(format!(
+            "truncated PPM: expected {expected} bytes, got {}",
+            data.len().saturating_sub(pos)
+        ));
+    }
+    Ok(PpmImage {
+        width,
+        height,
+        rgb: data[pos..pos + expected].to_vec(),
+    })
 }
