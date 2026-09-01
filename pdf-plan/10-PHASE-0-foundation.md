@@ -107,6 +107,9 @@ point you have 40 000 lines and no idea which of them are wrong.
     `x86_64-pc-windows-msvc`, `wasm32-unknown-unknown`, `aarch64-apple-ios`,
     `aarch64-linux-android`. WASM is a **required** target from day 1 (ADR-P0011).
   - **DoD:** All six green on the empty workspace in under 8 minutes with caching.
+  - **Note:** CI `.github/workflows/ci.yml` build job has all six targets; `setup-rust-toolchain`
+    now enables `cache: true` on every job (lint, build, supply-chain, test-fast, fuzz-soak) to
+    meet the <8-minute-with-caching DoD.
 
 - [x] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
@@ -128,6 +131,9 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** pnpm workspace, TypeScript strict, Vite, Vitest, Biome or ESLint+Prettier (pick one,
     record it), and a shared `packages/ui-kit` for the design system.
   - **DoD:** `pnpm -r build` and `pnpm -r test` green on empty apps.
+  - **Note:** Done — `pnpm-workspace.yaml` (apps/*, packages/*), `@selis/ui-kit` + `@selis/ui`
+    (TS-strict via tsconfig.base.json), Vitest, **Biome** (recorded; `pnpm lint` green),
+    `pnpm -r build`/`-r test`/`lint` all green.
 
 ---
 
