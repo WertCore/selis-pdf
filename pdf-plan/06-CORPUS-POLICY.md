@@ -95,17 +95,22 @@ commit even the URL lists of wild documents.
 - We never challenge a takedown; there is no engineering value in the specific bytes of any one
   wild document.
 
-## 7. Automated controls (to implement with the tooling)
+## 7. Automated controls (status)
 
-1. `xtask corpus wild fetch` enforces: cache dir outside the repo, encrypted-volume check,
-   provenance record write, and refuse-with-error if `--i-have-read-the-policy` is absent.
-2. A `check-wild-hygiene` lint (xtask): greps CI config for wild-corpus commands (must be none),
-   greps `corpus/expect/` for suspiciously long literals (content leak into expectations).
-3. Fuzzing inputs derived from wild files are the *seed material only* (`fuzz/corpus/` is
-   gitignored); libFuzzer minimises them, and minimised crash inputs are still treated as wild
-   (never committed).
-4. Bug-report tooling (`xtask oracle triage --export`) strips document bytes; exports carry
-   hashes and structure only.
+1. **[implemented]** `xtask corpus wild fetch --i-have-read-the-policy` (xtask/src/wild.rs):
+   refuses without the acknowledgement, refuses a cache inside the repo, refuses a volume
+   Windows can prove is BitLocker-off (warns when unverifiable), free-space floor per zip,
+   writes `<batch>/provenance.jsonl`, extracts via system tools. `xtask corpus wild status`
+   lists batches.
+2. **[implemented]** `xtask check-wild-hygiene` (xtask/src/wild_hygiene.rs): fails if any CI
+   workflow references a wild source (commoncrawl/digitalcorpora/fetch-wild.ps1/`corpus wild`)
+   and fails if any `corpus/expect/*.toml` record exceeds the metadata-only size bound
+   (content leak). Wired into `cargo xtask lint`, i.e. the CI lint job; unit-tested.
+3. **[pending]** Fuzzing inputs derived from wild files are *seed material only*
+   (`fuzz/corpus/` is gitignored); libFuzzer minimises them, and minimised crash inputs are
+   still treated as wild (never committed).
+4. **[pending]** Bug-report tooling (`xtask oracle triage --export`) strips document bytes;
+   exports carry hashes and structure only.
 
 ## 8. Scope and precedence
 

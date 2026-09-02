@@ -258,31 +258,33 @@ point you have 40 000 lines and no idea which of them are wrong.
     `encrypted`, `cjk`, `rtl`, `tagged`, `huge`, `malicious`.
   - **DoD:** Fetch is reproducible and offline-cacheable; a hash mismatch fails loudly.
 
-- [ ] **SL-0.CORP.02 — Seed the corpus from public sources** · deps: CORP.01 · owner: AI
+- [x] **SL-0.CORP.02 — Seed the corpus from public sources** · deps: CORP.01 · owner: AI
   - **Do:** Manifest entries for: the pdf.js test corpus, the veraPDF corpus, Isartor (PDF/A-1
     negative tests), the Ghent Workgroup output suite, the PDF Association test suite, and a
     govdocs1 sample for fuzz seeds. Respect each licence.
   - **DoD:** ≥5 corpora fetching; total file count and tag distribution reported by
     `xtask corpus stats`.
-  - **Note:** pdf.js (977 PDFs, cached+verified) and veraPDF (2556 PDFs, extracted) are fetched.
-    The Isartor files are a subdirectory of the veraPDF corpus (the separate 404 entry was
-    removed). The ghent, pdfassoc, and govdocs1 entries have researched direct-download URLs
-    (SL-0.CORP.02 follow-up, branch `corp-urls-policy`): **pdfassoc** =
-    `pdf-association/pdf20examples` GitHub tarball (CC-BY-SA-4.0, hash recorded, fetched+verified
-    through the harness); **ghent** = Ghent PDF Output Suite 5.0 via the Wayback Machine
-    `id_` endpoint (the live gwg.org download is email-gated; zip signature and size
-    verified, sha256 pending first fetch); **govdocs1** = `000.zip` on the
-    `s3://digitalcorpora` bucket (`corpora/files/govdocs1/zipfiles/` layout confirmed via
-    ListObjectsV2; both the S3 endpoint and the gateway answer 200). `xtask corpus stats`
-    reports the total PDF count and per-source breakdown.
+  - **Note:** All five manifests resolve to direct artifacts: **pdf.js** (977 PDFs, flat in
+    `corpus/pdfs/`, cached+verified), **veraPDF** (2556 PDFs, extracted, incl. the Isartor
+    files as a subdirectory), **pdfassoc** (`pdf-association/pdf20examples` tarball,
+    CC-BY-SA-4.0, fetched+hash-verified through the harness), **govdocs1** (`000.zip` on
+    `s3://digitalcorpora`, public domain, sha256 `7fb4673a…46aa` verified through the
+    harness, 200 PDFs extracted), **ghent** (GWG Output Suite V50 via the Wayback `id_`
+    endpoint — the live gwg.org download is email-gated and no public mirror exists
+    [Smash expired, no Zenodo/GitHub copies; pdfbox's benchmark README confirms the suite is
+    not auto-downloadable]; HTTP-verified, bytes pending the throttled Wayback transfer,
+    hash to be pinned on completion). `xtask corpus stats`: 3,936 PDFs (977 flat + 2,556
+    verapdf + 200 govdocs1 + 203 synthetic), tag distribution reported.
 
 - [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
   - **Do:** `corpus/expect/<id>.toml` holding, per file: expected open outcome (`Ok` / a specific
     error code), golden render hashes per DPI, expected extracted text hash, oracle-comparison
     tolerance, and an `annotation` field for "the oracle is wrong here, and why".
   - **DoD:** `xtask corpus verify` compares actual against expected and reports a typed diff.
-  - **Note:** Open-outcome expectations (3533 records, 3529 ok + 4 err) are written and verified;
-    `xtask corpus expect-generate` and `corpus verify` are implemented. Golden render hashes and
+  - **Note:** Open-outcome expectations (3936 records, 3901 ok + 35 err) are written and
+    verified; `xtask corpus expect-generate` and `corpus verify` are implemented. The 35 err
+    outcomes are typed codes: 4 pre-existing wild/damaged cases + 31 govdocs1 files (wild fuzz
+    seeds are expected to fail opening in interesting ways). Golden render hashes and
     extracted-text hashes depend on Phase 2/3 and are not yet generated.
 
 - [x] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
@@ -348,11 +350,14 @@ per 10k batch. The DoD's "first 10k fetched" is a single `-Execute -Zips 10` run
 with ≥20 GB free; deliberately deferred here (no disk space), exactly as the DoD allows the
 plan to precede the fetch.
 
-- [x] **SL-0.CORP.05a — Policy + plan + sample script written** (this section,
-      `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`).
+- [x] **SL-0.CORP.05a — Policy + plan + sample script written, gate tooling live** (this
+      section, `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`, and the
+      `xtask corpus wild fetch` gate + `xtask check-wild-hygiene` lint, wired into
+      `cargo xtask lint` → CI).
 - [ ] **SL-0.CORP.05b — First 10k fetched** · blocked on ~16 GB free disk; run
-      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10` and then
-      `xtask corpus expect-generate` over the extracted files.
+      `xtask corpus wild fetch --zips 10 --i-have-read-the-policy` (or
+      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10`) and then `xtask corpus
+      expect-generate` over the extracted files.
 
 ---
 

@@ -15,11 +15,13 @@ mod coverage;
 mod fuzz;
 mod layers;
 mod oracle;
-mod size_check;
-mod synthetic;
 mod purity;
 mod sbom;
+mod size_check;
+mod synthetic;
 mod unsafe_check;
+mod wild;
+mod wild_hygiene;
 
 use std::process::ExitCode;
 
@@ -59,6 +61,9 @@ enum Command {
     CheckAlloc,
     /// Flags are owned, dated, and not past expiry (03-CONVENTIONS.md §11).
     CheckFlags,
+    /// Wild-corpus policy gates: CI excludes wild sources, expectations carry no
+    /// document content (06-CORPUS-POLICY.md §7, SL-0.CORP.05).
+    CheckWildHygiene,
     /// WASM size budgets (SL-0.WS.09).
     SizeCheck,
     /// Coverage floors per crate (SL-0.WS.08).
@@ -112,9 +117,7 @@ enum OracleSub {
     /// Report which oracles are available locally and their pinned images.
     Check,
     /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
-    Compare {
-        file: std::path::PathBuf,
-    },
+    Compare { file: std::path::PathBuf },
     /// Render with selis and an oracle at the same DPI and compare (SL-0.ORACLE.02).
     CompareRender {
         #[arg(long)]
@@ -124,9 +127,7 @@ enum OracleSub {
         file: std::path::PathBuf,
     },
     /// Compare text extracted by selis and mutool (SL-0.ORACLE.04).
-    CompareText {
-        file: std::path::PathBuf,
-    },
+    CompareText { file: std::path::PathBuf },
     /// Triage: run structural compare over a corpus sample and group disagreements (SL-0.ORACLE.05).
     Triage {
         #[arg(long, default_value = "100")]
@@ -152,6 +153,33 @@ enum CorpusSub {
     Verify,
     /// Generate the synthetic corpus (SL-0.CORP.04).
     SyntheticGenerate,
+    /// Gated acquisition of wild corpus samples (SL-0.CORP.05).
+    Wild(WildArgs),
+}
+
+#[derive(clap::Args)]
+struct WildArgs {
+    #[command(subcommand)]
+    sub: WildSub,
+}
+
+#[derive(Subcommand)]
+enum WildSub {
+    /// Fetch SAFEDOCS zips into the wild cache (policy-gated; see
+    /// pdf-plan/06-CORPUS-POLICY.md).
+    Fetch {
+        /// Number of ~1000-PDF SAFEDOCS zips to fetch.
+        #[arg(long, default_value_t = 1)]
+        zips: usize,
+        /// First zip index (stratify samples across the corpus).
+        #[arg(long, default_value_t = 0)]
+        zip_start: usize,
+        /// Assert you have read pdf-plan/06-CORPUS-POLICY.md.
+        #[arg(long)]
+        i_have_read_the_policy: bool,
+    },
+    /// List wild batches and their PDF counts.
+    Status,
 }
 
 fn main() -> ExitCode {
@@ -167,6 +195,7 @@ fn main() -> ExitCode {
         Command::CheckContracts => checks::check_contracts(),
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
+        Command::CheckWildHygiene => wild_hygiene::check(),
         Command::SizeCheck => size_check::run(),
         Command::Coverage => coverage::run(),
         Command::Mutate => coverage::mutate(),
@@ -177,13 +206,31 @@ fn main() -> ExitCode {
             CorpusSub::ExpectGenerate => corpus::run(corpus::CorpusCommand::ExpectGenerate),
             CorpusSub::Verify => corpus::run(corpus::CorpusCommand::Verify),
             CorpusSub::SyntheticGenerate => synthetic::generate(),
+            CorpusSub::Wild(args) => match args.sub {
+                WildSub::Fetch {
+                    zips,
+                    zip_start,
+                    i_have_read_the_policy,
+                } => wild::run(wild::WildCommand::Fetch {
+                    zips,
+                    zip_start,
+                    ack: i_have_read_the_policy,
+                }),
+                WildSub::Status => wild::run(wild::WildCommand::Status),
+            },
         },
         Command::Oracle(args) => match args.sub {
-            OracleSub::Render { tool, dpi, file } => oracle::run(oracle::OracleCommand::Render { tool, dpi, file }),
+            OracleSub::Render { tool, dpi, file } => {
+                oracle::run(oracle::OracleCommand::Render { tool, dpi, file })
+            }
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
             OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
-            OracleSub::CompareRender { tool, dpi, file } => oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file }),
-            OracleSub::CompareText { file } => oracle::run(oracle::OracleCommand::CompareText { file }),
+            OracleSub::CompareRender { tool, dpi, file } => {
+                oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file })
+            }
+            OracleSub::CompareText { file } => {
+                oracle::run(oracle::OracleCommand::CompareText { file })
+            }
             OracleSub::Triage { sample } => oracle::run(oracle::OracleCommand::Triage { sample }),
         },
         Command::Fuzz => fuzz::check(),
@@ -215,6 +262,7 @@ fn lint() -> Result<(), String> {
     purity::check()?;
     unsafe_check::check()?;
     checks::check_contracts()?;
+    wild_hygiene::check()?;
     // SL-0.WS.07 — supply-chain gates.
     run("cargo", &["deny", "check"])?;
     run("cargo", &["vet"])?;
