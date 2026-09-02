@@ -51,6 +51,7 @@ unicode-normalization = "0.1"
 # Crypto (ADR-P0019) — RustCrypto, all MIT OR Apache-2.0
 aes         = "0.8"
 cbc         = { version = "0.1", features = ["alloc"] }
+getrandom   = "0.2"
 md-5        = "0.10"
 sha2        = "0.10"
 

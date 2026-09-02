@@ -111,6 +111,18 @@ impl EncryptInfo {
         };
         (info, file_key)
     }
+
+    /// Verify the stored `/Perms` blob against this info's permission flags
+    /// and the file key (revision 6, read side). Returns `false` when `/Perms`
+    /// is absent, truncated, or decrypts to different flags/bytes — a damaged
+    /// or re-keyed document.
+    #[must_use]
+    pub fn verify_perms(&self, file_key: &[u8]) -> bool {
+        if self.r < 6 || self.perms.is_empty() {
+            return false;
+        }
+        selis_crypto::verify_perms_r6(self.p, file_key, &self.perms)
+    }
 }
 
 /// The decryption policy of an authenticated encrypted document: the file
@@ -374,20 +386,23 @@ pub fn encrypt_dict(info: &EncryptInfo) -> Obj {
         (bytes(b"V"), Obj::Int(i64::from(info.v))),
         (bytes(b"R"), Obj::Int(i64::from(info.r))),
         (bytes(b"Length"), Obj::Int(i64::try_from(info.length).unwrap_or(256))),
-        (bytes(b"O"), Obj::String(bytes(&info.o))),
-        (bytes(b"U"), Obj::String(bytes(&info.u))),
-        (bytes(b"P"), Obj::Int(i64::from(info.p))),
+        (bytes(b"O"), Obj::HexString(bytes(&info.o))),
+        (bytes(b"U"), Obj::HexString(bytes(&info.u))),
+        // /P is a signed 32-bit integer: write the two's-complement bit
+        // pattern so values with the high bit set round-trip through the
+        // i32 parser.
+        (bytes(b"P"), Obj::Int(i64::from(i32::from_ne_bytes(info.p.to_ne_bytes())))),
         (bytes(b"StmF"), Obj::Name(bytes(info.stmf.as_bytes()))),
         (bytes(b"StrF"), Obj::Name(bytes(info.strf.as_bytes()))),
     ];
     if !info.ue.is_empty() {
-        pairs.push((bytes(b"UE"), Obj::String(bytes(&info.ue))));
+        pairs.push((bytes(b"UE"), Obj::HexString(bytes(&info.ue))));
     }
     if !info.oe.is_empty() {
-        pairs.push((bytes(b"OE"), Obj::String(bytes(&info.oe))));
+        pairs.push((bytes(b"OE"), Obj::HexString(bytes(&info.oe))));
     }
     if !info.perms.is_empty() {
-        pairs.push((bytes(b"Perms"), Obj::String(bytes(&info.perms))));
+        pairs.push((bytes(b"Perms"), Obj::HexString(bytes(&info.perms))));
     }
     if !info.encrypt_metadata {
         pairs.push((bytes(b"EncryptMetadata"), Obj::Bool(false)));

@@ -421,7 +421,10 @@ impl DocumentBuilder {
         if let Some((first, second)) = &self.id {
             trailer_pairs.push((
                 b"ID".to_vec(),
-                Obj::Array(vec![Obj::String(bytes(first)), Obj::String(bytes(second))]),
+                Obj::Array(vec![
+                    Obj::HexString(bytes(first)),
+                    Obj::HexString(bytes(second)),
+                ]),
             ));
         }
         let trailer = Obj::Dict(
@@ -826,8 +829,8 @@ pub fn write_objects_as_document_encrypted(
         (
             b"ID".to_vec(),
             Obj::Array(vec![
-                Obj::String(bytes(&id_first)),
-                Obj::String(bytes(&id_first)),
+                Obj::HexString(bytes(&id_first)),
+                Obj::HexString(bytes(&id_first)),
             ]),
         ),
     ]);
@@ -1083,6 +1086,10 @@ mod tests {
         assert_eq!(key.len(), 32);
         assert!(info.stream_encrypted());
         assert!(info.string_encrypted());
+        assert!(
+            info.verify_perms(&key),
+            "/Perms must decrypt to the written flags with the file key"
+        );
 
         // Resolve the content stream (object 3) and decrypt its body.
         let mut content_offset = 0u64;
