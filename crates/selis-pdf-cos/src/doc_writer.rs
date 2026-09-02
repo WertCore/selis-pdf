@@ -560,6 +560,157 @@ pub fn embed_image_rgba(
     Ref::new(num, 0)
 }
 
+/// Append an incremental update to an existing PDF (SL-1A.WRITE.02).
+///
+/// The original bytes are preserved verbatim as a prefix; the replacement
+/// objects and a new classic xref table + trailer are appended, with `/Prev`
+/// pointing back at the previous revision's `startxref` (ISO 32000-1 §7.5.6).
+/// This is the pattern Adobe, Aspose, and Foxit emit for small edits: only the
+/// changed objects are rewritten, everything else stays byte-identical, so a
+/// small change to a large file costs bytes proportional to the edit, and
+/// digital signatures over prior revisions stay valid (the bytes they sign are
+/// untouched).
+///
+/// `new_objects` is the set of objects to (re)define in this revision, keyed
+/// by object number (numbers must be unique; gaps are allowed and emitted as
+/// separate xref subsections). `trailer` carries the new revision's trailer
+/// entries — typically `/Root` and `/ID` carried over from the previous
+/// revision; `/Size` and `/Prev` are filled in here.
+///
+/// # Budget
+///
+/// Charges the original bytes, the appended output bytes, and per-object
+/// writes.
+///
+/// # Malformed Input
+///
+/// `OBJ_UNEXPECTED` on a duplicate object number or an original with no
+/// `startxref`.
+pub fn write_incremental_update(
+    original: &[u8],
+    new_objects: &[(u32, Obj)],
+    trailer: &[(Vec<u8>, Obj)],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    // The previous revision's xref offset — the value on its `startxref` line.
+    let startxref_kw = crate::xref::find_startxref(original, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incr-write",
+            detail = "original has no startxref"
+        )
+    })?;
+    let kw = usize::try_from(startxref_kw).unwrap_or(usize::MAX);
+    let (prev, _) = crate::xref::read_startxref_value(
+        original,
+        kw.saturating_add("startxref".len()),
+    )?;
+
+    // `/Size` is the highest object number across all revisions + 1: the
+    // previous revision's declared size, raised by any newly-allocated object.
+    let original_size = {
+        let doc = crate::parse_revisions(original, startxref_kw, budget, g)?;
+        doc.revisions()
+            .last()
+            .and_then(|r| {
+                r.trailer
+                    .iter()
+                    .find(|(k, _)| k.as_slice() == b"Size")
+                    .and_then(|(_, v)| match v {
+                        Obj::Int(n) => Some(u64::try_from(*n).unwrap_or(u64::MAX)),
+                        _ => None,
+                    })
+            })
+            .unwrap_or(0)
+    };
+    let mut max_new = 0u64;
+    let mut sorted: Vec<(u32, &Obj)> = new_objects.iter().map(|(n, o)| (*n, o)).collect();
+    sorted.sort_by_key(|(n, _)| *n);
+    for (i, (num, _)) in sorted.iter().enumerate() {
+        if i > 0 && sorted.get(i.saturating_sub(1)).map(|(n, _)| *n) == Some(*num) {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "incr-write",
+                object = *num,
+                detail = "duplicate object number"
+            ));
+        }
+        max_new = max_new.max(u64::from(*num));
+    }
+    let size = original_size.max(max_new.saturating_add(1));
+
+    let mut out = Vec::new();
+    out.extend_from_slice(original);
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+
+    // Append each replacement object, recording its absolute offset.
+    let mut offsets: Vec<(u32, u64)> = Vec::with_capacity(sorted.len());
+    for (num, obj) in &sorted {
+        let off = u64::try_from(out.len()).unwrap_or(u64::MAX);
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        let mut w = Writer::new(budget);
+        out.extend_from_slice(&w.to_bytes(obj, g)?);
+        out.push(b'\n');
+        out.extend_from_slice(b"endobj\n");
+        offsets.push((*num, off));
+    }
+
+    // Classic xref table: one subsection per contiguous run of replacement
+    // object numbers. Only the changed objects are declared; everything else
+    // is inherited from the previous revision (ISO 32000-1 §7.5.8.3) — listing
+    // them as free here would incorrectly free them.
+    let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    out.extend_from_slice(b"xref\n");
+    let mut i = 0usize;
+    while i < offsets.len() {
+        let run_start = i;
+        let mut num = offsets.get(i).map(|(n, _)| *n).unwrap_or(0);
+        while i < offsets.len() && offsets.get(i).map(|(n, _)| *n) == Some(num) {
+            i = i.saturating_add(1);
+            num = num.saturating_add(1);
+        }
+        let run = offsets
+            .get(run_start..i)
+            .unwrap_or(offsets.get(run_start..run_start).unwrap_or(&[]));
+        let first = run.first().map(|(n, _)| *n).unwrap_or(0);
+        let count = u64::try_from(run.len()).unwrap_or(u64::MAX);
+        out.extend_from_slice(format!("{first} {count}\n").as_bytes());
+        for (_, off) in run {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+    }
+
+    // Trailer: the caller's entries (Root, ID, …) plus /Size and /Prev.
+    out.extend_from_slice(b"trailer\n");
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = trailer
+        .iter()
+        .map(|(k, v)| (bytes(k), v.clone()))
+        .collect();
+    pairs.push((
+        bytes(b"Size"),
+        Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+    ));
+    pairs.push((
+        bytes(b"Prev"),
+        Obj::Int(i64::try_from(prev).unwrap_or(i64::MAX)),
+    ));
+    let trailer_obj = Obj::Dict(pairs);
+    let mut tw = Writer::new(budget);
+    out.extend_from_slice(&tw.to_bytes(&trailer_obj, g)?);
+    out.push(b'\n');
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+    Ok(out)
+}
+
 /// Write a complete single-revision PDF from pre-built objects (the output
 /// path for optimisation/rewriting tools such as SL-1A.TOOL.07, where the
 /// object graph already exists and only needs serialising with a valid xref).
@@ -577,6 +728,27 @@ pub fn embed_image_rgba(
 pub fn write_objects_as_document(
     objects: &[(u32, Obj)],
     root: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    write_objects_as_document_with_trailer(objects, root, &[], budget, g)
+}
+
+/// As [`write_objects_as_document`], with extra trailer entries appended after
+/// `/Size` and `/Root` (used by SL-1A.TOOL.04 to carry `/Info` and `/ID` into
+/// a rewritten document).
+///
+/// # Budget
+///
+/// As [`write_objects_as_document`].
+///
+/// # Malformed Input
+///
+/// As [`write_objects_as_document`].
+pub fn write_objects_as_document_with_trailer(
+    objects: &[(u32, Obj)],
+    root: Ref,
+    extra_trailer: &[(Vec<u8>, Obj)],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
@@ -630,13 +802,15 @@ pub fn write_objects_as_document(
         }
     }
     out.extend_from_slice(b"trailer\n");
-    let trailer = dict(&[
+    let mut trailer_pairs: Vec<(Vec<u8>, Obj)> = vec![
         (
             b"Size".to_vec(),
             Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
         ),
         (b"Root".to_vec(), Obj::Ref(root)),
-    ]);
+    ];
+    trailer_pairs.extend_from_slice(extra_trailer);
+    let trailer = dict(&trailer_pairs);
     let mut tw = Writer::new(budget);
     out.extend_from_slice(&tw.to_bytes(&trailer, g)?);
     out.push(b'\n');
@@ -843,6 +1017,164 @@ mod tests {
             page_nums.len(),
             2,
             "two distinct page objects: {page_nums:?}"
+        );
+    }
+
+    /// Incremental update: original bytes are a prefix, two revisions parse,
+    /// and the replacement objects resolve from the newest revision.
+    #[test]
+    fn incremental_update_appends_a_revision() {
+        let mut b = DocumentBuilder::new();
+        let mut c = ContentBuilder::new();
+        c.set_fill(1.0, 0.0, 0.0).fill_rect(0.0, 0.0, 100.0, 100.0);
+        b.add_page(100.0, 100.0, c.to_bytes().as_slice());
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let original = b.write(&budget, &mut g).expect("write");
+
+        // Redefine the catalog (1) with a /Producer string and the page (4)
+        // with a /Rotate — these are separate xref subsections.
+        let catalog = dict(&[
+            (b"Type".to_vec(), Obj::Name(bytes(b"Catalog"))),
+            (b"Pages".to_vec(), Obj::Ref(Ref::new(2, 0))),
+            (b"Version".to_vec(), Obj::Name(bytes(b"1.4"))),
+            (b"Producer".to_vec(), Obj::String(bytes(b"selis-incr"))),
+        ]);
+        let page = dict(&[
+            (b"Type".to_vec(), Obj::Name(bytes(b"Page"))),
+            (b"Parent".to_vec(), Obj::Ref(Ref::new(2, 0))),
+            (
+                b"MediaBox".to_vec(),
+                Obj::Array(vec![
+                    Obj::Int(0),
+                    Obj::Int(0),
+                    Obj::Int(100),
+                    Obj::Int(100),
+                ]),
+            ),
+            (b"Contents".to_vec(), Obj::Ref(Ref::new(3, 0))),
+            (b"Resources".to_vec(), Obj::Dict(Vec::new())),
+            (b"Rotate".to_vec(), Obj::Int(90)),
+        ]);
+        let trailer = vec![
+            (b"Root".to_vec(), Obj::Ref(Ref::new(1, 0))),
+            (
+                b"ID".to_vec(),
+                Obj::Array(vec![
+                    Obj::String(bytes(b"first")),
+                    Obj::String(bytes(b"second")),
+                ]),
+            ),
+        ];
+        let updated = write_incremental_update(
+            &original,
+            &[(1, catalog), (4, page)],
+            &trailer,
+            &budget,
+            &mut g,
+        )
+        .expect("incr");
+
+        // Original bytes are a byte-identical prefix.
+        assert!(updated.starts_with(&original), "original must be a prefix");
+
+        // Two revisions, and the new objects resolve from the newest.
+        let startxref = crate::xref::find_startxref(&updated, 4096).expect("startxref");
+        let doc = crate::parse_revisions(&updated, startxref, &budget, &mut g).expect("open");
+        assert_eq!(doc.revisions().len(), 2);
+        let view = doc.at_revision(1).expect("newest view");
+
+        // Catalog /Producer is present.
+        let cat_off = match view.xref.get(&1) {
+            Some(crate::XrefEntry::InUse { offset, .. }) => *offset,
+            _ => panic!("catalog not in use"),
+        };
+        let Obj::Dict(cat_pairs) =
+            crate::resolve_object_numbered(&updated, cat_off, 1, &budget, &mut g)
+                .expect("resolve catalog")
+        else {
+            panic!("catalog is a dict");
+        };
+        assert!(
+            cat_pairs
+                .iter()
+                .any(|(k, v)| k.as_slice() == b"Producer"
+                    && matches!(v, Obj::String(s) if s.as_slice() == b"selis-incr")),
+            "catalog has /Producer"
+        );
+
+        // Page /Rotate is present.
+        let page_off = match view.xref.get(&4) {
+            Some(crate::XrefEntry::InUse { offset, .. }) => *offset,
+            _ => panic!("page not in use"),
+        };
+        let Obj::Dict(page_pairs) =
+            crate::resolve_object_numbered(&updated, page_off, 4, &budget, &mut g)
+                .expect("resolve page")
+        else {
+            panic!("page is a dict");
+        };
+        assert!(
+            page_pairs
+                .iter()
+                .any(|(k, v)| k.as_slice() == b"Rotate" && matches!(v, Obj::Int(90))),
+            "page has /Rotate"
+        );
+    }
+
+    /// Duplicate object numbers in the update are rejected.
+    #[test]
+    fn incremental_update_rejects_duplicates() {
+        let mut b = DocumentBuilder::new();
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let original = b.write(&budget, &mut g).expect("write");
+        let err = write_incremental_update(
+            &original,
+            &[(1, Obj::Int(1)), (1, Obj::Int(2))],
+            &[(b"Root".to_vec(), Obj::Ref(Ref::new(1, 0)))],
+            &budget,
+            &mut g,
+        )
+        .expect_err("duplicates rejected");
+        assert_eq!(err.code(), Code::ObjUnexpected);
+    }
+
+    /// `write_objects_as_document_with_trailer` carries extra trailer entries.
+    #[test]
+    fn write_objects_as_document_with_trailer_carries_extra_entries() {
+        let objects = vec![(
+            1u32,
+            dict(&[
+                (b"Type".to_vec(), Obj::Name(bytes(b"Catalog"))),
+                (b"Pages".to_vec(), Obj::Ref(Ref::new(2, 0))),
+            ]),
+        )];
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let extra = vec![
+            (b"Info".to_vec(), Obj::Ref(Ref::new(99, 0))),
+            (
+                b"ID".to_vec(),
+                Obj::Array(vec![
+                    Obj::String(bytes(b"abc")),
+                    Obj::String(bytes(b"def")),
+                ]),
+            ),
+        ];
+        let out = write_objects_as_document_with_trailer(
+            &objects,
+            Ref::new(1, 0),
+            &extra,
+            &budget,
+            &mut g,
+        )
+        .expect("write");
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("/Info 99 0 R"), "trailer has /Info: {s}");
+        assert!(
+            s.contains("(abc)") && s.contains("(def)"),
+            "trailer has /ID strings: {s}"
         );
     }
 

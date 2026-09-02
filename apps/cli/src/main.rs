@@ -31,6 +31,7 @@ mod render;
 mod search;
 mod tools;
 mod topdf;
+mod unlock;
 
 #[cfg(test)]
 mod tool_conformance;
@@ -240,6 +241,17 @@ enum Command {
         #[arg(short, long)]
         output: String,
     },
+    /// Remove password protection from a PDF (decrypt and rewrite).
+    Unlock {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The password (default: empty — the user password).
+        #[arg(short, long)]
+        password: Option<String>,
+    },
     /// Run a tool over many files with per-file isolation + a JSON report.
     Batch {
         /// The tool to run across the set: `compress`.
@@ -345,6 +357,11 @@ fn main() {
             title,
         } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
         Command::Compress { path, output } => compress::run(&path, &output),
+        Command::Unlock {
+            path,
+            output,
+            password,
+        } => unlock::run(&path, &output, password.as_deref()),
         Command::Batch {
             tool,
             inputs,
