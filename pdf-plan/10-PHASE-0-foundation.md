@@ -266,9 +266,14 @@ point you have 40 000 lines and no idea which of them are wrong.
     `xtask corpus stats`.
   - **Note:** pdf.js (977 PDFs, cached+verified) and veraPDF (2556 PDFs, extracted) are fetched.
     The Isartor files are a subdirectory of the veraPDF corpus (the separate 404 entry was
-    removed). The ghent, pdfassoc, and govdocs1 entries need researched direct-download URLs
-    (the current placeholder URLs point at web pages and contribute 0 PDFs) — these require
-    HUMAN research of the licence terms and exact download endpoints. `xtask corpus stats`
+    removed). The ghent, pdfassoc, and govdocs1 entries have researched direct-download URLs
+    (SL-0.CORP.02 follow-up, branch `corp-urls-policy`): **pdfassoc** =
+    `pdf-association/pdf20examples` GitHub tarball (CC-BY-SA-4.0, hash recorded, fetched+verified
+    through the harness); **ghent** = Ghent PDF Output Suite 5.0 via the Wayback Machine
+    `id_` endpoint (the live gwg.org download is email-gated; zip signature and size
+    verified, sha256 pending first fetch); **govdocs1** = `000.zip` on the
+    `s3://digitalcorpora` bucket (`corpora/files/govdocs1/zipfiles/` layout confirmed via
+    ListObjectsV2; both the S3 endpoint and the gateway answer 200). `xtask corpus stats`
     reports the total PDF count and per-source breakdown.
 
 - [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
@@ -293,6 +298,61 @@ point you have 40 000 lines and no idea which of them are wrong.
     (Common Crawl extraction is the usual route; check terms and PII posture). Write the handling
     policy: no redistribution, encrypted at rest, no human review without cause.
   - **DoD:** Written plan + the first 10k fetched.
+
+### SL-0.CORP.05 — Wild-corpus acquisition plan (written; fetch pending disk space)
+
+**Decision.** Do not run our own Common Crawl WARC pipeline as the primary route. Acquire wild
+PDFs from **SAFEDOCS (CC-MAIN-2021-31-PDF-UNTRUNCATED)** on Digital Corpora
+(`downloads.digitalcorpora.org/corpora/files/CC-MAIN-2021-31-PDF-UNTRUNCATED/`,
+`verified 200` on the first zip), which is NASA JPL's DARPA SafeDocs extraction of the Common
+Crawl CC-MAIN-2021-31 crawl: **7.93 million unique real-world PDFs**, refetched untruncated (CC
+raw data caps files at 1 MB), deduplicated by SHA-256, packaged as 7,933 zips of ~1,000 files
+(1.0–2.8 GB each), with provenance metadata tables linking every PDF back to its original URL
+and crawl record. Direct Common Crawl WARC extraction stays as the documented fallback
+(`corpus/tools/fetch-wild.ps1 -Source commoncrawl`) for freshness SAFEDOCS cannot offer.
+
+**Legality (checked 2026-09).** Common Crawl's [Terms of Use](https://commoncrawl.org/terms-of-use)
+(March 7, 2024) grant a limited licence to use the Service and Crawled Content; prohibited uses
+(privacy invasion, harvesting PII "for use separately from the Crawled Content", AI/ML training)
+do not cover parse-robustness testing, which is the research use the ToU contemplates. Crawled
+content remains third-party copyrighted — hence the fetch-only posture in
+`pdf-plan/06-CORPUS-POLICY.md`. Digital Corpora's site materials are CC0; govdocs1 documents are
+US Government public domain. SAFEDOCS inherits the Common Crawl posture; JPL/PDF Association
+publish it freely via the AWS Open Data Sponsorship Program. No payment anywhere in the chain.
+
+**Handling policy.** `pdf-plan/06-CORPUS-POLICY.md` (new file): no redistribution (not in repo,
+CI artefacts, bug reports, or screenshots; expectations carry hashes/outcomes only), encrypted at
+rest (BitLocker/LUKS volume; cache lives outside the repo at
+`~/.cache/selis-corpus/wild`), no human review of document content without recorded cause
+(triage on metadata: hashes, error codes, structure), provenance JSON per batch, quarantine +
+honouring of takedowns, and the automated-hygiene controls to build alongside the tooling.
+
+**Acquisition mechanics (the 10k DoD, when disk allows).**
+`corpus/tools/fetch-wild.ps1` (written, not run at scale): a dry-run-by-default script that
+- resolves SAFEDOCS zip URLs from the verified key layout
+  `zipfiles/<grp>/<NNNN>.zip` (`0000-0999/0000.zip` …), stratified by `-ZipStart`,
+- downloads **10 zips ≈ 10,000 PDFs ≈ 13–16 GB** with `curl --retry`, verifies SHA-256 per zip
+  and per file, extracts, and writes `<batch>/provenance.json` inside the batch directory
+  (outside the repo, never committed — 06-CORPUS-POLICY.md §5),
+- refuses to write inside the repo, checks free space (per-zip floor), warns if the destination
+  volume does not report BitLocker protection,
+- and carries the Common Crawl fallback route (CDX index query with
+  `filter=mimetype:application/pdf`, per-domain sampling, byte-range WARC record carve) —
+  experimental, capped, and marked as such in the script.
+
+**Sizing for the G1 gate (~100k).** 100 SAFEDOCS zips ≈ 100k PDFs ≈ 130–160 GB: fetch in
+stratified batches (vary `-ZipStart` across the 0–7999 range so the sample spans the corpus,
+not just its head), rotate batches off-disk once expectation records are generated (the corpus
+is rebuildable from provenance + upstream). Estimated download time at 100 Mbit/s: ~3–4 hours
+per 10k batch. The DoD's "first 10k fetched" is a single `-Execute -Zips 10` run on a machine
+with ≥20 GB free; deliberately deferred here (no disk space), exactly as the DoD allows the
+plan to precede the fetch.
+
+- [x] **SL-0.CORP.05a — Policy + plan + sample script written** (this section,
+      `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`).
+- [ ] **SL-0.CORP.05b — First 10k fetched** · blocked on ~16 GB free disk; run
+      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10` and then
+      `xtask corpus expect-generate` over the extracted files.
 
 ---
 

@@ -86,6 +86,7 @@ turned out to be wrong or under-specified.
 | `01-ARCHITECTURE.md` | Layer model, full crate list + dependency DAG, core traits, every client architecture. | Before any code. |
 | `02-ADRS.md` | 34 Architecture Decision Records. Locked decisions. | Before proposing an alternative. |
 | `03-CONVENTIONS.md` | Error model, naming, unsafe policy, lint gates, Definition of Done, PR template. | Before any code. |
+| `06-CORPUS-POLICY.md` | Handling policy for wild (web-derived) corpora: fetch-only, encrypted at rest, no redistribution, no human review without cause, provenance rules. | Before acquiring any wild corpus. |
 | `10-PHASE-0-foundation.md` | Weeks 0–3. Repo, CI, corpus harness, oracle harness, budget/sandbox kernel, error model. | Now. |
 | `11-PHASE-1-cos.md` | Weeks 4–9. COS object model, xref, filters, damaged-file recovery, encryption. |  |
 | `11A-PHASE-1A-tools.md` | Weeks 10–16. Merge, split, page ops, unlock, protect, compress. **First revenue, month 4.** Runs parallel with Phase 2. |  |
