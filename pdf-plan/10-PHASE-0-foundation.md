@@ -265,10 +265,11 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** ≥5 corpora fetching; total file count and tag distribution reported by
     `xtask corpus stats`.
   - **Note:** pdf.js (977 PDFs, cached+verified) and veraPDF (2556 PDFs, extracted) are fetched.
-    The Isartor entry was removed (the files are inside the veraPDF corpus). The ghent, pdfassoc,
-    and govdocs1 entries need researched direct-download URLs (the current placeholder URLs point
-    at web pages and contribute 0 PDFs). `xtask corpus stats` now reports the total PDF count
-    and per-source breakdown.
+    The Isartor files are a subdirectory of the veraPDF corpus (the separate 404 entry was
+    removed). The ghent, pdfassoc, and govdocs1 entries need researched direct-download URLs
+    (the current placeholder URLs point at web pages and contribute 0 PDFs) — these require
+    HUMAN research of the licence terms and exact download endpoints. `xtask corpus stats`
+    reports the total PDF count and per-source breakdown.
 
 - [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
   - **Do:** `corpus/expect/<id>.toml` holding, per file: expected open outcome (`Ok` / a specific
