@@ -102,6 +102,9 @@ fn load_floors() -> Result<BTreeMap<String, f64>, String> {
         serde_json::from_str(&text).map_err(|e| format!("{COVERAGE_TOML}: {e}"))?;
     let mut out = BTreeMap::new();
     for (k, val) in v.as_object().ok_or("coverage.toml must be an object")? {
+        if k == "mutation_score" {
+            continue;
+        }
         let floor = val.as_u64().ok_or_else(|| format!("{k}: non-numeric floor"))?;
         out.insert(k.clone(), floor as f64);
     }
@@ -110,8 +113,7 @@ fn load_floors() -> Result<BTreeMap<String, f64>, String> {
 
 /// Run `cargo-mutants` on the crates the convention scopes mutation to
 /// (`selis-sandbox`, `selis-pdf-edit`, `selis-pdf-redact`, `selis-pdf-sign`).
-/// The mutation score is informational here (no floor gate yet); the command
-/// fails if `cargo-mutants` itself errors.
+/// Enforces the `mutation_score` floor from `xtask/coverage.toml` if present.
 pub fn mutate() -> Result<(), String> {
     let out = std::process::Command::new("cargo")
         .arg("mutants")
@@ -132,14 +134,54 @@ pub fn mutate() -> Result<(), String> {
         .map_err(|e| format!("cannot run cargo-mutants: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    println!("{stdout}");
     if !stderr.trim().is_empty() {
         eprintln!("{stderr}");
     }
-    if out.status.success() {
-        println!("mutation: cargo-mutants completed (no surviving mutants is the goal)");
-        Ok(())
-    } else {
-        Err(format!("cargo-mutants failed (exit {:?})", out.status.code()))
+
+    // Parse the mutation score from the summary ("Mutation score: N%").
+    let score: Option<f64> = stdout
+        .lines()
+        .find_map(|l| {
+            let l = l.trim();
+            if let Some(rest) = l.strip_prefix("Mutation score:") {
+                rest.trim().trim_end_matches('%').parse::<f64>().ok()
+            } else {
+                None
+            }
+        });
+
+    // The floor is a top-level key in coverage.toml.
+    let floor = load_score_floor()?;
+    println!("{stdout}");
+    if !out.status.success() {
+        return Err(format!("cargo-mutants failed (exit {:?})", out.status.code()));
     }
+
+    match (score, floor) {
+        (Some(s), Some(f)) if s < f => {
+            Err(format!("mutation score {s:.1}% below floor {f:.1}%"))
+        }
+        (Some(s), Some(f)) => {
+            println!("mutation: score {s:.1}% meets floor {f:.1}%");
+            Ok(())
+        }
+        (Some(s), None) => {
+            println!("mutation: score {s:.1}% (no floor configured)");
+            Ok(())
+        }
+        (None, Some(_)) => Err("mutation: score could not be parsed from output".to_string()),
+        (None, None) => {
+            println!("mutation: no score parsed and no floor configured");
+            Ok(())
+        }
+    }
+}
+
+/// The `mutation_score` floor (percentage) from `xtask/coverage.toml`, if any.
+fn load_score_floor() -> Result<Option<f64>, String> {
+    let text = std::fs::read_to_string(COVERAGE_TOML)
+        .map_err(|e| format!("cannot read {COVERAGE_TOML}: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{COVERAGE_TOML}: {e}"))?;
+    Ok(v.get("mutation_score").and_then(|x| x.as_f64()))
 }
