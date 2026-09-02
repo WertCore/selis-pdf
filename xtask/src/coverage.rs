@@ -44,7 +44,9 @@ pub fn run() -> Result<(), String> {
     let mut per_crate: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for f in files {
         let name = f["name"].as_str().unwrap_or("");
-        let Some(crate_name) = crate_name_of(name) else { continue };
+        let Some(crate_name) = crate_name_of(name) else {
+            continue;
+        };
         let covered = f["summary"]["lines"]["covered"].as_u64().unwrap_or(0);
         let total = f["summary"]["lines"]["count"].as_u64().unwrap_or(0);
         let entry = per_crate.entry(crate_name).or_insert((0, 0));
@@ -54,7 +56,9 @@ pub fn run() -> Result<(), String> {
 
     let mut failures = Vec::new();
     for (crate_name, &(covered, total)) in &per_crate {
-        let Some(&floor) = floors.get(crate_name) else { continue };
+        let Some(&floor) = floors.get(crate_name) else {
+            continue;
+        };
         let pct = if total > 0 {
             covered as f64 / total as f64 * 100.0
         } else {
@@ -105,7 +109,9 @@ fn load_floors() -> Result<BTreeMap<String, f64>, String> {
         if k == "mutation_score" {
             continue;
         }
-        let floor = val.as_u64().ok_or_else(|| format!("{k}: non-numeric floor"))?;
+        let floor = val
+            .as_u64()
+            .ok_or_else(|| format!("{k}: non-numeric floor"))?;
         out.insert(k.clone(), floor as f64);
     }
     Ok(out)
@@ -139,28 +145,27 @@ pub fn mutate() -> Result<(), String> {
     }
 
     // Parse the mutation score from the summary ("Mutation score: N%").
-    let score: Option<f64> = stdout
-        .lines()
-        .find_map(|l| {
-            let l = l.trim();
-            if let Some(rest) = l.strip_prefix("Mutation score:") {
-                rest.trim().trim_end_matches('%').parse::<f64>().ok()
-            } else {
-                None
-            }
-        });
+    let score: Option<f64> = stdout.lines().find_map(|l| {
+        let l = l.trim();
+        if let Some(rest) = l.strip_prefix("Mutation score:") {
+            rest.trim().trim_end_matches('%').parse::<f64>().ok()
+        } else {
+            None
+        }
+    });
 
     // The floor is a top-level key in coverage.toml.
     let floor = load_score_floor()?;
     println!("{stdout}");
     if !out.status.success() {
-        return Err(format!("cargo-mutants failed (exit {:?})", out.status.code()));
+        return Err(format!(
+            "cargo-mutants failed (exit {:?})",
+            out.status.code()
+        ));
     }
 
     match (score, floor) {
-        (Some(s), Some(f)) if s < f => {
-            Err(format!("mutation score {s:.1}% below floor {f:.1}%"))
-        }
+        (Some(s), Some(f)) if s < f => Err(format!("mutation score {s:.1}% below floor {f:.1}%")),
         (Some(s), Some(f)) => {
             println!("mutation: score {s:.1}% meets floor {f:.1}%");
             Ok(())

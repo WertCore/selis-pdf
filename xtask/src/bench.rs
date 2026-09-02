@@ -67,19 +67,29 @@ pub fn run(record: bool, compare: bool) -> Result<(), String> {
     }
 
     if compare {
-        let baseline_text = std::fs::read_to_string(BASELINE_FILE)
-            .map_err(|e| format!("cannot read {BASELINE_FILE}: {e}.\nRun `xtask bench --record-baseline` first."))?;
-        let baseline: BTreeMap<String, f64> = serde_json::from_str(&baseline_text)
-            .map_err(|e| format!("{BASELINE_FILE}: {e}"))?;
+        let baseline_text = std::fs::read_to_string(BASELINE_FILE).map_err(|e| {
+            format!("cannot read {BASELINE_FILE}: {e}.\nRun `xtask bench --record-baseline` first.")
+        })?;
+        let baseline: BTreeMap<String, f64> =
+            serde_json::from_str(&baseline_text).map_err(|e| format!("{BASELINE_FILE}: {e}"))?;
 
         let mut failures = Vec::new();
         for (name, &new_mean) in &results {
             if let Some(&base_mean) = baseline.get(name) {
                 let change = (new_mean - base_mean) / base_mean * 100.0;
-                let status = if change > 2.0 { "FAIL" } else if change < -2.0 { "IMPROVED" } else { "ok" };
+                let status = if change > 2.0 {
+                    "FAIL"
+                } else if change < -2.0 {
+                    "IMPROVED"
+                } else {
+                    "ok"
+                };
                 println!("  {name:30} {new_mean:.3} ns (baseline {base_mean:.3} ns, {change:+.1}%) {status}");
                 if change > 2.0 {
-                    failures.push(format!("{name}: {change:+.1}% regression (>{:.0}% threshold)", 2.0));
+                    failures.push(format!(
+                        "{name}: {change:+.1}% regression (>{:.0}% threshold)",
+                        2.0
+                    ));
                 }
             } else {
                 println!("  {name:30} {new_mean:.3} ns (no baseline)");
