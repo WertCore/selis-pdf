@@ -53,7 +53,18 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **API:** `fn write_document(model: &DocModel, sink: &mut dyn DocSink, opts: &WriteOpts) -> Result<()>`
   - **DoD:** Property test over generated document models: `parse(write(m))` is semantically equal
     to `m`; output opens in PDFium, qpdf, and Acrobat; `qpdf --check` reports no warnings.
-- [ ] **SL-1A.WRITE.02 — Incremental-update writer** · deps: WRITE.01 · owner: HUMAN
+- [x] **SL-1A.WRITE.02 — Incremental-update writer** · deps: WRITE.01 · owner: HUMAN
+  - **Note:** Shipped as `selis_pdf_cos::doc_writer::write_incremental_update`:
+    appends replacement objects + a classic xref table + trailer to an existing
+    file's bytes, with `/Prev` pointing at the prior revision's `startxref`
+    (ISO 32000-1 §7.5.6). The original bytes are a byte-identical prefix; only
+    the changed objects are declared (one xref subsection per contiguous run),
+    everything else is inherited — so a small edit costs bytes proportional to
+    the edit and keeps digital signatures over prior revisions valid. The
+    trailer carries the caller's `/Root`/`/ID` plus auto-filled `/Size` and
+    `/Prev`. Verified by re-parsing: two revisions, new objects resolve.
+    Refinements for later: xref streams, `/ID[1]` regeneration, and the < 2 KB
+    append-budget suite.
   - **Do:** `23-EDIT-MODEL-SPEC.md §6` in full. Pulled forward from `SL-5.EDIT.03` because page
     rotation, page deletion, and metadata edits are all naturally incremental — and because this
     is the component that most benefits from early hardening.
@@ -163,7 +174,17 @@ operation is available identically in the CLI, the web app, and the extension.
     rotate adds to any existing `/Rotate` (mod 360) with page selection, delete refuses to remove
     every page, reorder validates a full permutation. Duplicate/insert-blank and the incremental
     (WRITE.02) path with its < 2 KB append budget are refinements pending the incremental writer.
-- [ ] **SL-1A.TOOL.04 — Unlock: remove password** · deps: WRITE.01, `SL-1.ENC.02` · owner: HUMAN
+- [x] **SL-1A.TOOL.04 — Unlock: remove password** · deps: WRITE.01, `SL-1.ENC.02` · owner: HUMAN
+  - **Note:** Shipped as `selis unlock <input> --output <out> [--password <pw>]`
+    (defaults to the empty user password). Opens via the engine, walks the
+    object graph from `/Root` (+`/Info`) through a decrypting resolver, and
+    rewrites a clean single-revision document via `write_objects_as_document`
+    with `/Encrypt` dropped from the trailer; unencrypted inputs are copied
+    as-is. `WRITE.05` verification before writing: output reparses with no
+    `/Encrypt`, the same `/Root`, and builds a usable document model. A wrong
+    password is a clean typed `WRONG_PASSWORD` error. Tested against the
+    corpus (`bug900822.pdf`, `empty_protected.pdf`, `secHandler.pdf` unlock;
+    `print_protection.pdf` needs its real password).
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
     document. Works for whichever password the user has — user or owner.
