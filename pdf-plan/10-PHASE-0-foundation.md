@@ -119,13 +119,15 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** `cargo-llvm-cov` with the per-crate floors of `03-CONVENTIONS.md §6` in
     `xtask/coverage.toml`; `cargo-mutants` scoped to `selis-sandbox`/`selis-pdf-edit`/`selis-pdf-redact`/`selis-pdf-sign`.
   - **DoD:** Floors enforced; a deliberately-uncovered branch fails CI.
+  - **Note:** `xtask coverage` runs `cargo llvm-cov` and enforces per-crate floors (L2 core 90%,
+    other L2 80%, L3-L4 70%). Mutation (cargo-mutants) pending.
 
 - [ ] **SL-0.WS.09 — `size-check` and the WASM budget table** · deps: WS.06 · owner: AI
   - **Do:** Build the WASM target with `wasm-opt`, measure brotli-compressed size per feature
     chunk, compare against `xtask/size-budgets.toml`. Fail on regression beyond 2%.
   - **DoD:** Baseline recorded; a deliberate bloat commit fails CI.
-  - **Note:** Start this in week 1, empty. A size budget introduced at month 6 is a size budget
-    that gets raised at month 6.
+  - **Note:** `xtask size-check` builds wasm32, wasm-opt -O3, brotli via node zlib. Baseline
+    (xtask target): 367 KiB raw, 102.5 KiB brotli — under the 120 KiB core-parser budget.
 
 - [ ] **SL-0.WS.10 — pnpm workspace for `apps/*/ui`** · owner: AI
   - **Do:** pnpm workspace, TypeScript strict, Vite, Vitest, Biome or ESLint+Prettier (pick one,
