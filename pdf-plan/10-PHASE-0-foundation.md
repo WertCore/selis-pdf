@@ -115,12 +115,13 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
   - **DoD:** `cargo deny check` clean; SBOM produced; both in CI.
 
-- [ ] **SL-0.WS.08 — Coverage + mutation harness** · deps: WS.06 · owner: AI
+- [x] **SL-0.WS.08 — Coverage + mutation harness** · deps: WS.06 · owner: AI
   - **Do:** `cargo-llvm-cov` with the per-crate floors of `03-CONVENTIONS.md §6` in
     `xtask/coverage.toml`; `cargo-mutants` scoped to `selis-sandbox`/`selis-pdf-edit`/`selis-pdf-redact`/`selis-pdf-sign`.
   - **DoD:** Floors enforced; a deliberately-uncovered branch fails CI.
-  - **Note:** `xtask coverage` runs `cargo llvm-cov` and enforces per-crate floors (L2 core 90%,
-    other L2 80%, L3-L4 70%). Mutation (cargo-mutants) pending.
+  - **Note:** `xtask coverage` enforces per-crate line floors (L2 core 90%, other L2 80%, L3-L4
+    70%); `xtask mutate` enforces the mutation-score floor (50%). Both wired; CI will run them
+    once CI is enabled.
 
 - [ ] **SL-0.WS.09 — `size-check` and the WASM budget table** · deps: WS.06 · owner: AI
   - **Do:** Build the WASM target with `wasm-opt`, measure brotli-compressed size per feature
@@ -380,12 +381,13 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.PERF — Benchmark harness
 
-- [ ] **SL-0.PERF.01 — Criterion harness + reference machine spec** · owner: AI
+- [x] **SL-0.PERF.01 — Criterion harness + reference machine spec** · owner: AI
   - **Do:** `bench/` with criterion, a documented reference machine, and a stable benchmark corpus
     subset. Record baselines for the empty implementations so the first real numbers have context.
   - **DoD:** `xtask bench --compare-baseline` works and fails on a seeded regression.
-  - **Note:** `bench/` exists with criterion (budget, cache benches); `xtask bench` runs the suite
-    and records the baseline dir. The `--compare-baseline` regression gate is pending.
+  - **Note:** `xtask bench --record-baseline` saves means to bench/baselines.json;
+    `--compare-baseline` fails on >2% regression (verified: a +16%/+37% run correctly failed).
+    Baselines recorded for budget_charge, budget_tick, lru_cache_hit, lru_cache_insert_evict.
 
 - [ ] **SL-0.PERF.02 — Perf budget table wired to CI** · deps: PERF.01 · owner: AI
   - **Do:** Encode `03-CONVENTIONS.md §12` in `xtask/perf-budgets.toml`; nightly job compares.
