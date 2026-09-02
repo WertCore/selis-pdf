@@ -1,0 +1,6 @@
+{
+  "budget_charge": { "ns": 5, "enabled": false },
+  "budget_tick": { "ns": 5, "enabled": false },
+  "lru_cache_hit": { "ns": 20, "enabled": false },
+  "lru_cache_insert_evict": { "ns": 200, "enabled": false }
+}
