@@ -1116,8 +1116,26 @@ mod tests {
     /// opens with the empty user password and the page count is preserved.
     #[test]
     fn corpus_file_encrypt_roundtrip() {
-        // Embedded at compile time (no filesystem at L2; SL-0.WS.04 purity).
-        let src: &[u8] = include_bytes!("D:\\selis\\corpus\\pdfs\\90ms_rksj_h_sample.pdf");
+        // Build a minimal multi-page document programmatically (portable, no
+        // filesystem dependency; SL-0.WS.04 purity).
+        use crate::doc_writer::ContentBuilder;
+        let mut src_b = DocumentBuilder::new();
+        for p in 0..3u32 {
+            let c = ContentBuilder::new()
+                .begin_text()
+                .set_font("Helvetica", 10.0)
+                .text_at(10.0, 10.0)
+                .show_text(&format!("page {p}"))
+                .end_text()
+                .to_bytes();
+            src_b.add_page(100.0, 100.0, &c);
+        }
+        let mut tmp_g = guard();
+        let budget = selis_sandbox::Budget::unlimited();
+        let src_bytes = src_b
+            .write(&budget, &mut tmp_g)
+            .expect("build source doc");
+        let src: &[u8] = src_bytes.as_slice();
         let budget = selis_sandbox::Budget::unlimited();
         let mut g = guard();
         let startxref = crate::xref::find_startxref(src, 2048).expect("startxref");
