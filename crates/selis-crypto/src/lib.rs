@@ -350,11 +350,7 @@ fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
 /// adequate for IVs and salts — not cryptographic RNG).
 fn random16() -> [u8; 16] {
     let mut out = [0u8; 16];
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xDEAD_BEEF);
-    let mut state = seed;
+    let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
     for b in &mut out {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         *b = (state >> 32) as u8;
@@ -522,16 +518,12 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     }
 }
 
-/// Random bytes of length `n` (a simple PRNG seeded from wall-clock —
-/// adequate for IVs and salts, not a cryptographic RNG).
+/// Random bytes of length `n` (a simple PRNG — adequate for IVs and salts,
+/// not a cryptographic RNG).
 #[must_use]
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(n);
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xDEAD_BEEF);
-    let mut state = seed;
+    let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
     for _ in 0..n {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         out.push((state >> 32) as u8);

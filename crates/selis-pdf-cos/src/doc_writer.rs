@@ -1109,12 +1109,12 @@ mod tests {
     /// opens with the empty user password and the page count is preserved.
     #[test]
     fn corpus_file_encrypt_roundtrip() {
-        let corpus_path = "D:\\selis\\corpus\\pdfs\\90ms_rksj_h_sample.pdf";
-        let src = std::fs::read(corpus_path).expect("read corpus file");
+        // Embedded at compile time (no filesystem at L2; SL-0.WS.04 purity).
+        let src: &[u8] = include_bytes!("D:\\selis\\corpus\\pdfs\\90ms_rksj_h_sample.pdf");
         let budget = selis_sandbox::Budget::unlimited();
         let mut g = guard();
-        let startxref = crate::xref::find_startxref(&src, 2048).expect("startxref");
-        let doc = crate::parse_revisions(&src, startxref, &budget, &mut g).expect("parse");
+        let startxref = crate::xref::find_startxref(src, 2048).expect("startxref");
+        let doc = crate::parse_revisions(src, startxref, &budget, &mut g).expect("parse");
         let rev = &doc.revisions()[0];
 
         // Collect all in-use objects.
@@ -1122,7 +1122,7 @@ mod tests {
         let mut root = Ref::new(0, 0);
         for (num, entry) in &rev.entries {
             if let crate::XrefEntry::InUse { offset, .. } = entry {
-                let obj = crate::resolve_object(&src, *offset, &budget, &mut g).expect("resolve");
+                let obj = crate::resolve_object(src, *offset, &budget, &mut g).expect("resolve");
                 objects.push((*num, obj));
             }
         }
