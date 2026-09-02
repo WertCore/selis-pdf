@@ -129,11 +129,11 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Note:** `xtask size-check` builds wasm32, wasm-opt -O3, brotli via node zlib. Baseline
     (xtask target): 367 KiB raw, 102.5 KiB brotli — under the 120 KiB core-parser budget.
 
-- [ ] **SL-0.WS.10 — pnpm workspace for `apps/*/ui`** · owner: AI
+- [x] **SL-0.WS.10 — pnpm workspace for `apps/*/ui`** · owner: AI
   - **Do:** pnpm workspace, TypeScript strict, Vite, Vitest, Biome or ESLint+Prettier (pick one,
     record it), and a shared `packages/ui-kit` for the design system.
   - **DoD:** `pnpm -r build` and `pnpm -r test` green on empty apps.
-  - **Note:** Done — `pnpm-workspace.yaml` (apps/*, packages/*), `@selis/ui-kit` + `@selis/ui`
+  - **Note:** `pnpm-workspace.yaml` (apps/*, packages/*), `@selis/ui-kit` + `@selis/ui`
     (TS-strict via tsconfig.base.json), Vitest, **Biome** (recorded; `pnpm lint` green),
     `pnpm -r build`/`-r test`/`lint` all green.
 
