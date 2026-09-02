@@ -184,7 +184,16 @@ operation is available identically in the CLI, the web app, and the extension.
     `/Encrypt`, the same `/Root`, and builds a usable document model. A wrong
     password is a clean typed `WRONG_PASSWORD` error. Tested against the
     corpus (`bug900822.pdf`, `empty_protected.pdf`, `secHandler.pdf` unlock;
-    `print_protection.pdf` needs its real password).
+    `print_protection.pdf` needs its real password). Includes owner-password
+    authentication for R2–4 (Algorithm 3, confirmed against mupdf's reference
+    implementation: the owner key is MD5 of the padded owner password only,
+    with 50-iteration rehash for R3+, no /O/P/ID0 in the hash). `/ID[1]` is
+    regenerated deterministically per ISO 32000-1 §14.4 (FNV-2x64 of source
+    content, same pattern as the merge tool). Three crypto bugs found and
+    fixed in the process: (1) per-object key salted length was always +5
+    instead of +2 for R2/3; (2) `aes` flag was false for V>=4 documents
+    (spec says V=4/5 are AES by definition); (3) R3 key length was forced to
+    5 bytes instead of `/Length`/8.
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
     document. Works for whichever password the user has — user or owner.
