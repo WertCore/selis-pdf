@@ -107,9 +107,9 @@ point you have 40 000 lines and no idea which of them are wrong.
     `x86_64-pc-windows-msvc`, `wasm32-unknown-unknown`, `aarch64-apple-ios`,
     `aarch64-linux-android`. WASM is a **required** target from day 1 (ADR-P0011).
   - **DoD:** All six green on the empty workspace in under 8 minutes with caching.
-  - **Note:** CI `.github/workflows/ci.yml` build job has all six targets; `setup-rust-toolchain`
-    now enables `cache: true` on every job (lint, build, supply-chain, test-fast, fuzz-soak) to
-    meet the <8-minute-with-caching DoD.
+  - **Note:** CI `.github/workflows/ci.yml` has all six targets in the build matrix;
+    `setup-rust-toolchain` enables `cache: true` on every job. CI is currently disabled
+    (to avoid cost); re-enable and verify <8-min timing once cost is approved.
 
 - [x] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
