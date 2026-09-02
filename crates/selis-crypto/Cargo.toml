@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 aes = { workspace = true }
+getrandom = { workspace = true }
 md-5 = { workspace = true }
 sha2 = { workspace = true }
 selis-error = { workspace = true }

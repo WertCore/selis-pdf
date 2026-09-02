@@ -346,16 +346,26 @@ fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 16 random bytes from a simple PRNG (AES-CTR seeded from wall-clock,
-/// adequate for IVs and salts — not cryptographic RNG).
+/// 16 random bytes for an IV (CSPRNG via `getrandom`; deterministic fallback
+/// only on platforms without an OS entropy source).
 fn random16() -> [u8; 16] {
     let mut out = [0u8; 16];
+    fill_random(&mut out);
+    out
+}
+
+/// Fill a buffer with random bytes from the OS CSPRNG. On the rare platforms
+/// where `getrandom` is unavailable it falls back to a deterministic PRNG so
+/// the function can never fail.
+fn fill_random(out: &mut [u8]) {
+    if getrandom::getrandom(out).is_ok() {
+        return;
+    }
     let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
-    for b in &mut out {
+    for b in out.iter_mut() {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         *b = (state >> 32) as u8;
     }
-    out
 }
 
 /// AES-256-CBC decrypt with an explicit IV and PKCS7 unpadding.
@@ -518,16 +528,13 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     }
 }
 
-/// Random bytes of length `n` (a simple PRNG — adequate for IVs and salts,
-/// not a cryptographic RNG).
+/// Random bytes of length `n` (CSPRNG via `getrandom`; deterministic fallback
+/// only on platforms without an OS entropy source).
 #[must_use]
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(n);
-    let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
-    for _ in 0..n {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        out.push((state >> 32) as u8);
-    }
+    out.resize(n, 0);
+    fill_random(&mut out);
     out
 }
 
@@ -595,6 +602,35 @@ pub fn compute_perms_r6(p: u32, file_key: &[u8]) -> Vec<u8> {
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&fk[16..32]);
     aes256_cbc_encrypt_raw(&cipher, &iv, &plain)
+}
+
+/// Verify a stored `/Perms` blob against the expected permission flags and
+/// file key (revision 6, read side). Returns `true` when the blob decrypts to
+/// the 4-byte flags plus the twelve `0xFF` bytes, indicating an unmodified
+/// document whose key matches.
+#[must_use]
+pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8]) -> bool {
+    if perms.len() != 16 {
+        return false;
+    }
+    let fk = &file_key[..file_key.len().min(32)];
+    let Ok(cipher) = Aes256::new_from_slice(fk) else {
+        return false;
+    };
+    let mut iv = [0u8; 16];
+    iv.copy_from_slice(&fk[16..32]);
+    let mut plain = [0u8; 16];
+    plain.copy_from_slice(&perms[..16]);
+    let mut block = Block::clone_from_slice(&plain);
+    cipher.decrypt_block(&mut block);
+    let mut out = [0u8; 16];
+    for k in 0..16 {
+        out[k] = block[k] ^ iv[k];
+    }
+    if out[..4] != p.to_le_bytes() {
+        return false;
+    }
+    out[4..].iter().all(|&b| b == 0xFF)
 }
 
 #[cfg(test)]
@@ -672,5 +708,33 @@ mod tests {
     fn hardened_hash_terminates_and_is_32_bytes() {
         let out = hardened_hash(b"", b"01234567", &[]);
         assert_eq!(out.len(), 32);
+    }
+
+    #[test]
+    fn perms_roundtrips_and_verifies() {
+        let file_key = [0x11u8; 32];
+        let p: u32 = 0xFFFFF0C0;
+        let perms = compute_perms_r6(p, &file_key);
+        assert_eq!(perms.len(), 16);
+        assert!(verify_perms_r6(p, &file_key, &perms), "valid /Perms verifies");
+        assert!(
+            !verify_perms_r6(p + 1, &file_key, &perms),
+            "wrong flags reject"
+        );
+        assert!(
+            !verify_perms_r6(p, &[0x22u8; 32], &perms),
+            "wrong file key rejects"
+        );
+        assert!(
+            !verify_perms_r6(p, &file_key, &perms[..15]),
+            "truncated /Perms rejects"
+        );
+    }
+
+    #[test]
+    fn random_bytes_fill_and_are_not_all_zero() {
+        let a = random_bytes(32);
+        assert_eq!(a.len(), 32);
+        assert!(a.iter().any(|&x| x != 0), "not all zeros");
     }
 }
