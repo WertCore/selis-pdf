@@ -38,6 +38,8 @@ pub struct EncryptInfo {
     pub ue: Vec<u8>,
     /// `/OE` — the owner-wrapped file key for revisions 5–6.
     pub oe: Vec<u8>,
+    /// `/Perms` — the AES-256-CBC encrypted permission-flags blob (rev 6).
+    pub perms: Vec<u8>,
     /// `/CF` — the crypt filter definitions, resolved when indirect. Used to
     /// select a per-stream `/Crypt` filter's algorithm (SL-1.FILT.09).
     pub cf: Vec<(selis_bytes::Bytes, Obj)>,
@@ -62,6 +64,52 @@ impl EncryptInfo {
     /// `/StdCF` are supported.
     pub fn supports(&self) -> bool {
         self.v <= 5 && self.r >= 2 && self.r <= 6
+    }
+
+    /// Build a revision-6 `/Encrypt` dictionary and the file encryption key.
+    ///
+    /// Returns the [`EncryptInfo`] (with `/O`, `/U`, `/UE`, `/OE`, `/Perms` all
+    /// computed) and the 32-byte file key. The document ID `id0` (from
+    /// [`document_id`]) is used for key derivation.
+    #[must_use]
+    pub fn new_r6(
+        user_password: &[u8],
+        owner_password: &[u8],
+        p: u32,
+        _id0: &[u8],
+    ) -> (Self, Vec<u8>) {
+        let file_key = selis_crypto::random_bytes(32);
+        let u_v_salt = selis_crypto::random_bytes(8);
+        let u_k_salt = selis_crypto::random_bytes(8);
+        let o_v_salt = selis_crypto::random_bytes(8);
+        let o_k_salt = selis_crypto::random_bytes(8);
+        let u = selis_crypto::compute_u_r6(user_password, &u_v_salt, &u_k_salt, 6);
+        let o = selis_crypto::compute_o_r6(owner_password, &o_v_salt, &o_k_salt, &u, 6);
+        let ue = selis_crypto::compute_ue_r6(user_password, &u_k_salt, &file_key, 6);
+        let oe = selis_crypto::compute_oe_r6(owner_password, &o_k_salt, &u, &file_key, 6);
+        let perms = selis_crypto::compute_perms_r6(p, &file_key);
+        let cf_std_cf = Obj::Dict(vec![
+            (bytes(b"CFM"), Obj::Name(bytes(b"AESV3"))),
+            (bytes(b"Length"), Obj::Int(32)),
+            (bytes(b"AuthEvent"), Obj::Name(bytes(b"DocOpen"))),
+        ]);
+        let info = Self {
+            r: 6,
+            v: 5,
+            length: 256,
+            o,
+            u,
+            p,
+            stmf: "StdCF".to_string(),
+            strf: "StdCF".to_string(),
+            aes: true,
+            encrypt_metadata: true,
+            ue,
+            oe,
+            perms,
+            cf: vec![(bytes(b"StdCF"), cf_std_cf)],
+        };
+        (info, file_key)
     }
 }
 
@@ -217,6 +265,10 @@ pub fn parse_encrypt(
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => Vec::new(),
     };
+    let perms = match get(b"Perms") {
+        Some(Obj::String(b)) => b.as_slice().to_vec(),
+        _ => Vec::new(),
+    };
     Ok(Some(EncryptInfo {
         r,
         v,
@@ -230,6 +282,7 @@ pub fn parse_encrypt(
         encrypt_metadata,
         ue,
         oe,
+        perms,
         cf,
     }))
 }
@@ -312,6 +365,85 @@ pub fn decrypt_data(info: &EncryptInfo, key: &[u8], objnum: u32, gen: u16, data:
     selis_crypto::decrypt_data(key, objnum, gen, data, info.r, info.aes)
 }
 
+/// Build the `/Encrypt` dictionary as a COS object, ready to write as an
+/// indirect object.
+#[must_use]
+pub fn encrypt_dict(info: &EncryptInfo) -> Obj {
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = vec![
+        (bytes(b"Filter"), Obj::Name(bytes(b"Standard"))),
+        (bytes(b"V"), Obj::Int(i64::from(info.v))),
+        (bytes(b"R"), Obj::Int(i64::from(info.r))),
+        (bytes(b"Length"), Obj::Int(i64::try_from(info.length).unwrap_or(256))),
+        (bytes(b"O"), Obj::String(bytes(&info.o))),
+        (bytes(b"U"), Obj::String(bytes(&info.u))),
+        (bytes(b"P"), Obj::Int(i64::from(info.p))),
+        (bytes(b"StmF"), Obj::Name(bytes(info.stmf.as_bytes()))),
+        (bytes(b"StrF"), Obj::Name(bytes(info.strf.as_bytes()))),
+    ];
+    if !info.ue.is_empty() {
+        pairs.push((bytes(b"UE"), Obj::String(bytes(&info.ue))));
+    }
+    if !info.oe.is_empty() {
+        pairs.push((bytes(b"OE"), Obj::String(bytes(&info.oe))));
+    }
+    if !info.perms.is_empty() {
+        pairs.push((bytes(b"Perms"), Obj::String(bytes(&info.perms))));
+    }
+    if !info.encrypt_metadata {
+        pairs.push((bytes(b"EncryptMetadata"), Obj::Bool(false)));
+    }
+    // The /CF dictionary.
+    if !info.cf.is_empty() {
+        let cf_dict = Obj::Dict(
+            info.cf.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
+        pairs.push((bytes(b"CF"), cf_dict));
+    }
+    Obj::Dict(pairs)
+}
+
+/// Encrypt all strings and stream bodies in an object for the given object
+/// number, following Algorithm 1 (per-object salted key for rev ≤ 4, direct
+/// file key for rev ≥ 5).
+///
+/// The `/Encrypt` dictionary itself must NOT be passed through this function.
+#[must_use]
+pub fn encrypt_object(obj: &Obj, key: &[u8], objnum: u32, gen: u16, rev: u8, aes: bool) -> Obj {
+    match obj {
+        Obj::String(b) => {
+            let ct = selis_crypto::encrypt_data(key, objnum, gen, b.as_slice(), rev, aes);
+            Obj::String(bytes(&ct))
+        }
+        Obj::Array(items) => Obj::Array(
+            items
+                .iter()
+                .map(|o| encrypt_object(o, key, objnum, gen, rev, aes))
+                .collect(),
+        ),
+        Obj::Dict(pairs) => Obj::Dict(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.clone(), encrypt_object(v, key, objnum, gen, rev, aes)))
+                .collect(),
+        ),
+        Obj::Stream { dict, data } => {
+            let ct = selis_crypto::encrypt_data(key, objnum, gen, data.as_slice(), rev, aes);
+            let mut new_dict = dict.clone();
+            let ct_len = i64::try_from(ct.len()).unwrap_or(i64::MAX);
+            if let Some((_, v)) = new_dict.iter_mut().find(|(k, _)| k.as_slice() == b"Length") {
+                *v = Obj::Int(ct_len);
+            } else {
+                new_dict.push((bytes(b"Length"), Obj::Int(ct_len)));
+            }
+            Obj::Stream {
+                dict: new_dict,
+                data: bytes(&ct),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
 /// Find the byte offset of a reference via the xref index.
 fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<u64> {
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
@@ -328,4 +460,8 @@ fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Re
         during = "encrypt",
         object = r.num
     ))
+}
+
+fn bytes(v: &[u8]) -> selis_bytes::Bytes {
+    selis_bytes::Bytes::copy_from_slice(v)
 }
