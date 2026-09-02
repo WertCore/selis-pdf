@@ -1,0 +1,6 @@
+{
+  "core-parser": 120000,
+  "core-plus-filters": 180000,
+  "engine-viewer": 400000,
+  "engine-render": 600000
+}

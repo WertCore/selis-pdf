@@ -14,6 +14,7 @@ mod coverage;
 mod fuzz;
 mod layers;
 mod oracle;
+mod size_check;
 mod synthetic;
 mod purity;
 mod sbom;
@@ -163,7 +164,7 @@ fn main() -> ExitCode {
         Command::CheckContracts => checks::check_contracts(),
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
-        Command::SizeCheck => not_in_phase_0("size-check"),
+        Command::SizeCheck => size_check::run(),
         Command::Coverage => coverage::run(),
         Command::Corpus(args) => match args.sub {
             CorpusSub::Fetch { tag } => corpus::run(corpus::CorpusCommand::Fetch(tag)),

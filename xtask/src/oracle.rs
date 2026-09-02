@@ -363,24 +363,6 @@ fn run_json(cmd: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("`{}` JSON parse error: {e}", cmd.display()))
 }
 
-/// Generate a unique set of object numbers from our inspect output (union
-/// across all revisions).
-fn our_objects(ours: &serde_json::Value) -> BTreeSet<u32> {
-    let mut all = BTreeSet::new();
-    if let Some(revs) = ours["revisions"].as_array() {
-        for r in revs {
-            if let Some(objs) = r["objects"].as_array() {
-                for o in objs {
-                    if let Some(n) = o.as_u64() {
-                        all.insert(n as u32);
-                    }
-                }
-            }
-        }
-    }
-    all
-}
-
 // ── Render comparison (SL-0.ORACLE.02 foundation) ──────────────────────────
 
 /// Render a page with selis and with an oracle at the same DPI, compare
