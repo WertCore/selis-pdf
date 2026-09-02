@@ -6,6 +6,7 @@
 //! succeeding (SL-0.WS.02 DoD): a stub that returns 0 is a lie, and a CI gate
 //! that lies is worse than no gate.
 
+mod bench;
 mod checks;
 mod codes;
 mod conformance;
@@ -186,7 +187,7 @@ fn main() -> ExitCode {
             OracleSub::Triage { sample } => oracle::run(oracle::OracleCommand::Triage { sample }),
         },
         Command::Fuzz => fuzz::check(),
-        Command::Bench => not_in_phase_0("bench"),
+        Command::Bench => bench::run(),
         Command::Conformance => conformance::report(),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),
