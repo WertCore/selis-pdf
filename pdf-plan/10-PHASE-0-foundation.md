@@ -383,6 +383,8 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Do:** `bench/` with criterion, a documented reference machine, and a stable benchmark corpus
     subset. Record baselines for the empty implementations so the first real numbers have context.
   - **DoD:** `xtask bench --compare-baseline` works and fails on a seeded regression.
+  - **Note:** `bench/` exists with criterion (budget, cache benches); `xtask bench` runs the suite
+    and records the baseline dir. The `--compare-baseline` regression gate is pending.
 
 - [ ] **SL-0.PERF.02 — Perf budget table wired to CI** · deps: PERF.01 · owner: AI
   - **Do:** Encode `03-CONVENTIONS.md §12` in `xtask/perf-budgets.toml`; nightly job compares.
