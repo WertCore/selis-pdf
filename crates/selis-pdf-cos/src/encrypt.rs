@@ -164,7 +164,7 @@ pub fn parse_encrypt(
     let v = int(b"V").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
     let length = int(b"Length")
         .and_then(|v| usize::try_from(v).ok())
-        .unwrap_or(40);
+        .unwrap_or(if v >= 4 { 128 } else { 40 });
     let o = match get(b"O") {
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => return Ok(None),
@@ -195,20 +195,26 @@ pub fn parse_encrypt(
     // /CF may be a direct dict or an indirect reference. Resolve it when
     // it's a Ref so per-stream filter selection works (SL-1.FILT.09).
     let cf = resolve_cf_dict(src, budget, g, get(b"CF"));
-    // AES is used when the standard stream crypt filter is AESV2/AESV3.
-    let aes = stmf == "StdCF"
-        && cf
-            .iter()
-            .find(|(k, _)| k.as_slice() == b"StdCF")
-            .and_then(|(_, v)| match v {
-                Obj::Dict(p) => p.iter().find(|(k, _)| k.as_slice() == b"CFM"),
-                _ => None,
-            })
-            .and_then(|(_, v)| match v {
-                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
-                _ => None,
-            })
-            .is_some_and(|cfm| cfm == "AESV2" || cfm == "AESV3");
+    // AES is used when the handler revision requires it (`/V` 4 or 5 are
+    // AES-128/AES-256 by definition, ISO 32000-1 §7.6.3.2), or when the
+    // standard crypt filter declares AESV2/AESV3 in `/CF/StdCF/CFM`. The
+    // `/CF` check alone is not sufficient: a damaged or non-conformant writer
+    // can set `/V 4` while `/CFM` names `/V2` (RC4) — the file key still
+    // derives per `/V`, so the cipher must follow `/V`.
+    let aes = v >= 4
+        || (stmf == "StdCF"
+            && cf
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"StdCF")
+                .and_then(|(_, v)| match v {
+                    Obj::Dict(p) => p.iter().find(|(k, _)| k.as_slice() == b"CFM"),
+                    _ => None,
+                })
+                .and_then(|(_, v)| match v {
+                    Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                    _ => None,
+                })
+                .is_some_and(|cfm| cfm == "AESV2" || cfm == "AESV3"));
     let ue = match get(b"UE") {
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => Vec::new(),

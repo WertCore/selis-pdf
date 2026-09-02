@@ -67,7 +67,8 @@ pub fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 /// Derive the encryption key for revisions 2–4 (Algorithms 2/2a).
 ///
-/// `length` is the key length in **bits** (40 for `/V 1`, `/Length` otherwise).
+/// `length` is the key length in **bits** (40 for `/V 1`, `/Length` otherwise;
+/// revisions 3–4 take `/Length` bytes, revision 2 is always 40 bits).
 /// `encrypt_metadata` reflects the handler's `/EncryptMetadata` flag: when it
 /// is false and the algorithm is V4/V5, four 0xFF bytes join the hash input.
 #[must_use]
@@ -89,7 +90,8 @@ pub fn encryption_key(
     if r >= 4 && !encrypt_metadata {
         hasher.update([0xFF, 0xFF, 0xFF, 0xFF]);
     }
-    let key_len = if r >= 4 { length / 8 } else { 5 };
+    // Revision 2 is always 40 bits; revisions 3–4 use `/Length` (in bits).
+    let key_len = if r == 2 { 5 } else { length / 8 };
     let mut digest = hasher.finalize().to_vec();
     // Revisions 3 and 4 rehash the first key-length bytes fifty times.
     if r >= 3 {
@@ -153,11 +155,84 @@ pub fn authenticate_user(
     let computed = compute_u(&key, r, id0);
     // R2 compares the full 32-byte value; R3/R4 compare the first 16 bytes.
     let cmp_len = if r == 2 { 32 } else { 16 }.min(computed.len()).min(u.len());
+    if computed.get(..cmp_len)? == u.get(..cmp_len)? {
+        let _ = aes; // the cipher choice affects decryption, not key derivation
+        return Some(key);
+    }
+    // The password is not the user password — it may be the owner password,
+    // which recovers the user password from `/O` (Algorithm 3).
+    authenticate_owner(o, u, p, id0, r, length, encrypt_metadata, password)
+}
+
+/// Authenticate an owner password for revisions 2–4 (Algorithm 3, 3.7):
+/// derive an intermediate key from the owner password alone (no /O, /P, /ID0
+/// — the spec's Algorithm 3 computes the key from the padded owner password
+/// only, then the 50-iteration rehash for R3+), decrypt `/O` to recover the
+/// user password, then authenticate the user password normally.
+#[must_use]
+pub fn authenticate_owner(
+    o: &[u8],
+    u: &[u8],
+    p: u32,
+    id0: &[u8],
+    r: u8,
+    length: usize,
+    encrypt_metadata: bool,
+    password: &[u8],
+) -> Option<Vec<u8>> {
+    if r >= 5 || o.len() < 32 {
+        return None;
+    }
+    let _ = p;
+    let _ = id0;
+    let _ = encrypt_metadata;
+    let o32: [u8; 32] = o[..32].try_into().ok()?;
+    let key = compute_owner_key(password, r, length);
+
+    // Decrypt `/O` to recover the padded user password.
+    // R2: single RC4 pass. R3/R4: 20 RC4 passes with keys 19..0 (descending).
+    let user_pw: Vec<u8> = if r == 2 {
+        rc4(&key, &o32)
+    } else {
+        let mut data = o32.to_vec();
+        for x in 0..20u8 {
+            let round_key: Vec<u8> = key.iter().map(|&b| b ^ (19 - x)).collect();
+            data = rc4(&round_key, &data);
+        }
+        data
+    };
+
+    // Algorithm 2 + 5: derive the file key from the recovered user password
+    // and validate it against `/U` (this includes /O, /P, /ID0 in the hash).
+    let file_key = encryption_key(&user_pw, &o32, p, id0, r, length, encrypt_metadata);
+    let computed = compute_u(&file_key, r, id0);
+    let cmp_len = if r == 2 { 32 } else { 16 }.min(computed.len()).min(u.len());
     if computed.get(..cmp_len)? != u.get(..cmp_len)? {
         return None;
     }
-    let _ = aes; // the cipher choice affects decryption, not key derivation
-    Some(key)
+    Some(file_key)
+}
+
+/// The intermediate key for owner-password /O manipulation (Algorithm 3,
+/// steps a–d): MD5 of the padded owner password, rehashed 50 times for
+/// revisions 3–4, truncated to the key length (5 bytes for R2, /Length for
+/// R3–4). No /O, /P, or /ID0 join this hash.
+#[must_use]
+pub fn compute_owner_key(password: &[u8], r: u8, length: usize) -> Vec<u8> {
+    let padded = pad_password(password);
+    let key_len = if r == 2 { 5 } else { length / 8 };
+    let mut hasher = Md5::new();
+    hasher.update(padded);
+    let mut key = hasher.finalize().to_vec();
+    if r >= 3 {
+        for _ in 0..50 {
+            let mut h = Md5::new();
+            h.update(&key[..key.len().min(key_len)]);
+            key = h.finalize().to_vec();
+        }
+    }
+    key.truncate(key_len.min(key.len()));
+    key
 }
 
 /// Algorithm 2.A (revisions 5 and 6): validate the user password against
@@ -394,10 +469,20 @@ pub fn decrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     if aes {
         hasher.update(b"sAlT");
     }
-    let salted_len = key.len().saturating_add(5).min(16);
+    // The salted key length (n) depends on the revision (ISO 32000-1
+    // §7.6.3.3, Algorithm 1 step d): R < 4 takes key_len + 2 bytes, R >= 4
+    // takes key_len + 5. For AES the result is then padded to 16 bytes.
+    let salted_len = key
+        .len()
+        .saturating_add(if r >= 4 { 5 } else { 2 })
+        .min(16);
     let mut obj_key = hasher.finalize().to_vec();
     obj_key.truncate(salted_len);
     if aes {
+        // Pad to exactly 16 bytes for AES-128 per ISO 32000-1 §7.6.3.3
+        // Algorithm 1, step (d): "the result is padded with zeros to a length
+        // of 16 bytes before being used as the key for AES-128".
+        obj_key.resize(16, 0);
         match Aes128::new_from_slice(&obj_key) {
             Ok(cipher) => aes128_cbc_decrypt_iv_prefix(&cipher, data),
             Err(_) => Vec::new(),
@@ -461,10 +546,79 @@ mod tests {
         assert_eq!(u.len(), 32);
     }
 
+    /// The per-object key's salted length must follow the revision: R2/3 use
+    /// key_len + 2, R4 uses key_len + 5 (ISO 32000-1 §7.6.3.3 Algorithm 1).
+    /// A stream encrypted with the correct per-object key must round-trip.
+    #[test]
+    fn per_object_key_salt_len_matches_the_revision() {
+        let file_key = b"abcde"; // 5-byte key
+        let plaintext = b"hello object stream body";
+        for (r, salt_extra) in [(2u8, 2usize), (3, 2), (4, 5)] {
+            let mut hasher = Md5::new();
+            hasher.update(file_key);
+            hasher.update(&7u32.to_le_bytes()[..3]);
+            hasher.update(0u16.to_le_bytes());
+            let mut obj_key = hasher.finalize().to_vec();
+            obj_key.truncate((file_key.len().saturating_add(salt_extra)).min(16));
+            let ciphertext = rc4(&obj_key, plaintext);
+            let round = decrypt_data(file_key, 7, 0, &ciphertext, r, false);
+            assert_eq!(
+                round, plaintext,
+                "R{r} RC4 round-trip with key_len+{salt_extra} salting"
+            );
+        }
+    }
+
+    /// Encrypt the padded user password into `/O` (Algorithm 6). R2 encrypts
+    /// with a single RC4 pass; R3/R4 use 20 RC4 passes keyed by `key XOR 0`
+    /// through `key XOR 19` in ascending order.
+    fn make_o(key: &[u8], user_padded: &[u8; 32], r: u8) -> [u8; 32] {
+        let mut out = user_padded.to_vec();
+        let max_rounds: u8 = if r == 2 { 1 } else { 20 };
+        for i in 0..max_rounds {
+            let round_key: Vec<u8> = key.iter().map(|&b| b ^ i).collect();
+            out = rc4(&round_key, &out);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&out[..32]);
+        arr
+    }
+
+    /// An owner password must authenticate for revisions 2–4 by recovering the
+    /// user password from `/O`. Constructed self-consistently: `/O` encrypts
+    /// the padded user password under a key derived from the owner password,
+    /// iterated to a fixed point so the stored `/O` matches the key it was
+    /// encrypted with.
+    #[test]
+    fn owner_password_authenticates_for_rev2_to_4() {
+        let p: u32 = 0xFFFF_FFF0;
+        let id0 = [0x41u8; 16];
+        let owner = b"owner-password";
+        let user = b"user-password";
+        for (r, length) in [(2u8, 40usize), (3, 128), (4, 128)] {
+            let user_padded = pad_password(user);
+            // Direct construction of /O: the owner key does NOT depend on /O
+            // (Algorithm 3 uses only the padded owner password). No iteration
+            // needed.
+            let owner_key = compute_owner_key(owner, r, length);
+            let o = make_o(&owner_key, &user_padded, r);
+            // The file key from the user password, and /U from it.
+            let file_key = encryption_key(user, &o, p, &id0, r, length, true);
+            let u = compute_u(&file_key, r, &id0);
+            // The owner password must authenticate to the same file key.
+            let auth = authenticate_user(
+                &o, &u, p, &id0, r, length, false, true, &[], &[], owner,
+            );
+            assert_eq!(
+                auth.as_deref(),
+                Some(file_key.as_slice()),
+                "R{r} owner password authenticates to the file key"
+            );
+        }
+    }
+
     #[test]
     fn aes_stream_decrypts_with_a_prefixed_iv() {
-        // Round-trip: encrypt a known plaintext with AES-128-CBC (IV prefix)
-        // and decrypt it back.
         let key = [0x00u8; 16];
         let cipher = Aes128::new(&key.into());
         let plaintext = b"sixteen bytes!!?"; // exactly one block

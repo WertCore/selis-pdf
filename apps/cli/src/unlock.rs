@@ -109,13 +109,36 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         }
         extra_trailer.push((b"Info".to_vec(), Obj::Ref(*info)));
     }
-    // Carry over the /ID so the output has a deterministic identifier.
-    if let Some((_, Obj::Array(id))) = rev
+    // /ID: the first element is the permanent identifier (carried over); the
+    // second must change when a file is modified (ISO 32000-1 §14.4), so a
+    // fresh deterministic value is derived from the source contents — the
+    // same FNV-2x64 pattern the merge tool uses (WRITE.04).
+    let old_id: Option<Vec<u8>> = rev
         .trailer
         .iter()
         .find(|(k, _)| k.as_slice() == b"ID")
-    {
-        extra_trailer.push((b"ID".to_vec(), Obj::Array(id.clone())));
+        .and_then(|(_, v)| match v {
+            Obj::Array(items) => items
+                .first()
+                .and_then(|x| match x {
+                    Obj::String(s) => Some(s.as_slice().to_vec()),
+                    _ => None,
+                }),
+            _ => None,
+        });
+    let fresh = fresh_file_id(&src);
+    match old_id {
+        Some(id0) => extra_trailer.push((
+            b"ID".to_vec(),
+            Obj::Array(vec![Obj::String(selis_bytes::Bytes::copy_from_slice(&id0)), Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh))]),
+        )),
+        None => extra_trailer.push((
+            b"ID".to_vec(),
+            Obj::Array(vec![
+                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
+                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
+            ]),
+        )),
     }
 
     // The /Encrypt entry is omitted from the new trailer because
@@ -204,6 +227,24 @@ fn collect_refs(obj: &Obj, out: &mut Vec<Ref>) {
         }
         _ => {}
     }
+}
+
+/// A deterministic 16-byte file identifier from the source contents (the
+/// same FNV-2x64 construction the merge tool uses for a fresh `/ID`).
+fn fresh_file_id(src: &[u8]) -> Vec<u8> {
+    fn fnv(data: &[u8], seed: u64) -> u64 {
+        let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
+        for &b in data {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+    let blob = &src[..src.len().min(1 << 20)];
+    let mut id = vec![0u8; 16];
+    id[..8].copy_from_slice(&fnv(blob, 1).to_le_bytes());
+    id[8..].copy_from_slice(&fnv(blob, 2).to_le_bytes());
+    id
 }
 
 #[cfg(test)]
@@ -319,6 +360,29 @@ mod tests {
         assert!(
             selis_pdf_engine::Session::open(out_bytes, &budget).is_ok(),
             "output must open in the engine"
+        );
+}
+
+    /// A non-conformant/broken encrypted file (V=4 + RC4 + /Length 40, which
+    /// is invalid per spec) must produce a clean error, not a crash.
+    #[test]
+    fn broken_encrypted_file_errors_cleanly() {
+        let corpus = "D:\\selis\\corpus\\pdfs\\issue19484_1.pdf";
+        if !std::path::Path::new(corpus).exists() {
+            eprintln!("skipping: {corpus} not found");
+            return;
+        }
+        let dir = std::env::temp_dir().join("selis-unlock-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("issue19484_unlocked.pdf");
+        let err = super::run(corpus, out_path.to_str().unwrap(), None)
+            .expect_err("broken encrypted file must error");
+        // The error should mention "damaged object container" or similar
+        // (the engine also reports 0 pages for this file).
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("panicked") && !msg.contains("unreachable"),
+            "error is clean, not a crash: {msg}"
         );
     }
 }
