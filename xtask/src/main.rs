@@ -72,7 +72,7 @@ enum Command {
     /// Fuzzing harness (SL-0.SEC.02).
     Fuzz,
     /// Criterion benchmarks (SL-0.PERF.01).
-    Bench,
+    Bench(BenchArgs),
     /// Conformance ladder report (SL-0.OPS.02).
     Conformance,
     /// CycloneDX SBOM (SL-0.WS.07).
@@ -85,6 +85,16 @@ enum Command {
     Release,
     /// Publish the three OSS crates (ADR-P0030).
     PublishOss,
+}
+
+#[derive(clap::Args)]
+struct BenchArgs {
+    /// Record the current results as the baseline.
+    #[arg(long)]
+    record_baseline: bool,
+    /// Compare current results against the recorded baseline; fail on >2% regression.
+    #[arg(long)]
+    compare_baseline: bool,
 }
 
 #[derive(clap::Args)]
@@ -187,7 +197,7 @@ fn main() -> ExitCode {
             OracleSub::Triage { sample } => oracle::run(oracle::OracleCommand::Triage { sample }),
         },
         Command::Fuzz => fuzz::check(),
-        Command::Bench => bench::run(),
+        Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
         Command::Conformance => conformance::report(),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),
