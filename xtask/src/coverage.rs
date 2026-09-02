@@ -107,3 +107,39 @@ fn load_floors() -> Result<BTreeMap<String, f64>, String> {
     }
     Ok(out)
 }
+
+/// Run `cargo-mutants` on the crates the convention scopes mutation to
+/// (`selis-sandbox`, `selis-pdf-edit`, `selis-pdf-redact`, `selis-pdf-sign`).
+/// The mutation score is informational here (no floor gate yet); the command
+/// fails if `cargo-mutants` itself errors.
+pub fn mutate() -> Result<(), String> {
+    let out = std::process::Command::new("cargo")
+        .arg("mutants")
+        .arg("--timeout")
+        .arg("120")
+        .args(["--in-place", "--no-coverage"])
+        .args([
+            "-p",
+            "selis-sandbox",
+            "-p",
+            "selis-pdf-edit",
+            "-p",
+            "selis-pdf-redact",
+            "-p",
+            "selis-pdf-sign",
+        ])
+        .output()
+        .map_err(|e| format!("cannot run cargo-mutants: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    println!("{stdout}");
+    if !stderr.trim().is_empty() {
+        eprintln!("{stderr}");
+    }
+    if out.status.success() {
+        println!("mutation: cargo-mutants completed (no surviving mutants is the goal)");
+        Ok(())
+    } else {
+        Err(format!("cargo-mutants failed (exit {:?})", out.status.code()))
+    }
+}

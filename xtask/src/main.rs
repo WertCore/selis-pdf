@@ -62,6 +62,8 @@ enum Command {
     SizeCheck,
     /// Coverage floors per crate (SL-0.WS.08).
     Coverage,
+    /// Mutation testing scoped to sandbox/edit/redact/sign (SL-0.WS.08).
+    Mutate,
     /// Corpus fetch / stats / verify (SL-0.CORP.01-03).
     Corpus(CorpusArgs),
     /// Oracle tools and comparisons (SL-0.ORACLE.01). Local-first, Docker fallback.
@@ -166,6 +168,7 @@ fn main() -> ExitCode {
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::SizeCheck => size_check::run(),
         Command::Coverage => coverage::run(),
+        Command::Mutate => coverage::mutate(),
         Command::Corpus(args) => match args.sub {
             CorpusSub::Fetch { tag } => corpus::run(corpus::CorpusCommand::Fetch(tag)),
             CorpusSub::List => corpus::run(corpus::CorpusCommand::List),
