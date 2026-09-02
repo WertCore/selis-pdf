@@ -29,14 +29,22 @@ const TOOL_BINARY: &[(&str, &str)] = &[
 
 pub enum OracleCommand {
     /// Render `file` to a PNG per DPI with the named tool.
-    Render { tool: String, dpi: u32, file: PathBuf },
+    Render {
+        tool: String,
+        dpi: u32,
+        file: PathBuf,
+    },
     /// Report which oracles are available locally (and record their versions).
     Check,
     /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
     Compare { file: PathBuf },
     /// Render with `selis` and an oracle at the same DPI and compare pixelwise
     /// (SL-0.ORACLE.02 foundation).
-    CompareRender { tool: String, dpi: u32, file: PathBuf },
+    CompareRender {
+        tool: String,
+        dpi: u32,
+        file: PathBuf,
+    },
     /// Compare text extracted by selis against an oracle (SL-0.ORACLE.04).
     CompareText { file: PathBuf },
     /// Triage workflow: compare a sample of corpus files against qpdf and
@@ -220,8 +228,9 @@ fn compare(file: &Path) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("{}: no such file", file.display()));
     }
-    let qpdf_bin = find_local("qpdf")
-        .ok_or_else(|| "qpdf not installed locally. Install with `winget install qpdf` or add to PATH.".to_string())?;
+    let qpdf_bin = find_local("qpdf").ok_or_else(|| {
+        "qpdf not installed locally. Install with `winget install qpdf` or add to PATH.".to_string()
+    })?;
     let selis_bin = find_local("selis")
         .or_else(|| find_local("selis.exe"))
         .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
@@ -278,19 +287,11 @@ fn compare(file: &Path) -> Result<(), String> {
     let their_obj_count = theirs["qpdf"]
         .as_array()
         .and_then(|a| a.get(1))
-        .map(|obj_map| {
-            obj_map.as_object()
-                .map(|o| o.len() as u64)
-                .unwrap_or(0)
-        })
+        .map(|obj_map| obj_map.as_object().map(|o| o.len() as u64).unwrap_or(0))
         .unwrap_or(0);
     let our_entries: u64 = ours["revisions"]
         .as_array()
-        .map(|revs| {
-            revs.iter()
-                .filter_map(|r| r["entries"].as_u64())
-                .sum()
-        })
+        .map(|revs| revs.iter().filter_map(|r| r["entries"].as_u64()).sum())
         .unwrap_or(0);
     if our_entries != their_obj_count {
         diffs.push(format!(
@@ -312,10 +313,15 @@ fn compare(file: &Path) -> Result<(), String> {
                 if let Some(stream) = v["stream"].as_object() {
                     if let Some(dict) = stream["dict"].as_object() {
                         if let Some(len_val) = dict.get("/Length") {
-                            if let Some(len) = len_val.as_u64()
+                            if let Some(len) = len_val
+                                .as_u64()
                                 .or_else(|| len_val.as_str().and_then(|s| s.parse::<u64>().ok()))
                             {
-                                if let Some(num) = k.strip_prefix("obj:").and_then(|s| s.split_once(' ')).and_then(|(n, _)| n.parse::<u32>().ok()) {
+                                if let Some(num) = k
+                                    .strip_prefix("obj:")
+                                    .and_then(|s| s.split_once(' '))
+                                    .and_then(|(n, _)| n.parse::<u32>().ok())
+                                {
                                     out.insert(num, len);
                                 }
                             }
@@ -327,7 +333,10 @@ fn compare(file: &Path) -> Result<(), String> {
         })
         .unwrap_or_default();
     if !their_streams.is_empty() {
-        println!("  stream lengths: qpdf reports {} streams", their_streams.len());
+        println!(
+            "  stream lengths: qpdf reports {} streams",
+            their_streams.len()
+        );
     }
 
     if diffs.is_empty() {
@@ -354,10 +363,7 @@ fn run_json(cmd: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("cannot run `{}': {e}", cmd.display()))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "`{}` failed: {stderr}",
-            cmd.display()
-        ));
+        return Err(format!("`{}` failed: {stderr}", cmd.display()));
     }
     serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("`{}` JSON parse error: {e}", cmd.display()))
@@ -450,9 +456,7 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     }
 
     let pct = diff as f64 / total as f64 * 100.0;
-    println!(
-        "render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE76≈2.3"
-    );
+    println!("render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE76≈2.3");
     if pct < 0.5 {
         println!("render PASS (within 0.5% tolerance)");
         Ok(())
@@ -674,8 +678,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// group the disagreements by signature, so N failures collapse to a handful
 /// of root causes.
 fn triage(sample: usize) -> Result<(), String> {
-    let qpdf_bin = find_local("qpdf")
-        .ok_or_else(|| "qpdf not installed locally".to_string())?;
+    let qpdf_bin = find_local("qpdf").ok_or_else(|| "qpdf not installed locally".to_string())?;
     let selis_bin = find_local("selis")
         .or_else(|| find_local("selis.exe"))
         .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
@@ -691,13 +694,28 @@ fn triage(sample: usize) -> Result<(), String> {
     for pdf in &pdfs {
         let signature = structural_signature(&selis_bin, &qpdf_bin, pdf);
         groups.entry(signature).or_default().push(
-            pdf.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            pdf.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
         );
     }
 
-    println!("oracle triage: {} files, {} signature groups:", pdfs.len(), groups.len());
+    println!(
+        "oracle triage: {} files, {} signature groups:",
+        pdfs.len(),
+        groups.len()
+    );
     for (sig, files) in &groups {
-        println!("  {sig}: {} file(s){}", files.len(), if files.len() <= 5 { format!(" — {}", files.join(", ")) } else { String::new() });
+        println!(
+            "  {sig}: {} file(s){}",
+            files.len(),
+            if files.len() <= 5 {
+                format!(" — {}", files.join(", "))
+            } else {
+                String::new()
+            }
+        );
     }
     Ok(())
 }
