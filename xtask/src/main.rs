@@ -15,6 +15,7 @@ mod coverage;
 mod fuzz;
 mod layers;
 mod oracle;
+mod perf_check;
 mod purity;
 mod sbom;
 mod size_check;
@@ -87,6 +88,13 @@ enum Command {
     Fuzz,
     /// Criterion benchmarks (SL-0.PERF.01).
     Bench(BenchArgs),
+    /// Performance budgets vs criterion (SL-0.PERF.02).
+    PerfCheck {
+        /// Fail on budgets whose harness does not exist yet (default:
+        /// report loudly but pass).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Conformance ladder report (SL-0.OPS.02).
     Conformance,
     /// CycloneDX SBOM (SL-0.WS.07).
@@ -257,6 +265,7 @@ fn main() -> ExitCode {
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
+        Command::PerfCheck { strict } => perf_check::run(strict),
         Command::Conformance => conformance::report(),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),
