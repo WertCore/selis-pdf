@@ -68,7 +68,11 @@ impl Session {
             doc: &Doc,
             budget: &Budget,
             g: &mut BudgetGuard<'_>,
-        ) -> Result<(Doc, selis_pdf_doc::Document, Option<selis_pdf_cos::encrypt::DecryptPolicy>)> {
+        ) -> Result<(
+            Doc,
+            selis_pdf_doc::Document,
+            Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+        )> {
             let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
                 let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
                 match encrypt_ref {
@@ -82,8 +86,9 @@ impl Session {
                                     .map(|v| v.trailer.clone())
                                     .map(|t| selis_pdf_cos::encrypt::document_id(&t))
                                     .unwrap_or_default();
-                                selis_pdf_cos::encrypt::authenticate(&info, &id, b"")
-                                    .map(|k| selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k))
+                                selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
+                                    selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
+                                })
                             }
                             // Unreadable or non-standard handler: open unencrypted.
                             Ok(None) => None,

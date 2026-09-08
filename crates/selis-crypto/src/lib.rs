@@ -154,7 +154,9 @@ pub fn authenticate_user(
     let key = encryption_key(password, o, p, id0, r, length, encrypt_metadata);
     let computed = compute_u(&key, r, id0);
     // R2 compares the full 32-byte value; R3/R4 compare the first 16 bytes.
-    let cmp_len = if r == 2 { 32 } else { 16 }.min(computed.len()).min(u.len());
+    let cmp_len = if r == 2 { 32 } else { 16 }
+        .min(computed.len())
+        .min(u.len());
     if computed.get(..cmp_len)? == u.get(..cmp_len)? {
         let _ = aes; // the cipher choice affects decryption, not key derivation
         return Some(key);
@@ -206,7 +208,9 @@ pub fn authenticate_owner(
     // and validate it against `/U` (this includes /O, /P, /ID0 in the hash).
     let file_key = encryption_key(&user_pw, &o32, p, id0, r, length, encrypt_metadata);
     let computed = compute_u(&file_key, r, id0);
-    let cmp_len = if r == 2 { 32 } else { 16 }.min(computed.len()).min(u.len());
+    let cmp_len = if r == 2 { 32 } else { 16 }
+        .min(computed.len())
+        .min(u.len());
     if computed.get(..cmp_len)? != u.get(..cmp_len)? {
         return None;
     }
@@ -282,7 +286,14 @@ pub fn recover_user_password(
 /// Algorithm 2.A (revisions 5 and 6): validate the user password against
 /// `/U`, falling back to the owner password against `/O`, and unwrap the
 /// 32-byte file encryption key from `/UE` (or `/OE`).
-fn authenticate_r56(password: &[u8], u: &[u8], ue: &[u8], o: &[u8], oe: &[u8], r: u8) -> Option<Vec<u8>> {
+fn authenticate_r56(
+    password: &[u8],
+    u: &[u8],
+    ue: &[u8],
+    o: &[u8],
+    oe: &[u8],
+    r: u8,
+) -> Option<Vec<u8>> {
     let pwd = &password[..password.len().min(127)];
     if u.len() >= 48 {
         let (hash, vsalt, ksalt) = split_u48(u);
@@ -398,7 +409,10 @@ fn hardened_hash(password: &[u8], salt: &[u8], udata: &[u8]) -> [u8; 32] {
         // E = AES-128-CBC(K1) with key K[0..16], IV K[16..32], no padding:
         // K1's length is 64 * seq_len, always a multiple of 16.
         let e = aes128_cbc_encrypt(&k[0..16], &k[16..32], &k1);
-        let sum: u32 = e.iter().take(16).fold(0u32, |acc, &b| acc.wrapping_add(u32::from(b)));
+        let sum: u32 = e
+            .iter()
+            .take(16)
+            .fold(0u32, |acc, &b| acc.wrapping_add(u32::from(b)));
         k = match sum % 3 {
             0 => Sha256::digest(&e).to_vec(),
             1 => Sha384::digest(&e).to_vec(),
@@ -636,10 +650,7 @@ pub fn decrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     // The salted key length (n) depends on the revision (ISO 32000-1
     // §7.6.3.3, Algorithm 1 step d): R < 4 takes key_len + 2 bytes, R >= 4
     // takes key_len + 5. For AES the result is then padded to 16 bytes.
-    let salted_len = key
-        .len()
-        .saturating_add(if r >= 4 { 5 } else { 2 })
-        .min(16);
+    let salted_len = key.len().saturating_add(if r >= 4 { 5 } else { 2 }).min(16);
     let mut obj_key = hasher.finalize().to_vec();
     obj_key.truncate(salted_len);
     if aes {
@@ -684,10 +695,7 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     // The salted key length (n) depends on the revision (ISO 32000-1
     // §7.6.3.3, Algorithm 1 step d): R < 4 takes key_len + 2 bytes, R >= 4
     // takes key_len + 5. For AES the result is then padded to 16 bytes.
-    let salted_len = key
-        .len()
-        .saturating_add(if r >= 4 { 5 } else { 2 })
-        .min(16);
+    let salted_len = key.len().saturating_add(if r >= 4 { 5 } else { 2 }).min(16);
     let mut obj_key = hasher.finalize().to_vec();
     obj_key.truncate(salted_len);
     if aes {
@@ -738,7 +746,13 @@ pub fn compute_u_r6(user_password: &[u8], v_salt: &[u8], k_salt: &[u8], r: u8) -
 /// the key-hash of the owner password + validation salt + the full 48-byte
 /// `/U`, followed by the owner salts.
 #[must_use]
-pub fn compute_o_r6(owner_password: &[u8], v_salt: &[u8], k_salt: &[u8], u: &[u8], r: u8) -> Vec<u8> {
+pub fn compute_o_r6(
+    owner_password: &[u8],
+    v_salt: &[u8],
+    k_salt: &[u8],
+    u: &[u8],
+    r: u8,
+) -> Vec<u8> {
     let mut out = key_hash(owner_password, v_salt, &u[..u.len().min(48)], r);
     out.extend_from_slice(&v_salt[..v_salt.len().min(8)]);
     out.extend_from_slice(&k_salt[..k_salt.len().min(8)]);
@@ -757,7 +771,13 @@ pub fn compute_ue_r6(user_password: &[u8], k_salt: &[u8], file_key: &[u8], r: u8
 /// Wrap the 32-byte file key as `/OE` (Algorithm 2.B): as
 /// [`compute_ue_r6`] but keyed from the owner password + `/U`.
 #[must_use]
-pub fn compute_oe_r6(owner_password: &[u8], k_salt: &[u8], u: &[u8], file_key: &[u8], r: u8) -> Vec<u8> {
+pub fn compute_oe_r6(
+    owner_password: &[u8],
+    k_salt: &[u8],
+    u: &[u8],
+    file_key: &[u8],
+    r: u8,
+) -> Vec<u8> {
     let hash = key_hash(owner_password, k_salt, &u[..u.len().min(48)], r);
     aes256_cbc_encrypt_nopad(&hash, &file_key[..file_key.len().min(32)])
 }
@@ -808,7 +828,6 @@ pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8]) -> bool {
         return false;
     }
     out[4..].iter().all(|&b| b == 0xFF)
-
 }
 
 #[cfg(test)]
@@ -925,9 +944,7 @@ mod tests {
             let file_key = encryption_key(user, &o, p, &id0, r, length, true);
             let u = compute_u(&file_key, r, &id0);
             // The owner password must authenticate to the same file key.
-            let auth = authenticate_user(
-                &o, &u, p, &id0, r, length, false, true, &[], &[], owner,
-            );
+            let auth = authenticate_user(&o, &u, p, &id0, r, length, false, true, &[], &[], owner);
             assert_eq!(
                 auth.as_deref(),
                 Some(file_key.as_slice()),
@@ -941,7 +958,7 @@ mod tests {
         let key = [0x00u8; 16];
         let cipher = Aes128::new(&key.into());
         let plaintext = b"sixteen bytes!!?"; // exactly one block
-        // PKCS7: pad to two blocks.
+                                             // PKCS7: pad to two blocks.
         let mut padded = plaintext.to_vec();
         padded.extend_from_slice(&[16u8; 16]);
         let ct = aes128_cbc_encrypt(&key, &[0u8; 16], &padded);
@@ -963,7 +980,10 @@ mod tests {
         let p: u32 = 0xFFFFF0C0;
         let perms = compute_perms_r6(p, &file_key);
         assert_eq!(perms.len(), 16);
-        assert!(verify_perms_r6(p, &file_key, &perms), "valid /Perms verifies");
+        assert!(
+            verify_perms_r6(p, &file_key, &perms),
+            "valid /Perms verifies"
+        );
         assert!(
             !verify_perms_r6(p + 1, &file_key, &perms),
             "wrong flags reject"

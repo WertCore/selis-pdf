@@ -98,11 +98,7 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
     // /Info is not reachable from /Root (it is a trailer entry), so walk it
     // separately and add an /Info trailer entry.
     let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some((_, Obj::Ref(info))) = rev
-        .trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Info")
-    {
+    if let Some((_, Obj::Ref(info))) = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
         if !visited.contains(&info.num) {
             walk(&mut resolver, *info, &mut visited, &mut objects, &mut g)
                 .map_err(|e| CliError(format!("{path}: {e}")))?;
@@ -118,19 +114,20 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         .iter()
         .find(|(k, _)| k.as_slice() == b"ID")
         .and_then(|(_, v)| match v {
-            Obj::Array(items) => items
-                .first()
-                .and_then(|x| match x {
-                    Obj::String(s) => Some(s.as_slice().to_vec()),
-                    _ => None,
-                }),
+            Obj::Array(items) => items.first().and_then(|x| match x {
+                Obj::String(s) => Some(s.as_slice().to_vec()),
+                _ => None,
+            }),
             _ => None,
         });
     let fresh = fresh_file_id(&src);
     match old_id {
         Some(id0) => extra_trailer.push((
             b"ID".to_vec(),
-            Obj::Array(vec![Obj::String(selis_bytes::Bytes::copy_from_slice(&id0)), Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh))]),
+            Obj::Array(vec![
+                Obj::String(selis_bytes::Bytes::copy_from_slice(&id0)),
+                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
+            ]),
         )),
         None => extra_trailer.push((
             b"ID".to_vec(),
@@ -143,14 +140,9 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
 
     // The /Encrypt entry is omitted from the new trailer because
     // write_objects_as_document_with_trailer only emits /Size, /Root, + extra.
-    let bytes = write_objects_as_document_with_trailer(
-        &objects,
-        root,
-        &extra_trailer,
-        &budget,
-        &mut g,
-    )
-    .map_err(|e| CliError(format!("{path}: write: {e}")))?;
+    let bytes =
+        write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
+            .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
     // Structural verification (WRITE.05): the output must reparse with no
     // /Encrypt and the same /Root.
@@ -179,8 +171,7 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         )));
     }
 
-    std::fs::write(output, &bytes)
-        .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
     Ok(UnlockReport { encrypted: true })
 }
 
@@ -303,12 +294,8 @@ mod tests {
         let in_path = dir.join("unsupported.pdf");
         let out_path = dir.join("unsupported.out.pdf");
         std::fs::write(&in_path, build_pdf(true)).unwrap();
-        let err = super::run(
-            in_path.to_str().unwrap(),
-            out_path.to_str().unwrap(),
-            None,
-        )
-        .expect_err("unsupported handler refused");
+        let err = super::run(in_path.to_str().unwrap(), out_path.to_str().unwrap(), None)
+            .expect_err("unsupported handler refused");
         assert!(
             err.to_string().contains("unsupported"),
             "message mentions unsupported: {err}"
@@ -324,12 +311,8 @@ mod tests {
         let out_path = dir.join("plain.out.pdf");
         let src = build_pdf(false);
         std::fs::write(&in_path, &src).unwrap();
-        super::run(
-            in_path.to_str().unwrap(),
-            out_path.to_str().unwrap(),
-            None,
-        )
-        .expect("copy as-is");
+        super::run(in_path.to_str().unwrap(), out_path.to_str().unwrap(), None)
+            .expect("copy as-is");
         let copied = std::fs::read(&out_path).unwrap();
         assert_eq!(copied, src, "bytes must be identical for unencrypted input");
     }
@@ -365,7 +348,7 @@ mod tests {
             selis_pdf_engine::Session::open(out_bytes, &budget).is_ok(),
             "output must open in the engine"
         );
-}
+    }
 
     /// A non-conformant/broken encrypted file (V=4 + RC4 + /Length 40, which
     /// is invalid per spec) must produce a clean error, not a crash.

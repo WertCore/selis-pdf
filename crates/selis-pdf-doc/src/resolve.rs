@@ -162,8 +162,7 @@ fn decrypt_obj_inner(obj: Obj, r: Ref, policy: &DecryptPolicy, depth: u16) -> Ob
             // false (ISO 32000-1 §7.4.10); other streams follow /StmF unless
             // the stream selects its own crypt filter with /Crypt (SL-1.FILT.09).
             let is_metadata = dict.iter().any(|(k, v)| {
-                k.as_slice() == b"Type"
-                    && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
+                k.as_slice() == b"Type" && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
             });
             Obj::Stream {
                 data: decrypt_stream(&dict, data, r, policy, is_metadata),
@@ -205,12 +204,7 @@ fn decrypt_dict(
 ) -> Vec<(selis_bytes::Bytes, Obj)> {
     pairs
         .into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                decrypt_obj_inner(v, r, policy, depth.saturating_add(1)),
-            )
-        })
+        .map(|(k, v)| (k, decrypt_obj_inner(v, r, policy, depth.saturating_add(1))))
         .collect()
 }
 
@@ -265,14 +259,9 @@ pub(crate) fn resolve_compressed(
     // encrypted and streams use the standard filter (the key is keyed to the
     // object stream's own number/gen).
     let payload: Vec<u8> = match key {
-        Some(policy) if policy.stream_encrypted => selis_crypto::decrypt_data(
-            &policy.key,
-            objstm,
-            gen,
-            payload,
-            policy.rev,
-            policy.aes,
-        ),
+        Some(policy) if policy.stream_encrypted => {
+            selis_crypto::decrypt_data(&policy.key, objstm, gen, payload, policy.rev, policy.aes)
+        }
         _ => payload.to_vec(),
     };
     // Unfilter the object stream data. Per 32000-1 §7.4.1, `/Filter` is either
@@ -447,8 +436,7 @@ fn encrypt_obj_inner(obj: Obj, r: Ref, policy: &DecryptPolicy, depth: u16) -> Ob
     match obj {
         Obj::Stream { dict, data } => {
             let is_metadata = dict.iter().any(|(k, v)| {
-                k.as_slice() == b"Type"
-                    && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
+                k.as_slice() == b"Type" && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
             });
             Obj::Stream {
                 data: encrypt_stream(&dict, data, r, policy, is_metadata),
@@ -490,12 +478,7 @@ fn encrypt_dict(
 ) -> Vec<(selis_bytes::Bytes, Obj)> {
     pairs
         .into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                encrypt_obj_inner(v, r, policy, depth.saturating_add(1)),
-            )
-        })
+        .map(|(k, v)| (k, encrypt_obj_inner(v, r, policy, depth.saturating_add(1))))
         .collect()
 }
 
@@ -543,21 +526,19 @@ fn encrypt_stream(
 /// entry in `/Filter`; a missing `/Name` defaults to `/Identity` (not
 /// encrypted, ISO 32000-1 §7.4.10).
 fn per_stream_crypt_name(dict: &[(selis_bytes::Bytes, Obj)]) -> Option<String> {
-    let filters: Vec<&selis_bytes::Bytes> = match dict.iter().find(|(k, _)| k.as_slice() == b"Filter")
-    {
-        Some((_, Obj::Name(n))) => vec![n],
-        Some((_, Obj::Array(items))) => items
-            .iter()
-            .filter_map(|v| match v {
-                Obj::Name(n) => Some(n),
-                _ => None,
-            })
-            .collect(),
-        _ => return None,
-    };
-    let i = filters
-        .iter()
-        .position(|n| n.as_slice() == b"Crypt")?;
+    let filters: Vec<&selis_bytes::Bytes> =
+        match dict.iter().find(|(k, _)| k.as_slice() == b"Filter") {
+            Some((_, Obj::Name(n))) => vec![n],
+            Some((_, Obj::Array(items))) => items
+                .iter()
+                .filter_map(|v| match v {
+                    Obj::Name(n) => Some(n),
+                    _ => None,
+                })
+                .collect(),
+            _ => return None,
+        };
+    let i = filters.iter().position(|n| n.as_slice() == b"Crypt")?;
     let parm: Option<&[(selis_bytes::Bytes, Obj)]> =
         match dict.iter().find(|(k, _)| k.as_slice() == b"DecodeParms") {
             Some((_, Obj::Dict(pairs))) => Some(pairs),
@@ -723,27 +704,36 @@ mod tests {
 
     #[test]
     fn per_stream_crypt_single_name_not_crypt_returns_none() {
-        let dict = vec![(b"Filter".as_slice().into(), Obj::Name(b"FlateDecode".as_slice().into()))];
+        let dict = vec![(
+            b"Filter".as_slice().into(),
+            Obj::Name(b"FlateDecode".as_slice().into()),
+        )];
         assert_eq!(per_stream_crypt_name(&dict), None);
     }
 
     #[test]
     fn per_stream_crypt_single_name_crypt_returns_identity_when_no_parms() {
-        let dict = vec![(b"Filter".as_slice().into(), Obj::Name(b"Crypt".as_slice().into()))];
+        let dict = vec![(
+            b"Filter".as_slice().into(),
+            Obj::Name(b"Crypt".as_slice().into()),
+        )];
         assert_eq!(per_stream_crypt_name(&dict), Some("Identity".to_string()));
     }
 
     #[test]
     fn per_stream_crypt_array_crypt_with_name() {
         let dict = vec![
-            (b"Filter".as_slice().into(), Obj::Array(vec![
-                Obj::Name(b"Crypt".as_slice().into()),
-            ])),
-            (b"DecodeParms".as_slice().into(), Obj::Array(vec![
-                Obj::Dict(vec![
-                    (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
-                ]),
-            ])),
+            (
+                b"Filter".as_slice().into(),
+                Obj::Array(vec![Obj::Name(b"Crypt".as_slice().into())]),
+            ),
+            (
+                b"DecodeParms".as_slice().into(),
+                Obj::Array(vec![Obj::Dict(vec![(
+                    b"Name".as_slice().into(),
+                    Obj::Name(b"StdCF".as_slice().into()),
+                )])]),
+            ),
         ];
         assert_eq!(per_stream_crypt_name(&dict), Some("StdCF".to_string()));
     }
@@ -751,18 +741,23 @@ mod tests {
     #[test]
     fn per_stream_crypt_array_crypt_with_flate_returns_name() {
         let dict = vec![
-            (b"Filter".as_slice().into(), Obj::Array(vec![
-                Obj::Name(b"Crypt".as_slice().into()),
-                Obj::Name(b"FlateDecode".as_slice().into()),
-            ])),
-            (b"DecodeParms".as_slice().into(), Obj::Array(vec![
-                Obj::Dict(vec![
-                    (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
+            (
+                b"Filter".as_slice().into(),
+                Obj::Array(vec![
+                    Obj::Name(b"Crypt".as_slice().into()),
+                    Obj::Name(b"FlateDecode".as_slice().into()),
                 ]),
-                Obj::Dict(vec![
-                    (b"Predictor".as_slice().into(), Obj::Int(12)),
+            ),
+            (
+                b"DecodeParms".as_slice().into(),
+                Obj::Array(vec![
+                    Obj::Dict(vec![(
+                        b"Name".as_slice().into(),
+                        Obj::Name(b"StdCF".as_slice().into()),
+                    )]),
+                    Obj::Dict(vec![(b"Predictor".as_slice().into(), Obj::Int(12))]),
                 ]),
-            ])),
+            ),
         ];
         assert_eq!(per_stream_crypt_name(&dict), Some("StdCF".to_string()));
     }
@@ -793,22 +788,25 @@ mod tests {
         // Ciphertext: 16-byte zero IV + AES-128-CBC encrypted with derived key
         // MD5(0x00*16 || objnum[0..3]=42 || gen[0..2]=0 || "sAlT")
         let ciphertext: Vec<u8> = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            181, 227, 83, 188, 135, 201, 65, 49, 79, 253, 225, 115, 194, 27, 201, 254,
-            87, 243, 160, 206, 156, 16, 150, 249, 211, 36, 246, 232, 105, 216, 149, 64,
-            141, 105, 199, 29, 4, 28, 75, 74, 172, 76, 115, 216, 227, 137, 179, 109,
-            228, 186, 89, 169, 88, 122, 201, 217, 133, 245, 147, 134, 206, 174, 99, 51,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 181, 227, 83, 188, 135, 201, 65, 49,
+            79, 253, 225, 115, 194, 27, 201, 254, 87, 243, 160, 206, 156, 16, 150, 249, 211, 36,
+            246, 232, 105, 216, 149, 64, 141, 105, 199, 29, 4, 28, 75, 74, 172, 76, 115, 216, 227,
+            137, 179, 109, 228, 186, 89, 169, 88, 122, 201, 217, 133, 245, 147, 134, 206, 174, 99,
+            51,
         ];
         let stream = Obj::Stream {
             dict: vec![
-                (b"Filter".as_slice().into(), Obj::Array(vec![
-                    Obj::Name(b"Crypt".as_slice().into()),
-                ])),
-                (b"DecodeParms".as_slice().into(), Obj::Array(vec![
-                    Obj::Dict(vec![
-                        (b"Name".as_slice().into(), Obj::Name(b"StdCF".as_slice().into())),
-                    ]),
-                ])),
+                (
+                    b"Filter".as_slice().into(),
+                    Obj::Array(vec![Obj::Name(b"Crypt".as_slice().into())]),
+                ),
+                (
+                    b"DecodeParms".as_slice().into(),
+                    Obj::Array(vec![Obj::Dict(vec![(
+                        b"Name".as_slice().into(),
+                        Obj::Name(b"StdCF".as_slice().into()),
+                    )])]),
+                ),
                 (b"Length".as_slice().into(), Obj::Int(80)),
             ],
             data: selis_bytes::Bytes::copy_from_slice(&ciphertext),
@@ -842,14 +840,17 @@ mod tests {
         let data = selis_bytes::Bytes::copy_from_slice(b"raw data");
         let stream = Obj::Stream {
             dict: vec![
-                (b"Filter".as_slice().into(), Obj::Array(vec![
-                    Obj::Name(b"Crypt".as_slice().into()),
-                ])),
-                (b"DecodeParms".as_slice().into(), Obj::Array(vec![
-                    Obj::Dict(vec![
-                        (b"Name".as_slice().into(), Obj::Name(b"Identity".as_slice().into())),
-                    ]),
-                ])),
+                (
+                    b"Filter".as_slice().into(),
+                    Obj::Array(vec![Obj::Name(b"Crypt".as_slice().into())]),
+                ),
+                (
+                    b"DecodeParms".as_slice().into(),
+                    Obj::Array(vec![Obj::Dict(vec![(
+                        b"Name".as_slice().into(),
+                        Obj::Name(b"Identity".as_slice().into()),
+                    )])]),
+                ),
                 (b"Length".as_slice().into(), Obj::Int(8)),
             ],
             data: data.clone(),
@@ -878,9 +879,10 @@ mod tests {
         let data = selis_bytes::Bytes::copy_from_slice(b"raw data");
         let stream = Obj::Stream {
             dict: vec![
-                (b"Filter".as_slice().into(), Obj::Array(vec![
-                    Obj::Name(b"Crypt".as_slice().into()),
-                ])),
+                (
+                    b"Filter".as_slice().into(),
+                    Obj::Array(vec![Obj::Name(b"Crypt".as_slice().into())]),
+                ),
                 (b"Length".as_slice().into(), Obj::Int(8)),
             ],
             data: data.clone(),
@@ -890,6 +892,9 @@ mod tests {
         let Obj::Stream { data: out, .. } = &decrypted else {
             panic!("expected stream");
         };
-        assert_eq!(out, &data, "missing /Name must default to /Identity (no decryption)");
+        assert_eq!(
+            out, &data,
+            "missing /Name must default to /Identity (no decryption)"
+        );
     }
 }
