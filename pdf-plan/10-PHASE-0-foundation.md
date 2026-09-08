@@ -223,6 +223,21 @@ point you have 40 000 lines and no idea which of them are wrong.
     forever, and access the host is contained in all three cases.
   - **Note:** Build this now, empty. OpenJPEG lands on it in Phase 2 and Tesseract in Phase 5.
 
+- [ ] **SL-0.SBX.07 — Clock injection so `Budget::wall` is enforced on real parse paths** · deps:
+  SBX.01 · owner: AI+
+  - **Do:** `Session::open` (and every helper that builds a `BudgetGuard` below L4) hardcodes
+    `FixedClock(0)` because purity rules forbid `Instant` below L4 — so the wall deadline never
+    fires at runtime; `bytes/objects/depth` limits are the only live budget. Add a `Clock`
+    parameter supplied at the binding boundary (the CLI is L5 and can use a real clock; future
+    WASM wraps `performance.now` in the same trait) and thread it through the ~20 `guard_with`
+    sites on the open path.
+  - **DoD:** A test that a `ManualClock` advanced past the Viewer wall fails an open with
+    `BUDGET_WALL`; the ROB.01 sweep then reports genuine engine-side wall verdicts and its
+    watchdog slack can shrink from 30 s to seconds.
+  - **Note:** Filed from the SL-1.ROB.01 local sweep (2026-09-09): per-file wall verdicts there
+    come from the sweep's own watchdog, not from the engine — real deadline enforcement is
+    structurally absent until this lands.
+
 ---
 
 ## 0.IO — Sources and sinks

@@ -181,6 +181,15 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **Note:** Decide the product posture here deliberately. Honouring permissions when the user has
     the owner password and legitimately owns the file is user-hostile; ignoring them silently is
     the thing that gets a vendor sued. Explicit, logged override is the defensible middle.
+- [ ] **SL-1.ENC.05 — Clear the lint-gate debt ENC.02 left on main** · deps: ENC.02 · owner: AI
+  - **Do:** `cargo xtask lint` is red on main at two gates. `check-contracts`:
+    `selis-pdf-cos/src/encrypt.rs` public functions consuming untrusted bytes lack the mandated
+    `# Budget` / `# Malformed Input` sections (2 sites). `check-alloc`: direct
+    `Vec::with_capacity` / `vec![0u8; …]` with possibly document-derived lengths in
+    `selis-crypto/src/lib.rs` (6 sites) and `selis-pdf-cos/src/doc_writer.rs` (1 site) — route
+    them through `selis_sandbox::alloc` (`selis-pdf-cos` is L2 and may depend on the L1 sandbox;
+    `selis-crypto` is L1 and needs either a layering-allowlisted edge or fixed-size restructuring).
+  - **DoD:** `cargo xtask lint` fully green on main; the gates stay wired into CI.
 
 ---
 
@@ -238,21 +247,19 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     open-or-typed-error, 0 panics, 0 hangs, 0 OOMs.
   - **DoD:** A report grouping failures by root cause; each root cause is a filed task; the
     residual <1% is enumerated and understood, not hand-waved.
-  - **Note (local corpus, 2026-09-08):** The 10k wild fetch is still pending (SL-0.CORP.05,
-    disk-bound) — the DoD is NOT complete. The sweep now runs over the full local corpus
-    (3,839 PDFs: the 642-on-disk pdf.js seeds of the previous 977 [335 were never-vendored
-    `.pdf.link` web downloads, lost in a disk clean], 2,694 veraPDF [the earlier 2,556
-    expectations dropped 138 basename-collided files; they are included again], 200 govdocs1,
-    92 Ghent, 203 synthetic + 8 committed test fixtures), each file under a fresh per-file
-    Viewer budget and the SL-0.ERR.03 trampoline, with a watchdog thread per open so a hang is
-    measured, not fatal. Result: 3,805/3,839 open (99.1%), 34 typed errors
-    (27 `TRAILER_MISSING_ROOT` synthetic mutants + 7 `OBJ_UNEXPECTED`: 3 of the 4 known wild
-    cases [bug1978317 is one of the missing `.link` files] + 4 synthetic mutants), 0 panics,
-    0 hangs, 0 OOMs, 0 expectation drifts, 0 over-wall.
-    Machine-readable report: `target/rob01-report.json` (regenerate with
+  - **Note (local corpus, 2026-09-09):** The 10k wild fetch is staged (see SL-0.CORP.05b) — the
+    full-DoD sweep over it is still pending. The local corpus is now COMPLETE and sweep-clean:
+    4,212 PDFs on disk (1,023 flat incl. the 373 restored `.link` files [368 had landed
+    double-named and were renamed; `corpus verify` = 4,212 checked, 0 changed], 2,694 veraPDF
+    [the 138 previously-unrecorded suite files now have structured records too], 200 govdocs1,
+    92 Ghent, 203 synthetic + 8 committed test fixtures). Sweep result: 4,175/4,212 open
+    (99.1%), 37 typed errors (31 synthetic mutants; 4 known wild cases; issue5909_original and
+    issue7303 `OBJ_UNEXPECTED`; pdf `BUDGET_OBJECTS` at 31 MB — the Viewer object cap doing its
+    job), 0 panics, 0 hangs, 0 OOMs, 0 expectation drifts, 0 over-wall. Machine-readable
+    report: `target/rob01-report.json` (regenerate with
     `cargo test -p selis-cli --test rob01_baseline -- --ignored --nocapture`). Root causes
-    unchanged from the campaign notes; no new fix tasks filed. Remaining for the DoD: the 10k
-    wild fetch, then re-running this sweep over it.
+    unchanged from the campaign notes; no new fix tasks filed. Remaining for the DoD: the
+    10k wild fetch completes, then this sweep runs over it via `SELIS_ROB01_CORPUS_ROOT`.
   - **Note:** Fetched corpus (977 files) opens 973/977 (99.6%) under the Viewer budget; the
     remaining 4 are typed errors, all enumerated and understood — bug1020226 and
     poppler-742-0-fuzzed (degenerate structures: an unclosed dict with no `endobj`, and an
