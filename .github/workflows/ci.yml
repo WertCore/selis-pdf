@@ -18,6 +18,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Every 2 days at 03:00 UTC. GitHub cron steps by day-of-month, so the
+    # gap at a month boundary is 1 day instead of 2; there is no true
+    # "every 48 hours" cron. Nightly-gated jobs (fuzz-soak, perf) run on
+    # this schedule; scheduled runs always use main.
+    - cron: '0 3 */2 * *'
 
 env:
   CARGO_TERM_COLOR: always
