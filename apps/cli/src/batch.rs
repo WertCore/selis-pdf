@@ -114,11 +114,16 @@ fn run_one(input: &str, outdir: &str) -> FileReport {
             .display()
     );
 
-    // Per-file isolation: run the tool and catch any failure.
-    let outcome = std::panic::catch_unwind(|| compress::optimise_file(input, &out_path));
+    // Per-file isolation: run the tool and catch any failure. SL-0.ERR.03: the
+    // panic trampoline converts a bug into the typed INTERNAL_PANIC error —
+    // code path + panic site, no document bytes (ADR-P0017) — instead of the
+    // untyped "internal panic" string a bare catch_unwind produced.
+    let outcome = selis_sandbox::trampoline::catch("cli-batch-compress", || {
+        compress::optimise_file(input, &out_path)
+    });
     let elapsed = started.elapsed().as_millis();
     match outcome {
-        Ok(Ok(report)) => FileReport {
+        Ok(report) => FileReport {
             input: input.to_string(),
             output: Some(out_path),
             status: "ok".to_string(),
@@ -127,20 +132,11 @@ fn run_one(input: &str, outdir: &str) -> FileReport {
             out_bytes: Some(u64::try_from(report.out_bytes).unwrap_or(u64::MAX)),
             millis: elapsed,
         },
-        Ok(Err(e)) => FileReport {
+        Err(e) => FileReport {
             input: input.to_string(),
             output: None,
             status: "failed".to_string(),
             error: Some(e.to_string()),
-            in_bytes,
-            out_bytes: None,
-            millis: elapsed,
-        },
-        Err(_) => FileReport {
-            input: input.to_string(),
-            output: None,
-            status: "failed".to_string(),
-            error: Some("internal panic during processing".to_string()),
             in_bytes,
             out_bytes: None,
             millis: elapsed,
