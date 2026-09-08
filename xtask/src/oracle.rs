@@ -1012,9 +1012,10 @@ fn structural_signature(selis_bin: &Path, qpdf_bin: &Path, file: &Path) -> Strin
         }
         // Who refused the file matters: a contract where we alone refuse is a
         // different root cause from one where the oracle refuses, and "both
-        // refuse" is agreement, not disagreement.
-        (None, Some(_)) => "qpdf_rejects".to_string(),
-        (Some(_), None) => "selis_rejects".to_string(),
+        // refuse" is agreement, not disagreement. Tuple is (ours, theirs):
+        // ours=None + theirs=Some means *we* refused while qpdf opened.
+        (None, Some(_)) => "selis_rejects".to_string(),
+        (Some(_), None) => "qpdf_rejects".to_string(),
         (None, None) => "both_reject".to_string(),
     }
 }
