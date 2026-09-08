@@ -385,6 +385,20 @@ plan to precede the fetch.
       `xtask corpus wild fetch --zips 10 --i-have-read-the-policy` (or
       `corpus/tools/fetch-wild.ps1 -Execute -Zips 10`) and then `xtask corpus
       expect-generate` over the extracted files.
+  - **Note (2026-09-09):** staged — zips 0000–0002 (3,000 PDFs, batch
+    `batch-1788896119`) fetched and extracted under
+    `%USERPROFILE%\.cache\selis-corpus\wild` with provenance (policy §5).
+    First sweep over them: 2,978/3,000 open (99.3%), 0 drifts possible (no
+    expectations), and the sweep gate correctly FAILED on 3 `INTERNAL_PANIC`s
+    (filed as SL-1.ENC.06 — hostile short `/IV` in the CBC decrypt) and 2
+    hangs (24.9 MB and 4.7 MB files grinding 35 s — the SL-0.SBX.07
+    frozen-clock finding; `bytes`/`objects`/`depth` limits bound them, the
+    wall deadline does not fire). 20 typed errors: 11 `XREF_UNRECOVERABLE`
+    (reconstruct fallback misses), 2 `BUDGET_POISONED`, 1 `BUDGET_OBJECTS`,
+    2 `TRAILER_MISSING_ROOT`, 1 `OBJ_UNEXPECTED`, 3 `INTERNAL_PANIC`,
+    2 hangs — full list in `target/rob01-report-wild.json`. Remaining: ~7 more
+    zips once disk allows, expectations for the batch, and re-sweep until the
+    gates pass.
 
 ---
 

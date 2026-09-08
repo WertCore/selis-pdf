@@ -190,6 +190,18 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     them through `selis_sandbox::alloc` (`selis-pdf-cos` is L2 and may depend on the L1 sandbox;
     `selis-crypto` is L1 and needs either a layering-allowlisted edge or fixed-size restructuring).
   - **DoD:** `cargo xtask lint` fully green on main; the gates stay wired into CI.
+- [ ] **SL-1.ENC.06 — Guard CBC IV/key lengths against hostile `/Encrypt` strings** · deps: ENC.02 ·
+  owner: AI
+  - **Do:** The ROB.01 wild sweep (3,000 SAFEDOCS files, 2026-09-09) caught 3 `INTERNAL_PANIC`s
+    in `selis-crypto/src/lib.rs:584` (`cbc_decrypt_with`) and the same shape at :559
+    (`aes256_cbc_decrypt_nopad`): `prev.copy_from_slice(&iv[..iv.len().min(16)])` panics when a
+    hostile `/IV` (or any string fed in) is shorter than 16 bytes — `copy_from_slice` demands an
+    exact length. Wild cases: batch files 0000/0000461, 0002/0002052, 0002/0002666 (all AESV4,
+    `/Encrypt` present). Fix shape: zero-fill `prev` and copy at most `min(iv.len(), 16)` bytes in
+    (a short IV is malformed input → typed `ObjUnexpected`/crypto error upstream, never a panic);
+    audit every other `copy_from_slice`/index on `/Encrypt`-derived lengths the same way.
+  - **DoD:** The 3 wild files open-or-fail typed (move them into the corpus expectation set); the
+    ROB.01 wild sweep reports 0 `INTERNAL_PANIC`.
 
 ---
 
