@@ -1,6 +1,148 @@
-{
-  "budget_charge": { "ns": 5, "enabled": false },
-  "budget_tick": { "ns": 5, "enabled": false },
-  "lru_cache_hit": { "ns": 20, "enabled": false },
-  "lru_cache_insert_evict": { "ns": 200, "enabled": false }
-}
+# Performance budgets — 03-CONVENTIONS.md §12, SL-0.PERF.02.
+#
+# Every path in §12 gets an entry here. `metric` selects the measurement the
+# budget applies to:
+#   mean-ns        — criterion mean wall time in nanoseconds (`xtask bench`)
+#   ratio          — unitless throughput ratio against PDFium (>= min)
+#   percent        — a percentage (frame budget misses, differing pixels)
+#   bytes          — peak memory in bytes
+#   duration-ms    — an end-to-end latency in milliseconds
+#
+# `status` records measurability honestly:
+#   measuring      — a benchmark exists and the budget is enforced now.
+#   not-measurable — no benchmark exists yet; the budget FAILS as
+#                    `not implemented` (never passes silently) until a
+#                    benchmark lands. Wired into CI as a warning; flips to a
+#                    hard gate per artifact as benchmarks appear.
+#
+# `bench` is the criterion benchmark name for metric=mean-ns.
+# `gate` selects the regression comparison for measuring rows:
+#   baseline-2     — fails when the current mean exceeds the recorded
+#                    bench/baselines.json mean by >5% (03-CONVENTIONS.md §9
+#                    release rule; the historical 2% figure was unrunnable
+#                    on noisy hardware).
+#   none           — absolute budget only.
+#
+# For the kernel/cache micro-rows the absolute `budget` is 2x the recorded
+# reference-machine baseline (cross-machine noise headroom); the enforced
+# limit is the 5% baseline regression gate (03-CONVENTIONS.md §9). Reference
+# machine: bench/README.md.
+
+[[budget]]
+path     = "budget_charge (sandbox kernel charge)"
+section  = "budget kernel"
+metric   = "mean-ns"
+budget   = 40
+bench    = "budget_charge"
+status   = "measuring"
+gate     = "baseline-2"
+
+[[budget]]
+path     = "budget_tick (cancellation tick)"
+section  = "budget kernel"
+metric   = "mean-ns"
+budget   = 30
+bench    = "budget_tick"
+status   = "measuring"
+gate     = "baseline-2"
+
+[[budget]]
+path     = "lru_cache_hit (tile/page cache hit)"
+section  = "page cache"
+metric   = "mean-ns"
+budget   = 10000
+bench    = "lru_cache_hit"
+status   = "measuring"
+gate     = "baseline-2"
+
+[[budget]]
+path     = "lru_cache_insert_evict (tile cache insert + eviction)"
+section  = "page cache"
+metric   = "mean-ns"
+budget   = 4000000
+bench    = "lru_cache_insert_evict"
+status   = "measuring"
+gate     = "baseline-2"
+
+# ---- §12 rows below have no benchmark yet: they fail as `not implemented`,
+# ---- never as passing (SL-0.PERF.02 DoD). Each names its future harness.
+
+[[budget]]
+path     = "Open + first page painted, 5 MB linearised, local"
+section  = "open-to-paint"
+metric   = "duration-ms"
+budget   = 250
+status   = "not-measurable"
+notes    = "§12 native budget. WASM twin: <= 600 ms. Needs the end-to-end open+paint harness (Phase 2 renderer)."
+
+[[budget]]
+path     = "Open + first page painted, 5 MB over Fast 3G, linearised"
+section  = "open-to-paint"
+metric   = "duration-ms"
+budget   = 1200
+status   = "not-measurable"
+notes    = "§12 p75. Needs the HttpRangeSource + simulated-latency harness."
+
+[[budget]]
+path     = "Render A4 text page @150 DPI (native)"
+section  = "render"
+metric   = "duration-ms"
+budget   = 18
+status   = "not-measurable"
+notes    = "§12. WASM twin: <= 45 ms. Needs a page-render criterion bench on the golden slice (Phase 2)."
+
+[[budget]]
+path     = "Render A4 text page @150 DPI vs PDFium (throughput ratio)"
+section  = "render"
+metric   = "ratio"
+budget   = 0.6
+status   = "not-measurable"
+notes    = "Minimum ratio vs PDFium. 0.6 at G2, 0.9 at G5 (§12). Tracked by the oracle differential harness."
+
+[[budget]]
+path     = "Text extraction, 300-page report (native)"
+section  = "extract"
+metric   = "duration-ms"
+budget   = 900
+status   = "not-measurable"
+notes    = "Needs the text-extraction bench (Phase 3)."
+
+[[budget]]
+path     = "Incremental save, 1 annotation on a 200 MB file"
+section  = "save"
+metric   = "duration-ms"
+budget   = 40
+status   = "not-measurable"
+notes    = "The load-bearing §12 budget (ADR-P0007). Must also assert the file was NOT rewritten. Needs the edit-save bench (Phase 3)."
+
+[[budget]]
+path     = "Scroll frame budget, all shells"
+section  = "frames"
+metric   = "percent"
+budget   = 0
+status   = "not-measurable"
+notes    = "60 fps sustained; no frame > 16 ms attributable to the engine. Measured in-shell, not in cargo bench."
+
+[[budget]]
+path     = "Peak RSS, 200 MB PDF, viewer profile (native)"
+section  = "memory"
+metric   = "bytes"
+budget   = 419430400
+status   = "not-measurable"
+notes    = "§12: 400 MB native / 300 MB WASM. Needs the RSS-probe harness (Phase 5 shells)."
+
+[[budget]]
+path     = "Core WASM bundle (brotli)"
+section  = "size"
+metric   = "bytes"
+budget   = 3145728
+status   = "not-measurable"
+notes    = "§12: 3 MB viewer / 6 MB with editor chunk. Enforced by `xtask size-check` (SL-0.WS.09), not by bench."
+
+[[budget]]
+path     = "Cold app launch to interactive, mobile mid-range"
+section  = "launch"
+metric   = "duration-ms"
+budget   = 800
+status   = "not-measurable"
+notes    = "Measured on the fixed mobile device (21-TESTING-AND-ORACLES.md §9), not in CI."

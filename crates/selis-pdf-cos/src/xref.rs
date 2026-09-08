@@ -234,9 +234,7 @@ pub(crate) fn parse_one_revision(
 
     if src.get(p..p.saturating_add(4)) == Some(b"xref") {
         parse_classic_revision(src, p.saturating_add(4), budget, g)
-    } else if src.get(p).is_some_and(|&b| b.is_ascii_digit())
-        && looks_like_object_header(src, p)
-    {
+    } else if src.get(p).is_some_and(|&b| b.is_ascii_digit()) && looks_like_object_header(src, p) {
         parse_xref_stream_revision(src, cursor, p, budget, g)
     } else if let Some(kw) = find_xref_keyword_near(src, p) {
         // The `startxref` offset points before the real table (a stray EOL or
@@ -493,7 +491,11 @@ fn read_entry_line(src: &[u8], p: usize) -> Result<(u64, u16, bool, usize)> {
     // The offset field (at least one digit, at most ten).
     let (offset_digits, offset, next) = read_decimal_field(src, i, 10);
     if offset_digits == 0 {
-        return Err(err!(Code::XrefMalformed, during = "xref-entry", at = p as u64));
+        return Err(err!(
+            Code::XrefMalformed,
+            during = "xref-entry",
+            at = p as u64
+        ));
     }
     i = next;
     while src.get(i).is_some_and(is_inline_ws) {
@@ -730,7 +732,6 @@ fn looks_like_object_header(src: &[u8], idx: usize) -> bool {
     src.get(i.saturating_add(3))
         .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_')
 }
-
 
 /// Scan a bounded window after `pos` for the `xref` keyword of a classic
 /// table.

@@ -663,10 +663,8 @@ pub fn write_incremental_update(
         )
     })?;
     let kw = usize::try_from(startxref_kw).unwrap_or(usize::MAX);
-    let (prev, _) = crate::xref::read_startxref_value(
-        original,
-        kw.saturating_add("startxref".len()),
-    )?;
+    let (prev, _) =
+        crate::xref::read_startxref_value(original, kw.saturating_add("startxref".len()))?;
 
     // `/Size` is the highest object number across all revisions + 1: the
     // previous revision's declared size, raised by any newly-allocated object.
@@ -747,10 +745,8 @@ pub fn write_incremental_update(
 
     // Trailer: the caller's entries (Root, ID, …) plus /Size and /Prev.
     out.extend_from_slice(b"trailer\n");
-    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> = trailer
-        .iter()
-        .map(|(k, v)| (bytes(k), v.clone()))
-        .collect();
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> =
+        trailer.iter().map(|(k, v)| (bytes(k), v.clone())).collect();
     pairs.push((
         bytes(b"Size"),
         Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
@@ -1242,12 +1238,7 @@ mod tests {
             (b"Parent".to_vec(), Obj::Ref(Ref::new(2, 0))),
             (
                 b"MediaBox".to_vec(),
-                Obj::Array(vec![
-                    Obj::Int(0),
-                    Obj::Int(0),
-                    Obj::Int(100),
-                    Obj::Int(100),
-                ]),
+                Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(100), Obj::Int(100)]),
             ),
             (b"Contents".to_vec(), Obj::Ref(Ref::new(3, 0))),
             (b"Resources".to_vec(), Obj::Dict(Vec::new())),
@@ -1293,10 +1284,8 @@ mod tests {
             panic!("catalog is a dict");
         };
         assert!(
-            cat_pairs
-                .iter()
-                .any(|(k, v)| k.as_slice() == b"Producer"
-                    && matches!(v, Obj::String(s) if s.as_slice() == b"selis-incr")),
+            cat_pairs.iter().any(|(k, v)| k.as_slice() == b"Producer"
+                && matches!(v, Obj::String(s) if s.as_slice() == b"selis-incr")),
             "catalog has /Producer"
         );
 
@@ -1353,10 +1342,7 @@ mod tests {
             (b"Info".to_vec(), Obj::Ref(Ref::new(99, 0))),
             (
                 b"ID".to_vec(),
-                Obj::Array(vec![
-                    Obj::String(bytes(b"abc")),
-                    Obj::String(bytes(b"def")),
-                ]),
+                Obj::Array(vec![Obj::String(bytes(b"abc")), Obj::String(bytes(b"def"))]),
             ),
         ];
         let out = write_objects_as_document_with_trailer(
@@ -1410,10 +1396,9 @@ mod tests {
         assert_eq!(id.len(), 16, "encrypted document must carry /ID");
 
         // Authenticate with the empty user password.
-        let info =
-            crate::encrypt::parse_encrypt(&bytes, Some(encrypt_ref), &budget, &mut g)
-                .expect("parse encrypt")
-                .expect("encrypt info");
+        let info = crate::encrypt::parse_encrypt(&bytes, Some(encrypt_ref), &budget, &mut g)
+            .expect("parse encrypt")
+            .expect("encrypt info");
         let key = crate::encrypt::authenticate(&info, &id, b"").expect("auth");
         assert_eq!(key.len(), 32);
         assert!(info.stream_encrypted());
@@ -1464,9 +1449,7 @@ mod tests {
         }
         let mut tmp_g = guard();
         let budget = selis_sandbox::Budget::unlimited();
-        let src_bytes = src_b
-            .write(&budget, &mut tmp_g)
-            .expect("build source doc");
+        let src_bytes = src_b.write(&budget, &mut tmp_g).expect("build source doc");
         let src: &[u8] = src_bytes.as_slice();
         let budget = selis_sandbox::Budget::unlimited();
         let mut g = guard();
@@ -1488,7 +1471,8 @@ mod tests {
         }
 
         // Encrypt with empty user password.
-        let (info, file_key) = crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &[0u8; 16]);
+        let (info, file_key) =
+            crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &[0u8; 16]);
         let encrypted = crate::doc_writer::write_objects_as_document_encrypted(
             &objects, root, &info, &file_key, &budget, &mut g,
         )
@@ -1500,19 +1484,22 @@ mod tests {
             crate::parse_revisions(&encrypted, enc_startxref, &budget, &mut g).expect("parse enc");
         let enc_rev = &enc_doc.revisions()[0];
         let encrypt_ref = enc_rev.encrypt.expect("encrypt ref");
-        let enc_info = crate::encrypt::parse_encrypt(&encrypted, Some(encrypt_ref), &budget, &mut g)
-            .expect("parse encrypt")
-            .expect("encrypt info");
+        let enc_info =
+            crate::encrypt::parse_encrypt(&encrypted, Some(encrypt_ref), &budget, &mut g)
+                .expect("parse encrypt")
+                .expect("encrypt info");
         let id = crate::encrypt::document_id(&enc_rev.trailer);
         assert!(!id.is_empty(), "encrypted doc must have /ID");
-        let key = crate::encrypt::authenticate(&enc_info, &id, b"").expect("auth with empty password");
+        let key =
+            crate::encrypt::authenticate(&enc_info, &id, b"").expect("auth with empty password");
         assert_eq!(key.len(), 32, "file key must be 32 bytes");
 
         // Verify the page count is preserved by resolving the /Pages object.
         let mut pages_count = 0i64;
         for (_, entry) in &enc_rev.entries {
             if let crate::XrefEntry::InUse { offset, .. } = entry {
-                let obj = crate::resolve_object(&encrypted, *offset, &budget, &mut g).expect("resolve");
+                let obj =
+                    crate::resolve_object(&encrypted, *offset, &budget, &mut g).expect("resolve");
                 if let Obj::Dict(pairs) = &obj {
                     let is_pages = pairs.iter().any(|(k, v)| {
                         k.as_slice() == b"Type"

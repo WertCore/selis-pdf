@@ -1,6 +1,6 @@
 {
-  "budget_charge": 18.863,
-  "budget_tick": 13.866,
-  "lru_cache_hit": 4124.4,
-  "lru_cache_insert_evict": 1791200.0
+  "budget_charge": 14.73,
+  "budget_tick": 13.673,
+  "lru_cache_hit": 5355.8,
+  "lru_cache_insert_evict": 972880.0
 }

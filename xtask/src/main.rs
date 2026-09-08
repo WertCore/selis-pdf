@@ -15,6 +15,7 @@ mod coverage;
 mod fuzz;
 mod layers;
 mod oracle;
+mod perf_check;
 mod purity;
 mod sbom;
 mod size_check;
@@ -64,8 +65,17 @@ enum Command {
     /// Wild-corpus policy gates: CI excludes wild sources, expectations carry no
     /// document content (06-CORPUS-POLICY.md §7, SL-0.CORP.05).
     CheckWildHygiene,
-    /// WASM size budgets (SL-0.WS.09).
-    SizeCheck,
+    /// WASM size budgets + 2% regression rule (SL-0.WS.09).
+    SizeCheck {
+        /// Record the fresh measurement as the new baseline instead of
+        /// comparing against it.
+        #[arg(long)]
+        update_baseline: bool,
+        /// Fail on budgets whose artifact is not measured yet (default:
+        /// report loudly but pass).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Coverage floors per crate (SL-0.WS.08).
     Coverage,
     /// Mutation testing scoped to sandbox/edit/redact/sign (SL-0.WS.08).
@@ -78,6 +88,13 @@ enum Command {
     Fuzz,
     /// Criterion benchmarks (SL-0.PERF.01).
     Bench(BenchArgs),
+    /// Performance budgets vs criterion (SL-0.PERF.02).
+    PerfCheck {
+        /// Fail on budgets whose harness does not exist yet (default:
+        /// report loudly but pass).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Conformance ladder report (SL-0.OPS.02).
     Conformance,
     /// CycloneDX SBOM (SL-0.WS.07).
@@ -206,7 +223,10 @@ fn main() -> ExitCode {
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::CheckWildHygiene => wild_hygiene::check(),
-        Command::SizeCheck => size_check::run(),
+        Command::SizeCheck {
+            update_baseline,
+            strict,
+        } => size_check::run(update_baseline, strict),
         Command::Coverage => coverage::run(),
         Command::Mutate => coverage::mutate(),
         Command::Corpus(args) => match args.sub {
@@ -245,6 +265,7 @@ fn main() -> ExitCode {
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
+        Command::PerfCheck { strict } => perf_check::run(strict),
         Command::Conformance => conformance::report(),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),

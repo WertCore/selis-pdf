@@ -6,7 +6,8 @@ use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
 static AUTH_EVENT_EF_OPEN: &[u8] = include_bytes!("../../../corpus/pdfs/auth-event-ef-open.pdf");
-static ENCRYPTED_ATTACHMENT: &[u8] = include_bytes!("../../../corpus/pdfs/encrypted-attachment.pdf");
+static ENCRYPTED_ATTACHMENT: &[u8] =
+    include_bytes!("../../../corpus/pdfs/encrypted-attachment.pdf");
 static ISSUE19484_1: &[u8] = include_bytes!("../../../corpus/pdfs/issue19484_1.pdf");
 static ISSUE19484_2: &[u8] = include_bytes!("../../../corpus/pdfs/issue19484_2.pdf");
 static BUG1782186: &[u8] = include_bytes!("../../../corpus/pdfs/bug1782186.pdf");
@@ -53,7 +54,11 @@ fn issue19484_metadata_crypt_identity_not_decrypted() {
     // stream (object 3) and verify its payload is plaintext XML.
     let startxref = selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
     let doc = selis_pdf_cos::parse_revisions(src, startxref, &budget, &mut g).expect("parse");
-    let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt).expect("encrypt");
+    let encrypt_ref = doc
+        .revisions()
+        .last()
+        .and_then(|v| v.encrypt)
+        .expect("encrypt");
     let info = selis_pdf_cos::encrypt::parse_encrypt(src, Some(encrypt_ref), &budget, &mut g)
         .expect("parse encrypt")
         .expect("encrypt info");
@@ -67,7 +72,9 @@ fn issue19484_metadata_crypt_identity_not_decrypted() {
     let policy = selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, key);
     let mut resolver = selis_pdf_doc::Resolver::new(&doc, src, &budget);
     resolver.set_key(policy);
-    let obj = resolver.resolve(Ref::new(3, 0), &mut g).expect("resolve metadata");
+    let obj = resolver
+        .resolve(Ref::new(3, 0), &mut g)
+        .expect("resolve metadata");
     let Obj::Stream { dict, data } = &obj else {
         panic!("expected a stream");
     };
@@ -78,7 +85,9 @@ fn issue19484_metadata_crypt_identity_not_decrypted() {
         }
         match v {
             Obj::Name(n) => n.as_slice() == b"Crypt",
-            Obj::Array(a) => a.iter().any(|o| matches!(o, Obj::Name(n) if n.as_slice() == b"Crypt")),
+            Obj::Array(a) => a
+                .iter()
+                .any(|o| matches!(o, Obj::Name(n) if n.as_slice() == b"Crypt")),
             _ => false,
         }
     });
@@ -100,7 +109,11 @@ fn issue19484_2_metadata_crypt_identity_not_decrypted() {
     let _session = Session::open(src.to_vec(), &budget).expect("Session::open");
     let startxref = selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
     let doc = selis_pdf_cos::parse_revisions(src, startxref, &budget, &mut g).expect("parse");
-    let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt).expect("encrypt");
+    let encrypt_ref = doc
+        .revisions()
+        .last()
+        .and_then(|v| v.encrypt)
+        .expect("encrypt");
     let info = selis_pdf_cos::encrypt::parse_encrypt(src, Some(encrypt_ref), &budget, &mut g)
         .expect("parse encrypt")
         .expect("encrypt info");
@@ -114,7 +127,9 @@ fn issue19484_2_metadata_crypt_identity_not_decrypted() {
     let policy = selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, key);
     let mut resolver = selis_pdf_doc::Resolver::new(&doc, src, &budget);
     resolver.set_key(policy);
-    let obj = resolver.resolve(Ref::new(3, 0), &mut g).expect("resolve metadata");
+    let obj = resolver
+        .resolve(Ref::new(3, 0), &mut g)
+        .expect("resolve metadata");
     let Obj::Stream { data, .. } = &obj else {
         panic!("expected a stream");
     };

@@ -281,7 +281,12 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Inspect { path, json } => inspect::run(&path, json),
-        Command::Render { path, page, output, dpi } => render::run(&path, page, &output, dpi),
+        Command::Render {
+            path,
+            page,
+            output,
+            dpi,
+        } => render::run(&path, page, &output, dpi),
         Command::Extract {
             path,
             page,

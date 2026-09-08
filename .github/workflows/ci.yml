@@ -6,8 +6,8 @@
 # test-fast      | every PR  | required
 # supply-chain   | every PR  | required
 # size-check     | every PR  | required
-# determinism    | every PR  | required
-# test-slow      | nightly   | required for release
+# determinism    | every PR  | required (job pending)
+# test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
 # perf           | nightly   | blocks release on >5% regression
 
@@ -18,6 +18,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Every 2 days at 03:00 UTC. GitHub cron steps by day-of-month, so the
+    # gap at a month boundary is 1 day instead of 2; there is no true
+    # "every 48 hours" cron. Nightly-gated jobs (fuzz-soak, perf) run on
+    # this schedule; scheduled runs always use main.
+    - cron: '0 3 */2 * *'
 
 env:
   CARGO_TERM_COLOR: always
@@ -88,6 +94,23 @@ jobs:
       - run: cargo test --workspace
         timeout-minutes: 10
 
+  # ── WASM size budgets + 2% regression rule (SL-0.WS.09) ────────────────────
+  size-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install wasm-opt (binaryen, via npm)
+        run: npm install -g wasm-opt
+      - run: cargo xtask size-check
+        timeout-minutes: 15
+
   # ── fuzz-soak (nightly, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02 ──────────
   fuzz-soak:
     runs-on: ubuntu-24.04
@@ -107,3 +130,22 @@ jobs:
           cargo +nightly fuzz run cos_lex -- -max_total_time=600
           cargo +nightly fuzz run doc_open -- -max_total_time=600
         timeout-minutes: 40
+
+  # ── perf budgets (nightly) — SL-0.PERF.02; blocks release on >5% regression
+  # per 03-CONVENTIONS.md §9. The baseline is re-recorded on the runner first,
+  # so the regression comparison is same-machine (a committed baseline from a
+  # different machine cannot gate percentages).
+  perf:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Record runner-fresh baseline
+        run: cargo xtask bench --record-baseline
+        timeout-minutes: 20
+      - name: Compare budgets against the fresh baseline
+        run: cargo xtask perf-check
+        timeout-minutes: 20

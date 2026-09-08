@@ -152,15 +152,13 @@ fn read_stream_body(
     if let Some(length) = declared {
         let end = body.saturating_add(length);
         if end <= src.len() && endstream_follows(src, end) {
-            let data = src
-                .get(body..end)
-                .ok_or_else(|| {
-                    err!(
-                        Code::ObjUnexpected,
-                        during = "resolve-object",
-                        detail = "stream body out of range"
-                    )
-                })?;
+            let data = src.get(body..end).ok_or_else(|| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "resolve-object",
+                    detail = "stream body out of range"
+                )
+            })?;
             return Ok(Bytes::copy_from_slice(data));
         }
     }
@@ -278,7 +276,10 @@ pub fn resolve_object_numbered(
                 q = q.saturating_add(1);
             }
             let is_value_start = src.get(q).is_some_and(|&b| {
-                matches!(b, b'<' | b'[' | b'(' | b'/' | b'0'..=b'9' | b't' | b'f' | b'n')
+                matches!(
+                    b,
+                    b'<' | b'[' | b'(' | b'/' | b'0'..=b'9' | b't' | b'f' | b'n'
+                )
             });
             if is_value_start {
                 resolve_object_bare(src, pos, budget, g)

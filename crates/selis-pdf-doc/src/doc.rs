@@ -340,7 +340,16 @@ fn walk_pages(
         }
     } else {
         // A page node: materialise the resolved attributes.
-        let page = materialize_page(&node, node_ref.num, inherited, doc, src, budget, d.guard(), key)?;
+        let page = materialize_page(
+            &node,
+            node_ref.num,
+            inherited,
+            doc,
+            src,
+            budget,
+            d.guard(),
+            key,
+        )?;
         out.push(page);
     }
     Ok(())

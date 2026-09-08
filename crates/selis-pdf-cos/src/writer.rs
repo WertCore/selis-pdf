@@ -354,9 +354,9 @@ mod tests {
     #[test]
     fn hex_strings_write_as_hex_literals() {
         assert_eq!(
-            write(&Obj::HexString(selis_bytes::Bytes::copy_from_slice(
-                &[0xde, 0xad, 0xbe, 0xef]
-            ))),
+            write(&Obj::HexString(selis_bytes::Bytes::copy_from_slice(&[
+                0xde, 0xad, 0xbe, 0xef
+            ]))),
             "<DEADBEEF>"
         );
         assert_eq!(

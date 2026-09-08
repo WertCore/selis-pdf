@@ -12,9 +12,7 @@
 use std::collections::BTreeSet;
 
 use selis_log::oplog::{ActorId, OpLog, OpRecord, Outcome};
-use selis_pdf_cos::doc_writer::{
-    write_incremental_update, write_objects_as_document_with_trailer,
-};
+use selis_pdf_cos::doc_writer::{write_incremental_update, write_objects_as_document_with_trailer};
 use selis_pdf_cos::encrypt::{self, DecryptPolicy};
 use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
 use selis_pdf_doc::Resolver;
@@ -148,14 +146,8 @@ fn clear_permissions_r56(
     // New revision trailer: /Root, /ID, /Encrypt.
     let new_trailer = build_new_trailer(trailer, enc_num, src);
 
-    let updated = write_incremental_update(
-        src,
-        &[(enc_num, new_encrypt)],
-        &new_trailer,
-        budget,
-        g,
-    )
-    .map_err(|e| CliError(format!("{path}: write: {e}")))?;
+    let updated = write_incremental_update(src, &[(enc_num, new_encrypt)], &new_trailer, budget, g)
+        .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
     verify_output(&updated, root, path)?;
 
@@ -187,9 +179,8 @@ fn clear_permissions_r24(
 ) -> CliResult<()> {
     // Recover the padded user password from /O (Algorithm 3), so the new key
     // can be derived from the same user password with the cleared /P.
-    let user_pw =
-        selis_crypto::recover_user_password(&info.o, info.r, info.length, owner_password)
-            .ok_or_else(|| CliError(format!("{path}: cannot recover user password from /O")))?;
+    let user_pw = selis_crypto::recover_user_password(&info.o, info.r, info.length, owner_password)
+        .ok_or_else(|| CliError(format!("{path}: cannot recover user password from /O")))?;
 
     let new_p = ALL_PERMS_R2_4;
     let new_key = selis_crypto::encryption_key(
@@ -216,10 +207,7 @@ fn clear_permissions_r24(
         .map_err(|e| CliError(format!("{path}: {e}")))?;
 
     // /Info as a separate root.
-    if let Some((_, Obj::Ref(info_r))) = trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Info")
-    {
+    if let Some((_, Obj::Ref(info_r))) = trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
         if !visited.contains(&info_r.num) {
             walk(&mut resolver, *info_r, &mut visited, &mut objects, g)
                 .map_err(|e| CliError(format!("{path}: {e}")))?;
@@ -244,10 +232,7 @@ fn clear_permissions_r24(
 
     // Trailer: /Root, /Info, /ID, /Encrypt (indirect).
     let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some((_, Obj::Ref(info_r))) = trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Info")
-    {
+    if let Some((_, Obj::Ref(info_r))) = trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
         extra_trailer.push((b"Info".to_vec(), Obj::Ref(*info_r)));
     }
     let fresh = fresh_file_id(src);
@@ -274,8 +259,7 @@ fn clear_permissions_r24(
 
     verify_output(&bytes, root, path)?;
 
-    std::fs::write(output, &bytes)
-        .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
     record_override(&format!(
         "R{} full rewrite: content re-encrypted under the /P-cleared key",
         info.r
@@ -470,12 +454,8 @@ mod tests {
         let in_path = dir.join("plain.pdf");
         let out_path = dir.join("plain.out.pdf");
         std::fs::write(&in_path, build_plain_pdf()).unwrap();
-        let err = super::run(
-            in_path.to_str().unwrap(),
-            out_path.to_str().unwrap(),
-            None,
-        )
-        .expect_err("plain document refused");
+        let err = super::run(in_path.to_str().unwrap(), out_path.to_str().unwrap(), None)
+            .expect_err("plain document refused");
         assert!(
             err.to_string().contains("not encrypted"),
             "message mentions not encrypted: {err}"
@@ -513,22 +493,13 @@ mod tests {
             out.extend_from_slice(body);
             out.extend_from_slice(b"\nendobj\n");
         };
-        push_obj(
-            1,
-            b"<< /Type /Catalog /Pages 2 0 R >>",
-        );
-        push_obj(
-            2,
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        );
+        push_obj(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push_obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
         push_obj(
             3,
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R /Resources << /Font << /F1 4 0 R >> >> >>",
         );
-        push_obj(
-            4,
-            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        );
+        push_obj(4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
         // /Encrypt dict (not itself encrypted). /P is a signed 32-bit value.
         let enc_body = format!(
             "<< /Filter /Standard /V 1 /R 2 /Length 40 /O <{}> /U <{}> /P {} >>",
@@ -538,10 +509,7 @@ mod tests {
         );
         push_obj(5, enc_body.as_bytes());
         // The content stream, RC4-encrypted under object 6.
-        let stream_body = format!(
-            "<< /Length {} >>\nstream\n",
-            enc_content.len()
-        );
+        let stream_body = format!("<< /Length {} >>\nstream\n", enc_content.len());
         offsets.insert(6, out.len());
         out.extend_from_slice(format!("6 0 obj\n").as_bytes());
         out.extend_from_slice(stream_body.as_bytes());
@@ -558,10 +526,8 @@ mod tests {
         out.extend_from_slice(b"trailer\n");
         let id_hex = format!("{}", hex(&id0));
         out.extend_from_slice(
-            format!(
-                "<< /Size 7 /Root 1 0 R /Encrypt 5 0 R /ID [<{id_hex}><{id_hex}>] >>\n"
-            )
-            .as_bytes(),
+            format!("<< /Size 7 /Root 1 0 R /Encrypt 5 0 R /ID [<{id_hex}><{id_hex}>] >>\n")
+                .as_bytes(),
         );
         out.extend_from_slice(format!("startxref\n{xref_at}\n%%EOF\n").as_bytes());
         out
@@ -642,10 +608,8 @@ mod tests {
         out.extend_from_slice(b"trailer\n");
         let id_hex = hex(&id0);
         out.extend_from_slice(
-            format!(
-                "<< /Size 7 /Root 1 0 R /Encrypt 5 0 R /ID [<{id_hex}><{id_hex}>] >>\n"
-            )
-            .as_bytes(),
+            format!("<< /Size 7 /Root 1 0 R /Encrypt 5 0 R /ID [<{id_hex}><{id_hex}>] >>\n")
+                .as_bytes(),
         );
         out.extend_from_slice(format!("startxref\n{xref_at}\n%%EOF\n").as_bytes());
         out
@@ -714,8 +678,8 @@ mod tests {
         );
         // The output opens in the engine with the (empty) user password.
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = selis_pdf_engine::Session::open(out, &budget)
-            .expect("output opens in the engine");
+        let session =
+            selis_pdf_engine::Session::open(out, &budget).expect("output opens in the engine");
         assert_eq!(session.len(), 1, "one page");
     }
 }

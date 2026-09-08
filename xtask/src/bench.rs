@@ -1,6 +1,14 @@
 //! Criterion benchmark harness (SL-0.PERF.01).
 //! `xtask bench --record-baseline` saves baselines; `xtask bench --compare-baseline` checks
-//! for regressions >2% against the saved baseline. Parses criterion's standard output.
+//! for regressions beyond the configured threshold against the saved baseline. Parses
+//! criterion's standard output.
+//!
+//! Thresholds: the committed `bench/baselines.json` is a *reference record*
+//! (recorded once on the reference machine) — the >2% cross-run rule from
+//! PERF.01 is not runnable on noisy laptop hardware (±100% swings observed
+//! for the cache benches). The enforced CI gate is in `perf_check.rs` (>5%,
+//! 03-CONVENTIONS.md §9); the CI job records a runner-fresh baseline before
+//! comparing, so the comparison is same-machine.
 
 use std::collections::BTreeMap;
 
