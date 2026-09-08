@@ -37,12 +37,16 @@ const TOOL_BINARY: &[(&str, &str)] = &[
 ];
 
 /// The four triage verdicts of `21-TESTING-AND-ORACLES.md §5`.
-pub const TRIAGE_VERDICTS: &[&str] =
-    &["OurBug", "OracleBug", "SpecAmbiguous", "ToleranceTooTight"];
+pub const TRIAGE_VERDICTS: &[&str] = &["OurBug", "OracleBug", "SpecAmbiguous", "ToleranceTooTight"];
 
 /// One oracle tool's pinned container identity, as recorded in
 /// `xtask/oracles.toml`.
+///
+/// Most fields are provenance (they document *how* the pin was produced and
+/// are surfaced by `xtask oracle check` / human review); only `image`,
+/// `digest` and `version` drive dispatch.
 #[derive(serde::Deserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct ToolPin {
     /// What the oracle is used for (render, structural, text, ...).
     #[serde(default)]
@@ -178,7 +182,7 @@ fn render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     // pdfjs-dist version inside the container, so it is always dispatched
     // there (see docker/oracles/pdfjs/).
     if tool == "pdfjs" {
-        return render_container(tool, "node", dpi, file, &out_dir);
+        return render_container(tool, dpi, file, &out_dir);
     }
 
     let binary = TOOL_BINARY
@@ -190,7 +194,7 @@ fn render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     if let Some(local) = find_local(binary) {
         return render_local(tool, &local, dpi, file, &out_dir);
     }
-    render_container(tool, binary, dpi, file, &out_dir)
+    render_container(tool, dpi, file, &out_dir)
 }
 
 /// The path to a local oracle binary, if installed on PATH.
@@ -256,13 +260,7 @@ fn render_local(
 /// The image runs `docker/oracles/<tool>/driver.*` with the same CLI
 /// contract the local binary honours; the file is mounted read-only and the
 /// PNG is written to a bind-mounted output path.
-fn render_container(
-    tool: &str,
-    binary: &str,
-    dpi: u32,
-    file: &Path,
-    out_dir: &Path,
-) -> Result<(), String> {
+fn render_container(tool: &str, dpi: u32, file: &Path, out_dir: &Path) -> Result<(), String> {
     if find_local("docker").is_none() {
         return Err(format!(
             "{tool}: not installed locally and Docker is not available. \
@@ -318,7 +316,7 @@ fn render_container(
 fn check() -> Result<(), String> {
     let pins = load_pins()?;
     println!("oracle check (local-first; Docker only for CI pinning):");
-    let mut display = |id: &str, local: String| {
+    let display = |id: &str, local: String| {
         let image = match pins.get(id) {
             Some(p) if !p.digest.is_empty() => format!("{}@{}", p.image, p.digest),
             Some(p) if !p.version.is_empty() => {
@@ -376,7 +374,7 @@ fn compare(file: &Path) -> Result<(), String> {
     }
 
     // 2. Object count from qpdf v2: qpdf[0].maxobjectid.
-    let qpdf_meta = theirs["qpdf"].as_array().and_then(|a| a.get(0));
+    let qpdf_meta = theirs["qpdf"].as_array().and_then(|a| a.first());
     let their_objects = qpdf_meta
         .and_then(|m| m["maxobjectid"].as_u64())
         .unwrap_or(0);
@@ -864,8 +862,7 @@ fn triage(sample: usize, verdicts: &[(String, String)], note: Option<&str>) -> R
         clusters.len()
     );
     for c in &clusters {
-        let mut display: Vec<String> =
-            c.files.iter().map(|f| f.display().to_string()).collect();
+        let mut display: Vec<String> = c.files.iter().map(|f| f.display().to_string()).collect();
         let rest = if display.len() > 5 {
             let n = display.len() - 5;
             display.truncate(5);
@@ -994,6 +991,7 @@ fn record_verdict(
 ///     lists object 0; its `maxobjectid` counts the slot, which is why the
 ///     pre-normalisation comparator reported obj_delta=1 on every healthy
 ///     file).
+///
 /// Remaining difference, documented in `oracle compare`: our union spans all
 /// revisions, qpdf's map is the final revision's live objects — files that
 /// delete objects in later revisions legitimately differ.
@@ -1188,7 +1186,13 @@ licence = "AGPL-3.0"
         let too_long = record_verdict_at(&expect, &pdf, "obj_delta=1", "OurBug", Some(&long_note));
         assert!(too_long.is_err(), "oversized note must be rejected");
 
-        let ok = record_verdict_at(&expect, &pdf, "obj_delta=1", "OurBug", Some("xref free head"));
+        let ok = record_verdict_at(
+            &expect,
+            &pdf,
+            "obj_delta=1",
+            "OurBug",
+            Some("xref free head"),
+        );
         assert!(ok.is_ok(), "bounded note must be accepted: {ok:?}");
         let text = std::fs::read_to_string(&expect).unwrap();
         assert!(text.contains("[annotation]"));
