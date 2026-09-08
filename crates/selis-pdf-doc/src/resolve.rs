@@ -433,6 +433,109 @@ fn decrypt_stream(
     ))
 }
 
+/// Encrypt the streams and strings in an object (the inverse of
+/// [`decrypt_obj`]), respecting the document's crypt filters. Used by
+/// SL-1A.TOOL.05 to re-encrypt a document after the `/P`-derived key changes.
+pub fn encrypt_obj(obj: Obj, r: Ref, policy: &DecryptPolicy) -> Obj {
+    encrypt_obj_inner(obj, r, policy, 0)
+}
+
+fn encrypt_obj_inner(obj: Obj, r: Ref, policy: &DecryptPolicy, depth: u16) -> Obj {
+    if depth > 32 {
+        return obj;
+    }
+    match obj {
+        Obj::Stream { dict, data } => {
+            let is_metadata = dict.iter().any(|(k, v)| {
+                k.as_slice() == b"Type"
+                    && matches!(v, Obj::Name(n) if n.as_slice() == b"Metadata")
+            });
+            Obj::Stream {
+                data: encrypt_stream(&dict, data, r, policy, is_metadata),
+                dict: encrypt_dict(dict, r, policy, depth),
+            }
+        }
+        Obj::String(bytes) => {
+            let bytes = if policy.string_encrypted {
+                selis_bytes::Bytes::from(selis_crypto::encrypt_data(
+                    &policy.key,
+                    r.num,
+                    r.gen,
+                    bytes.as_slice(),
+                    policy.rev,
+                    policy.aes,
+                ))
+            } else {
+                bytes
+            };
+            Obj::String(bytes)
+        }
+        Obj::Dict(pairs) => Obj::Dict(encrypt_dict(pairs, r, policy, depth)),
+        Obj::Array(items) => Obj::Array(
+            items
+                .into_iter()
+                .map(|i| encrypt_obj_inner(i, r, policy, depth.saturating_add(1)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Encrypt a dict's values in place (streams and strings).
+fn encrypt_dict(
+    pairs: Vec<(selis_bytes::Bytes, Obj)>,
+    r: Ref,
+    policy: &DecryptPolicy,
+    depth: u16,
+) -> Vec<(selis_bytes::Bytes, Obj)> {
+    pairs
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                encrypt_obj_inner(v, r, policy, depth.saturating_add(1)),
+            )
+        })
+        .collect()
+}
+
+/// Encrypt a stream's data with the same per-stream rules as
+/// [`decrypt_stream`], in reverse.
+fn encrypt_stream(
+    dict: &[(selis_bytes::Bytes, Obj)],
+    data: selis_bytes::Bytes,
+    r: Ref,
+    policy: &DecryptPolicy,
+    is_metadata: bool,
+) -> selis_bytes::Bytes {
+    let per_stream = per_stream_crypt_name(dict);
+    let encrypted = match &per_stream {
+        Some(name) => name != "Identity",
+        None => {
+            if is_metadata && !policy.encrypt_metadata {
+                false
+            } else {
+                policy.stream_encrypted
+            }
+        }
+    };
+    if !encrypted {
+        return data;
+    }
+    let aes = per_stream
+        .as_deref()
+        .map(|name| policy.aes_for(name))
+        .unwrap_or(policy.aes);
+    selis_bytes::Bytes::from(selis_crypto::encrypt_data(
+        &policy.key,
+        r.num,
+        r.gen,
+        data.as_slice(),
+        policy.rev,
+        aes,
+    ))
+}
+
 /// The crypt filter name a stream selects with `/Filter [/Crypt ...]`, or
 /// `None` when the stream has no explicit `/Crypt` filter.
 ///

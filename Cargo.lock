@@ -915,6 +915,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "selis-bytes",
+ "selis-crypto",
  "selis-error",
  "selis-geom",
  "selis-image",

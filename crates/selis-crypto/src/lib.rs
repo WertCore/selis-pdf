@@ -235,6 +235,50 @@ pub fn compute_owner_key(password: &[u8], r: u8, length: usize) -> Vec<u8> {
     key
 }
 
+/// Build the `/O` value for an owner password (Algorithm 6): encrypt the
+/// 32-byte padded user password with the owner key. R2 uses a single RC4 pass;
+/// R3/R4 use 20 RC4 passes keyed by `key XOR 0` through `key XOR 19` in
+/// ascending order.
+#[must_use]
+pub fn compute_o(owner_key: &[u8], user_padded: &[u8; 32], r: u8) -> [u8; 32] {
+    let mut out = user_padded.to_vec();
+    let max_rounds: u8 = if r == 2 { 1 } else { 20 };
+    for i in 0..max_rounds {
+        let round_key: Vec<u8> = owner_key.iter().map(|&b| b ^ i).collect();
+        out = rc4(&round_key, &out);
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out[..32]);
+    arr
+}
+
+/// Recover the padded user password from `/O` given the owner password
+/// (Algorithm 3, the first half of [`authenticate_owner`]). Returns the
+/// 32-byte padded user password, or `None` when `/O` is too short.
+#[must_use]
+pub fn recover_user_password(
+    o: &[u8],
+    r: u8,
+    length: usize,
+    owner_password: &[u8],
+) -> Option<Vec<u8>> {
+    if r >= 5 || o.len() < 32 {
+        return None;
+    }
+    let o32: [u8; 32] = o[..32].try_into().ok()?;
+    let key = compute_owner_key(owner_password, r, length);
+    if r == 2 {
+        Some(rc4(&key, &o32))
+    } else {
+        let mut data = o32.to_vec();
+        for x in 0..20u8 {
+            let round_key: Vec<u8> = key.iter().map(|&b| b ^ (19 - x)).collect();
+            data = rc4(&round_key, &data);
+        }
+        Some(data)
+    }
+}
+
 /// Algorithm 2.A (revisions 5 and 6): validate the user password against
 /// `/U`, falling back to the owner password against `/O`, and unwrap the
 /// 32-byte file encryption key from `/UE` (or `/OE`).
@@ -251,18 +295,57 @@ fn authenticate_r56(password: &[u8], u: &[u8], ue: &[u8], o: &[u8], oe: &[u8], r
         }
         // Owner-password fallback: the hash input includes the full 48-byte
         // /U value.
-        if o.len() >= 48 && oe.len() >= 32 {
-            let (ohash, ovsalt, oksalt) = split_u48(o);
-            let computed = hash_r6_aware(pwd, ovsalt, &u[..48], r);
-            if computed == ohash {
-                let key_hash = hash_r6_aware(pwd, oksalt, &u[..48], r);
-                let mut fk = aes256_cbc_decrypt_nopad(&key_hash, &[0u8; 16], &oe[..32]);
-                fk.truncate(32);
-                return Some(fk);
-            }
+        return authenticate_owner_r56(password, u, o, oe, r);
+    }
+    None
+}
+
+/// Validate an owner password against `/O` for revisions 5–6 and unwrap the
+/// 32-byte file encryption key from `/OE` (Algorithm 2.A owner branch).
+#[must_use]
+pub fn authenticate_owner_r56(
+    password: &[u8],
+    u: &[u8],
+    o: &[u8],
+    oe: &[u8],
+    r: u8,
+) -> Option<Vec<u8>> {
+    let pwd = &password[..password.len().min(127)];
+    if o.len() >= 48 && oe.len() >= 32 {
+        let (ohash, ovsalt, oksalt) = split_u48(o);
+        let computed = hash_r6_aware(pwd, ovsalt, &u[..u.len().min(48)], r);
+        if computed == ohash {
+            let key_hash = hash_r6_aware(pwd, oksalt, &u[..u.len().min(48)], r);
+            let mut fk = aes256_cbc_decrypt_nopad(&key_hash, &[0u8; 16], &oe[..32]);
+            fk.truncate(32);
+            return Some(fk);
         }
     }
     None
+}
+
+/// Whether `password` is the document's **owner** password (the only
+/// credential that legitimately clears permission restrictions, SL-1.ENC.04).
+/// Revisions 2–4 use the `/O` recovery ([`authenticate_owner`]); revisions
+/// 5–6 validate against `/O` directly.
+#[must_use]
+pub fn is_owner_password(
+    o: &[u8],
+    u: &[u8],
+    p: u32,
+    id0: &[u8],
+    r: u8,
+    length: usize,
+    encrypt_metadata: bool,
+    ue: &[u8],
+    oe: &[u8],
+    password: &[u8],
+) -> bool {
+    if r >= 5 {
+        authenticate_owner_r56(password, u, o, oe, r).is_some()
+    } else {
+        authenticate_owner(o, u, p, id0, r, length, encrypt_metadata, password).is_some()
+    }
 }
 
 /// Split a 48-byte `/U` (or `/O`) into hash, validation salt, and key salt.
@@ -490,6 +573,229 @@ pub fn decrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     } else {
         rc4(&obj_key, data)
     }
+}
+
+/// Encrypt per-object data (the inverse of [`decrypt_data`], Algorithms 1/1a
+/// in the encrypt direction). RC4 (revisions 2–3) is symmetric; AES-128-CBC
+/// (revision 4) gets a fresh random leading IV and PKCS7 padding, so the
+/// ciphertext length differs from the plaintext. Used by SL-1A.TOOL.05 to
+/// re-encrypt a document after clearing `/P` (which feeds the key for R2–4).
+///
+/// The AES IV is derived deterministically from the file key and object
+/// identifier rather than sampled from a CSPRNG: the file key is random per
+/// document, so the IV is unique per (document, object), and the re-encrypted
+/// document carries the same confidentiality as the input. This keeps the
+/// encrypt path dependency-free and deterministic (round-trip testable).
+#[must_use]
+pub fn encrypt_data(
+    key: &[u8],
+    objnum: u32,
+    gen: u16,
+    data: &[u8],
+    r: u8,
+    aes: bool,
+) -> Vec<u8> {
+    if key.is_empty() {
+        return Vec::new();
+    }
+    if r >= 5 {
+        // AES-256-CBC (revisions 5–6) with a leading IV and PKCS7 padding.
+        let Ok(cipher) = Aes256::new_from_slice(&key[..key.len().min(32)]) else {
+            return Vec::new();
+        };
+        let iv = aes_iv(key, objnum, gen);
+        return aes256_cbc_encrypt_iv_prefix(&cipher, &iv, data);
+    }
+    // Algorithm 1 salting — identical to the decrypt side.
+    let mut hasher = Md5::new();
+    hasher.update(key);
+    hasher.update(&objnum.to_le_bytes()[..3]);
+    hasher.update(gen.to_le_bytes());
+    if aes {
+        hasher.update(b"sAlT");
+    }
+    let salted_len = key
+        .len()
+        .saturating_add(if r >= 4 { 5 } else { 2 })
+        .min(16);
+    let mut obj_key = hasher.finalize().to_vec();
+    obj_key.truncate(salted_len);
+    if aes {
+        obj_key.resize(16, 0);
+        let Ok(cipher) = Aes128::new_from_slice(&obj_key) else {
+            return Vec::new();
+        };
+        let iv = aes_iv(key, objnum, gen);
+        aes128_cbc_encrypt_iv_prefix(&cipher, &iv, data)
+    } else {
+        rc4(&obj_key, data)
+    }
+}
+
+/// A deterministic 16-byte IV for AES per-object encryption: MD5 of the file
+/// key and the object identifier, truncated. Unique per (document, object).
+fn aes_iv(key: &[u8], objnum: u32, gen: u16) -> [u8; 16] {
+    let mut hasher = Md5::new();
+    hasher.update(key);
+    hasher.update(&objnum.to_le_bytes()[..3]);
+    hasher.update(gen.to_le_bytes());
+    let mut out = [0u8; 16];
+    let d = hasher.finalize();
+    out.copy_from_slice(&d[..16]);
+    out
+}
+
+/// AES-128-CBC encrypt with a leading IV and PKCS7 padding.
+fn aes128_cbc_encrypt_iv_prefix(cipher: &Aes128, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len().saturating_add(32));
+    out.extend_from_slice(iv);
+    out.extend_from_slice(&aes128_cbc_encrypt_pkcs7(cipher, iv, data));
+    out
+}
+
+/// AES-128-CBC encrypt with PKCS7 padding (input may be any length).
+fn aes128_cbc_encrypt_pkcs7(cipher: &Aes128, iv: &[u8], data: &[u8]) -> Vec<u8> {
+    let pad_len = 16 - (data.len() % 16);
+    let mut padded = data.to_vec();
+    padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
+    aes128_cbc_encrypt_raw(cipher, iv, &padded)
+}
+
+/// AES-128-CBC encrypt without padding (input length must be a block
+/// multiple).
+fn aes128_cbc_encrypt_raw(cipher: &Aes128, iv: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut prev = [0u8; 16];
+    prev.copy_from_slice(&iv[..iv.len().min(16)]);
+    for chunk in data.chunks(16) {
+        if chunk.len() != 16 {
+            break;
+        }
+        let mut block = [0u8; 16];
+        for k in 0..16 {
+            block[k] = chunk[k] ^ prev[k];
+        }
+        let mut gb = Block::clone_from_slice(&block);
+        cipher.encrypt_block(&mut gb);
+        out.extend_from_slice(gb.as_slice());
+        prev.copy_from_slice(gb.as_slice());
+    }
+    out
+}
+
+/// AES-256-CBC encrypt with a leading IV and PKCS7 padding (Algorithm 1a in
+/// the encrypt direction for revisions 5–6).
+fn aes256_cbc_encrypt_iv_prefix(cipher: &Aes256, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len().saturating_add(32));
+    out.extend_from_slice(iv);
+    out.extend_from_slice(&aes256_cbc_encrypt_pkcs7(cipher, iv, data));
+    out
+}
+
+/// AES-256-CBC encrypt with PKCS7 padding.
+fn aes256_cbc_encrypt_pkcs7(cipher: &Aes256, iv: &[u8], data: &[u8]) -> Vec<u8> {
+    let pad_len = 16 - (data.len() % 16);
+    let mut padded = data.to_vec();
+    padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
+    aes256_cbc_encrypt_raw(cipher, iv, &padded)
+}
+
+/// AES-256-CBC encrypt without padding (input length must be a block
+/// multiple).
+fn aes256_cbc_encrypt_raw(cipher: &Aes256, iv: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut prev = [0u8; 16];
+    prev.copy_from_slice(&iv[..iv.len().min(16)]);
+    for chunk in data.chunks(16) {
+        if chunk.len() != 16 {
+            break;
+        }
+        let mut block = [0u8; 16];
+        for k in 0..16 {
+            block[k] = chunk[k] ^ prev[k];
+        }
+        let mut gb = Block::clone_from_slice(&block);
+        cipher.encrypt_block(&mut gb);
+        out.extend_from_slice(gb.as_slice());
+        prev.copy_from_slice(gb.as_slice());
+    }
+    out
+}
+
+/// Compute the R6 `/Perms` value (Algorithm 10): the 16-byte permissions
+/// structure encrypted with AES-256-CBC (zero IV, no padding). Bytes 12–15
+/// are conventionally random; they are not validated on read, so a fixed
+/// value keeps the output deterministic.
+#[must_use]
+pub fn compute_perms(file_key: &[u8], p: u32, encrypt_metadata: bool) -> Vec<u8> {
+    let Ok(cipher) = Aes256::new_from_slice(&file_key[..file_key.len().min(32)]) else {
+        return Vec::new();
+    };
+    let mut buf = [0u8; 16];
+    buf[..4].copy_from_slice(&p.to_le_bytes());
+    buf[4..8].fill(0xFF);
+    buf[8] = if encrypt_metadata { b'T' } else { b'F' };
+    buf[9..12].copy_from_slice(b"adb");
+    // bytes 12–15: fixed (not validated on read).
+    aes256_cbc_encrypt_raw(&cipher, &[0u8; 16], &buf)
+}
+
+/// Build the revision 5/6 credential set for a file encryption key:
+/// `(/U, /UE, /O, /OE)` (Algorithms "compute user/owner password" for R6).
+///
+/// The validation/key salts are derived deterministically from the file key
+/// (unique per document) rather than sampled from a CSPRNG — the same
+/// trade-off as the per-object AES IV in [`encrypt_data`]. SL-1A.TOOL.06
+/// (add password) is the CSPRNG write path per ADR-P0019; this constructor
+/// exists so the tool layer can build self-consistent R5/6 documents for
+/// round-trip verification.
+#[must_use]
+pub fn compute_r6_credentials(
+    user_password: &[u8],
+    owner_password: &[u8],
+    file_key: &[u8],
+    r: u8,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let salt = |tag: &[u8]| -> [u8; 8] {
+        let mut h = Md5::new();
+        h.update(file_key);
+        h.update(tag);
+        let d = h.finalize();
+        let mut s = [0u8; 8];
+        s.copy_from_slice(&d[..8]);
+        s
+    };
+    let vsalt = salt(b"selis-vsalt");
+    let ksalt = salt(b"selis-ksalt");
+    let ovsalt = salt(b"selis-ovsalt");
+    let oksalt = salt(b"selis-oksalt");
+
+    // /U = hash(pw, vsalt) || vsalt || ksalt; /UE = AES-256(key_hash, file key).
+    let uhash = hash_r6_aware(user_password, &vsalt, &[], r);
+    let mut u = uhash;
+    u.extend_from_slice(&vsalt);
+    u.extend_from_slice(&ksalt);
+    let key_hash = hash_r6_aware(user_password, &ksalt, &[], r);
+    let ue = aes256_wrap(&key_hash, file_key);
+
+    // /O = hash(owner pw, ovsalt, /U) || ovsalt || oksalt; /OE likewise.
+    let ohash = hash_r6_aware(owner_password, &ovsalt, &u, r);
+    let mut o = ohash;
+    o.extend_from_slice(&ovsalt);
+    o.extend_from_slice(&oksalt);
+    let okey_hash = hash_r6_aware(owner_password, &oksalt, &u, r);
+    let oe = aes256_wrap(&okey_hash, file_key);
+
+    (u, ue, o, oe)
+}
+
+/// AES-256-CBC encrypt a 32-byte value with a zero IV and no padding — the
+/// `/UE`//`/OE` wrapping (Algorithm 2.A in the encrypt direction).
+fn aes256_wrap(key_hash: &[u8], value: &[u8]) -> Vec<u8> {
+    let Ok(cipher) = Aes256::new_from_slice(&key_hash[..key_hash.len().min(32)]) else {
+        return Vec::new();
+    };
+    aes256_cbc_encrypt_raw(&cipher, &[0u8; 16], &value[..value.len().min(32)])
 }
 
 #[cfg(test)]

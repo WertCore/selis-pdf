@@ -22,6 +22,7 @@ use selis_error::{Code, Result};
 
 mod batch;
 mod check;
+mod clear_permissions;
 mod compress;
 mod convert;
 mod extract;
@@ -263,6 +264,17 @@ enum Command {
         #[arg(long)]
         outdir: String,
     },
+    /// Clear permission restrictions (given the owner password).
+    ClearPermissions {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The owner password.
+        #[arg(short, long)]
+        password: Option<String>,
+    },
 }
 
 fn main() {
@@ -362,6 +374,11 @@ fn main() {
             output,
             password,
         } => unlock::run(&path, &output, password.as_deref()),
+        Command::ClearPermissions {
+            path,
+            output,
+            password,
+        } => clear_permissions::run(&path, &output, password.as_deref()),
         Command::Batch {
             tool,
             inputs,

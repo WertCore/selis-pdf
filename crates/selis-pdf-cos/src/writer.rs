@@ -97,14 +97,19 @@ impl Writer {
                 self.push(b">>");
             }
             Obj::Stream { dict, data } => {
-                // Write the dict with a /Length, then `stream ... endstream`.
-                let mut with_len = dict.clone();
-                if !with_len.iter().any(|(k, _)| k.as_slice() == b"Length") {
-                    with_len.push((
-                        selis_bytes::Bytes::copy_from_slice(b"Length"),
-                        Obj::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)),
-                    ));
-                }
+                // Write the dict with a /Length matching the bytes actually
+                // written, then `stream ... endstream`. A carried-over /Length
+                // (e.g. the source's encrypted length after a decrypting
+                // rewrite) is replaced — it must equal the written body.
+                let mut with_len: Vec<(selis_bytes::Bytes, Obj)> = dict
+                    .iter()
+                    .filter(|(k, _)| k.as_slice() != b"Length")
+                    .cloned()
+                    .collect();
+                with_len.push((
+                    selis_bytes::Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)),
+                ));
                 self.push(b"<<");
                 for (k, v) in &with_len {
                     self.write_name(k);

@@ -24,7 +24,7 @@ pub use doc::{Document, Page};
 pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};
 pub use metadata::{FieldValue, Metadata};
 pub use oc::{OcConfig, OcGroup, OcMembership, OcProperties};
-pub use resolve::Resolver;
+pub use resolve::{encrypt_obj, Resolver};
 pub use struct_tree::{StructElement, StructKid, StructTree};
 pub use tree::{
     parse_destination, walk_name_tree, walk_number_tree, Destination, NameTree, NumberTree,

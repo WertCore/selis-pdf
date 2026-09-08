@@ -22,6 +22,7 @@ selis-geom = { workspace = true }
 selis-io = { workspace = true, features = ["native-io"] }
 selis-sandbox = { workspace = true }
 selis-log = { workspace = true }
+selis-crypto = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-doc = { workspace = true }
 selis-pdf-edit = { workspace = true }

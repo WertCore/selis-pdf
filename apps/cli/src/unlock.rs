@@ -240,10 +240,14 @@ fn fresh_file_id(src: &[u8]) -> Vec<u8> {
         }
         h
     }
-    let blob = &src[..src.len().min(1 << 20)];
+    let blob = src.get(..src.len().min(1 << 20)).unwrap_or(src);
     let mut id = vec![0u8; 16];
-    id[..8].copy_from_slice(&fnv(blob, 1).to_le_bytes());
-    id[8..].copy_from_slice(&fnv(blob, 2).to_le_bytes());
+    if let Some(slot) = id.get_mut(..8) {
+        slot.copy_from_slice(&fnv(blob, 1).to_le_bytes());
+    }
+    if let Some(slot) = id.get_mut(8..) {
+        slot.copy_from_slice(&fnv(blob, 2).to_le_bytes());
+    }
     id
 }
 
