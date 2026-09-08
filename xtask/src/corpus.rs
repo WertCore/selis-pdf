@@ -369,6 +369,15 @@ fn open_outcome(path: &Path) -> ExpectRecord {
     }
 }
 
+/// Serialise the open-outcome expectation for one PDF on disk (SL-0.CORP.03).
+///
+/// Shared by `expect-generate` and the synthetic generator so both record
+/// *actual* outcomes — the expectation set tracks reality, and `corpus verify`
+/// flags any later drift.
+pub(crate) fn open_outcome_toml(path: &Path) -> Result<String, String> {
+    toml::to_string(&open_outcome(path)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Write open-outcome expectations for every corpus PDF (SL-0.CORP.03).
 fn expect_generate() -> Result<(), String> {
     let expect_dir = Path::new("corpus/expect");

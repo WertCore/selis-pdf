@@ -189,12 +189,14 @@ pub fn generate() -> Result<(), String> {
         mutants.extend(mutate_vary(&multi));
     }
     for (i, bytes) in mutants.iter().enumerate() {
-        std::fs::write(dir.join(format!("mutant_{i}.pdf")), bytes)
-            .map_err(|e| format!("mutant_{i}: {e}"))?;
-        // A mutant's open outcome is unknown up-front: the expectation is
-        // "ok OR err" — verify only checks it did not hang or panic (the
-        // budget guarantees termination). Record ok with a note.
-        let expect = "open = \"ok\"\npages = 1\n";
+        let dest = dir.join(format!("mutant_{i}.pdf"));
+        std::fs::write(&dest, bytes).map_err(|e| format!("mutant_{i}: {e}"))?;
+        // A mutant's expectation is whatever the engine actually does with it
+        // (SL-0.CORP.03): record the real outcome, so `corpus verify` flags
+        // any later drift instead of silently accepting it. A damaged file
+        // that opens after a tolerance fix is a *known-good* record, not a
+        // contradiction — the expectation diff is what documents that.
+        let expect = crate::corpus::open_outcome_toml(&dest)?;
         std::fs::write(exp_dir.join(format!("mutant_{i}.toml")), expect)
             .map_err(|e| format!("mutant_{i}: {e}"))?;
         count.set(count.get().saturating_add(1));
@@ -306,13 +308,11 @@ pub fn generate() -> Result<(), String> {
             i = i.saturating_add(7);
         }
         let idx = count.get();
-        std::fs::write(dir.join(format!("mut_{idx}.pdf")), &b)
+        let dest = dir.join(format!("mut_{idx}.pdf"));
+        std::fs::write(&dest, &b).map_err(|e| format!("mut_{idx}: {e}"))?;
+        let expect = crate::corpus::open_outcome_toml(&dest)?;
+        std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), expect)
             .map_err(|e| format!("mut_{idx}: {e}"))?;
-        std::fs::write(
-            exp_dir.join(format!("mut_{idx}.toml")),
-            b"open = \"ok\"\npages = 1\n",
-        )
-        .map_err(|e| format!("mut_{idx}: {e}"))?;
         count.set(count.get() + 1);
     }
     // More mutants from a different source.
@@ -321,13 +321,11 @@ pub fn generate() -> Result<(), String> {
             let cut = (multi5.len() as f64 * frac) as usize;
             if cut > 0 && cut < multi5.len() {
                 let idx = count.get();
-                std::fs::write(dir.join(format!("mut_{idx}.pdf")), &multi5[..cut])
+                let dest = dir.join(format!("mut_{idx}.pdf"));
+                std::fs::write(&dest, &multi5[..cut]).map_err(|e| format!("mut_{idx}: {e}"))?;
+                let expect = crate::corpus::open_outcome_toml(&dest)?;
+                std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), expect)
                     .map_err(|e| format!("mut_{idx}: {e}"))?;
-                std::fs::write(
-                    exp_dir.join(format!("mut_{idx}.toml")),
-                    b"open = \"ok\"\npages = 1\n",
-                )
-                .map_err(|e| format!("mut_{idx}: {e}"))?;
                 count.set(count.get() + 1);
             }
         }
