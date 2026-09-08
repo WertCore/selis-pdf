@@ -163,6 +163,12 @@ fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 fn corpus_dir() -> std::path::PathBuf {
+    // Wild batches live outside the repo (policy §2), so sweeping one points
+    // the test at the batch directory instead of `corpus/pdfs`. Expectation
+    // records for wild ids do not exist; the sweep then reports outcomes only.
+    if let Ok(root) = std::env::var("SELIS_ROB01_CORPUS_ROOT") {
+        return std::path::PathBuf::from(root);
+    }
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("..");
     p.push("..");
@@ -271,6 +277,7 @@ fn local_corpus_open_sweep() {
 
     let wall = Duration::from_nanos(Budget::profile(Surface::Viewer).wall);
     let root = corpus_dir();
+    let corpus_root_label = root.to_string_lossy().into_owned();
     let sweep_started = std::time::Instant::now();
     let mut outcomes: Vec<FileOutcome> = Vec::with_capacity(files.len());
     for (i, path) in files.iter().enumerate() {
@@ -393,8 +400,12 @@ fn local_corpus_open_sweep() {
     // ── report ──────────────────────────────────────────────────────────────
     let report = serde_json::json!({
         "task": "SL-1.ROB.01",
-        "scope": "local corpus; the 10k wild fetch is pending SL-0.CORP.05 (disk-bound)",
-        "corpus_root": "corpus/pdfs",
+        "scope": if std::env::var_os("SELIS_ROB01_CORPUS_ROOT").is_some() {
+            "wild batch (SELIS_ROB01_CORPUS_ROOT)"
+        } else {
+            "local corpus; the 10k wild fetch is pending SL-0.CORP.05 (disk-bound)"
+        },
+        "corpus_root": corpus_root_label,
         "surface": "viewer",
         "per_file_budget": true,
         "hang_slack_secs": HANG_SLACK_SECS,
@@ -433,7 +444,12 @@ fn local_corpus_open_sweep() {
     let mut report_path = workspace_root();
     report_path.push("target");
     std::fs::create_dir_all(&report_path).expect("create target dir");
-    report_path.push("rob01-report.json");
+    // The wild-batch report is kept separate from the local-corpus report.
+    report_path.push(if std::env::var_os("SELIS_ROB01_CORPUS_ROOT").is_some() {
+        "rob01-report-wild.json"
+    } else {
+        "rob01-report.json"
+    });
     let mut f = std::fs::File::create(&report_path).expect("create report");
     f.write_all(serde_json::to_string_pretty(&report).unwrap().as_bytes())
         .expect("write report");
