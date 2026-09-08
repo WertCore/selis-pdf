@@ -102,14 +102,15 @@ point you have 40 000 lines and no idea which of them are wrong.
     document-derived length outside `selis-sandbox`.
   - **DoD:** Fixture tests (positive + negative) for each; all three in CI.
 
-- [ ] **SL-0.WS.06 — Six-target build matrix** · deps: WS.01 · owner: AI
+- [x] **SL-0.WS.06 — Six-target build matrix** · deps: WS.01 · owner: AI
   - **Do:** CI builds `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`,
     `x86_64-pc-windows-msvc`, `wasm32-unknown-unknown`, `aarch64-apple-ios`,
     `aarch64-linux-android`. WASM is a **required** target from day 1 (ADR-P0011).
   - **DoD:** All six green on the empty workspace in under 8 minutes with caching.
   - **Note:** CI `.github/workflows/ci.yml` has all six targets in the build matrix;
     `setup-rust-toolchain` enables `cache: true` on every job. CI is currently disabled
-    (to avoid cost); re-enable and verify <8-min timing once cost is approved.
+    (to avoid cost); re-enable and verify <8-min timing once cost is approved. Workflow
+    verified well-formed with actionlint 1.7.7 (0 errors).
 
 - [x] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
