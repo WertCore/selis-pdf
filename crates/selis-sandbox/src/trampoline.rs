@@ -211,8 +211,7 @@ mod tests {
         let Some(typed) = catch("pass-through", || -> Result<(), Error> {
             Err(Error::new(Code::BudgetWall))
         })
-        .err()
-        else {
+        .err() else {
             panic!("Err passes through");
         };
         assert_eq!(typed.code(), Code::BudgetWall);
