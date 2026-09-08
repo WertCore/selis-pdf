@@ -9,6 +9,7 @@
 # determinism    | every PR  | required (job pending)
 # test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
+# perf           | nightly   | blocks release on >5% regression
 
 name: CI
 
@@ -123,3 +124,22 @@ jobs:
           cargo +nightly fuzz run cos_lex -- -max_total_time=600
           cargo +nightly fuzz run doc_open -- -max_total_time=600
         timeout-minutes: 40
+
+  # ── perf budgets (nightly) — SL-0.PERF.02; blocks release on >5% regression
+  # per 03-CONVENTIONS.md §9. The baseline is re-recorded on the runner first,
+  # so the regression comparison is same-machine (a committed baseline from a
+  # different machine cannot gate percentages).
+  perf:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Record runner-fresh baseline
+        run: cargo xtask bench --record-baseline
+        timeout-minutes: 20
+      - name: Compare budgets against the fresh baseline
+        run: cargo xtask perf-check
+        timeout-minutes: 20
