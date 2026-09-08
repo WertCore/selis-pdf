@@ -416,20 +416,22 @@ plan to precede the fetch.
     Stays unchecked; the harness itself is in place and the mutool-based single-file comparison
     works.
 
-- [ ] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
+- [x] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,
     page tree shape, xref entries, and stream lengths.
   - **DoD:** Comparator handles the known representational differences and documents each.
-  - **Note:** `xtask oracle compare <file>` compares object count, xref entries, and stream
+  - **Note:** `xtask oracle compare <file>` compares object counts, xref entries, and stream
     lengths, documenting each difference. qpdf v2 JSON parsed (version 1 key support pending).
-    **Partially met:** the free-head normalisation is in place — object 0 excluded from our
-    union and qpdf's `obj:` map keys used instead of `maxobjectid` (verified on 160F-2019.pdf:
-    544 vs 544; this removed the phantom `obj_delta=1` on every healthy file) — and
-    damaged-but-recoverable files stay comparable via `qpdf --warning-exit-0`. The seeded
-    triage run surfaced one residual representational gap the comparator does not yet close:
-    our object union spans *all* revisions while qpdf's map lists the *final* revision's live
-    objects, so files with incrementally deleted objects show a residual obj_delta. Adding
-    final-revision-only counts is the follow-up; left unchecked until it lands.
+    Object counts are compared live-vs-live after the triage run surfaced the two artefact
+    classes the union-based comparator manufactured: `selis inspect --json` now exposes
+    per-revision `free` arrays, and an object counts as live iff its *latest* xref entry is in
+    use (object 0 never counts) — matching qpdf's object-map semantics; damaged-but-recoverable
+    files stay comparable via `qpdf --warning-exit-0`. Verified on the seeded 463-file sample:
+    match rate rose 392 → 402, and every remaining obj_delta cluster is a genuine tool
+    divergence on broken files (free-marker handling in xref streams, recovery supersets),
+    annotated with both readings in `corpus/expect/*.toml` — see the §5 baseline table in
+    `21-TESTING-AND-ORACLES.md`. Page-tree-shape and text-metric comparisons land with
+    SL-1.DOC/SL-1.REN (nothing to compare yet at Phase 0).
 
 - [ ] **SL-0.ORACLE.04 — Text-extraction oracle** · deps: ORACLE.01 · owner: AI
   - **Do:** Compare extracted text against PDFium and pdf.js by normalised edit distance, with
@@ -450,20 +452,21 @@ plan to precede the fetch.
   - **DoD:** The workflow documented in `21-TESTING-AND-ORACLES.md §5` and exercised on a seeded
     set of deliberate differences.
   - **Note:** Done, exercised on the *structural* comparison (ORACLE.03) — the one that works
-    today. Seeded run: 463 files (216 pdf.js corpus incl. the crypto fixtures, 40 govdocs1, 203
-    synthetic incl. 62 seeded mutants) → 15 clusters, ranked by files × corpus weight. Verdicts
-    recorded as `[annotation]` tables in `corpus/expect/*.toml` (65 files): `selis_rejects`×21 +
-    `qpdf_rejects`×21 + `obj_delta`×23 = `SpecAmbiguous`; `obj_delta=2`×5 = `ToleranceTooTight`
-    (comparator artefact); `both_reject`×6 = agreement, no annotation needed. No `OurBug` — the
-    comparator normalisations (free-head, `--warning-exit-0`) removed the two artefact classes
-    that would have manufactured them. Comparator improvement (final-revision counts) filed under
-    ORACLE.03. Workflow + baseline table documented in `21-TESTING-AND-ORACLES.md §5`. Two
+    today. Seeded run (live-vs-live comparator): 463 files (216 pdf.js corpus incl. the crypto
+    fixtures, 40 govdocs1, 203 synthetic incl. 62 seeded mutants) → 17 clusters, ranked by files
+    × corpus weight. Verdicts recorded as `[annotation]` tables in `corpus/expect/*.toml` (55
+    files): `selis_rejects`×21 + `qpdf_rejects`×21 + `obj_delta`×13 = `SpecAmbiguous`;
+    `both_reject`×6 = agreement, no annotation needed. No `OurBug`: the comparator normalisations
+    (live-vs-live object counts, `--warning-exit-0`) removed every artefact class — the clusters
+    that remain are genuine tool divergences on broken files, annotated with both readings. When
+    a comparator fix dissolves a cluster, `oracle triage --clear <signature>` removes its stale
+    annotations. Workflow + baseline table documented in `21-TESTING-AND-ORACLES.md §5`. Three
     under-specifications fixed en route: (1) the seeded mutants' expectation records claimed
-    `open = "ok"` for deliberately damaged files (the generator wrote a placeholder instead of
-    observing the engine) — the generator now records what `Session::open` actually does and
-    preserves `[annotation]` across regeneration; (2) the first signature set lumped
-    "who refused" into one `open_failed` cluster — now split into `selis_rejects` /
-    `qpdf_rejects` / `both_reject`.
+    `open = "ok"` for deliberately damaged files — the generator now records what `Session::open`
+    actually does and preserves `[annotation]` across regeneration; (2) the first signature set
+    lumped "who refused" into one `open_failed` cluster — now split into `selis_rejects` /
+    `qpdf_rejects` / `both_reject`; (3) the original union-based object metric manufactured
+    deltas on files with deleted objects — replaced by live-vs-live.
 
 ---
 

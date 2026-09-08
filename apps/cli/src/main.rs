@@ -478,6 +478,11 @@ struct InspectRevision {
     entries: usize,
     /// The object numbers declared by this revision, sorted.
     objects: Vec<u32>,
+    /// The object numbers whose entry in this revision is FREE (the rest are
+    /// in use). Exposed so the qpdf comparator can count live objects with
+    /// the same semantics as qpdf's object map (SL-0.ORACLE.03).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    free: Vec<u32>,
 }
 
 #[derive(serde::Serialize)]

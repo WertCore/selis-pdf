@@ -1,6 +1,2 @@
 open = "ok"
 pages = 2
-[annotation]
-triage = "obj_delta=4"
-verdict = "SpecAmbiguous"
-note = "obj_delta: our union spans all revisions vs qpdf final live objects (comparator gap, see ORACLE.03)"

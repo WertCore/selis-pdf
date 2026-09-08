@@ -122,13 +122,16 @@ the team learns to ignore it — which is the real failure mode.
    - `qpdf_rejects` — we open, qpdf refuses hard (oracle over-strictness or a
      repair-policy gap in the other direction);
    - `both_reject` — agreement: the file is broken and both tools say so.
-   Two comparator normalisations are applied before counting (SL-0.ORACLE.03
-   known differences, verified on real files): object 0 — the free-list head —
-   is excluded from our union, and qpdf's `maxobjectid` is *not* used (it
-   counts the free-head slot); the comparison uses qpdf's `obj:N 0 R` map
-   keys. Without this, every healthy file shows a phantom `obj_delta=1`.
-   Damaged-but-recoverable files stay in the comparable pool via
-   `qpdf --warning-exit-0` (qpdf otherwise exits 2 and emits no JSON for
+   Object counts are compared **live-vs-live** (SL-0.ORACLE.03, verified on
+   real files): an object is live iff its *latest* xref entry across all
+   revisions is in use; object 0 never counts; qpdf's `obj:` map keys are the
+   oracle side (`maxobjectid` counts slots incl. the free head and is never
+   the live count). `selis inspect --json` exposes per-revision `free`
+   arrays so the comparator can apply qpdf's semantics. This closed the two
+   artefact classes the first seeded run surfaced: the phantom free-head
+   delta on every healthy file, and the union-vs-live skew on files with
+   deleted objects. Damaged-but-recoverable files stay in the comparable pool
+   via `qpdf --warning-exit-0` (qpdf otherwise exits 2 and emits no JSON for
    files it repairs, which manufactured a 107-file false `open_failed`
    cluster on the first seeded run).
 3. **Rank** by (files affected × corpus weight), where wild-corpus files weigh more than synthetic.
@@ -153,23 +156,23 @@ the team learns to ignore it — which is the real failure mode.
 ### Baseline: the seeded run (2026-09-08)
 
 463 files (216 pdf.js corpus incl. the crypto fixtures, 40 govdocs1, 203
-synthetic incl. 62 seeded mutants) × qpdf 12.4.1 → **15 clusters**:
+synthetic incl. 62 seeded mutants) × qpdf 12.4.1, live-vs-live comparator →
+**17 clusters**:
 
 | Cluster | Files | Verdict |
 |---|---|---|
-| `match` | 392 | — (agreement; 84.7% of the sample) |
-| `selis_rejects` | 21 | `SpecAmbiguous` — deliberate mutants we refuse by design (typed error, no repair attempt); qpdf agrees to disagree; both readings defensible |
+| `match` | 402 | — (agreement; 86.8% of the sample) |
+| `selis_rejects` | 21 | `SpecAmbiguous` — deliberate mutants we refuse by design (typed error, no repair attempt); both readings defensible |
 | `qpdf_rejects` | 21 | `SpecAmbiguous` — we open (incl. reconstruction) where qpdf refuses hard: pdf.js-corpus pathologies (page-tree loops, unrecoverable `/Root`), the crypto fixtures qpdf will not open password-less, and mutants qpdf cannot recover |
-| `obj_delta=1` | 7 | `SpecAmbiguous` — multi-revision files: our union spans all revisions, qpdf's map lists the final revision's live objects; the spec does not define "the" object count |
-| `obj_delta=2` | 5 | `ToleranceTooTight` — same union-vs-live divergence at N=2; comparator artefact, not an engine bug |
-| `obj_delta=3…21` | 6 | `SpecAmbiguous` — same divergence on files with incrementally deleted objects (incl. the two byte-exact recovery fixtures) |
-| `obj_delta=15/27/103` | 3 | `SpecAmbiguous` — govdocs damaged files where our reconstruction recovers the full object set; note & keep |
 | `both_reject` | 6 | — (agreement on broken files; typed codes already recorded) |
+| `obj_delta=87…2163` (govdocs, 9 files) | 9 | `SpecAmbiguous` — damaged files where the two tools read free markers and recovery sets differently; ours honours the spec's free-list uniformly |
+| `obj_delta=1 / 17 / 47` (issue5874/11656/16263) | 3 | `SpecAmbiguous` — qpdf's JSON map counts xref-*stream* free-marked objects as live (it honours free markers in classic tables only); we honour the free marker in both forms |
+| `obj_delta=2` (issue15716) | 1 | `SpecAmbiguous` — the xref size is internally inconsistent (qpdf's own warning: "reported number of objects (8) is not one plus the highest object number (13)"); repair readings differ |
 
-The residual `obj_delta` clusters are the one real finding: the structural
-comparator should also compare final-revision-only counts to silence the
-union-vs-live skew for files with incremental updates. Recorded as the
-follow-up for SL-0.ORACLE.03 (see the plan notes).
+The remaining obj_delta clusters are genuine tool divergences on broken
+files, each annotated with both readings — not comparator artefacts. If a
+future comparator change dissolves a cluster, `oracle triage --clear
+<signature>` removes its stale annotations.
 
 ---
 

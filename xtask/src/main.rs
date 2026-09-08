@@ -168,6 +168,11 @@ enum OracleSub {
         /// Prose context recorded alongside every `--verdict` annotation.
         #[arg(long)]
         note: Option<String>,
+        /// Remove stale annotations: expectation records whose `triage`
+        /// equals this signature lose their `[annotation]` block (repeatable).
+        /// Used when a comparator fix dissolves a cluster.
+        #[arg(long = "clear", value_name = "SIGNATURE")]
+        clear: Vec<String>,
     },
 }
 
@@ -274,11 +279,13 @@ fn main() -> ExitCode {
                 sample,
                 verdict,
                 note,
+                clear,
             } => parse_verdicts(&verdict).and_then(|verdicts| {
                 oracle::run(oracle::OracleCommand::Triage {
                     sample,
                     verdicts,
                     note,
+                    clear,
                 })
             }),
         },

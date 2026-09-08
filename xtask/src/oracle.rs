@@ -146,11 +146,15 @@ pub enum OracleCommand {
     CompareText { file: PathBuf },
     /// Triage workflow: compare a sample of corpus files against qpdf and
     /// group the disagreements by signature (SL-0.ORACLE.05). `verdicts`
-    /// maps a signature to a verdict; `note` is recorded with each.
+    /// maps a signature to a verdict; `note` is recorded with each. `clear`
+    /// removes stale annotations: every expectation in the sample whose
+    /// `triage` equals the given signature loses its `[annotation]` block —
+    /// used when a comparator fix dissolves a cluster.
     Triage {
         sample: usize,
         verdicts: Vec<(String, String)>,
         note: Option<String>,
+        clear: Vec<String>,
     },
 }
 
@@ -165,7 +169,8 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
             sample,
             verdicts,
             note,
-        } => triage(sample, &verdicts, note.as_deref()),
+            clear,
+        } => triage(sample, &verdicts, note.as_deref(), &clear),
     }
 }
 
@@ -373,34 +378,29 @@ fn compare(file: &Path) -> Result<(), String> {
         ));
     }
 
-    // 2. Object count from qpdf v2: qpdf[0].maxobjectid.
+    // 2. Live object count, live-vs-live: ours = latest xref entry in use
+    //    (across all revisions, object 0 excluded); qpdf = `obj:` map keys.
+    //    `maxobjectid` is reported for reference only — it counts slots
+    //    (free head included), not live objects.
     let qpdf_meta = theirs["qpdf"].as_array().and_then(|a| a.first());
-    let their_objects = qpdf_meta
+    let their_slots = qpdf_meta
         .and_then(|m| m["maxobjectid"].as_u64())
         .unwrap_or(0);
-    let our_objects = ours["revisions"]
-        .as_array()
-        .map(|revs| {
-            let mut all = BTreeSet::new();
-            for r in revs {
-                if let Some(objs) = r["objects"].as_array() {
-                    for o in objs {
-                        if let Some(n) = o.as_u64() {
-                            all.insert(n);
-                        }
-                    }
-                }
-            }
-            all.len()
-        })
-        .unwrap_or(0);
-    if our_objects as u64 != their_objects {
+    let their_objects = count_qpdf_objects(&theirs);
+    let our_objects = count_our_live_objects(&ours);
+    if our_objects != their_objects {
         diffs.push(format!(
-            "  object count: ours={our_objects} qpdf={their_objects} delta={}",
-            (our_objects as u64).abs_diff(their_objects)
+            "  live objects: ours={our_objects} qpdf={their_objects} delta={}",
+            our_objects.abs_diff(their_objects)
         ));
     } else {
-        println!("  object count: {our_objects} (match)");
+        println!("  live objects: {our_objects} (match)");
+    }
+    if their_slots != their_objects + 1 {
+        println!(
+            "  (qpdf maxobjectid={their_slots} counts slots incl. free head; \
+             live keys={their_objects})"
+        );
     }
 
     // 3. Xref entry / object count from qpdf v2: count obj: keys in qpdf[1].
@@ -467,8 +467,9 @@ fn compare(file: &Path) -> Result<(), String> {
             println!("{d}");
         }
         println!("known representational differences (SL-0.ORACLE.03 DoD):");
-        println!("  - object count: qpdf's maxobjectid counts object 0 (the free");
-        println!("    head); we count the union of non-free xref entries.");
+        println!("  - live objects: counted live-vs-live (latest xref entry in");
+        println!("    use vs qpdf's object map); qpdf's maxobjectid counts slots");
+        println!("    including the free head, so it is never the live count.");
         println!("  - xref entries: we sum every revision's declared entries; qpdf");
         println!("    reports the final revision's live objects.");
     }
@@ -821,8 +822,15 @@ fn cluster_weight(c: &Cluster) -> usize {
 /// group the disagreements by signature, so N failures collapse to a handful
 /// of root causes. `verdicts` maps signature → verdict; when non-empty, the
 /// verdict is recorded into every affected file's expectation record as an
-/// `[annotation]` table (`21-TESTING-AND-ORACLES.md §3`).
-fn triage(sample: usize, verdicts: &[(String, String)], note: Option<&str>) -> Result<(), String> {
+/// `[annotation]` table (`21-TESTING-AND-ORACLES.md §3`). `clear` removes
+/// stale annotations (a comparator fix may dissolve a cluster; the files'
+/// `[annotation]` blocks referencing it must go with it).
+fn triage(
+    sample: usize,
+    verdicts: &[(String, String)],
+    note: Option<&str>,
+    clear: &[String],
+) -> Result<(), String> {
     let qpdf_bin = find_local("qpdf").ok_or_else(|| "qpdf not installed locally".to_string())?;
     let selis_bin = find_local("selis")
         .or_else(|| find_local("selis.exe"))
@@ -880,11 +888,25 @@ fn triage(sample: usize, verdicts: &[(String, String)], note: Option<&str>) -> R
         );
     }
 
+    if !clear.is_empty() {
+        let mut cleared = 0usize;
+        for pdf in &pdfs {
+            for signature in clear {
+                cleared += clear_annotation(pdf, signature)?;
+            }
+        }
+        println!("cleared {cleared} stale annotation(s) for: {clear:?}");
+        if verdicts.is_empty() {
+            return Ok(());
+        }
+    }
+
     if verdicts.is_empty() {
         println!(
             "verdict step: none supplied. For each cluster record one of \
              {TRIAGE_VERDICTS:?}:\n  cargo xtask oracle triage --sample N \
-             --verdict \"<signature>=<Verdict>\" --note \"...\""
+             --verdict \"<signature>=<Verdict>\" --note \"...\" \
+             [--clear <stale-signature>]"
         );
         return Ok(());
     }
@@ -979,29 +1001,88 @@ fn record_verdict(
     std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Remove the `[annotation]` block from a file's expectation record when its
+/// recorded `triage` signature equals `signature`. Returns 1 if cleared, 0
+/// otherwise (missing annotation, different signature, or unreadable file —
+/// the caller reports totals, so absence is not an error).
+fn clear_annotation(pdf: &Path, signature: &str) -> Result<usize, String> {
+    let path = match expect_path_for(pdf) {
+        Ok(p) => p,
+        Err(_) => return Ok(0),
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(0);
+    };
+    // Find the annotation block and check its recorded signature.
+    let mut annotation = String::new();
+    let mut in_annotation = false;
+    for line in text.lines() {
+        if line.trim() == "[annotation]" {
+            in_annotation = true;
+            annotation.push_str(line);
+            annotation.push('\n');
+            continue;
+        }
+        if in_annotation {
+            if line.starts_with('[') {
+                break;
+            }
+            annotation.push_str(line);
+            annotation.push('\n');
+        }
+    }
+    let recorded = annotation
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("triage = \""))
+        .and_then(|s| s.strip_suffix('"'));
+    if recorded != Some(signature) {
+        return Ok(0);
+    }
+    // Rebuild the record without the annotation block.
+    let mut body = String::new();
+    let mut skipping = false;
+    for line in text.lines() {
+        if line.trim() == "[annotation]" {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if line.starts_with('[') {
+                skipping = false;
+            } else {
+                continue;
+            }
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    while body.ends_with('\n') {
+        body.pop();
+    }
+    body.push('\n');
+    std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(1)
+}
+
 /// The signature of a file's structural agreement with qpdf: a short string
 /// summarising the diffs (or "match").
 ///
-/// Object counts are normalised before comparison so the known
-/// representational difference (SL-0.ORACLE.03) cannot manufacture a
-/// signature:
-///   - ours: the union of xref object numbers across all revisions, minus
-///     object 0 (the free-list head our xref records),
+/// Object counts are compared **live-vs-live** so the known representational
+/// differences (SL-0.ORACLE.03) cannot manufacture a signature:
+///   - ours: an object is live iff its *latest* xref entry across all
+///     revisions is in use (a later Free overrides an earlier InUse);
+///     object 0 — the free-list head — never counts,
 ///   - qpdf: the number of `obj:N 0 R` keys in its object map (qpdf never
-///     lists object 0; its `maxobjectid` counts the slot, which is why the
-///     pre-normalisation comparator reported obj_delta=1 on every healthy
-///     file).
-///
-/// Remaining difference, documented in `oracle compare`: our union spans all
-/// revisions, qpdf's map is the final revision's live objects — files that
-/// delete objects in later revisions legitimately differ.
+///     lists object 0 or free objects; its `maxobjectid` counts the slots,
+///     which is why the pre-normalisation comparator reported a delta on
+///     every file with deleted objects).
 fn structural_signature(selis_bin: &Path, qpdf_bin: &Path, file: &Path) -> String {
     let file_str = file.to_str().unwrap_or_default();
     let ours = run_json(selis_bin, &["inspect", "--json", file_str]).ok();
     let theirs = qpdf_json(qpdf_bin, file_str).ok();
     match (ours, theirs) {
         (Some(ours), Some(theirs)) => {
-            let our_objects = count_our_objects(&ours) as u64;
+            let our_objects = count_our_live_objects(&ours);
             let their_objects = count_qpdf_objects(&theirs);
             let obj_delta = our_objects.abs_diff(their_objects);
             if obj_delta == 0 {
@@ -1020,31 +1101,45 @@ fn structural_signature(selis_bin: &Path, qpdf_bin: &Path, file: &Path) -> Strin
     }
 }
 
+/// The number of live objects in our inspect JSON, with qpdf's semantics: an
+/// object is live iff its *latest* xref entry (highest revision mentioning
+/// it) is in use; object 0 never counts.
+///
+/// Requires the `free` arrays `selis inspect --json` emits (per revision, the
+/// object numbers whose entry is FREE). For JSON produced by older builds
+/// without `free`, every entry is treated as in-use.
+fn count_our_live_objects(ours: &serde_json::Value) -> u64 {
+    let mut latest_free: BTreeMap<u64, bool> = BTreeMap::new();
+    if let Some(revs) = ours["revisions"].as_array() {
+        for r in revs {
+            if let Some(objs) = r["objects"].as_array() {
+                for o in objs {
+                    if let Some(n) = o.as_u64() {
+                        latest_free.insert(n, false);
+                    }
+                }
+            }
+            if let Some(frees) = r["free"].as_array() {
+                for f in frees {
+                    if let Some(n) = f.as_u64() {
+                        latest_free.insert(n, true);
+                    }
+                }
+            }
+        }
+    }
+    latest_free
+        .iter()
+        .filter(|(&num, &free)| !free && num != 0)
+        .count() as u64
+}
+
 /// `qpdf --json` on a damaged-but-recoverable file exits 2 and emits no
 /// stdout — a warning, not an open failure. `--warning-exit-0` keeps those
 /// files in the comparable pool; only files qpdf cannot open at all fail
 /// here (true `open_failed` signatures).
 fn qpdf_json(qpdf_bin: &Path, file: &str) -> Result<serde_json::Value, String> {
     run_json(qpdf_bin, &["--warning-exit-0", "--json", file])
-}
-
-/// Union of xref object numbers across all revisions in our inspect JSON,
-/// minus object 0 (the free-list head, not a live object).
-fn count_our_objects(ours: &serde_json::Value) -> usize {
-    let mut all = BTreeSet::new();
-    if let Some(revs) = ours["revisions"].as_array() {
-        for r in revs {
-            if let Some(objs) = r["objects"].as_array() {
-                for o in objs {
-                    if let Some(n) = o.as_u64() {
-                        all.insert(n);
-                    }
-                }
-            }
-        }
-    }
-    all.remove(&0);
-    all.len()
 }
 
 /// The number of live objects qpdf's JSON object map lists: every `obj:N 0 R`
@@ -1149,8 +1244,33 @@ licence = "AGPL-3.0"
                 { "objects": [2, 7] }
             ]
         });
-        // Union {0,1,2,5,7} minus the free-head 0 → 4 live objects.
-        assert_eq!(count_our_objects(&ours), 4);
+        // Union {0,1,2,5,7} minus the free-head 0 → 4 live objects (legacy
+        // shape without `free` arrays: every entry counts as in-use).
+        assert_eq!(count_our_live_objects(&ours), 4);
+    }
+
+    #[test]
+    fn live_objects_use_latest_entry_free_status() {
+        // Revision 0 has objects 1,2,3; revision 1 frees object 2 and adds 4.
+        // Live = {1,3,4} → 3, matching qpdf's map which never lists freed
+        // objects. This is the SL-0.ORACLE.03 residual-gap fix: the old
+        // union-based count reported 4 and manufactured obj_delta=1.
+        let ours: serde_json::Value = serde_json::json!({
+            "revisions": [
+                { "objects": [0, 1, 2, 3], "free": [0] },
+                { "objects": [0, 2, 4], "free": [0, 2] }
+            ]
+        });
+        assert_eq!(count_our_live_objects(&ours), 3);
+
+        // A later revision can also resurrect a freed object: latest wins.
+        let resurrect: serde_json::Value = serde_json::json!({
+            "revisions": [
+                { "objects": [0, 1, 2], "free": [0, 2] },
+                { "objects": [0, 2], "free": [0] }
+            ]
+        });
+        assert_eq!(count_our_live_objects(&resurrect), 2);
     }
 
     #[test]
@@ -1217,6 +1337,104 @@ licence = "AGPL-3.0"
             TRIAGE_VERDICTS,
             &["OurBug", "OracleBug", "SpecAmbiguous", "ToleranceTooTight"]
         );
+    }
+
+    #[test]
+    fn clear_annotation_removes_only_the_matching_signature() {
+        let tmp = std::env::temp_dir().join(format!("selis-triage-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let pdf_dir = tmp.join("pdfs");
+        let expect_dir = tmp.join("expect");
+        std::fs::create_dir_all(&pdf_dir).unwrap();
+        std::fs::create_dir_all(&expect_dir).unwrap();
+        let pdf = pdf_dir.join("t.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4\n").unwrap();
+        let expect = expect_dir.join("t.toml");
+        std::fs::write(&expect, "open = \"err\"\ncode = \"X\"\n").unwrap();
+
+        // No annotation yet: clearing is a no-op, not an error.
+        assert_eq!(
+            clear_annotation_at(&expect, "obj_delta=1").expect("clear ok"),
+            0,
+            "nothing to clear"
+        );
+
+        // Record, then clear a DIFFERENT signature: annotation survives.
+        record_verdict_at(&expect, &pdf, "obj_delta=1", "SpecAmbiguous", None).unwrap();
+        assert_eq!(
+            clear_annotation_at(&expect, "obj_delta=2").expect("clear ok"),
+            0,
+            "different signature must not clear"
+        );
+        let text = std::fs::read_to_string(&expect).unwrap();
+        assert!(text.contains("[annotation]"));
+
+        // Clear the matching signature: block removed, core fields intact.
+        assert_eq!(
+            clear_annotation_at(&expect, "obj_delta=1").expect("clear ok"),
+            1
+        );
+        let text = std::fs::read_to_string(&expect).unwrap();
+        assert!(!text.contains("[annotation]"));
+        assert!(text.contains("open = \"err\""));
+        assert!(text.contains("code = \"X\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Test seam: `clear_annotation` against an explicit expectation path
+    /// (the production one derives `corpus/expect/` from the cwd).
+    fn clear_annotation_at(expect_path: &Path, signature: &str) -> Result<usize, String> {
+        let text = match std::fs::read_to_string(expect_path) {
+            Ok(t) => t,
+            Err(_) => return Ok(0),
+        };
+        let mut annotation = String::new();
+        let mut in_annotation = false;
+        for line in text.lines() {
+            if line.trim() == "[annotation]" {
+                in_annotation = true;
+                annotation.push_str(line);
+                annotation.push('\n');
+                continue;
+            }
+            if in_annotation {
+                if line.starts_with('[') {
+                    break;
+                }
+                annotation.push_str(line);
+                annotation.push('\n');
+            }
+        }
+        let recorded = annotation
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("triage = \""))
+            .and_then(|s| s.strip_suffix('"'));
+        if recorded != Some(signature) {
+            return Ok(0);
+        }
+        let mut body = String::new();
+        let mut skipping = false;
+        for line in text.lines() {
+            if line.trim() == "[annotation]" {
+                skipping = true;
+                continue;
+            }
+            if skipping {
+                if line.starts_with('[') {
+                    skipping = false;
+                } else {
+                    continue;
+                }
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        while body.ends_with('\n') {
+            body.pop();
+        }
+        body.push('\n');
+        std::fs::write(expect_path, body).map_err(|e| format!("{e}"))?;
+        Ok(1)
     }
 
     /// Test seam: `record_verdict` against an explicit expectation path
