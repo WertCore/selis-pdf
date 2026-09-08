@@ -3,4 +3,4 @@ pages = 1
 [annotation]
 triage = "selis_rejects"
 verdict = "SpecAmbiguous"
-note = "ours refuses by design or qpdf cannot recover; both readings defensible"
+note = "opens now; expect-generate added files mid-run"
