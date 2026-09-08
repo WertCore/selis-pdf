@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=3"
+verdict = "SpecAmbiguous"
+note = "incrementally deleted objects; union vs live"

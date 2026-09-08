@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=9"
+verdict = "SpecAmbiguous"
+note = "union vs live divergence on single files"

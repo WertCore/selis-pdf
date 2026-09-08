@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=2"
+verdict = "ToleranceTooTight"
+note = "same union-vs-live skew at N=2; comparator artefact"

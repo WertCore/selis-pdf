@@ -1,2 +1,6 @@
 open = "err"
 code = "ObjUnexpected"
+[annotation]
+triage = "selis_rejects"
+verdict = "SpecAmbiguous"
+note = "ours refuses by design or qpdf cannot recover; both readings defensible"

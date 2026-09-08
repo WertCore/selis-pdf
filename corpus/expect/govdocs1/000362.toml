@@ -1,2 +1,6 @@
 open = "ok"
 pages = 2
+[annotation]
+triage = "obj_delta=15"
+verdict = "SpecAmbiguous"
+note = "damaged govdocs: our reconstruction recovers the full object set"

@@ -322,11 +322,13 @@ fn lint() -> Result<(), String> {
 
 /// Parse `--verdict signature=Verdict` pairs. The verdict value set is
 /// enforced by the triage step; this only rejects malformed pairs early.
+/// The pair separator is the first `=`, so signatures containing `=`
+/// (`obj_delta=1`) must quote the whole argument and split at the LAST `=`.
 fn parse_verdicts(raw: &[String]) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for v in raw {
         let (sig, verdict) = v
-            .split_once('=')
+            .rsplit_once('=')
             .ok_or_else(|| format!("--verdict `{v}` must be `signature=Verdict`"))?;
         let sig = sig.trim();
         let verdict = verdict.trim();

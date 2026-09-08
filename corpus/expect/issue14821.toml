@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=1"
+verdict = "SpecAmbiguous"
+note = "union-across-revisions vs qpdf final live objects"
