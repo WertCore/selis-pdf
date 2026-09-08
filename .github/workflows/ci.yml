@@ -6,10 +6,9 @@
 # test-fast      | every PR  | required
 # supply-chain   | every PR  | required
 # size-check     | every PR  | required
-# determinism    | every PR  | required
-# test-slow      | nightly   | required for release
+# determinism    | every PR  | required (job pending)
+# test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
-# perf           | nightly   | blocks release on >5% regression
 
 name: CI
 
@@ -87,6 +86,23 @@ jobs:
           cache: true
       - run: cargo test --workspace
         timeout-minutes: 10
+
+  # ── WASM size budgets + 2% regression rule (SL-0.WS.09) ────────────────────
+  size-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install wasm-opt (binaryen, via npm)
+        run: npm install -g wasm-opt
+      - run: cargo xtask size-check
+        timeout-minutes: 15
 
   # ── fuzz-soak (nightly, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02 ──────────
   fuzz-soak:
