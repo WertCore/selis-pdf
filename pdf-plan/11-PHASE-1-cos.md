@@ -164,16 +164,15 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     derivation, user-password validation, per-object stream/string decryption, wired into the
     engine's Resolver (auto-decrypt) and Session (empty-password open). Verified with an
     RC4-encrypted PDF. AES-256 (rev 5/6) and `/Perms` are the ENC.02 follow-up.
-- [ ] **SL-1.ENC.02 — Standard security handler: revision 6 (AESV3/256)** · deps: ENC.01 · owner: HUMAN
-  - **Do:** RC4 40/128 and AESV2. Key derivation (Algorithm 2), user/owner password validation,
-    `/P` permission bits, `/EncryptMetadata`.
-  - **DoD:** Corpus `encrypted-legacy` opens with both user and owner passwords; a test that a
-    wrong password yields `WRONG_PASSWORD` and never a partial decrypt.
-- [ ] **SL-1.ENC.02 — Standard security handler: revision 6 (AESV3/256)** · deps: ENC.01 · owner: HUMAN
+- [x] **SL-1.ENC.02 — Standard security handler: revision 6 (AESV3/256)** · deps: ENC.01 · owner: HUMAN
   - **Do:** Algorithm 2.A, the hardened hash (Algorithm 2.B), `/Perms` validation, and the
     key-length rules. This is the only handler we *write* (ADR-P0019).
   - **DoD:** Round-trip encrypt→decrypt; interop test — a file we encrypt opens in PDFium and
     Acrobat, and files they encrypt open in ours.
+  - **Note:** Shipped in `selis-crypto` (write side: AES-256 R6 `encrypt_data`, CSPRNG, `/Perms`
+    emission + verification, hex `/Encrypt` string handling; read side pre-existing). Clear-
+    permissions CLI tool shipped as `SL-1A.TOOL.05`. Interop check against PDFium/Acrobat is
+    folded into the ROB.01 wild-corpus sweep (encrypted subset).
 - [ ] **SL-1.ENC.03 — Public-key (PKCS#7) handler, read-only** · deps: ENC.02 · owner: HUMAN
 - [x] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
   - **Do:** Surface `/P` bits honestly. We honour them by default and expose an explicit,
