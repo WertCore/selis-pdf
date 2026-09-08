@@ -217,7 +217,39 @@ operation is available identically in the CLI, the web app, and the extension.
       that produces a corrupt file.
   - **Corpus:** `encrypted-legacy` and `encrypted-aes`, plus a document with `/EncryptMetadata
     false`, one with an identity crypt filter, and one that is signed *and* encrypted.
-- [ ] **SL-1A.TOOL.05 — Clear permission restrictions** · deps: TOOL.04 · owner: AI+
+- [x] **SL-1A.TOOL.05 — Clear permission restrictions** · deps: TOOL.04 · owner: AI+
+  - **Note:** Shipped as `selis clear-permissions <input> --output <out>
+    [--password <pw>]`. The password is interpreted as the SL-1.ENC.04
+    explicit override: the tool proceeds only when it authenticates as the
+    **owner** (`is_owner_password`, both revision families), else a clean
+    `WRONG_OWNER_PASSWORD` typed error. The override is recorded via
+    `OpLog::record_override` with the tested vocabulary (`clear-permissions`
+    / `owner-password-permission-bits`) and echoed as an audit line. Two
+    write paths, split on where `/P` feeds the key:
+    - **R2–4** (`/P` is in the key derivation): full rewrite — walk+decrypt
+      with the old key, recover the user password from `/O` (Algorithm 3),
+      derive the new key from the cleared `/P`, re-encrypt every stream and
+      string (`encrypt_obj`, the mirror of `decrypt_obj`), recompute `/U`,
+      keep `/O`, and write a fresh single-revision document with an indirect
+      `/Encrypt` object (Table 15) carrying `/P` as a **signed** 32-bit
+      value.
+    - **R5/6** (`/P` is *not* in the key derivation — Algorithm 2.A hashes
+      password+salts only): incremental append (WRITE.02) redefining the
+      `/Encrypt` object with the cleared `/P` and a recomputed `/Perms`
+      (Algorithm 10); content bytes stay encrypted under the unchanged file
+      key and the original bytes remain a byte-identical prefix.
+  - Supporting crypto: `encrypt_data` (RC4 symmetric / AES-CBC with a
+    deterministic per-object IV, documented trade-off vs a CSPRNG),
+    `compute_perms`, `compute_r6_credentials` (deterministic salts — the
+    CSPRNG write path is TOOL.06 per ADR-P0019), `recover_user_password`,
+    `compute_o`, `is_owner_password`/`authenticate_owner_r56`. Also fixed a
+    latent writer bug this exposed: the Writer now always emits the stream
+    `/Length` matching the bytes actually written (a carried-over encrypted
+    length would corrupt rewritten AES documents — unlock included).
+  - **DoD:** Round-trip tests for both paths (synthetic R2 RC4-40 and R6
+    AES-256 documents with known user/owner passwords): output opens in the
+    engine, `/P` reads back all-permissions, R6 output is a byte-identical
+    prefix of the input.
   - **Do:** The adjacent case: a document that opens with no password but sets `/P` bits
     forbidding print, copy, or edit. Given the owner password, clear them — same as Acrobat's
     security-settings removal. Follow `SL-1.ENC.04`: honour the bits by default, offer an explicit
