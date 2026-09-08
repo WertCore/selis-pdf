@@ -4,10 +4,13 @@
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
-// Corpus bytes are embedded at compile time: L0–L3 crates must stay
-// filesystem-free (xtask check-purity), even in their tests.
-static FORM_TWO_PAGES: &[u8] = include_bytes!("../../../corpus/pdfs/form_two_pages.pdf");
-static OUTLINES_FOR_EDITOR: &[u8] = include_bytes!("../../../corpus/pdfs/outlines_for_editor.pdf");
+// Selis-authored synthetic fixtures (corpus/fixtures/), committed so the test
+// does not depend on the fetched-corpus cache. Bytes are embedded at compile
+// time: L0–L3 crates must stay filesystem-free (xtask check-purity), even in
+// their tests.
+static FORM_TWO_PAGES: &[u8] = include_bytes!("../../../corpus/fixtures/form_two_pages.pdf");
+static OUTLINES_FOR_EDITOR: &[u8] =
+    include_bytes!("../../../corpus/fixtures/outlines_for_editor.pdf");
 
 fn open(src: &[u8]) -> Session {
     let budget = Budget::profile(Surface::Viewer);

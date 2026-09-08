@@ -14,10 +14,13 @@
 
 use selis_sandbox::Budget;
 
-// Corpus bytes are embedded at compile time: L0–L3 crates must stay
-// filesystem-free (xtask check-purity), even in their tests.
-static FORM_TWO_PAGES: &[u8] = include_bytes!("../../../corpus/pdfs/form_two_pages.pdf");
-static OUTLINES_FOR_EDITOR: &[u8] = include_bytes!("../../../corpus/pdfs/outlines_for_editor.pdf");
+// These two files are Selis-authored synthetic fixtures (corpus/fixtures/):
+// they exercise the strict-xref recovery paths and are committed so the test
+// does not depend on the fetched-corpus cache (SL-0.LEGAL.04 keeps fetched
+// third-party PDFs out of git; our own generated files may live in git).
+static FORM_TWO_PAGES: &[u8] = include_bytes!("../../../corpus/fixtures/form_two_pages.pdf");
+static OUTLINES_FOR_EDITOR: &[u8] =
+    include_bytes!("../../../corpus/fixtures/outlines_for_editor.pdf");
 
 fn open(src: &[u8]) -> selis_pdf_cos::Doc {
     let budget = Budget::unlimited();

@@ -11,11 +11,23 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn corpus(name: &str) -> PathBuf {
+    // Selis-authored synthetic fixtures live in corpus/fixtures/ (committed);
+    // fetched third-party corpus stays in the gitignored corpus/pdfs/ cache.
+    let fixtures = [
+        "form_two_pages.pdf",
+        "outlines_for_editor.pdf",
+        "structure_simple.pdf",
+    ];
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("..");
     p.push("..");
-    p.push("corpus");
-    p.push("pdfs");
+    if fixtures.contains(&name) {
+        p.push("corpus");
+        p.push("fixtures");
+    } else {
+        p.push("corpus");
+        p.push("pdfs");
+    }
     p.push(name);
     p
 }
