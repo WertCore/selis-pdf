@@ -19,6 +19,21 @@ pub fn generate() -> Result<(), String> {
         let _ = std::fs::remove_file(p);
     }
 
+    /// The open-outcome record for a generated file, observed from the actual
+    /// engine behaviour (the generator writes what the engine does; `corpus
+    /// verify` then polices regressions). Uses the same code path as `corpus
+    /// verify` — `Session::open` — so the recorded outcome matches what the
+    /// verifier re-observes. Mutants are deliberately damaged, so a typed
+    /// refusal is the expected, policy-correct outcome.
+    fn open_outcome(path: &Path) -> String {
+        let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
+        let src = std::fs::read(path).unwrap_or_default();
+        match selis_pdf_engine::Session::open(src, &budget) {
+            Ok(session) => format!("open = \"ok\"\npages = {}\n", session.len()),
+            Err(e) => format!("open = \"err\"\ncode = \"{:?}\"\n", e.code()),
+        }
+    }
+
     let count = std::cell::Cell::new(0usize);
     let gen = |id: &str, mut builder: DocumentBuilder, expect_pages: usize| -> Result<(), String> {
         let budget = selis_sandbox::Budget::unlimited();
@@ -191,11 +206,12 @@ pub fn generate() -> Result<(), String> {
     for (i, bytes) in mutants.iter().enumerate() {
         std::fs::write(dir.join(format!("mutant_{i}.pdf")), bytes)
             .map_err(|e| format!("mutant_{i}: {e}"))?;
-        // A mutant's open outcome is unknown up-front: the expectation is
-        // "ok OR err" — verify only checks it did not hang or panic (the
-        // budget guarantees termination). Record ok with a note.
-        let expect = "open = \"ok\"\npages = 1\n";
-        std::fs::write(exp_dir.join(format!("mutant_{i}.toml")), expect)
+        // A mutant's open outcome is a policy decision, decided once by the
+        // generator (robustness = typed error, never a hang or panic — the
+        // budget guarantees termination): refuse with a typed code, record
+        // it, and let `corpus verify` police regressions.
+        let outcome = open_outcome(&dir.join(format!("mutant_{i}.pdf")));
+        std::fs::write(exp_dir.join(format!("mutant_{i}.toml")), outcome)
             .map_err(|e| format!("mutant_{i}: {e}"))?;
         count.set(count.get().saturating_add(1));
     }
@@ -310,7 +326,7 @@ pub fn generate() -> Result<(), String> {
             .map_err(|e| format!("mut_{idx}: {e}"))?;
         std::fs::write(
             exp_dir.join(format!("mut_{idx}.toml")),
-            b"open = \"ok\"\npages = 1\n",
+            open_outcome(&dir.join(format!("mut_{idx}.pdf"))),
         )
         .map_err(|e| format!("mut_{idx}: {e}"))?;
         count.set(count.get() + 1);
@@ -325,7 +341,7 @@ pub fn generate() -> Result<(), String> {
                     .map_err(|e| format!("mut_{idx}: {e}"))?;
                 std::fs::write(
                     exp_dir.join(format!("mut_{idx}.toml")),
-                    b"open = \"ok\"\npages = 1\n",
+                    open_outcome(&dir.join(format!("mut_{idx}.pdf"))),
                 )
                 .map_err(|e| format!("mut_{idx}: {e}"))?;
                 count.set(count.get() + 1);

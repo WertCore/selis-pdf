@@ -1,0 +1,98 @@
+# Oracle images job — SL-0.ORACLE.01 (ADR-P0009).
+#
+# Builds the five pinned oracle images from docker/oracles/ on every change to
+# them, smoke-tests each oracle against fixtures/smoke.pdf, and prints the
+# image digests to record in xtask/oracles.toml. Pushing (and therefore
+# digest recording) is gated behind the ORACLE_PUSH secret being present, so
+# the job validates the recipes on public CI without needing registry creds.
+#
+# No job here fetches wild-corpus data (policy §7; see xtask check-wild-hygiene).
+
+name: oracle-images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/oracles/**"
+      - "xtask/oracles.toml"
+  pull_request:
+    paths:
+      - "docker/oracles/**"
+      - "xtask/oracles.toml"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Set this repository variable/secret to enable pushing the images to GHCR
+  # (digests are then recorded into xtask/oracles.toml from the job output).
+  ORACLE_PUSH: ""
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: qpdf
+            tag: 11.9.0
+          - tool: mupdf
+            tag: 1.23.9
+          - tool: ghostscript
+            tag: 9.56.1
+          - tool: pdfium
+            tag: chromium-7961
+          - tool: pdfjs
+            tag: 6.2.108
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the matrix tag matches xtask/oracles.toml
+        run: grep -q "version = \"${{ matrix.tag }}\"" xtask/oracles.toml
+
+      - name: Build the pinned image
+        working-directory: docker/oracles/${{ matrix.tool }}
+        run: |
+          docker build \
+            -t ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }} \
+            .
+
+      - name: Smoke the oracle against the fixture
+        working-directory: docker/oracles
+        run: |
+          IMG=ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          case "${{ matrix.tool }}" in
+            qpdf)
+              docker run --rm -v "$PWD/fixtures/smoke.pdf:/in.pdf:ro" "$IMG" --json /in.pdf > /dev/null ;;
+            mupdf)
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" draw -r 150 -o /out/smoke.png /fx/smoke.pdf ;;
+            ghostscript)
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" -sDEVICE=png16m -r150 -o /out/smoke.png /fx/smoke.pdf ;;
+            pdfium)
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png ;;
+            pdfjs)
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png ;;
+          esac
+          test -s out/smoke.png && echo "smoke render ok"
+
+      - name: Record the image digest
+        run: |
+          IMG=ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG" 2>/dev/null || echo "unpushed (digest exists after docker push)")
+          echo "${{ matrix.tool }}: $DIGEST" | tee -a oracle-digests.txt
+
+      - name: Push (only when ORACLE_PUSH creds are configured)
+        if: ${{ env.ORACLE_PUSH != '' }}
+        run: |
+          echo "${{ secrets.ORACLE_PUSH }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oracle-digests-${{ matrix.tool }}
+          path: oracle-digests.txt
+          if-no-files-found: ignore

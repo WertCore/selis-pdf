@@ -1,10 +1,87 @@
-# Oracle tool pinning (SL-0.ORACLE.01).
+# Oracle tool pinning (SL-0.ORACLE.01, ADR-P0009).
 #
-# Each line records the container image used when the tool is NOT installed
-# locally. On the dev machine the local binary is used instead (local-first),
-# so these images are only for CI and machines without the tools installed.
-# The digest pins the exact tool version so comparisons are reproducible.
+# Every oracle runs as an external process — locally when the tool is
+# installed (local-first dispatch), otherwise inside the pinned container
+# built from docker/oracles/<tool>/Dockerfile. Nothing here is ever linked
+# into a Selis build, and AGPL tools (MuPDF, Ghostscript) exist only inside
+# their containers (ADR-P0021).
+#
+# Pinning strength, per tool:
+#   - `image`    the container we build from the checked-in Dockerfile.
+#                Published by the CI `oracle-images` job to GHCR.
+#   - `digest`   the image manifest digest, recorded after the first
+#                successful `docker build` + push (CI is the only place that
+#                can produce it; Docker is not available on the dev host that
+#                authored these). `oracle check` flags an empty digest, and
+#                container dispatch refuses to run an unpinned image.
+#   - `base`     the base image, pinned by manifest digest. Every digest in
+#                this file was resolved live from the registry API on
+#                2026-09-08.
+#   - `source_*` the exact tool artifact built inside the container, pinned
+#                by sha256 computed from a local download (npm tarballs are
+#                additionally cross-checked against the registry's published
+#                integrity hash).
+#
+# Local binaries on the dev host (recorded here for drift visibility; the
+# authoritative comparison identity is the container):
+#   qpdf  12.4.1 (winget)   mutool 1.23.0 (winget)   gs: not installed
 
-qpdf = "ghcr.io/qpdf/qpdf:11.9.0"
-ghostscript = "ghcr.io/soscripted/soscripted:9.56.1"
-mupdf = "ghcr.io/mupdf/mupdf:1.23.9"
+[tool.qpdf]
+role = "structural (SL-0.ORACLE.03)"
+version = "11.9.0"
+image = "ghcr.io/wertcore/selis-pdf/oracle-qpdf"
+digest = ""
+base = "debian:bookworm-slim"
+base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+source_url = "https://github.com/qpdf/qpdf/releases/download/v11.9.0/qpdf-11.9.0.tar.gz"
+source_sha256 = "9f5d6335bb7292cc24a7194d281fc77be2bbf86873e8807b85aeccfbff66082f"
+dockerfile = "docker/oracles/qpdf/Dockerfile"
+licence = "Apache-2.0"
+
+[tool.mupdf]
+role = "render + text (SL-0.ORACLE.02/04)"
+version = "1.23.9"
+image = "ghcr.io/wertcore/selis-pdf/oracle-mupdf"
+digest = ""
+base = "debian:bookworm-slim"
+base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+source_url = "https://mupdf.com/downloads/archive/mupdf-1.23.9-source.tar.gz"
+source_sha256 = "d4a5d66801d85f97d76da978b155f66a5659d1131070c0400f076883f604e297"
+dockerfile = "docker/oracles/mupdf/Dockerfile"
+licence = "AGPL-3.0 (external process only, ADR-P0021)"
+
+[tool.ghostscript]
+role = "codec/colour/shading reference (SL-0.ORACLE.02)"
+version = "9.56.1"
+image = "ghcr.io/wertcore/selis-pdf/oracle-ghostscript"
+digest = ""
+base = "debian:bookworm-slim"
+base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+source_url = "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs9561/ghostscript-9.56.1.tar.gz"
+source_sha256 = "1598b9a38659cce8448d42a73054b2f9cbfcc40a9b97eeec5f22d4d6cd1de8e6"
+dockerfile = "docker/oracles/ghostscript/Dockerfile"
+licence = "AGPL-3.0 (external process only, ADR-P0021)"
+
+[tool.pdfium]
+role = "primary render oracle (SL-0.ORACLE.02)"
+version = "chromium/7961 (PDFium 152.0.7961.0)"
+image = "ghcr.io/wertcore/selis-pdf/oracle-pdfium"
+digest = ""
+base = "debian:bookworm-slim"
+base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+source_url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-linux-x64.tgz"
+source_sha256 = "019665c8877d46fe65f625f80fd714ab07aac68554b0636acf2a2adf9288adb2"
+dockerfile = "docker/oracles/pdfium/Dockerfile"
+licence = "BSD-3-Clause"
+
+[tool.pdfjs]
+role = "independent render + extract oracle (SL-0.ORACLE.02/04)"
+version = "6.2.108"
+image = "ghcr.io/wertcore/selis-pdf/oracle-pdfjs"
+digest = ""
+base = "node:22-bookworm-slim"
+base_digest = "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+source_url = "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.2.108.tgz"
+source_sha256 = "b3e68d5cda70551a90b3f771419d379e20fc788ce056fa32de73608e01df47f4"
+dockerfile = "docker/oracles/pdfjs/Dockerfile"
+licence = "Apache-2.0"
