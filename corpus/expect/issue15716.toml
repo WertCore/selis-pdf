@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=2"
+verdict = "SpecAmbiguous"
+note = "xref size internally inconsistent (maxid 13 vs 8 entries); repair readings differ"

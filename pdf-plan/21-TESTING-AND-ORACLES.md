@@ -104,21 +104,75 @@ subject to revision by that calibration, and the calibration numbers are publish
 A full-corpus differential run produces thousands of disagreements. Untriaged, that is noise and
 the team learns to ignore it — which is the real failure mode.
 
-1. **Cluster.** `xtask oracle triage --sample N` runs the structural comparison against qpdf
-   over a corpus sample and groups by a disagreement signature (`obj_delta=N`, `open_failed`,
-   ...), not by file. 4 000 failures typically collapse to 20–40 clusters. Implemented and
-   verified on 30 files (21 match, 1 obj_delta=2, 8 open_failed — the 4 unrecoverable wild
-   files plus 4 encrypted-objstm files).
-2. **Rank** by (files affected × corpus weight), where wild-corpus files weigh more than synthetic.
-3. **Verdict** per cluster, recorded in the expectation files:
+1. **Seed.** The corpus files are fetch-only (gitignored, refetchable from
+   `~/.cache/selis-corpus`): re-extract the archives into `corpus/pdfs/`
+   (`xtask corpus synthetic-generate` for the deterministic synthetic set),
+   then sample. Sampling is a deterministic stride over the sorted file list
+   (`--sample N`), so the sample spans every source instead of whichever
+   directory sorts first.
+2. **Cluster.** `xtask oracle triage --sample N` runs the structural comparison
+   against qpdf over the sample and groups by disagreement signature, not by
+   file. 4 000 failures typically collapse to 20–40 clusters. Signatures, as
+   implemented in `xtask/src/oracle.rs`:
+   - `match` — structural agreement after normalisation (see below);
+   - `obj_delta=N` — live-object count differs by N;
+   - `selis_rejects` — we refuse with a typed error, qpdf opens (repair-policy
+     gap; for deliberately-damaged mutants the refusal is the designed
+     posture);
+   - `qpdf_rejects` — we open, qpdf refuses hard (oracle over-strictness or a
+     repair-policy gap in the other direction);
+   - `both_reject` — agreement: the file is broken and both tools say so.
+   Object counts are compared **live-vs-live** (SL-0.ORACLE.03, verified on
+   real files): an object is live iff its *latest* xref entry across all
+   revisions is in use; object 0 never counts; qpdf's `obj:` map keys are the
+   oracle side (`maxobjectid` counts slots incl. the free head and is never
+   the live count). `selis inspect --json` exposes per-revision `free`
+   arrays so the comparator can apply qpdf's semantics. This closed the two
+   artefact classes the first seeded run surfaced: the phantom free-head
+   delta on every healthy file, and the union-vs-live skew on files with
+   deleted objects. Damaged-but-recoverable files stay in the comparable pool
+   via `qpdf --warning-exit-0` (qpdf otherwise exits 2 and emits no JSON for
+   files it repairs, which manufactured a 107-file false `open_failed`
+   cluster on the first seeded run).
+3. **Rank** by (files affected × corpus weight), where wild-corpus files weigh more than synthetic.
+   Implemented as the `[w=…]` column in the triage output (govdocs/wild ×3).
+4. **Verdict** per cluster, recorded in the expectation files:
    - `OurBug` → file a task, link the cluster, add a golden corpus entry.
    - `OracleBug` → annotate with the spec citation; report upstream; keep our output.
    - `SpecAmbiguous` → annotate with both readings and the reasoning for ours; consider asking the
      PDF Association (this is what membership is for).
    - `ToleranceTooTight` → adjust the tolerance *with the calibration data as justification*, never
      because a build is red.
-4. **Never** mark a cluster `WontFix` without an annotation. A silent suppression is a bug that
+   Mechanically: `xtask oracle triage --sample N --verdict "<signature>=<Verdict>" --note "…"`
+   re-computes the clusters, validates the verdict against the four-value set,
+   and writes an `[annotation]` table (`triage`, `verdict`, `note`) into
+   `corpus/expect/<id>.toml` for every file in that cluster. Notes are bounded
+   authored prose (≤160 chars, one line) and `check-wild-hygiene` still
+   enforces the metadata-only record bounds. Regenerating expectations
+   (`corpus expect-generate`) preserves existing annotations.
+5. **Never** mark a cluster `WontFix` without an annotation. A silent suppression is a bug that
    will be rediscovered in a year at ten times the cost.
+
+### Baseline: the seeded run (2026-09-08)
+
+463 files (216 pdf.js corpus incl. the crypto fixtures, 40 govdocs1, 203
+synthetic incl. 62 seeded mutants) × qpdf 12.4.1, live-vs-live comparator →
+**17 clusters**:
+
+| Cluster | Files | Verdict |
+|---|---|---|
+| `match` | 402 | — (agreement; 86.8% of the sample) |
+| `selis_rejects` | 21 | `SpecAmbiguous` — deliberate mutants we refuse by design (typed error, no repair attempt); both readings defensible |
+| `qpdf_rejects` | 21 | `SpecAmbiguous` — we open (incl. reconstruction) where qpdf refuses hard: pdf.js-corpus pathologies (page-tree loops, unrecoverable `/Root`), the crypto fixtures qpdf will not open password-less, and mutants qpdf cannot recover |
+| `both_reject` | 6 | — (agreement on broken files; typed codes already recorded) |
+| `obj_delta=87…2163` (govdocs, 9 files) | 9 | `SpecAmbiguous` — damaged files where the two tools read free markers and recovery sets differently; ours honours the spec's free-list uniformly |
+| `obj_delta=1 / 17 / 47` (issue5874/11656/16263) | 3 | `SpecAmbiguous` — qpdf's JSON map counts xref-*stream* free-marked objects as live (it honours free markers in classic tables only); we honour the free marker in both forms |
+| `obj_delta=2` (issue15716) | 1 | `SpecAmbiguous` — the xref size is internally inconsistent (qpdf's own warning: "reported number of objects (8) is not one plus the highest object number (13)"); repair readings differ |
+
+The remaining obj_delta clusters are genuine tool divergences on broken
+files, each annotated with both readings — not comparator artefacts. If a
+future comparator change dissolves a cluster, `oracle triage --clear
+<signature>` removes its stale annotations.
 
 ---
 

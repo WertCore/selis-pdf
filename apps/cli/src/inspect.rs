@@ -59,6 +59,12 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
             byte_range: [rev.byte_range.start, rev.byte_range.end],
             entries: rev.entries.len(),
             objects: rev.entries.keys().copied().collect(),
+            free: rev
+                .entries
+                .iter()
+                .filter(|(_, e)| matches!(e, selis_pdf_cos::XrefEntry::Free { .. }))
+                .map(|(k, _)| *k)
+                .collect(),
         });
     }
 

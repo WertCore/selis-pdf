@@ -1,0 +1,10 @@
+{
+  "name": "selis-oracle-pdfjs",
+  "private": true,
+  "description": "Pinned pdf.js headless render driver for the Selis oracle container (SL-0.ORACLE.01). Oracle-only: never shipped with Selis (ADR-P0009).",
+  "type": "module",
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.8",
+    "pdfjs-dist": "6.2.108"
+  }
+}

@@ -1,2 +1,6 @@
 open = "ok"
 pages = 9
+[annotation]
+triage = "obj_delta=192"
+verdict = "SpecAmbiguous"
+note = "govdocs: recovery superset vs qpdf live set; free-marker readings differ"

@@ -159,6 +159,20 @@ enum OracleSub {
     Triage {
         #[arg(long, default_value = "100")]
         sample: usize,
+        /// Record a verdict for a signature: `signature=Verdict` (repeatable).
+        /// Verdict is one of OurBug | OracleBug | SpecAmbiguous |
+        /// ToleranceTooTight; it is written into each affected file's
+        /// expectation record as an `[annotation]` table.
+        #[arg(long = "verdict", value_name = "SIGNATURE=VERDICT")]
+        verdict: Vec<String>,
+        /// Prose context recorded alongside every `--verdict` annotation.
+        #[arg(long)]
+        note: Option<String>,
+        /// Remove stale annotations: expectation records whose `triage`
+        /// equals this signature lose their `[annotation]` block (repeatable).
+        /// Used when a comparator fix dissolves a cluster.
+        #[arg(long = "clear", value_name = "SIGNATURE")]
+        clear: Vec<String>,
     },
 }
 
@@ -261,7 +275,19 @@ fn main() -> ExitCode {
             OracleSub::CompareText { file } => {
                 oracle::run(oracle::OracleCommand::CompareText { file })
             }
-            OracleSub::Triage { sample } => oracle::run(oracle::OracleCommand::Triage { sample }),
+            OracleSub::Triage {
+                sample,
+                verdict,
+                note,
+                clear,
+            } => parse_verdicts(&verdict).and_then(|verdicts| {
+                oracle::run(oracle::OracleCommand::Triage {
+                    sample,
+                    verdicts,
+                    note,
+                    clear,
+                })
+            }),
         },
         Command::Fuzz => fuzz::check(),
         Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
@@ -299,6 +325,26 @@ fn lint() -> Result<(), String> {
     run("cargo", &["vet"])?;
     sbom::sbom()?;
     Ok(())
+}
+
+/// Parse `--verdict signature=Verdict` pairs. The verdict value set is
+/// enforced by the triage step; this only rejects malformed pairs early.
+/// The pair separator is the first `=`, so signatures containing `=`
+/// (`obj_delta=1`) must quote the whole argument and split at the LAST `=`.
+fn parse_verdicts(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for v in raw {
+        let (sig, verdict) = v
+            .rsplit_once('=')
+            .ok_or_else(|| format!("--verdict `{v}` must be `signature=Verdict`"))?;
+        let sig = sig.trim();
+        let verdict = verdict.trim();
+        if sig.is_empty() || verdict.is_empty() {
+            return Err(format!("--verdict `{v}` must be `signature=Verdict`"));
+        }
+        out.push((sig.to_string(), verdict.to_string()));
+    }
+    Ok(out)
 }
 
 /// Run a subprocess, streaming its output, and fail with a typed message on a

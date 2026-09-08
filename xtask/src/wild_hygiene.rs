@@ -31,12 +31,13 @@ const WILD_MARKERS: &[&str] = &[
     "corpus wild",
 ];
 
-/// No expectation record may exceed this many bytes (records are metadata-only; the
-/// generator emits at most ~64).
-const MAX_EXPECT_FILE_BYTES: u64 = 128;
+/// No expectation record may exceed this many bytes (records are metadata-only: an
+/// open outcome plus, since SL-0.ORACLE.05, a triage `[annotation]` table —
+/// bounded authored prose, never document content).
+const MAX_EXPECT_FILE_BYTES: u64 = 256;
 
 /// No single literal line in an expectation record may exceed this many chars.
-const MAX_EXPECT_LINE_CHARS: usize = 64;
+const MAX_EXPECT_LINE_CHARS: usize = 160;
 
 pub fn check() -> Result<(), String> {
     check_at(Path::new("."))
@@ -184,6 +185,36 @@ mod tests {
         std::fs::write(tmp.join("leak.toml"), format!("note = \"{long_line}\"\n")).unwrap();
         let violations = check_expectations(&tmp).unwrap();
         assert!(!violations.is_empty(), "oversized literal must be flagged");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn annotated_record_is_within_bounds() {
+        // The SL-0.ORACLE.05 annotation shape (triage + verdict + bounded
+        // note) fits the metadata-only bound; one char more on the note line
+        // does not.
+        let tmp = std::env::temp_dir().join(format!("selis-hygiene-anno-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let note = "mutants we recover; qpdf refuses hard";
+        let record = format!(
+            "open = \"err\"\ncode = \"TrailerMissingRoot\"\n[annotation]\n\
+             triage = \"qpdf_rejects\"\nverdict = \"SpecAmbiguous\"\nnote = \"{note}\"\n"
+        );
+        std::fs::write(tmp.join("anno.toml"), &record).unwrap();
+        assert!(
+            check_expectations(&tmp).unwrap().is_empty(),
+            "an annotated record within bounds must pass"
+        );
+        let long_note = "x".repeat(MAX_EXPECT_LINE_CHARS);
+        let oversized = format!(
+            "open = \"err\"\ncode = \"T\"\n[annotation]\ntriage = \"t\"\nverdict = \"OurBug\"\nnote = \"{long_note}a\"\n"
+        );
+        std::fs::write(tmp.join("over.toml"), oversized).unwrap();
+        assert!(
+            !check_expectations(&tmp).unwrap().is_empty(),
+            "a line over the bound must be flagged"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

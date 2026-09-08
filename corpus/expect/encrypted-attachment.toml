@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "qpdf_rejects"
+verdict = "SpecAmbiguous"
+note = "we open (or recover); qpdf refuses hard; both readings defensible"

@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "obj_delta=17"
+verdict = "SpecAmbiguous"
+note = "free-marker handling differs (xref stream vs classic table); see 21 section 5"
