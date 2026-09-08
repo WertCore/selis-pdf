@@ -16,5 +16,6 @@
   "selis-error": 70,
   "selis-crypto": 70,
   "selis-io": 70,
-  "selis-geom": 70
+  "selis-geom": 70,
+  "mutation_score": 50
 }

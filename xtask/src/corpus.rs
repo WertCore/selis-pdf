@@ -209,7 +209,7 @@ fn verify_sha256(path: &Path, e: &CorpusEntry) -> Result<bool, String> {
 
 /// A tiny, dependency-free SHA-256 is overkill for a phase-0 harness; use the
 /// system `certutil` on Windows or `sha256sum` elsewhere.
-fn sha256_hex(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_hex(path: &Path) -> Result<String, String> {
     let program = if std::env::consts::OS == "windows" {
         "certutil"
     } else {
@@ -275,14 +275,23 @@ fn stats(entries: &[CorpusEntry]) -> Result<(), String> {
             if path.is_dir() {
                 let n = count_pdfs(&path);
                 if n > 0 {
-                    by_source.insert(path.file_name().unwrap_or_default().to_string_lossy().into_owned(), n);
+                    by_source.insert(
+                        path.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        n,
+                    );
                 }
             } else if path.extension().is_some_and(|e| e == "pdf") {
                 flat += 1;
             }
         }
     }
-    println!("  total pdfs in corpus/pdfs: {}", flat + by_source.values().sum::<usize>());
+    println!(
+        "  total pdfs in corpus/pdfs: {}",
+        flat + by_source.values().sum::<usize>()
+    );
     println!("    flat: {flat}");
     for (src, n) in &by_source {
         println!("    {src}: {n}");
@@ -291,7 +300,7 @@ fn stats(entries: &[CorpusEntry]) -> Result<(), String> {
 }
 
 /// Count `*.pdf` files under a directory, recursively.
-fn count_pdfs(dir: &Path) -> usize {
+pub(crate) fn count_pdfs(dir: &Path) -> usize {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -327,10 +336,7 @@ fn collect_pdfs_inner(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
             collect_pdfs_inner(root, &path, out);
         } else if path.extension().is_some_and(|x| x == "pdf") {
             let rel = path.strip_prefix(root).unwrap_or(&path);
-            let id = rel
-                .to_string_lossy()
-                .replace('\\', "/")
-                .replace(".pdf", "");
+            let id = rel.to_string_lossy().replace('\\', "/").replace(".pdf", "");
             out.push((id, path));
         }
     }
@@ -349,10 +355,7 @@ struct ExpectRecord {
 
 fn open_outcome(path: &Path) -> ExpectRecord {
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    match selis_pdf_engine::Session::open(
-        std::fs::read(path).unwrap_or_default(),
-        &budget,
-    ) {
+    match selis_pdf_engine::Session::open(std::fs::read(path).unwrap_or_default(), &budget) {
         Ok(session) => ExpectRecord {
             open: "ok".to_string(),
             code: None,
@@ -420,11 +423,7 @@ fn verify() -> Result<(), String> {
         checked += 1;
         if !same {
             changed += 1;
-            println!(
-                "  {id}: expected {:?} got {:?}",
-                expected,
-                actual
-            );
+            println!("  {id}: expected {:?} got {:?}", expected, actual);
         }
     }
     println!("corpus verify: {checked} checked, {changed} changed");

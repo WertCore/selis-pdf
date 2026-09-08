@@ -8,6 +8,7 @@
 use selis_error::{err, Code, Result};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::encrypt;
 use crate::obj::{Obj, Ref};
 use crate::writer::Writer;
 
@@ -27,6 +28,10 @@ pub struct DocumentBuilder {
     catalog_extra: Vec<(Vec<u8>, Obj)>,
     /// The trailer `/ID` pair, when set.
     id: Option<(Vec<u8>, Vec<u8>)>,
+    /// The encryption info and file key (when encryption is enabled).
+    encryption: Option<(encrypt::EncryptInfo, Vec<u8>)>,
+    /// The object number of the `/Encrypt` dictionary, once assigned.
+    encrypt_ref: Option<Ref>,
 }
 
 impl DocumentBuilder {
@@ -40,6 +45,8 @@ impl DocumentBuilder {
             info: Vec::new(),
             catalog_extra: Vec::new(),
             id: None,
+            encryption: None,
+            encrypt_ref: None,
         };
         b.objects.push((
             1,
@@ -90,6 +97,23 @@ impl DocumentBuilder {
     /// identifier at creation time and its value at the last modification).
     pub fn set_id(&mut self, first: Vec<u8>, second: Vec<u8>) {
         self.id = Some((first, second));
+    }
+
+    /// Enable encryption on the written document: a revision-6 AES-256
+    /// handler is emitted and every string/stream object is encrypted during
+    /// [`write`](DocumentBuilder::write). `file_key` is the 32-byte key from
+    /// [`EncryptInfo::new_r6`].
+    ///
+    /// # Budget
+    ///
+    /// No charge: the values are buffered and charged by
+    /// [`write`](DocumentBuilder::write).
+    ///
+    /// # Malformed Input
+    ///
+    /// None: the caller provides the parsed encryption info and key.
+    pub fn set_encrypt(&mut self, info: encrypt::EncryptInfo, file_key: Vec<u8>) {
+        self.encryption = Some((info, file_key));
     }
 
     /// Set an `/Info` field (e.g. `Title`, `Author`).
@@ -321,6 +345,37 @@ impl DocumentBuilder {
             }
         }
 
+        // Encryption (SL-1.ENC.02): allocate the /Encrypt dictionary object,
+        // then encrypt every other object's strings and stream bodies with the
+        // file key. The /Encrypt dict itself and the trailer stay plaintext.
+        if let Some((info, file_key)) = self.encryption.take() {
+            let rev = info.r;
+            let aes = info.aes;
+            let u = info.u.clone();
+            let encrypt_num = self.allocate();
+            let encrypt_obj = encrypt::encrypt_dict(&info);
+            let encrypt_ref = Ref::new(encrypt_num, 0);
+            self.objects.push((encrypt_num, encrypt_obj));
+            self.encrypt_ref = Some(encrypt_ref);
+            for (num, obj) in &mut self.objects {
+                if *num == encrypt_num {
+                    continue;
+                }
+                *obj = encrypt::encrypt_object(obj, &file_key, *num, 0, rev, aes);
+            }
+            // An encrypted document must carry /ID; derive a default from the
+            // file key when the caller did not set one.
+            if self.id.is_none() {
+                let first = file_key
+                    .iter()
+                    .chain(u.iter())
+                    .copied()
+                    .take(16)
+                    .collect::<Vec<u8>>();
+                self.id = Some((first.clone(), first));
+            }
+        }
+
         // Write objects sequentially into `out`, recording absolute offsets.
         let mut offsets: Vec<Option<u64>> = Vec::new();
         for (num, obj) in &self.objects {
@@ -360,10 +415,16 @@ impl DocumentBuilder {
             ),
             (b"Root".to_vec(), Obj::Ref(Ref::new(1, 0))),
         ];
+        if let Some(r) = self.encrypt_ref {
+            trailer_pairs.push((b"Encrypt".to_vec(), Obj::Ref(r)));
+        }
         if let Some((first, second)) = &self.id {
             trailer_pairs.push((
                 b"ID".to_vec(),
-                Obj::Array(vec![Obj::String(bytes(first)), Obj::String(bytes(second))]),
+                Obj::Array(vec![
+                    Obj::HexString(bytes(first)),
+                    Obj::HexString(bytes(second)),
+                ]),
             ));
         }
         let trailer = Obj::Dict(
@@ -823,6 +884,142 @@ pub fn write_objects_as_document_with_trailer(
     Ok(out)
 }
 
+/// Write a complete single-revision PDF from pre-built objects, with
+/// revision-6 encryption (SL-1.ENC.02 write side).
+///
+/// `objects` may be sparse (gaps become free xref entries) but must not
+/// contain duplicate object numbers; `root` is the trailer's `/Root`. The
+/// `/Encrypt` dictionary is built from `info` and `file_key` and allocated as
+/// a new object; every other object's strings and stream bodies are encrypted
+/// with the file key during serialisation.
+///
+/// # Budget
+///
+/// Charges the serialised output bytes and one object unit per object plus the
+/// encryption object.
+///
+/// # Malformed Input
+///
+/// `BUDGET_BYTES` on exhaustion; `OBJ_UNEXPECTED` on duplicate object numbers.
+pub fn write_objects_as_document_encrypted(
+    objects: &[(u32, Obj)],
+    root: Ref,
+    info: &encrypt::EncryptInfo,
+    file_key: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let mut max_num = 0u32;
+    for (num, _) in objects {
+        max_num = max_num.max(*num);
+    }
+    let encrypt_num = max_num.saturating_add(1);
+    max_num = encrypt_num;
+    let mut offsets: Vec<Option<u64>> =
+        vec![None; usize::try_from(max_num).map_or(usize::MAX, |n| n.saturating_add(1))];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+
+    // Write the /Encrypt dictionary first so it stays plaintext.
+    let encrypt_ref = Ref::new(encrypt_num, 0);
+    let encrypt_obj = encrypt::encrypt_dict(info);
+    {
+        let slot = offsets
+            .get_mut(usize::try_from(encrypt_num).unwrap_or(usize::MAX))
+            .ok_or_else(|| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "doc-write-enc",
+                    detail = "encrypt object"
+                )
+            })?;
+        *slot = Some(u64::try_from(out.len()).unwrap_or(u64::MAX));
+        out.extend_from_slice(format!("{encrypt_num} 0 obj\n").as_bytes());
+        let mut w = Writer::new(budget);
+        out.extend_from_slice(&w.to_bytes(&encrypt_obj, g)?);
+        out.push(b'\n');
+        out.extend_from_slice(b"endobj\n");
+    }
+
+    let rev = info.r;
+    let aes = info.aes;
+    for (num, obj) in objects {
+        let num_us = usize::try_from(*num).unwrap_or(usize::MAX);
+        let slot = offsets.get_mut(num_us).ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "doc-write-enc",
+                detail = "duplicate object number"
+            )
+        })?;
+        if slot.is_some() {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "doc-write-enc",
+                object = *num,
+                detail = "duplicate object number"
+            ));
+        }
+        *slot = Some(u64::try_from(out.len()).unwrap_or(u64::MAX));
+        let encrypted = encrypt::encrypt_object(obj, file_key, *num, 0, rev, aes);
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        let mut w = Writer::new(budget);
+        out.extend_from_slice(&w.to_bytes(&encrypted, g)?);
+        out.push(b'\n');
+        out.extend_from_slice(b"endobj\n");
+    }
+
+    let size = u64::try_from(offsets.len()).unwrap_or(u64::MAX);
+    let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    for (i, off) in offsets.iter().enumerate() {
+        match off {
+            Some(off) if i > 0 => {
+                out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+            }
+            _ => out.extend_from_slice(b"0000000000 65535 f \n"),
+        }
+    }
+    out.extend_from_slice(b"trailer\n");
+
+    // Derive /ID from the file key (must be present for encrypted documents).
+    let id_first = file_key
+        .iter()
+        .chain(info.u.iter())
+        .copied()
+        .take(16)
+        .collect::<Vec<u8>>();
+    let trailer = dict(&[
+        (
+            b"Size".to_vec(),
+            Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+        ),
+        (b"Root".to_vec(), Obj::Ref(root)),
+        (b"Encrypt".to_vec(), Obj::Ref(encrypt_ref)),
+        (
+            b"ID".to_vec(),
+            Obj::Array(vec![
+                Obj::HexString(bytes(&id_first)),
+                Obj::HexString(bytes(&id_first)),
+            ]),
+        ),
+    ]);
+    let mut tw = Writer::new(budget);
+    out.extend_from_slice(&tw.to_bytes(&trailer, g)?);
+    out.push(b'\n');
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+    Ok(out)
+}
+
 /// A real number object.
 fn real(v: f64) -> Obj {
     let max = 9_223_372_036_854_775_807i64;
@@ -1176,6 +1373,162 @@ mod tests {
             s.contains("(abc)") && s.contains("(def)"),
             "trailer has /ID strings: {s}"
         );
+    }
+
+    /// Round-trip: a document written with revision-6 encryption opens with
+    /// the empty user password and its content streams decrypt to the
+    /// original bytes (SL-1.ENC.02 write side).
+    #[test]
+    fn encrypted_document_roundtrips_with_empty_password() {
+        let mut b = DocumentBuilder::new();
+        let mut c = ContentBuilder::new();
+        c.set_fill(1.0, 0.0, 0.0).fill_rect(0.0, 0.0, 100.0, 100.0);
+        c.begin_text()
+            .set_font("Helvetica", 12.0)
+            .text_at(10.0, 50.0)
+            .show_text("Secret round trip")
+            .end_text();
+        let original = c.to_bytes();
+        b.add_page(100.0, 100.0, original.as_slice());
+        let id0 = b"0123456789abcdef";
+        let (info, file_key) = crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, id0);
+        assert_eq!(info.r, 6);
+        assert_eq!(info.v, 5);
+        assert_eq!(file_key.len(), 32);
+        b.set_encrypt(info, file_key);
+        let mut g = guard();
+        let budget = selis_sandbox::Budget::unlimited();
+        let bytes = b.write(&budget, &mut g).expect("write");
+
+        // The trailer carries /Encrypt and the document parses.
+        let startxref = crate::xref::find_startxref(&bytes, 2048).expect("startxref");
+        let doc = crate::parse_revisions(&bytes, startxref, &budget, &mut g).expect("open");
+        assert_eq!(doc.revisions().len(), 1);
+        let rev = &doc.revisions()[0];
+        let encrypt_ref = rev.encrypt.expect("encrypt ref in trailer");
+        let id = crate::encrypt::document_id(&rev.trailer);
+        assert_eq!(id.len(), 16, "encrypted document must carry /ID");
+
+        // Authenticate with the empty user password.
+        let info =
+            crate::encrypt::parse_encrypt(&bytes, Some(encrypt_ref), &budget, &mut g)
+                .expect("parse encrypt")
+                .expect("encrypt info");
+        let key = crate::encrypt::authenticate(&info, &id, b"").expect("auth");
+        assert_eq!(key.len(), 32);
+        assert!(info.stream_encrypted());
+        assert!(info.string_encrypted());
+        assert!(
+            info.verify_perms(&key),
+            "/Perms must decrypt to the written flags with the file key"
+        );
+
+        // Resolve the content stream (object 3) and decrypt its body.
+        let mut content_offset = 0u64;
+        for (num, e) in &rev.entries {
+            if *num == 3 {
+                if let crate::XrefEntry::InUse { offset, .. } = e {
+                    content_offset = *offset;
+                }
+            }
+        }
+        let obj = crate::resolve_object(&bytes, content_offset, &budget, &mut g).expect("resolve");
+        let Obj::Stream { data, .. } = obj else {
+            panic!("content must be a stream");
+        };
+        let plain = crate::encrypt::decrypt_data(&info, &key, 3, 0, data.as_slice());
+        assert_eq!(
+            plain.as_slice(),
+            original.as_slice(),
+            "decrypted content stream must match the original"
+        );
+    }
+
+    /// Encrypt a corpus file and verify the round-trip: the encrypted output
+    /// opens with the empty user password and the page count is preserved.
+    #[test]
+    fn corpus_file_encrypt_roundtrip() {
+        // Build a minimal multi-page document programmatically (portable, no
+        // filesystem dependency; SL-0.WS.04 purity).
+        use crate::doc_writer::ContentBuilder;
+        let mut src_b = DocumentBuilder::new();
+        for p in 0..3u32 {
+            let c = ContentBuilder::new()
+                .begin_text()
+                .set_font("Helvetica", 10.0)
+                .text_at(10.0, 10.0)
+                .show_text(&format!("page {p}"))
+                .end_text()
+                .to_bytes();
+            src_b.add_page(100.0, 100.0, &c);
+        }
+        let mut tmp_g = guard();
+        let budget = selis_sandbox::Budget::unlimited();
+        let src_bytes = src_b
+            .write(&budget, &mut tmp_g)
+            .expect("build source doc");
+        let src: &[u8] = src_bytes.as_slice();
+        let budget = selis_sandbox::Budget::unlimited();
+        let mut g = guard();
+        let startxref = crate::xref::find_startxref(src, 2048).expect("startxref");
+        let doc = crate::parse_revisions(src, startxref, &budget, &mut g).expect("parse");
+        let rev = &doc.revisions()[0];
+
+        // Collect all in-use objects.
+        let mut objects: Vec<(u32, Obj)> = Vec::new();
+        let mut root = Ref::new(0, 0);
+        for (num, entry) in &rev.entries {
+            if let crate::XrefEntry::InUse { offset, .. } = entry {
+                let obj = crate::resolve_object(src, *offset, &budget, &mut g).expect("resolve");
+                objects.push((*num, obj));
+            }
+        }
+        if let Some(r) = rev.root {
+            root = r;
+        }
+
+        // Encrypt with empty user password.
+        let (info, file_key) = crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &[0u8; 16]);
+        let encrypted = crate::doc_writer::write_objects_as_document_encrypted(
+            &objects, root, &info, &file_key, &budget, &mut g,
+        )
+        .expect("write encrypted");
+
+        // Parse the encrypted output, authenticate, and verify page count.
+        let enc_startxref = crate::xref::find_startxref(&encrypted, 2048).expect("enc startxref");
+        let enc_doc =
+            crate::parse_revisions(&encrypted, enc_startxref, &budget, &mut g).expect("parse enc");
+        let enc_rev = &enc_doc.revisions()[0];
+        let encrypt_ref = enc_rev.encrypt.expect("encrypt ref");
+        let enc_info = crate::encrypt::parse_encrypt(&encrypted, Some(encrypt_ref), &budget, &mut g)
+            .expect("parse encrypt")
+            .expect("encrypt info");
+        let id = crate::encrypt::document_id(&enc_rev.trailer);
+        assert!(!id.is_empty(), "encrypted doc must have /ID");
+        let key = crate::encrypt::authenticate(&enc_info, &id, b"").expect("auth with empty password");
+        assert_eq!(key.len(), 32, "file key must be 32 bytes");
+
+        // Verify the page count is preserved by resolving the /Pages object.
+        let mut pages_count = 0i64;
+        for (_, entry) in &enc_rev.entries {
+            if let crate::XrefEntry::InUse { offset, .. } = entry {
+                let obj = crate::resolve_object(&encrypted, *offset, &budget, &mut g).expect("resolve");
+                if let Obj::Dict(pairs) = &obj {
+                    let is_pages = pairs.iter().any(|(k, v)| {
+                        k.as_slice() == b"Type"
+                            && matches!(v, Obj::Name(n) if n.as_slice() == b"Pages")
+                    });
+                    if is_pages {
+                        if let Some((_, Obj::Int(n))) =
+                            pairs.iter().find(|(k, _)| k.as_slice() == b"Count")
+                        {
+                            pages_count = *n;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(pages_count > 0, "document must have at least one page");
     }
 
     /// Parse `src` and return the `/Count` of its `/Type /Pages` object.

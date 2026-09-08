@@ -8,9 +8,10 @@ const BUDGETS: &str = "xtask/size-budgets.toml";
 
 /// Check that the WASM target fits within the size budgets.
 pub fn run() -> Result<(), String> {
-    let budgets: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(BUDGETS).map_err(|e| format!("{BUDGETS}: {e}"))?)
-            .map_err(|e| format!("{BUDGETS}: {e}"))?;
+    let budgets: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(BUDGETS).map_err(|e| format!("{BUDGETS}: {e}"))?,
+    )
+    .map_err(|e| format!("{BUDGETS}: {e}"))?;
     let budgets = budgets.as_object().ok_or("{BUDGETS}: not an object")?;
 
     // Build the WASM target for the xtask (the simplest WASM target).
@@ -58,17 +59,28 @@ pub fn run() -> Result<(), String> {
         .status()
         .map_err(|e| format!("wasm-opt: {e}"))?;
     if !status.success() {
-        return Err("wasm-opt failed. Install with `cargo install wasm-opt` or `npm i -g wasm-opt`.".to_string());
+        return Err(
+            "wasm-opt failed. Install with `cargo install wasm-opt` or `npm i -g wasm-opt`."
+                .to_string(),
+        );
     }
-    let raw_size = std::fs::metadata(&opt_out).map_err(|e| format!("{opt_out:?}: {e}"))?.len();
+    let raw_size = std::fs::metadata(&opt_out)
+        .map_err(|e| format!("{opt_out:?}: {e}"))?
+        .len();
 
     // Brotli-compress (node's zlib or a simple brotli tool).
     let compressed = brotli_compress(&opt_out)?;
     let brotli_size = compressed.len() as u64;
 
     println!("wasm size-check (xtask target):");
-    println!("  raw (wasm-opt -O3): {raw_size} bytes ({:.1} KiB)", raw_size as f64 / 1024.0);
-    println!("  brotli-compressed:  {brotli_size} bytes ({:.1} KiB)", brotli_size as f64 / 1024.0);
+    println!(
+        "  raw (wasm-opt -O3): {raw_size} bytes ({:.1} KiB)",
+        raw_size as f64 / 1024.0
+    );
+    println!(
+        "  brotli-compressed:  {brotli_size} bytes ({:.1} KiB)",
+        brotli_size as f64 / 1024.0
+    );
 
     // Check against the first budget entry (the broadest baseline).
     let mut failures = Vec::new();

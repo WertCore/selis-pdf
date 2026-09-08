@@ -26,7 +26,9 @@ pub fn generate() -> Result<(), String> {
             &selis_sandbox::FixedClock(0),
             selis_sandbox::CancelToken::new(),
         );
-        let bytes = builder.write(&budget, &mut g).map_err(|e| format!("{id}: {e}"))?;
+        let bytes = builder
+            .write(&budget, &mut g)
+            .map_err(|e| format!("{id}: {e}"))?;
         std::fs::write(dir.join(format!("{id}.pdf")), &bytes).map_err(|e| format!("{id}: {e}"))?;
         let expect = format!("open = \"ok\"\npages = {expect_pages}\n");
         std::fs::write(exp_dir.join(format!("{id}.toml")), &expect)
@@ -36,9 +38,14 @@ pub fn generate() -> Result<(), String> {
     };
 
     // ── Page-size / content variants ────────────────────────────────────────
-    for (i, (w, h)) in [(612.0, 792.0), (595.0, 842.0), (200.0, 200.0), (1440.0, 1440.0)]
-        .iter()
-        .enumerate()
+    for (i, (w, h)) in [
+        (612.0, 792.0),
+        (595.0, 842.0),
+        (200.0, 200.0),
+        (1440.0, 1440.0),
+    ]
+    .iter()
+    .enumerate()
     {
         let mut doc = DocumentBuilder::new();
         let content = ContentBuilder::new()
@@ -83,9 +90,14 @@ pub fn generate() -> Result<(), String> {
     }
 
     // ── Drawing operations ─────────────────────────────────────────────────
-    for (i, (r, g, b)) in [(0.9, 0.2, 0.2), (0.2, 0.9, 0.2), (0.2, 0.2, 0.9), (0.5, 0.5, 0.5)]
-        .iter()
-        .enumerate()
+    for (i, (r, g, b)) in [
+        (0.9, 0.2, 0.2),
+        (0.2, 0.9, 0.2),
+        (0.2, 0.2, 0.9),
+        (0.5, 0.5, 0.5),
+    ]
+    .iter()
+    .enumerate()
     {
         let mut doc = DocumentBuilder::new();
         let content = ContentBuilder::new()
@@ -101,12 +113,8 @@ pub fn generate() -> Result<(), String> {
         let mut doc = DocumentBuilder::new();
         let mut cb = ContentBuilder::new();
         for j in 0..(i + 1) * 3 {
-            cb.set_fill(
-                j as f64 * 0.1,
-                (i as f64) * 0.1,
-                0.5,
-            )
-            .fill_rect(10.0 + j as f64 * 30.0, 10.0, 25.0, 50.0);
+            cb.set_fill(j as f64 * 0.1, (i as f64) * 0.1, 0.5)
+                .fill_rect(10.0 + j as f64 * 30.0, 10.0, 25.0, 50.0);
         }
         doc.add_page(612.0, 792.0, &cb.to_bytes());
         gen(&format!("multi_rect_{i}"), doc, 1)?;
@@ -126,7 +134,10 @@ pub fn generate() -> Result<(), String> {
                 dict: vec![
                     (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
                     (bytes(b"Subtype"), Obj::Name(bytes(b"Form"))),
-                    (bytes(b"BBox"), Obj::Array(vec![int(0), int(0), int(100), int(100)])),
+                    (
+                        bytes(b"BBox"),
+                        Obj::Array(vec![int(0), int(0), int(100), int(100)]),
+                    ),
                     (bytes(b"Length"), Obj::Int(inner.len() as i64)),
                 ],
                 data: selis_bytes::Bytes::from(inner),
@@ -169,8 +180,8 @@ pub fn generate() -> Result<(), String> {
     gen("flate_content", doc, 1)?;
 
     // ── Mutated variants (seeded) ──────────────────────────────────────────
-    let valid =
-        std::fs::read(dir.join("page_variant_0.pdf")).map_err(|e| format!("page_variant_0.pdf: {e}"))?;
+    let valid = std::fs::read(dir.join("page_variant_0.pdf"))
+        .map_err(|e| format!("page_variant_0.pdf: {e}"))?;
     let mut mutants = mutate(&valid);
     // Expand with more damage sites from the multi-page document.
     if let Ok(multi) = std::fs::read(dir.join("multi_page_10.pdf")) {
@@ -195,7 +206,12 @@ pub fn generate() -> Result<(), String> {
             for pos in 0..5 {
                 let id = format!("combo_{t}_{c}_{pos}");
                 let mut doc = DocumentBuilder::new();
-                let colours = [(0.9, 0.1, 0.1), (0.1, 0.9, 0.1), (0.1, 0.1, 0.9), (0.6, 0.6, 0.1)];
+                let colours = [
+                    (0.9, 0.1, 0.1),
+                    (0.1, 0.9, 0.1),
+                    (0.1, 0.1, 0.9),
+                    (0.6, 0.6, 0.1),
+                ];
                 let (r, g, b) = colours[c];
                 let mut cb = ContentBuilder::new();
                 cb.set_fill(r, g, b).fill_rect(
@@ -292,8 +308,11 @@ pub fn generate() -> Result<(), String> {
         let idx = count.get();
         std::fs::write(dir.join(format!("mut_{idx}.pdf")), &b)
             .map_err(|e| format!("mut_{idx}: {e}"))?;
-        std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), b"open = \"ok\"\npages = 1\n")
-            .map_err(|e| format!("mut_{idx}: {e}"))?;
+        std::fs::write(
+            exp_dir.join(format!("mut_{idx}.toml")),
+            b"open = \"ok\"\npages = 1\n",
+        )
+        .map_err(|e| format!("mut_{idx}: {e}"))?;
         count.set(count.get() + 1);
     }
     // More mutants from a different source.
@@ -304,8 +323,11 @@ pub fn generate() -> Result<(), String> {
                 let idx = count.get();
                 std::fs::write(dir.join(format!("mut_{idx}.pdf")), &multi5[..cut])
                     .map_err(|e| format!("mut_{idx}: {e}"))?;
-                std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), b"open = \"ok\"\npages = 1\n")
-                    .map_err(|e| format!("mut_{idx}: {e}"))?;
+                std::fs::write(
+                    exp_dir.join(format!("mut_{idx}.toml")),
+                    b"open = \"ok\"\npages = 1\n",
+                )
+                .map_err(|e| format!("mut_{idx}: {e}"))?;
                 count.set(count.get() + 1);
             }
         }
@@ -319,7 +341,9 @@ pub fn generate() -> Result<(), String> {
 /// and truncate at finer fractions, so the mutant set scales past 200.
 fn mutate_vary(src: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    for frac in [0.1, 0.2, 0.25, 0.35, 0.45, 0.5, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.95] {
+    for frac in [
+        0.1, 0.2, 0.25, 0.35, 0.45, 0.5, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.95,
+    ] {
         let cut = (src.len() as f64 * frac) as usize;
         if cut > 0 && cut < src.len() {
             out.push(src[..cut].to_vec());

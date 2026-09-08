@@ -70,6 +70,7 @@ impl Writer {
             Obj::Int(i) => self.push_int(*i),
             Obj::Real { scaled, scale } => self.push_real(*scaled, *scale),
             Obj::String(bytes) => self.write_string(bytes),
+            Obj::HexString(bytes) => self.write_hex_string(bytes),
             Obj::Name(name) => self.write_name(name),
             Obj::Ref(r) => {
                 self.push_int(i64::from(r.num));
@@ -156,6 +157,21 @@ impl Writer {
             }
         }
         self.push(b")");
+    }
+
+    /// Write a string as a hex literal (`<…>`, two hex digits per byte).
+    fn write_hex_string(&mut self, bytes: &selis_bytes::Bytes) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        self.push(b"<");
+        for &b in bytes.as_slice() {
+            let hi = usize::from(b >> 4);
+            let lo = usize::from(b & 0x0f);
+            if let (Some(&h), Some(&l)) = (HEX.get(hi), HEX.get(lo)) {
+                self.out.push(h);
+                self.out.push(l);
+            }
+        }
+        self.push(b">");
     }
 
     fn push_int(&mut self, v: i64) {
@@ -332,6 +348,20 @@ mod tests {
                 b"a(b)c\\d"
             ))),
             r"(a\(b\)c\\d)"
+        );
+    }
+
+    #[test]
+    fn hex_strings_write_as_hex_literals() {
+        assert_eq!(
+            write(&Obj::HexString(selis_bytes::Bytes::copy_from_slice(
+                &[0xde, 0xad, 0xbe, 0xef]
+            ))),
+            "<DEADBEEF>"
+        );
+        assert_eq!(
+            write(&Obj::HexString(selis_bytes::Bytes::copy_from_slice(b"AB"))),
+            "<4142>"
         );
     }
 

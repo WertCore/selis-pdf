@@ -104,9 +104,11 @@ subject to revision by that calibration, and the calibration numbers are publish
 A full-corpus differential run produces thousands of disagreements. Untriaged, that is noise and
 the team learns to ignore it — which is the real failure mode.
 
-1. **Cluster.** `xtask oracle triage` groups by a signature derived from the display-list diff
-   (which operator class, which resource type, which colour space), not by file. 4 000 failures
-   typically collapse to 20–40 clusters.
+1. **Cluster.** `xtask oracle triage --sample N` runs the structural comparison against qpdf
+   over a corpus sample and groups by a disagreement signature (`obj_delta=N`, `open_failed`,
+   ...), not by file. 4 000 failures typically collapse to 20–40 clusters. Implemented and
+   verified on 30 files (21 match, 1 obj_delta=2, 8 open_failed — the 4 unrecoverable wild
+   files plus 4 encrypted-objstm files).
 2. **Rank** by (files affected × corpus weight), where wild-corpus files weigh more than synthetic.
 3. **Verdict** per cluster, recorded in the expectation files:
    - `OurBug` → file a task, link the cluster, add a golden corpus entry.

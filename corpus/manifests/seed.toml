@@ -34,26 +34,26 @@ notes = "PDF/A validation corpus for the conformance ladder. Includes the Isarto
 [[corpus]]
 id = "ghent"
 name = "Ghent Workgroup output suite"
-source_url = "https://www.gwg.org/resources/"
+source_url = "https://web.archive.org/web/20190522015112id_/http://www.gwg.org/wp-content/uploads/Ghent_PDF_Output_Suite_V50.zip"
 sha256 = ""
-licence = "fetch-only (commercial work samples)"
+licence = "fetch-only (Ghent Workgroup test files; free download for prepress testing, no redistribution of modified versions)"
 tags = ["render", "cmyk", "huge"]
-notes = "Prepress files: CMYK, spot colours, transparency. No direct archive URL; needs a researched download link before fetch (TODO)."
+notes = "Prepress files: CMYK, spot colours, transparency. Ghent PDF Output Suite 5.0 (144,934,235 bytes, application/zip). The live gwg.org download is email-gated and the original wp-content URL is dead; the Wayback Machine copy (snapshot 2019-05-22, `id_` raw-content endpoint) is the only stable direct-download endpoint. sha256 to be recorded on first fetch (the harness prints it)."
 
 [[corpus]]
 id = "pdfassoc"
 name = "PDF Association test suite"
-source_url = "https://www.pdfa.org/"
-sha256 = ""
-licence = "fetch-only"
+source_url = "https://github.com/pdf-association/pdf20examples/archive/refs/heads/master.tar.gz"
+sha256 = "a10f104a51f07dec4c6453b03aba8b746dfd300980758b50c2b6a93fee8df935"
+licence = "CC-BY-SA-4.0"
 tags = ["smoke", "render", "text"]
-notes = "Spec-driven samples covering ISO 32000-2 constructs. No direct archive URL; needs a researched download link before fetch (TODO)."
+notes = "pdf-association/pdf20examples: the PDF Association's official PDF 2.0 example files (UTF-8 strings, incremental save, offset start, black point compensation, page-level output intents, calibrated RGB). Spec-driven, small (7 PDFs, tarball ~22 KiB). The PDF Association's broader test suites are member-gated; this repo is their public, freely-licensed offering."
 
 [[corpus]]
 id = "govdocs1"
 name = "govdocs1 sample (fuzz seeds)"
-source_url = "https://downloads.digitalcorpora.org/corporas/govdocs1/"
-sha256 = ""
+source_url = "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip"
+sha256 = "7fb4673ac1905a3ed16a9c5780a70c729c3abc575b06c155b7042b91fa5946aa"
 licence = "Public domain (US federal works); fetch-only"
 tags = ["fuzz", "huge"]
-notes = "Fuzzing seed corpus; sample only, never the full set. The S3 bucket uses a JS-rendered explorer (no raw listing); pick a single numbered zip once the exact URL pattern is confirmed (TODO)."
+notes = "Fuzzing seed corpus; sample only, never the full set. Exact S3 key layout confirmed via the ListObjectsV2 API on the s3://digitalcorpora bucket: numbered zips live under corpora/files/govdocs1/zipfiles/ (000.zip .. 999.zip, each 180-490 MB). The gateway mirror downloads.digitalcorpora.org/corpora/files/govdocs1/zipfiles/000.zip also answers 200. Thread 000 is 486,762,106 bytes of mixed-type files - extract only *.pdf. Site terms: CC0 for Digital Corpora's own material; the documents themselves are US-government public domain."

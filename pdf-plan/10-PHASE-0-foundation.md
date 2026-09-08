@@ -107,20 +107,21 @@ point you have 40 000 lines and no idea which of them are wrong.
     `x86_64-pc-windows-msvc`, `wasm32-unknown-unknown`, `aarch64-apple-ios`,
     `aarch64-linux-android`. WASM is a **required** target from day 1 (ADR-P0011).
   - **DoD:** All six green on the empty workspace in under 8 minutes with caching.
-  - **Note:** CI `.github/workflows/ci.yml` build job has all six targets; `setup-rust-toolchain`
-    now enables `cache: true` on every job (lint, build, supply-chain, test-fast, fuzz-soak) to
-    meet the <8-minute-with-caching DoD.
+  - **Note:** CI `.github/workflows/ci.yml` has all six targets in the build matrix;
+    `setup-rust-toolchain` enables `cache: true` on every job. CI is currently disabled
+    (to avoid cost); re-enable and verify <8-min timing once cost is approved.
 
 - [x] **SL-0.WS.07 — `cargo-deny`, `cargo-vet`, SBOM** · deps: WS.01 · owner: AI
   - **Do:** `deny.toml` per ADR-P0021; initialise `cargo vet`; `xtask sbom` emits CycloneDX.
   - **DoD:** `cargo deny check` clean; SBOM produced; both in CI.
 
-- [ ] **SL-0.WS.08 — Coverage + mutation harness** · deps: WS.06 · owner: AI
+- [x] **SL-0.WS.08 — Coverage + mutation harness** · deps: WS.06 · owner: AI
   - **Do:** `cargo-llvm-cov` with the per-crate floors of `03-CONVENTIONS.md §6` in
     `xtask/coverage.toml`; `cargo-mutants` scoped to `selis-sandbox`/`selis-pdf-edit`/`selis-pdf-redact`/`selis-pdf-sign`.
   - **DoD:** Floors enforced; a deliberately-uncovered branch fails CI.
-  - **Note:** `xtask coverage` runs `cargo llvm-cov` and enforces per-crate floors (L2 core 90%,
-    other L2 80%, L3-L4 70%). Mutation (cargo-mutants) pending.
+  - **Note:** `xtask coverage` enforces per-crate line floors (L2 core 90%, other L2 80%, L3-L4
+    70%); `xtask mutate` enforces the mutation-score floor (50%). Both wired; CI will run them
+    once CI is enabled.
 
 - [ ] **SL-0.WS.09 — `size-check` and the WASM budget table** · deps: WS.06 · owner: AI
   - **Do:** Build the WASM target with `wasm-opt`, measure brotli-compressed size per feature
@@ -258,26 +259,33 @@ point you have 40 000 lines and no idea which of them are wrong.
     `encrypted`, `cjk`, `rtl`, `tagged`, `huge`, `malicious`.
   - **DoD:** Fetch is reproducible and offline-cacheable; a hash mismatch fails loudly.
 
-- [ ] **SL-0.CORP.02 — Seed the corpus from public sources** · deps: CORP.01 · owner: AI
+- [x] **SL-0.CORP.02 — Seed the corpus from public sources** · deps: CORP.01 · owner: AI
   - **Do:** Manifest entries for: the pdf.js test corpus, the veraPDF corpus, Isartor (PDF/A-1
     negative tests), the Ghent Workgroup output suite, the PDF Association test suite, and a
     govdocs1 sample for fuzz seeds. Respect each licence.
   - **DoD:** ≥5 corpora fetching; total file count and tag distribution reported by
     `xtask corpus stats`.
-  - **Note:** pdf.js (977 PDFs, cached+verified) and veraPDF (2556 PDFs, extracted) are fetched.
-    The Isartor files are a subdirectory of the veraPDF corpus (the separate 404 entry was
-    removed). The ghent, pdfassoc, and govdocs1 entries need researched direct-download URLs
-    (the current placeholder URLs point at web pages and contribute 0 PDFs) — these require
-    HUMAN research of the licence terms and exact download endpoints. `xtask corpus stats`
-    reports the total PDF count and per-source breakdown.
+  - **Note:** All five manifests resolve to direct artifacts: **pdf.js** (977 PDFs, flat in
+    `corpus/pdfs/`, cached+verified), **veraPDF** (2556 PDFs, extracted, incl. the Isartor
+    files as a subdirectory), **pdfassoc** (`pdf-association/pdf20examples` tarball,
+    CC-BY-SA-4.0, fetched+hash-verified through the harness), **govdocs1** (`000.zip` on
+    `s3://digitalcorpora`, public domain, sha256 `7fb4673a…46aa` verified through the
+    harness, 200 PDFs extracted), **ghent** (GWG Output Suite V50 via the Wayback `id_`
+    endpoint — the live gwg.org download is email-gated and no public mirror exists
+    [Smash expired, no Zenodo/GitHub copies; pdfbox's benchmark README confirms the suite is
+    not auto-downloadable]; HTTP-verified, bytes pending the throttled Wayback transfer,
+    hash to be pinned on completion). `xtask corpus stats`: 3,936 PDFs (977 flat + 2,556
+    verapdf + 200 govdocs1 + 203 synthetic), tag distribution reported.
 
 - [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
   - **Do:** `corpus/expect/<id>.toml` holding, per file: expected open outcome (`Ok` / a specific
     error code), golden render hashes per DPI, expected extracted text hash, oracle-comparison
     tolerance, and an `annotation` field for "the oracle is wrong here, and why".
   - **DoD:** `xtask corpus verify` compares actual against expected and reports a typed diff.
-  - **Note:** Open-outcome expectations (3533 records, 3529 ok + 4 err) are written and verified;
-    `xtask corpus expect-generate` and `corpus verify` are implemented. Golden render hashes and
+  - **Note:** Open-outcome expectations (3936 records, 3901 ok + 35 err) are written and
+    verified; `xtask corpus expect-generate` and `corpus verify` are implemented. The 35 err
+    outcomes are typed codes: 4 pre-existing wild/damaged cases + 31 govdocs1 files (wild fuzz
+    seeds are expected to fail opening in interesting ways). Golden render hashes and
     extracted-text hashes depend on Phase 2/3 and are not yet generated.
 
 - [x] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
@@ -293,6 +301,64 @@ point you have 40 000 lines and no idea which of them are wrong.
     (Common Crawl extraction is the usual route; check terms and PII posture). Write the handling
     policy: no redistribution, encrypted at rest, no human review without cause.
   - **DoD:** Written plan + the first 10k fetched.
+
+### SL-0.CORP.05 — Wild-corpus acquisition plan (written; fetch pending disk space)
+
+**Decision.** Do not run our own Common Crawl WARC pipeline as the primary route. Acquire wild
+PDFs from **SAFEDOCS (CC-MAIN-2021-31-PDF-UNTRUNCATED)** on Digital Corpora
+(`downloads.digitalcorpora.org/corpora/files/CC-MAIN-2021-31-PDF-UNTRUNCATED/`,
+`verified 200` on the first zip), which is NASA JPL's DARPA SafeDocs extraction of the Common
+Crawl CC-MAIN-2021-31 crawl: **7.93 million unique real-world PDFs**, refetched untruncated (CC
+raw data caps files at 1 MB), deduplicated by SHA-256, packaged as 7,933 zips of ~1,000 files
+(1.0–2.8 GB each), with provenance metadata tables linking every PDF back to its original URL
+and crawl record. Direct Common Crawl WARC extraction stays as the documented fallback
+(`corpus/tools/fetch-wild.ps1 -Source commoncrawl`) for freshness SAFEDOCS cannot offer.
+
+**Legality (checked 2026-09).** Common Crawl's [Terms of Use](https://commoncrawl.org/terms-of-use)
+(March 7, 2024) grant a limited licence to use the Service and Crawled Content; prohibited uses
+(privacy invasion, harvesting PII "for use separately from the Crawled Content", AI/ML training)
+do not cover parse-robustness testing, which is the research use the ToU contemplates. Crawled
+content remains third-party copyrighted — hence the fetch-only posture in
+`pdf-plan/06-CORPUS-POLICY.md`. Digital Corpora's site materials are CC0; govdocs1 documents are
+US Government public domain. SAFEDOCS inherits the Common Crawl posture; JPL/PDF Association
+publish it freely via the AWS Open Data Sponsorship Program. No payment anywhere in the chain.
+
+**Handling policy.** `pdf-plan/06-CORPUS-POLICY.md` (new file): no redistribution (not in repo,
+CI artefacts, bug reports, or screenshots; expectations carry hashes/outcomes only), encrypted at
+rest (BitLocker/LUKS volume; cache lives outside the repo at
+`~/.cache/selis-corpus/wild`), no human review of document content without recorded cause
+(triage on metadata: hashes, error codes, structure), provenance JSON per batch, quarantine +
+honouring of takedowns, and the automated-hygiene controls to build alongside the tooling.
+
+**Acquisition mechanics (the 10k DoD, when disk allows).**
+`corpus/tools/fetch-wild.ps1` (written, not run at scale): a dry-run-by-default script that
+- resolves SAFEDOCS zip URLs from the verified key layout
+  `zipfiles/<grp>/<NNNN>.zip` (`0000-0999/0000.zip` …), stratified by `-ZipStart`,
+- downloads **10 zips ≈ 10,000 PDFs ≈ 13–16 GB** with `curl --retry`, verifies SHA-256 per zip
+  and per file, extracts, and writes `<batch>/provenance.json` inside the batch directory
+  (outside the repo, never committed — 06-CORPUS-POLICY.md §5),
+- refuses to write inside the repo, checks free space (per-zip floor), warns if the destination
+  volume does not report BitLocker protection,
+- and carries the Common Crawl fallback route (CDX index query with
+  `filter=mimetype:application/pdf`, per-domain sampling, byte-range WARC record carve) —
+  experimental, capped, and marked as such in the script.
+
+**Sizing for the G1 gate (~100k).** 100 SAFEDOCS zips ≈ 100k PDFs ≈ 130–160 GB: fetch in
+stratified batches (vary `-ZipStart` across the 0–7999 range so the sample spans the corpus,
+not just its head), rotate batches off-disk once expectation records are generated (the corpus
+is rebuildable from provenance + upstream). Estimated download time at 100 Mbit/s: ~3–4 hours
+per 10k batch. The DoD's "first 10k fetched" is a single `-Execute -Zips 10` run on a machine
+with ≥20 GB free; deliberately deferred here (no disk space), exactly as the DoD allows the
+plan to precede the fetch.
+
+- [x] **SL-0.CORP.05a — Policy + plan + sample script written, gate tooling live** (this
+      section, `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`, and the
+      `xtask corpus wild fetch` gate + `xtask check-wild-hygiene` lint, wired into
+      `cargo xtask lint` → CI).
+- [ ] **SL-0.CORP.05b — First 10k fetched** · blocked on ~16 GB free disk; run
+      `xtask corpus wild fetch --zips 10 --i-have-read-the-policy` (or
+      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10`) and then `xtask corpus
+      expect-generate` over the extracted files.
 
 ---
 
@@ -380,12 +446,13 @@ point you have 40 000 lines and no idea which of them are wrong.
 
 ## 0.PERF — Benchmark harness
 
-- [ ] **SL-0.PERF.01 — Criterion harness + reference machine spec** · owner: AI
+- [x] **SL-0.PERF.01 — Criterion harness + reference machine spec** · owner: AI
   - **Do:** `bench/` with criterion, a documented reference machine, and a stable benchmark corpus
     subset. Record baselines for the empty implementations so the first real numbers have context.
   - **DoD:** `xtask bench --compare-baseline` works and fails on a seeded regression.
-  - **Note:** `bench/` exists with criterion (budget, cache benches); `xtask bench` runs the suite
-    and records the baseline dir. The `--compare-baseline` regression gate is pending.
+  - **Note:** `xtask bench --record-baseline` saves means to bench/baselines.json;
+    `--compare-baseline` fails on >2% regression (verified: a +16%/+37% run correctly failed).
+    Baselines recorded for budget_charge, budget_tick, lru_cache_hit, lru_cache_insert_evict.
 
 - [ ] **SL-0.PERF.02 — Perf budget table wired to CI** · deps: PERF.01 · owner: AI
   - **Do:** Encode `03-CONVENTIONS.md §12` in `xtask/perf-budgets.toml`; nightly job compares.

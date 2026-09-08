@@ -51,6 +51,13 @@ pub enum Obj {
     },
     /// A string of raw bytes. Text decoding is an explicit later step.
     String(Bytes),
+    /// A string that must be serialised as a hex literal (`<…>`). The parser
+    /// produces [`Obj::String`] for both literal and hex forms — this variant
+    /// is **write-only** (used to match the conventional hex encoding of the
+    /// `/Encrypt` dictionary's `/O` `/U` `/UE` `/OE` `/Perms` values). It is
+    /// not produced by the parser, so it does not appear in
+    /// `parse(write(obj)) == obj` round-trips.
+    HexString(Bytes),
     /// A name, `#xx` escapes already decoded.
     Name(Bytes),
     /// An array of values.
@@ -76,7 +83,9 @@ impl Obj {
     pub fn heap_words(&self) -> usize {
         match self {
             Obj::Null | Obj::Bool(_) | Obj::Int(_) | Obj::Real { .. } | Obj::Ref(_) => 0,
-            Obj::String(b) | Obj::Name(b) => b.len().saturating_div(8).saturating_add(1),
+            Obj::String(b) | Obj::Name(b) | Obj::HexString(b) => {
+                b.len().saturating_div(8).saturating_add(1)
+            }
             Obj::Array(items) => items.len().saturating_add(1),
             Obj::Dict(pairs) => pairs.len().saturating_mul(2).saturating_add(1),
             Obj::Stream { dict, data } => dict
@@ -96,6 +105,7 @@ impl Obj {
             Obj::Int(_) => "int",
             Obj::Real { .. } => "real",
             Obj::String(_) => "string",
+            Obj::HexString(_) => "hex_string",
             Obj::Name(_) => "name",
             Obj::Array(_) => "array",
             Obj::Dict(_) => "dict",

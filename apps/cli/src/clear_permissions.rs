@@ -128,7 +128,7 @@ fn clear_permissions_r56(
     g: &mut selis_sandbox::BudgetGuard<'_>,
 ) -> CliResult<()> {
     let new_p = ALL_PERMS_R5_6;
-    let perms = selis_crypto::compute_perms(key, new_p, info.encrypt_metadata);
+    let perms = selis_crypto::compute_perms_r6(new_p, key);
 
     // The /Encrypt object number from the trailer.
     let enc_num = trailer
@@ -140,14 +140,17 @@ fn clear_permissions_r56(
         })
         .ok_or_else(|| CliError(format!("{path}: /Encrypt trailer entry not a ref")))?;
 
-    let new_encrypt = build_encrypt_dict(info, new_p, &info.o, &info.u, &perms);
+    let mut new_info = info.clone();
+    new_info.p = new_p;
+    new_info.perms = perms;
+    let new_encrypt = encrypt::encrypt_dict(&new_info);
 
     // New revision trailer: /Root, /ID, /Encrypt.
     let new_trailer = build_new_trailer(trailer, enc_num, src);
 
     let updated = write_incremental_update(
         src,
-        &[(enc_num, Obj::Dict(new_encrypt))],
+        &[(enc_num, new_encrypt)],
         &new_trailer,
         budget,
         g,
@@ -230,10 +233,14 @@ fn clear_permissions_r24(
         *obj = selis_pdf_doc::encrypt_obj(taken, r, &new_policy);
     }
 
-    // Build the new /Encrypt dict (keep /O, replace /P and /U). Per
-    // ISO 32000-1 Table 15 the trailer's /Encrypt is an indirect reference,
-    // so the dict becomes a fresh object after the walked content.
-    let new_encrypt = build_encrypt_dict(info, new_p, &info.o, &new_u, &[]);
+    // Build the new /Encrypt dict via the canonical builder: mutate the
+    // parsed info with the cleared /P and the recomputed /U, then serialize.
+    // Per ISO 32000-1 Table 15 the trailer's /Encrypt is an indirect
+    // reference, so the dict becomes a fresh object after the walked content.
+    let mut new_info = info.clone();
+    new_info.p = new_p;
+    new_info.u = new_u.clone();
+    let new_encrypt = encrypt::encrypt_dict(&new_info);
 
     // Trailer: /Root, /Info, /ID, /Encrypt (indirect).
     let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
@@ -259,7 +266,7 @@ fn clear_permissions_r24(
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    objects.push((enc_num, Obj::Dict(new_encrypt)));
+    objects.push((enc_num, new_encrypt));
     extra_trailer.push((b"Encrypt".to_vec(), Obj::Ref(Ref::new(enc_num, 0))));
 
     let bytes = write_objects_as_document_with_trailer(&objects, root, &extra_trailer, budget, g)
@@ -303,50 +310,6 @@ fn record_override(summary: &str) {
             override_used.unwrap_or("")
         );
     }
-}
-
-/// Build the new `/Encrypt` dictionary (as `Vec<(Bytes, Obj)>`), replacing
-/// `/P` and, when supplied, `/U`/`/Perms`.
-fn build_encrypt_dict(
-    info: &encrypt::EncryptInfo,
-    new_p: u32,
-    o: &[u8],
-    u: &[u8],
-    perms: &[u8],
-) -> Vec<(selis_bytes::Bytes, Obj)> {
-    let b = selis_bytes::Bytes::copy_from_slice;
-    // /P is a signed 32-bit integer: the algorithms use its two's-complement
-    // bit pattern, so 0xFFFFFFFC is written as -4 (and parses back to the
-    // same bits — an unsigned literal would fail the parser's i32::try_from).
-    let signed_p = i32::from_ne_bytes(new_p.to_ne_bytes());
-    let mut d = vec![
-        (b(b"Filter"), Obj::Name(b(b"Standard"))),
-        (b(b"V"), Obj::Int(i64::from(info.v))),
-        (b(b"R"), Obj::Int(i64::from(info.r))),
-        (
-            b(b"Length"),
-            Obj::Int(i64::try_from(info.length).unwrap_or(40)),
-        ),
-        (b(b"P"), Obj::Int(i64::from(signed_p))),
-        (b(b"O"), Obj::String(b(o))),
-        (b(b"U"), Obj::String(b(u))),
-    ];
-    if info.r >= 4 {
-        d.push((b(b"StmF"), Obj::Name(b(b"StdCF"))));
-        d.push((b(b"StrF"), Obj::Name(b(b"StdCF"))));
-        d.push((b(b"EncryptMetadata"), Obj::Bool(info.encrypt_metadata)));
-        if !info.cf.is_empty() {
-            d.push((b(b"CF"), Obj::Dict(info.cf.clone())));
-        }
-    }
-    if info.r >= 5 {
-        d.push((b(b"UE"), Obj::String(b(&info.ue))));
-        d.push((b(b"OE"), Obj::String(b(&info.oe))));
-        if !perms.is_empty() {
-            d.push((b(b"Perms"), Obj::String(b(perms))));
-        }
-    }
-    d
 }
 
 /// Build the new revision's trailer entries for the R5/6 incremental update.
@@ -622,9 +585,17 @@ mod tests {
         let user_pw = b"";
         let file_key = [0x5Au8; 32];
 
-        let (u, ue, o, oe) =
-            selis_crypto::compute_r6_credentials(user_pw, owner_pw, &file_key, 6);
-        let perms = selis_crypto::compute_perms(&file_key, restricted_p, true);
+        // Random-but-fixed salts keep the synthetic file deterministic; the
+        // credential values themselves follow the R6 Algorithms 2.A/2.B.
+        let v_salt = [0xA1u8; 8];
+        let k_salt = [0xB2u8; 8];
+        let ov_salt = [0xC3u8; 8];
+        let ok_salt = [0xD4u8; 8];
+        let u = selis_crypto::compute_u_r6(user_pw, &v_salt, &k_salt, 6);
+        let ue = selis_crypto::compute_ue_r6(user_pw, &k_salt, &file_key, 6);
+        let o = selis_crypto::compute_o_r6(owner_pw, &ov_salt, &ok_salt, &u, 6);
+        let oe = selis_crypto::compute_oe_r6(owner_pw, &ok_salt, &u, &file_key, 6);
+        let perms = selis_crypto::compute_perms_r6(restricted_p, &file_key);
         let content = b"BT /F1 12 Tf (ok) Tj ET".to_vec();
         let enc_content = selis_crypto::encrypt_data(&file_key, 6, 0, &content, 6, true);
 
