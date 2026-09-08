@@ -450,17 +450,20 @@ plan to precede the fetch.
   - **DoD:** The workflow documented in `21-TESTING-AND-ORACLES.md §5` and exercised on a seeded
     set of deliberate differences.
   - **Note:** Done, exercised on the *structural* comparison (ORACLE.03) — the one that works
-    today. Seeded run: 456 files (213 pdf.js corpus, 40 govdocs1, 203 synthetic incl. 62 seeded
-    mutants) → 14 clusters, ranked by files × corpus weight. Verdicts recorded as `[annotation]`
-    tables in `corpus/expect/*.toml` (59 files): `qpdf_rejects`×21 + `selis_rejects`×17 +
-    `obj_delta`×16 = `SpecAmbiguous`; `obj_delta=2`×5 = `ToleranceTooTight` (comparator artefact);
-    `both_reject`×6 = agreement, no annotation needed. No `OurBug` — the comparator
-    normalisations (free-head, `--warning-exit-0`) removed the two artefact classes that would
-    have manufactured them. Comparator improvement (final-revision counts) filed under ORACLE.03.
-    Workflow + baseline table documented in `21-TESTING-AND-ORACLES.md §5`. One under-specification
-    fixed en route: the seeded mutants' expectation records claimed `open = "ok"` for deliberately
-    damaged files (the generator wrote a placeholder instead of observing the engine); the
-    generator now records what `Session::open` actually does, and `corpus verify` polices it.
+    today. Seeded run: 463 files (216 pdf.js corpus incl. the crypto fixtures, 40 govdocs1, 203
+    synthetic incl. 62 seeded mutants) → 15 clusters, ranked by files × corpus weight. Verdicts
+    recorded as `[annotation]` tables in `corpus/expect/*.toml` (65 files): `selis_rejects`×21 +
+    `qpdf_rejects`×21 + `obj_delta`×23 = `SpecAmbiguous`; `obj_delta=2`×5 = `ToleranceTooTight`
+    (comparator artefact); `both_reject`×6 = agreement, no annotation needed. No `OurBug` — the
+    comparator normalisations (free-head, `--warning-exit-0`) removed the two artefact classes
+    that would have manufactured them. Comparator improvement (final-revision counts) filed under
+    ORACLE.03. Workflow + baseline table documented in `21-TESTING-AND-ORACLES.md §5`. Two
+    under-specifications fixed en route: (1) the seeded mutants' expectation records claimed
+    `open = "ok"` for deliberately damaged files (the generator wrote a placeholder instead of
+    observing the engine) — the generator now records what `Session::open` actually does and
+    preserves `[annotation]` across regeneration; (2) the first signature set lumped
+    "who refused" into one `open_failed` cluster — now split into `selis_rejects` /
+    `qpdf_rejects` / `both_reject`.
 
 ---
 

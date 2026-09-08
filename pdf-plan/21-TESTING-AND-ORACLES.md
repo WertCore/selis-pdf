@@ -152,17 +152,17 @@ the team learns to ignore it — which is the real failure mode.
 
 ### Baseline: the seeded run (2026-09-08)
 
-456 files (213 pdf.js corpus, 40 govdocs1, 203 synthetic incl. 62 seeded
-mutants) × qpdf 12.4.1 → **14 clusters**:
+463 files (216 pdf.js corpus incl. the crypto fixtures, 40 govdocs1, 203
+synthetic incl. 62 seeded mutants) × qpdf 12.4.1 → **15 clusters**:
 
 | Cluster | Files | Verdict |
 |---|---|---|
-| `match` | 391 | — (agreement; 85.7% of the sample) |
-| `qpdf_rejects` | 21 | `SpecAmbiguous` — 21 deliberate mutants where qpdf cannot recover and we do; both readings defensible, we keep our output |
-| `selis_rejects` | 17 | `SpecAmbiguous` — 12 real pathologies qpdf refuses (page-tree loops, unrecoverable `/Root`) + 5 mutants we refuse deliberately; typed refusal is the documented posture |
+| `match` | 392 | — (agreement; 84.7% of the sample) |
+| `selis_rejects` | 21 | `SpecAmbiguous` — deliberate mutants we refuse by design (typed error, no repair attempt); qpdf agrees to disagree; both readings defensible |
+| `qpdf_rejects` | 21 | `SpecAmbiguous` — we open (incl. reconstruction) where qpdf refuses hard: pdf.js-corpus pathologies (page-tree loops, unrecoverable `/Root`), the crypto fixtures qpdf will not open password-less, and mutants qpdf cannot recover |
 | `obj_delta=1` | 7 | `SpecAmbiguous` — multi-revision files: our union spans all revisions, qpdf's map lists the final revision's live objects; the spec does not define "the" object count |
 | `obj_delta=2` | 5 | `ToleranceTooTight` — same union-vs-live divergence at N=2; comparator artefact, not an engine bug |
-| `obj_delta=3…21` | 5 | `SpecAmbiguous` — same divergence on files with incrementally deleted objects |
+| `obj_delta=3…21` | 6 | `SpecAmbiguous` — same divergence on files with incrementally deleted objects (incl. the two byte-exact recovery fixtures) |
 | `obj_delta=15/27/103` | 3 | `SpecAmbiguous` — govdocs damaged files where our reconstruction recovers the full object set; note & keep |
 | `both_reject` | 6 | — (agreement on broken files; typed codes already recorded) |
 
