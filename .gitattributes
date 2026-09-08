@@ -1,0 +1,7 @@
+# Binary artefacts must never be line-ending translated. With core.autocrlf=true
+# on Windows checkouts, PDFs without this attribute were CRLF-smudged on
+# checkout, shifting every byte offset after the first LF and breaking the
+# byte-exact recovery fixtures (merge_recovery: outlines_for_editor.pdf).
+*.pdf binary
+*.png binary
+*.ppm binary
