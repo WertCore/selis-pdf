@@ -3,4 +3,4 @@ pages = 1
 [annotation]
 triage = "obj_delta=1"
 verdict = "SpecAmbiguous"
-note = "union-across-revisions vs qpdf final live objects"
+note = "obj_delta: our union spans all revisions vs qpdf final live objects (comparator gap, see ORACLE.03)"

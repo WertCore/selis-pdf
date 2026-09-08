@@ -1,6 +1,6 @@
 open = "err"
 code = "TrailerMissingRoot"
 [annotation]
-triage = "qpdf_rejects"
+triage = "selis_rejects"
 verdict = "SpecAmbiguous"
-note = "mutants we recover; qpdf refuses hard"
+note = "deliberately damaged mutants we refuse by design; qpdf agrees"

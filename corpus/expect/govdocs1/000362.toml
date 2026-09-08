@@ -3,4 +3,4 @@ pages = 2
 [annotation]
 triage = "obj_delta=15"
 verdict = "SpecAmbiguous"
-note = "damaged govdocs: our reconstruction recovers the full object set"
+note = "obj_delta: our union spans all revisions vs qpdf final live objects (comparator gap, see ORACLE.03)"

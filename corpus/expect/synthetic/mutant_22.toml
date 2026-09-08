@@ -1,6 +1,6 @@
 open = "err"
 code = "ObjUnexpected"
 [annotation]
-triage = "selis_rejects"
+triage = "qpdf_rejects"
 verdict = "SpecAmbiguous"
-note = "opens now; expect-generate added files mid-run"
+note = "we open (or recover); qpdf refuses hard; both readings defensible"
