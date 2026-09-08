@@ -233,7 +233,7 @@ pub fn parse_encrypt(
         Some(Obj::String(b)) => b.as_slice().to_vec(),
         _ => return Ok(None),
     };
-// /P is a signed 32-bit integer (permission flags); the algorithms use
+    // /P is a signed 32-bit integer (permission flags); the algorithms use
     // its two's-complement bit pattern as an unsigned little-endian value.
     let p = int(b"P")
         .and_then(|v| i32::try_from(v).ok())
@@ -391,13 +391,19 @@ pub fn encrypt_dict(info: &EncryptInfo) -> Obj {
         (bytes(b"Filter"), Obj::Name(bytes(b"Standard"))),
         (bytes(b"V"), Obj::Int(i64::from(info.v))),
         (bytes(b"R"), Obj::Int(i64::from(info.r))),
-        (bytes(b"Length"), Obj::Int(i64::try_from(info.length).unwrap_or(256))),
+        (
+            bytes(b"Length"),
+            Obj::Int(i64::try_from(info.length).unwrap_or(256)),
+        ),
         (bytes(b"O"), Obj::HexString(bytes(&info.o))),
         (bytes(b"U"), Obj::HexString(bytes(&info.u))),
         // /P is a signed 32-bit integer: write the two's-complement bit
         // pattern so values with the high bit set round-trip through the
         // i32 parser.
-        (bytes(b"P"), Obj::Int(i64::from(i32::from_ne_bytes(info.p.to_ne_bytes())))),
+        (
+            bytes(b"P"),
+            Obj::Int(i64::from(i32::from_ne_bytes(info.p.to_ne_bytes()))),
+        ),
         (bytes(b"StmF"), Obj::Name(bytes(info.stmf.as_bytes()))),
         (bytes(b"StrF"), Obj::Name(bytes(info.strf.as_bytes()))),
     ];
@@ -416,7 +422,10 @@ pub fn encrypt_dict(info: &EncryptInfo) -> Obj {
     // The /CF dictionary.
     if !info.cf.is_empty() {
         let cf_dict = Obj::Dict(
-            info.cf.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            info.cf
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         );
         pairs.push((bytes(b"CF"), cf_dict));
     }

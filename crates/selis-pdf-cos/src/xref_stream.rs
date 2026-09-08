@@ -229,7 +229,7 @@ pub fn parse_object_stream(
             )
         })?;
 
-// Parse `num offset` pairs from the header.
+    // Parse `num offset` pairs from the header.
     let mut pairs = Vec::new();
     let mut pos = 0usize;
     for _ in 0..n {

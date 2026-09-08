@@ -321,7 +321,8 @@ mod tests {
     fn crypt_filter_is_a_noop_in_decode_chain() {
         let mut g = guard();
         let data = b"Hello, Crypt filter!";
-        let out = decode_chain(&["Crypt".to_string()], &[], data, 1000, &mut g).expect("Crypt no-op");
+        let out =
+            decode_chain(&["Crypt".to_string()], &[], data, 1000, &mut g).expect("Crypt no-op");
         assert_eq!(out, data);
     }
 
