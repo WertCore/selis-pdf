@@ -1,6 +1,28 @@
-{
-  "core-parser": 120000,
-  "core-plus-filters": 180000,
-  "engine-viewer": 400000,
-  "engine-render": 600000
-}
+# WASM size budgets — SL-0.WS.09 (ADR-P0011). Brotli-compressed bytes of the
+# wasm-opt -O3 output.
+#
+# `artifact` names the linked wasm artefact a budget is evaluated against. A
+# budget whose artifact is not measured yet is reported as "not measured" —
+# never as passing (same principle as `xtask perf-check`). Today exactly one
+# linked artifact exists (the xtask automation binary, which pulls in the
+# whole engine); the dedicated chunk artifacts arrive with the wasm shell.
+
+[[budget]]
+chunk = "core-parser"
+artifact = "core-parser-cdylib"
+budget = 120000
+
+[[budget]]
+chunk = "core-plus-filters"
+artifact = "core-plus-filters-cdylib"
+budget = 180000
+
+[[budget]]
+chunk = "engine-viewer"
+artifact = "xtask"
+budget = 400000
+
+[[budget]]
+chunk = "engine-render"
+artifact = "engine-render-cdylib"
+budget = 600000

@@ -64,8 +64,17 @@ enum Command {
     /// Wild-corpus policy gates: CI excludes wild sources, expectations carry no
     /// document content (06-CORPUS-POLICY.md §7, SL-0.CORP.05).
     CheckWildHygiene,
-    /// WASM size budgets (SL-0.WS.09).
-    SizeCheck,
+    /// WASM size budgets + 2% regression rule (SL-0.WS.09).
+    SizeCheck {
+        /// Record the fresh measurement as the new baseline instead of
+        /// comparing against it.
+        #[arg(long)]
+        update_baseline: bool,
+        /// Fail on budgets whose artifact is not measured yet (default:
+        /// report loudly but pass).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Coverage floors per crate (SL-0.WS.08).
     Coverage,
     /// Mutation testing scoped to sandbox/edit/redact/sign (SL-0.WS.08).
@@ -206,7 +215,10 @@ fn main() -> ExitCode {
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::CheckWildHygiene => wild_hygiene::check(),
-        Command::SizeCheck => size_check::run(),
+        Command::SizeCheck {
+            update_baseline,
+            strict,
+        } => size_check::run(update_baseline, strict),
         Command::Coverage => coverage::run(),
         Command::Mutate => coverage::mutate(),
         Command::Corpus(args) => match args.sub {
