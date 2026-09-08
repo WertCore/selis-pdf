@@ -156,12 +156,23 @@ point you have 40 000 lines and no idea which of them are wrong.
     codes. This is the field callers use to decide whether the user's work survived.
   - **DoD:** A test asserting every registered code has a `doc_state`; a doc page explaining each.
 
-- [ ] **SL-0.ERR.03 — Panic trampoline at the binding boundary** · deps: ERR.01 · owner: AI+
+- [x] **SL-0.ERR.03 — Panic trampoline at the binding boundary** · deps: ERR.01 · owner: AI+
   - **Do:** `catch_unwind` wrappers in `selis-pdf-wasm`/`selis-pdf-ffi` converting a panic into
     `INTERNAL_PANIC` with the code path but **no document bytes** (ADR-P0017). Set
     `panic = "abort"` off for release builds of the shipped libraries so unwinding works.
   - **DoD:** A test that a deliberate panic in a deep parser returns an error rather than killing
     the host process; a test that the payload contains no document-derived bytes.
+  - **Note:** Shipped as `selis_sandbox::catch` (the sandbox kernel owns the trampoline per
+    01-ARCHITECTURE.md §6) rather than per-binding copies, so WASM/FFI/JNI cannot drift from
+    each other when those crates exist (Phase 7). The payload is dropped unread (never downcast,
+    never formatted); the error carries the `during` code path and the panic site (`file:line`)
+    captured by a panic hook that chains to any host-installed hook. `[profile.release]` pins
+    `panic = "unwind"` in the workspace root, and a test fails the build if any profile sets
+    `"abort"`. DoD tests: 512-deep parse-shaped panic → typed `INTERNAL_PANIC`; a panic message
+    embedding document bytes never reaches the error (`Display`, log line, and context asserted);
+    non-string payloads (`panic_any`) convert too. Wired at today's binding boundary: the CLI's
+    command dispatch and its per-file batch loop. A stack overflow still aborts (unwind cannot
+    catch it) — the no-native-recursion rule in 01-ARCHITECTURE.md §6 is what covers that.
 
 - [x] **SL-0.ERR.04 — Localisation plumbing** · deps: ERR.01 · owner: AI
   - **Do:** User messages resolved through Fluent (or ICU MessageFormat) keys from the registry.

@@ -238,6 +238,21 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     open-or-typed-error, 0 panics, 0 hangs, 0 OOMs.
   - **DoD:** A report grouping failures by root cause; each root cause is a filed task; the
     residual <1% is enumerated and understood, not hand-waved.
+  - **Note (local corpus, 2026-09-08):** The 10k wild fetch is still pending (SL-0.CORP.05,
+    disk-bound) — the DoD is NOT complete. The sweep now runs over the full local corpus
+    (3,839 PDFs: the 642-on-disk pdf.js seeds of the previous 977 [335 were never-vendored
+    `.pdf.link` web downloads, lost in a disk clean], 2,694 veraPDF [the earlier 2,556
+    expectations dropped 138 basename-collided files; they are included again], 200 govdocs1,
+    92 Ghent, 203 synthetic + 8 committed test fixtures), each file under a fresh per-file
+    Viewer budget and the SL-0.ERR.03 trampoline, with a watchdog thread per open so a hang is
+    measured, not fatal. Result: 3,805/3,839 open (99.1%), 34 typed errors
+    (27 `TRAILER_MISSING_ROOT` synthetic mutants + 7 `OBJ_UNEXPECTED`: 3 of the 4 known wild
+    cases [bug1978317 is one of the missing `.link` files] + 4 synthetic mutants), 0 panics,
+    0 hangs, 0 OOMs, 0 expectation drifts, 0 over-wall.
+    Machine-readable report: `target/rob01-report.json` (regenerate with
+    `cargo test -p selis-cli --test rob01_baseline -- --ignored --nocapture`). Root causes
+    unchanged from the campaign notes; no new fix tasks filed. Remaining for the DoD: the 10k
+    wild fetch, then re-running this sweep over it.
   - **Note:** Fetched corpus (977 files) opens 973/977 (99.6%) under the Viewer budget; the
     remaining 4 are typed errors, all enumerated and understood — bug1020226 and
     poppler-742-0-fuzzed (degenerate structures: an unclosed dict with no `endobj`, and an
