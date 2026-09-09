@@ -290,7 +290,16 @@ pub(crate) fn run(
         write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
             .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
-    // WRITE.05: verify before replacing. The re-parsed output must carry a
+    // WRITE.05 (via the shared gate): the output is surveyed against the
+    // input's counts (protect rewrites nothing structurally — pages,
+    // annotations, fields, and OCGs must match) and verified before the
+    // atomic commit.
+    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+    let expected =
+        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
+
+    // WRITE.05 (protect-specific): the re-parsed output must carry a
     // revision-6 /Encrypt whose /P and /EncryptMetadata match the request,
     // both passwords must authenticate, /Perms must verify against the file
     // key, the exempted metadata (if any) must still be plaintext, and the
@@ -301,14 +310,17 @@ pub(crate) fn run(
             root,
             p,
             encrypt_metadata,
-            user_pw,
+            user_pw: user_pw.clone(),
             owner_pw,
             metadata_exempt,
         },
         path,
     )?;
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // Commit through the shared gate: structural verification + atomic
+    // write (temp + fsync + rename). A failing verification leaves the
+    // destination untouched.
+    crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
 
     record_operation(&granted);
     eprintln!("protected {path} -> {output} (AES-256, revision 6)");
