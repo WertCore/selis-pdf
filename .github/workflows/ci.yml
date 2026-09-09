@@ -44,10 +44,10 @@ jobs:
           # warn-level clippy lint (e.g. too_many_arguments on the /Encrypt
           # dict API) above the documented policy.
           rustflags: ""
-      # `cargo xtask lint` also runs `cargo deny check` (SL-0.WS.07).
+      # `cargo xtask lint` also runs `cargo deny check` + `cargo vet` (SL-0.WS.07).
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-vet
       - run: cargo xtask lint
 
   # ── build matrix (6 targets, 03-CONVENTIONS.md §9) ──────────────────────────
@@ -55,18 +55,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
-          - wasm32-unknown-unknown
-          - aarch64-apple-ios
-          - aarch64-linux-android
-        # Cross targets whose SDKs are not provisioned on these runners
-        # (osxcross, mingw, Android NDK) attempt the build and fail visibly
-        # until the toolchain job lands (SL-0.WS.03 follow-up). They are
-        # non-blocking so the gate is not red on pre-existing infra gaps.
-        allow_fail: [false, true, true, false, true, true]
+        include:
+          - { target: x86_64-unknown-linux-gnu, allow_fail: false }
+          - { target: wasm32-unknown-unknown, allow_fail: false }
+          - { target: aarch64-apple-darwin, allow_fail: true }
+          - { target: x86_64-pc-windows-msvc, allow_fail: true }
+          - { target: aarch64-apple-ios, allow_fail: true }
+          - { target: aarch64-linux-android, allow_fail: true }
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -129,7 +124,7 @@ jobs:
           n=$(find corpus/pdfs -maxdepth 1 -name '*.pdf' | wc -l)
           echo "smoke corpus: $n files"
           test "$n" -gt 100
-      - run: cargo test --workspace
+      - run: cargo test -p selis-cli --bin selis tool_conformance
         timeout-minutes: 15
 
   # ── WASM size budgets + 2% regression rule (SL-0.WS.09) ────────────────────

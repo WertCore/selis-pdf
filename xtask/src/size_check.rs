@@ -297,23 +297,27 @@ fn write_baseline(baseline: &SizeBaseline) -> Result<(), String> {
 }
 
 fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
-    // Use Node.js zlib's brotli from the command line.
+    // Use Node.js zlib's brotli from the command line. The compressed bytes
+    // go to a temp file, not stdout — writing a large buffer to a pipe-backed
+    // stdout can hit EAGAIN on the runner (observed with the ~7 MB wasm
+    // artifact); a regular file cannot.
+    let out_path = std::env::temp_dir().join("selis-size-brotli.bin");
+    let script = format!(
+        "const z=require('node:zlib');const fs=require('fs');\
+         const d=fs.readFileSync('{src}');\
+         fs.writeFileSync('{dst}',z.brotliCompressSync(d));",
+        src = path.display().to_string().replace('\\', "\\\\"),
+        dst = out_path.display().to_string().replace('\\', "\\\\"),
+    );
     let out = std::process::Command::new("node")
-        .args([
-            "-e",
-            &format!(
-                "const z=require('node:zlib');const fs=require('fs');const d=fs.readFileSync('{}');\
-                 fs.writeFileSync(process.stdout.fd,Buffer.from(z.brotliCompressSync(d)));",
-                path.display().to_string().replace('\\', "\\\\")
-            ),
-        ])
+        .args(["-e", &script])
         .output()
         .map_err(|e| format!("node brotli: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("node brotli compression failed: {stderr}"));
     }
-    Ok(out.stdout)
+    std::fs::read(&out_path).map_err(|e| format!("{}: {e}", out_path.display()))
 }
 
 #[cfg(test)]
