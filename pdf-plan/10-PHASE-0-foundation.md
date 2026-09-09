@@ -218,13 +218,38 @@ point you have 40 000 lines and no idea which of them are wrong.
     Values in `sandbox/profiles.toml`, tuned later against the corpus, not guessed forever.
   - **DoD:** Profiles documented with the reasoning for each number.
 
-- [ ] **SL-0.SBX.06 — WASM sandbox host for untrusted codecs** · deps: SBX.01 · owner: AI+
+- [x] **SL-0.SBX.06 — WASM sandbox host for untrusted codecs** · deps: SBX.01 · owner: AI+
   - **Do:** The Tier-2 mechanism of `01-ARCHITECTURE.md §4`: a `wasmtime` embedding (native) and a
     browser-native path (web) that runs a codec module with a hard linear-memory cap, no WASI
     filesystem, no clock beyond a deadline, and a copy-in/copy-out buffer protocol.
   - **DoD:** A deliberately-malicious test module that tries to allocate unbounded memory, spin
     forever, and access the host is contained in all three cases.
   - **Note:** Build this now, empty. OpenJPEG lands on it in Phase 2 and Tesseract in Phase 5.
+  - **Status:** Landed in `selis-sandbox` (L1) — `wasm` protocol module (runtime-independent
+    contract) + `wasm_host` wasmtime embedding behind the `wasm-host` feature (off for the
+    wasm32 build; CI `test-fast` runs the suite natively). Containment: per-run `Store` with a
+    `ResourceLimiter` hard memory cap, zero imports (refused pre-instantiation), fuel wired to
+    `Budget.wall` (fuel = wall × 10, strictly tighter than the deadline), host↔module
+    boundaries run `BudgetGuard::tick` (deadline + `CancelToken` + poison with the guard's own
+    typed errors), all (ptr,len) regions validated before any access. DoD covered by 19
+    in-crate wat tests: unbounded growth → `SANDBOX_FUEL` (loop) / denial-to-module (single
+    grow) / `SANDBOX_MEMORY_CAP` (declared minimum), spin (decode *and* start) → `SANDBOX_FUEL`,
+    host reach beyond the protocol (WASI `fd_write`, invented backdoor) →
+    `SANDBOX_IMPORT_DENIED`, forged pointers → `SANDBOX_PROTOCOL`; plus a barrage test proving
+    the host survives. Error codes 6010–6016 registered. `cargo xtask lint`, `cargo vet`,
+    `cargo deny check` and `cargo test --workspace` green.
+  - **Honest gaps:** (1) The web path is the contract only — the browser engine implementation
+    (empty-imports instantiation, `Memory` maximum, Worker-termination as the cancel
+    mechanism) lands with `selis-pdf-wasm`; it has no per-instruction fuel equivalent, so web
+    containment is boundary-based until then. (2) Fuel is a proxy, not wall-clock: a module
+    cannot be interrupted *mid-instruction* by `CancelToken` (checked at boundaries); epoch
+    pre-emption via a watchdog thread is deferred until a codec profile shows the fuel proxy
+    too coarse. (3) Fuel-per-budget-nanos ratio (10) is a stated constant to re-tune against
+    the Phase-2 corpus; profiles.toml deliberately untouched (fuel is an execution detail, not
+    a Budget dimension). (4) wasmtime 47 requires rustc 1.94 (matches the pinned toolchain);
+    the workspace `rust-version` field (1.85) has drifted from ADR-P0001's "stable − 2" rule
+    and should be re-baselined in a housekeeping task. (5) `wasmtime::Module` compiles per run;
+    FILT.08 should hoist the engine and precompile/serialize the OpenJPEG module.
 
 ---
 
