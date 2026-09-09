@@ -85,6 +85,10 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         .root
         .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
 
+    // TOOL.04 engineering note: a full rewrite invalidates digital
+    // signatures — detect before running and tell the user.
+    crate::tools::warn_if_digital_signature(&src, &doc, &budget, &mut g, path);
+
     // Walk the object graph from /Root (and /Info, so metadata survives),
     // resolving with automatic decryption.
     let mut resolver = Resolver::new(&doc, &src, &budget);

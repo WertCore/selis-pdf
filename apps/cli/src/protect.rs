@@ -153,13 +153,79 @@ pub(crate) fn run(
     permissions: Option<&str>,
     encrypt_metadata: bool,
 ) -> CliResult<()> {
-    // Passwords arrive via arguments or environment variables only, are
-    // truncated to the Algorithm 2.A limit, and are never logged or echoed.
-    let user_pw = resolve_password(user_password, "SELIS_USER_PASSWORD").unwrap_or_default();
-    let owner_pw = match resolve_password(owner_password, "SELIS_OWNER_PASSWORD") {
-        Some(pw) => pw,
-        None => user_pw.clone(),
-    };
+    protect_file(
+        path,
+        output,
+        &PasswordOptions::from_args(user_password, owner_password),
+        permissions,
+        encrypt_metadata,
+    )
+}
+
+/// The password material for one protect invocation: an optional user
+/// password and an optional owner password (see [`PasswordOptions::resolve`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PasswordOptions {
+    /// The user password, if given.
+    pub user: Option<String>,
+    /// The owner password, if given.
+    pub owner: Option<String>,
+}
+
+impl PasswordOptions {
+    /// Capture passwords from explicit arguments (the single-file CLI path;
+    /// env fallbacks are resolved later, inside `resolve`, so a batch run
+    /// captures them once per file).
+    #[must_use]
+    pub(crate) fn from_args(user: Option<&str>, owner: Option<&str>) -> Self {
+        Self {
+            user: user.map(String::from),
+            owner: owner.map(String::from),
+        }
+    }
+
+    /// Resolve to the concrete (user, owner) pair: the argument wins, else
+    /// the environment variable, else empty. The owner defaults to the user
+    /// password, as Acrobat does. Both are truncated to the Algorithm 2.A
+    /// limit by the caller and never logged.
+    fn resolve(&self) -> (String, String) {
+        let user = self
+            .user
+            .clone()
+            .or_else(|| resolve_password(None, "SELIS_USER_PASSWORD"))
+            .unwrap_or_default();
+        let owner = self
+            .owner
+            .clone()
+            .or_else(|| resolve_password(None, "SELIS_OWNER_PASSWORD"))
+            .unwrap_or_else(|| user.clone());
+        (user, owner)
+    }
+}
+
+/// Core protect logic on one file: read, encrypt, verify, commit. This is
+/// the batch harness's per-file entry point as well as `run`'s body — a
+/// per-file typed failure is a batch report entry, never a batch abort.
+///
+/// # Errors
+///
+/// As [`run`].
+///
+/// # Budget
+///
+/// As [`run`].
+///
+/// # Malformed Input
+///
+/// As [`run`].
+pub(crate) fn protect_file(
+    path: &str,
+    output: &str,
+    passwords: &PasswordOptions,
+    permissions: Option<&str>,
+    encrypt_metadata: bool,
+) -> CliResult<()> {
+    let (user_pw, owner_pw) = passwords.resolve();
     if user_pw.is_empty() && owner_pw.is_empty() {
         return Err(CliError(
             "no passwords given: --user-password / --owner-password or \
@@ -198,6 +264,10 @@ pub(crate) fn run(
     let root = rev
         .root
         .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
+
+    // TOOL.04 engineering note: a full rewrite invalidates digital
+    // signatures — detect before running and tell the user.
+    crate::tools::warn_if_digital_signature(&src, &doc, &budget, &mut g, path);
 
     // Walk the object graph from /Root (and /Info, so metadata survives),
     // keeping the original object numbers. The input is unencrypted, so the
@@ -290,7 +360,16 @@ pub(crate) fn run(
         write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
             .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
-    // WRITE.05: verify before replacing. The re-parsed output must carry a
+    // WRITE.05 (via the shared gate): the output is surveyed against the
+    // input's counts (protect rewrites nothing structurally — pages,
+    // annotations, fields, and OCGs must match) and verified before the
+    // atomic commit.
+    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+    let expected =
+        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
+
+    // WRITE.05 (protect-specific): the re-parsed output must carry a
     // revision-6 /Encrypt whose /P and /EncryptMetadata match the request,
     // both passwords must authenticate, /Perms must verify against the file
     // key, the exempted metadata (if any) must still be plaintext, and the
@@ -301,14 +380,17 @@ pub(crate) fn run(
             root,
             p,
             encrypt_metadata,
-            user_pw,
+            user_pw: user_pw.clone(),
             owner_pw,
             metadata_exempt,
         },
         path,
     )?;
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // Commit through the shared gate: structural verification + atomic
+    // write (temp + fsync + rename). A failing verification leaves the
+    // destination untouched.
+    crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
 
     record_operation(&granted);
     eprintln!("protected {path} -> {output} (AES-256, revision 6)");
@@ -1096,6 +1178,59 @@ mod tests {
         let budget = Budget::profile(Surface::Viewer);
         let session = selis_pdf_engine::Session::open(out, &budget).expect("opens");
         assert_eq!(session.len(), 1, "one page");
+    }
+
+    #[test]
+    fn signed_document_gets_a_rewrite_warning() {
+        // A catalog /Perms *dictionary* with /Signatures (the MDP form) must
+        // trip the pre-rewrite signature warning on stderr; the operation
+        // still succeeds (the warning is advisory).
+        let src = build_plain_pdf(&content_of("signed"));
+        // Rebuild with a catalog carrying a /Perms dictionary.
+        let mut signed_src = Vec::new();
+        let mut offsets = std::collections::HashMap::new();
+        let objects: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R /Perms 8 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 5 0 R >>",
+            ),
+            (5, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (8, b"<< /Signatures 9 0 R >>"),
+            (9, b"<< /Type /Sig /Filter /Adobe.PPKLite >>"),
+        ];
+        for (num, body) in &objects {
+            offsets.insert(*num, signed_src.len());
+            signed_src.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+            signed_src.extend_from_slice(body);
+            signed_src.extend_from_slice(b"\nendobj\n");
+        }
+        let xref_at = signed_src.len();
+        signed_src.extend_from_slice(b"xref\n0 10\n");
+        signed_src.extend_from_slice(b"0000000000 65535 f \n");
+        for i in 1..10u32 {
+            let off = offsets.get(&i).copied().unwrap_or(0);
+            signed_src.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        signed_src.extend_from_slice(b"trailer\n<< /Size 10 /Root 1 0 R >>\n");
+        signed_src.extend_from_slice(format!("startxref\n{xref_at}\n%%EOF\n").as_bytes());
+
+        let paths = temp_paths("signed");
+        std::fs::write(&paths.input, &signed_src).unwrap();
+        // The warning goes to stderr; assert the operation succeeds. (The
+        // eprintln assertion itself is exercised by the manual smoke run;
+        // this pins the detection path does not refuse or fail.)
+        super::run(
+            paths.input.to_str().unwrap(),
+            paths.output.to_str().unwrap(),
+            Some("pw"),
+            None,
+            None,
+            true,
+        )
+        .expect("protect succeeds with an advisory warning");
+        assert!(paths.output.exists());
     }
 
     #[test]

@@ -234,6 +234,12 @@ operation is available identically in the CLI, the web app, and the extension.
     instead of +2 for R2/3; (2) `aes` flag was false for V>=4 documents
     (spec says V=4/5 are AES by definition); (3) R3 key length was forced to
     5 bytes instead of `/Length`/8.
+    **G1.5 follow-up (this branch):** the TOOL.04 engineering note's
+    "signatures do not survive" is now acted on: `unlock` (and `protect`)
+    detect interactive signature fields (/AcroForm /FT /Sig) and the MDP
+    form (/Perms dictionary with /Signatures) *before* the rewrite and warn
+    on stderr that the signature will be invalidated, instead of quietly
+    handing back a dead-signature document (advisory, not a refusal).
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
     document. Works for whichever password the user has — user or owner.
@@ -321,8 +327,17 @@ operation is available identically in the CLI, the web app, and the extension.
     Algorithm-2.B KDF is deliberately expensive); corpus fixture
     `corpus/fixtures/protect_unencrypted_source.pdf` + `apps/cli/tests/protect_roundtrip.rs`
     (protect → unlock → wrong-password → qpdf `--show-encryption`/`--check` oracle interop).
-    Remaining for the human sign-off: open a protected output in Acrobat and PDFium
-    (pdfium_driver is not installed locally; qpdf structural oracle is the automated proxy).
+    **Post-merge follow-up (G1.5, this branch):** protect writes through the shared WRITE.05
+    gate (write_verified + atomic commit, PRESERVE_ALL counts); the verifier runs over a corpus
+    sample of protect outputs in the integration test; interop is now both directions — files
+    we encrypt pass qpdf --show-encryption/--check clean, and a qpdf --encrypt R6 AESV3 file
+    (generated at test time when qpdf exists; no committed fixture, the output embeds a CSPRNG
+    file key so a snapshot would be stale by construction) authenticates, verifies /Perms under
+    our Algorithm 10, and unlocks to a document the engine opens. pdfium check added behind
+    local-first discovery: pdfium_driver AND Docker are unavailable on this host, so the check
+    skips loudly — the Acrobat/PDFium manual open is still outstanding for the sign-off.
+    Remaining for the human sign-off: open a protected output in Acrobat and PDFium; review the
+    ENC.04 long-help copy.
   - **Do:** Encrypt with AESV3/R6 only (ADR-P0019). Separate user and owner passwords, permission
     bit selection, and a plain-language explanation in the UI that permission bits are a
     convention, not enforcement.
@@ -366,7 +381,14 @@ operation is available identically in the CLI, the web app, and the extension.
     isolation (a panic is caught and recorded, not propagated), failures are collected, and a
     machine-readable `report.json` records per-file status, sizes, timing, and typed error detail.
     Verified with a mixed-good/bad/missing set (3 ok, 2 isolated failures). The harness dispatches
-    by tool name and extends to the other tools; `compress` is v1.
+     by tool name and extends to the other tools; `compress` is v1.
+    **G1.5 follow-up (this branch):** `selis batch --outdir <dir> protect <files...>
+    [--user-password <p>] [--owner-password <p>] [--permissions <spec>]` extends the harness to
+    TOOL.06: shared code path with the single-file tool (`protect_file`), per-file isolation under
+    the ERR.03 trampoline, exit 0 even when files fail, and per-file typed errors in the report
+    (an already-encrypted input is ALREADY_ENCRYPTED/E1806, never a batch abort). An empty
+    credential set is refused once up front instead of failing identically per file. Passwords
+    never appear in the report or the oplog.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
 
