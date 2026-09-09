@@ -27,9 +27,12 @@ ADD --checksum=sha256:${GS_SHA256} \
 
 RUN cd /tmp \
  && tar xzf gs.tar.gz \
- && make -C ghostscript-${GS_VERSION} -j"$(nproc)" \
- && make -C ghostscript-${GS_VERSION} install_so install_shared \
- && rm -rf /tmp/gs* /tmp/ghostscript* \
+ && cd ghostscript-${GS_VERSION} \
+ && ./configure --prefix=/usr/local --without-x --disable-cups \
+       --disable-gtk --with-drivers=FILES \
+ && make -j"$(nproc)" so \
+ && make soinstall \
+ && cd / && rm -rf /tmp/gs* /tmp/ghostscript* \
  && gs --version
 
 # Render oracle interface: `docker run <image> -sDEVICE=png16m -r150 -o /out.png /in.pdf`
