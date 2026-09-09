@@ -122,9 +122,47 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **Risk:** Structural verification is weaker than render verification. It is sufficient for the
     Phase 1A operations because none of them alter page content, only page *selection* and
     document structure. Do not reuse this weaker standard for any operation that rewrites content.
+  - **Status (draft, awaits HUMAN sign-off — owner: HUMAN, do not self-approve):** implemented as
+    `selis_pdf_cos::verify` (`verify_structural` + `survey`, L2, read-only, budgeted). Negative
+    DoD test `corrupted_writer_output_is_caught` corrupts a written document six ways (tail
+    truncation, mid-body truncation, dangling reference, page/annotation/field/OCG expectation
+    mismatches) and each is caught with the right typed fault. Wired into 100% of tool outputs via
+    `apps/cli/src/write_gate.rs` (verify before commit; expectations surveyed from the input;
+    per-tool overrides where an operation legitimately changes counts). qpdf wired as
+    `cargo xtask oracle check-output[-dir]` (local-first, pinned-container fallback) with CI job
+    `write05-oracle`; runner-green run pending human verification. Design note:
+    `pdf-plan/29-WRITE05-06-DESIGN-NOTE.md`.
 - [ ] **SL-1A.WRITE.06 — Crash-atomicity for the writer** · deps: WRITE.02, `SL-0.IO.05` · owner: HUMAN
   - **Do:** Kill the process at 500 random points during each tool operation; assert the output is
     always either absent, the untouched original, or a complete valid document.
+  - **Status (draft, awaits HUMAN sign-off — owner: HUMAN, do not self-approve):** property holds
+    at all 500 seeded kill points × {split, rotate-one-page (incremental in-place append),
+    compress (full rewrite)} — 1500 child-process kills, verified on the dev host; reproducible
+    via fixed xorshift64* seeds (`apps/cli/tests/write06_kill_test.rs`, `#[ignore]`-tagged, CI
+    job `write06-kill`; 12-point smoke variant runs in the default suite). Fixes where the
+    guarantee did not hold: all tools now commit through the atomic sink (temp+fsync+rename) —
+    previously `std::fs::write` (truncate-then-write) was a torn window; new `selis_io::
+    AppendFileSink` provides the in-place fsync append for the incremental path; new
+    `parse_revisions_resilient` implements the I5 reader rollback (a torn newest revision is
+    discarded on next open). Debug-only crash injection (`SELIS_DEBUG_CRASH_AFTER_BYTES` /
+    `SELIS_DEBUG_CRASH_PHASE`) lives in the sinks, absent from release builds. Flagged for the
+    human owner: power-loss vs process-kill scope, Windows rename atomicity position (design
+    note §2.4), sign-off checklist §6.
+
+- [ ] **SL-1A.WRITE.08 — Full render+text output verification (G2)** · deps: WRITE.05, Phase 2
+      renderer · owner: AI+
+  - **Do:** Replace the pre-G2 structural standard (`WRITE.05`) for any operation that rewrites
+    page *content*: after writing, open the output, render every page, extract its text, and
+    compare both against the pre-save capture. Structure-level agreement is no longer sufficient
+    once operations touch content streams (text editing, redaction content stripping, content
+    re-encoding).
+  - **DoD:** The verification gate runs on 100% of outputs of every content-rewriting tool on the
+    corpus; a deliberately corrupted *content* (a page whose pixels or text changed without the
+    operation intending it) is caught, where structural verification passes it. Engine/render
+    determinism (ADR-P0012) makes the comparison exact.
+  - **Why G2:** needs the renderer (`12-PHASE-2-render.md`) and text extraction
+    (`13-PHASE-3-text.md`) — not available in Phase 1A.
+  - **Filed:** by the WRITE.05 implementation (the task block required filing it now).
 
 - [x] **SL-1A.WRITE.07 — Conformance-friendly writer defaults** · deps: WRITE.01, `SL-1.DOC.09` · owner: AI+
   - **Do:** Make the writer avoid, by default, everything that would make output non-conformant

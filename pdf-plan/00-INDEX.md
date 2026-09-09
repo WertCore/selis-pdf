@@ -106,6 +106,7 @@ turned out to be wrong or under-specified.
 | `25-RISK-REGISTER.md` | Live risk register with owners, triggers, and kill-criteria. | Monthly review. |
 | `26-PRODUCT-SURFACE.md` | Competitor surface → SKU map, entitlement matrix, pricing shape. | Before scoping any product. |
 | `28-FIRST-RELEASE-SCOPE.md` | **Read before any code.** Competitive reality, the exposure model (what licensing attaches to build vs. distribute), and the month-4 owned-engine path. |
+| `29-WRITE05-06-DESIGN-NOTE.md` | WRITE.05/WRITE.06 draft design note (pre-sign-off): the structural verifier, the crash-atomicity sink/rollback fixes, the kill-test harness, and the human sign-off checklist. |
 | `27-COST-AND-LICENSING.md` | What money is actually required and when; the open-source/dual-licence analysis. | Before budgeting, and before changing ADR-P0030. |
 
 ---

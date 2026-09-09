@@ -230,6 +230,14 @@ Contract:
 The verification step is not optional and is not skippable by a flag. It is the reason a rewrite is
 allowed to exist at all.
 
+> **Pre-G2 note (WRITE.05):** until the renderer exists, step 2's render+text comparison is
+> satisfied *structurally* by `selis_pdf_cos::verify::verify_structural` (reparse, reference
+> closure, page-tree consistency, count expectations) — the weaker standard, sufficient only for
+> operations that never touch page content. It must NOT be reused for content-rewriting
+> operations; the full standard is SL-1A.WRITE.08 (filed in `11A-PHASE-1A-tools.md`). Steps 3–4
+> (temp+fsync+rename, typed failure with no file) are fully implemented and are the only commit
+> path tools use. See `pdf-plan/29-WRITE05-06-DESIGN-NOTE.md` (draft, pre-sign-off).
+
 ---
 
 ## 8. What the model deliberately does not do
