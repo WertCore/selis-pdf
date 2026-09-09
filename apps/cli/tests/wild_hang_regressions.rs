@@ -45,8 +45,7 @@ const CASES: &[(&str, &str)] = &[
 ];
 
 fn wild_root() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))?;
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     let root = std::path::PathBuf::from(home)
         .join(".cache")
         .join("selis-corpus")
@@ -108,12 +107,12 @@ fn wild_hang_regressions_terminate_typed() {
         match rx.recv_timeout(Duration::from_secs(WATCHDOG_SECS)) {
             Err(_) => panic!("hang regression: {id} ({}s watchdog)", WATCHDOG_SECS),
             Ok(Err(code)) => {
-                assert_ne!(
-                    code, "INTERNAL_PANIC",
-                    "panic regression: {id} (sha {sha})"
-                );
+                assert_ne!(code, "INTERNAL_PANIC", "panic regression: {id} (sha {sha})");
                 evaluated += 1;
-                eprintln!("  {id} -> typed {code} ({}ms)", started.elapsed().as_millis());
+                eprintln!(
+                    "  {id} -> typed {code} ({}ms)",
+                    started.elapsed().as_millis()
+                );
             }
             Ok(Ok(())) => {
                 evaluated += 1;
