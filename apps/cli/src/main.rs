@@ -1,4 +1,4 @@
-//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
+﻿//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
 //!
 //! Phase 1 ships the structural inspector the qpdf oracle compares against:
 //! `selis inspect --json <file>` dumps revisions, xref entries, and
@@ -25,6 +25,8 @@ mod check;
 mod clear_permissions;
 mod compress;
 mod convert;
+#[cfg(debug_assertions)]
+mod crash_save;
 mod extract;
 mod img2pdf;
 mod inspect;
@@ -33,6 +35,7 @@ mod search;
 mod tools;
 mod topdf;
 mod unlock;
+mod write_gate;
 
 #[cfg(test)]
 mod tool_conformance;
@@ -249,7 +252,7 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
-        /// The password (default: empty — the user password).
+        /// The password (default: empty â€” the user password).
         #[arg(short, long)]
         password: Option<String>,
     },
@@ -275,6 +278,19 @@ enum Command {
         #[arg(short, long)]
         password: Option<String>,
     },
+    /// DEBUG BUILDS ONLY â€” run one save operation with crash injection
+    /// active (SL-1A.WRITE.06 kill-test harness entry point). Hidden.
+    #[command(hide = true, name = "__crash-save")]
+    #[cfg(debug_assertions)]
+    CrashSave {
+        /// The operation: split|rotate-rewrite|rotate-incremental|compress.
+        op: String,
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -286,120 +302,130 @@ fn main() {
     // `selis-pdf-wasm`/`selis-pdf-ffi` bindings install the same wrapper.
     let result = selis_sandbox::trampoline::catch("cli-command", || -> CliResult<()> {
         match cli.command {
-            Command::Inspect { path, json } => inspect::run(&path, json),
-            Command::Render {
-                path,
-                page,
-                output,
-                dpi,
-            } => render::run(&path, page, &output, dpi),
-            Command::Extract {
-                path,
-                page,
-                last,
-                format,
-                output,
-            } => extract::run(&path, page, last, &format, output.as_deref()),
-            Command::Convert {
-                path,
-                output,
-                first,
-                last,
-            } => convert::run(&path, &output, first, last),
-            Command::Search { path, query, page } => search::run(&path, &query, page),
-            Command::Check { path, profile } => check::run(&path, &profile),
-            Command::Merge { inputs, output } => tools::merge(&inputs, &output),
-            Command::Split {
-                path,
-                first,
-                last,
-                output,
-            } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
-            Command::SetMetadata {
-                path,
-                fields,
-                output,
-            } => {
-                let parsed: Vec<(&str, &str)> =
-                    fields.iter().filter_map(|f| f.split_once('=')).collect();
-                tools::set_metadata(&path, &parsed, &output)
-            }
-            Command::Redact {
-                path,
-                rects,
-                output,
-            } => {
-                let parsed: Vec<(f64, f64, f64, f64)> = rects
-                    .iter()
-                    .filter_map(|r| {
-                        let parts: Vec<&str> = r.split(',').collect();
-                        if parts.len() == 4 {
-                            Some((
-                                parts.get(0)?.trim().parse().unwrap_or(0.0),
-                                parts.get(1)?.trim().parse().unwrap_or(0.0),
-                                parts.get(2)?.trim().parse().unwrap_or(0.0),
-                                parts.get(3)?.trim().parse().unwrap_or(0.0),
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                tools::redact(&path, &parsed, &output)
-            }
-            Command::Rotate {
-                path,
-                angle,
-                pages,
-                output,
-            } => tools::rotate(&path, angle, pages.as_deref(), &output),
-            Command::Delete {
-                path,
-                pages,
-                output,
-            } => tools::delete(&path, &pages, &output),
-            Command::Reorder {
-                path,
-                order,
-                output,
-            } => tools::reorder(&path, &order, &output),
-            Command::Img2Pdf {
-                inputs,
-                output,
-                page_size,
-                margin,
-            } => match img2pdf::PageFit::parse(&page_size) {
-                Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
-                Err(e) => Err(e),
-            },
-            Command::Topdf {
-                input,
-                output,
-                format,
-                page_size,
-                title,
-            } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
-            Command::Compress { path, output } => compress::run(&path, &output),
-            Command::Unlock {
-                path,
-                output,
-                password,
-            } => unlock::run(&path, &output, password.as_deref()),
-            Command::ClearPermissions {
-                path,
-                output,
-                password,
-            } => clear_permissions::run(&path, &output, password.as_deref()),
-            Command::Batch {
-                tool,
-                inputs,
-                outdir,
-            } => match tool.as_str() {
-                "compress" => batch::batch_compress(&inputs, &outdir),
-                other => Err(CliError(format!(
-                    "unknown batch tool `{other}` (supported: compress)"
+
+        Command::Inspect { path, json } => inspect::run(&path, json),
+        Command::Render {
+            path,
+            page,
+            output,
+            dpi,
+        } => render::run(&path, page, &output, dpi),
+        Command::Extract {
+            path,
+            page,
+            last,
+            format,
+            output,
+        } => extract::run(&path, page, last, &format, output.as_deref()),
+        Command::Convert {
+            path,
+            output,
+            first,
+            last,
+        } => convert::run(&path, &output, first, last),
+        Command::Search { path, query, page } => search::run(&path, &query, page),
+        Command::Check { path, profile } => check::run(&path, &profile),
+        Command::Merge { inputs, output } => tools::merge(&inputs, &output),
+        Command::Split {
+            path,
+            first,
+            last,
+            output,
+        } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
+        Command::SetMetadata {
+            path,
+            fields,
+            output,
+        } => {
+            let parsed: Vec<(&str, &str)> =
+                fields.iter().filter_map(|f| f.split_once('=')).collect();
+            tools::set_metadata(&path, &parsed, &output)
+        }
+        Command::Redact {
+            path,
+            rects,
+            output,
+        } => {
+            let parsed: Vec<(f64, f64, f64, f64)> = rects
+                .iter()
+                .filter_map(|r| {
+                    let parts: Vec<&str> = r.split(',').collect();
+                    if parts.len() == 4 {
+                        Some((
+                            parts.get(0)?.trim().parse().unwrap_or(0.0),
+                            parts.get(1)?.trim().parse().unwrap_or(0.0),
+                            parts.get(2)?.trim().parse().unwrap_or(0.0),
+                            parts.get(3)?.trim().parse().unwrap_or(0.0),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            tools::redact(&path, &parsed, &output)
+        }
+        Command::Rotate {
+            path,
+            angle,
+            pages,
+            output,
+        } => tools::rotate(&path, angle, pages.as_deref(), &output),
+        Command::Delete {
+            path,
+            pages,
+            output,
+        } => tools::delete(&path, &pages, &output),
+        Command::Reorder {
+            path,
+            order,
+            output,
+        } => tools::reorder(&path, &order, &output),
+        Command::Img2Pdf {
+            inputs,
+            output,
+            page_size,
+            margin,
+        } => match img2pdf::PageFit::parse(&page_size) {
+            Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
+            Err(e) => Err(e),
+        },
+        Command::Topdf {
+            input,
+            output,
+            format,
+            page_size,
+            title,
+        } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
+        Command::Compress { path, output } => compress::run(&path, &output),
+        Command::Unlock {
+            path,
+            output,
+            password,
+        } => unlock::run(&path, &output, password.as_deref()),
+        Command::ClearPermissions {
+            path,
+            output,
+            password,
+        } => clear_permissions::run(&path, &output, password.as_deref()),
+        Command::Batch {
+            tool,
+            inputs,
+            outdir,
+        } => match tool.as_str() {
+            "compress" => batch::batch_compress(&inputs, &outdir),
+            other => Err(CliError(format!(
+                "unknown batch tool `{other}` (supported: compress)"
+            ))),
+        },
+        #[cfg(debug_assertions)]
+        Command::CrashSave { op, path, output } => {
+            match crash_save::parse_crash_op(&op) {
+                Some(parsed) => crash_save::run_crash_save(parsed, &path, &output),
+                None => Err(CliError(format!(
+                    "unknown crash-save op `{op}` (supported: split, rotate-rewrite, rotate-incremental, compress)"
                 ))),
-            },
+            }
+        }
         }
     });
     match result {

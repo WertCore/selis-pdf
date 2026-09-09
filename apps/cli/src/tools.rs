@@ -13,6 +13,7 @@
 use selis_pdf_cos::{self, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::write_gate::{self, Preserved, PRESERVE_ALL, PRESERVE_EXCEPT_PAGES};
 use crate::{read_file, CliError, CliResult};
 
 /// A parsed merge input with its source-page → merged-page mapping.
@@ -66,7 +67,25 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
     let bytes = merged
         .write(&budget, &mut g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.05: structural verification before the output reaches disk.
+    // Merge copies every input's pages, so the expectation is the sum of the
+    // inputs' pages; other counts follow each input's survey.
+    let mut expected_pages = 0u64;
+    for input in &parsed {
+        let observed = selis_pdf_cos::verify::survey(&input.src, &budget, &mut g)
+            .map_err(|e| CliError(format!("{path}: {e}", path = inputs[0], e = e)))?;
+        expected_pages = expected_pages.saturating_add(observed.pages);
+    }
+    write_gate::write_verified(
+        &bytes,
+        output,
+        &selis_pdf_cos::verify::Expectations {
+            pages: Some(expected_pages),
+            ..selis_pdf_cos::verify::Expectations::none()
+        },
+        &budget,
+        &mut g,
+    )?;
     eprintln!(
         "merged {} file(s) into {output} ({} duplicate object(s) removed)",
         inputs.len(),
@@ -2008,7 +2027,24 @@ pub(crate) fn split(path: &str, first: usize, last: usize, output: &str) -> CliR
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    let expected_pages = u64::try_from(kept.len()).unwrap_or(u64::MAX);
+    let kept_annots = annots_on_pages(
+        &src,
+        &doc,
+        &kept.iter().map(|(_, _, r)| *r).collect::<Vec<_>>(),
+        &budget,
+        &mut g,
+    );
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_EXCEPT_PAGES,
+        Some(expected_pages),
+        Some(kept_annots),
+        &budget,
+        &mut g,
+    )?;
     eprintln!("split pages {first}..{last} into {output}");
     Ok(())
 }
@@ -2043,7 +2079,16 @@ pub(crate) fn set_metadata(path: &str, fields: &[(&str, &str)], output: &str) ->
         &mut out, &src, &doc, &page_refs, &kept, false, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        &budget,
+        &mut g,
+    )?;
     eprintln!("set {} metadata field(s) -> {output}", fields.len());
     Ok(())
 }
@@ -2080,7 +2125,16 @@ pub(crate) fn redact(path: &str, rects: &[(f64, f64, f64, f64)], output: &str) -
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        &budget,
+        &mut g,
+    )?;
     eprintln!("redacted {} region(s) -> {output}", rects.len());
     Ok(())
 }
@@ -2524,7 +2578,16 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        &budget,
+        &mut g,
+    )?;
     eprintln!(
         "rotated {} page(s) by {}° -> {output}",
         selected.len(),
@@ -2576,7 +2639,23 @@ pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<()> {
         &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    let kept_annots = annots_on_pages(
+        &src,
+        &doc,
+        &kept_pages.iter().map(|(_, _, r)| *r).collect::<Vec<_>>(),
+        &budget,
+        &mut g,
+    );
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_EXCEPT_PAGES,
+        Some(u64::try_from(kept_pages.len()).unwrap_or(u64::MAX)),
+        Some(kept_annots),
+        &budget,
+        &mut g,
+    )?;
     eprintln!("deleted {} page(s), kept {kept} -> {output}", removed.len());
     Ok(())
 }
@@ -2612,23 +2691,88 @@ pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<()> {
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(out, output, &budget, &mut g)?;
+    write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(order.len()).unwrap_or(u64::MAX)),
+        None,
+        &budget,
+        &mut g,
+    )?;
     eprintln!("reordered {} page(s) -> {output}", order.len());
     Ok(())
 }
 
-/// Serialise and write a built document to `output`.
+/// Total `/Annots` items across a subset of pages (used by split/delete:
+/// the output keeps only the surviving pages' annotations).
+fn annots_on_pages(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    pages: &[Ref],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> u64 {
+    let mut total = 0u64;
+    for page_ref in pages {
+        let Ok(page) = resolve_ref_obj(src, doc, *page_ref, budget, g) else {
+            continue;
+        };
+        let annots = match &page {
+            Obj::Dict(pairs) => pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Annots")
+                .map(|(_, v)| v.clone()),
+            _ => None,
+        };
+        let Some(annots) = annots else { continue };
+        let resolved = match annots {
+            Obj::Ref(r) => resolve_ref_obj(src, doc, r, budget, g).unwrap_or(Obj::Null),
+            other => other,
+        };
+        if let Obj::Array(items) = resolved {
+            total = total.saturating_add(u64::try_from(items.len()).unwrap_or(u64::MAX));
+        }
+    }
+    total
+}
+
+/// Serialise and write a built document to `output` with WRITE.05 structural
+/// verification and an atomic commit. `preserved` selects which counts the
+/// operation promises to keep from the input's survey; `expected_pages` is
+/// asserted directly when the caller knows the number (split, reorder);
+/// `annotations_override` replaces the input-total annotation expectation
+/// when only a subset of pages survives (split, delete).
 fn write_document(
-    mut builder: selis_pdf_cos::doc_writer::DocumentBuilder,
+    builder: selis_pdf_cos::doc_writer::DocumentBuilder,
     output: &str,
+    input: Option<&[u8]>,
+    preserved: Preserved,
+    expected_pages: Option<u64>,
+    annotations_override: Option<u64>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> CliResult<()> {
+    let mut builder = builder;
     let bytes = builder
         .write(budget, g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
-    Ok(())
+    let mut expected = match input {
+        Some(src) => {
+            let observed = selis_pdf_cos::verify::survey(src, budget, g)
+                .map_err(|e| CliError(format!("input survey failed: {e}")))?;
+            write_gate::expectations_from(&observed, &preserved)
+        }
+        None => selis_pdf_cos::verify::Expectations::none(),
+    };
+    if let Some(pages) = expected_pages {
+        expected.pages = Some(pages);
+    }
+    if let Some(annots) = annotations_override {
+        expected.annotations = Some(annots);
+    }
+    write_gate::write_verified(&bytes, output, &expected, budget, g)
 }
 
 /// A page's existing `/Rotate` (0 when absent).

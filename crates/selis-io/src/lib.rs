@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod append_sink;
 mod fault;
 mod file;
 mod file_sink;
@@ -28,6 +29,7 @@ mod mem;
 mod range_set;
 mod sink;
 
+pub use append_sink::AppendFileSink;
 pub use fault::{FaultConfig, FaultSource};
 pub use file::FileSource;
 pub use file_sink::FileSink;

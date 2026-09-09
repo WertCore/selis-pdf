@@ -151,8 +151,7 @@ fn clear_permissions_r56(
 
     verify_output(&updated, root, path)?;
 
-    std::fs::write(output, &updated)
-        .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    crate::write_gate::atomic_write(&updated, output)?;
     record_override(
         "R5/6 incremental: /P and /Perms updated, content re-encrypted under the unchanged file key",
     );
@@ -259,7 +258,7 @@ fn clear_permissions_r24(
 
     verify_output(&bytes, root, path)?;
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    crate::write_gate::atomic_write(&bytes, output)?;
     record_override(&format!(
         "R{} full rewrite: content re-encrypted under the /P-cleared key",
         info.r

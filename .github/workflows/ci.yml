@@ -7,6 +7,8 @@
 # supply-chain   | every PR  | required
 # size-check     | every PR  | required
 # determinism    | every PR  | required (job pending)
+# write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
+# write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
 # test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
 # perf           | nightly   | blocks release on >5% regression
@@ -149,6 +151,42 @@ jobs:
         run: npm install -g wasm-opt
       - run: cargo xtask size-check
         timeout-minutes: 15
+
+  # ── WRITE.05: qpdf --check over 100% of tool outputs (structural oracle) ───
+  # Local qpdf on the runner (apt); the xtask oracle command falls back to the
+  # pinned container when absent, so the job also validates the container path.
+  write05-oracle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Install qpdf (structural oracle, Apache-2.0)
+        run: sudo apt-get update && sudo apt-get install -y qpdf
+      - name: Build the CLI
+        run: cargo build -p selis-cli
+      - name: Run the tool suite over the smoke fixtures
+        run: |
+          mkdir -p target/tool-outputs
+          # A formed multi-page fixture from the corpus builder test sources.
+          cargo xtask fixtures --outdir target/tool-outputs
+      - name: qpdf --check every tool output
+        run: cargo xtask oracle check-output-dir target/tool-outputs
+        timeout-minutes: 10
+
+  # ── WRITE.06: crash-atomicity kill tests (500 points x 3 operations) ───────
+  # The debug-only crash injection is a debug build; no release flag involved.
+  write06-kill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Kill-test harness (500 points x split/rotate-incremental/compress)
+        run: cargo test -p selis-cli --test write06_kill_test -- --ignored --test-threads 4
+        timeout-minutes: 40
 
   # ── fuzz-soak (nightly, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02 ──────────
   fuzz-soak:

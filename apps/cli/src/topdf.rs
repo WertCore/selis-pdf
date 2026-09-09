@@ -53,7 +53,10 @@ pub(crate) fn topdf(
     }
     .map_err(|e| CliError(format!("{input}: {e}")))?;
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.05: generated output is verified (reference resolution + page
+    // tree; no count expectations — there is no input document to survey)
+    // and committed atomically.
+    crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
     eprintln!("wrote {output} ({} bytes)", bytes.len());
     Ok(())
 }

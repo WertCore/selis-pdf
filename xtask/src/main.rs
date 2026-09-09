@@ -12,6 +12,7 @@ mod codes;
 mod conformance;
 mod corpus;
 mod coverage;
+mod fixtures;
 mod fuzz;
 mod layers;
 mod oracle;
@@ -97,6 +98,13 @@ enum Command {
     },
     /// Conformance ladder report (SL-0.OPS.02).
     Conformance,
+    /// Generate the tool-suite smoke fixtures and run every tool over them so
+    /// the outputs can be oracle-checked (SL-1A.WRITE.05 CI slot).
+    Fixtures {
+        /// Output directory for the produced tool outputs.
+        #[arg(long, default_value = "target/tool-outputs")]
+        outdir: std::path::PathBuf,
+    },
     /// CycloneDX SBOM (SL-0.WS.07).
     Sbom,
     /// Signing (G6).
@@ -143,6 +151,10 @@ enum OracleSub {
     },
     /// Report which oracles are available locally and their pinned images.
     Check,
+    /// Run `qpdf --check` over one tool output (SL-1A.WRITE.05).
+    CheckOutput { file: std::path::PathBuf },
+    /// Run `qpdf --check` over every *.pdf in a directory (SL-1A.WRITE.05 CI slot).
+    CheckOutputDir { dir: std::path::PathBuf },
     /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
     Compare { file: std::path::PathBuf },
     /// Render with selis and an oracle at the same DPI and compare (SL-0.ORACLE.02).
@@ -268,6 +280,12 @@ fn main() -> ExitCode {
                 oracle::run(oracle::OracleCommand::Render { tool, dpi, file })
             }
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
+            OracleSub::CheckOutput { file } => {
+                oracle::run(oracle::OracleCommand::CheckOutput { file })
+            }
+            OracleSub::CheckOutputDir { dir } => {
+                oracle::run(oracle::OracleCommand::CheckOutputDir { dir })
+            }
             OracleSub::Compare { file } => oracle::run(oracle::OracleCommand::Compare { file }),
             OracleSub::CompareRender { tool, dpi, file } => {
                 oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file })
@@ -293,6 +311,7 @@ fn main() -> ExitCode {
         Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
         Command::PerfCheck { strict } => perf_check::run(strict),
         Command::Conformance => conformance::report(),
+        Command::Fixtures { outdir } => fixtures::run(&outdir),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),
         Command::Package => not_in_phase_0("package"),
