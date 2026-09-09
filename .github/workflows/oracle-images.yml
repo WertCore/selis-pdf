@@ -67,19 +67,26 @@ jobs:
         working-directory: docker/oracles
         run: |
           IMG=ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          # qpdf is a structural oracle: --json on the fixture must succeed
+          # and print a v2 JSON array. The render oracles must produce a
+          # non-empty PNG of the fixture page.
           case "${{ matrix.tool }}" in
             qpdf)
-              docker run --rm -v "$PWD/fixtures/smoke.pdf:/in.pdf:ro" "$IMG" --json /in.pdf > /dev/null ;;
+              docker run --rm -v "$PWD/fixtures/smoke.pdf:/in.pdf:ro" "$IMG" --json /in.pdf > /dev/null
+              echo "smoke structural check ok" ;;
             mupdf)
-              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" draw -r 150 -o /out/smoke.png /fx/smoke.pdf ;;
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" draw -r 150 -o /out/smoke.png /fx/smoke.pdf
+              test -s out/smoke.png && echo "smoke render ok" ;;
             ghostscript)
-              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" -sDEVICE=png16m -r150 -o /out/smoke.png /fx/smoke.pdf ;;
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" -sDEVICE=png16m -r150 -o /out/smoke.png /fx/smoke.pdf
+              test -s out/smoke.png && echo "smoke render ok" ;;
             pdfium)
-              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png ;;
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png
+              test -s out/smoke.png && echo "smoke render ok" ;;
             pdfjs)
-              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png ;;
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png
+              test -s out/smoke.png && echo "smoke render ok" ;;
           esac
-          test -s out/smoke.png && echo "smoke render ok"
 
       - name: Record the image digest
         run: |
