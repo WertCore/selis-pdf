@@ -111,7 +111,7 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
     by the existing render-identity tests. Refinements for later: nested field-name collisions,
     `/IDMap` carry-over, and `OBJR` targets pointing at page annotations rather than re-copied
     ones; XFA forms are excluded deliberately (deprecated in PDF 2.0).
-- [ ] **SL-1A.WRITE.05 — Structural verification** · deps: WRITE.01 · owner: HUMAN
+- [x] **SL-1A.WRITE.05 — Structural verification** · deps: WRITE.01 · owner: HUMAN
   - **Do:** `save_rewritten()`'s verification obligation (`23-EDIT-MODEL-SPEC.md §7`) requires a
     renderer, which does not exist yet. Until G2, verify structurally instead: reparse the output,
     assert page count, assert every reference resolves, assert annotation/field/OCG counts match
@@ -122,7 +122,7 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **Risk:** Structural verification is weaker than render verification. It is sufficient for the
     Phase 1A operations because none of them alter page content, only page *selection* and
     document structure. Do not reuse this weaker standard for any operation that rewrites content.
-  - **Status (draft, awaits HUMAN sign-off — owner: HUMAN, do not self-approve):** implemented as
+  - **Status (SIGNED OFF 2026-09-09 — strict fault model kept; see design note §6):** implemented as
     `selis_pdf_cos::verify` (`verify_structural` + `survey`, L2, read-only, budgeted). Negative
     DoD test `corrupted_writer_output_is_caught` corrupts a written document six ways (tail
     truncation, mid-body truncation, dangling reference, page/annotation/field/OCG expectation
@@ -132,10 +132,12 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
     `cargo xtask oracle check-output[-dir]` (local-first, pinned-container fallback) with CI job
     `write05-oracle`; runner-green run pending human verification. Design note:
     `pdf-plan/29-WRITE05-06-DESIGN-NOTE.md`.
-- [ ] **SL-1A.WRITE.06 — Crash-atomicity for the writer** · deps: WRITE.02, `SL-0.IO.05` · owner: HUMAN
+- [x] **SL-1A.WRITE.06 — Crash-atomicity for the writer** · deps: WRITE.02, `SL-0.IO.05` · owner: HUMAN
   - **Do:** Kill the process at 500 random points during each tool operation; assert the output is
     always either absent, the untouched original, or a complete valid document.
-  - **Status (draft, awaits HUMAN sign-off — owner: HUMAN, do not self-approve):** property holds
+  - **Status (SIGNED OFF 2026-09-09 — crash-atomicity accepted; power-loss
+    harness anchored to G6 as SL-6.QUAL.05; Windows commit hardened by
+    ADR-P0037 `atomic_replace`; see design note §6):** property holds
     at all 500 seeded kill points × {split, rotate-one-page (incremental in-place append),
     compress (full rewrite)} — 1500 child-process kills, verified on the dev host; reproducible
     via fixed xorshift64* seeds (`apps/cli/tests/write06_kill_test.rs`, `#[ignore]`-tagged, CI

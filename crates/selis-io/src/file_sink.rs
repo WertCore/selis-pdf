@@ -187,15 +187,11 @@ impl DocSink for FileSink {
         if self.crash_phase == Some("before-rename") {
             std::process::abort();
         }
-        std::fs::rename(&self.temp_path, &self.final_path).map_err(|e| {
-            let mut ctx = selis_error::Ctx::new();
-            ctx.detail = Some(format!(
-                "rename {} -> {}: {e}",
-                self.temp_path.display(),
-                self.final_path.display()
-            ));
-            selis_error::Error::with(Code::IoReadFailed, ctx)
-        })?;
+        // Atomic swap (ADR-P0037): MoveFileEx(REPLACE_EXISTING|WRITE_THROUGH)
+        // on Windows, rename(2) on POSIX. The temp handle is closed above
+        // (Windows cannot replace an open file) and the temp content was
+        // fsynced; the swap itself cannot tear.
+        crate::replace::atomic_replace(&self.temp_path, &self.final_path)?;
         #[cfg(debug_assertions)]
         if self.crash_phase == Some("after-rename") {
             std::process::abort();

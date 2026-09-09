@@ -129,4 +129,15 @@ GA, with profiling data. ADR-P0035 is what keeps that reversal cheap.
   - **Do:** Platform AT integration — UIA (Windows), NSAccessibility (macOS), AT-SPI (Linux) —
     exposing the document structure tree, not just the chrome. Tauri/WebView AT plumbing needs
     explicit work; do not assume the web a11y work carries over.
+- [ ] **SL-6.QUAL.05 — Power-loss atomicity harness** · deps: WRITE.06, QUAL.01 · owner: AI+
+  - **Do:** Upgrade the WRITE.06 kill harness from process-kill to VM-snapshot power loss: run the
+    tool suite in a VM, kill storage at random points (QEMU blkdebug / Hyper-V storage QoS), and
+    assert the same three-state guarantee (absent / original / complete-or-I5-recoverable). Also
+    proves the fsync-ordering assumption WRITE.06 inherited from the filesystem, and validates
+    `ADR-P0037`'s `WRITE_THROUGH` position on real host power events.
+  - **Why G6:** desktop GA is where Selis meets real users' failing laptops, USB sticks, and
+    spinning rust — the only gate where a power-loss proof is a purchase argument. No document
+    vendor has this; databases (SQLite) do. Filed at WRITE.06 sign-off (2026-09-09).
+  - **DoD:** The power-loss property holds across the seeded kill schedule on NTFS, APFS, and
+    ext4; any failure is a writer bug with a filed fix before the gate passes.
 - [ ] **SL-6.QUAL.04 — G6 review and go/no-go** · owner: HUMAN

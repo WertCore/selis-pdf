@@ -17,7 +17,10 @@
 //! this is how a linearised 200 MB PDF opens before the first megabyte has
 //! arrived.
 
-#![forbid(unsafe_code)]
+// `unsafe` is denied crate-wide except `replace.rs` (Windows MoveFileExW FFI
+// on the 03-CONVENTIONS.md §2 allowlist — see xtask/unsafe-allow.toml).
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod append_sink;
@@ -27,6 +30,7 @@ mod file_sink;
 mod http;
 mod mem;
 mod range_set;
+pub mod replace;
 mod sink;
 
 pub use append_sink::AppendFileSink;
@@ -36,6 +40,7 @@ pub use file_sink::FileSink;
 pub use http::{FetchFn, HttpRangeSource};
 pub use mem::MemSource;
 pub use range_set::RangeSet;
+pub use replace::atomic_replace;
 pub use sink::AppendSink;
 
 use selis_error::Result;

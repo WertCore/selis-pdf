@@ -706,3 +706,24 @@ clearances in year one.
 name is permanent. Every user-visible string goes through i18n keys from day 1 so a rename is a
 resource change, not a code change. A shortlist entry is not cleared until `SL-0.LEAD.01` returns
 a written opinion; the searches above are prior-use signal, not a clearance.
+
+## ADR-P0037 — Atomic save commit: `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)` on Windows
+**Status:** Accepted (signed off 2026-09-09 with the WRITE.05/06 human review)
+**Decision:** Every save path commits through one primitive: `selis_io::atomic_replace`.
+On Windows it calls `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`; on POSIX
+it is `rename(2)`. `std::fs::rename` is never used to overwrite an existing destination. The
+temp file is fsynced before the replace (existing `FileSink` discipline); `WRITE_THROUGH`
+additionally flushes the directory entry on Windows. POSIX callers that need the directory entry
+durable use the documented fsync-the-parent-directory extension point.
+**Rationale:** A save is atomic only if the final swap cannot tear. `std::fs::rename` over an
+existing file is atomic on NTFS in practice but the Win32 contract does not guarantee it;
+`MOVEFILE_REPLACE_EXISTING` is the documented replace operation and `MOVEFILE_WRITE_THROUGH`
+removes the last visibility window. This is the same position as qpdf (`QUtil::rename`), Chromium
+(`base::ReplaceFile`), and SQLite — the three implementations most trusted for exactly this
+property. Cost is one small platform shim inside `selis-io`, which is already on the `unsafe`
+allowlist (03-CONVENTIONS.md §2); no new dependency.
+**Consequences:** Cross-platform by construction: POSIX gets the kernel-guaranteed rename, Windows
+gets the documented API. The real-world Windows failure mode is not tearing but sharing violations
+(AV/indexers holding the destination) — callers surface that as a typed error and the original file
+is untouched. `selis-io` keeps its allowlist entry with this block named in `xtask/unsafe-allow.toml`
+commentary. Recorded at WRITE.06 sign-off; revisitable only by superseding ADR.

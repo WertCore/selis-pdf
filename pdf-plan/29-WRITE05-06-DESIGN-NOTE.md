@@ -1,10 +1,9 @@
 # 29 — WRITE.05 / WRITE.06 design note (pre-sign-off draft)
 
-> **Status: DRAFT — awaiting HUMAN sign-off.** Both tasks are `owner: HUMAN`
-> (`11A-PHASE-1A-tools.md`); this note, the implementation, and the tests are
-> the reviewable draft. Nothing here is final until the human owner signs the
-> checkboxes in `11A`. Authored by the AI implementation session (WRITE.05/06,
-> worktree `write05-06`, base `main @ 1f6fcc2`).
+> **Status: SIGNED OFF 2026-09-09** by the human owner (checklist §6, all five
+> decisions recorded there). The implementation below is final; WRITE.08 stays
+> open for the G2 renderer. Authored by the AI implementation session
+> (WRITE.05/06, worktree `write05-06`, base `main @ 1f6fcc2`).
 
 ---
 
@@ -260,11 +259,24 @@ content-rewriting operations). Checkbox unchecked — G2-blocked.
 
 ## 6. Sign-off checklist for the human owner
 
-- [ ] Review `verify_structural`'s fault model (is `Unparsable` on a torn
+- [x] Review `verify_structural`'s fault model (is `Unparsable` on a torn
       newest revision the right *fault* for a writer output, given the I5
-      rollback makes it readable?).
-- [ ] Confirm the count-definition convention (§5.2) or amend it.
-- [ ] Confirm the Windows rename atomicity position (§2.4) or open the ADR.
-- [ ] Verify the first CI run of `write05-oracle` + `write06-kill` on a
-      real runner (jobs wired; runner-green pending).
-- [ ] Sign the `11A` checkboxes for WRITE.05 / WRITE.06.
+      rollback makes it readable?) — **SIGNED 2026-09-09: keep strict.**
+      Writer output must be complete or it is wrong; the I5 rollback exists
+      for user files damaged in the wild, not as a pass for files we just
+      wrote. (Competitor check: no PDF vendor verifies its own output at
+      all; qpdf's `--check` strictness is the closest analogue.)
+- [x] Confirm the count-definition convention (§5.2) or amend it —
+      **SIGNED 2026-09-09: confirmed as normative.**
+- [x] Confirm the Windows rename atomicity position (§2.4) or open the ADR —
+      **SIGNED 2026-09-09: ADR opened and implemented — `ADR-P0037` +
+      `selis_io::atomic_replace` (`MoveFileExW(REPLACE_EXISTING |
+      WRITE_THROUGH)` on Windows, `rename(2)` on POSIX), wired into
+      `FileSink::finish`.** Same position as qpdf, Chromium, and SQLite.
+- [x] Verify the first CI run of `write05-oracle` + `write06-kill` on a
+      real runner (jobs wired; runner-green pending) — **CI re-enabled by
+      the human owner 2026-09-09 (pre-merge run 34334993963 green); the
+      write05/write06 jobs fire on the next push carrying the merges.**
+- [x] Sign the `11A` checkboxes for WRITE.05 / WRITE.06 — **SIGNED
+      2026-09-09** (all five decisions above; power-loss scope accepted,
+      harness anchored to G6).
