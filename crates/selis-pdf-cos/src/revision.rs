@@ -225,6 +225,78 @@ pub fn parse_revisions(
     })
 }
 
+/// Parse revisions tolerating a torn newest revision (SL-1A.WRITE.06, I5).
+///
+/// Identical to [`parse_revisions`] except that a newest revision whose xref
+/// block or trailer is damaged does not fail the parse: earlier `startxref`
+/// occurrences are tried (newest first) and the document resolves to the
+/// newest *complete* revision instead. This is the reader-side of crash
+/// atomicity: an append interrupted mid-write is **detectable and discarded**
+/// rather than refusing the document. Callers that must distinguish "the
+/// newest revision was torn" (the writer's own verification, tool checks)
+/// should consult `verify`'s verdict as well.
+///
+/// # Budget
+///
+/// As [`parse_revisions`]; each rollback attempt is charged.
+///
+/// # Malformed Input
+///
+/// A damaged newest revision is tolerated and discarded. A document with no
+/// parseable revision anywhere returns `Ok(None)`; budget/cancellation
+/// propagate as `Err`.
+pub fn parse_revisions_resilient(
+    src: &[u8],
+    startxref_keyword_pos: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Doc>> {
+    // Walk backwards over `startxref` keyword occurrences: the aimed one
+    // first, then earlier ones. A torn tail means the newest keyword may
+    // itself be intact while its *target* is not, or the keyword may be cut
+    // mid-value — both resolve by trying the previous occurrence.
+    let mut cursor = startxref_keyword_pos;
+    for _ in 0..16 {
+        match parse_revisions(src, cursor, budget, g) {
+            Ok(doc) => {
+                return if doc.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(doc))
+                };
+            }
+            Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => return Err(e),
+            Err(_) => {}
+        }
+        match prev_startxref(src, cursor) {
+            Some(prev) => cursor = prev,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// The position of the last `startxref` keyword strictly before `before`
+/// (searching the whole buffer backwards). Used to roll back to an earlier
+/// revision when the newest `startxref` block is torn (I5).
+fn prev_startxref(src: &[u8], before: u64) -> Option<u64> {
+    let end = usize::try_from(before).unwrap_or(src.len()).min(src.len());
+    if end < 9 {
+        return None;
+    }
+    let hay = src.get(..end)?;
+    let mut p = hay.len().saturating_sub(9);
+    loop {
+        if hay.get(p..p.saturating_add(9)) == Some(b"startxref") {
+            return Some(u64::try_from(p).unwrap_or(u64::MAX));
+        }
+        if p == 0 {
+            return None;
+        }
+        p = p.saturating_sub(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -326,5 +398,53 @@ mod tests {
         let startxref = crate::xref::find_startxref(&pdf, 2048).expect("startxref");
         let doc = parse_revisions(&pdf, startxref, &budget, &mut g).expect("parse");
         assert!(doc.at_revision(99).is_none());
+    }
+
+    /// SL-1A.WRITE.06 (I5): a *torn newest revision* — the incremental update
+    /// was killed mid-append — does not refuse the document. The resilient
+    /// parse rolls back to the previous complete revision; the strict parse
+    /// still fails (that difference is what the writer's verification uses
+    /// to reject incomplete output).
+    #[test]
+    fn torn_newest_revision_rolls_back_resiliently() {
+        let pdf = multi_revision_file(2); // 3 complete revisions
+        let budget = Budget::unlimited();
+        let mut g = guard();
+
+        // Strict parse succeeds on the intact file.
+        let startxref = crate::xref::find_startxref(&pdf, 2048).expect("startxref");
+        assert_eq!(
+            parse_revisions(&pdf, startxref, &budget, &mut g)
+                .expect("strict parse")
+                .len(),
+            3
+        );
+
+        // Tear the tail: cut mid-way through the newest startxref block.
+        let half = pdf.len() >> 1;
+        for keep in [pdf.len() - 6, pdf.len() - 14, half] {
+            let torn = pdf[..keep].to_vec();
+            // The strict parse of the torn tail may or may not fail (a cut
+            // that still leaves a complete earlier startxref target parses);
+            // the resilient parse must always recover all complete revisions.
+            let recovered = crate::parse_revisions_resilient(&torn, startxref, &budget, &mut g);
+            let doc = recovered
+                .expect("resilient parse recovers a complete revision")
+                .expect("at least one complete revision exists");
+            assert!(
+                !doc.revisions().is_empty(),
+                "at least the original revision survives a torn tail (cut at {keep})"
+            );
+        }
+
+        // A buffer with no parseable revision anywhere yields None (not a
+        // panic, not a fake document).
+        let garbage = b"not a pdf at all, not even slightly".to_vec();
+        assert!(
+            crate::parse_revisions_resilient(&garbage, 0, &budget, &mut g)
+                .expect("no budget error")
+                .is_none(),
+            "no complete revision -> None"
+        );
     }
 }
