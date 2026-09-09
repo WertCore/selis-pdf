@@ -12,6 +12,17 @@ workspace = true
 
 [dependencies]
 selis-error = { workspace = true }
+# Native Tier-2 codec-sandbox runtime. Gated: not compiled for the browser
+# targets, where the host delegates to the browser's own WASM engine (the
+# `wasm` module is the runtime-independent contract both paths implement).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wasmtime = { workspace = true, optional = true }
+
+[features]
+default = []
+# The native wasmtime embedding (SL-0.SBX.06). Off by default so pure-kernel
+# consumers (and the wasm32 build) never link Cranelift.
+wasm-host = ["dep:wasmtime"]
 
 [build-dependencies]
 serde = { workspace = true }
