@@ -40,3 +40,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Hash-pinning for the wild hang-regression fixtures (test-only; MIT/Apache,
+# already in [workspace.dependencies]).
+sha2 = { workspace = true }
