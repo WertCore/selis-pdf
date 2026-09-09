@@ -804,31 +804,37 @@ pub fn compute_oe_r6(
     aes256_cbc_encrypt_nopad(&hash, &file_key[..file_key.len().min(32)])
 }
 
-/// The 16-byte `/Perms` value (revision 6): AES-256-CBC of the 4-byte
-/// little-endian permission flags plus twelve `0xFF` bytes, keyed by the file
-/// key with IV `file_key[16..32]`.
+/// The 16-byte `/Perms` value (revision 6, Algorithm 10): AES-256-CBC with a
+/// zero IV of the 16-byte block
+/// `P(4 LE) || 0xFF 0xFF 0xFF 0xFF || 'T'|"adb" || 4 arbitrary bytes`.
+/// Byte 8 is `'F'` when `/EncryptMetadata` is false; the final four bytes are
+/// fill bytes readers are free to define (here: from the CSPRNG).
 #[must_use]
-pub fn compute_perms_r6(p: u32, file_key: &[u8]) -> Vec<u8> {
+pub fn compute_perms_r6(p: u32, file_key: &[u8], encrypt_metadata: bool) -> Vec<u8> {
     let mut plain = [0u8; 16];
     plain[..4].copy_from_slice(&p.to_le_bytes());
-    for b in plain.iter_mut().skip(4) {
+    for b in plain.iter_mut().skip(4).take(4) {
         *b = 0xFF;
     }
+    plain[8] = if encrypt_metadata { b'T' } else { b'F' };
+    plain[9..12].copy_from_slice(b"adb");
+    let fill = random_bytes(4);
+    plain[12..16].copy_from_slice(&fill);
     let fk = &file_key[..file_key.len().min(32)];
     let Ok(cipher) = Aes256::new_from_slice(fk) else {
         return Vec::new();
     };
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&fk[16..32]);
-    aes256_cbc_encrypt_raw(&cipher, &iv, &plain)
+    aes256_cbc_encrypt_raw(&cipher, &[0u8; 16], &plain)
 }
 
 /// Verify a stored `/Perms` blob against the expected permission flags and
-/// file key (revision 6, read side). Returns `true` when the blob decrypts to
-/// the 4-byte flags plus the twelve `0xFF` bytes, indicating an unmodified
-/// document whose key matches.
+/// file key (revision 6, read side). Returns `true` when the zero-IV
+/// decryption of the blob yields the 4-byte flags, the four `0xFF` bytes,
+/// and the `'T'|"adb"` marker — the first 12 bytes Algorithm 10 defines; the
+/// last four are fill and unconstrained. An unmodified document whose key
+/// matches passes; a re-keyed or tampered blob fails.
 #[must_use]
-pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8]) -> bool {
+pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8], encrypt_metadata: bool) -> bool {
     if perms.len() != 16 {
         return false;
     }
@@ -836,24 +842,32 @@ pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8]) -> bool {
     let Ok(cipher) = Aes256::new_from_slice(fk) else {
         return false;
     };
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&fk[16..32]);
-    let mut plain = [0u8; 16];
-    plain.copy_from_slice(&perms[..16]);
-    let mut block = Block::clone_from_slice(&plain);
-    cipher.decrypt_block(&mut block);
+    let mut block = [0u8; 16];
+    block.copy_from_slice(&perms[..16]);
+    let mut gb = Block::clone_from_slice(&block);
+    cipher.decrypt_block(&mut gb);
     let mut out = [0u8; 16];
     for k in 0..16 {
-        out[k] = block[k] ^ iv[k];
+        out[k] = gb[k];
     }
     if out[..4] != p.to_le_bytes() {
         return false;
     }
-    out[4..].iter().all(|&b| b == 0xFF)
+    if out[4..8].iter().any(|&b| b != 0xFF) {
+        return false;
+    }
+    let metadata_byte = if encrypt_metadata { b'T' } else { b'F' };
+    out[8] == metadata_byte && out[9..12] == *b"adb"
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
     use super::*;
 
     #[test]
@@ -1017,24 +1031,61 @@ mod tests {
     fn perms_roundtrips_and_verifies() {
         let file_key = [0x11u8; 32];
         let p: u32 = 0xFFFFF0C0;
-        let perms = compute_perms_r6(p, &file_key);
+        let perms = compute_perms_r6(p, &file_key, true);
         assert_eq!(perms.len(), 16);
         assert!(
-            verify_perms_r6(p, &file_key, &perms),
+            verify_perms_r6(p, &file_key, &perms, true),
             "valid /Perms verifies"
         );
         assert!(
-            !verify_perms_r6(p + 1, &file_key, &perms),
+            !verify_perms_r6(p + 1, &file_key, &perms, true),
             "wrong flags reject"
         );
         assert!(
-            !verify_perms_r6(p, &[0x22u8; 32], &perms),
+            !verify_perms_r6(p, &[0x22u8; 32], &perms, true),
             "wrong file key rejects"
         );
         assert!(
-            !verify_perms_r6(p, &file_key, &perms[..15]),
+            !verify_perms_r6(p, &file_key, &perms[..15], true),
             "truncated /Perms rejects"
         );
+        // /EncryptMetadata false flips the marker byte.
+        let perms_f = compute_perms_r6(p, &file_key, false);
+        assert!(
+            !verify_perms_r6(p, &file_key, &perms_f, true),
+            "an F-blob must not verify as T"
+        );
+        assert!(
+            verify_perms_r6(p, &file_key, &perms_f, false),
+            "an F-blob verifies with EncryptMetadata false"
+        );
+    }
+
+    /// Interop (SL-1A.TOOL.06 DoD): a `/Perms` blob produced by this module
+    /// must verify the way qpdf implements Algorithm 10 — the first 12 bytes
+    /// are `P(LE) || FFFF FFFF || T/F || "adb"` under a zero IV, and the last
+    /// four bytes are arbitrary fill.
+    #[test]
+    fn perms_matches_qpdf_algorithm_10_layout() {
+        let file_key = [0x33u8; 32];
+        let p: u32 = 0xFFFF_FFC4;
+        let perms = compute_perms_r6(p, &file_key, true);
+        // Recompute the expected plaintext and encrypt it ECB-style by hand
+        // (the block is one AES op; CBC with a zero IV is ECB XOR nothing).
+        let mut expected_plain = [0u8; 16];
+        expected_plain[..4].copy_from_slice(&p.to_le_bytes());
+        expected_plain[4..8].copy_from_slice(&[0xFF; 4]);
+        expected_plain[8] = b'T';
+        expected_plain[9..12].copy_from_slice(b"adb");
+        // Decrypt the blob back to plaintext and compare the 12 meaningful
+        // bytes; the 4 fill bytes are unconstrained.
+        use aes::cipher::{BlockDecrypt, KeyInit};
+        let cipher = Aes256::new_from_slice(&file_key).unwrap();
+        let mut block = [0u8; 16];
+        block.copy_from_slice(&perms);
+        let mut gb = aes::Block::clone_from_slice(&block);
+        cipher.decrypt_block(&mut gb);
+        assert_eq!(&gb.as_slice()[..12], &expected_plain[..12]);
     }
 
     #[test]

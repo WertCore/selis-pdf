@@ -295,7 +295,32 @@ operation is available identically in the CLI, the web app, and the extension.
   - **DoD:** A corpus of permission-restricted documents round-trips with the bits cleared.
   - **Note:** Distinct from TOOL.04 and lower priority — ship TOOL.04 first, it is the one users
     ask for by name.
-- [ ] **SL-1A.TOOL.06 — Add password / set permissions** · deps: `SL-1.ENC.02` · owner: HUMAN
+- [x] **SL-1A.TOOL.06 — Add password / set permissions** · deps: `SL-1.ENC.02` · owner: HUMAN
+  - **Status: DRAFT — awaiting HUMAN sign-off** (per the task's owner gate; the AI draft is
+    complete and green but not final until a human approves it — including the ENC.04 UI copy
+    and the Acrobat/PDFium manual open step).
+  - **Note:** Shipped as
+    `selis protect in.pdf -o out.pdf --user-password <p> --owner-password <p> [--permissions <spec>] [--no-encrypt-metadata]`.
+    AESV3/R6 only (ADR-P0019) via the ENC.02 write path; separate user/owner passwords (owner
+    defaults to user, Acrobat-style; env fallbacks `SELIS_USER_PASSWORD`/`SELIS_OWNER_PASSWORD`,
+    exposure tradeoff documented in the long help); full rewrite with WRITE.05 verification
+    before replacement; already-encrypted input refused with the new typed `ALREADY_ENCRYPTED`
+    (E1806). Permission surface kept small: print, modify, copy, annotate (+`none`); reserved
+    bits stay conformant (bits 1–2 zero, 7–8/13–32 one); accessibility extraction always
+    granted. `/EncryptMetadata` honoured: the catalog `/Metadata` stream is left plaintext
+    under `--no-encrypt-metadata` (direct-stream `/Metadata` is refused rather than
+    mishandled). `/ID` from the CSPRNG. The ENC.04 plain-language statement ("permission bits
+    are a convention, not enforcement") ships in the command's long help; web/extension copy
+    review rides on the same sign-off. Fixing this task exposed and fixed a real ENC.02 bug:
+    `/Perms` did not follow Algorithm 10 (wrong plaintext layout, wrong IV) — qpdf warned
+    "/Perms field doesn't match expected value"; corrected in selis-crypto (see the crypto
+    commit) and now qpdf --check is clean. DoD evidence: round-trip + wrong-password typed
+    error + /P//Perms verification unit tests; proptest over generated inputs (48 cases, the
+    Algorithm-2.B KDF is deliberately expensive); corpus fixture
+    `corpus/fixtures/protect_unencrypted_source.pdf` + `apps/cli/tests/protect_roundtrip.rs`
+    (protect → unlock → wrong-password → qpdf `--show-encryption`/`--check` oracle interop).
+    Remaining for the human sign-off: open a protected output in Acrobat and PDFium
+    (pdfium_driver is not installed locally; qpdf structural oracle is the automated proxy).
   - **Do:** Encrypt with AESV3/R6 only (ADR-P0019). Separate user and owner passwords, permission
     bit selection, and a plain-language explanation in the UI that permission bits are a
     convention, not enforcement.
