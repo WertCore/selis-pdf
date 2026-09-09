@@ -13,10 +13,10 @@
 //! must be recorded via `xtask oracle check` so version drift is visible.
 //!
 //! The pins live in `xtask/oracles.toml` (`[tool.<id>]` tables): the image
-//! built from `docker/oracles/<tool>/Dockerfile`, its digest (recorded after
-//! the first CI build — Docker is unavailable on the dev host that authored
-//! the pins), the digest-pinned base image, and the sha256-pinned tool
-//! artifact. A container without a recorded digest is refused for
+//! built from `docker/oracles/<tool>/Dockerfile`, its manifest digest
+//! (recorded from the CI push — Docker is unavailable on the dev host that
+//! authored the pins), the digest-pinned base image, and the sha256-pinned
+//! tool artifact. A container without a recorded digest is refused for
 //! comparable output: a mutable tag is not a pin.
 
 use std::collections::{BTreeMap, BTreeSet};
