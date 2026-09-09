@@ -245,12 +245,15 @@ fn open_one(path: &std::path::Path, root: &std::path::Path, wall: Duration) -> F
         .expect("spawn open worker");
 
     let (outcome, code, during): (&'static str, Option<String>, Option<String>) =
-        match rx.recv_timeout(wall + Duration::from_secs(HANG_SLACK_SECS)) {
+        match rx.recv_timeout(wall.saturating_add(Duration::from_secs(HANG_SLACK_SECS))) {
             Ok(v) => v,
             Err(_) => ("hang", None, None),
         };
     let millis = started.elapsed().as_millis();
-    let within_budget_wall = millis <= (wall + Duration::from_secs(HANG_SLACK_SECS)).as_millis();
+    let within_budget_wall = millis
+        <= wall
+            .saturating_add(Duration::from_secs(HANG_SLACK_SECS))
+            .as_millis();
     FileOutcome {
         id,
         outcome,

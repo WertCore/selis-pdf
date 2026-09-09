@@ -105,7 +105,11 @@ fn no_tool_degrades_conformance_posture() {
     let full = std::env::var_os("SELIS_TOOL_CONFORMANCE_FULL").is_some();
     // ~200 evaluated files keeps the gate in the minutes range; the corpus
     // had ~650 files when the gate shipped and now grows without bound.
-    let stride = if full { 1 } else { (files.len() / 200).max(1) };
+    let stride = if full {
+        1
+    } else {
+        files.len().div_ceil(200).max(1)
+    };
     let files: Vec<std::path::PathBuf> = files
         .into_iter()
         .enumerate()
@@ -122,8 +126,8 @@ fn no_tool_degrades_conformance_posture() {
         // Full-document rewrites on multi-megabyte files exercise the same
         // conformance paths as small ones while dominating the gate's wall
         // time; their open path is already covered by the ROB.01 sweep.
-        let oversize = !full
-            && std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_GATE_BYTES;
+        let oversize =
+            !full && std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_GATE_BYTES;
         if oversize {
             skipped += 1;
             continue;
