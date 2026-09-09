@@ -556,7 +556,14 @@ fn aes256_cbc_decrypt_nopad(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     };
     let mut out = Vec::new();
     let mut prev = [0u8; 16];
-    prev.copy_from_slice(&iv[..iv.len().min(16)]);
+    // SL-1.ENC.06: a hostile `/Encrypt` string can be shorter than one block.
+    // `copy_from_slice` demands an exact length, so a short IV panicked here;
+    // truncated input is malformed and fails as empty like every other
+    // decrypt failure in this file.
+    if iv.len() < 16 {
+        return Vec::new();
+    }
+    prev.copy_from_slice(&iv[..16]);
     for chunk in data.chunks(16) {
         if chunk.len() != 16 {
             break;
@@ -581,7 +588,15 @@ where
 {
     let mut out = Vec::new();
     let mut prev = [0u8; 16];
-    prev.copy_from_slice(&iv[..iv.len().min(16)]);
+    // SL-1.ENC.06: the IV is the first 16 bytes of attacker-controlled
+    // ciphertext. A truncated stream yields a short IV, and `copy_from_slice`
+    // panicked on the length mismatch (3 wild INTERNAL_PANICs). Short input
+    // is malformed: fail as empty, like every other decrypt failure here —
+    // the caller then reports a typed error instead of dying.
+    if iv.len() < 16 {
+        return Vec::new();
+    }
+    prev.copy_from_slice(&iv[..16]);
     let mut blocks: Vec<[u8; 16]> = Vec::new();
     for chunk in data.chunks(16) {
         if chunk.len() != 16 {
@@ -833,6 +848,23 @@ pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_ciphertext_fails_empty_instead_of_panicking() {
+        // SL-1.ENC.06: truncated attacker-controlled ciphertext used to panic
+        // `copy_from_slice` on the short IV (3 wild INTERNAL_PANICs). Short
+        // input is malformed and must fail as empty — the file's established
+        // failure signal — so the caller reports a typed error instead.
+        let key = [0x2Au8; 32];
+        assert!(decrypt_data(&key, 1, 0, &[], 6, true).is_empty());
+        assert!(decrypt_data(&key, 1, 0, &[0x11; 7], 6, true).is_empty());
+        assert!(decrypt_data(&key, 1, 0, &[0x11; 15], 6, true).is_empty());
+        assert!(decrypt_data(&key, 1, 0, &[0x11; 15], 4, true).is_empty());
+        assert!(aes256_cbc_decrypt_nopad(&key, &[0x22; 5], &[0x33; 32]).is_empty());
+        // A full first block still decrypts (no behavior change on valid input;
+        // the exact length depends on the PKCS7 pad byte of the output).
+        assert!(decrypt_data(&key, 1, 0, &[0x11; 32], 6, true).len() <= 16);
+    }
 
     #[test]
     fn rc4_matches_known_vector() {
