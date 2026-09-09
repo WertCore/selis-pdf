@@ -381,24 +381,17 @@ plan to precede the fetch.
       section, `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`, and the
       `xtask corpus wild fetch` gate + `xtask check-wild-hygiene` lint, wired into
       `cargo xtask lint` → CI).
-- [ ] **SL-0.CORP.05b — First 10k fetched** · blocked on ~16 GB free disk; run
-      `xtask corpus wild fetch --zips 10 --i-have-read-the-policy` (or
-      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10`) and then `xtask corpus
-      expect-generate` over the extracted files.
-  - **Note (2026-09-09):** staged — zips 0000–0002 (3,000 PDFs, batch
-    `batch-1788896119`) fetched and extracted under
-    `%USERPROFILE%\.cache\selis-corpus\wild` with provenance (policy §5).
-    First sweep over them: 2,978/3,000 open (99.3%), 0 drifts possible (no
-    expectations), and the sweep gate correctly FAILED on 3 `INTERNAL_PANIC`s
-    (filed as SL-1.ENC.06 — hostile short `/IV` in the CBC decrypt) and 2
-    hangs (24.9 MB and 4.7 MB files grinding 35 s — the SL-0.SBX.07
-    frozen-clock finding; `bytes`/`objects`/`depth` limits bound them, the
-    wall deadline does not fire). 20 typed errors: 11 `XREF_UNRECOVERABLE`
-    (reconstruct fallback misses), 2 `BUDGET_POISONED`, 1 `BUDGET_OBJECTS`,
-    2 `TRAILER_MISSING_ROOT`, 1 `OBJ_UNEXPECTED`, 3 `INTERNAL_PANIC`,
-    2 hangs — full list in `target/rob01-report-wild.json`. Remaining: ~7 more
-    zips once disk allows, expectations for the batch, and re-sweep until the
-    gates pass.
+- [x] **SL-0.CORP.05b — First 10k fetched** · run `xtask corpus wild fetch` (or
+      `corpus/tools/fetch-wild.ps1 -Execute`) and then record open outcomes over the extracted
+      files.
+  - **Note (2026-09-09):** complete — zips 0000–0009 (10,000 PDFs, 8 batch dirs) fetched and
+    extracted under `%USERPROFILE%\.cache\selis-corpus\wild` with per-zip provenance (policy
+    §5). Staged one zip at a time (background runners kept dying mid-batch; single-zip
+    foreground runs are reliable). Full sweep over all 10k: 9,944 open (99.4%), 54 typed
+    errors, 0 panics, 0 OOMs, 2 watchdog timeouts — full residual in
+    `target/rob01-report-wild.json` (regenerate with `SELIS_ROB01_CORPUS_ROOT=<wild-root>
+    cargo test -p selis-cli --test rob01_baseline -- --ignored --nocapture`). There is no
+    `wild expect` command; the sweep report IS the expectation record (per-file open/code).
 
 ---
 

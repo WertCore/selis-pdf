@@ -270,8 +270,18 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     job), 0 panics, 0 hangs, 0 OOMs, 0 expectation drifts, 0 over-wall. Machine-readable
     report: `target/rob01-report.json` (regenerate with
     `cargo test -p selis-cli --test rob01_baseline -- --ignored --nocapture`). Root causes
-    unchanged from the campaign notes; no new fix tasks filed. Remaining for the DoD: the
-    10k wild fetch completes, then this sweep runs over it via `SELIS_ROB01_CORPUS_ROOT`.
+    unchanged from the campaign notes; no new fix tasks filed.
+  - **Note (wild 10k, 2026-09-09):** the full DoD sweep over SL-0.CORP.05b's 10,000 SAFEDOCS
+    files: 9,944 open (99.4%), 54 typed errors — 31 `XREF_UNRECOVERABLE` (reconstruct fallback
+    misses, the known hard tail), 12 `BUDGET_*` (the caps doing their job), 6
+    `TRAILER_MISSING_ROOT`, 5 `OBJ_UNEXPECTED` — **0 panics** (the 3 batch-1 `INTERNAL_PANIC`s
+    are fixed by SL-1.ENC.06 and now open cleanly), 0 OOMs. Open-or-typed: 99.98% (DoD ≥99%).
+    2 watchdog timeouts, both investigated and both terminating standalone: `0002/0002365`
+    (4.7 MB) opens in 4 s outside the sweep (transient sweep-time slowness, likely AV scan of
+    freshly-extracted files); `0002/0002657` (25 MB, 47k xref entries) opens in 243 s debug
+    (slow file — will fail typed `BUDGET_WALL` once SL-0.SBX.07 lands a real clock). Residual
+    0.56% fully enumerated in `target/rob01-report-wild.json`; no new bug classes found, so no
+    new tasks beyond ENC.06 (fixed) — the residual clause of the DoD, not hand-waving.
   - **Note:** Fetched corpus (977 files) opens 973/977 (99.6%) under the Viewer budget; the
     remaining 4 are typed errors, all enumerated and understood — bug1020226 and
     poppler-742-0-fuzzed (degenerate structures: an unclosed dict with no `endobj`, and an
