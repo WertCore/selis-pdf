@@ -392,11 +392,11 @@ plan to precede the fetch.
     chromium/7961 prebuilt binaries; pdf.js 6.2.108 via `npm ci` integrity hashes, lockfile
     committed). The pdfium C driver (compiled locally with MSVC against the pinned win-x64
     tarball) and the pdf.js headless driver were exercised end-to-end locally.
-    **Digests pending:** Docker is unavailable on this host, so image manifest digests are
-    recorded as empty in `xtask/oracles.toml`; container dispatch warns and the CI
-    `oracle-images` workflow builds + smoke-renders all five and records the digests on the
-    first push. Ghostscript is CI-validated only (no local gs). No oracle is linked into any
-    Selis build (ADR-P0009).
+    **Digests recorded:** all five images were built, smoke-rendered and
+    pushed to GHCR by the CI `oracle-images` job (2026-09-09, run
+    34319440352); the manifest digests are in `xtask/oracles.toml` and
+    container dispatch pulls by digest. Ghostscript is CI-validated only (no
+    local gs). No oracle is linked into any Selis build (ADR-P0009).
 
 - [ ] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
   - **Do:** Compare our output to an oracle's with a *perceptual* metric, not exact bytes:
