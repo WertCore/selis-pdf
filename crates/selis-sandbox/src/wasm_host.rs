@@ -525,10 +525,6 @@ fn protocol_len(len: usize) -> Result<i32> {
 /// The `step` name is engine-controlled static text, never document
 /// content (ADR-P0017).
 fn map_call_error(e: wasmtime::Error, step: &'static str) -> Error {
-    if std::env::var_os("SELIS_SANDBOX_DEBUG").is_some() {
-        eprintln!("sandbox debug: step={step} err={e:#}");
-    }
-
     if e.downcast_ref::<MemoryCapExceeded>().is_some() {
         return err!(Code::SandboxMemoryCap, during = "wasm-host", detail = step);
     }
