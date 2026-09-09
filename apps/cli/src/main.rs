@@ -28,6 +28,7 @@ mod convert;
 mod extract;
 mod img2pdf;
 mod inspect;
+mod protect;
 mod render;
 mod search;
 mod tools;
@@ -275,7 +276,53 @@ enum Command {
         #[arg(short, long)]
         password: Option<String>,
     },
+    /// Add password protection and set permission bits (AES-256, revision 6).
+    #[command(after_long_help = PROTECT_PERMISSIONS_NOTE)]
+    Protect {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The user password (the password needed to open the document).
+        /// Omit for a document that opens without a password.
+        #[arg(long = "user-password")]
+        user_password: Option<String>,
+        /// The owner password (needed to change permissions later).
+        /// Defaults to the user password.
+        #[arg(long = "owner-password")]
+        owner_password: Option<String>,
+        /// Permissions to grant, comma-separated: print, modify, copy,
+        /// annotate; `none` denies all four. Default: grant all four.
+        #[arg(long)]
+        permissions: Option<String>,
+        /// Keep the document-level XMP metadata unencrypted
+        /// (/EncryptMetadata false). Default: metadata is encrypted.
+        #[arg(long = "no-encrypt-metadata")]
+        no_encrypt_metadata: bool,
+    },
 }
+
+/// SL-1.ENC.04 requires the plain-language statement that permission bits
+/// are a convention, not enforcement. This copy ships with the command so
+/// every surface (CLI now, web/extension later) states it; the web/extension
+/// wording is reviewed at the same sign-off gate.
+const PROTECT_PERMISSIONS_NOTE: &str = "\
+What `--permissions` does — and does not do:
+
+The permission bits recorded in a PDF are a request, not a lock. They are
+honoured by well-behaved viewers, but any program (including this one, given
+the owner password) can change or ignore them. Do not rely on them to keep
+content secret — the document encryption password does that. Permission bits
+express the owner's intent: e.g. \"this document should not be edited\".
+
+Accessibility is never restricted: screen-reader extraction is always granted,
+in every configuration of this command.
+
+Passwords can be given as arguments (visible in shell history and process
+listings on this machine) or via the SELIS_USER_PASSWORD / SELIS_OWNER_PASSWORD
+environment variables. They are never logged and never stored anywhere except
+inside the encrypted document itself.";
 
 fn main() {
     let cli = Cli::parse();
@@ -384,6 +431,21 @@ fn main() {
             output,
             password,
         } => clear_permissions::run(&path, &output, password.as_deref()),
+        Command::Protect {
+            path,
+            output,
+            user_password,
+            owner_password,
+            permissions,
+            no_encrypt_metadata,
+        } => protect::run(
+            &path,
+            &output,
+            user_password.as_deref(),
+            owner_password.as_deref(),
+            permissions.as_deref(),
+            !no_encrypt_metadata,
+        ),
         Command::Batch {
             tool,
             inputs,
