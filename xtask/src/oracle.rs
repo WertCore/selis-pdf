@@ -133,6 +133,14 @@ pub enum OracleCommand {
     },
     /// Report which oracles are available locally (and record their versions).
     Check,
+    /// Run the structural oracle's consistency check over tool output
+    /// (SL-1A.WRITE.05): `qpdf --check <file>` locally, or through the pinned
+    /// container when qpdf is not installed. Exits non-zero when the output
+    /// does not pass.
+    CheckOutput { file: PathBuf },
+    /// Check every `*.pdf` under a directory produced by the tool suite
+    /// (SL-1A.WRITE.05 CI slot). Fails on the first output that does not pass.
+    CheckOutputDir { dir: PathBuf },
     /// Compare `selis inspect --json` against `qpdf --json` (SL-0.ORACLE.03).
     Compare { file: PathBuf },
     /// Render with `selis` and an oracle at the same DPI and compare pixelwise
@@ -162,6 +170,8 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
     match cmd {
         OracleCommand::Render { tool, dpi, file } => render(&tool, dpi, &file),
         OracleCommand::Check => check(),
+        OracleCommand::CheckOutput { file } => check_output(&file),
+        OracleCommand::CheckOutputDir { dir } => check_output_dir(&dir),
         OracleCommand::Compare { file } => compare(&file),
         OracleCommand::CompareRender { tool, dpi, file } => compare_render(&tool, dpi, &file),
         OracleCommand::CompareText { file } => compare_text(&file),
@@ -488,6 +498,116 @@ fn run_json(cmd: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
     }
     serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("`{}` JSON parse error: {e}", cmd.display()))
+}
+
+// ── Output checking (SL-1A.WRITE.05) ──────────────────────────────────────
+
+/// Run `qpdf --check <file>` over tool output (SL-1A.WRITE.05's external
+/// oracle slot). Local qpdf first; the pinned container otherwise. The exit
+/// status is the verdict — CI wires this directly after the tool suite.
+///
+/// qpdf's `--check` distinguishes exit 2 (warnings) from exit 3 (errors);
+/// warnings are reported but do not fail the gate (tool outputs from the
+/// Phase 1A writers legitimately keep e.g. missing /ID or non-conformant
+/// trailer details the originals had), errors always fail.
+fn check_output(file: &Path) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    let path = file.to_str().ok_or("path is not valid UTF-8")?;
+    if let Some(qpdf) = find_local("qpdf") {
+        let out = Command::new(&qpdf)
+            .arg("--check")
+            .arg(path)
+            .output()
+            .map_err(|e| format!("cannot run qpdf: {e}"))?;
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        match code {
+            0 | 2 => {
+                println!(
+                    "qpdf --check {}: {} (exit {code})",
+                    file.display(),
+                    if code == 0 { "OK" } else { "warnings only" }
+                );
+                Ok(())
+            }
+            _ => Err(format!(
+                "qpdf --check {}: ERRORS (exit {code}):\n{stdout}{stderr}",
+                file.display()
+            )),
+        }
+    } else {
+        // Pinned container fallback (same entrypoint, same contract).
+        let pins = load_pins()?;
+        let pin = pins
+            .get("qpdf")
+            .ok_or_else(|| "no [tool.qpdf] pin in xtask/oracles.toml".to_string())?;
+        let image = image_ref(pin, "qpdf")?;
+        let out = Command::new("docker")
+            .arg("run")
+            .arg("--rm")
+            .arg("-v")
+            .arg(format!(
+                "{}:/in.pdf:ro",
+                file.canonicalize().map_err(|e| e.to_string())?.display()
+            ))
+            .arg(&image)
+            .arg("--check")
+            .arg("/in.pdf")
+            .output()
+            .map_err(|e| {
+                format!(
+                    "qpdf not installed locally and docker dispatch failed: {e}. \
+                 Install qpdf (`winget install qpdf`) or Docker."
+                )
+            })?;
+        let code = out.status.code().unwrap_or(-1);
+        match code {
+            0 | 2 => Ok(()),
+            _ => Err(format!(
+                "qpdf --check (container) {}: ERRORS (exit {code}):\n{}{}",
+                file.display(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )),
+        }
+    }
+}
+
+/// Run `qpdf --check` over every `*.pdf` directly under `dir` (the tool
+/// suite's output directory). SL-1A.WRITE.05's CI slot.
+fn check_output_dir(dir: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+        {
+            if let Err(e) = check_output(&path) {
+                failures.push(e);
+            }
+            checked += 1;
+        }
+    }
+    if checked == 0 {
+        return Err(format!("{}: no *.pdf outputs to check", dir.display()));
+    }
+    if failures.is_empty() {
+        println!("qpdf --check: {checked} output(s) passed");
+        Ok(())
+    } else {
+        Err(format!(
+            "qpdf --check: {}/{} output(s) FAILED:\n  {}",
+            failures.len(),
+            checked,
+            failures.join("\n  ")
+        ))
+    }
 }
 
 // ── Render comparison (SL-0.ORACLE.02 foundation) ──────────────────────────
