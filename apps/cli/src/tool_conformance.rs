@@ -147,6 +147,11 @@ fn no_tool_degrades_conformance_posture() {
             continue;
         };
         drop(session);
+        // Per-file timing goes to stderr: invisible by default, invaluable
+        // with `--nocapture` when the gate is slow — a file that grinds the
+        // tools for minutes is a budget-enforcement finding (SL-0.SBX.07),
+        // not a mystery.
+        let file_started = std::time::Instant::now();
         evaluated += 1;
         if page_count == 0 {
             skipped += 1;
@@ -181,6 +186,11 @@ fn no_tool_degrades_conformance_posture() {
             }
             let _ = std::fs::remove_file(&out_path);
         }
+        eprintln!(
+            "  [conformance-gate] {} {}ms",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            file_started.elapsed().as_millis()
+        );
     }
 
     assert!(
