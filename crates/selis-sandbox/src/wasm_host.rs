@@ -1,4 +1,4 @@
-﻿//! The native Tier-2 codec-sandbox host: a `wasmtime` embedding
+//! The native Tier-2 codec-sandbox host: a `wasmtime` embedding
 //! (SL-0.SBX.06; `01-ARCHITECTURE.md Ã‚Â§4`).
 //!
 //! # The containment model
@@ -295,7 +295,7 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ output: only when the module claims success Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         let output = if status == Status::Ok {
-            self.copy_out(&instance, &mut store, &memory, mem_bytes)?
+            self.copy_out(&instance, &mut store, &memory)?
         } else {
             Vec::new()
         };
@@ -320,7 +320,6 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
         instance: &Instance,
         store: &mut Store<StoreState>,
         memory: &Memory,
-        mem_bytes: usize,
     ) -> Result<Vec<u8>> {
         self.guard.tick()?;
         // Two plain i32 calls, not a multi-value return: C toolchains
@@ -363,6 +362,9 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
         let len = usize::try_from(len_raw)
             .map_err(|_| protocol_error("output returned a negative length"))?;
         let region = Region { ptr, len };
+        // The module may have grown its memory during decode: re-read the
+        // size now, or a valid output region would be rejected as forged.
+        let mem_bytes = memory.data_size(&mut *store);
         self.validate_region(&region, mem_bytes, "output region")?;
         // vec_filled charges Resource::Bytes before allocating (the copy
         // is the allocation), so no separate charge here.
@@ -523,6 +525,10 @@ fn protocol_len(len: usize) -> Result<i32> {
 /// The `step` name is engine-controlled static text, never document
 /// content (ADR-P0017).
 fn map_call_error(e: wasmtime::Error, step: &'static str) -> Error {
+    if std::env::var_os("SELIS_SANDBOX_DEBUG").is_some() {
+        eprintln!("sandbox debug: step={step} err={e:#}");
+    }
+
     if e.downcast_ref::<MemoryCapExceeded>().is_some() {
         return err!(Code::SandboxMemoryCap, during = "wasm-host", detail = step);
     }
