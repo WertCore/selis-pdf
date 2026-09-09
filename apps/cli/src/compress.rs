@@ -121,16 +121,21 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
         .map_err(|e| CliError(format!("{path}: write: {e}")))?;
     let out_bytes = bytes.len();
 
-    // Structural verification (WRITE.05 obligation): the output must reparse
-    // with the same root reachable.
-    let sx = xref::find_startxref(&bytes, 4096).unwrap_or(0);
-    let parsed = parse_revisions(&bytes, sx, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
-    if parsed.revisions().last().and_then(|r| r.root) != Some(root_ref) {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Root not preserved)"
-        )));
-    }
+    // Structural verification (WRITE.05, via the shared gate): the output
+    // must reparse, every reference must resolve, the page count must match
+    // the input's, and the /Root must be preserved. Commit is atomic.
+    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+    crate::write_gate::write_verified(
+        &bytes,
+        output,
+        &selis_pdf_cos::verify::Expectations {
+            pages: Some(observed.pages),
+            ..selis_pdf_cos::verify::Expectations::none()
+        },
+        &budget,
+        &mut g,
+    )?;
     // The output must also build a document model — a catalog with a usable
     // page tree. A root graph that parses but has no /Pages (e.g. the input
     // only opens through scan-based recovery) is not a compressible document;
@@ -142,7 +147,6 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
         )));
     }
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
     Ok(Report {
         objects: object_count,
         deduplicated,

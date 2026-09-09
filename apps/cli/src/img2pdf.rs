@@ -136,7 +136,8 @@ pub(crate) fn img2pdf(
     let bytes = builder
         .write(&budget, &mut g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    // WRITE.05: generated output is verified and committed atomically.
+    crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
     eprintln!("wrote {} page(s) to {output}", inputs.len());
     Ok(())
 }

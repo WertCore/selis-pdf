@@ -25,6 +25,8 @@ mod check;
 mod clear_permissions;
 mod compress;
 mod convert;
+#[cfg(debug_assertions)]
+mod crash_save;
 mod extract;
 mod img2pdf;
 mod inspect;
@@ -33,6 +35,7 @@ mod search;
 mod tools;
 mod topdf;
 mod unlock;
+mod write_gate;
 
 #[cfg(test)]
 mod tool_conformance;
@@ -275,6 +278,19 @@ enum Command {
         #[arg(short, long)]
         password: Option<String>,
     },
+    /// DEBUG BUILDS ONLY — run one save operation with crash injection
+    /// active (SL-1A.WRITE.06 kill-test harness entry point). Hidden.
+    #[command(hide = true, name = "__crash-save")]
+    #[cfg(debug_assertions)]
+    CrashSave {
+        /// The operation: split|rotate-rewrite|rotate-incremental|compress.
+        op: String,
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -394,6 +410,15 @@ fn main() {
                 "unknown batch tool `{other}` (supported: compress)"
             ))),
         },
+        #[cfg(debug_assertions)]
+        Command::CrashSave { op, path, output } => {
+            match crash_save::parse_crash_op(&op) {
+                Some(parsed) => crash_save::run_crash_save(parsed, &path, &output),
+                None => Err(CliError(format!(
+                    "unknown crash-save op `{op}` (supported: split, rotate-rewrite, rotate-incremental, compress)"
+                ))),
+            }
+        }
     };
     match result {
         Ok(()) => {}

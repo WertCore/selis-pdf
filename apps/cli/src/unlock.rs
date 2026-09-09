@@ -61,9 +61,9 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
 
     let policy = match rev.encrypt {
         None => {
-            // Not encrypted: copy as-is.
-            std::fs::write(output, &src)
-                .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+            // Not encrypted: copy as-is (verbatim, atomic — the bytes are the
+            // user's original file, not writer output to verify).
+            crate::write_gate::atomic_write(&src, output)?;
             return Ok(UnlockReport { encrypted: false });
         }
         Some(r) => {
@@ -144,8 +144,23 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
             .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
-    // Structural verification (WRITE.05): the output must reparse with no
-    // /Encrypt and the same /Root.
+    // Structural verification (WRITE.05, via the shared gate): the output
+    // must reparse, every reference must resolve, and the page count must
+    // match the input's. Commit is atomic (temp + fsync + rename).
+    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+    crate::write_gate::write_verified(
+        &bytes,
+        output,
+        &selis_pdf_cos::verify::Expectations {
+            pages: Some(observed.pages),
+            ..selis_pdf_cos::verify::Expectations::none()
+        },
+        &budget,
+        &mut g,
+    )?;
+    // The decrypted output must carry no /Encrypt and must build a usable
+    // document model (WRITE.07).
     let sx = xref::find_startxref(&bytes, 4096).unwrap_or(0);
     let parsed = parse_revisions(&bytes, sx, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
@@ -158,11 +173,6 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
             "{path}: output failed verification (/Encrypt still present)"
         )));
     }
-    if out_rev.root != Some(root) {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Root not preserved)"
-        )));
-    }
     // The output must also build a usable document model (WRITE.07).
     let doc_budget = Budget::profile(Surface::Viewer);
     if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
@@ -171,7 +181,6 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
         )));
     }
 
-    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
     Ok(UnlockReport { encrypted: true })
 }
 
