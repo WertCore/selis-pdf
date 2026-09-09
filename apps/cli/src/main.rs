@@ -279,122 +279,129 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Inspect { path, json } => inspect::run(&path, json),
-        Command::Render {
-            path,
-            page,
-            output,
-            dpi,
-        } => render::run(&path, page, &output, dpi),
-        Command::Extract {
-            path,
-            page,
-            last,
-            format,
-            output,
-        } => extract::run(&path, page, last, &format, output.as_deref()),
-        Command::Convert {
-            path,
-            output,
-            first,
-            last,
-        } => convert::run(&path, &output, first, last),
-        Command::Search { path, query, page } => search::run(&path, &query, page),
-        Command::Check { path, profile } => check::run(&path, &profile),
-        Command::Merge { inputs, output } => tools::merge(&inputs, &output),
-        Command::Split {
-            path,
-            first,
-            last,
-            output,
-        } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
-        Command::SetMetadata {
-            path,
-            fields,
-            output,
-        } => {
-            let parsed: Vec<(&str, &str)> =
-                fields.iter().filter_map(|f| f.split_once('=')).collect();
-            tools::set_metadata(&path, &parsed, &output)
+    // SL-0.ERR.03: the CLI is the binding boundary today, so the whole command
+    // dispatch runs under the panic trampoline. A parser bug surfaces as the
+    // typed `INTERNAL_PANIC` error (code path + panic site, no document bytes,
+    // ADR-P0017) instead of killing the host process. The future
+    // `selis-pdf-wasm`/`selis-pdf-ffi` bindings install the same wrapper.
+    let result = selis_sandbox::trampoline::catch("cli-command", || -> CliResult<()> {
+        match cli.command {
+            Command::Inspect { path, json } => inspect::run(&path, json),
+            Command::Render {
+                path,
+                page,
+                output,
+                dpi,
+            } => render::run(&path, page, &output, dpi),
+            Command::Extract {
+                path,
+                page,
+                last,
+                format,
+                output,
+            } => extract::run(&path, page, last, &format, output.as_deref()),
+            Command::Convert {
+                path,
+                output,
+                first,
+                last,
+            } => convert::run(&path, &output, first, last),
+            Command::Search { path, query, page } => search::run(&path, &query, page),
+            Command::Check { path, profile } => check::run(&path, &profile),
+            Command::Merge { inputs, output } => tools::merge(&inputs, &output),
+            Command::Split {
+                path,
+                first,
+                last,
+                output,
+            } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
+            Command::SetMetadata {
+                path,
+                fields,
+                output,
+            } => {
+                let parsed: Vec<(&str, &str)> =
+                    fields.iter().filter_map(|f| f.split_once('=')).collect();
+                tools::set_metadata(&path, &parsed, &output)
+            }
+            Command::Redact {
+                path,
+                rects,
+                output,
+            } => {
+                let parsed: Vec<(f64, f64, f64, f64)> = rects
+                    .iter()
+                    .filter_map(|r| {
+                        let parts: Vec<&str> = r.split(',').collect();
+                        if parts.len() == 4 {
+                            Some((
+                                parts.get(0)?.trim().parse().unwrap_or(0.0),
+                                parts.get(1)?.trim().parse().unwrap_or(0.0),
+                                parts.get(2)?.trim().parse().unwrap_or(0.0),
+                                parts.get(3)?.trim().parse().unwrap_or(0.0),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                tools::redact(&path, &parsed, &output)
+            }
+            Command::Rotate {
+                path,
+                angle,
+                pages,
+                output,
+            } => tools::rotate(&path, angle, pages.as_deref(), &output),
+            Command::Delete {
+                path,
+                pages,
+                output,
+            } => tools::delete(&path, &pages, &output),
+            Command::Reorder {
+                path,
+                order,
+                output,
+            } => tools::reorder(&path, &order, &output),
+            Command::Img2Pdf {
+                inputs,
+                output,
+                page_size,
+                margin,
+            } => match img2pdf::PageFit::parse(&page_size) {
+                Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
+                Err(e) => Err(e),
+            },
+            Command::Topdf {
+                input,
+                output,
+                format,
+                page_size,
+                title,
+            } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
+            Command::Compress { path, output } => compress::run(&path, &output),
+            Command::Unlock {
+                path,
+                output,
+                password,
+            } => unlock::run(&path, &output, password.as_deref()),
+            Command::ClearPermissions {
+                path,
+                output,
+                password,
+            } => clear_permissions::run(&path, &output, password.as_deref()),
+            Command::Batch {
+                tool,
+                inputs,
+                outdir,
+            } => match tool.as_str() {
+                "compress" => batch::batch_compress(&inputs, &outdir),
+                other => Err(CliError(format!(
+                    "unknown batch tool `{other}` (supported: compress)"
+                ))),
+            },
         }
-        Command::Redact {
-            path,
-            rects,
-            output,
-        } => {
-            let parsed: Vec<(f64, f64, f64, f64)> = rects
-                .iter()
-                .filter_map(|r| {
-                    let parts: Vec<&str> = r.split(',').collect();
-                    if parts.len() == 4 {
-                        Some((
-                            parts.get(0)?.trim().parse().unwrap_or(0.0),
-                            parts.get(1)?.trim().parse().unwrap_or(0.0),
-                            parts.get(2)?.trim().parse().unwrap_or(0.0),
-                            parts.get(3)?.trim().parse().unwrap_or(0.0),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            tools::redact(&path, &parsed, &output)
-        }
-        Command::Rotate {
-            path,
-            angle,
-            pages,
-            output,
-        } => tools::rotate(&path, angle, pages.as_deref(), &output),
-        Command::Delete {
-            path,
-            pages,
-            output,
-        } => tools::delete(&path, &pages, &output),
-        Command::Reorder {
-            path,
-            order,
-            output,
-        } => tools::reorder(&path, &order, &output),
-        Command::Img2Pdf {
-            inputs,
-            output,
-            page_size,
-            margin,
-        } => match img2pdf::PageFit::parse(&page_size) {
-            Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
-            Err(e) => Err(e),
-        },
-        Command::Topdf {
-            input,
-            output,
-            format,
-            page_size,
-            title,
-        } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
-        Command::Compress { path, output } => compress::run(&path, &output),
-        Command::Unlock {
-            path,
-            output,
-            password,
-        } => unlock::run(&path, &output, password.as_deref()),
-        Command::ClearPermissions {
-            path,
-            output,
-            password,
-        } => clear_permissions::run(&path, &output, password.as_deref()),
-        Command::Batch {
-            tool,
-            inputs,
-            outdir,
-        } => match tool.as_str() {
-            "compress" => batch::batch_compress(&inputs, &outdir),
-            other => Err(CliError(format!(
-                "unknown batch tool `{other}` (supported: compress)"
-            ))),
-        },
-    };
+    });
     match result {
         Ok(()) => {}
         Err(e) => {

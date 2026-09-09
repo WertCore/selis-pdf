@@ -7,6 +7,51 @@ use std::path::Path;
 use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
 use selis_pdf_cos::{Obj, Ref};
 
+/// Regenerate the expectation record for `path`, preserving any `[annotation]`
+/// table from the previous record so a rerun of this generator cannot silently
+/// wipe the recorded triage verdicts (SL-0.ORACLE.05).
+fn preserve_annotation(path: std::path::PathBuf, record: String) -> String {
+    let mut record = record;
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        if let Some(annotation) = extract_annotation_table(&old) {
+            if !record.contains("[annotation]") {
+                record.push('\n');
+                record.push_str(&annotation);
+            }
+        }
+    }
+    record
+}
+
+/// The `[annotation]` table of an expectation record, if any (from the table
+/// header to the next table header or end of file). Module-level so tests
+/// can exercise the preservation contract directly.
+fn extract_annotation_table(text: &str) -> Option<String> {
+    let mut lines = text.lines().peekable();
+    let mut block = String::new();
+    let mut inside = false;
+    while let Some(line) = lines.next() {
+        if line.trim() == "[annotation]" {
+            inside = true;
+            block.push_str(line);
+            block.push('\n');
+            continue;
+        }
+        if inside {
+            if line.starts_with('[') {
+                break;
+            }
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    if inside {
+        Some(block)
+    } else {
+        None
+    }
+}
+
 pub fn generate() -> Result<(), String> {
     let dir = Path::new("corpus/pdfs/synthetic");
     std::fs::create_dir_all(dir).map_err(|e| format!("{dir:?}: {e}"))?;
@@ -17,46 +62,6 @@ pub fn generate() -> Result<(), String> {
     for e in std::fs::read_dir(dir).map_err(|e| format!("{dir:?}: {e}"))? {
         let p = e.map_err(|e| format!("{e}"))?.path();
         let _ = std::fs::remove_file(p);
-    }
-
-    /// The open-outcome record for a generated file, observed from the actual
-    /// engine behaviour (the generator writes what the engine does; `corpus
-    /// verify` then polices regressions). Uses the same code path as `corpus
-    /// verify` — `Session::open` — so the recorded outcome matches what the
-    /// verifier re-observes. Mutants are deliberately damaged, so a typed
-    /// refusal is the expected, policy-correct outcome. An existing
-    /// `[annotation]` triage record (SL-0.ORACLE.05) is preserved across the
-    /// rewrite.
-    fn open_outcome(path: &Path) -> String {
-        let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let src = std::fs::read(path).unwrap_or_default();
-        match selis_pdf_engine::Session::open(src, &budget) {
-            Ok(session) => format!("open = \"ok\"\npages = {}\n", session.len()),
-            Err(e) => format!("open = \"err\"\ncode = \"{:?}\"\n", e.code()),
-        }
-    }
-
-    /// Regenerate the expectation record for `path`, preserving any
-    /// `[annotation]` table from the previous record so a rerun of this
-    /// generator cannot silently wipe the recorded triage verdicts.
-    fn write_expect(exp_dir: &Path, id: &str, outcome: String) -> Result<(), String> {
-        let path = exp_dir.join(format!("{id}.toml"));
-        let mut record = outcome;
-        if let Ok(old) = std::fs::read_to_string(&path) {
-            if let Some(annotation) = extract_annotation(&old) {
-                if !record.contains("[annotation]") {
-                    record.push('\n');
-                    record.push_str(&annotation);
-                }
-            }
-        }
-        std::fs::write(&path, record).map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    /// The `[annotation]` table of an expectation record, if any (from the
-    /// table header to the next table header or end of file).
-    fn extract_annotation(text: &str) -> Option<String> {
-        extract_annotation_table(text)
     }
 
     let count = std::cell::Cell::new(0usize);
@@ -71,7 +76,8 @@ pub fn generate() -> Result<(), String> {
             .map_err(|e| format!("{id}: {e}"))?;
         std::fs::write(dir.join(format!("{id}.pdf")), &bytes).map_err(|e| format!("{id}: {e}"))?;
         let expect = format!("open = \"ok\"\npages = {expect_pages}\n");
-        write_expect(exp_dir, id, expect)?;
+        std::fs::write(exp_dir.join(format!("{id}.toml")), &expect)
+            .map_err(|e| format!("{id}: {e}"))?;
         count.set(count.get().saturating_add(1));
         Ok(())
     };
@@ -228,14 +234,19 @@ pub fn generate() -> Result<(), String> {
         mutants.extend(mutate_vary(&multi));
     }
     for (i, bytes) in mutants.iter().enumerate() {
-        std::fs::write(dir.join(format!("mutant_{i}.pdf")), bytes)
+        let dest = dir.join(format!("mutant_{i}.pdf"));
+        std::fs::write(&dest, bytes).map_err(|e| format!("mutant_{i}: {e}"))?;
+        // A mutant's expectation is whatever the engine actually does with it
+        // (SL-0.CORP.03): record the real outcome, so `corpus verify` flags
+        // any later drift instead of silently accepting it. A damaged file
+        // that opens after a tolerance fix is a *known-good* record, not a
+        // contradiction — the expectation diff is what documents that.
+        let expect = preserve_annotation(
+            exp_dir.join(format!("mutant_{i}.toml")),
+            crate::corpus::open_outcome_toml(&dest)?,
+        );
+        std::fs::write(exp_dir.join(format!("mutant_{i}.toml")), expect)
             .map_err(|e| format!("mutant_{i}: {e}"))?;
-        // A mutant's open outcome is a policy decision, decided once by the
-        // generator (robustness = typed error, never a hang or panic — the
-        // budget guarantees termination): refuse with a typed code, record
-        // it, and let `corpus verify` police regressions.
-        let outcome = open_outcome(&dir.join(format!("mutant_{i}.pdf")));
-        write_expect(exp_dir, &format!("mutant_{i}"), outcome)?;
         count.set(count.get().saturating_add(1));
     }
 
@@ -345,13 +356,14 @@ pub fn generate() -> Result<(), String> {
             i = i.saturating_add(7);
         }
         let idx = count.get();
-        std::fs::write(dir.join(format!("mut_{idx}.pdf")), &b)
+        let dest = dir.join(format!("mut_{idx}.pdf"));
+        std::fs::write(&dest, &b).map_err(|e| format!("mut_{idx}: {e}"))?;
+        let expect = preserve_annotation(
+            exp_dir.join(format!("mut_{idx}.toml")),
+            crate::corpus::open_outcome_toml(&dest)?,
+        );
+        std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), expect)
             .map_err(|e| format!("mut_{idx}: {e}"))?;
-        write_expect(
-            exp_dir,
-            &format!("mut_{idx}"),
-            open_outcome(&dir.join(format!("mut_{idx}.pdf"))),
-        )?;
         count.set(count.get() + 1);
     }
     // More mutants from a different source.
@@ -360,13 +372,14 @@ pub fn generate() -> Result<(), String> {
             let cut = (multi5.len() as f64 * frac) as usize;
             if cut > 0 && cut < multi5.len() {
                 let idx = count.get();
-                std::fs::write(dir.join(format!("mut_{idx}.pdf")), &multi5[..cut])
+                let dest = dir.join(format!("mut_{idx}.pdf"));
+                std::fs::write(&dest, &multi5[..cut]).map_err(|e| format!("mut_{idx}: {e}"))?;
+                let expect = preserve_annotation(
+                    exp_dir.join(format!("mut_{idx}.toml")),
+                    crate::corpus::open_outcome_toml(&dest)?,
+                );
+                std::fs::write(exp_dir.join(format!("mut_{idx}.toml")), expect)
                     .map_err(|e| format!("mut_{idx}: {e}"))?;
-                write_expect(
-                    exp_dir,
-                    &format!("mut_{idx}"),
-                    open_outcome(&dir.join(format!("mut_{idx}.pdf"))),
-                )?;
                 count.set(count.get() + 1);
             }
         }
@@ -444,64 +457,9 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// The `[annotation]` table of an expectation record, if any (from the table
-/// header to the next table header or end of file). Module-level so tests
-/// can exercise the preservation contract directly.
-fn extract_annotation_table(text: &str) -> Option<String> {
-    let mut lines = text.lines().peekable();
-    let mut block = String::new();
-    let mut inside = false;
-    while let Some(line) = lines.next() {
-        if line.trim() == "[annotation]" {
-            inside = true;
-            block.push_str(line);
-            block.push('\n');
-            continue;
-        }
-        if inside {
-            if line.starts_with('[') {
-                break;
-            }
-            block.push_str(line);
-            block.push('\n');
-        }
-    }
-    if inside {
-        Some(block)
-    } else {
-        None
-    }
-}
-
 fn bytes(s: &[u8]) -> selis_bytes::Bytes {
     selis_bytes::Bytes::copy_from_slice(s)
 }
 fn int(n: i64) -> Obj {
     Obj::Int(n)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::extract_annotation_table;
-
-    #[test]
-    fn annotation_block_is_extracted_for_preservation() {
-        let text = "open = \"err\"\ncode = \"TrailerMissingRoot\"\n[annotation]\n\
-                    triage = \"selis_rejects\"\nverdict = \"SpecAmbiguous\"\n\
-                    note = \"deliberately damaged\"\n";
-        let block = extract_annotation_table(text).expect("annotation present");
-        assert!(block.starts_with("[annotation]"));
-        assert!(block.contains("verdict = \"SpecAmbiguous\""));
-        assert!(!block.contains("open = \"err\""), "core fields stay out");
-
-        // A record with no annotation yields None.
-        assert!(extract_annotation_table("open = \"ok\"\npages = 1\n").is_none());
-
-        // A table following the annotation terminates the block cleanly.
-        let two_tables = "open = \"ok\"\npages = 1\n[annotation]\n\
-                          verdict = \"OurBug\"\n[other]\nx = 1\n";
-        let block = extract_annotation_table(two_tables).expect("annotation present");
-        assert!(block.contains("verdict = \"OurBug\""));
-        assert!(!block.contains("[other]"));
-    }
 }

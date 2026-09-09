@@ -49,6 +49,7 @@ mod cancel;
 mod clock;
 mod depth;
 mod profiles;
+pub mod trampoline;
 
 pub use alloc::{boxed_slice, copy_slice, grow, vec_with_capacity};
 pub use budget::{Budget, BudgetGuard, Resource, Usage};
@@ -56,3 +57,4 @@ pub use cancel::CancelToken;
 pub use clock::{Clock, FixedClock, ManualClock, Nanos};
 pub use depth::DepthGuard;
 pub use profiles::Surface;
+pub use trampoline::catch;

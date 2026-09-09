@@ -170,12 +170,23 @@ point you have 40 000 lines and no idea which of them are wrong.
     codes. This is the field callers use to decide whether the user's work survived.
   - **DoD:** A test asserting every registered code has a `doc_state`; a doc page explaining each.
 
-- [ ] **SL-0.ERR.03 — Panic trampoline at the binding boundary** · deps: ERR.01 · owner: AI+
+- [x] **SL-0.ERR.03 — Panic trampoline at the binding boundary** · deps: ERR.01 · owner: AI+
   - **Do:** `catch_unwind` wrappers in `selis-pdf-wasm`/`selis-pdf-ffi` converting a panic into
     `INTERNAL_PANIC` with the code path but **no document bytes** (ADR-P0017). Set
     `panic = "abort"` off for release builds of the shipped libraries so unwinding works.
   - **DoD:** A test that a deliberate panic in a deep parser returns an error rather than killing
     the host process; a test that the payload contains no document-derived bytes.
+  - **Note:** Shipped as `selis_sandbox::catch` (the sandbox kernel owns the trampoline per
+    01-ARCHITECTURE.md §6) rather than per-binding copies, so WASM/FFI/JNI cannot drift from
+    each other when those crates exist (Phase 7). The payload is dropped unread (never downcast,
+    never formatted); the error carries the `during` code path and the panic site (`file:line`)
+    captured by a panic hook that chains to any host-installed hook. `[profile.release]` pins
+    `panic = "unwind"` in the workspace root, and a test fails the build if any profile sets
+    `"abort"`. DoD tests: 512-deep parse-shaped panic → typed `INTERNAL_PANIC`; a panic message
+    embedding document bytes never reaches the error (`Display`, log line, and context asserted);
+    non-string payloads (`panic_any`) convert too. Wired at today's binding boundary: the CLI's
+    command dispatch and its per-file batch loop. A stack overflow still aborts (unwind cannot
+    catch it) — the no-native-recursion rule in 01-ARCHITECTURE.md §6 is what covers that.
 
 - [x] **SL-0.ERR.04 — Localisation plumbing** · deps: ERR.01 · owner: AI
   - **Do:** User messages resolved through Fluent (or ICU MessageFormat) keys from the registry.
@@ -225,6 +236,21 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **DoD:** A deliberately-malicious test module that tries to allocate unbounded memory, spin
     forever, and access the host is contained in all three cases.
   - **Note:** Build this now, empty. OpenJPEG lands on it in Phase 2 and Tesseract in Phase 5.
+
+- [ ] **SL-0.SBX.07 — Clock injection so `Budget::wall` is enforced on real parse paths** · deps:
+  SBX.01 · owner: AI+
+  - **Do:** `Session::open` (and every helper that builds a `BudgetGuard` below L4) hardcodes
+    `FixedClock(0)` because purity rules forbid `Instant` below L4 — so the wall deadline never
+    fires at runtime; `bytes/objects/depth` limits are the only live budget. Add a `Clock`
+    parameter supplied at the binding boundary (the CLI is L5 and can use a real clock; future
+    WASM wraps `performance.now` in the same trait) and thread it through the ~20 `guard_with`
+    sites on the open path.
+  - **DoD:** A test that a `ManualClock` advanced past the Viewer wall fails an open with
+    `BUDGET_WALL`; the ROB.01 sweep then reports genuine engine-side wall verdicts and its
+    watchdog slack can shrink from 30 s to seconds.
+  - **Note:** Filed from the SL-1.ROB.01 local sweep (2026-09-09): per-file wall verdicts there
+    come from the sweep's own watchdog, not from the engine — real deadline enforcement is
+    structurally absent until this lands.
 
 ---
 
@@ -369,10 +395,17 @@ plan to precede the fetch.
       section, `pdf-plan/06-CORPUS-POLICY.md`, `corpus/tools/fetch-wild.ps1`, and the
       `xtask corpus wild fetch` gate + `xtask check-wild-hygiene` lint, wired into
       `cargo xtask lint` → CI).
-- [ ] **SL-0.CORP.05b — First 10k fetched** · blocked on ~16 GB free disk; run
-      `xtask corpus wild fetch --zips 10 --i-have-read-the-policy` (or
-      `corpus/tools/fetch-wild.ps1 -Execute -Zips 10`) and then `xtask corpus
-      expect-generate` over the extracted files.
+- [x] **SL-0.CORP.05b — First 10k fetched** · run `xtask corpus wild fetch` (or
+      `corpus/tools/fetch-wild.ps1 -Execute`) and then record open outcomes over the extracted
+      files.
+  - **Note (2026-09-09):** complete — zips 0000–0009 (10,000 PDFs, 8 batch dirs) fetched and
+    extracted under `%USERPROFILE%\.cache\selis-corpus\wild` with per-zip provenance (policy
+    §5). Staged one zip at a time (background runners kept dying mid-batch; single-zip
+    foreground runs are reliable). Full sweep over all 10k: 9,944 open (99.4%), 54 typed
+    errors, 0 panics, 0 OOMs, 2 watchdog timeouts — full residual in
+    `target/rob01-report-wild.json` (regenerate with `SELIS_ROB01_CORPUS_ROOT=<wild-root>
+    cargo test -p selis-cli --test rob01_baseline -- --ignored --nocapture`). There is no
+    `wild expect` command; the sweep report IS the expectation record (per-file open/code).
 
 ---
 
