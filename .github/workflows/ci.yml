@@ -104,6 +104,12 @@ jobs:
           cache: true
       - run: cargo test --workspace
         timeout-minutes: 10
+      # The Tier-2 codec sandbox (SL-0.SBX.06) is feature-gated
+      # (`wasm-host`), so --workspace alone never compiles the wasmtime
+      # embedding or its hostile-module containment tests. The feature is
+      # target-excluded on wasm32, so this job stays native-only.
+      - run: cargo test -p selis-sandbox --features wasm-host
+        timeout-minutes: 15
 
   # ── WRITE.07 conformance-posture gate over the fetched smoke corpus ───────
   write07:
