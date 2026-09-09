@@ -210,17 +210,15 @@ fn verify_sha256(path: &Path, e: &CorpusEntry) -> Result<bool, String> {
 /// A tiny, dependency-free SHA-256 is overkill for a phase-0 harness; use the
 /// system `certutil` on Windows or `sha256sum` elsewhere.
 pub(crate) fn sha256_hex(path: &Path) -> Result<String, String> {
-    let program = if std::env::consts::OS == "windows" {
-        "certutil"
+    let path_str = path.to_string_lossy().into_owned();
+    let (program, args): (&str, Vec<&str>) = if std::env::consts::OS == "windows" {
+        ("certutil", vec!["-hashfile", &path_str, "SHA256"])
     } else {
-        "sha256sum"
+        ("sha256sum", vec![&path_str])
     };
     let out = std::process::Command::new(program)
-        .arg("-hashfile")
-        .arg(path)
-        .arg("SHA256") // certutil defaults to SHA1; the manifests pin SHA256
+        .args(&args)
         .output()
-        .or_else(|_| std::process::Command::new("sha256sum").arg(path).output())
         .map_err(|e| format!("cannot run hash tool ({program}): {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     // certutil prints a hex digest line; sha256sum prints "<hex>  <path>".
