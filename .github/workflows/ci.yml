@@ -38,6 +38,12 @@ jobs:
         with:
           components: clippy, rustfmt
           cache: true
+          # The lint policy is the workspace deny list (Cargo.toml
+          # [workspace.lints]) enforced by `cargo xtask lint`; the toolchain
+          # action's default RUSTFLAGS="-D warnings" would also promote every
+          # warn-level clippy lint (e.g. too_many_arguments on the /Encrypt
+          # dict API) above the documented policy.
+          rustflags: ""
       - run: cargo xtask lint
 
   # ── build matrix (6 targets, 03-CONVENTIONS.md §9) ──────────────────────────

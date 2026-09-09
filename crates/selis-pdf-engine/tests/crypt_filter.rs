@@ -1,16 +1,19 @@
 //! Per-stream /Crypt filter verification (SL-1.FILT.09 follow-up).
+//!
+//! The five fixtures are pdf.js-corpus files exercising per-stream /Crypt
+//! filters; they are committed under `tests/fixtures/` (the wild corpus is
+//! fetch-only, but these five are part of the permanent regression suite).
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use selis_pdf_cos::{Obj, Ref};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
-static AUTH_EVENT_EF_OPEN: &[u8] = include_bytes!("../../../corpus/pdfs/auth-event-ef-open.pdf");
-static ENCRYPTED_ATTACHMENT: &[u8] =
-    include_bytes!("../../../corpus/pdfs/encrypted-attachment.pdf");
-static ISSUE19484_1: &[u8] = include_bytes!("../../../corpus/pdfs/issue19484_1.pdf");
-static ISSUE19484_2: &[u8] = include_bytes!("../../../corpus/pdfs/issue19484_2.pdf");
-static BUG1782186: &[u8] = include_bytes!("../../../corpus/pdfs/bug1782186.pdf");
+static AUTH_EVENT_EF_OPEN: &[u8] = include_bytes!("fixtures/auth-event-ef-open.pdf");
+static ENCRYPTED_ATTACHMENT: &[u8] = include_bytes!("fixtures/encrypted-attachment.pdf");
+static ISSUE19484_1: &[u8] = include_bytes!("fixtures/issue19484_1.pdf");
+static ISSUE19484_2: &[u8] = include_bytes!("fixtures/issue19484_2.pdf");
+static BUG1782186: &[u8] = include_bytes!("fixtures/bug1782186.pdf");
 
 fn open(src: &[u8]) -> Session {
     let budget = Budget::profile(Surface::Viewer);

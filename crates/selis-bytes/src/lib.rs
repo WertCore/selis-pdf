@@ -249,9 +249,9 @@ impl BytesMut {
     /// charges the budget first and returns `Result` (ADR-P0006).
     #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
-        let mut v = Vec::new();
-        v.reserve(cap);
-        Self { v }
+        Self {
+            v: Vec::with_capacity(cap),
+        }
     }
 
     /// Append a slice.
