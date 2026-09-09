@@ -259,7 +259,7 @@ enum Command {
     },
     /// Run a tool over many files with per-file isolation + a JSON report.
     Batch {
-        /// The tool to run across the set: `compress`.
+        /// The tool to run across the set: compress|protect.
         tool: String,
         /// The input files.
         #[arg(required = true)]
@@ -267,6 +267,17 @@ enum Command {
         /// The output directory (results + report.json).
         #[arg(long)]
         outdir: String,
+        /// (protect) The user password. Omit for a document that opens
+        /// without a password.
+        #[arg(long = "user-password")]
+        user_password: Option<String>,
+        /// (protect) The owner password. Defaults to the user password.
+        #[arg(long = "owner-password")]
+        owner_password: Option<String>,
+        /// (protect) Permissions to grant, comma-separated: print, modify,
+        /// copy, annotate; `none` denies all four. Default: grant all four.
+        #[arg(long)]
+        permissions: Option<String>,
     },
     /// Clear permission restrictions (given the owner password).
     ClearPermissions {
@@ -472,10 +483,23 @@ fn main() {
             tool,
             inputs,
             outdir,
+            user_password,
+            owner_password,
+            permissions,
         } => match tool.as_str() {
             "compress" => batch::batch_compress(&inputs, &outdir),
+            "protect" => {
+                // `batch protect --owner-password pw` binds the flag to the
+                // batch subcommand, not the tool name; accept the flag after
+                // the tool word by consuming the leading token.
+                let passwords = crate::protect::PasswordOptions::from_args(
+                    user_password.as_deref(),
+                    owner_password.as_deref(),
+                );
+                batch::batch_protect(&inputs, &outdir, &passwords, permissions.as_deref())
+            }
             other => Err(CliError(format!(
-                "unknown batch tool `{other}` (supported: compress)"
+                "unknown batch tool `{other}` (supported: compress, protect)"
             ))),
         },
         #[cfg(debug_assertions)]

@@ -153,13 +153,79 @@ pub(crate) fn run(
     permissions: Option<&str>,
     encrypt_metadata: bool,
 ) -> CliResult<()> {
-    // Passwords arrive via arguments or environment variables only, are
-    // truncated to the Algorithm 2.A limit, and are never logged or echoed.
-    let user_pw = resolve_password(user_password, "SELIS_USER_PASSWORD").unwrap_or_default();
-    let owner_pw = match resolve_password(owner_password, "SELIS_OWNER_PASSWORD") {
-        Some(pw) => pw,
-        None => user_pw.clone(),
-    };
+    protect_file(
+        path,
+        output,
+        &PasswordOptions::from_args(user_password, owner_password),
+        permissions,
+        encrypt_metadata,
+    )
+}
+
+/// The password material for one protect invocation: an optional user
+/// password and an optional owner password (see [`PasswordOptions::resolve`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PasswordOptions {
+    /// The user password, if given.
+    pub user: Option<String>,
+    /// The owner password, if given.
+    pub owner: Option<String>,
+}
+
+impl PasswordOptions {
+    /// Capture passwords from explicit arguments (the single-file CLI path;
+    /// env fallbacks are resolved later, inside `resolve`, so a batch run
+    /// captures them once per file).
+    #[must_use]
+    pub(crate) fn from_args(user: Option<&str>, owner: Option<&str>) -> Self {
+        Self {
+            user: user.map(String::from),
+            owner: owner.map(String::from),
+        }
+    }
+
+    /// Resolve to the concrete (user, owner) pair: the argument wins, else
+    /// the environment variable, else empty. The owner defaults to the user
+    /// password, as Acrobat does. Both are truncated to the Algorithm 2.A
+    /// limit by the caller and never logged.
+    fn resolve(&self) -> (String, String) {
+        let user = self
+            .user
+            .clone()
+            .or_else(|| resolve_password(None, "SELIS_USER_PASSWORD"))
+            .unwrap_or_default();
+        let owner = self
+            .owner
+            .clone()
+            .or_else(|| resolve_password(None, "SELIS_OWNER_PASSWORD"))
+            .unwrap_or_else(|| user.clone());
+        (user, owner)
+    }
+}
+
+/// Core protect logic on one file: read, encrypt, verify, commit. This is
+/// the batch harness's per-file entry point as well as `run`'s body — a
+/// per-file typed failure is a batch report entry, never a batch abort.
+///
+/// # Errors
+///
+/// As [`run`].
+///
+/// # Budget
+///
+/// As [`run`].
+///
+/// # Malformed Input
+///
+/// As [`run`].
+pub(crate) fn protect_file(
+    path: &str,
+    output: &str,
+    passwords: &PasswordOptions,
+    permissions: Option<&str>,
+    encrypt_metadata: bool,
+) -> CliResult<()> {
+    let (user_pw, owner_pw) = passwords.resolve();
     if user_pw.is_empty() && owner_pw.is_empty() {
         return Err(CliError(
             "no passwords given: --user-password / --owner-password or \

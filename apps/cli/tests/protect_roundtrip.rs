@@ -485,3 +485,90 @@ fn pdfium_opens_our_protected_output() {
         "pdfium produced a render"
     );
 }
+
+/// SL-1A.TOOL.11 batch extension: `selis batch protect` runs per file in
+/// isolation — an already-encrypted input is a typed per-file report entry
+/// (`ALREADY_ENCRYPTED`), never a batch abort — and the JSON report carries
+/// status, sizes, and the error detail per file.
+#[test]
+fn batch_protect_isolates_failures_and_reports_them() {
+    // Two good inputs, one already-protected (produced by the tool itself —
+    // the cheapest way to make a genuinely encrypted input for the batch).
+    let dir = std::env::temp_dir().join(format!("selis-tool06-batch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let good_a = dir.join("good-a.pdf");
+    let good_b = dir.join("good-b.pdf");
+    std::fs::copy(fixture(), &good_a).expect("copy fixture");
+    std::fs::copy(fixture(), &good_b).expect("copy fixture");
+    let already = dir.join("already.pdf");
+    let status = selis()
+        .arg("protect")
+        .arg(&good_a)
+        .arg("-o")
+        .arg(&already)
+        .arg("--user-password")
+        .arg("first-pw")
+        .status()
+        .expect("spawn selis protect");
+    assert!(status.success(), "setup protect failed");
+
+    let outdir = dir.join("results");
+    let run = selis()
+        .arg("batch")
+        .arg("--outdir")
+        .arg(&outdir)
+        .arg("--user-password")
+        .arg("batch-pw")
+        .arg("--permissions")
+        .arg("print")
+        .arg("protect")
+        .arg(&good_a)
+        .arg(&already)
+        .arg(&good_b)
+        .output()
+        .expect("spawn selis batch");
+    // The batch exits 0 even when files failed: isolation is the contract.
+    assert!(
+        run.status.success(),
+        "batch must not abort: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outdir.join("report.json")).expect("report.json"),
+    )
+    .expect("report parses");
+    let files = report
+        .get("files")
+        .and_then(|f| f.as_array())
+        .expect("files array");
+    assert_eq!(report.get("tool").and_then(|t| t.as_str()), Some("protect"));
+    assert_eq!(report.get("total").and_then(|t| t.as_u64()), Some(3));
+    assert_eq!(report.get("ok").and_then(|t| t.as_u64()), Some(2));
+    assert_eq!(report.get("failed").and_then(|t| t.as_u64()), Some(1));
+    let failed = files
+        .iter()
+        .find(|f| f.get("status").and_then(|s| s.as_str()) == Some("failed"))
+        .expect("one failed entry");
+    let error = failed
+        .get("error")
+        .and_then(|e| e.as_str())
+        .expect("error detail");
+    assert!(
+        error.contains("E1806") || error.contains("ALREADY_ENCRYPTED"),
+        "typed ALREADY_ENCRYPTED in the report: {error}"
+    );
+    // The two successes produced protected outputs.
+    for f in files {
+        if f.get("status").and_then(|s| s.as_str()) == Some("ok") {
+            let out = f
+                .get("output")
+                .and_then(|o| o.as_str())
+                .expect("output path");
+            assert!(
+                std::path::Path::new(out).exists(),
+                "protected output exists"
+            );
+        }
+    }
+}
