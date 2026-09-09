@@ -2,9 +2,9 @@
 #
 # Builds the five pinned oracle images from docker/oracles/ on every change to
 # them, smoke-tests each oracle against fixtures/smoke.pdf, and prints the
-# image digests to record in xtask/oracles.toml. Pushing (and therefore
-# digest recording) is gated behind the ORACLE_PUSH secret being present, so
-# the job validates the recipes on public CI without needing registry creds.
+# digests to record in xtask/oracles.toml. Pushing is gated behind the repo
+# variable ENABLE_ORACLE_PUSH=1 (Settings → Variables), so the job validates
+# the recipes on CI without needing registry creds.
 #
 # No job here fetches wild-corpus data (policy §7; see xtask check-wild-hygiene).
 
@@ -24,11 +24,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Set this repository variable/secret to enable pushing the images to GHCR
-  # (digests are then recorded into xtask/oracles.toml from the job output).
-  ORACLE_PUSH: ""
   # GHCR image names must be lowercase; the owner is "WertCore".
   OWNER_LC: wertcore
+  # To record image digests: set the repo variable ENABLE_ORACLE_PUSH=1
+  # (Settings → Secrets and variables → Actions → Variables). The workflow
+  # then pushes with its own GITHUB_TOKEN (packages: write is already
+  # declared) and the Record step emits image@sha256:... digests.
 
 jobs:
   build-and-smoke:
@@ -88,17 +89,20 @@ jobs:
               test -s out/smoke.png && echo "smoke render ok" ;;
           esac
 
+      - name: Push to GHCR (only when vars.ENABLE_ORACLE_PUSH = 1)
+        if: ${{ vars.ENABLE_ORACLE_PUSH == '1' }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+
       - name: Record the image digest
         run: |
           IMG=ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
-          DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG" 2>/dev/null || echo "unpushed (digest exists after docker push)")
+          # RepoDigests is populated only after a push; pre-push builds report
+          # the config id, which is not a pin. The pushed digest is what gets
+          # recorded into xtask/oracles.toml.
+          DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG" 2>/dev/null || echo "unpushed (set vars.ENABLE_ORACLE_PUSH=1 to record)")
           echo "${{ matrix.tool }}: $DIGEST" | tee -a oracle-digests.txt
-
-      - name: Push (only when ORACLE_PUSH creds are configured)
-        if: ${{ env.ORACLE_PUSH != '' }}
-        run: |
-          echo "${{ secrets.ORACLE_PUSH }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker push ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
 
       - uses: actions/upload-artifact@v4
         with:
