@@ -26,6 +26,8 @@ pub mod flate;
 pub mod jbig2;
 pub mod jbig2_full;
 pub mod jbig2_mq;
+#[cfg(feature = "wasm-host")]
+pub mod jpx;
 pub mod lzw;
 pub mod pipeline;
 
@@ -38,6 +40,8 @@ pub use jbig2_full::{
     decode_symbol_dictionary, decode_text_region, Symbol, SymbolDictionary, TextRegion,
 };
 pub use jbig2_mq::MqDecoder;
+#[cfg(feature = "wasm-host")]
+pub use jpx::jpx_decode;
 pub use lzw::lzw_decode;
 pub use pipeline::{decode_chain, decode_stream, DecodeParms};
 

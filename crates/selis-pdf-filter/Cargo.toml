@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "selis-pdf-filter"
 description = "Stream filters for the Selis PDF engine: Flate, LZW, ASCIIHex/85, RunLength, DCT. Apache-2.0 (ADR-P0030)."
 edition.workspace = true
@@ -19,3 +19,10 @@ selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 miniz_oxide = { workspace = true }
 zune-jpeg = { workspace = true }
+
+[features]
+default = []
+# JPXDecode through the Tier-2 WASM sandbox (SL-1.FILT.08): native shells
+# enable this; the wasm32 build of the engine never compiles the wasmtime
+# embedding (the browser runs the same module through the browser engine).
+wasm-host = ["selis-sandbox/wasm-host"]
