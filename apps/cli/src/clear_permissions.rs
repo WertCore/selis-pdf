@@ -126,7 +126,7 @@ fn clear_permissions_r56(
     g: &mut selis_sandbox::BudgetGuard<'_>,
 ) -> CliResult<()> {
     let new_p = ALL_PERMS_R5_6;
-    let perms = selis_crypto::compute_perms_r6(new_p, key);
+    let perms = selis_crypto::compute_perms_r6(new_p, key, info.encrypt_metadata);
 
     // The /Encrypt object number from the trailer.
     let enc_num = trailer
@@ -561,7 +561,7 @@ mod tests {
         let ue = selis_crypto::compute_ue_r6(user_pw, &k_salt, &file_key, 6);
         let o = selis_crypto::compute_o_r6(owner_pw, &ov_salt, &ok_salt, &u, 6);
         let oe = selis_crypto::compute_oe_r6(owner_pw, &ok_salt, &u, &file_key, 6);
-        let perms = selis_crypto::compute_perms_r6(restricted_p, &file_key);
+        let perms = selis_crypto::compute_perms_r6(restricted_p, &file_key, true);
         let content = b"BT /F1 12 Tf (ok) Tj ET".to_vec();
         let enc_content = selis_crypto::encrypt_data(&file_key, 6, 0, &content, 6, true);
 

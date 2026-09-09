@@ -87,7 +87,7 @@ impl EncryptInfo {
         let o = selis_crypto::compute_o_r6(owner_password, &o_v_salt, &o_k_salt, &u, 6);
         let ue = selis_crypto::compute_ue_r6(user_password, &u_k_salt, &file_key, 6);
         let oe = selis_crypto::compute_oe_r6(owner_password, &o_k_salt, &u, &file_key, 6);
-        let perms = selis_crypto::compute_perms_r6(p, &file_key);
+        let perms = selis_crypto::compute_perms_r6(p, &file_key, true);
         let cf_std_cf = Obj::Dict(vec![
             (bytes(b"CFM"), Obj::Name(bytes(b"AESV3"))),
             (bytes(b"Length"), Obj::Int(32)),
@@ -112,10 +112,10 @@ impl EncryptInfo {
         (info, file_key)
     }
 
-    /// Verify the stored `/Perms` blob against this info's permission flags
-    /// and the file key (revision 6, read side). Returns `false` when `/Perms`
-    /// is absent, truncated, or decrypts to different flags/bytes — a damaged
-    /// or re-keyed document.
+    /// Verify the stored `/Perms` blob against this info's permission flags,
+    /// the file key, and the `/EncryptMetadata` flag (revision 6, read side).
+    /// Returns `false` when `/Perms` is absent, truncated, or does not carry
+    /// the expected Algorithm-10 block — a damaged or re-keyed document.
     ///
     /// # Budget
     ///
@@ -133,7 +133,7 @@ impl EncryptInfo {
         if self.r < 6 || self.perms.is_empty() {
             return false;
         }
-        selis_crypto::verify_perms_r6(self.p, file_key, &self.perms)
+        selis_crypto::verify_perms_r6(self.p, file_key, &self.perms, self.encrypt_metadata)
     }
 }
 
