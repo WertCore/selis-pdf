@@ -599,6 +599,9 @@ fn compute_subset_bbox(glyf: &[u8]) -> [u8; 8] {
 }
 
 fn build_cmap_format12(font: &FontRef<'_>, keep: &[u16], renumber: &BTreeMap<u16, u16>) -> Vec<u8> {
+    // keep scopes the subset; the format-12 table maps every charmap entry
+    // that survives renumbering, which is exactly the kept set's image.
+    let _ = keep;
     let mut code_to_new: BTreeMap<u32, u16> = BTreeMap::new();
     for (code, old_gid) in font.charmap().mappings() {
         let old_gid16 = u16::try_from(old_gid.to_u32()).unwrap_or(u16::MAX);

@@ -120,6 +120,11 @@ impl HttpRangeSource {
     }
 
     /// Degrade to a full sequential download (no range support).
+    ///
+    /// Called by the byte-source consumer when [`Self::is_random_access`]
+    /// returns false — the wiring lands with the remote-corpus reader
+    /// (SL-1.IO); `full_download_degradation` covers it end-to-end.
+    #[allow(dead_code)]
     fn fetch_all(&self) -> Result<()> {
         let real_len = {
             let inner = self.inner.lock().map_err(|_| {

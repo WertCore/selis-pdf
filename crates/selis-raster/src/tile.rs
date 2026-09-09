@@ -7,9 +7,8 @@
 //!
 //! This module owns the decomposition and the render-to-tile contract; the
 //! actual rasterisation per tile is the caller's (via the [`Backend`] or a
-//! direct buffer write).
+//! direct buffer write). The parallel (rayon) path lands with SL-2.RAST.10.
 
-use crate::aa::{renders_match, stable_hash};
 use selis_error::Result;
 use selis_geom::Rect;
 use selis_sandbox::{alloc, BudgetGuard};
@@ -129,27 +128,18 @@ where
     tiles.iter().map(|t| (*t, render(t))).collect()
 }
 
-/// Render tiles in parallel (threaded path).
-///
-/// The tiles are rendered independently and the results collected in the
-/// same order as the sequential path, so the stitched output is identical.
-#[cfg(feature = "rayon")]
-pub fn render_parallel<F>(tiles: &[Tile], render: F) -> Vec<(Tile, Vec<u8>)>
-where
-    F: Fn(&Tile) -> Vec<u8> + Sync,
-{
-    use rayon::prelude::*;
-    tiles.par_iter().map(|t| (*t, render(t))).collect()
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
+
+    use crate::aa::{renders_match, stable_hash};
 
     use super::*;
 

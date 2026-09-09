@@ -67,7 +67,7 @@ fn object_tree_is_bounded_by_the_budget() {
         objects: 1_000,
         ..Budget::unlimited()
     };
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let g = budget.guard_with(&FixedClock(0), CancelToken::new());
     let b = *g.budget();
     let result = selis_pdf_cos::parse(&doc, &b);
     match result {

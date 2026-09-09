@@ -16,7 +16,7 @@
 use selis_pdf_cos::copy::collect_objects;
 use selis_pdf_cos::doc_writer::write_objects_as_document;
 use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
-use selis_sandbox::{Budget, BudgetGuard, Surface};
+use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::{read_file, CliError, CliResult};
 

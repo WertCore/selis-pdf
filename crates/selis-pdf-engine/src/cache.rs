@@ -232,8 +232,9 @@ mod tests {
         let mut cache = LruCache::new(10);
         cache.insert(key(0), zeros(4), 4);
         cache.insert(key(1), zeros(4), 4);
-        // Touch page 0 so page 1 is the oldest.
-        cache.get(&key(0));
+        // Touch page 0 so page 1 is the oldest (the discarded `Option` is
+        // the point: the touch, not the value, drives LRU recency).
+        let _ = cache.get(&key(0));
         cache.insert(key(2), zeros(4), 4); // would be 12 > 10
                                            // Page 1 (oldest) is gone; pages 0 and 2 remain.
         assert!(cache.get(&key(1)).is_none());

@@ -17,7 +17,9 @@
 //! reader uses to decide how many bytes to fetch before rendering page 1.
 
 use selis_error::Result;
-use selis_sandbox::{Budget, BudgetGuard};
+#[cfg(test)]
+use selis_sandbox::Budget;
+use selis_sandbox::BudgetGuard;
 
 use crate::obj::Obj;
 

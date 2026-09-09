@@ -87,6 +87,7 @@ pub(crate) fn build(
                 if let Item::Rect {
                     x,
                     top,
+                    height: _,
                     w,
                     h,
                     color,

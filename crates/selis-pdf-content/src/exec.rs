@@ -6,7 +6,7 @@
 //! backend that the engine uses.
 
 use selis_bytes::Bytes;
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_geom::{Matrix, Point, Rect};
 use selis_sandbox::BudgetGuard;
 

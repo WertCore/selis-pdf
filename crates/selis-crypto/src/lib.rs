@@ -338,7 +338,9 @@ pub fn authenticate_owner_r56(
 /// Whether `password` is the document's **owner** password (the only
 /// credential that legitimately clears permission restrictions, SL-1.ENC.04).
 /// Revisions 2–4 use the `/O` recovery ([`authenticate_owner`]); revisions
-/// 5–6 validate against `/O` directly.
+/// 5–6 validate against `/O` directly. `/UE` is passed through for
+/// dictionary-shape symmetry with the caller — owner validation never
+/// consumes it (only user authentication unwraps the `/UE` key).
 #[must_use]
 pub fn is_owner_password(
     o: &[u8],
@@ -352,6 +354,7 @@ pub fn is_owner_password(
     oe: &[u8],
     password: &[u8],
 ) -> bool {
+    let _ = ue;
     if r >= 5 {
         authenticate_owner_r56(password, u, o, oe, r).is_some()
     } else {
@@ -540,7 +543,11 @@ fn fill_random(out: &mut [u8]) {
     }
 }
 
-/// AES-256-CBC decrypt with an explicit IV and PKCS7 unpadding.
+/// AES-256-CBC decrypt with an explicit IV and PKCS7 unpadding. Reserved for
+/// revision-6 stream decryption (SL-1.ENC): streams under AESV3 use this
+/// padded form, while `/UE`/`/OE` key unwrapping uses the unpadded variant
+/// below.
+#[allow(dead_code)]
 fn aes256_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     let Ok(cipher) = Aes256::new_from_slice(&key[..key.len().min(32)]) else {
         return Vec::new();

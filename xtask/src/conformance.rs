@@ -16,6 +16,9 @@ struct ConformanceCfg {
 
 #[derive(Deserialize)]
 struct Area {
+    /// The SL id (e.g. `SL-0.ORACLE.01`); parsed for completeness of
+    /// `conformance/areas.toml` — the report table keys on name.
+    #[allow(dead_code)]
     id: String,
     name: String,
     level: u8,

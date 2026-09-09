@@ -6,12 +6,12 @@
 //! — `Ok(None)` — never an error.
 
 use selis_bytes::Bytes;
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_sandbox::BudgetGuard;
 use skrifa::raw::ps::type1::Type1Font as RawType1;
 use skrifa::raw::types::GlyphId;
 
-use crate::outline::{Outline, OutlineCmd, OutlineSink};
+use crate::outline::{Outline, OutlineSink};
 
 /// A parsed Type 1 font program (PFA or PFB).
 ///

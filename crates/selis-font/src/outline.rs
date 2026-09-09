@@ -11,7 +11,7 @@
 //! an error and never a panic. A page must not fail over a bad font file.
 
 use selis_bytes::Bytes;
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_sandbox::BudgetGuard;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};

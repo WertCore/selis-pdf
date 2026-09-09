@@ -45,9 +45,14 @@ pub(crate) struct Page {
 /// A laid-out line.
 #[derive(Debug)]
 pub(crate) struct Line {
-    /// Distance from the page top to the line's top, in points.
+    /// Distance from the page top to the line's top, in points. Carried for
+    /// the styled-output path (SL-2.CONVERT); the plain-text renderer orders
+    /// lines by construction (they are pushed top-down).
+    #[allow(dead_code)]
     pub top: f64,
-    /// The line height in points.
+    /// The line height in points. Carried for the styled-output path
+    /// (SL-2.CONVERT); see [`Line::top`].
+    #[allow(dead_code)]
     pub height: f64,
     /// Distance from the page top to the text baseline, in points.
     pub baseline: f64,
@@ -64,12 +69,21 @@ pub(crate) enum Item {
         font: &'static str,
         size: f64,
         bytes: Vec<u8>,
+        /// The fill colour in RGB [0,1]; carried for the styled-output path
+        /// (SL-2.CONVERT) — the plain-text renderer does not consume it.
+        #[allow(dead_code)]
         color: [f64; 3],
     },
     /// A filled rectangle; `top` is the distance from the page top.
     Rect {
         x: f64,
+        /// Distance from the page top; carried for the styled-output path
+        /// (SL-2.CONVERT) — the plain-text renderer orders by `y` only.
+        #[allow(dead_code)]
         top: f64,
+        /// Carried with `top` for the styled-output path (SL-2.CONVERT).
+        #[allow(dead_code)]
+        height: f64,
         w: f64,
         h: f64,
         color: [f64; 3],
@@ -343,6 +357,7 @@ fn render_block(
                     Item::Rect {
                         x: MARGIN + indent,
                         top,
+                        height: CODE_LINE,
                         w: layout.max_x() - (MARGIN + indent),
                         h: CODE_LINE,
                         color: CODE_BG,
@@ -383,6 +398,7 @@ fn render_block(
                 items: vec![Item::Rect {
                     x: MARGIN,
                     top: top + 5.6,
+                    height: 0.8,
                     w: layout.page_w - 2.0 * MARGIN,
                     h: 0.8,
                     color: RULE_GREY,
@@ -411,7 +427,7 @@ fn wrap_spans(
     let mut cur_x = first_x;
     let mut prev_trailing = false;
 
-    let mut push_line = |lines: &mut Vec<Vec<(Style, String)>>, cur: &mut Vec<(Style, String)>| {
+    let push_line = |lines: &mut Vec<Vec<(Style, String)>>, cur: &mut Vec<(Style, String)>| {
         if !cur.is_empty() {
             // Drop trailing spaces on the line's last run.
             if let Some(last) = cur.last_mut() {

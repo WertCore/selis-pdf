@@ -63,6 +63,10 @@ pub fn collect_objects(
 }
 
 /// Find the byte offset of a reference in the source file via its xref index.
+/// Reserved for the object-copy writer (SL-1.COS): `collect_objects` resolves
+/// through [`resolve_ref`] (which handles object streams), while `offset_of`
+/// is the direct-xref lookup the incremental-writer path needs.
+#[allow(dead_code)]
 fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<u64> {
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = crate::parse_revisions(src, startxref, budget, g)

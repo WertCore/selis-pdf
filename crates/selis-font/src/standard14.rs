@@ -6,6 +6,11 @@
 //!
 //! Courier variants have a uniform width of 600; the others carry their
 //! full AFM tables.
+//
+// The Standard-14 names keep Adobe's canonical spelling (Courier,
+// Times_Roman, ...) — they match the published AFM metric tables and the
+// /BaseFont spellings verbatim, so non-snake-case is intentional here.
+#![allow(non_upper_case_globals)]
 
 /// A single glyph-width entry.
 #[derive(Debug, Clone, Copy, PartialEq)]

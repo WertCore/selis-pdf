@@ -231,15 +231,6 @@ mod tests {
 
     use super::*;
 
-    fn dict(pairs: Vec<(&[u8], Obj)>) -> Obj {
-        Obj::Dict(
-            pairs
-                .into_iter()
-                .map(|(k, v)| (selis_bytes::Bytes::copy_from_slice(k), v))
-                .collect(),
-        )
-    }
-
     #[test]
     fn visibility_respects_on_off() {
         let g1 = Ref::new(1, 0);

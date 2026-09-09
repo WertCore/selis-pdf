@@ -111,7 +111,9 @@ pub fn script_runs(text: &str) -> Vec<ScriptRun> {
         };
         let ch_len = ch.len_utf8();
         match current {
-            Some((cur, start)) if cur == tag => {}
+            // Continuation of the current run: `start` was recorded when the
+            // run opened and `end` only advances with the byte cursor.
+            Some((cur, _start)) if cur == tag => {}
             Some((cur, start)) => {
                 runs.push(ScriptRun {
                     script: cur,
@@ -199,7 +201,6 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
     use super::*;
-    use selis_sandbox::Budget;
 
     const MINI_TTF: &[u8] = include_bytes!("../../selis-font/tests/fixtures/mini.ttf");
 

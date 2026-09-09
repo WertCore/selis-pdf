@@ -1,7 +1,7 @@
 //! Per-stream /Crypt filter verification (SL-1.FILT.09 follow-up).
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use selis_pdf_cos::{Obj, Ref, XrefEntry};
+use selis_pdf_cos::{Obj, Ref};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 

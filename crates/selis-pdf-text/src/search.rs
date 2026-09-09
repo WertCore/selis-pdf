@@ -127,9 +127,6 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
     use super::*;
-    use selis_bytes::Bytes;
-    use selis_geom::Point;
-    use selis_pdf_content::text::TextGlyph;
 
     #[test]
     fn normalise_case_and_diacritics() {

@@ -175,7 +175,7 @@ impl Writer {
     }
 
     fn push_int(&mut self, v: i64) {
-        let mut buf = itoa_buf(v);
+        let buf = itoa_buf(v);
         self.out.extend_from_slice(&buf);
     }
 

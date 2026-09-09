@@ -17,7 +17,7 @@
 //! Numbers may be decimal or hexadecimal (`<00FF>`). A malformed CMap is a
 //! deviation — `Ok(None)` — never an error.
 
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_sandbox::BudgetGuard;
 
 /// One `begincidrange` entry: codes `first..=last` map to the CIDs

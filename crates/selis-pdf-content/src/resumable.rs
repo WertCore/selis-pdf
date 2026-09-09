@@ -104,12 +104,12 @@ mod tests {
         let mut steps = 0u32;
         loop {
             steps = steps.saturating_add(1);
+            if steps > 100 {
+                panic!("must complete");
+            }
             match interp.step(&mut g, 3).expect("step") {
                 Step::Yield => continue,
                 Step::Done => break,
-            }
-            if steps > 100 {
-                panic!("must complete");
             }
         }
         assert!(steps < 100, "small stream completes quickly");

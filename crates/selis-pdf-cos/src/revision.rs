@@ -260,7 +260,7 @@ mod tests {
     /// "newest wins" resolution is observable.
     fn multi_revision_file(count: usize) -> Vec<u8> {
         let body = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec();
-        let mut out = body;
+        let out = body;
         // Revision 0 (the original): xref for the body with no /Prev.
         let (mut out, mut prev_off) = append_xref(out, None);
         for _ in 1..=count {

@@ -13,7 +13,7 @@
 //! through to `/MissingWidth`.
 
 use selis_bytes::Bytes;
-use selis_error::{err, Code, Result};
+use selis_error::Result;
 use selis_sandbox::BudgetGuard;
 
 use skrifa::instance::{LocationRef, Size};

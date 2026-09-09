@@ -101,7 +101,7 @@ pub fn render_display_list(
                     }
                 }
                 let paint = paint(&state.fill, state.alpha_fill);
-                selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
+                let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
             }
             Op::Stroke { path, state } => {
                 let Some(p) = to_raster_path(path) else {
@@ -110,7 +110,7 @@ pub fn render_display_list(
                 let p = transform_raster_path(&p, state.ctm);
                 let paint = paint(&state.stroke, state.alpha_stroke);
                 let spec = stroke_spec(state);
-                selis_raster::render::stroke(backend, &p, &spec, &paint);
+                let _ = selis_raster::render::stroke(backend, &p, &spec, &paint);
             }
             Op::FillStroke { path, state } => {
                 let Some(p) = to_raster_path(path) else {
@@ -118,10 +118,10 @@ pub fn render_display_list(
                 };
                 let p = transform_raster_path(&p, state.ctm);
                 let fill_paint = paint(&state.fill, state.alpha_fill);
-                selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
+                let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
                 let stroke_paint = paint(&state.stroke, state.alpha_stroke);
                 let spec = stroke_spec(state);
-                selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
+                let _ = selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
             }
             Op::Text { at, state, runs } => {
                 for run in runs {
@@ -151,7 +151,7 @@ pub fn render_display_list(
                             continue;
                         };
                         let paint = paint(&state.fill, state.alpha_fill);
-                        selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
+                        let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
                     }
                 }
             }

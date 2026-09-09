@@ -142,9 +142,9 @@ fn decode_pixel(
             let m = f64::from(apply_decode(read_sample(1), decode, 1)) / 255.0;
             let y = f64::from(apply_decode(read_sample(2), decode, 2)) / 255.0;
             let k = f64::from(apply_decode(read_sample(3), decode, 3)) / 255.0;
-            let r = (1.0 - (c + k).min(1.0));
-            let g = (1.0 - (m + k).min(1.0));
-            let b = (1.0 - (y + k).min(1.0));
+            let r = 1.0 - (c + k).min(1.0);
+            let g = 1.0 - (m + k).min(1.0);
+            let b = 1.0 - (y + k).min(1.0);
             // The channels are in [0,1], so the RGBA8 narrowing is exact in
             // range.
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]

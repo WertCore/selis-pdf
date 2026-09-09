@@ -8,6 +8,11 @@
 //! (0x7F, 0x81, 0x8D, 0x8F, 0x90, 0x9D) are normalised from pdf.js's
 //! `bullet` placeholders to `.notdef`, per Annex D.4 — an unassigned code
 //! must not paint a spurious bullet.
+//
+// The encoding constants keep the PDF-spec spellings (StandardEncoding,
+// WinAnsiEncoding, ...) so they read exactly as they appear in /Encoding
+// dictionaries; non-snake-case is intentional here.
+#![allow(non_upper_case_globals)]
 
 /// The StandardEncoding (Annex D), 256 entries.
 pub const StandardEncoding: [&str; 256] = [

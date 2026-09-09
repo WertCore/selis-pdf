@@ -19,7 +19,7 @@
 //! tool artifact. A container without a recorded digest is refused for
 //! comparable output: a mutable tag is not a pin.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

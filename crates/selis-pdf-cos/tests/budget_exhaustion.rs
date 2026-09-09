@@ -16,19 +16,6 @@ fn guard(budget: Budget) -> BudgetGuard<'static> {
     budget.guard_with(&FixedClock(0), CancelToken::new())
 }
 
-/// Run a hostile input under a tight budget and require a budget error.
-fn assert_budget_error(input: &[u8], budget: Budget, what: &str) {
-    let mut g = guard(budget);
-    let b = *g.budget();
-    let result = parse(input, &b);
-    match result {
-        Ok(_) => panic!("{what}: input must exhaust the budget, not parse"),
-        Err(e) => {
-            assert!(e.is_budget(), "{what}: expected a budget error, got {e}");
-        }
-    }
-}
-
 /// A `/Prev` chain of 10,000 xrefs must terminate with `BUDGET_DEPTH`, not
 /// hang.
 #[test]
@@ -83,7 +70,7 @@ fn deep_array_nesting_terminates() {
         depth: 128,
         ..Budget::unlimited()
     };
-    let mut g = guard(budget);
+    let g = guard(budget);
     let result = parse(&input, &g.budget());
     match result {
         Ok(_) => panic!("20k-deep array must exhaust the depth budget"),

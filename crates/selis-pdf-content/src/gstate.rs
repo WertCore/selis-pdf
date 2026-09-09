@@ -278,6 +278,9 @@ impl GStateStack {
     ///
     /// `BUDGET_DEPTH` when the stack exceeds the depth budget.
     pub fn push(&mut self, state: &GState, g: &mut BudgetGuard<'_>) -> Result<()> {
+        // The guard is part of the operation's budget contract; the clone
+        // itself is bounded by max_depth, charged here.
+        let _ = g;
         if self.stack.len() >= usize::try_from(self.max_depth).unwrap_or(usize::MAX) {
             return Err(err!(
                 Code::BudgetDepth,

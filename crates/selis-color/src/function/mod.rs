@@ -168,7 +168,10 @@ impl SampledFunction {
         Ok(out)
     }
 
-    /// The total number of grid cells.
+    /// The total number of grid cells. Reserved for the streaming evaluator
+    /// and budget accounting of SL-1.COLOUR shading; the current
+    /// corner-walk evaluation derives indices directly.
+    #[allow(dead_code)]
     fn cell_count(&self) -> usize {
         self.size.iter().fold(1usize, |a, &b| a.saturating_mul(b))
     }

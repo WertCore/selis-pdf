@@ -83,13 +83,13 @@ struct Xyz {
 
 /// Convert XYZ to linear sRGB (the D65 reference white).
 fn xyz_to_linear_rgb(xyz: Xyz) -> (f64, f64, f64) {
-    let X = xyz.x;
-    let Y = xyz.y;
-    let Z = xyz.z;
+    let x = xyz.x;
+    let y = xyz.y;
+    let z = xyz.z;
     // The sRGB matrix (linear, before the gamma curve).
-    let r = 3.2406 * X - 1.5372 * Y - 0.4986 * Z;
-    let g = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
-    let b = 0.0557 * X - 0.2040 * Y + 1.0570 * Z;
+    let r = 3.2406 * x - 1.5372 * y - 0.4986 * z;
+    let g = -0.9689 * x + 1.8758 * y + 0.0415 * z;
+    let b = 0.0557 * x - 0.2040 * y + 1.0570 * z;
     (r, g, b)
 }
 
@@ -103,7 +103,9 @@ fn srgb_gamma(c: f64) -> f64 {
     }
 }
 
-/// The CIE `f` function used by Lab↔XYZ.
+/// The CIE `f` function used by Lab↔XYZ, reserved for the Lab→XYZ direction
+/// (SL-1.COLOUR). The reverse transform in [`Lab::to_rgb`] inlines `f⁻¹`.
+#[allow(dead_code)]
 fn cie_f(t: f64) -> f64 {
     let delta = 6.0 / 29.0;
     if t > delta * delta * delta {
@@ -146,10 +148,10 @@ impl CalRgb {
         let l2 = c2.powf(self.gamma.1).clamp(0.0, 1.0);
         let l3 = c3.powf(self.gamma.2).clamp(0.0, 1.0);
         // Apply the linear conversion matrix.
-        let [a, b, c, d, e, f, g, h, i] = self.matrix;
-        let r = a * l1 + b * l2 + c * l3;
-        let g = d * l1 + e * l2 + f * l3;
-        let b = g * l1 + h * l2 + i * l3;
+        let [m11, m12, m13, m21, m22, m23, m31, m32, m33] = self.matrix;
+        let r = m11 * l1 + m12 * l2 + m13 * l3;
+        let g = m21 * l1 + m22 * l2 + m23 * l3;
+        let b = m31 * l1 + m32 * l2 + m33 * l3;
         Some(Rgb::new(srgb_gamma(r), srgb_gamma(g), srgb_gamma(b)))
     }
 }
@@ -227,6 +229,23 @@ mod tests {
         let rgb = rgb_space.to_rgb(&[1.0, 0.0, 0.0]).expect("convert");
         // Red maps to roughly red.
         assert!(rgb.r > 0.9);
+        assert!(rgb.g < 0.1);
+    }
+
+    #[test]
+    fn calrgb_matrix_rows_do_not_shadow() {
+        // Regression: the blue row previously read the *green channel* (a
+        // destructured `g` was shadowed by the green binding), so a
+        // non-identity matrix computed a wrong blue. With the permutation
+        // matrix below, l1 must land on blue: b = m31·l1.
+        let rgb_space = CalRgb {
+            white: WhitePoint::D65,
+            gamma: (1.0, 1.0, 1.0),
+            matrix: [0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        };
+        let rgb = rgb_space.to_rgb(&[1.0, 0.0, 0.0]).expect("convert");
+        assert!(rgb.b > 0.9, "l1 must reach blue, got {:?}", rgb.to_rgb8());
+        assert!(rgb.r < 0.1);
         assert!(rgb.g < 0.1);
     }
 
