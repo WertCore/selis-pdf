@@ -50,6 +50,13 @@ mod clock;
 mod depth;
 mod profiles;
 pub mod trampoline;
+/// The Tier-2 WASM codec sandbox. The [`wasm`] protocol module is always
+/// present (the web path implements it against the browser engine); the
+/// native `wasmtime` host lives behind the `wasm-host` feature.
+pub mod wasm;
+
+#[cfg(feature = "wasm-host")]
+mod wasm_host;
 
 pub use alloc::{boxed_slice, copy_slice, grow, vec_with_capacity};
 pub use budget::{Budget, BudgetGuard, Resource, Usage};
@@ -58,3 +65,6 @@ pub use clock::{Clock, FixedClock, ManualClock, Nanos};
 pub use depth::DepthGuard;
 pub use profiles::Surface;
 pub use trampoline::catch;
+
+#[cfg(feature = "wasm-host")]
+pub use wasm_host::WasmCodec;

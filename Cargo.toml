@@ -58,6 +58,18 @@ sha2        = "0.10"
 # CLI
 clap        = { version = "4", features = ["derive"] }
 
+# Tier-2 WASM codec sandbox (01-ARCHITECTURE.md §4, SL-0.SBX.06).
+# wasmtime (Apache-2.0 WITH LLVM-exception, Bytecode Alliance, crates.io-only)
+# is the native embedding that executes untrusted codec modules (OpenJPEG
+# Phase 2, Tesseract Phase 5) under a hard linear-memory cap, zero host
+# imports, and a fuel meter wired to Budget/CancelToken. Browser shells never
+# compile it: the `wasm-host` cargo feature is `wasm32`-excluded and the web
+# path uses the browser's own engine behind the same `wasm` protocol module.
+# Maintenance: Bytecode Alliance is a foundation-backed upstream with a
+# security-response process and monthly releases; cargo-vet imports its
+# audits (supply-chain/config.toml [imports.bytecodealliance]).
+wasmtime = { version = "47.0.0", default-features = false, features = ["cranelift", "runtime", "wat"] }
+
 # Test-only
 proptest    = "1"
 

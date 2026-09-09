@@ -696,3 +696,69 @@ meaning = "An argument across a binding boundary failed validation before enteri
 user_msg = "That request was not valid."
 retryable = false
 doc_state = "Unchanged"
+
+# 6010–6016 — the Tier-2 WASM codec sandbox host (SL-0.SBX.06). The sandbox
+# contains the failure; the document is never modified by a codec run, so
+# every sandbox code reports doc_state = Loaded.
+[[code]]
+id = 6010
+name = "SANDBOX_MEMORY_CAP"
+kind = "Budget"
+meaning = "A sandboxed codec module tried to grow its linear memory or a table beyond its hard cap."
+user_msg = "This content needs more memory than the sandboxed codec is allowed here."
+retryable = true
+doc_state = "Loaded"
+
+[[code]]
+id = 6011
+name = "SANDBOX_FUEL"
+kind = "Budget"
+meaning = "A sandboxed codec module exhausted its compute budget before finishing."
+user_msg = "This content took too long to decode inside the sandbox."
+retryable = true
+doc_state = "Loaded"
+
+[[code]]
+id = 6012
+name = "SANDBOX_TRAP"
+kind = "Internal"
+meaning = "A sandboxed codec module trapped during execution and was contained."
+user_msg = "Selis stopped a decoding engine fault before it could do harm."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 6013
+name = "SANDBOX_IMPORT_DENIED"
+kind = "Invalid"
+meaning = "A codec module declared host imports; the sandbox host defines none and refuses the module."
+user_msg = "A decoding component tried to reach outside its sandbox and was stopped."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 6014
+name = "SANDBOX_PROTOCOL"
+kind = "Invalid"
+meaning = "A codec module violated the copy-in/copy-out buffer protocol (bad export, pointer, or length)."
+user_msg = "A decoding component broke its sandbox contract and was stopped."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 6015
+name = "SANDBOX_MODULE_ERROR"
+kind = "Malformed"
+meaning = "A sandboxed codec module reported its input as undecodable via the buffer-protocol status code."
+user_msg = "This content could not be decoded."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 6016
+name = "SANDBOX_HOST_ERROR"
+kind = "Internal"
+meaning = "The codec sandbox host itself failed to initialise or operate."
+user_msg = "Selis hit an internal error in the codec sandbox. Your document was not modified."
+retryable = false
+doc_state = "Loaded"
