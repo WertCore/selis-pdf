@@ -18,20 +18,22 @@ RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian
         > /etc/apt/sources.list.d/security.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl pkg-config \
+        build-essential ca-certificates curl pkg-config file \
         libpng-dev libjpeg-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ADD --checksum=sha256:${GS_SHA256} \
     https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs9561/ghostscript-${GS_VERSION}.tar.gz /tmp/gs.tar.gz
 
+# Static build: `make install` places the `gs` driver executable in
+# /usr/local/bin (the shared-library build installs it as `gsc`).
 RUN cd /tmp \
  && tar xzf gs.tar.gz \
  && cd ghostscript-${GS_VERSION} \
  && ./configure --prefix=/usr/local --without-x --disable-cups \
        --disable-gtk --with-drivers=FILES \
- && make -j"$(nproc)" so \
- && make soinstall \
+ && make -j"$(nproc)" \
+ && make install \
  && cd / && rm -rf /tmp/gs* /tmp/ghostscript* \
  && gs --version
 
