@@ -6,7 +6,7 @@
 //! (rendered by the Liberation fallback); images can be embedded as XObjects.
 
 use selis_error::{err, Code, Result};
-use selis_sandbox::{Budget, BudgetGuard};
+use selis_sandbox::{alloc, Budget, BudgetGuard};
 
 use crate::encrypt;
 use crate::obj::{Obj, Ref};
@@ -706,8 +706,9 @@ pub fn write_incremental_update(
         u64::try_from(out.len()).unwrap_or(u64::MAX),
     )?;
 
-    // Append each replacement object, recording its absolute offset.
-    let mut offsets: Vec<(u32, u64)> = Vec::with_capacity(sorted.len());
+    // Append each replacement object, recording its absolute offset. The
+    // reservation is document-sized: charge it to the budget (ADR-P0006).
+    let mut offsets: Vec<(u32, u64)> = alloc::vec_with_capacity(g, sorted.len())?;
     for (num, obj) in &sorted {
         let off = u64::try_from(out.len()).unwrap_or(u64::MAX);
         out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());

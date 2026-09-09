@@ -776,7 +776,7 @@ mod tests {
             )]),
         )];
         let policy = DecryptPolicy {
-            key: vec![0u8; 16],
+            key: [0u8; 16].to_vec(),
             rev: 4,
             aes: false,
             stream_encrypted: false,
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn decrypt_obj_per_stream_identity_does_not_decrypt() {
         let policy = DecryptPolicy {
-            key: vec![0u8; 16],
+            key: [0u8; 16].to_vec(),
             rev: 4,
             aes: true,
             stream_encrypted: true,
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn decrypt_obj_per_stream_no_parms_does_not_decrypt() {
         let policy = DecryptPolicy {
-            key: vec![0u8; 16],
+            key: [0u8; 16].to_vec(),
             rev: 4,
             aes: true,
             stream_encrypted: true,

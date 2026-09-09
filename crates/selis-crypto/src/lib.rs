@@ -403,7 +403,9 @@ fn hardened_hash(password: &[u8], salt: &[u8], udata: &[u8]) -> [u8; 32] {
     loop {
         // K1 = (password || K || udata), repeated 64 times.
         let seq_len = password.len() + k.len() + udata.len();
-        let mut k1 = Vec::with_capacity(seq_len.saturating_mul(64));
+        // Bounded hint only (password ≤127, K 32, udata ≤48: ≤ ~13 KiB) and
+        // always filled exactly: `Vec::new` grows to the same final size.
+        let mut k1 = Vec::new();
         for _ in 0..64 {
             k1.extend_from_slice(password);
             k1.extend_from_slice(&k);
@@ -443,7 +445,8 @@ fn aes128_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     let Ok(cipher) = Aes128::new_from_slice(key) else {
         return Vec::new();
     };
-    let mut out = Vec::with_capacity(data.len());
+    // Output is exactly the block-aligned input: no reservation needed.
+    let mut out = Vec::new();
     let mut prev = [0u8; 16];
     prev.copy_from_slice(&iv[..iv.len().min(16)]);
     for chunk in data.chunks(16) {
@@ -490,7 +493,8 @@ pub fn aes256_cbc_encrypt_nopad(key: &[u8], data: &[u8]) -> Vec<u8> {
 /// AES-256-CBC encrypt raw: key is 32 bytes, IV is 16 bytes, data must be a
 /// multiple of 16 (already padded). Returns the ciphertext without IV prefix.
 fn aes256_cbc_encrypt_raw(cipher: &Aes256, iv: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len());
+    // Output is exactly the block-aligned input: no reservation needed.
+    let mut out = Vec::new();
     let mut prev = [0u8; 16];
     prev.copy_from_slice(&iv[..iv.len().min(16)]);
     for chunk in data.chunks(16) {
@@ -512,7 +516,8 @@ fn aes256_cbc_encrypt_raw(cipher: &Aes256, iv: &[u8], data: &[u8]) -> Vec<u8> {
 /// PKCS7 pad to a 16-byte block boundary.
 fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     let pad = 16 - (data.len() % 16);
-    let mut out = Vec::with_capacity(data.len().saturating_add(pad));
+    // Exactly `data.len() + pad` bytes are pushed below.
+    let mut out = Vec::new();
     out.extend_from_slice(data);
     let pad_byte = u8::try_from(pad).unwrap_or(16);
     for _ in 0..pad {
@@ -739,7 +744,8 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
 /// only on platforms without an OS entropy source).
 #[must_use]
 pub fn random_bytes(n: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(n);
+    // Key-sized only (16/32 in every caller): `resize` allocates exactly `n`.
+    let mut out = Vec::new();
     out.resize(n, 0);
     fill_random(&mut out);
     out
@@ -1015,7 +1021,7 @@ mod tests {
         let mut padded = plaintext.to_vec();
         padded.extend_from_slice(&[16u8; 16]);
         let ct = aes128_cbc_encrypt(&key, &[0u8; 16], &padded);
-        let mut with_iv = vec![0u8; 16];
+        let mut with_iv = [0u8; 16].to_vec();
         with_iv.extend_from_slice(&ct);
         let pt = aes128_cbc_decrypt_iv_prefix(&cipher, &with_iv);
         assert_eq!(&pt[..16], plaintext);
