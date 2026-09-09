@@ -58,6 +58,14 @@ pub const EXPORT_DECODE: &str = "decode";
 /// The exported name of the output-region reader.
 pub const EXPORT_OUTPUT: &str = "output";
 
+/// The exported name of the output-region pointer reader.
+///
+/// Split from [`EXPORT_OUTPUT`] so the protocol stays implementable from C
+/// (the OpenJPEG module): C toolchains do not produce wasm multi-value
+/// returns, so `output(max_len) -> len` and `output_ptr() -> ptr` are two
+/// plain i32 calls. The browser path benefits identically.
+pub const EXPORT_OUTPUT_PTR: &str = "output_ptr";
+
 /// The exported name of the output-region finaliser.
 pub const EXPORT_FINISH: &str = "finish";
 
@@ -130,12 +138,14 @@ pub const DECODE_CONTRACT: &str = "fn decode(input_len: i32) -> i32  // returns 
 
 /// The `output` convention, in host terms.
 ///
-/// `(max_len: i32) -> (len, ptr)`: the module reports where its output
-/// lives. The host clamps the module's declared length against `max_len`
-/// (the caller's output budget), validates the region against the memory
-/// bounds, and copies it out. A region outside linear memory is a protocol
-/// violation, not a read.
-pub const OUTPUT_CONTRACT: &str = "fn output(max_len: i32) -> (i32 len, i32 ptr)";
+/// `(max_len: i32) -> len` then `(output_ptr: ()) -> ptr`: the module
+/// reports where its output lives as two i32 calls (C has no wasm
+/// multi-value returns; OpenJPEG is the first real client). The host
+/// clamps the module's declared length against `max_len` (the caller's
+/// output budget), validates the region against the memory bounds, and
+/// copies it out. A region outside linear memory is a protocol violation,
+/// not a read.
+pub const OUTPUT_CONTRACT: &str = "fn output(max_len: i32) -> i32 len; fn output_ptr() -> i32 ptr";
 
 /// The `finish` convention, in host terms.
 ///
@@ -145,7 +155,13 @@ pub const OUTPUT_CONTRACT: &str = "fn output(max_len: i32) -> (i32 len, i32 ptr)
 pub const FINISH_CONTRACT: &str = "fn finish() -> i32  // returns Status";
 
 /// The complete export set a conforming module must provide.
-pub const REQUIRED_EXPORTS: [&str; 4] = [EXPORT_INIT, EXPORT_DECODE, EXPORT_OUTPUT, EXPORT_FINISH];
+pub const REQUIRED_EXPORTS: [&str; 5] = [
+    EXPORT_INIT,
+    EXPORT_DECODE,
+    EXPORT_OUTPUT,
+    EXPORT_OUTPUT_PTR,
+    EXPORT_FINISH,
+];
 
 #[cfg(test)]
 mod tests {

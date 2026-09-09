@@ -1,5 +1,5 @@
-//! The native Tier-2 codec-sandbox host: a `wasmtime` embedding
-//! (SL-0.SBX.06; `01-ARCHITECTURE.md Â§4`).
+﻿//! The native Tier-2 codec-sandbox host: a `wasmtime` embedding
+//! (SL-0.SBX.06; `01-ARCHITECTURE.md Ã‚Â§4`).
 //!
 //! # The containment model
 //!
@@ -32,14 +32,14 @@
 //!
 //! # Budget wiring (ADR-P0006)
 //!
-//! * `Budget.bytes` → the linear-memory cap (enforced by the limiter, not
+//! * `Budget.bytes` â†’ the linear-memory cap (enforced by the limiter, not
 //!   charged incrementally: refusing growth must be a wasm-observable
 //!   failure, not a host-side poison) plus host-side copies, which are
 //!   charged through the same [`BudgetGuard`].
-//! * `Budget.wall` → the fuel allotment, budget-relative exactly like
-//!   [`BudgetGuard::tick`], measured by the guard's injected clock — a
+//! * `Budget.wall` â†’ the fuel allotment, budget-relative exactly like
+//!   [`BudgetGuard::tick`], measured by the guard's injected clock â€” a
 //!   clock the *module* never sees.
-//! * [`CancelToken`] → every host↔module boundary runs
+//! * [`CancelToken`] â†’ every hostâ†”module boundary runs
 //!   [`BudgetGuard::tick`], which checks the deadline and the token with
 //!   the guard's own typed errors. Between boundaries the module's worst
 //!   case latency to the next boundary is bounded by its remaining fuel,
@@ -63,7 +63,7 @@ use wasmtime::{Config, Engine, Instance, Memory, Module, ResourceLimiter, Store,
 use crate::budget::{BudgetGuard, Resource};
 use crate::wasm::{
     CodecOutput, Status, EXPORT_DECODE, EXPORT_FINISH, EXPORT_INIT, EXPORT_MEMORY, EXPORT_OUTPUT,
-    PAGE_SIZE,
+    EXPORT_OUTPUT_PTR, PAGE_SIZE,
 };
 
 /// Fuel charged per nanosecond of the budget's wall-clock deadline.
@@ -73,14 +73,14 @@ use crate::wasm::{
 /// than the deadline (a module never outlives its budget) while leaving
 /// the host slack for the unfuelled copy-in/copy-out steps. Ten fuel per
 /// budget nanosecond means a "spinning forever" module is stopped after at
-/// most its deadline's worth of budget has been spent â€” exactly the
+/// most its deadline's worth of budget has been spent Ã¢â‚¬â€ exactly the
 /// ADR-P0006 contract.
 const FUEL_PER_BUDGET_NANOS: u64 = 10;
 
 /// The hard ceiling on any codec sandbox's linear memory.
 ///
 /// Above 4 GiB a 32-bit codec could not address its own memory anyway; the
-/// ceiling also bounds the u64â†’usize conversions the limiter performs.
+/// ceiling also bounds the u64Ã¢â€ â€™usize conversions the limiter performs.
 /// Callers get a cap equal to their budget's *remaining* byte allowance,
 /// clamped to this. Nothing in the codec plan (OpenJPEG, Tesseract)
 /// legitimately wants more.
@@ -92,7 +92,7 @@ const MAX_LINEAR_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// state can leak between runs, and a codec cannot even observe that
 /// another codec ran before it. A host (and its engine) is cheap enough
 /// to build per run; Phase-2 codecs that run per stream can hoist the
-/// engine into a `OnceLock` and precompile modules â€” [`Module`] is
+/// engine into a `OnceLock` and precompile modules Ã¢â‚¬â€ [`Module`] is
 /// `Clone` and serializable.
 ///
 /// # Budget
@@ -129,9 +129,9 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
     /// Build a codec host charging `guard`.
     ///
     /// Cancellation and the wall-clock deadline are taken from the guard
-    /// itself: every host↔module boundary runs `BudgetGuard::tick`, so a
+    /// itself: every hostâ†”module boundary runs `BudgetGuard::tick`, so a
     /// cancelled token or an expired deadline (measured by the guard's
-    /// injected clock — the module never sees a clock) stops the run with
+    /// injected clock â€” the module never sees a clock) stops the run with
     /// the guard's own typed error. The linear-memory cap is the budget's
     /// remaining byte allowance clamped to [`MAX_LINEAR_MEMORY_BYTES`]; a
     /// caller wanting a tighter cap pre-charges the guard before
@@ -252,7 +252,7 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
 
         let input_len = protocol_len(input.len())?;
 
-        // â”€â”€ init: the module reserves its input region â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ init: the module reserves its input region Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         self.guard.tick()?;
         let init = instance
             .get_typed_func::<i32, i32>(&mut store, EXPORT_INIT)
@@ -279,7 +279,7 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
             .write(&mut store, in_region.ptr, input)
             .map_err(|_| host_error("copy-in refused"))?;
 
-        // â”€â”€ decode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ decode Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         self.guard.tick()?;
         let decode = instance
             .get_typed_func::<i32, i32>(&mut store, EXPORT_DECODE)
@@ -293,14 +293,14 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
             .map_err(|e| map_call_error(e, "decode"))?;
         let status = Status::try_from(status_raw)?;
 
-        // â”€â”€ output: only when the module claims success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ output: only when the module claims success Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         let output = if status == Status::Ok {
             self.copy_out(&instance, &mut store, &memory, mem_bytes)?
         } else {
             Vec::new()
         };
 
-        // â”€â”€ finish: best-effort; a hostile finish is contained anyway â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ finish: best-effort; a hostile finish is contained anyway Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if let Ok(finish) = instance.get_typed_func::<(), i32>(&mut store, EXPORT_FINISH) {
             // A trapping finish cannot undo the (already copied) output or
             // harm the host; the run's own status stands.
@@ -323,11 +323,21 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
         mem_bytes: usize,
     ) -> Result<Vec<u8>> {
         self.guard.tick()?;
+        // Two plain i32 calls, not a multi-value return: C toolchains
+        // (OpenJPEG is the first real client) cannot produce wasm
+        // multi-value results, and the browser path benefits identically.
         let output_fn = instance
-            .get_typed_func::<i32, (i32, i32)>(&mut *store, EXPORT_OUTPUT)
+            .get_typed_func::<i32, i32>(&mut *store, EXPORT_OUTPUT)
             .map_err(|_| {
                 protocol_error(&format!(
-                    "missing export `{EXPORT_OUTPUT}` with type (i32)->(i32,i32)"
+                    "missing export `{EXPORT_OUTPUT}` with type (i32)->i32"
+                ))
+            })?;
+        let ptr_fn = instance
+            .get_typed_func::<(), i32>(&mut *store, EXPORT_OUTPUT_PTR)
+            .map_err(|_| {
+                protocol_error(&format!(
+                    "missing export `{EXPORT_OUTPUT_PTR}` with type ()->i32"
                 ))
             })?;
         let remaining = self
@@ -336,9 +346,12 @@ impl<'g, 'c> WasmCodec<'g, 'c> {
             .bytes
             .saturating_sub(self.guard.usage().bytes);
         let max_out = i32::try_from(remaining.min(i32::MAX as u64)).unwrap_or(i32::MAX);
-        let (len_raw, ptr_raw) = output_fn
+        let len_raw = output_fn
             .call(&mut *store, max_out)
             .map_err(|e| map_call_error(e, "output"))?;
+        let ptr_raw = ptr_fn
+            .call(&mut *store, ())
+            .map_err(|e| map_call_error(e, "output_ptr"))?;
         if len_raw == 0 && ptr_raw == 0 {
             return Ok(Vec::new());
         }
@@ -436,7 +449,7 @@ impl StoreState {
 /// so the module observes `memory.grow == -1` and may fall back (a real
 /// codec such as OpenJPEG must be able to try a smaller arena). A denial
 /// of the *initial* allocation means the module declared more memory than
-/// it may ever have â€” that is a policy refusal, surfaced as a trap-shaped
+/// it may ever have Ã¢â‚¬â€ that is a policy refusal, surfaced as a trap-shaped
 /// error ([`MemoryCapExceeded`]) that fails instantiation immediately.
 #[derive(Debug)]
 struct CodecLimiter {
@@ -591,9 +604,9 @@ mod tests {
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $again)))
             (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (global.get $len)
-            (i32.const 4096))
+          (func (export "output") (param $max i32) (result i32)
+            (global.get $len))
+          (func (export "output_ptr") (result i32) (i32.const 4096))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// DoD (a): tries to allocate unbounded memory, one page at a time.
@@ -609,9 +622,8 @@ mod tests {
               (drop (memory.grow (i32.const 1)))
               (br $grow))
             (unreachable))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// DoD (b): spins forever without touching memory.
@@ -622,9 +634,8 @@ mod tests {
           (func (export "decode") (param $n i32) (result i32)
             (loop $spin (br $spin))
             (unreachable))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// DoD (b) variant: spins in the `start` section, so the fuel meter
@@ -636,9 +647,8 @@ mod tests {
           (func $spin (loop $l (br $l)))
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// DoD (c): reaches for the host beyond the buffer protocol by
@@ -651,9 +661,8 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// DoD (c) variant: invents a private host backdoor.
@@ -663,9 +672,8 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// Protocol violation: reports an output pointer far outside linear
@@ -675,9 +683,8 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 65536)
-            (i32.const 2130706432))
+          (func (export "output") (param $max i32) (result i32) (i32.const 65536))
+          (func (export "output_ptr") (result i32) (i32.const 2130706432))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// Protocol violation: `init` refuses with the zero sentinel.
@@ -686,9 +693,8 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "init") (param $n i32) (result i32) (i32.const 0))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// Module-reported failure: the input is undecodable (status 1).
@@ -697,9 +703,8 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 1))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// The single-growth variant of DoD (a): one huge `memory.grow` is
@@ -712,9 +717,8 @@ mod tests {
           (func (export "decode") (param $n i32) (result i32)
             (drop (memory.grow (i32.const 65536)))
             (i32.const 2))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     /// An oversized *declared* memory: the module is refused before any
@@ -724,9 +728,8 @@ mod tests {
           (memory (export "memory") 4096)
           (func (export "init") (param $n i32) (result i32) (i32.const 1024))
           (func (export "decode") (param $n i32) (result i32) (i32.const 0))
-          (func (export "output") (param $max i32) (result i32 i32)
-            (i32.const 0)
-            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (i32.const 0))
+          (func (export "output_ptr") (result i32) (i32.const 0))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
     #[test]
