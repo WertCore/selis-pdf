@@ -11,13 +11,12 @@ use std::collections::BTreeSet;
 
 use selis_error::{err, Code, Result};
 use selis_pdf_cos::encrypt::DecryptPolicy;
-use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref};
+use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref, RevisionView};
 use selis_sandbox::{Budget, BudgetGuard};
 
 /// A reference-resolving walker that refuses cycles.
 #[derive(Debug)]
 pub struct Resolver<'a> {
-    doc: &'a Doc,
     src: &'a [u8],
     budget: &'a Budget,
     visited: BTreeSet<u32>,
@@ -25,6 +24,9 @@ pub struct Resolver<'a> {
     /// The decryption policy (key + crypt-filter selection) of an encrypted
     /// document, if it authenticated.
     key: Option<DecryptPolicy>,
+    /// The merged latest-revision index, built once: rebuilding it per
+    /// resolved object turns large-xref walks quadratic (SL-1.ROB.01).
+    view: Option<RevisionView>,
 }
 
 impl<'a> Resolver<'a> {
@@ -32,12 +34,12 @@ impl<'a> Resolver<'a> {
     #[must_use]
     pub fn new(doc: &'a Doc, src: &'a [u8], budget: &'a Budget) -> Self {
         Self {
-            doc,
             src,
             budget,
             visited: BTreeSet::new(),
             depth: 0,
             key: None,
+            view: doc.at_revision(doc.len().saturating_sub(1)),
         }
     }
 
@@ -48,9 +50,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// The latest revision view (for reading stream bodies directly).
+    /// Borrowed from the resolver's cached index: no re-merge per call.
     #[must_use]
-    pub fn at_revision(&self) -> Option<selis_pdf_cos::RevisionView> {
-        self.doc.at_revision(self.doc.len().saturating_sub(1))
+    pub fn at_revision(&self) -> Option<&selis_pdf_cos::RevisionView> {
+        self.view.as_ref()
     }
 
     /// The source bytes (for reading stream bodies directly).
@@ -97,8 +100,8 @@ impl<'a> Resolver<'a> {
         }
 
         let view = self
-            .doc
-            .at_revision(self.doc.len().saturating_sub(1))
+            .view
+            .as_ref()
             .ok_or_else(|| err!(Code::ObjUnexpected, during = "doc-resolve", object = r.num))?;
         match view.xref.get(&r.num) {
             Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
@@ -115,7 +118,7 @@ impl<'a> Resolver<'a> {
                 // §7.5.7), so the returned value is used as-is.
                 g.charge_one(selis_sandbox::Resource::Objects)?;
                 resolve_compressed(
-                    self.doc,
+                    view,
                     self.src,
                     *objstm,
                     *index,
@@ -217,7 +220,7 @@ fn decrypt_dict(
 /// container is.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_compressed(
-    doc: &Doc,
+    view: &RevisionView,
     src: &[u8],
     objstm: u32,
     index: u32,
@@ -225,15 +228,6 @@ pub(crate) fn resolve_compressed(
     g: &mut BudgetGuard<'_>,
     key: Option<&DecryptPolicy>,
 ) -> Result<Obj> {
-    let view = doc
-        .at_revision(doc.len().saturating_sub(1))
-        .ok_or_else(|| {
-            err!(
-                Code::ObjUnexpected,
-                during = "objstm",
-                detail = "no revision"
-            )
-        })?;
     let (offset, gen) = match view.xref.get(&objstm) {
         Some(selis_pdf_cos::XrefEntry::InUse { offset, gen }) => (*offset, *gen),
         _ => {

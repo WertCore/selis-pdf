@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use selis_error::{err, Code, Result};
 use selis_geom::Rect;
 use selis_pdf_cos::encrypt::DecryptPolicy;
-use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref};
+use selis_pdf_cos::{resolve_object_numbered, Doc, Obj, Ref, RevisionView};
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::resolve::resolve_compressed;
@@ -62,6 +62,11 @@ impl Document {
         g: &mut BudgetGuard<'_>,
         key: Option<&DecryptPolicy>,
     ) -> Result<Self> {
+        // One merged revision view per resolve: `at_revision` rebuilds the
+        // merged xref map in O(revisions × entries), so rebuilding it per
+        // resolved object turns large-xref opens quadratic (SL-1.ROB.01 —
+        // two wild files with 50–150k entries hung here). The view is a pure
+        // function of (doc, latest revision), so sharing it is exact.
         let view = doc
             .at_revision(doc.len().saturating_sub(1))
             .ok_or_else(|| {
@@ -78,7 +83,7 @@ impl Document {
                 detail = "no /Root"
             )
         })?;
-        let catalog = resolve_ref(doc, src, root_ref, budget, g, key)?;
+        let catalog = resolve_ref(&view, src, root_ref, budget, g, key)?;
 
         // Walk the page tree from /Pages.
         let pages_ref = dict_ref(&catalog, b"Pages").ok_or_else(|| {
@@ -96,7 +101,7 @@ impl Document {
         // rather than refusing the whole document (SL-1.ROB.01 — the catalog
         // itself is valid, the page tree is a phantom).
         let pages_res = walk_pages(
-            doc,
+            &view,
             src,
             pages_ref,
             &mut inherited,
@@ -141,22 +146,13 @@ struct Inherited {
 /// the object body. When `key` is set, a directly-stored object is decrypted
 /// and an object-stream container is decrypted inside `resolve_compressed`.
 fn resolve_ref(
-    doc: &Doc,
+    view: &RevisionView,
     src: &[u8],
     r: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
     key: Option<&DecryptPolicy>,
 ) -> Result<Obj> {
-    let view = doc
-        .at_revision(doc.len().saturating_sub(1))
-        .ok_or_else(|| {
-            err!(
-                Code::ObjUnexpected,
-                during = "doc-resolve",
-                detail = "no revisions"
-            )
-        })?;
     let obj = match view.xref.get(&r.num) {
         Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) => {
             let obj = resolve_object_numbered(src, *offset, r.num, budget, g)?;
@@ -167,7 +163,7 @@ fn resolve_ref(
         }
         Some(selis_pdf_cos::XrefEntry::Compressed { objstm, index }) => {
             // The object lives in an object stream (/ObjStm).
-            resolve_compressed(doc, src, *objstm, *index, budget, g, key)?
+            resolve_compressed(view, src, *objstm, *index, budget, g, key)?
         }
         Some(_) | None => {
             return Err(err!(
@@ -242,7 +238,7 @@ fn obj_i32(obj: &Obj) -> Option<i32> {
 /// Walk the page tree, resolving inherited attributes and guarding cycles.
 #[allow(clippy::too_many_arguments)]
 fn walk_pages(
-    doc: &Doc,
+    view: &RevisionView,
     src: &[u8],
     node_ref: Ref,
     inherited: &mut Inherited,
@@ -264,7 +260,7 @@ fn walk_pages(
     // this, a document with more pages than the depth budget could not open.
     let mut d = selis_sandbox::DepthGuard::enter(g)?;
 
-    let node = resolve_ref(doc, src, node_ref, budget, d.guard(), key)?;
+    let node = resolve_ref(view, src, node_ref, budget, d.guard(), key)?;
     let node_type = dict_get(&node, b"Type").and_then(|t| match t {
         Obj::Name(n) => Some(n.clone()),
         _ => None,
@@ -305,7 +301,7 @@ fn walk_pages(
                 // An inline page dict in `/Kids` (damaged writers embed the
                 // page body directly). Walk it in-place as a page node.
                 Obj::Dict(_) => {
-                    walk_inline_page(doc, src, kid, inherited, out, budget, d.guard(), key)?;
+                    walk_inline_page(view, src, kid, inherited, out, budget, d.guard(), key)?;
                     continue;
                 }
                 _ => {
@@ -318,7 +314,7 @@ fn walk_pages(
                 }
             };
             match walk_pages(
-                doc,
+                view,
                 src,
                 kid_ref,
                 inherited,
@@ -344,7 +340,7 @@ fn walk_pages(
             &node,
             node_ref.num,
             inherited,
-            doc,
+            view,
             src,
             budget,
             d.guard(),
@@ -361,7 +357,7 @@ fn materialize_page(
     node: &Obj,
     num: u32,
     inherited: &Inherited,
-    doc: &Doc,
+    view: &RevisionView,
     src: &[u8],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
@@ -374,7 +370,7 @@ fn materialize_page(
     // `/Resources N 0 R`); consumers need the dictionary, so resolve it
     // here rather than threading a bare reference to every call site.
     let resources = match inherited.resources.as_ref() {
-        Some(Obj::Ref(r)) => resolve_ref(doc, src, *r, budget, g, key).ok(),
+        Some(Obj::Ref(r)) => resolve_ref(view, src, *r, budget, g, key).ok(),
         other => other.cloned(),
     };
     let contents = dict_get(node, b"Contents").and_then(contents_refs);
@@ -391,7 +387,7 @@ fn materialize_page(
 /// Walk an inline page dict found directly inside a `/Kids` array (damaged
 /// writers embed the page body rather than a reference).
 fn walk_inline_page(
-    doc: &Doc,
+    view: &RevisionView,
     src: &[u8],
     node: &Obj,
     inherited: &mut Inherited,
@@ -403,7 +399,7 @@ fn walk_inline_page(
     let mut d = selis_sandbox::DepthGuard::enter(g)?;
     apply_inherited(node, inherited);
     // An inline page has no xref number; 0 never collides with a real object.
-    let page = materialize_page(node, 0, inherited, doc, src, budget, d.guard(), key)?;
+    let page = materialize_page(node, 0, inherited, view, src, budget, d.guard(), key)?;
     out.push(page);
     Ok(())
 }
