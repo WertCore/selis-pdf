@@ -15,6 +15,35 @@ use selis_error::{err, Code, Result};
 
 use crate::{DocSink, SinkReceipt};
 
+/// The write chunk size used when crash injection is active. Kill points are
+/// granular to this many bytes.
+#[cfg(debug_assertions)]
+const CRASH_CHUNK: usize = 256;
+
+/// Read the debug crash-injection configuration (byte threshold and phase)
+/// for SL-1A.WRITE.06. Debug builds only; see `append_sink.rs`.
+#[cfg(debug_assertions)]
+fn crash_config() -> (Option<u64>, Option<&'static str>) {
+    let bytes = std::env::var("SELIS_DEBUG_CRASH_AFTER_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    let phase = std::env::var("SELIS_DEBUG_CRASH_PHASE")
+        .ok()
+        .and_then(|v| match v.as_str() {
+            "before-rename" => Some("before-rename"),
+            "after-rename" => Some("after-rename"),
+            "before-fsync" => Some("before-fsync"),
+            _ => None,
+        });
+    (bytes, phase)
+}
+
+/// No-op in release builds.
+#[cfg(not(debug_assertions))]
+fn crash_config() -> (Option<u64>, Option<&'static str>) {
+    (None, None)
+}
+
 /// A file-backed sink that commits atomically.
 pub struct FileSink {
     /// The temp file being written (`None` once finished).
@@ -25,6 +54,12 @@ pub struct FileSink {
     final_path: PathBuf,
     /// Bytes written so far.
     bytes: u64,
+    /// Debug-only crash threshold (bytes written to the temp file).
+    #[cfg(debug_assertions)]
+    crash_after: Option<u64>,
+    /// Debug-only crash phase.
+    #[cfg(debug_assertions)]
+    crash_phase: Option<&'static str>,
 }
 
 impl FileSink {
@@ -54,11 +89,16 @@ impl FileSink {
             ctx.detail = Some(format!("{}: {e}", temp_path.display()));
             selis_error::Error::with(Code::IoReadFailed, ctx)
         })?;
+        let (crash_after, crash_phase) = crash_config();
         Ok(Self {
             file: Some(file),
             temp_path,
             final_path,
             bytes: 0,
+            #[cfg(debug_assertions)]
+            crash_after,
+            #[cfg(debug_assertions)]
+            crash_phase,
         })
     }
 
@@ -78,6 +118,28 @@ impl DocSink for FileSink {
                 detail = "sink already finished"
             )
         })?;
+        #[cfg(debug_assertions)]
+        {
+            // Crash at a deterministic byte position: write in chunks and
+            // abort once the threshold is crossed. abort() runs no Drop
+            // handlers, exactly like a killed process.
+            if let Some(limit) = self.crash_after {
+                for chunk in bytes.chunks(CRASH_CHUNK) {
+                    file.write_all(chunk).map_err(|e| {
+                        let mut ctx = selis_error::Ctx::new();
+                        ctx.detail = Some(e.to_string());
+                        selis_error::Error::with(Code::IoReadFailed, ctx)
+                    })?;
+                    self.bytes = self
+                        .bytes
+                        .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+                    if self.bytes >= limit {
+                        std::process::abort();
+                    }
+                }
+                return Ok(());
+            }
+        }
         file.write_all(bytes).map_err(|e| {
             let mut ctx = selis_error::Ctx::new();
             ctx.detail = Some(e.to_string());
@@ -102,6 +164,10 @@ impl DocSink for FileSink {
                 detail = "sink already finished"
             )
         })?;
+        #[cfg(debug_assertions)]
+        if self.crash_phase == Some("before-fsync") {
+            std::process::abort();
+        }
         {
             let mut f = file;
             f.flush().map_err(|e| {
@@ -117,6 +183,10 @@ impl DocSink for FileSink {
             // f drops here, closing the temp handle BEFORE the rename
             // (Windows cannot rename an open file).
         }
+        #[cfg(debug_assertions)]
+        if self.crash_phase == Some("before-rename") {
+            std::process::abort();
+        }
         std::fs::rename(&self.temp_path, &self.final_path).map_err(|e| {
             let mut ctx = selis_error::Ctx::new();
             ctx.detail = Some(format!(
@@ -126,6 +196,10 @@ impl DocSink for FileSink {
             ));
             selis_error::Error::with(Code::IoReadFailed, ctx)
         })?;
+        #[cfg(debug_assertions)]
+        if self.crash_phase == Some("after-rename") {
+            std::process::abort();
+        }
         Ok(SinkReceipt { bytes: self.bytes })
     }
 }
