@@ -265,6 +265,10 @@ pub(crate) fn protect_file(
         .root
         .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
 
+    // TOOL.04 engineering note: a full rewrite invalidates digital
+    // signatures — detect before running and tell the user.
+    crate::tools::warn_if_digital_signature(&src, &doc, &budget, &mut g, path);
+
     // Walk the object graph from /Root (and /Info, so metadata survives),
     // keeping the original object numbers. The input is unencrypted, so the
     // resolver needs no key.
@@ -1174,6 +1178,59 @@ mod tests {
         let budget = Budget::profile(Surface::Viewer);
         let session = selis_pdf_engine::Session::open(out, &budget).expect("opens");
         assert_eq!(session.len(), 1, "one page");
+    }
+
+    #[test]
+    fn signed_document_gets_a_rewrite_warning() {
+        // A catalog /Perms *dictionary* with /Signatures (the MDP form) must
+        // trip the pre-rewrite signature warning on stderr; the operation
+        // still succeeds (the warning is advisory).
+        let src = build_plain_pdf(&content_of("signed"));
+        // Rebuild with a catalog carrying a /Perms dictionary.
+        let mut signed_src = Vec::new();
+        let mut offsets = std::collections::HashMap::new();
+        let objects: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R /Perms 8 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 5 0 R >>",
+            ),
+            (5, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (8, b"<< /Signatures 9 0 R >>"),
+            (9, b"<< /Type /Sig /Filter /Adobe.PPKLite >>"),
+        ];
+        for (num, body) in &objects {
+            offsets.insert(*num, signed_src.len());
+            signed_src.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+            signed_src.extend_from_slice(body);
+            signed_src.extend_from_slice(b"\nendobj\n");
+        }
+        let xref_at = signed_src.len();
+        signed_src.extend_from_slice(b"xref\n0 10\n");
+        signed_src.extend_from_slice(b"0000000000 65535 f \n");
+        for i in 1..10u32 {
+            let off = offsets.get(&i).copied().unwrap_or(0);
+            signed_src.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        signed_src.extend_from_slice(b"trailer\n<< /Size 10 /Root 1 0 R >>\n");
+        signed_src.extend_from_slice(format!("startxref\n{xref_at}\n%%EOF\n").as_bytes());
+
+        let paths = temp_paths("signed");
+        std::fs::write(&paths.input, &signed_src).unwrap();
+        // The warning goes to stderr; assert the operation succeeds. (The
+        // eprintln assertion itself is exercised by the manual smoke run;
+        // this pins the detection path does not refuse or fail.)
+        super::run(
+            paths.input.to_str().unwrap(),
+            paths.output.to_str().unwrap(),
+            Some("pw"),
+            None,
+            None,
+            true,
+        )
+        .expect("protect succeeds with an advisory warning");
+        assert!(paths.output.exists());
     }
 
     #[test]

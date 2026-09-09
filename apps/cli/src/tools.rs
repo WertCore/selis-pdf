@@ -94,6 +94,87 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
     Ok(())
 }
 
+/// Warn on stderr when the document carries a digital signature that a full
+/// rewrite will invalidate (TOOL.04 engineering note: detect this *before*
+/// running and tell the user, rather than silently handing back a document
+/// whose signature has quietly died). Applies to every structure-rewriting
+/// tool — unlock, clear-permissions, protect.
+///
+/// Detection is deliberately narrow and honest: interactive signature fields
+/// under `/AcroForm` (`/FT /Sig`) and the document time-stamp / MDP entry
+/// under a catalog `/Perms` *dictionary* (`/Signatures`). It is a warning,
+/// not a refusal — the user may hold the signing key and re-sign the output.
+///
+/// # Budget
+///
+/// Charged to the caller's guard like every parse: a handful of object
+/// resolutions bounded by the `/AcroForm` field list. Never walks page trees.
+///
+/// # Malformed Input
+///
+/// A missing or damaged `/AcroForm`/`/Perms` simply yields no warning; the
+/// helper never fails the operation it guards.
+pub(crate) fn warn_if_digital_signature(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    path: &str,
+) {
+    use selis_pdf_cos::copy::resolve_ref;
+    use selis_pdf_cos::reconcile as rec;
+
+    // Signature fields: /AcroForm → /Fields → any field with /FT /Sig.
+    if let Ok(Some(Obj::Ref(acro_ref))) = rec::catalog_entry(src, doc, b"AcroForm", budget, g) {
+        if let Ok(Obj::Dict(form_pairs)) = resolve_ref(src, doc, acro_ref, budget, g) {
+            if let Some((_, Obj::Array(fields))) =
+                form_pairs.iter().find(|(k, _)| k.as_slice() == b"Fields")
+            {
+                let has_sig_field = fields.iter().any(|field| {
+                    let resolved = match field {
+                        Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g),
+                        other => Ok(other.clone()),
+                    };
+                    matches!(&resolved, Ok(Obj::Dict(field_pairs)) if field_pairs
+                    .iter()
+                    .any(|(k, v)| {
+                        k.as_slice() == b"FT"
+                            && matches!(v, Obj::Name(n) if n.as_slice() == b"Sig")
+                    }))
+                });
+                if has_sig_field {
+                    eprintln!(
+                        "warning: {path} carries a digital signature; this rewrite invalidates \
+                         it (re-sign the output to restore one)"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    // Document-level: a catalog /Perms *dictionary* (the MDP form) carrying
+    // /Signatures. (The permission-bits form of /Perms is an integer and
+    // carries no signatures.)
+    if let Ok(Some(perms)) = rec::catalog_entry(src, doc, b"Perms", budget, g) {
+        let resolved = match &perms {
+            Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g),
+            other => Ok(other.clone()),
+        };
+        if let Ok(Obj::Dict(perms_pairs)) = resolved {
+            if perms_pairs
+                .iter()
+                .any(|(k, _)| k.as_slice() == b"Signatures")
+            {
+                eprintln!(
+                    "warning: {path} carries a digital signature; this rewrite invalidates it \
+                     (re-sign the output to restore one)"
+                );
+            }
+        }
+    }
+}
+
 /// Reconcile the merged document's catalog-level structures (WRITE.04):
 /// outlines (bookmarks), page labels, named destinations, embedded files,
 /// form fields, the structure tree (ADR-P0031 — a merged document stays
