@@ -132,10 +132,10 @@ fn parse_expect(text: &str) -> Option<(String, Option<String>)> {
 /// generated enum's `Debug` is `CamelCase`, the registry's `name()` is
 /// `SCREAMING_SNAKE`; both identify the same code.
 fn expect_code_normalised(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 8);
+    let mut out = String::with_capacity(name.len().saturating_add(8));
     for (i, ch) in name.chars().enumerate() {
         if ch.is_ascii_uppercase() && i > 0 {
-            let prev = name.chars().nth(i - 1).unwrap_or(ch);
+            let prev = name.chars().nth(i.saturating_sub(1)).unwrap_or(ch);
             if !prev.is_ascii_uppercase() {
                 out.push('_');
             }
