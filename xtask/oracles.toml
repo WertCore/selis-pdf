@@ -64,7 +64,7 @@ licence = "AGPL-3.0 (external process only, ADR-P0021)"
 
 [tool.pdfium]
 role = "primary render oracle (SL-0.ORACLE.02)"
-version = "chromium/7961 (PDFium 152.0.7961.0)"
+version = "chromium-7961"
 image = "ghcr.io/wertcore/selis-pdf/oracle-pdfium"
 digest = ""
 base = "debian:bookworm-slim"

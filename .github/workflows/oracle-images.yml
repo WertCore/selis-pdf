@@ -27,6 +27,8 @@ env:
   # Set this repository variable/secret to enable pushing the images to GHCR
   # (digests are then recorded into xtask/oracles.toml from the job output).
   ORACLE_PUSH: ""
+  # GHCR image names must be lowercase; the owner is "WertCore".
+  OWNER_LC: wertcore
 
 jobs:
   build-and-smoke:
@@ -58,13 +60,13 @@ jobs:
         working-directory: docker/oracles/${{ matrix.tool }}
         run: |
           docker build \
-            -t ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }} \
+            -t ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }} \
             .
 
       - name: Smoke the oracle against the fixture
         working-directory: docker/oracles
         run: |
-          IMG=ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          IMG=ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
           case "${{ matrix.tool }}" in
             qpdf)
               docker run --rm -v "$PWD/fixtures/smoke.pdf:/in.pdf:ro" "$IMG" --json /in.pdf > /dev/null ;;
@@ -81,7 +83,7 @@ jobs:
 
       - name: Record the image digest
         run: |
-          IMG=ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          IMG=ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
           DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG" 2>/dev/null || echo "unpushed (digest exists after docker push)")
           echo "${{ matrix.tool }}: $DIGEST" | tee -a oracle-digests.txt
 
@@ -89,7 +91,7 @@ jobs:
         if: ${{ env.ORACLE_PUSH != '' }}
         run: |
           echo "${{ secrets.ORACLE_PUSH }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker push ghcr.io/${{ github.repository_owner }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
+          docker push ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
 
       - uses: actions/upload-artifact@v4
         with:
