@@ -1,4 +1,4 @@
-﻿
+
 # cargo-vet config file
 
 [cargo-vet]
@@ -15,10 +15,6 @@ url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
 
 [imports.mozilla]
 url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
-
-# Tier-2 WASM codec sandbox (SL-0.SBX.06): wasmtime 47 tree. Exempted pending
-# per-crate audits; wasmtime itself is Bytecode Alliance-audited upstream
-# ([imports.bytecodealliance]), but the import feed lags the release line.
 
 [[exemptions.addr2line]]
 version = "0.26.1"
