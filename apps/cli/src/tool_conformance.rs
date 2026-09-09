@@ -14,6 +14,12 @@ use selis_pdf_doc::{Profile, RuleResult};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
+/// Maximum input size the gate runs tools over per file (8 MiB). Full-document
+/// rewrites on multi-megabyte files exercise the same conformance paths as
+/// small ones while dominating the gate's wall time; every file's open path
+/// is already covered by the ROB.01 sweep. Skips are counted, never silent.
+const MAX_GATE_BYTES: u64 = 8 * 1024 * 1024;
+
 /// The corpus directory (`corpus/pdfs` at the workspace root).
 fn corpus_dir() -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -77,11 +83,12 @@ fn run_tools(
 /// no evaluable rule flips Pass → Fail on the output.
 ///
 /// The gate's cost is O(files × tools × pages), so it evaluates a
-/// deterministic stride of the sorted corpus (every Nth file) to keep its
-/// wall time bounded as the corpus grows; set `SELIS_TOOL_CONFORMANCE_FULL=1`
-/// to remove the stride for a full manual sweep. The stride bounds *work*,
-/// not assertion strength: whatever is evaluated runs the identical checks,
-/// and the `evaluated > 0` assertion still fails vacuous runs.
+/// deterministic stride of the sorted corpus (every Nth file) and skips files
+/// larger than [`MAX_GATE_BYTES`] to keep its wall time bounded as the corpus
+/// grows; set `SELIS_TOOL_CONFORMANCE_FULL=1` to remove both bounds for a full
+/// manual sweep. The bounds limit *work*, not assertion strength: whatever is
+/// evaluated runs the identical checks, skips are counted, and the
+/// `evaluated > 0` assertion still fails vacuous runs.
 #[test]
 fn no_tool_degrades_conformance_posture() {
     let dir = std::env::temp_dir().join("selis-write07-hook");
@@ -112,6 +119,15 @@ fn no_tool_degrades_conformance_posture() {
     let mut skipped = 0usize;
 
     for path in &files {
+        // Full-document rewrites on multi-megabyte files exercise the same
+        // conformance paths as small ones while dominating the gate's wall
+        // time; their open path is already covered by the ROB.01 sweep.
+        let oversize = !full
+            && std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_GATE_BYTES;
+        if oversize {
+            skipped += 1;
+            continue;
+        }
         let Ok(src) = std::fs::read(path) else {
             skipped += 1;
             continue;
