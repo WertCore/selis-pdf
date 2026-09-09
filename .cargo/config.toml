@@ -1,0 +1,4 @@
+# Cargo aliases — SL-0.WS.01.
+# `cargo xtask <subcommand>` runs the automation binary (ADR-P0002).
+[alias]
+xtask = "run --package xtask --"

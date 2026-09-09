@@ -5,8 +5,9 @@
 # graphify knowledge-graph output (regenerable via `graphify update .`)
 /graphify-out
 
-# Local cargo config overrides (this repo has none; user-level config is elsewhere)
-/.cargo
+# .cargo/config.toml is committed: it carries the `cargo xtask` alias the CI
+# jobs depend on (SL-0.WS.01). User-level overrides live in CARGO_HOME, not here.
+
 
 # Editors
 .idea/

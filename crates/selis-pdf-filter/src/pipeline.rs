@@ -150,6 +150,11 @@ fn tiff_predictor(
     Ok(out)
 }
 
+/// Undo PNG prediction (predictors 10–15): per-row filter type, then the
+/// row-wise reverse filter. The `predictor` value itself carries no extra
+/// information once we are in this function (the row filter types are in the
+/// data); it is kept in the signature for symmetry with `apply_predictor`,
+/// which dispatched here on it.
 fn png_predictor(
     data: &[u8],
     predictor: u16,
@@ -158,6 +163,7 @@ fn png_predictor(
     bpc: usize,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
+    let _ = predictor;
     let bpp = colors
         .saturating_mul(bpc.saturating_add(7).wrapping_div(8))
         .max(1);
