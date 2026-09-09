@@ -75,18 +75,37 @@ fn run_tools(
 
 /// The WRITE.07 gate: run every tool over every corpus file that opens, and
 /// assert no evaluable rule flips Pass → Fail on the output.
+///
+/// Requires the fetch-only corpus (`xtask corpus fetch` + extraction); in a
+/// fresh checkout the corpus is absent and the test skips loudly — the CI
+/// `write07` job owns the gate (it fetches the corpus and asserts it was
+/// populated before running this test).
 #[test]
 fn no_tool_degrades_conformance_posture() {
     let dir = std::env::temp_dir().join("selis-write07-hook");
     std::fs::create_dir_all(&dir).expect("temp dir");
 
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(corpus_dir())
-        .expect("corpus/pdfs exists")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "pdf"))
-        .collect();
+    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(corpus_dir()) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "pdf"))
+            .collect(),
+        Err(_) => {
+            eprintln!(
+                "WRITE.07 skipped: corpus/pdfs is absent (fetch-only corpus; \
+                 the CI write07 job owns this gate)"
+            );
+            return;
+        }
+    };
     files.sort();
-    assert!(!files.is_empty(), "corpus/pdfs has PDF files");
+    if files.is_empty() {
+        eprintln!(
+            "WRITE.07 skipped: corpus/pdfs has no PDF files (fetch-only corpus; \
+             the CI write07 job owns this gate)"
+        );
+        return;
+    }
 
     let budget = Budget::profile(Surface::Viewer);
     let mut regressions: Vec<String> = Vec::new();
