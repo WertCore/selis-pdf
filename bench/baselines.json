@@ -2,5 +2,11 @@
   "budget_charge": 14.73,
   "budget_tick": 13.673,
   "lru_cache_hit": 5355.8,
-  "lru_cache_insert_evict": 972880.0
+  "lru_cache_insert_evict": 972880.0,
+  "render_large_image": 63805000.0,
+  "render_mixed": 65276000.0,
+  "render_shading": 2381400.0,
+  "render_text_heavy": 93087000.0,
+  "render_transparency": 17394000.0,
+  "render_vector_heavy": 51914000.0
 }

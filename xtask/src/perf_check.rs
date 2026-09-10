@@ -98,9 +98,18 @@ pub(crate) struct PerfBudget {
     pub metric: Metric,
     /// The budget value in the metric's unit.
     pub budget: f64,
-    /// Criterion benchmark name (required for enforced mean-ns rows).
+    /// Criterion benchmark name (required for enforced mean-ns and
+    /// duration-ms rows).
     #[serde(default)]
     pub bench: Option<String>,
+    /// Results JSON file (required for enforced ratio rows): written by the
+    /// row's harness (e.g. `xtask perf-render` writes
+    /// `bench/render-results.json`).
+    #[serde(default)]
+    pub results: Option<String>,
+    /// Top-level key of the ratio inside `results` (required for ratio rows).
+    #[serde(default)]
+    pub ratio_key: Option<String>,
     /// Whether the row is enforced or pending its harness.
     pub status: Status,
     /// The regression gate for measuring rows.
@@ -178,14 +187,15 @@ pub fn run(strict: bool) -> Result<(), String> {
         .iter()
         .filter(|b| b.status == Status::Measuring)
         .collect();
-    let enforced_mean_ns: Vec<&PerfBudget> = enforced
+    // Rows whose data comes from criterion (means in ns).
+    let enforced_criterion: Vec<&PerfBudget> = enforced
         .iter()
         .copied()
-        .filter(|b| b.metric == Metric::MeanNs)
+        .filter(|b| b.metric == Metric::MeanNs || b.metric == Metric::DurationMs)
         .collect();
 
-    // Measure only when some mean-ns row needs data.
-    let results: BTreeMap<String, f64> = if enforced_mean_ns.is_empty() {
+    // Measure only when some criterion-backed row needs data.
+    let results: BTreeMap<String, f64> = if enforced_criterion.is_empty() {
         BTreeMap::new()
     } else {
         run_cargo_bench()?
@@ -194,7 +204,7 @@ pub fn run(strict: bool) -> Result<(), String> {
     let baseline: BTreeMap<String, f64> = match std::fs::read_to_string(BASELINE_FILE) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{BASELINE_FILE}: {e}"))?,
         Err(_)
-            if enforced_mean_ns
+            if enforced_criterion
                 .iter()
                 .any(|b| b.gate == Some(Gate::Baseline2)) =>
         {
@@ -207,65 +217,163 @@ pub fn run(strict: bool) -> Result<(), String> {
         Err(_) => BTreeMap::new(),
     };
 
+    // Ratio rows read one results file each (usually the same file twice —
+    // the parse is cheap, and per-row errors name the row's file).
     let mut failures = Vec::new();
     let mut warnings = Vec::new();
 
     for row in &cfg.budget {
         let unit = unit_of(row.metric);
         match row.status {
-            Status::Measuring => {
-                let measured = row
-                    .bench
-                    .as_deref()
-                    .and_then(|name| results.get(name).copied());
-                let base = row
-                    .bench
-                    .as_deref()
-                    .and_then(|name| baseline.get(name).copied());
-                match perf_verdict(measured, row.budget, row.gate, base) {
-                    PerfVerdict::Ok => {
-                        let mean_txt = measured
-                            .map(|m| format!("{m:.1}"))
-                            .unwrap_or_else(|| "-".to_string());
-                        println!(
-                            "  {:62} {mean_txt:>12} {unit} — budget {} ok",
-                            row.path, row.budget
-                        );
-                    }
-                    PerfVerdict::OverBudget => {
-                        let mean_txt = measured
-                            .map(|m| format!("{m:.1}"))
-                            .unwrap_or_else(|| "-".to_string());
-                        failures.push(format!(
-                            "  {} [{unit}]: {mean_txt} > budget {}",
-                            row.path, row.budget
-                        ));
-                    }
-                    PerfVerdict::Regressed { pct } => {
-                        let mean_txt = measured
-                            .map(|m| format!("{m:.1}"))
-                            .unwrap_or_else(|| "-".to_string());
-                        let base_txt = base
-                            .map(|b| format!("{b:.1}"))
-                            .unwrap_or_else(|| "none".to_string());
-                        failures.push(format!(
-                            "  {} [{unit}]: {mean_txt} regressed {pct:+.2}% (>{}% vs baseline {base_txt})",
-                            row.path, MAX_REGRESSION_PCT
-                        ));
-                    }
-                    PerfVerdict::NotImplemented => {
-                        let msg = format!(
-                            "  {} [{}]: not implemented — benchmark `{:?}` did not report a mean",
-                            row.path, unit, row.bench
-                        );
-                        if strict {
-                            failures.push(msg);
-                        } else {
-                            warnings.push(msg);
+            Status::Measuring => match row.metric {
+                Metric::MeanNs => {
+                    let measured = row
+                        .bench
+                        .as_deref()
+                        .and_then(|name| results.get(name).copied());
+                    let base = row
+                        .bench
+                        .as_deref()
+                        .and_then(|name| baseline.get(name).copied());
+                    match perf_verdict(measured, row.budget, row.gate, base) {
+                        PerfVerdict::Ok => {
+                            let mean_txt = measured
+                                .map(|m| format!("{m:.1}"))
+                                .unwrap_or_else(|| "-".to_string());
+                            println!(
+                                "  {:62} {mean_txt:>12} {unit} — budget {} ok",
+                                row.path, row.budget
+                            );
+                        }
+                        PerfVerdict::OverBudget => {
+                            let mean_txt = measured
+                                .map(|m| format!("{m:.1}"))
+                                .unwrap_or_else(|| "-".to_string());
+                            failures.push(format!(
+                                "  {} [{unit}]: {mean_txt} > budget {}",
+                                row.path, row.budget
+                            ));
+                        }
+                        PerfVerdict::Regressed { pct } => {
+                            let mean_txt = measured
+                                .map(|m| format!("{m:.1}"))
+                                .unwrap_or_else(|| "-".to_string());
+                            let base_txt = base
+                                .map(|b| format!("{b:.1}"))
+                                .unwrap_or_else(|| "none".to_string());
+                            failures.push(format!(
+                                "  {} [{unit}]: {mean_txt} regressed {pct:+.2}% (>{}% vs baseline {base_txt})",
+                                row.path, MAX_REGRESSION_PCT
+                            ));
+                        }
+                        PerfVerdict::NotImplemented => {
+                            let msg = format!(
+                                "  {} [{}]: not implemented — benchmark `{:?}` did not report a mean",
+                                row.path, unit, row.bench
+                            );
+                            if strict {
+                                failures.push(msg);
+                            } else {
+                                warnings.push(msg);
+                            }
                         }
                     }
                 }
-            }
+                Metric::DurationMs => {
+                    // Criterion reports ns; the budget is ms. The regression
+                    // gate compares in ns (the baseline file's unit).
+                    let measured_ns = row
+                        .bench
+                        .as_deref()
+                        .and_then(|name| results.get(name).copied());
+                    let base_ns = row
+                        .bench
+                        .as_deref()
+                        .and_then(|name| baseline.get(name).copied());
+                    let budget_ns = row.budget * 1e6;
+                    match perf_verdict(measured_ns, budget_ns, row.gate, base_ns) {
+                        PerfVerdict::Ok => {
+                            let ms_txt = measured_ns
+                                .map(|m| format!("{:.3}", m / 1e6))
+                                .unwrap_or_else(|| "-".to_string());
+                            println!(
+                                "  {:62} {ms_txt:>12} {unit} — budget {} ok",
+                                row.path, row.budget
+                            );
+                        }
+                        PerfVerdict::OverBudget => {
+                            let ms_txt = measured_ns
+                                .map(|m| format!("{:.3}", m / 1e6))
+                                .unwrap_or_else(|| "-".to_string());
+                            failures.push(format!(
+                                "  {} [{unit}]: {ms_txt} > budget {}",
+                                row.path, row.budget
+                            ));
+                        }
+                        PerfVerdict::Regressed { pct } => {
+                            let ms_txt = measured_ns
+                                .map(|m| format!("{:.3}", m / 1e6))
+                                .unwrap_or_else(|| "-".to_string());
+                            let base_txt = base_ns
+                                .map(|b| format!("{:.3}", b / 1e6))
+                                .unwrap_or_else(|| "none".to_string());
+                            failures.push(format!(
+                                "  {} [{unit}]: {ms_txt} regressed {pct:+.2}% (>{}% vs baseline {base_txt})",
+                                row.path, MAX_REGRESSION_PCT
+                            ));
+                        }
+                        PerfVerdict::NotImplemented => {
+                            let msg = format!(
+                                "  {} [{}]: not implemented — benchmark `{:?}` did not report a mean",
+                                row.path, unit, row.bench
+                            );
+                            if strict {
+                                failures.push(msg);
+                            } else {
+                                warnings.push(msg);
+                            }
+                        }
+                    }
+                }
+                Metric::Ratio => {
+                    // Ratios never come from criterion: the row names a
+                    // results file (written by its harness) and the key
+                    // holding the headline ratio. Higher is better.
+                    match read_ratio(row) {
+                        Ok(ratio) if ratio >= row.budget => {
+                            println!(
+                                "  {:62} {ratio:>12.3} {unit} — budget {} ok",
+                                row.path, row.budget
+                            );
+                        }
+                        Ok(ratio) => {
+                            failures.push(format!(
+                                "  {} [{unit}]: {ratio:.3} < budget {}",
+                                row.path, row.budget
+                            ));
+                        }
+                        Err(msg) => {
+                            let msg = format!("  {} [{unit}]: not implemented — {msg}", row.path);
+                            if strict {
+                                failures.push(msg);
+                            } else {
+                                warnings.push(msg);
+                            }
+                        }
+                    }
+                }
+                Metric::Percent | Metric::Bytes => {
+                    let msg = format!(
+                        "  {} [{}]: not implemented — no enforcement path for this metric yet",
+                        row.path, unit
+                    );
+                    if strict {
+                        failures.push(msg);
+                    } else {
+                        warnings.push(msg);
+                    }
+                }
+            },
             Status::NotMeasurable => {
                 let msg = format!(
                     "  {} [{}]: not implemented — {}",
@@ -299,6 +407,35 @@ pub fn run(strict: bool) -> Result<(), String> {
             println!("{f}");
         }
         Err("performance budgets or regression rule violated".to_string())
+    }
+}
+
+/// Read a ratio row's headline number from its results file. `Ok` carries
+/// the ratio; `Err` carries the reason it is unavailable (missing file,
+/// missing key, or a JSON null where the harness recorded no comparison —
+/// e.g. PDFium absent on the recording host).
+fn read_ratio(row: &PerfBudget) -> Result<f64, String> {
+    if row.gate == Some(Gate::Baseline2) {
+        return Err("ratio rows support gate = \"none\" only (absolute budget)".to_string());
+    }
+    let file = row
+        .results
+        .as_deref()
+        .ok_or_else(|| "row names no `results` file".to_string())?;
+    let key = row
+        .ratio_key
+        .as_deref()
+        .ok_or_else(|| "row names no `ratio_key`".to_string())?;
+    let text = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("cannot parse {file}: {e}"))?;
+    match json.get(key) {
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .ok_or_else(|| format!("`{key}` in {file} is not a number")),
+        _ => Err(format!(
+            "`{key}` missing or null in {file} — regenerate it with the row's harness"
+        )),
     }
 }
 
@@ -535,10 +672,26 @@ mod tests {
                 "§12 row missing from perf-budgets.toml: {expected}"
             );
         }
-        // Every measuring row must name its criterion benchmark.
+        // Every measuring row must name its data source: criterion-backed
+        // rows (mean-ns, duration-ms) name `bench`; ratio rows name
+        // `results` + `ratio_key`.
         for b in &cfg.budget {
             if b.status == Status::Measuring {
-                assert!(b.bench.is_some(), "measuring row without bench: {}", b.path);
+                match b.metric {
+                    Metric::MeanNs | Metric::DurationMs => {
+                        assert!(b.bench.is_some(), "measuring row without bench: {}", b.path);
+                    }
+                    Metric::Ratio => {
+                        assert!(
+                            b.results.is_some() && b.ratio_key.is_some(),
+                            "ratio row without results+ratio_key: {}",
+                            b.path
+                        );
+                    }
+                    Metric::Percent | Metric::Bytes => {
+                        assert!(false, "measuring row with no enforcement path: {}", b.path);
+                    }
+                }
             } else {
                 assert!(
                     b.notes.is_some(),
@@ -547,5 +700,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn read_ratio_parses_headline_or_explains_absence() {
+        let dir = std::env::temp_dir().join("selis-perf-check-ratio-test");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("results.json");
+        std::fs::write(&file, "{\"geomean_vs_pdfium\": 2.5}").expect("write");
+        let row = PerfBudget {
+            path: "ratio test".to_string(),
+            section: "render".to_string(),
+            metric: Metric::Ratio,
+            budget: 0.6,
+            bench: None,
+            results: Some(file.to_string_lossy().to_string()),
+            ratio_key: Some("geomean_vs_pdfium".to_string()),
+            status: Status::Measuring,
+            gate: Some(Gate::None),
+            notes: None,
+        };
+        assert!((read_ratio(&row).expect("ratio") - 2.5).abs() < 1e-12);
+        let missing_key = PerfBudget {
+            ratio_key: Some("geomean_vs_pdfjs".to_string()),
+            ..row.clone()
+        };
+        assert!(read_ratio(&missing_key).is_err());
+        std::fs::write(&file, "{\"geomean_vs_pdfium\": null}").expect("write null");
+        assert!(read_ratio(&row).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

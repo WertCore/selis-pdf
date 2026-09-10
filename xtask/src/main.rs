@@ -17,8 +17,12 @@ mod fuzz;
 mod layers;
 mod oracle;
 mod perf_check;
+#[cfg(not(target_arch = "wasm32"))]
+mod perf_wasm;
 mod png;
 mod purity;
+mod render_perf;
+mod render_set;
 mod sbom;
 mod size_check;
 mod sweep;
@@ -100,6 +104,60 @@ enum Command {
     },
     /// Conformance ladder report (SL-0.OPS.02).
     Conformance,
+    /// Measure render wall-time per page vs oracles on the benchmark set
+    /// (SL-2.PERF.02); writes the record `perf-check` gates the ratio on.
+    PerfRender {
+        /// Benchmark set directory.
+        #[arg(long, default_value = "bench/render-set")]
+        set: std::path::PathBuf,
+        /// Render resolution in DPI (default 72 = 1 pt per px; see
+        /// `render_perf` for why 150 needs the device-matrix fix first).
+        #[arg(long, default_value_t = 72)]
+        dpi: u32,
+        /// Timed repeats per page (median is recorded).
+        #[arg(long, default_value_t = 5)]
+        repeats: usize,
+        /// Results JSON output.
+        #[arg(long, default_value = "bench/render-results.json")]
+        out: std::path::PathBuf,
+        /// Comma-separated oracle ids to time (`mutool`, `pdfium`).
+        #[arg(long, default_value = "mutool,pdfium")]
+        oracles: String,
+        /// Explicit `pdfium_driver` binary path (else PATH lookup).
+        #[arg(long)]
+        pdfium_driver: Option<std::path::PathBuf>,
+        /// Explicit `mutool` binary path (else PATH lookup).
+        #[arg(long)]
+        mutool: Option<std::path::PathBuf>,
+        /// Time the engine only (no oracle processes).
+        #[arg(long)]
+        skip_oracles: bool,
+    },
+    /// Compare WASM-vs-native render on the benchmark set via the embedded
+    /// wasmtime driver (SL-2.PERF.03). Native-only (wasmtime has no wasm32
+    /// target).
+    #[cfg(not(target_arch = "wasm32"))]
+    PerfWasm {
+        /// Benchmark set directory.
+        #[arg(long, default_value = "bench/render-set")]
+        set: std::path::PathBuf,
+        /// Timed repeats per page (median is recorded).
+        #[arg(long, default_value_t = 5)]
+        repeats: usize,
+        /// Results JSON output.
+        #[arg(long, default_value = "bench/wasm-results.json")]
+        out: std::path::PathBuf,
+    },
+    /// Generate the deterministic render benchmark set (SL-2.PERF.02).
+    RenderSet {
+        /// Verify the committed fixtures against their generator instead of
+        /// regenerating them.
+        #[arg(long)]
+        check: bool,
+        /// Output directory for the produced PDFs.
+        #[arg(long, default_value = "bench/render-set")]
+        outdir: std::path::PathBuf,
+    },
     /// Generate the tool-suite smoke fixtures and run every tool over them so
     /// the outputs can be oracle-checked (SL-1A.WRITE.05 CI slot).
     Fixtures {
@@ -153,6 +211,11 @@ enum OracleSub {
     },
     /// Report which oracles are available locally and their pinned images.
     Check,
+    /// Print the pinned container image ref for a tool (for CI pull/extract).
+    ImageRef {
+        /// The oracle id (`qpdf`, `mupdf`, `ghostscript`, `pdfium`, `pdfjs`).
+        tool: String,
+    },
     /// Run `qpdf --check` over one tool output (SL-1A.WRITE.05).
     CheckOutput { file: std::path::PathBuf },
     /// Run `qpdf --check` over every *.pdf in a directory (SL-1A.WRITE.05 CI slot).
@@ -312,6 +375,7 @@ fn main() -> ExitCode {
                 oracle::run(oracle::OracleCommand::Render { tool, dpi, file })
             }
             OracleSub::Check => oracle::run(oracle::OracleCommand::Check),
+            OracleSub::ImageRef { tool } => oracle::run(oracle::OracleCommand::ImageRef { tool }),
             OracleSub::CheckOutput { file } => {
                 oracle::run(oracle::OracleCommand::CheckOutput { file })
             }
@@ -363,6 +427,43 @@ fn main() -> ExitCode {
         Command::Bench(args) => bench::run(args.record_baseline, args.compare_baseline),
         Command::PerfCheck { strict } => perf_check::run(strict),
         Command::Conformance => conformance::report(),
+        Command::RenderSet { check, outdir } => {
+            if check {
+                render_set::check(&outdir)
+            } else {
+                render_set::generate(&outdir)
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::PerfWasm { set, repeats, out } => perf_wasm::run(&set, repeats, &out),
+        Command::PerfRender {
+            set,
+            dpi,
+            repeats,
+            out,
+            oracles,
+            pdfium_driver,
+            mutool,
+            skip_oracles,
+        } => {
+            let tools = oracles
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            render_perf::run(
+                &set,
+                dpi,
+                repeats,
+                &out,
+                &render_perf::OracleTools {
+                    tools,
+                    pdfium_driver,
+                    mutool,
+                },
+                skip_oracles,
+            )
+        }
         Command::Fixtures { outdir } => fixtures::run(&outdir),
         Command::Sbom => sbom::sbom(),
         Command::Sign => not_in_phase_0("sign"),

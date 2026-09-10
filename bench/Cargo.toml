@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "cache"
 harness = false
+
+[[bench]]
+name = "render"
+harness = false

@@ -9,5 +9,6 @@ allow = [
     "selis-io",          # mmap in FileSource + MoveFileExW save-commit FFI (ADR-P0037, native only)
     "selis-pdf-ffi",     # the C ABI itself (planned — Phase 7)
     "selis-pdf-jni",     # JNI marshalling (planned — Phase 7)
+    "selis-pdf-wasm",    # the WASM render ABI boundary only (ADR-P0041, SL-2.PERF.03)
     "selis-raster",      # proven-identical SIMD kernels only (planned — Phase 2)
 ]

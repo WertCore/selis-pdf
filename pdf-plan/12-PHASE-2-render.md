@@ -188,12 +188,33 @@ every user on every page.
   - **Do:** ADR-P0025: LRU under a memory budget, keyed by (page, matrix, params, revision).
     Invalidation on edit is exact, not "clear everything".
   - **DoD:** Cache-hit benchmark; a mutation invalidates only affected entries.
-- [ ] **SL-2.PERF.02 — Meet the render throughput budget** · deps: RAST.10 · owner: AI+
+- [x] **SL-2.PERF.02 — Meet the render throughput budget** · deps: RAST.10 · owner: AI+
   - **DoD:** ≥0.6× PDFium at G2 on the benchmark set; a profile report naming the top 10 costs.
-- [ ] **SL-2.PERF.03 — WASM-specific render optimisation** · deps: PERF.02 · owner: AI+
+  - **Done 2026-09-10:** ratio MET — 2.78× geomean post-`main`-merge, every
+    page ≥0.6× raw (release, 72 DPI native scale, median of 9; profile in
+    `30-RENDER-PERF-REPORT.md`, record in `bench/render-results.json`,
+    gate wired in `perf-budgets.toml`, nightly perf job regenerates it with
+    the pinned driver). Honest scope: the §12 rows say @150 DPI but the
+    engine has no page→device matrix yet (gap G-1, CONF.01 owns it); the
+    18 ms absolute budget is NOT met (51.0 ms — gap G-2: batching atlas
+    implemented, measured a 51→99 ms regression, and removed with a pinned
+    probe; residual itemised in the report §9b). PERF.03 DONE below
+    (unblocked by this task).
+- [x] **SL-2.PERF.03 — WASM-specific render optimisation** · deps: PERF.02 · owner: AI+
   - **Do:** SIMD128 where it is provably deterministic, memory-growth strategy, and avoiding the
     JS↔WASM boundary in the tile path.
   - **DoD:** WASM within 2.5× of native on the same machine.
+  - **Done 2026-09-10:** MET — 1.44× geomean (release, same machine,
+    same process; every page ≤ 2.33×) via the wasmtime-driven harness
+    (`xtask perf-wasm`, `crates/selis-pdf-wasm` one-call-per-page ABI per
+    ADR-P0041 — no JS/browser harness exists in-repo, stated honestly).
+    Guest checksums byte-identical to native on all six pages (RAST.09
+    cross-arch proof, asserted per run). +simd128 adopted after
+    checksum-proven determinism (2.13× → ~1.4×). Memory: exact pre-sizing
+    + 512 MiB wasmtime limiter. Cold start: wasmtime compile ≈3–6 s +
+    instantiate ≈1–15 ms (browsers differ — the 45 ms row stays
+    not-measurable). Full ledger in `30-RENDER-PERF-REPORT.md` §9c, record
+    in `bench/wasm-results.json`.
 
 ---
 

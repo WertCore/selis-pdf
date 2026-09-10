@@ -1,0 +1,22 @@
+[package]
+name = "selis-pdf-wasm"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# The wasmtime-driven render driver (SL-2.PERF.03) loads this artifact's
+# `.wasm` directly; browsers use the same exports through the wasm shell
+# (Phase 5). `cdylib` only — no rlib (nothing in-process links it).
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-bytes = { workspace = true }
+selis-pdf-engine = { workspace = true }
+selis-sandbox = { workspace = true }

@@ -89,15 +89,18 @@ section  = "render"
 metric   = "duration-ms"
 budget   = 18
 status   = "not-measurable"
-notes    = "§12. WASM twin: <= 45 ms. Needs a page-render criterion bench on the golden slice (Phase 2)."
+notes    = "SL-2.PERF.02/G-2: NOT MET — 51.0 ms at 72 DPI native scale (median of 9, release) vs the 18 ms @150 DPI budget; a literal 150 DPI number awaits the page→device matrix (gap G-1). G-2 follow-up implemented the glyph batching atlas and REMOVED it after measurement (51.0 → 98.5 ms regression: 1.55 glyphs/fill at body-text gaps; tiny-skia shared-pixel coverage does not combine multiplicatively — pinned test; full ledger in pdf-plan/30-RENDER-PERF-REPORT.md §9b). Residual needs a pixel-changing atlas or SIMD rasteriser. Harness exists: criterion `render_text_heavy` renders the §12 A4 text page end-to-end at native scale; flip to measuring with bench = \"render_text_heavy\" once the matrix lands and the number is within reach. WASM twin: <= 45 ms cold start (SL-2.PERF.03 DONE 2026-09-10 — wasmtime cold compile 5.9 s + instantiate 15 ms; browsers compile differently so this stays a note, not a gate; render ratio 1.36x geomean vs native, every page ≤ 2.5x — harness `xtask perf-wasm`, record `bench/wasm-results.json`, ledger in pdf-plan/30-RENDER-PERF-REPORT.md §9c)."
 
 [[budget]]
 path     = "Render A4 text page @150 DPI vs PDFium (throughput ratio)"
 section  = "render"
 metric   = "ratio"
 budget   = 0.6
-status   = "not-measurable"
-notes    = "Minimum ratio vs PDFium. 0.6 at G2, 0.9 at G5 (§12). Tracked by the oracle differential harness."
+status   = "measuring"
+gate     = "none"
+results  = "bench/render-results.json"
+ratio_key = "geomean_vs_pdfium"
+notes    = "SL-2.PERF.02: MET — 2.78x geomean post-main-merge (median of 9, release, all six pages ≥ 0.6x raw; see pdf-plan/30-RENDER-PERF-REPORT.md). `xtask perf-render` regenerates the results file (72 DPI native scale — the literal 150 DPI awaits the page→device matrix, gap G-1); the CI perf job runs it with the pinned PDFium driver before perf-check. Oracle times are spawn-inclusive wall time (spawn cost recorded in the file); the gate uses the raw geomean. G5 target 0.9x remains future work."
 
 [[budget]]
 path     = "Text extraction, 300-page report (native)"
