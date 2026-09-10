@@ -29,6 +29,14 @@ impl CancelToken {
         }
     }
 
+    /// A token sharing `flag` with an external owner — the shell's platform
+    /// Ctrl-C hook (`selis_io::install_ctrl_c_flag`). Cancelling the hook's
+    /// flag cancels this token and every clone of it.
+    #[must_use]
+    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
     /// Request cancellation. Idempotent, and safe from any thread.
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Release);

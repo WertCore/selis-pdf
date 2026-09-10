@@ -6,7 +6,7 @@
 //! is the single-page case.
 
 use selis_pdf_engine::{Session, TinySkiaBackend};
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
+use selis_sandbox::{Budget, Surface};
 
 use crate::render::{dim, write_ppm};
 use crate::{read_file, CliError, CliResult};
@@ -54,7 +54,7 @@ pub(crate) fn run(
         }
         let mut backend = TinySkiaBackend::new(w, h)
             .ok_or_else(|| CliError(format!("cannot create {w}x{h} canvas")))?;
-        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut g = crate::runtime::cli_guard(&budget);
         session
             .render_page(page, &mut backend, &budget, &mut g)
             .map_err(|e| CliError(format!("render page {page}: {e}")))?;

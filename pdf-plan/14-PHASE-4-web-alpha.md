@@ -97,6 +97,12 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
   - **Do:** Every `Code` maps to a user-facing state with a recovery action. A damaged file shows
     what we recovered, not a dead end.
+- [ ] **SL-4.UI.13 — Large-file handling UX (web)** · deps: SL-0.SBX.05, SL-1A.UI.06 · owner: AI+
+  - **Do:** The web surface of SL-1A.UI.06, deferred from Phase 1A: progress and cancellation in
+    the tab for long operations, and the honest budget-exhaustion state (which budget, the measured
+    usage, split-the-file remedy) instead of a dead tab. The CLI/engine plumbing exists — the
+    shared CancelToken, typed `CANCELLED`/budget errors with resource + measured usage, and the
+    verification/`budget` JSON fields the UI consumes unchanged.
 
 ---
 

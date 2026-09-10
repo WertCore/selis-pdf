@@ -185,6 +185,8 @@ fn crate_verify_expectations(
         annotations: Some(observed.annotations),
         fields: Some(observed.fields),
         ocgs: Some(observed.ocgs),
+        outlines: Some(observed.outlines),
+        embedded_files: Some(observed.embedded_files),
     }
 }
 

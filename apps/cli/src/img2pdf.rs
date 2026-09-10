@@ -43,13 +43,14 @@ impl PageFit {
     }
 }
 
-/// Convert images to a PDF, one page per image (SL-1A.TOOL.08).
+/// Convert images to a PDF, one page per image (SL-1A.TOOL.08). Returns the
+/// operation's verification display.
 pub(crate) fn img2pdf(
     inputs: &[String],
     output: &str,
     fit: &PageFit,
     margin: f64,
-) -> CliResult<()> {
+) -> CliResult<crate::verify_report::Verification> {
     if inputs.is_empty() {
         return Err(CliError(
             "img2pdf needs at least one input image".to_string(),
@@ -59,11 +60,13 @@ pub(crate) fn img2pdf(
         return Err(CliError("margin must be >= 0".to_string()));
     }
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let mut g = crate::runtime::cli_guard(&budget);
     let mut builder = DocumentBuilder::new();
+    let mut in_bytes = 0usize;
 
     for path in inputs {
         let data = read_file(path)?;
+        in_bytes = in_bytes.saturating_add(data.len());
         let image =
             selis_image::decode(&data, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
         let img_w = f64::from(image.width);
@@ -137,9 +140,17 @@ pub(crate) fn img2pdf(
         .write(&budget, &mut g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
     // WRITE.05: generated output is verified and committed atomically.
-    crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
+    let verification = crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
+    let display = crate::verify_report::Verification::from_gate(
+        None,
+        &verification,
+        &selis_pdf_cos::verify::Expectations::none(),
+        u64::try_from(in_bytes).unwrap_or(u64::MAX),
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
     eprintln!("wrote {} page(s) to {output}", inputs.len());
-    Ok(())
+    display.emit_line();
+    Ok(display)
 }
 
 /// Allocate the builder's next object number.

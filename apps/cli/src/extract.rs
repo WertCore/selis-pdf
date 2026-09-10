@@ -9,7 +9,7 @@ use selis_pdf_content::display_list::Op;
 use selis_pdf_content::text::TextGlyph;
 use selis_pdf_engine::Session;
 use selis_pdf_text::TextLine;
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
+use selis_sandbox::{Budget, Surface};
 
 use crate::render::write_ppm;
 use crate::{read_file, CliError, CliResult};
@@ -33,7 +33,7 @@ pub(crate) fn run(
 
     // Document-level formats don't need a page.
     if format == "embedded" {
-        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut g = crate::runtime::cli_guard(&budget);
         return extract_embedded(&session, &budget, &mut g, output);
     }
 
@@ -44,7 +44,7 @@ pub(crate) fn run(
             session.len()
         )));
     }
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut g = crate::runtime::cli_guard(&budget);
     let mut first_output = true;
     for p in page..=last {
         let dl = session

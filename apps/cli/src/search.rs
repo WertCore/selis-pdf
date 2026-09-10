@@ -4,7 +4,7 @@
 //! ligature decomposition) from `selis-pdf-text`.
 
 use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
+use selis_sandbox::{Budget, Surface};
 
 use crate::extract::page_lines;
 use crate::{read_file, CliError, CliResult};
@@ -25,7 +25,7 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
             session.len()
         )));
     }
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut g = crate::runtime::cli_guard(&budget);
     let dl = session
         .page_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
