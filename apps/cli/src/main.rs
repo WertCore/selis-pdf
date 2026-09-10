@@ -662,8 +662,8 @@ fn parse_budget() -> selis_sandbox::Budget {
 /// `Session::open` and its guards, so an injected deadline bounds that
 /// operation (and every sub-guard below it) rather than never firing.
 #[must_use]
-pub(crate) fn shell_clock() -> selis_sandbox::InstantClock {
-    selis_sandbox::InstantClock::new()
+pub(crate) fn shell_clock() -> impl selis_sandbox::Clock {
+    selis_sandbox::shell_clock()
 }
 
 fn err_unimplemented(what: &str) -> CliError {

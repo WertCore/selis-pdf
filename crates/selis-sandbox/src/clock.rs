@@ -138,6 +138,30 @@ impl Clock for InstantClock {
     }
 }
 
+/// The shell's default clock for SL-0.SBX.07 call sites: the sanctioned
+/// monotonic [`InstantClock`] where the platform provides one.
+///
+/// On wasm32 there is no real clock available to pure Rust — the browser
+/// shell injects its own `performance.now`-backed [`Clock`] (ADR-P0011), and
+/// the pure-Rust wasm artifacts (the xtask size canary, the workspace build
+/// matrix) only need the wall-deadline plumbing to *compile* — so this
+/// returns a stopped [`FixedClock`]: the same never-firing semantics the
+/// code base had before SBX.07, confined to targets where no real clock
+/// exists.
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+#[must_use]
+pub fn shell_clock() -> impl Clock {
+    InstantClock::new()
+}
+
+/// Stopped-clock variant for targets without a sanctioned real clock. See
+/// [`shell_clock`].
+#[cfg(any(not(feature = "instant-clock"), target_arch = "wasm32"))]
+#[must_use]
+pub fn shell_clock() -> impl Clock {
+    FixedClock(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -72,6 +72,7 @@ pub use depth::DepthGuard;
 pub use profiles::Surface;
 pub use trampoline::catch;
 
+pub use clock::shell_clock;
 /// The real-clock adapter for L4/L5 shells (SL-0.SBX.07). Native only: a
 /// WASM shell injects its own `performance.now`-backed [`Clock`].
 #[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
