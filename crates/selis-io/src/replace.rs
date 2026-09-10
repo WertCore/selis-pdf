@@ -106,6 +106,7 @@ fn io_error(op: &str, temp: &Path, dest: &Path, e: std::io::Error) -> Error {
 #[cfg(all(test, unix))]
 mod tests {
     use super::atomic_replace;
+    use selis_error::Code;
 
     // The replace-over-existing semantics on POSIX rename(2); on Windows the
     // same path goes through MoveFileExW(REPLACE_EXISTING) and is exercised by

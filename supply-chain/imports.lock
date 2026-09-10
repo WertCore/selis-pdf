@@ -455,8 +455,8 @@ who = "Lukasz Anforowicz <lukasza@chromium.org>"
 criteria = "safe-to-deploy"
 version = "1.0.35"
 notes = """
-Grepped for \"unsafe\", \"crypt\", \"cipher\", \"fs\", \"net\" - there were no hits
-(except for benign \"net\" hit in tests and \"fs\" hit in README.md)
+Grepped for "unsafe", "crypt", "cipher", "fs", "net" - there were no hits
+(except for benign "net" hit in tests and "fs" hit in README.md)
 """
 aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
 
@@ -544,8 +544,8 @@ who = "Lukasz Anforowicz <lukasza@chromium.org>"
 criteria = "safe-to-deploy"
 version = "0.19.0"
 notes = """
-Grepped for \"unsafe\", \"crypt\", \"cipher\", \"fs\", \"net\" - there were no hits
-(except for benign \"fs\" hit in `skrifa-0.19.0/src/color/traversal_tests/mod.rs`).
+Grepped for "unsafe", "crypt", "cipher", "fs", "net" - there were no hits
+(except for benign "fs" hit in `skrifa-0.19.0/src/color/traversal_tests/mod.rs`).
 
 For overall `safe-to-deploy` and `does-not-implement-crypto` I am mostly
 relying on certification by the Chromium engineers who work on the library
@@ -624,7 +624,7 @@ aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_p
 who = "Dominik Röttsches <drott@chromium.org>"
 criteria = "safe-to-deploy"
 delta = "0.24.1 -> 0.26.3"
-notes = "Support for fonts that rely on hinting (like FreeType's \"tricky\" font detection). Overflow fixes, cycle detection in autohinting. cff overflow fixes."
+notes = """Support for fonts that rely on hinting (like FreeType's "tricky" font detection). Overflow fixes, cycle detection in autohinting. cff overflow fixes."""
 aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
 
 [[audits.google.audits.skrifa]]

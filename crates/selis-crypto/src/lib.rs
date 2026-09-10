@@ -402,7 +402,6 @@ fn hardened_hash(password: &[u8], salt: &[u8], udata: &[u8]) -> [u8; 32] {
     let mut round: u32 = 0;
     loop {
         // K1 = (password || K || udata), repeated 64 times.
-        let seq_len = password.len() + k.len() + udata.len();
         // Bounded hint only (password ≤127, K 32, udata ≤48: ≤ ~13 KiB) and
         // always filled exactly: `Vec::new` grows to the same final size.
         let mut k1 = Vec::new();
@@ -412,7 +411,8 @@ fn hardened_hash(password: &[u8], salt: &[u8], udata: &[u8]) -> [u8; 32] {
             k1.extend_from_slice(udata);
         }
         // E = AES-128-CBC(K1) with key K[0..16], IV K[16..32], no padding:
-        // K1's length is 64 * seq_len, always a multiple of 16.
+        // K1's length is 64 * (password.len() + k.len() + udata.len()),
+        // always a multiple of 16.
         let e = aes128_cbc_encrypt(&k[0..16], &k[16..32], &k1);
         let sum: u32 = e
             .iter()
