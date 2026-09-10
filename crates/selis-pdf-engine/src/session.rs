@@ -16,6 +16,7 @@ use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskTyp
 use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 
+use crate::page::{page_view as compute_page_view, PageView};
 use crate::render::render_display_list;
 
 /// The engine session: a parsed, resolved document ready to render.
@@ -174,6 +175,20 @@ impl Session {
             .map(|r| (r.width(), r.height()))
     }
 
+    /// The rendered view of a page at `dpi` (SL-2.RAST.12): the output canvas
+    /// size and the user-space → device transform, honouring page `/Rotate`
+    /// (ISO 32000-2 §14.11.2 — rotation is part of the rendered page view, and
+    /// the canvas dimensions swap for 90/270).
+    ///
+    /// `None` when the page does not exist or has no `/MediaBox`.
+    #[must_use]
+    pub fn page_view(&self, page_num: usize, dpi: f64) -> Option<PageView> {
+        let page = self.document.pages.get(page_num)?;
+        let box_ = page.media_box?;
+        let rotate = selis_geom::Rotation::from_degrees(i64::from(page.rotate.unwrap_or(0)));
+        Some(compute_page_view(box_, rotate, dpi))
+    }
+
     /// The embedded-file inventory (metadata only — extraction is policy
     /// gated).
     pub fn attachments(
@@ -229,10 +244,15 @@ impl Session {
     }
 
     /// Render a page onto a backend.
+    ///
+    /// `page_ctm` is the page-to-device transform from
+    /// [`Session::page_view`] — the caller sizes the backend from the same
+    /// view, so the transform and the canvas agree (RAST.12).
     pub fn render_page(
         &self,
         page_num: usize,
         backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<()> {
@@ -279,6 +299,7 @@ impl Session {
         render_display_list(
             &dl,
             backend,
+            page_ctm,
             &font_data,
             &resolve_smask,
             &resolve_inline_image,
@@ -478,6 +499,7 @@ fn resolve_pattern_inner(
     crate::render::render_display_list(
         &dl,
         &mut tile,
+        Matrix::IDENTITY,
         &no_font,
         &no_smask,
         &no_inline,
@@ -567,13 +589,21 @@ fn font_data_inner(
     g: &mut BudgetGuard<'_>,
 ) -> Option<Vec<u8>> {
     // Prefer the embedded font program.
-    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
-    if let Some(font_file) = font_dict.font_file {
-        return Some(font_file.data().as_slice().to_vec());
+    if let Some(font_dict) = resolve_font_dict(resolver, resources, font_name, g) {
+        if let Some(font_file) = font_dict.font_file {
+            return Some(font_file.data().as_slice().to_vec());
+        }
+        // A non-embedded standard-14 font falls back to the bundled Liberation
+        // font (SL-0.LEAD.07), keyed by the /BaseFont name.
+        if let Some(bytes) = selis_font::fallback::fallback_bytes(&font_dict.base_font) {
+            return Some(bytes.to_vec());
+        }
     }
-    // A non-embedded standard-14 font falls back to the bundled Liberation
-    // font (SL-0.LEAD.07), keyed by the /BaseFont name.
-    selis_font::fallback::fallback_bytes(&font_dict.base_font).map(|bytes| bytes.to_vec())
+    // A `Tf` naming a standard-14 font that /Resources does not declare still
+    // renders in every mainstream viewer (and MuPDF, the render oracle) — a
+    // missing font resource is a deviation, not a silent no-draw.
+    let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+    selis_font::fallback::fallback_bytes(name).map(|bytes| bytes.to_vec())
 }
 
 fn resolve_page_content(
@@ -685,7 +715,17 @@ fn font_width_inner(
     code: u16,
     g: &mut BudgetGuard<'_>,
 ) -> Option<f64> {
-    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
+    let font_dict = match resolve_font_dict(resolver, resources, font_name, g) {
+        Some(fd) => fd,
+        None => {
+            // Undeclared standard-14 font: metrics from the name itself
+            // (the same tolerance as `font_data_inner`).
+            let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+            let mut fd = selis_font::FontDict::simple(selis_font::FontSubtype::Type1);
+            fd.base_font = name.to_string();
+            fd
+        }
+    };
     let resolved = selis_font::resolve_widths(&font_dict, g).ok()?;
     Some(resolved.width(u32::from(code)))
 }
@@ -2126,7 +2166,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The black-filled square covers the page: the centre is black.
@@ -2146,7 +2186,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The top-left pixel is white (255 gray); the rest are black.
@@ -2165,7 +2205,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The top-left pixel is white (255 gray); the rest are black.
@@ -2182,7 +2222,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2000, 200).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The canvas has no background fill; glyphs paint black with alpha 255.
@@ -2209,7 +2249,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The form's red square fills the page: the centre pixel is red.

@@ -383,6 +383,46 @@ pub fn generate() -> Result<(), String> {
         }
     }
 
+    // ── Rotated pages with swapped MediaBox dimensions (SL-2.RAST.12) ─────
+    //
+    // The compound case: a landscape (already-swapped) MediaBox combined with
+    // /Rotate. The rendered canvas must be the rotated MediaBox — portrait
+    // again for 90/270 — with the content transformed accordingly. The
+    // content marks two opposite corners so a wrong rotation is visible in
+    // any render.
+    for rot in [90i64, 180, 270] {
+        let id = format!("rotate_swapped_{rot}");
+        let mut doc = DocumentBuilder::new();
+        let mut content = ContentBuilder::new();
+        content
+            .set_fill(0.0, 0.0, 0.8)
+            .fill_rect(600.0, 60.0, 120.0, 80.0)
+            .begin_text()
+            .set_font("Helvetica", 14.0)
+            .text_at(60.0, 540.0)
+            .show_text(&format!("Swapped MediaBox Rotate {rot}"))
+            .end_text();
+        let content_bytes = content.to_bytes();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content_bytes.len() as i64))],
+                data: selis_bytes::Bytes::from(content_bytes),
+            },
+        );
+        // Landscape Letter: width and height already swapped vs the portrait
+        // default.
+        doc.add_page_with_extra(
+            792.0,
+            612.0,
+            &[Ref::new(content_num, 0)],
+            None,
+            vec![(b"Rotate".to_vec(), Obj::Int(rot))],
+        );
+        gen(&id, doc, 1)?;
+    }
+
     println!("synthetic: {} files generated", count.get());
     Ok(())
 }

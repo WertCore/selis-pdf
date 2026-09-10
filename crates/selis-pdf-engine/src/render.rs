@@ -18,7 +18,14 @@ use selis_raster::{
 };
 use selis_sandbox::BudgetGuard;
 
+use crate::page::device_scale;
+
 /// Render a display list onto a backend.
+///
+/// `page_ctm` is the page-to-device transform (RAST.12): the matrix that maps
+/// PDF user space onto the backend's pixels, honouring DPI scale, y-flip, and
+/// page `/Rotate` (`crate::page::page_view` builds it). Every op's own CTM —
+/// user space → device — composes with it.
 ///
 /// `font_data` resolves a font resource name to the font program bytes (the
 /// engine's document layer provides this).
@@ -29,6 +36,7 @@ use selis_sandbox::BudgetGuard;
 pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
+    page_ctm: Matrix,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
@@ -67,8 +75,13 @@ pub fn render_display_list(
         }
         if state.clip != current_clip {
             backend.clear_clip();
+            // Clip paths are stored in user space; they must reach the
+            // rasteriser through the same total transform as the fills (the
+            // op's CTM composed with the page transform).
+            let clip_m = state.ctm.then(page_ctm);
             for (path, rule) in &state.clip {
                 if let Some(p) = to_raster_path(path) {
+                    let p = transform_raster_path(&p, clip_m);
                     backend.clip(
                         &p,
                         match rule {
@@ -93,10 +106,10 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 if let Some(pattern_name) = &state.fill_pattern {
                     if let Some(pattern) = resolve_pattern(pattern_name) {
-                        draw_pattern(backend, &pattern, &p, &state.fill, state, g);
+                        draw_pattern(backend, &pattern, &p, &state.fill, state, page_ctm, g);
                         continue;
                     }
                 }
@@ -107,20 +120,20 @@ pub fn render_display_list(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 let paint = paint(&state.stroke, state.alpha_stroke);
-                let spec = stroke_spec(state);
+                let spec = stroke_spec(state, state.ctm.then(page_ctm));
                 let _ = selis_raster::render::stroke(backend, &p, &spec, &paint);
             }
             Op::FillStroke { path, state } => {
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 let fill_paint = paint(&state.fill, state.alpha_fill);
                 let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
                 let stroke_paint = paint(&state.stroke, state.alpha_stroke);
-                let spec = stroke_spec(state);
+                let spec = stroke_spec(state, state.ctm.then(page_ctm));
                 let _ = selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
             }
             Op::Text { at, state, runs } => {
@@ -142,10 +155,13 @@ pub fn render_display_list(
                         else {
                             continue;
                         };
-                        let m = state
-                            .ctm
-                            .then(Matrix::scale(scale, scale))
-                            .then(Matrix::translate(at.x, at.y));
+                        // Glyph outline → text space (size scale) → user
+                        // space (position) → device (CTM) → page view
+                        // (DPI/flip/`/Rotate`).
+                        let m = Matrix::scale(scale, scale)
+                            .then(Matrix::translate(at.x, at.y))
+                            .then(state.ctm)
+                            .then(page_ctm);
                         let transformed = transform_outline(&outline, m);
                         let Some(p) = raster_path_from_commands(&transformed) else {
                             continue;
@@ -167,27 +183,34 @@ pub fn render_display_list(
                     height: *height,
                     rgba8: rgba8.as_slice().to_vec(),
                 };
-                let placement = selis_raster::ImagePlacement { rect: *rect };
+                // The placement rect is already in (1:1) device space from the
+                // content pass; the page transform maps it onto the canvas.
+                let placement = selis_raster::ImagePlacement {
+                    rect: rect.transform(page_ctm),
+                };
                 backend.draw_image(&img, &placement);
             }
             Op::InlineImage { dict, data, state } => {
                 let Some((w, h, rgba8)) = resolve_inline_image(dict, data) else {
                     continue;
                 };
-                let p0 = state.ctm.apply(Point::new(0.0, 0.0));
-                let p1 = state.ctm.apply(Point::new(1.0, 1.0));
+                let m = state.ctm.then(page_ctm);
                 let img = selis_raster::Image {
                     width: w,
                     height: h,
                     rgba8: rgba8.as_slice().to_vec(),
                 };
                 let placement = selis_raster::ImagePlacement {
-                    rect: selis_geom::Rect::new(p0.x, p0.y, p1.x, p1.y),
+                    rect: crate::page::unit_square_aabb(m),
                 };
                 backend.draw_image(&img, &placement);
             }
             Op::Shading { name, state } => {
-                let Some((w, h, rgba8, rect)) = resolve_shading(name, state) else {
+                // The shading rasteriser computes its device rect from the
+                // state's CTM, so it must see the total transform.
+                let mut st = state.clone();
+                st.ctm = state.ctm.then(page_ctm);
+                let Some((w, h, rgba8, rect)) = resolve_shading(name, &st) else {
                     continue;
                 };
                 let img = selis_raster::Image {
@@ -349,19 +372,23 @@ fn op_state(op: &Op) -> &ResolvedState {
 /// Draw a tiling pattern over a fill region (the path's device bounding box):
 /// plan the tile instances and draw each. Uncoloured patterns (type 2) are
 /// tinted by the current fill colour. The path is already in device space
-/// (transformed by the CTM).
+/// (transformed by the total CTM); the pattern planner sees the same total
+/// transform through `page_ctm`.
 fn draw_pattern(
     backend: &mut TinySkiaBackend,
     pattern: &selis_raster::pattern::TilingPattern,
     path: &selis_raster::Path,
     tint: &[f64; 3],
     state: &ResolvedState,
+    page_ctm: Matrix,
     g: &mut BudgetGuard<'_>,
 ) {
     let Some(region) = path_bounds(path) else {
         return;
     };
-    let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, state.ctm, region, g) else {
+    let mut st = state.clone();
+    st.ctm = state.ctm.then(page_ctm);
+    let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, st.ctm, region, g) else {
         return;
     };
     let tile_rgba = if pattern.paint_type == selis_raster::pattern::PatternType::Uncoloured {
@@ -441,10 +468,13 @@ fn paint(rgb: &[f64; 3], alpha: f64) -> RasterPaint {
     }
 }
 
-/// The resolved stroke spec from the display-list state.
-fn stroke_spec(state: &selis_pdf_content::display_list::ResolvedState) -> StrokeSpec {
+/// The resolved stroke spec from the display-list state. `m` is the total
+/// user-space → device transform: the line width is a user-space magnitude
+/// (PDF §8.4.3.2) and scales with the CTM, so it reaches the rasteriser in
+/// device pixels.
+fn stroke_spec(state: &selis_pdf_content::display_list::ResolvedState, m: Matrix) -> StrokeSpec {
     StrokeSpec {
-        width: state.line_width,
+        width: state.line_width * device_scale(m),
         cap: state.line_cap,
         join: state.line_join,
         miter_limit: 10.0,
@@ -511,6 +541,162 @@ mod tests {
         None
     }
 
+    /// A fill at user-space coordinates lands on the y-flipped, DPI-scaled
+    /// device position under a 72-DPI page transform (RAST.12): the rect
+    /// `10 10 … 60 110 re` (y-up) paints near the *bottom*-left of the canvas.
+    #[test]
+    fn page_transform_flips_y() {
+        let mut g = guard();
+        let content = b"10 10 m 60 10 l 60 110 l 10 110 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::None,
+            72.0,
+        );
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 612 + x) * 4;
+        // User (10,10) is the rect's bottom-left → device (10, 792-110..792-10).
+        assert_eq!(&data[at(20, 700)..at(20, 700) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(20, 690)..at(20, 690) + 3], &[255, 0, 0]);
+        // Above the rect (user y ≈ 110+) is white.
+        assert_eq!(&data[at(20, 660)..at(20, 660) + 3], &[0, 0, 0]);
+    }
+
+    /// Under a 90° page rotation the content rotates with the page: a rect at
+    /// the user page's bottom-left paints at the rotated canvas's top-left,
+    /// on a canvas whose dimensions are swapped (RAST.12, ISO 32000-2
+    /// §14.11.2).
+    #[test]
+    fn page_rotate_90_rotates_the_content_and_swaps_the_canvas() {
+        let mut g = guard();
+        // A rect covering user (0,0)..(50,100) — the page's left edge.
+        let content = b"0 0 m 50 0 l 50 100 l 0 100 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::Clockwise90,
+            72.0,
+        );
+        // Portrait page + 90° cw → landscape canvas.
+        assert_eq!((page.width, page.height), (792, 612));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 792 + x) * 4;
+        // The page's bottom-left displays at the top-left (90° cw): the rect
+        // covers device x ∈ [0,100] (page height), y ∈ [0,50] (page width).
+        assert_eq!(&data[at(10, 10)..at(10, 10) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(90, 40)..at(90, 40) + 3], &[255, 0, 0]);
+        // Right of the rect (user x > 50) is untouched.
+        assert_eq!(&data[at(70, 60)..at(70, 60) + 3], &[0, 0, 0]);
+    }
+
+    /// The compound case: a landscape (swapped) MediaBox with /Rotate 90 —
+    /// the canvas is portrait again and the content rotates with it.
+    #[test]
+    fn page_rotate_composes_with_a_swapped_media_box() {
+        let mut g = guard();
+        // A rect at the user page's top-left corner: user (0, 550)..(100, 612)
+        // on a 792×612 MediaBox.
+        let content = b"0 550 m 100 550 l 100 612 l 0 612 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 792.0, 612.0),
+            selis_geom::Rotation::Clockwise90,
+            72.0,
+        );
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 612 + x) * 4;
+        // The page's top-left corner displays at the top-right after a 90° cw
+        // rotation: red at device (x ≈ 612-62, y ≈ 0..100).
+        assert_eq!(&data[at(570, 50)..at(570, 50) + 3], &[255, 0, 0]);
+        // The canvas's left edge (device x small) is untouched.
+        assert_eq!(&data[at(10, 50)..at(10, 50) + 3], &[0, 0, 0]);
+    }
+
+    /// A stroke's line width scales with the page transform (a user-space
+    /// magnitude, PDF §8.4.3.2).
+    #[test]
+    fn stroke_width_scales_with_the_page_transform() {
+        let mut g = guard();
+        // A horizontal line at user y=400 across the page, width 10.
+        let content = b"1 0 0 RG 10 w 100 400 m 500 400 l S";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::None,
+            144.0,
+        );
+        assert_eq!((page.width, page.height), (1224, 1584));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 1224 + x) * 4;
+        // The line's centre: user y=400 → device y = 792*2 - 400*2 = 1584-800 =
+        // 784. A 10-unit stroke is 20 device px wide at 144 DPI.
+        assert_eq!(&data[at(400, 784)..at(400, 784) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(400, 775)..at(400, 775) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(400, 793)..at(400, 793) + 3], &[255, 0, 0]);
+        // 30 device px from the centre is beyond the 20 px stroke (untouched).
+        assert_eq!(&data[at(400, 754)..at(400, 754) + 3], &[0, 0, 0]);
+        assert_eq!(&data[at(400, 814)..at(400, 814) + 3], &[0, 0, 0]);
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -523,6 +709,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -549,6 +736,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -596,6 +784,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -637,6 +826,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -673,6 +863,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -719,6 +910,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -769,6 +961,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &resolve_smask,
             &no_inline_image,
@@ -816,6 +1009,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &resolve_inline,
@@ -860,6 +1054,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -905,6 +1100,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,

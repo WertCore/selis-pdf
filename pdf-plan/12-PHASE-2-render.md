@@ -152,7 +152,7 @@ every user on every page.
     configuration, "for print" vs "for screen", text-rendering hints, and a `RenderIntent`.
   - **DoD:** Every parameter has a corpus case proving it changes output as documented.
 
-- [ ] **SL-2.RAST.12 — Page `/Rotate` in the render surface** · deps: RAST.11 · owner: AI
+- [x] **SL-2.RAST.12 — Page `/Rotate` in the render surface** · deps: RAST.11 · owner: AI
   - **Do:** Apply page `/Rotate` (0/90/180/270) to the render canvas and CTM so a rotated page's
     output geometry matches other renderers. Found by the SL-2.CONF.01 sweep: 17 files render
     1240×1755 where the oracle renders 1755×1240 — selis paints the unrotated `/MediaBox`
@@ -161,6 +161,16 @@ every user on every page.
   - **Files:** `crates/selis-pdf-engine` (page geometry in the render path), `apps/cli/src/render.rs`.
   - **DoD:** Corpus `page-rotate` (90/180/270, plus `/Rotate` with swapped MediaBox dimensions)
     matches MuPDF at 150 DPI within tolerance; the sweep's `size_skew` cluster empties.
+  - **Done (2026-09-11):** The render path gained the page-to-device transform
+    (`selis-pdf-engine::page::page_view`): DPI scale + y-flip + the `/Rotate` quadrant, composed
+    into every op (fills, strokes with CTM-scaled widths, text, images, clip paths, shadings,
+    patterns), with the canvas dimensions swapping for 90/270. The sweep's `size_skew` cluster is
+    empty on a scoped re-run (21 cluster files × 3 DPIs, 0 size_skew outcomes; was 17 files).
+    The page-rotate corpus (rotate_0/90/180/270 + swapped-MediaBox variants) matches MuPDF at
+    150 DPI within tolerance (0.08–0.27%). Also fixed while wiring the transform: text under a
+    `cm` composed in the wrong order (CTM applied before the text matrix), and a `Tf` naming a
+    standard-14 font absent from `/Resources` now falls back to the bundled font instead of
+    drawing nothing (MuPDF/PDFium tolerance; a silent no-draw otherwise).
 
 - [ ] **SL-2.RAST.13 — Silent blank renders (CONF.01 `blank_selis` cluster)** · deps: RAST.04 · owner: AI
   - **Do:** Root-cause the 25 files where selis paints page 1 (near-)blank while MuPDF paints
