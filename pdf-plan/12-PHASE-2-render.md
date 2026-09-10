@@ -316,6 +316,20 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
   - The 20-CONFORMANCE-PROGRAM.md §3 tolerances and SL-2.CONF.02 consume these numbers; the
     threshold was re-baselined **from calibration data only**, per the §5 verdict discipline.
 
+  **CI confirmation status (2026-09-10):** dispatch attempt run
+  [34523221142](https://github.com/WertCore/selis-pdf/actions/runs/34523221142)
+  (`workflow_dispatch`, ref main) failed in the corpus-extraction step before reaching the sweep —
+  GNU tar on ubuntu cannot read the Ghent **zip** (`This does not look like a tar archive`; the
+  dev host's bsdtar could, which is why local legs worked). Fixed on this branch (python
+  `zipfile`, verified against the pinned zip: 95 PDFs). Pushing is out of scope for this task, so
+  the completed confirmation run fires on the first `render-conf` dispatch/cron after this branch
+  merges — it then reports (a) selis↔pdfium/pdf.js on the pinned images (completing the
+  calibration triangle: selis was only compared against MuPDF locally, and pair distances are not
+  transitive) and (b) the oracle-vs-oracle legs of this matrix on the pinned identities. The
+  same run's `size-check` failure (3 wasm cdylibs "NOT MEASURED — no artifact in this run") is a
+  pre-existing main-branch issue: runs 34483545072 (28fca97) and 34479582812 (f95f6ff) failed
+  before this branch's merge; not caused by this work.
+
 - [ ] **SL-2.CONF.04 — Gross-divergence triage (CONF.01 `diff>=25%` cluster)** · deps: CONF.01 · owner: AI
   - **Do:** Root-cause the 94 files at ≥25% differing pixels @150 (worst: `ghent/GWG080_
     DeviceN-Support_6c_x3` 55.9%, `ghent/GWG1610_Softmasks_Text_part1_X4` 55.1%, `issue6296`,
