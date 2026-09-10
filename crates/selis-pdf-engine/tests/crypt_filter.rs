@@ -7,7 +7,7 @@
 
 use selis_pdf_cos::{Obj, Ref};
 use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, Surface};
+use selis_sandbox::{Budget, FixedClock, Surface};
 
 static AUTH_EVENT_EF_OPEN: &[u8] = include_bytes!("fixtures/auth-event-ef-open.pdf");
 static ENCRYPTED_ATTACHMENT: &[u8] = include_bytes!("fixtures/encrypted-attachment.pdf");
@@ -17,7 +17,7 @@ static BUG1782186: &[u8] = include_bytes!("fixtures/bug1782186.pdf");
 
 fn open(src: &[u8]) -> Session {
     let budget = Budget::profile(Surface::Viewer);
-    Session::open(src.to_vec(), &budget).expect("Session::open")
+    Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("Session::open")
 }
 
 /// auth-event-ef-open.pdf: /StmF /Identity but the embedded file stream has
@@ -52,7 +52,7 @@ fn issue19484_metadata_crypt_identity_not_decrypted() {
     let src = ISSUE19484_1;
     let budget = Budget::profile(Surface::Viewer);
     let mut g = budget.guard();
-    let _session = Session::open(src.to_vec(), &budget).expect("Session::open");
+    let _session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("Session::open");
     // Authenticate exactly as the session does, then resolve the metadata
     // stream (object 3) and verify its payload is plaintext XML.
     let startxref = selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
@@ -109,7 +109,7 @@ fn issue19484_2_metadata_crypt_identity_not_decrypted() {
     let src = ISSUE19484_2;
     let budget = Budget::profile(Surface::Viewer);
     let mut g = budget.guard();
-    let _session = Session::open(src.to_vec(), &budget).expect("Session::open");
+    let _session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("Session::open");
     let startxref = selis_pdf_cos::xref::find_startxref(src, 2048).expect("startxref");
     let doc = selis_pdf_cos::parse_revisions(src, startxref, &budget, &mut g).expect("parse");
     let encrypt_ref = doc

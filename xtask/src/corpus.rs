@@ -353,7 +353,9 @@ struct ExpectRecord {
 
 fn open_outcome(path: &Path) -> ExpectRecord {
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    match selis_pdf_engine::Session::open(std::fs::read(path).unwrap_or_default(), &budget) {
+    let clock = selis_sandbox::InstantClock::new();
+    match selis_pdf_engine::Session::open(std::fs::read(path).unwrap_or_default(), &budget, &clock)
+    {
         Ok(session) => ExpectRecord {
             open: "ok".to_string(),
             code: None,

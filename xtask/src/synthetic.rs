@@ -67,10 +67,8 @@ pub fn generate() -> Result<(), String> {
     let count = std::cell::Cell::new(0usize);
     let gen = |id: &str, mut builder: DocumentBuilder, expect_pages: usize| -> Result<(), String> {
         let budget = selis_sandbox::Budget::unlimited();
-        let mut g = budget.guard_with(
-            &selis_sandbox::FixedClock(0),
-            selis_sandbox::CancelToken::new(),
-        );
+        let clock = selis_sandbox::InstantClock::new();
+        let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
         let bytes = builder
             .write(&budget, &mut g)
             .map_err(|e| format!("{id}: {e}"))?;

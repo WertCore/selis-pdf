@@ -179,7 +179,8 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
     }
     // The output must also build a usable document model (WRITE.07).
     let doc_budget = Budget::profile(Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
+    let clock = crate::shell_clock();
+    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget, &clock).is_err() {
         return Err(CliError(format!(
             "{path}: output failed verification (no usable document model)"
         )));
@@ -358,7 +359,7 @@ mod tests {
         // Verify the output opens with the engine.
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
         assert!(
-            selis_pdf_engine::Session::open(out_bytes, &budget).is_ok(),
+            selis_pdf_engine::Session::open(out_bytes, &budget, &crate::shell_clock()).is_ok(),
             "output must open in the engine"
         );
     }

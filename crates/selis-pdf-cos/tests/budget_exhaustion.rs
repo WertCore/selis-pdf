@@ -10,10 +10,46 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use selis_pdf_cos::{parse, Lexer};
-use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
+use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, FixedClock, ManualClock, Nanos};
 
 fn guard(budget: Budget) -> BudgetGuard<'static> {
     budget.guard_with(&FixedClock(0), CancelToken::new())
+}
+
+/// A manual clock that advances a fixed step on every read: time passes as
+/// the parse does work. This is the deterministic stand-in for a file that
+/// outlives its deadline — each `tick` inside the lexer advances the clock,
+/// so the wall deadline trips *mid-stream*, after real parsing work.
+#[derive(Debug)]
+struct ParseClock {
+    inner: ManualClock,
+    step: Nanos,
+    reads: std::sync::atomic::AtomicU64,
+}
+
+impl ParseClock {
+    /// A clock advancing `step` nanoseconds on every read.
+    fn new(step: Nanos) -> Self {
+        Self {
+            inner: ManualClock::new(),
+            step,
+            reads: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn reads(&self) -> u64 {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Clock for ParseClock {
+    fn now(&self) -> Nanos {
+        let _ = self
+            .reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.advance(self.step);
+        self.inner.now()
+    }
 }
 
 /// A `/Prev` chain of 10,000 xrefs must terminate with `BUDGET_DEPTH`, not
@@ -71,7 +107,7 @@ fn deep_array_nesting_terminates() {
         ..Budget::unlimited()
     };
     let g = guard(budget);
-    let result = parse(&input, &g.budget());
+    let result = parse(&input, &g.budget(), &FixedClock(0));
     match result {
         Ok(_) => panic!("20k-deep array must exhaust the depth budget"),
         Err(e) => {
@@ -141,6 +177,38 @@ fn endless_string_terminates() {
     assert!(
         result.is_ok() || result.is_err(),
         "unterminated string must return (error), not hang"
+    );
+}
+
+/// SL-0.SBX.07: the wall deadline fires *mid-parse* on the real lexing path.
+/// A ManualClock advanced past the Viewer wall while the parse is underway
+/// (the deterministic ParseClock advances on every read) must abort with
+/// `BUDGET_WALL` after real work — not at the first tick, not never.
+#[test]
+fn wall_deadline_aborts_a_parse_mid_stream() {
+    // A few hundred tokens: the lexer ticks per token, so the parse needs
+    // far more than the ~6 ticks the deadline allows.
+    let mut input = Vec::new();
+    for i in 0..500 {
+        input.extend_from_slice(format!("{i} ").as_bytes());
+    }
+    let budget = Budget::profile(selis_sandbox::Surface::Viewer); // wall = 5 s
+    let clock = ParseClock::new(1_000_000_000); // 1 s per clock read
+    let result = parse(&input, &budget, &clock);
+    match result {
+        Ok(_) => panic!("a parse racing past the Viewer wall must abort"),
+        Err(e) => {
+            assert!(e.is_budget(), "expected a budget error, got {e}");
+            assert_eq!(e.code(), selis_error::Code::BudgetWall);
+        }
+    }
+    // Mid-stream, not at the first tick: the guard was constructed (one
+    // read), several ticks elapsed (more reads), and only then did the
+    // deadline pass.
+    assert!(
+        clock.reads() > 2,
+        "the deadline must fire after parsing work, reads={}",
+        clock.reads()
     );
 }
 

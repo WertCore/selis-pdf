@@ -16,10 +16,8 @@ use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
 /// annotation, an AcroForm field, an OCG.
 fn formed_document() -> Vec<u8> {
     let budget = selis_sandbox::Budget::unlimited();
-    let mut g = budget.guard_with(
-        &selis_sandbox::FixedClock(0),
-        selis_sandbox::CancelToken::new(),
-    );
+    let clock = selis_sandbox::InstantClock::new();
+    let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
     let mut b = DocumentBuilder::new();
     for i in 0..3u8 {
         let mut c = ContentBuilder::new();

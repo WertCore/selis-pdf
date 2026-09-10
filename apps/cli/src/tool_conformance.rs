@@ -156,7 +156,7 @@ fn no_tool_degrades_conformance_posture() {
             continue;
         };
         // Inputs that do not open have no posture to degrade.
-        let Ok(session) = Session::open(src, &budget) else {
+        let Ok(session) = Session::open(src, &budget, &crate::shell_clock()) else {
             skipped += 1;
             continue;
         };
@@ -230,6 +230,6 @@ fn no_tool_degrades_conformance_posture() {
 /// Open `src` and evaluate its posture in one step (for tool outputs).
 fn posture_session(src: &[u8]) -> Option<Vec<RuleResult>> {
     let budget = Budget::profile(Surface::Viewer);
-    let session = Session::open(src.to_vec(), &budget).ok()?;
+    let session = Session::open(src.to_vec(), &budget, &crate::shell_clock()).ok()?;
     posture(&session)
 }

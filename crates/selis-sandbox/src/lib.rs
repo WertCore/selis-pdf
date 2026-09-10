@@ -33,13 +33,19 @@
 //! assert!(g.charge(Resource::Bytes, 1).is_err());
 //! ```
 //!
-//! # No clocks, no threads, no allocator hooks
+//! # No clocks below L4, no threads, no allocator hooks
 //!
 //! Time arrives through an injected [`Clock`] (ADR-P0011 forbids
-//! `std::time::Instant` below L4). Cancellation is cooperative. Allocation is
-//! charged by [`alloc`] wrappers rather than a global allocator hook, because
-//! `wasm32-unknown-unknown` has no useful hook and a global one cannot attribute
-//! an allocation to an operation anyway.
+//! `std::time::Instant` in L0–L3 code). The kernel itself is clock-free;
+//! [`FixedClock`] and [`ManualClock`] are the deterministic test sources. The
+//! one exception is [`InstantClock`] — a real-clock *adapter for L4/L5
+//! shells*, kept here so every shell shares one audited implementation. It is
+//! behind the `instant-clock` feature (a platform capability: shells enable
+//! it, L0–L3 crates do not) and compiled out for `wasm32`, where the browser
+//! shell wraps `performance.now` instead. Cancellation is cooperative.
+//! Allocation is charged by [`alloc`] wrappers rather than a global allocator
+//! hook, because `wasm32-unknown-unknown` has no useful hook and a global one
+//! cannot attribute an allocation to an operation anyway.
 
 #![forbid(unsafe_code)]
 
@@ -65,6 +71,11 @@ pub use clock::{Clock, FixedClock, ManualClock, Nanos};
 pub use depth::DepthGuard;
 pub use profiles::Surface;
 pub use trampoline::catch;
+
+/// The real-clock adapter for L4/L5 shells (SL-0.SBX.07). Native only: a
+/// WASM shell injects its own `performance.now`-backed [`Clock`].
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+pub use clock::InstantClock;
 
 #[cfg(feature = "wasm-host")]
 pub use wasm_host::WasmCodec;
