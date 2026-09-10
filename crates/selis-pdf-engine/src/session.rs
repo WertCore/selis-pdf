@@ -4,6 +4,9 @@
 //! document, resolve the page tree, and render a page to a backend with fonts
 //! and images resolved from the document's resources.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use selis_bytes::Bytes;
 use selis_color::Rgba;
 use selis_error::{err, Code, Result};
@@ -15,8 +18,6 @@ use selis_raster::image::{decode_image, Decode, DecodedImage};
 use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
 use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
-
-use crate::render::render_display_list;
 
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
@@ -236,6 +237,20 @@ impl Session {
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<()> {
+        let mut stats = crate::render::RenderStats::default();
+        self.render_page_with_stats(page_num, backend, budget, g, &mut stats)
+    }
+
+    /// Render a page onto a backend, filling `stats` with the raster walk's
+    /// workload counters (see [`crate::render::RenderStats`]).
+    pub fn render_page_with_stats(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        stats: &mut crate::render::RenderStats,
+    ) -> Result<()> {
         let dl = self.page_display_list(page_num, budget, g)?;
         let budget_copy = *budget;
         let page = self.document.pages.get(page_num).ok_or_else(|| {
@@ -276,7 +291,7 @@ impl Session {
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
         // transparent black — fill the canvas before painting content.
         fill_page_backdrop(backend);
-        render_display_list(
+        crate::render::render_display_list_with_stats(
             &dl,
             backend,
             &font_data,
@@ -285,6 +300,7 @@ impl Session {
             &resolve_shading,
             &resolve_pattern,
             g,
+            stats,
         );
         Ok(())
     }
@@ -324,11 +340,26 @@ fn build_display_list(
 ) -> Result<selis_pdf_content::display_list::DisplayList> {
     let budget_copy = *budget;
     let clock = g.clock();
+    // Glyph-width cache (SL-2.PERF.02): the interpreter asks per glyph, so
+    // resolving the font dict and width table per call repeats identical
+    // work. Keyed by (font, resource scope, code) — a different scope may
+    // resolve the same name differently, so the key must not collapse it.
+    // Walk-local and lookup-only, so determinism holds by construction.
+    let width_cache: RefCell<HashMap<(Bytes, Option<Bytes>, u16), f64>> =
+        RefCell::new(HashMap::new());
     let font_width = move |font_name: &Bytes, code: u16, key: Option<&Bytes>| -> f64 {
+        let cache_key = (font_name.clone(), key.cloned(), code);
+        if let Some(w) = width_cache.borrow().get(&cache_key) {
+            return *w;
+        }
         let mut bg = budget_copy.guard_with(clock, CancelToken::new());
         let mut res = session.new_resolver(&budget_copy);
         let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
-        font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0)
+        let w = font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0);
+        if width_cache.borrow().len() < 4096 {
+            width_cache.borrow_mut().insert(cache_key, w);
+        }
+        w
     };
     let resolve_do =
         move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {

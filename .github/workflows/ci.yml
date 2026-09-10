@@ -215,11 +215,34 @@ jobs:
   perf:
     runs-on: ubuntu-24.04
     if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
+      - name: Log in to GHCR (pinned oracle images)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Verify render benchmark fixtures (SL-2.PERF.02)
+        run: cargo xtask render-set --check
+        timeout-minutes: 10
+      - name: Measure render throughput vs pinned PDFium (SL-2.PERF.02)
+        # bench/render-results.json is what `perf-check` gates the ≥0.6×
+        # ratio row on; regenerating it here (pinned driver, release engine)
+        # makes the gate measure this runner, not a stale reference record.
+        run: |
+          IMG=$(cargo xtask oracle image-ref pdfium)
+          docker pull "$IMG"
+          CID=$(docker create "$IMG")
+          docker cp "$CID:/usr/local/bin/pdfium_driver" ./pdfium_driver
+          docker cp "$CID:/usr/local/lib/libpdfium.so" ./libpdfium.so
+          docker rm "$CID"
+          chmod +x ./pdfium_driver
+          LD_LIBRARY_PATH=. cargo run --release -p xtask -- perf-render \
+            --pdfium-driver ./pdfium_driver --repeats 5
+        timeout-minutes: 30
       - name: Record runner-fresh baseline
         run: cargo xtask bench --record-baseline
         timeout-minutes: 20

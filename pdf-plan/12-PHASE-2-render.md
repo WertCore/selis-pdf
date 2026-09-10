@@ -168,8 +168,16 @@ every user on every page.
   - **Do:** ADR-P0025: LRU under a memory budget, keyed by (page, matrix, params, revision).
     Invalidation on edit is exact, not "clear everything".
   - **DoD:** Cache-hit benchmark; a mutation invalidates only affected entries.
-- [ ] **SL-2.PERF.02 — Meet the render throughput budget** · deps: RAST.10 · owner: AI+
+- [x] **SL-2.PERF.02 — Meet the render throughput budget** · deps: RAST.10 · owner: AI+
   - **DoD:** ≥0.6× PDFium at G2 on the benchmark set; a profile report naming the top 10 costs.
+  - **Done 2026-09-10:** ratio MET — 2.62× geomean, every page ≥0.6× raw
+    (release, 72 DPI native scale, median of 9; profile in
+    `30-RENDER-PERF-REPORT.md`, record in `bench/render-results.json`,
+    gate wired in `perf-budgets.toml`, nightly perf job regenerates it with
+    the pinned driver). Honest scope: the §12 rows say @150 DPI but the
+    engine has no page→device matrix yet (gap G-1, CONF.01 owns it); the
+    18 ms absolute budget is NOT met (50.9 ms — gap G-2, needs a glyph
+    atlas). PERF.03 not started (still blocked behind this task).
 - [ ] **SL-2.PERF.03 — WASM-specific render optimisation** · deps: PERF.02 · owner: AI+
   - **Do:** SIMD128 where it is provably deterministic, memory-growth strategy, and avoiding the
     JS↔WASM boundary in the tile path.

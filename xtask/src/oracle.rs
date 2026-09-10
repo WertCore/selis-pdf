@@ -133,6 +133,11 @@ pub enum OracleCommand {
     },
     /// Report which oracles are available locally (and record their versions).
     Check,
+    /// Print the pinned container image ref for a tool (for CI pull/extract).
+    ImageRef {
+        /// The oracle id.
+        tool: String,
+    },
     /// Run the structural oracle's consistency check over tool output
     /// (SL-1A.WRITE.05): `qpdf --check <file>` locally, or through the pinned
     /// container when qpdf is not installed. Exits non-zero when the output
@@ -170,6 +175,7 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
     match cmd {
         OracleCommand::Render { tool, dpi, file } => render(&tool, dpi, &file),
         OracleCommand::Check => check(),
+        OracleCommand::ImageRef { tool } => image_ref_cmd(&tool),
         OracleCommand::CheckOutput { file } => check_output(&file),
         OracleCommand::CheckOutputDir { dir } => check_output_dir(&dir),
         OracleCommand::Compare { file } => compare(&file),
@@ -325,6 +331,18 @@ fn render_container(tool: &str, dpi: u32, file: &Path, out_dir: &Path) -> Result
     } else {
         Err(format!("{tool}: container render failed (exit {status})"))
     }
+}
+
+/// Print the pinned container image ref for one tool (digest-qualified when
+/// recorded), so CI pulls/extracts exactly the pinned artifact without
+/// re-parsing `xtask/oracles.toml` in shell.
+fn image_ref_cmd(tool: &str) -> Result<(), String> {
+    let pins = load_pins()?;
+    let pin = pins
+        .get(tool)
+        .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
+    println!("{}", image_ref(pin, tool)?);
+    Ok(())
 }
 
 /// Report which oracles are available locally and the pinned container images.

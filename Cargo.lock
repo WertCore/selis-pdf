@@ -2361,7 +2361,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "miniz_oxide",
  "selis-bytes",
+ "selis-pdf-content",
  "selis-pdf-cos",
  "selis-pdf-engine",
  "selis-sandbox",

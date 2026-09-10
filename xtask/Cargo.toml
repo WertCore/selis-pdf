@@ -9,7 +9,9 @@ publish = false
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+miniz_oxide = { workspace = true }
 selis-bytes = { workspace = true }
+selis-pdf-content = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-engine = { workspace = true }
 # xtask is a tool at the shell boundary: it supplies the real monotonic clock

@@ -8,6 +8,8 @@
 //! Paths (fill/stroke) are fully rendered. Text ops currently record their
 //! glyph positions; the glyph-outline rasterisation is the next increment.
 
+use std::collections::HashMap;
+
 use selis_color::Rgba;
 use selis_geom::{Matrix, Point};
 use selis_pdf_content::display_list::{DisplayList, Op, ResolvedState};
@@ -18,6 +20,261 @@ use selis_raster::{
 };
 use selis_sandbox::BudgetGuard;
 
+/// Per-walk workload counters (SL-2.PERF.02 instrumentation).
+///
+/// Counts only — no clocks, no allocation — so filling one cannot perturb
+/// determinism (SL-2.RAST.09): two walks over the same display list produce
+/// identical counters as well as identical pixels. The `xtask perf-render`
+/// harness records these beside the wall times; that pairing is the top-10
+/// cost report's evidence.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RenderStats {
+    /// Display-list ops visited (including group boundaries).
+    pub ops: u64,
+    /// `font_data` invocations (cache misses — at most one per distinct
+    /// font per walk; the pre-cache walk resolved per glyph).
+    pub font_resolves: u64,
+    /// Font program bytes returned by `font_data` (copies).
+    pub font_bytes: u64,
+    /// `glyph_id_for_char` lookups.
+    pub glyph_lookups: u64,
+    /// `outline_glyph` extractions.
+    pub glyph_outlines: u64,
+    /// Image draws (XObject, inline, and shading rasters).
+    pub image_draws: u64,
+    /// Image RGBA bytes handed to the backend (copies).
+    pub image_bytes: u64,
+    /// Clip-state changes that rebuilt the backend clip mask.
+    pub clip_rebuilds: u64,
+    /// Clip paths repainted across those rebuilds.
+    pub clip_paths: u64,
+    /// Soft-mask resolutions.
+    pub smask_resolves: u64,
+    /// Shading resolutions.
+    pub shading_resolves: u64,
+    /// Tiling-pattern resolutions.
+    pub pattern_resolves: u64,
+    /// Transparency-group pushes.
+    pub layers_pushed: u64,
+    /// Transparency-group pops.
+    pub layers_popped: u64,
+    /// Font-program cache hits (per run served without `font_data`).
+    pub font_cache_hits: u64,
+    /// Cmap cache hits (per glyph served without `glyph_id_for_char`).
+    pub gid_cache_hits: u64,
+    /// Outline cache hits (per glyph served without `outline_glyph`).
+    pub outline_cache_hits: u64,
+}
+
+/// Bound on distinct font programs cached per walk (hostile-input guard: a
+/// document naming millions of fonts must not grow the cache without
+/// limit; past the cap, resolution simply runs uncached).
+const MAX_CACHED_FONTS: usize = 256;
+/// Bound on distinct cmap entries cached per walk.
+const MAX_CACHED_GIDS: usize = 4096;
+/// Bound on distinct glyph outlines cached per walk.
+const MAX_CACHED_OUTLINES: usize = 1024;
+
+/// The writable per-glyph maps for one font.
+struct FontMaps {
+    /// Code → glyph id (`None` = unmapped, cached too: spaces are common
+    /// and must not re-run the cmap per instance).
+    gids: HashMap<u16, Option<u16>>,
+    /// Gid → font-unit outline commands (`None` = no outline).
+    outlines: HashMap<u16, Option<Vec<selis_font::OutlineCmd>>>,
+}
+
+/// A resolved font program with its units-per-em and per-glyph caches.
+///
+/// The cmap and outline maps live per font (not in one global map keyed by
+/// tuples): a page almost always reuses one font across thousands of
+/// glyphs, so the glyph loop probes small `u16`-keyed maps with no per-glyph
+/// key allocation or content hashing.
+struct CachedFont {
+    /// The font program bytes (resolved once per distinct font name).
+    bytes: selis_bytes::Bytes,
+    /// Units per em (constant per font program).
+    upem: f64,
+    /// The per-glyph maps.
+    maps: FontMaps,
+}
+
+/// The font a run renders with: the cached entry, or — past the
+/// hostile-input cap — a run-local scratch with the same behaviour (the run
+/// still renders; only cross-run sharing is lost).
+enum FontView<'a> {
+    /// The shared per-walk entry.
+    Cached {
+        /// The font program bytes.
+        bytes: selis_bytes::Bytes,
+        /// Units per em.
+        upem: f64,
+        /// The shared per-glyph maps.
+        maps: &'a mut FontMaps,
+    },
+    /// A run-local scratch (cap overflow only).
+    Scratch {
+        /// The font program bytes.
+        bytes: selis_bytes::Bytes,
+        /// Units per em.
+        upem: f64,
+        /// The run-local per-glyph maps.
+        maps: FontMaps,
+    },
+}
+
+impl FontView<'_> {
+    /// The font program bytes.
+    fn bytes(&self) -> &selis_bytes::Bytes {
+        match self {
+            FontView::Cached { bytes, .. } | FontView::Scratch { bytes, .. } => bytes,
+        }
+    }
+
+    /// Units per em.
+    fn upem(&self) -> f64 {
+        match self {
+            FontView::Cached { upem, .. } | FontView::Scratch { upem, .. } => *upem,
+        }
+    }
+
+    /// The writable per-glyph maps.
+    fn maps(&mut self) -> &mut FontMaps {
+        match self {
+            FontView::Cached { maps, .. } => maps,
+            FontView::Scratch { maps, .. } => maps,
+        }
+    }
+}
+
+/// Per-walk text cache (SL-2.PERF.02).
+///
+/// The display list carries one text op per glyph, so resolving the font
+/// program, the cmap entry, and the outline per glyph repeats identical
+/// work thousands of times per page (the profile measured 636 MB of font
+/// copies for a 4 557-glyph page). This cache resolves each distinct
+/// (font, code, gid) once per walk. It is a walk-local with lookup-only
+/// reads after insertion (never iterated), so output is unaffected and
+/// determinism (SL-2.RAST.09) holds by construction.
+struct TextCache {
+    /// Font name → resolved program and per-glyph maps.
+    fonts: HashMap<selis_bytes::Bytes, CachedFont>,
+}
+
+impl TextCache {
+    /// An empty cache.
+    fn new() -> Self {
+        Self {
+            fonts: HashMap::new(),
+        }
+    }
+
+    /// The entry for `name`, resolving the font program on first use.
+    /// `None` when the font does not resolve (the run is skipped). Past the
+    /// hostile-input cap the run renders from a run-local scratch with
+    /// identical output — only cross-run sharing is lost.
+    fn font<'a>(
+        &'a mut self,
+        font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+        name: &selis_bytes::Bytes,
+        stats: &mut RenderStats,
+    ) -> Option<FontView<'a>> {
+        if self.fonts.contains_key(name) {
+            stats.font_cache_hits = stats.font_cache_hits.saturating_add(1);
+            return self.fonts.get_mut(name).map(|font| FontView::Cached {
+                bytes: font.bytes.clone(),
+                upem: font.upem,
+                maps: &mut font.maps,
+            });
+        }
+        stats.font_resolves = stats.font_resolves.saturating_add(1);
+        let bytes = font_data(name)?;
+        stats.font_bytes = stats
+            .font_bytes
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let fb = selis_bytes::Bytes::from(bytes);
+        let upem = selis_font::units_per_em(&fb)
+            .map(f64::from)
+            .unwrap_or(1000.0);
+        if self.fonts.len() < MAX_CACHED_FONTS {
+            self.fonts.insert(
+                name.clone(),
+                CachedFont {
+                    bytes: fb.clone(),
+                    upem,
+                    maps: FontMaps {
+                        gids: HashMap::new(),
+                        outlines: HashMap::new(),
+                    },
+                },
+            );
+            return self.fonts.get_mut(name).map(|font| FontView::Cached {
+                bytes: font.bytes.clone(),
+                upem: font.upem,
+                maps: &mut font.maps,
+            });
+        }
+        Some(FontView::Scratch {
+            bytes: fb,
+            upem,
+            maps: FontMaps {
+                gids: HashMap::new(),
+                outlines: HashMap::new(),
+            },
+        })
+    }
+
+    /// The glyph id for `code` (`None` = unmapped).
+    fn glyph_id(
+        maps: &mut FontMaps,
+        bytes: &selis_bytes::Bytes,
+        code: u16,
+        stats: &mut RenderStats,
+    ) -> Option<u16> {
+        match maps.gids.get(&code) {
+            Some(cached) => {
+                stats.gid_cache_hits = stats.gid_cache_hits.saturating_add(1);
+                *cached
+            }
+            None => {
+                stats.glyph_lookups = stats.glyph_lookups.saturating_add(1);
+                let gid = selis_font::glyph_id_for_char(bytes, u32::from(code));
+                if maps.gids.len() < MAX_CACHED_GIDS {
+                    maps.gids.insert(code, gid);
+                }
+                gid
+            }
+        }
+    }
+
+    /// The font-unit outline commands for `gid` (`None` = no outline).
+    fn outline(
+        maps: &mut FontMaps,
+        bytes: &selis_bytes::Bytes,
+        gid: u16,
+        g: &mut BudgetGuard<'_>,
+        stats: &mut RenderStats,
+    ) -> Option<Vec<selis_font::OutlineCmd>> {
+        match maps.outlines.get(&gid) {
+            Some(cached) => {
+                stats.outline_cache_hits = stats.outline_cache_hits.saturating_add(1);
+                cached.clone()
+            }
+            None => {
+                stats.glyph_outlines = stats.glyph_outlines.saturating_add(1);
+                let outline = selis_font::outline_glyph(bytes, gid, g)
+                    .ok()
+                    .flatten()
+                    .map(|o| o.commands);
+                if maps.outlines.len() < MAX_CACHED_OUTLINES {
+                    maps.outlines.insert(gid, outline.clone());
+                }
+                outline
+            }
+        }
+    }
+}
+
 /// Render a display list onto a backend.
 ///
 /// `font_data` resolves a font resource name to the font program bytes (the
@@ -26,6 +283,7 @@ use selis_sandbox::BudgetGuard;
 /// # Malformed Input
 ///
 /// A degenerate or unrenderable op is skipped (a deviation), never fatal.
+#[allow(clippy::too_many_arguments)]
 pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
@@ -42,8 +300,50 @@ pub fn render_display_list(
     resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
     g: &mut BudgetGuard<'_>,
 ) {
+    let mut stats = RenderStats::default();
+    render_display_list_with_stats(
+        dl,
+        backend,
+        font_data,
+        resolve_smask,
+        resolve_inline_image,
+        resolve_shading,
+        resolve_pattern,
+        g,
+        &mut stats,
+    );
+}
+
+/// Render a display list onto a backend, filling `stats` with the walk's
+/// workload counters (see [`RenderStats`]).
+///
+/// # Malformed Input
+///
+/// A degenerate or unrenderable op is skipped (a deviation), never fatal.
+#[allow(clippy::too_many_arguments)]
+pub fn render_display_list_with_stats(
+    dl: &DisplayList,
+    backend: &mut TinySkiaBackend,
+    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
+    resolve_inline_image: &dyn Fn(
+        &[(selis_bytes::Bytes, selis_bytes::Bytes)],
+        &[u8],
+    ) -> Option<(u32, u32, selis_bytes::Bytes)>,
+    resolve_shading: &dyn Fn(
+        &selis_bytes::Bytes,
+        &ResolvedState,
+    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)>,
+    resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
+    g: &mut BudgetGuard<'_>,
+    stats: &mut RenderStats,
+) {
     // The blend mode, clip, and soft mask are per-op resolved state; emit
     // backend state only when they change.
+    //
+    // The text cache is walk-local (per-glyph font/cmap/outline resolution
+    // collapses to per-distinct-glyph; see `TextCache`).
+    let mut text_cache = TextCache::new();
     let mut current_blend = selis_color::BlendMode::Normal;
     let mut current_clip: Vec<(
         selis_pdf_content::path::Path,
@@ -51,13 +351,16 @@ pub fn render_display_list(
     )> = Vec::new();
     let mut current_smask: Option<selis_bytes::Bytes> = None;
     for op in &dl.ops {
+        stats.ops = stats.ops.saturating_add(1);
         // Transparency group boundaries have no per-op paint state.
         if let Op::PushLayer { blend, alpha } = op {
             backend.push_layer(*blend, *alpha);
+            stats.layers_pushed = stats.layers_pushed.saturating_add(1);
             continue;
         }
         if matches!(op, Op::PopLayer) {
             backend.pop_layer();
+            stats.layers_popped = stats.layers_popped.saturating_add(1);
             continue;
         }
         let state = op_state(op);
@@ -67,6 +370,7 @@ pub fn render_display_list(
         }
         if state.clip != current_clip {
             backend.clear_clip();
+            stats.clip_rebuilds = stats.clip_rebuilds.saturating_add(1);
             for (path, rule) in &state.clip {
                 if let Some(p) = to_raster_path(path) {
                     backend.clip(
@@ -76,13 +380,17 @@ pub fn render_display_list(
                             selis_pdf_content::path::ClipRule::EvenOdd => FillRule::EvenOdd,
                         },
                     );
+                    stats.clip_paths = stats.clip_paths.saturating_add(1);
                 }
             }
             current_clip = state.clip.clone();
         }
         if state.soft_mask != current_smask {
             let mask = match &state.soft_mask {
-                Some(key) => resolve_smask(key),
+                Some(key) => {
+                    stats.smask_resolves = stats.smask_resolves.saturating_add(1);
+                    resolve_smask(key)
+                }
                 None => None,
             };
             backend.set_soft_mask(mask.as_ref());
@@ -95,6 +403,7 @@ pub fn render_display_list(
                 };
                 let p = transform_raster_path(&p, state.ctm);
                 if let Some(pattern_name) = &state.fill_pattern {
+                    stats.pattern_resolves = stats.pattern_resolves.saturating_add(1);
                     if let Some(pattern) = resolve_pattern(pattern_name) {
                         draw_pattern(backend, &pattern, &p, &state.fill, state, g);
                         continue;
@@ -125,32 +434,32 @@ pub fn render_display_list(
             }
             Op::Text { at, state, runs } => {
                 for run in runs {
-                    let Some(font_bytes) = font_data(&run.font) else {
+                    let Some(mut view) = text_cache.font(font_data, &run.font, stats) else {
                         continue;
                     };
-                    let fb = selis_bytes::Bytes::from(font_bytes);
-                    let upem = selis_font::units_per_em(&fb)
-                        .map(f64::from)
-                        .unwrap_or(1000.0);
-                    let scale = run.size / upem;
-
+                    let scale = run.size / view.upem();
+                    // Hoisted per run: the paint, the scaled base matrix, and
+                    // one `Arc`-bump font-bytes clone (the maps are mutated
+                    // through the view below, so the bytes cannot borrow it).
+                    let paint = paint(&state.fill, state.alpha_fill);
+                    let base = state.ctm.then(Matrix::scale(scale, scale));
+                    let fb = view.bytes().clone();
                     for &code in &run.glyphs {
-                        let Some(gid) = selis_font::glyph_id_for_char(&fb, u32::from(code)) else {
+                        let maps = view.maps();
+                        let Some(gid) = TextCache::glyph_id(maps, &fb, code, stats) else {
                             continue;
                         };
-                        let Some(outline) = selis_font::outline_glyph(&fb, gid, g).ok().flatten()
-                        else {
+                        let Some(cmds) = TextCache::outline(maps, &fb, gid, g, stats) else {
                             continue;
                         };
-                        let m = state
-                            .ctm
-                            .then(Matrix::scale(scale, scale))
-                            .then(Matrix::translate(at.x, at.y));
-                        let transformed = transform_outline(&outline, m);
-                        let Some(p) = raster_path_from_commands(&transformed) else {
+                        let m = base.then(Matrix::translate(at.x, at.y));
+                        let transformed = transform_outline(&cmds, m);
+                        if transformed.is_empty() {
                             continue;
+                        }
+                        let p = RasterPath {
+                            commands: transformed,
                         };
-                        let paint = paint(&state.fill, state.alpha_fill);
                         let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
                     }
                 }
@@ -162,6 +471,10 @@ pub fn render_display_list(
                 rect,
                 ..
             } => {
+                stats.image_draws = stats.image_draws.saturating_add(1);
+                stats.image_bytes = stats
+                    .image_bytes
+                    .saturating_add(u64::try_from(rgba8.len()).unwrap_or(u64::MAX));
                 let img = selis_raster::Image {
                     width: *width,
                     height: *height,
@@ -174,6 +487,10 @@ pub fn render_display_list(
                 let Some((w, h, rgba8)) = resolve_inline_image(dict, data) else {
                     continue;
                 };
+                stats.image_draws = stats.image_draws.saturating_add(1);
+                stats.image_bytes = stats
+                    .image_bytes
+                    .saturating_add(u64::try_from(rgba8.len()).unwrap_or(u64::MAX));
                 let p0 = state.ctm.apply(Point::new(0.0, 0.0));
                 let p1 = state.ctm.apply(Point::new(1.0, 1.0));
                 let img = selis_raster::Image {
@@ -187,9 +504,14 @@ pub fn render_display_list(
                 backend.draw_image(&img, &placement);
             }
             Op::Shading { name, state } => {
+                stats.shading_resolves = stats.shading_resolves.saturating_add(1);
                 let Some((w, h, rgba8, rect)) = resolve_shading(name, state) else {
                     continue;
                 };
+                stats.image_draws = stats.image_draws.saturating_add(1);
+                stats.image_bytes = stats
+                    .image_bytes
+                    .saturating_add(u64::try_from(rgba8.len()).unwrap_or(u64::MAX));
                 let img = selis_raster::Image {
                     width: w,
                     height: h,
@@ -245,13 +567,15 @@ fn to_raster_path(content: &ContentPath) -> Option<RasterPath> {
     Some(RasterPath { commands })
 }
 
-/// Transform a glyph outline (in font units) by a matrix, producing raster
-/// path commands. Quadratic Béziers are converted to cubics.
+/// Transform glyph outline commands (in font units) by a matrix, producing
+/// raster path commands. Quadratic Béziers are converted to cubics.
 #[must_use]
-fn transform_outline(outline: &selis_font::Outline, m: Matrix) -> Vec<PathCmd> {
+fn transform_outline(cmds: &[selis_font::OutlineCmd], m: Matrix) -> Vec<PathCmd> {
+    // Quad→cubic conversion is 1:1, so the output is exactly as long.
     let mut out = Vec::new();
+    out.reserve(cmds.len());
     let mut current: Option<Point> = None;
-    for cmd in &outline.commands {
+    for cmd in cmds {
         match cmd {
             selis_font::OutlineCmd::Move { x, y } => {
                 let p = m.apply(Point::new(*x, *y));
@@ -299,17 +623,6 @@ fn transform_outline(outline: &selis_font::Outline, m: Matrix) -> Vec<PathCmd> {
         }
     }
     out
-}
-
-/// Build a raster path from a non-empty command list.
-#[must_use]
-fn raster_path_from_commands(commands: &[PathCmd]) -> Option<RasterPath> {
-    if commands.is_empty() {
-        return None;
-    }
-    Some(RasterPath {
-        commands: commands.to_vec(),
-    })
 }
 
 /// Transform a raster path from user space into device space with the CTM.
@@ -915,5 +1228,123 @@ mod tests {
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
         assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "shading fills red");
+    }
+
+    /// The fallback font resolves through the test stub (LiberationSans for
+    /// Helvetica), so the cache tests below exercise the real font pipeline.
+    fn fallback_font(name: &selis_bytes::Bytes) -> Option<Vec<u8>> {
+        if name.as_slice() == b"F1" {
+            selis_font::fallback::fallback_bytes("Helvetica").map(|b| b.to_vec())
+        } else {
+            None
+        }
+    }
+
+    /// The text cache resolves each distinct (font, code, gid) once: repeat
+    /// lookups hit, unknown fonts miss without caching, and repeated
+    /// outlines are identical (determinism by construction).
+    #[test]
+    fn text_cache_resolves_once_and_hits_thereafter() {
+        let mut g = guard();
+        let mut stats = RenderStats::default();
+        let mut cache = TextCache::new();
+        let name = selis_bytes::Bytes::copy_from_slice(b"F1");
+
+        // Unknown font: miss, no hit, no entry.
+        let missing = selis_bytes::Bytes::copy_from_slice(b"Nope");
+        assert!(cache.font(&fallback_font, &missing, &mut stats).is_none());
+        assert_eq!(stats.font_resolves, 1);
+        assert_eq!(stats.font_cache_hits, 0);
+
+        // First use resolves; second use hits.
+        assert!(cache.font(&fallback_font, &name, &mut stats).is_some());
+        assert!(cache.font(&fallback_font, &name, &mut stats).is_some());
+        assert_eq!(stats.font_resolves, 2);
+        assert_eq!(stats.font_cache_hits, 1);
+
+        // The cmap entry for 'A' resolves once, then hits.
+        let fb = selis_font::fallback::fallback_bytes("Helvetica").expect("fallback");
+        let fb = selis_bytes::Bytes::copy_from_slice(fb);
+        {
+            let mut view = cache
+                .font(&fallback_font, &name, &mut stats)
+                .expect("cached");
+            let maps = view.maps();
+            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            assert!(gid.is_some());
+            let gid2 = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            assert_eq!(gid, gid2);
+        }
+        assert_eq!(stats.glyph_lookups, 1);
+        assert_eq!(stats.gid_cache_hits, 1);
+
+        // The outline resolves once, then hits with identical commands.
+        let first = {
+            let mut view = cache
+                .font(&fallback_font, &name, &mut stats)
+                .expect("cached");
+            let maps = view.maps();
+            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
+        };
+        let second = {
+            let mut view = cache
+                .font(&fallback_font, &name, &mut stats)
+                .expect("cached");
+            let maps = view.maps();
+            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
+        };
+        assert_eq!(first, second);
+        assert_eq!(stats.glyph_outlines, 1);
+        assert_eq!(stats.outline_cache_hits, 1);
+        assert!(!first.is_empty(), "'A' has a drawn outline");
+    }
+
+    /// A real text walk renders the same pixels and counters twice: the
+    /// cache changes workload, never output (SL-2.RAST.09).
+    #[test]
+    fn text_walk_is_deterministic_with_stats() {
+        let mut g = guard();
+        let content = b"BT /F1 12 Tf 10 90 Td (Hi) Tj ET";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        assert_eq!(dl.ops.len(), 2, "one text op per glyph");
+
+        let mut first_stats = RenderStats::default();
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list_with_stats(
+            &dl,
+            &mut backend,
+            &fallback_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+            &mut first_stats,
+        );
+        let first_pixels = backend.pixmap().data().to_vec();
+
+        let mut second_stats = RenderStats::default();
+        let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+        render_display_list_with_stats(
+            &dl,
+            &mut backend,
+            &fallback_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+            &mut second_stats,
+        );
+        assert_eq!(backend.pixmap().data(), &first_pixels);
+        assert_eq!(second_stats, first_stats);
+        // Two glyphs, one font: the second op's lookups all hit.
+        assert_eq!(first_stats.font_resolves, 1);
+        assert_eq!(first_stats.glyph_lookups, 2);
+        assert!(first_pixels.iter().any(|&b| b < 255), "glyphs paint pixels");
     }
 }
