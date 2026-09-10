@@ -30,9 +30,15 @@ fn formed_document() -> Vec<u8> {
     b.write(&budget, &mut g).expect("fixture write")
 }
 
-/// The built `selis` binary (the workspace must be built first).
+/// The built `selis` binary (the workspace must be built first). Honours
+/// `CARGO_TARGET_DIR` and the platform executable suffix: CI's Linux runners
+/// produce `target/debug/selis`, Windows produces `selis.exe`.
 fn selis_bin() -> PathBuf {
-    PathBuf::from("target/debug/selis.exe")
+    let dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    dir.join("debug")
+        .join(if cfg!(windows) { "selis.exe" } else { "selis" })
 }
 
 /// Run one tool invocation, failing loudly on non-zero exit.

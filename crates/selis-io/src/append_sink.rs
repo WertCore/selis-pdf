@@ -101,6 +101,7 @@ impl AppendFileSink {
                 ctx.detail = Some(format!("{path}: {e}"));
                 selis_error::Error::with(Code::IoReadFailed, ctx)
             })?;
+        #[cfg(debug_assertions)]
         let (crash_after, crash_phase) = crash_config();
         Ok(Self {
             file: Some(file),

@@ -1185,7 +1185,6 @@ mod tests {
         // A catalog /Perms *dictionary* with /Signatures (the MDP form) must
         // trip the pre-rewrite signature warning on stderr; the operation
         // still succeeds (the warning is advisory).
-        let src = build_plain_pdf(&content_of("signed"));
         // Rebuild with a catalog carrying a /Perms dictionary.
         let mut signed_src = Vec::new();
         let mut offsets = std::collections::HashMap::new();

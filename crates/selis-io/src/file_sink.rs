@@ -89,6 +89,7 @@ impl FileSink {
             ctx.detail = Some(format!("{}: {e}", temp_path.display()));
             selis_error::Error::with(Code::IoReadFailed, ctx)
         })?;
+        #[cfg(debug_assertions)]
         let (crash_after, crash_phase) = crash_config();
         Ok(Self {
             file: Some(file),
