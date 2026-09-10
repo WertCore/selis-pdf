@@ -237,9 +237,11 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         "wasm-opt".to_string()
     };
 
-    let wasm_dir = Path::new("target/wasm32-unknown-unknown/release");
+    let wasm_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(|d| Path::new(&d).join("wasm32-unknown-unknown/release"))
+        .unwrap_or_else(|| Path::new("target/wasm32-unknown-unknown/release").to_path_buf());
     let mut out = BTreeMap::new();
-    let entries = std::fs::read_dir(wasm_dir).map_err(|e| format!("{wasm_dir:?}: {e}"))?;
+    let entries = std::fs::read_dir(&wasm_dir).map_err(|e| format!("{wasm_dir:?}: {e}"))?;
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         let is_fresh_wasm = path.extension().is_some_and(|x| x == "wasm")

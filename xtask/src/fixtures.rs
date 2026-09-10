@@ -78,6 +78,26 @@ pub fn run(outdir: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&build.stderr)
         ));
     }
+    // Cache desync: rust-cache can restore fingerprints that claim the binary
+    // is fresh while the link output itself is absent. Force a relink in that
+    // case instead of failing at first spawn.
+    if !selis_bin().exists() {
+        let _ = Command::new("cargo")
+            .args(["clean", "-p", "selis-cli"])
+            .output();
+        let rebuild = Command::new("cargo")
+            .args(["build", "-p", "selis-cli"])
+            .output()
+            .map_err(|e| format!("cargo rebuild -p selis-cli: {e}"))?;
+        if !rebuild.status.success() || !selis_bin().exists() {
+            return Err(format!(
+                "selis binary missing after rebuild at {}:\n{}{}",
+                selis_bin().display(),
+                String::from_utf8_lossy(&rebuild.stdout),
+                String::from_utf8_lossy(&rebuild.stderr)
+            ));
+        }
+    }
 
     std::fs::create_dir_all(outdir).map_err(|e| format!("{outdir:?}: {e}"))?;
     // Absolute paths: the child processes run with `current_dir` = the work
