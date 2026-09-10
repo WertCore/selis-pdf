@@ -7,7 +7,8 @@
 
 use selis_bytes::Bytes;
 use selis_font::{
-    glyph_count, outline_glyph, parse_cmap, parse_ttf_metrics, resolve_cid_widths, CidWidthEntry,
+    glyph_count, outline_glyph, parse_cmap, parse_ttf_metrics, parse_type1, resolve_cid_widths,
+    type1_glyph_count, CidWidthEntry,
 };
 use selis_sandbox::{Budget, Surface};
 
@@ -42,4 +43,19 @@ fn fuzz_glyf_repeat_flag_no_panic() {
         &[CidWidthEntry::Cid(0), CidWidthEntry::Widths(vec![100.0])],
         50.0,
     );
+}
+
+/// `fuzz-type1-matrix-overflow.bin` (campaign leg 34520827872 finding): a
+/// Type 1 font whose real-number token overflows read-fonts 0.44's
+/// `integral *= 10` scaling loop (`ps/type1.rs:1444`). The panic is
+/// contained by `selis_font::contain` — the font is the documented
+/// `Ok(None)` deviation, never a crash.
+#[test]
+fn fuzz_type1_matrix_overflow_is_a_deviation() {
+    let data = include_bytes!("fixtures/fuzz-type1-matrix-overflow.bin");
+    let bytes = Bytes::copy_from_slice(data);
+    let budget = Budget::profile(Surface::Fuzz);
+    let mut g = budget.guard();
+    assert!(parse_type1(&bytes, &mut g).expect("parse").is_none());
+    assert!(type1_glyph_count(&bytes).is_none());
 }

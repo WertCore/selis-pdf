@@ -314,20 +314,22 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **Do:** Finish `docs/specs/MALFORMATIONS.md`: every real-world deviation encountered, how we
     handle it, and which competitor does what. This document is a genuine competitive asset and
     the onboarding text for every future parser engineer.
-- [ ] **SL-1.ROB.06 — swash 0.2.10 overflow-panic containment (upstream tracking)** · deps:
-  SL-1.ROB.02 · owner: AI
-  - **Why:** The SL-1.ROB.02 campaign found swash 0.2.10 panics on hostile fonts under overflow
-    checks (which cargo-fuzz forces on): `xmtx::advance`'s `(long_metric_count - 1)` underflow
-    (zero or unresolvable `hhea`/`vhea` count), `Metrics::fill` negating `-32768` descenders, and
-    overflowing cmap idDelta arithmetic — an open-ended family, one site per leg so far. Each
-    found input is pinned as a regression fixture in `crates/selis-shape/tests/`. Contained in
-    `SwashShaper::shape` by a swash-mirroring degenerate-metrics reject plus a `catch_unwind`
-    backstop; the `shaper` fuzz target replaces libfuzzer-sys's abort-on-panic hook so contained
-    panics are campaign deviations, not crashes.
-  - **DoD:** When swash ships a release that is overflow-clean on hostile fonts, upgrade, drop
-    the `catch_unwind` backstop and the printing hook, re-run a full campaign leg, and confirm
-    zero contained panics. Until then every new shaper crash artifact is triaged into a fixture
-    and the containment kept.
+- [ ] **SL-1.ROB.06 — upstream font-parser overflow-panic containment** · deps: SL-1.ROB.02 ·
+  owner: AI
+  - **Why:** The SL-1.ROB.02 campaign found the upstream fontation crates panicking on hostile
+    fonts under overflow checks (which cargo-fuzz forces on): swash 0.2.10 (`xmtx::advance`'s
+    `(long_metric_count - 1)` underflow, `Metrics::fill` negating `-32768` descenders, overflowing
+    cmap idDelta arithmetic) and read-fonts 0.44 (`ps/type1.rs` real-number scaling
+    `integral *= 10` overflow) — an open-ended family, one site per leg so far. Every found input
+    is pinned as a regression fixture (`crates/selis-shape/tests/`, `crates/selis-font/tests/`).
+    Contained at the boundary: `selis_font::contain` / `SwashShaper::shape` catch_unwind backstops
+    turn upstream panics into the documented deviation/typed-error outcomes, plus a
+    swash-mirroring degenerate-metrics reject; the font-parser fuzz targets replace
+    libfuzzer-sys's abort-on-panic hook so contained panics are campaign deviations, not crashes.
+  - **DoD:** When skrifa/read-fonts/swash ship releases that are overflow-clean on hostile fonts,
+    upgrade, drop the containment backstops and the printing hook, re-run a full campaign leg, and
+    confirm zero contained panics. Until then every new font-parser crash artifact is triaged into
+    a fixture and the containment kept.
 
 ---
 

@@ -11,7 +11,7 @@ use selis_sandbox::BudgetGuard;
 use skrifa::raw::ps::type1::Type1Font as RawType1;
 use skrifa::raw::types::GlyphId;
 
-use crate::outline::{Outline, OutlineSink};
+use crate::outline::{Outline, OutlineCmd, OutlineSink};
 
 /// A parsed Type 1 font program (PFA or PFB).
 ///
@@ -36,7 +36,9 @@ pub fn parse(data: &Bytes, g: &mut BudgetGuard<'_>) -> Result<Option<Type1Font>>
         selis_sandbox::Resource::Bytes,
         u64::try_from(data.len()).unwrap_or(u64::MAX),
     )?;
-    if RawType1::new(data.as_slice()).is_err() {
+    // Panic containment: read-fonts can panic on hostile fonts
+    // (SL-1.ROB.06, e.g. its Type1 real-number parser overflowing).
+    if !crate::contain(|| RawType1::new(data.as_slice())).is_some_and(|parsed| parsed.is_ok()) {
         return Ok(None);
     }
     Ok(Some(Type1Font { data: data.clone() }))
@@ -45,14 +47,14 @@ pub fn parse(data: &Bytes, g: &mut BudgetGuard<'_>) -> Result<Option<Type1Font>>
 /// The number of glyphs in the Type 1 font.
 #[must_use]
 pub fn glyph_count(data: &Bytes) -> Option<u32> {
-    let raw = RawType1::new(data.as_slice()).ok()?;
+    let raw = crate::contain(|| RawType1::new(data.as_slice())).and_then(|r| r.ok())?;
     Some(raw.num_glyphs())
 }
 
 /// The glyph name for a glyph id.
 #[must_use]
 pub fn glyph_name(data: &Bytes, glyph_id: u16) -> Option<String> {
-    let raw = RawType1::new(data.as_slice()).ok()?;
+    let raw = crate::contain(|| RawType1::new(data.as_slice())).and_then(|r| r.ok())?;
     raw.glyph_name(GlyphId::from(glyph_id))
         .map(|s| s.to_string())
 }
@@ -60,15 +62,19 @@ pub fn glyph_name(data: &Bytes, glyph_id: u16) -> Option<String> {
 impl Type1Font {
     /// Extract a glyph outline, in font design units (typically 1000/em).
     pub fn outline_glyph(&self, glyph_id: u16, g: &mut BudgetGuard<'_>) -> Result<Option<Outline>> {
-        let raw = match RawType1::new(self.data.as_slice()) {
-            Ok(f) => f,
-            Err(_) => return Ok(None),
+        // Panic containment: read-fonts' charstring machinery can panic on
+        // hostile fonts (SL-1.ROB.06).
+        let Some(commands) = crate::contain(|| -> Option<Vec<OutlineCmd>> {
+            let raw = RawType1::new(self.data.as_slice()).ok()?;
+            let mut sink = OutlineSink::default();
+            if raw.draw(GlyphId::from(glyph_id), None, &mut sink).is_err() {
+                return None; // broken glyph: deviation
+            }
+            Some(sink.commands)
+        })
+        .flatten() else {
+            return Ok(None);
         };
-        let mut sink = OutlineSink::default();
-        if raw.draw(GlyphId::from(glyph_id), None, &mut sink).is_err() {
-            return Ok(None); // broken glyph: deviation
-        }
-        let commands = sink.commands;
         g.charge(
             selis_sandbox::Resource::Bytes,
             u64::try_from(commands.len()).unwrap_or(u64::MAX),
@@ -80,7 +86,7 @@ impl Type1Font {
     /// The glyph name for a glyph id.
     #[must_use]
     pub fn glyph_name(&self, glyph_id: u16) -> Option<String> {
-        let raw = RawType1::new(self.data.as_slice()).ok()?;
+        let raw = crate::contain(|| RawType1::new(self.data.as_slice())).and_then(|r| r.ok())?;
         raw.glyph_name(GlyphId::from(glyph_id))
             .map(|s| s.to_string())
     }
@@ -88,7 +94,8 @@ impl Type1Font {
     /// The number of glyphs.
     #[must_use]
     pub fn glyph_count(&self) -> u32 {
-        RawType1::new(self.data.as_slice())
+        crate::contain(|| RawType1::new(self.data.as_slice()))
+            .and_then(|r| r.ok())
             .map(|r| r.num_glyphs())
             .unwrap_or(0)
     }

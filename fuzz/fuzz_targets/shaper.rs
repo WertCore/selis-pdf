@@ -20,16 +20,11 @@
 
 use libfuzzer_sys::fuzz_target;
 use selis_shape::{Shaper, ShapingParams, SwashShaper};
-use std::sync::Once;
 
-static PRINTING_PANIC_HOOK: Once = Once::new();
+mod common;
 
 fuzz_target!(|data: &[u8]| {
-    PRINTING_PANIC_HOOK.call_once(|| {
-        std::panic::set_hook(Box::new(|info| {
-            eprintln!("{info}");
-        }));
-    });
+    common::install_printing_panic_hook();
     if data.len() < 4 {
         return;
     }

@@ -94,20 +94,20 @@ pub fn outline_glyph(
     glyph_id: u16,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Outline>> {
-    let font = match FontRef::new(data.as_slice()) {
-        Ok(f) => f,
-        Err(_) => return Ok(None),
+    // Panic containment: skrifa can panic on hostile fonts (SL-1.ROB.06).
+    let Some(commands) = crate::contain(|| -> Option<Vec<OutlineCmd>> {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        let outline = font.outline_glyphs().get(GlyphId::from(glyph_id))?;
+        let mut sink = OutlineSink::default();
+        let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
+        if outline.draw(settings, &mut sink).is_err() {
+            return None; // broken outline: deviation
+        }
+        Some(sink.commands)
+    })
+    .flatten() else {
+        return Ok(None);
     };
-    let outline = match font.outline_glyphs().get(GlyphId::from(glyph_id)) {
-        Some(o) => o,
-        None => return Ok(None),
-    };
-    let mut sink = OutlineSink::default();
-    let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
-    if outline.draw(settings, &mut sink).is_err() {
-        return Ok(None); // broken outline: deviation
-    }
-    let commands = sink.commands;
     g.charge(
         selis_sandbox::Resource::Bytes,
         u64::try_from(commands.len()).unwrap_or(u64::MAX),
@@ -119,11 +119,14 @@ pub fn outline_glyph(
 /// The number of glyphs in the embedded font, or `None` for a broken font.
 #[must_use]
 pub fn glyph_count(data: &Bytes) -> Option<u16> {
-    let font = FontRef::new(data.as_slice()).ok()?;
-    Some(
-        font.metrics(Size::unscaled(), LocationRef::default())
-            .glyph_count,
-    )
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        Some(
+            font.metrics(Size::unscaled(), LocationRef::default())
+                .glyph_count,
+        )
+    })
+    .flatten()
 }
 
 /// The units-per-em of the embedded font, or `None` for a broken font.
@@ -132,15 +135,18 @@ pub fn glyph_count(data: &Bytes) -> Option<u16> {
 /// renderer scales by `font_size / units_per_em`.
 #[must_use]
 pub fn units_per_em(data: &Bytes) -> Option<u16> {
-    let font = FontRef::new(data.as_slice()).ok()?;
-    let upem = font
-        .metrics(Size::unscaled(), LocationRef::default())
-        .units_per_em;
-    if upem == 0 {
-        None
-    } else {
-        Some(upem)
-    }
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        let upem = font
+            .metrics(Size::unscaled(), LocationRef::default())
+            .units_per_em;
+        if upem == 0 {
+            None
+        } else {
+            Some(upem)
+        }
+    })
+    .flatten()
 }
 
 /// The `post` glyph name for a glyph id, if the font has one.
@@ -149,23 +155,29 @@ pub fn units_per_em(data: &Bytes) -> Option<u16> {
 /// `/Differences` or a predefined encoding) to a glyph *id*.
 #[must_use]
 pub fn glyph_name(data: &Bytes, glyph_id: u16) -> Option<String> {
-    let font = FontRef::new(data.as_slice()).ok()?;
-    let names = font.glyph_names();
-    let name = names.get(GlyphId::from(glyph_id))?;
-    Some(name.as_str().to_string())
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        let names = font.glyph_names();
+        let name = names.get(GlyphId::from(glyph_id))?;
+        Some(name.as_str().to_string())
+    })
+    .flatten()
 }
 
 /// The glyph id whose `post` name is `name`, if any (reverse of
 /// [`glyph_name`]). `None` for a broken font or an unknown name.
 #[must_use]
 pub fn glyph_id_for_name(data: &Bytes, name: &str) -> Option<u16> {
-    let font = FontRef::new(data.as_slice()).ok()?;
-    for (gid, glyph_name) in font.glyph_names().iter() {
-        if glyph_name.as_str() == name {
-            return Some(u16::try_from(gid.to_u32()).unwrap_or(u16::MAX));
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        for (gid, glyph_name) in font.glyph_names().iter() {
+            if glyph_name.as_str() == name {
+                return Some(u16::try_from(gid.to_u32()).unwrap_or(u16::MAX));
+            }
         }
-    }
-    None
+        None
+    })
+    .flatten()
 }
 
 /// The glyph id for a Unicode character, via the font's cmap.
@@ -175,10 +187,13 @@ pub fn glyph_id_for_name(data: &Bytes, name: &str) -> Option<u16> {
 /// through the cmap to the outline.
 #[must_use]
 pub fn glyph_id_for_char(data: &Bytes, code: u32) -> Option<u16> {
-    let font = FontRef::new(data.as_slice()).ok()?;
-    let ch = char::from_u32(code)?;
-    let glyph = font.charmap().map(ch)?;
-    Some(u16::try_from(glyph.to_u32()).unwrap_or(u16::MAX))
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        let ch = char::from_u32(code)?;
+        let glyph = font.charmap().map(ch)?;
+        Some(u16::try_from(glyph.to_u32()).unwrap_or(u16::MAX))
+    })
+    .flatten()
 }
 
 /// A [`OutlinePen`] that collects [`OutlineCmd`]s.

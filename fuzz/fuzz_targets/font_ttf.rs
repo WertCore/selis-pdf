@@ -12,7 +12,10 @@ use selis_bytes::Bytes;
 use selis_font::{glyph_count, glyph_id_for_name, glyph_name, outline_glyph, parse_ttf_metrics};
 use selis_sandbox::{Budget, Surface};
 
+mod common;
+
 fuzz_target!(|data: &[u8]| {
+    common::install_printing_panic_hook();
     let budget = Budget::profile(Surface::Fuzz);
     let mut g = budget.guard();
     let bytes = Bytes::copy_from_slice(data);
