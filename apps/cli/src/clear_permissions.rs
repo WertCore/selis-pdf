@@ -18,6 +18,7 @@ use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
 use selis_pdf_doc::Resolver;
 use selis_sandbox::{Budget, Surface};
 
+use crate::verify_report::Verification;
 use crate::{read_file, CliError, CliResult};
 
 /// All permissions granted (R2–4): bits 0–1 cleared, all permission and
@@ -31,12 +32,14 @@ const ALL_PERMS_R5_6: u32 = 0xFFFF_FFFF;
 const OP_CLEAR_PERMISSIONS: &str = "clear-permissions";
 const OVERRIDE_OWNER_PASSWORD: &str = "owner-password-permission-bits";
 
-/// Run the clear-permissions tool.
-pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<()> {
+/// Run the clear-permissions tool. Returns the operation's verification
+/// display (SL-1A.UI.02).
+pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<Verification> {
     let pw = password.unwrap_or("");
     let src = read_file(path)?;
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
 
     let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = parse_revisions(&src, startxref, &budget, &mut g)
@@ -81,7 +84,7 @@ pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult
         .root
         .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
 
-    if info.r >= 5 {
+    let verification = if info.r >= 5 {
         clear_permissions_r56(
             &src,
             &info,
@@ -108,9 +111,10 @@ pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult
             &budget,
             &mut g,
         )
-    }
+    }?;
+    verification.emit_line();
+    Ok(verification)
 }
-
 /// R5/6: `/P` does not feed the key derivation, so the content stays
 /// encrypted at rest under the same file key.  Only `/P` and `/Perms` change,
 /// and the new `/Encrypt` object is appended as a new revision (WRITE.02).
@@ -124,7 +128,7 @@ fn clear_permissions_r56(
     trailer: &[(selis_bytes::Bytes, Obj)],
     budget: &Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<()> {
+) -> CliResult<Verification> {
     let new_p = ALL_PERMS_R5_6;
     let perms = selis_crypto::compute_perms_r6(new_p, key, info.encrypt_metadata);
 
@@ -151,12 +155,22 @@ fn clear_permissions_r56(
 
     verify_output(&updated, root, path)?;
 
-    crate::write_gate::atomic_write(&updated, output)?;
+    // WRITE.05 (via the shared gate): the appended revision changes only the
+    // /Encrypt dictionary, so every surveyed count must hold on the updated
+    // bytes. Commit is atomic.
+    let verification = crate::write_gate::verify_all_preserved(
+        &updated,
+        output,
+        src,
+        u64::try_from(src.len()).unwrap_or(u64::MAX),
+        budget,
+        g,
+    )?;
     record_override(
         "R5/6 incremental: /P and /Perms updated, content re-encrypted under the unchanged file key",
     );
     eprintln!("cleared permissions on {path} -> {output}");
-    Ok(())
+    Ok(verification)
 }
 
 /// R2–4: `/P` feeds the key derivation.  Decrypt all content with the old
@@ -175,7 +189,7 @@ fn clear_permissions_r24(
     trailer: &[(selis_bytes::Bytes, Obj)],
     budget: &Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<()> {
+) -> CliResult<Verification> {
     // Recover the padded user password from /O (Algorithm 3), so the new key
     // can be derived from the same user password with the cleared /P.
     let user_pw = selis_crypto::recover_user_password(&info.o, info.r, info.length, owner_password)
@@ -258,13 +272,22 @@ fn clear_permissions_r24(
 
     verify_output(&bytes, root, path)?;
 
-    crate::write_gate::atomic_write(&bytes, output)?;
+    // WRITE.05 (via the shared gate): the re-encryption changes no structure,
+    // so every surveyed count must hold. Commit is atomic.
+    let verification = crate::write_gate::verify_all_preserved(
+        &bytes,
+        output,
+        src,
+        u64::try_from(src.len()).unwrap_or(u64::MAX),
+        budget,
+        g,
+    )?;
     record_override(&format!(
         "R{} full rewrite: content re-encrypted under the /P-cleared key",
         info.r
     ));
     eprintln!("cleared permissions on {path} -> {output}");
-    Ok(())
+    Ok(verification)
 }
 
 /// Record the SL-1.ENC.04 override in the oplog vocabulary and echo the
@@ -336,11 +359,10 @@ fn verify_output(bytes: &[u8], expected_root: Ref, path: &str) -> CliResult<()> 
         )));
     }
     let doc_budget = Budget::profile(Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget).is_err() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (no usable document model)"
-        )));
-    }
+    let clock = crate::shell_clock();
+    // The typed error is propagated, not swallowed (SL-1A.UI.06).
+    selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
     Ok(())
 }
 
@@ -645,8 +667,8 @@ mod tests {
         // The output still opens in the engine with the empty user password,
         // and the content stream still decrypts (same file key).
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let session =
-            selis_pdf_engine::Session::open(out, &budget).expect("output opens in the engine");
+        let session = selis_pdf_engine::Session::open(out, &budget, &crate::shell_clock())
+            .expect("output opens in the engine");
         assert_eq!(session.len(), 1, "one page");
     }
 
@@ -677,8 +699,8 @@ mod tests {
         );
         // The output opens in the engine with the (empty) user password.
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let session =
-            selis_pdf_engine::Session::open(out, &budget).expect("output opens in the engine");
+        let session = selis_pdf_engine::Session::open(out, &budget, &crate::shell_clock())
+            .expect("output opens in the engine");
         assert_eq!(session.len(), 1, "one page");
     }
 }

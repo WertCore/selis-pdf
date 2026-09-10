@@ -1,4 +1,4 @@
-//! `xtask corpus` — SL-0.CORP.01.
+﻿//! `xtask corpus` â€” SL-0.CORP.01.
 //!
 //! `corpus fetch` downloads each manifest entry to a local cache (default
 //! `~/.cache/selis-corpus`, overridable with `SELIS_CORPUS_CACHE`), verifies
@@ -9,7 +9,7 @@
 //! unclear (SL-0.LEGAL.04). Downloads go through `curl` (present on Windows 10+,
 //! macOS, and every Linux CI image) so the xtask binary stays dependency-free;
 //! the digest check is done with `certutil`/`sha256sum`. A recorded sha256 that
-//! does not match fails loudly — an unverified download is a warning, never a
+//! does not match fails loudly â€” an unverified download is a warning, never a
 //! silent success.
 
 use std::collections::BTreeMap;
@@ -123,7 +123,7 @@ fn fetch(entries: &[CorpusEntry], tag: Option<&str>) -> Result<(), String> {
                 Ok(false) => {
                     // DoD: a hash mismatch fails loudly, never silently trusts.
                     return Err(format!(
-                        "{}: cached file {} fails sha256 — delete it and refetch",
+                        "{}: cached file {} fails sha256 â€” delete it and refetch",
                         e.id,
                         dest.display()
                     ));
@@ -135,7 +135,7 @@ fn fetch(entries: &[CorpusEntry], tag: Option<&str>) -> Result<(), String> {
         if e.sha256.trim().is_empty() {
             warnings += 1;
             println!(
-                "  {}: no sha256 recorded — downloading UNVERIFIED ({}). Refusing to trust; \
+                "  {}: no sha256 recorded â€” downloading UNVERIFIED ({}). Refusing to trust; \
                  record the printed hash after this fetch.",
                 e.id, e.source_url
             );
@@ -147,7 +147,7 @@ fn fetch(entries: &[CorpusEntry], tag: Option<&str>) -> Result<(), String> {
         if expected.is_empty() {
             let hash = sha256_hex(&dest).map_err(|m| format!("{}: {m}", dest.display()))?;
             println!(
-                "  {}: downloaded — RECORD sha256 = \"{}\" in the manifest",
+                "  {}: downloaded â€” RECORD sha256 = \"{}\" in the manifest",
                 e.id, hash
             );
         } else {
@@ -157,7 +157,7 @@ fn fetch(entries: &[CorpusEntry], tag: Option<&str>) -> Result<(), String> {
                     let actual =
                         sha256_hex(&dest).map_err(|m| format!("{}: {m}", dest.display()))?;
                     return Err(format!(
-                        "{}: sha256 MISMATCH after download — expected {}, got {}. Refusing the file.",
+                        "{}: sha256 MISMATCH after download â€” expected {}, got {}. Refusing the file.",
                         e.id,
                         e.sha256,
                         actual
@@ -353,7 +353,9 @@ struct ExpectRecord {
 
 fn open_outcome(path: &Path) -> ExpectRecord {
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    match selis_pdf_engine::Session::open(std::fs::read(path).unwrap_or_default(), &budget) {
+    let clock = selis_sandbox::shell_clock();
+    match selis_pdf_engine::Session::open(std::fs::read(path).unwrap_or_default(), &budget, &clock)
+    {
         Ok(session) => ExpectRecord {
             open: "ok".to_string(),
             code: None,
@@ -370,7 +372,7 @@ fn open_outcome(path: &Path) -> ExpectRecord {
 /// Serialise the open-outcome expectation for one PDF on disk (SL-0.CORP.03).
 ///
 /// Shared by `expect-generate` and the synthetic generator so both record
-/// *actual* outcomes — the expectation set tracks reality, and `corpus verify`
+/// *actual* outcomes â€” the expectation set tracks reality, and `corpus verify`
 /// flags any later drift.
 pub(crate) fn open_outcome_toml(path: &Path) -> Result<String, String> {
     toml::to_string(&open_outcome(path)).map_err(|e| format!("{}: {e}", path.display()))

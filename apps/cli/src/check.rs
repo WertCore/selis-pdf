@@ -4,7 +4,7 @@
 //! for a profile and reports pass/fail/unevaluated per rule.
 
 use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
+use selis_sandbox::{Budget, Surface};
 
 use crate::{read_file, CliError, CliResult};
 
@@ -16,9 +16,11 @@ use crate::{read_file, CliError, CliResult};
 pub(crate) fn run(path: &str, profile: &str) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
-    let session =
-        Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let profile = match profile {
         "readable" | "Readable" => selis_pdf_doc::Profile::Readable,
         "ua" | "Ua" | "pdfua" | "PDFUA" => selis_pdf_doc::Profile::PdfUa,

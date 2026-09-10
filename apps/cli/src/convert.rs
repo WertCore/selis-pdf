@@ -5,11 +5,10 @@
 //! output directory.  Text/HTML conversion is `selis extract`; `selis render`
 //! is the single-page case.
 
-use selis_pdf_engine::{Session, TinySkiaBackend};
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
-
 use crate::render::{dim, write_ppm};
 use crate::{read_file, CliError, CliResult};
+use selis_pdf_engine::{Session, TinySkiaBackend};
+use selis_sandbox::{Budget, Surface};
 
 /// Convert a page range of a PDF to PPM images in `output_dir`.
 ///
@@ -25,8 +24,9 @@ pub(crate) fn run(
 ) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
-    let session =
-        Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
     if session.is_empty() {
         return Err(CliError("document has no pages".to_string()));
     }
@@ -54,7 +54,7 @@ pub(crate) fn run(
         }
         let mut backend = TinySkiaBackend::new(w, h)
             .ok_or_else(|| CliError(format!("cannot create {w}x{h} canvas")))?;
-        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut g = budget.guard_with(&clock, crate::runtime::token());
         session
             .render_page(page, &mut backend, &budget, &mut g)
             .map_err(|e| CliError(format!("render page {page}: {e}")))?;

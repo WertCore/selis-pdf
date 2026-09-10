@@ -90,6 +90,83 @@ impl Clock for ManualClock {
     }
 }
 
+/// A real monotonic clock for the binding boundary (SL-0.SBX.07).
+///
+/// This is the one sanctioned `std::time::Instant` in the stack. It exists so
+/// that every L4/L5 shell (the CLI today; the WASM and FFI bindings when they
+/// land) shares a single audited adapter instead of growing its own: a shell
+/// constructs one per operation and hands it to `Session::open` /
+/// [`crate::Budget::guard_with`], and from there the kernel measures
+/// `Budget::wall` against genuine elapsed time, so the wall deadline actually
+/// fires on real parse paths instead of only in tests.
+///
+/// The construction rule is enforced two ways: the type lives behind the
+/// `instant-clock` cargo feature (a platform capability — shells enable it,
+/// L0–L3 crates do not), and it is compiled out entirely for `wasm32`, where
+/// the browser shell wraps `performance.now` in its own [`Clock`] instead
+/// (ADR-P0011). No crate below L4 may name `std::time::Instant`; they receive
+/// `&dyn Clock` from their caller.
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone, Copy)]
+pub struct InstantClock {
+    start: std::time::Instant,
+}
+
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+impl InstantClock {
+    /// A clock whose zero is *now*.
+    ///
+    /// Construct one per operation: `Budget::wall` is a deadline relative to
+    /// the guard's construction, so a fresh clock bounds that operation, not
+    /// the process.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+impl Default for InstantClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+impl Clock for InstantClock {
+    fn now(&self) -> Nanos {
+        // `Instant` is monotonic, so the elapsed reading never decreases;
+        // only the narrowing to Nanos can saturate (after ~584 years).
+        u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(Nanos::MAX)
+    }
+}
+
+/// The shell's default clock for SL-0.SBX.07 call sites: the sanctioned
+/// monotonic [`InstantClock`] where the platform provides one.
+///
+/// On wasm32 there is no real clock available to pure Rust — the browser
+/// shell injects its own `performance.now`-backed [`Clock`] (ADR-P0011), and
+/// the pure-Rust wasm artifacts (the xtask size canary, the workspace build
+/// matrix) only need the wall-deadline plumbing to *compile* — so this
+/// returns a stopped [`FixedClock`]: the same never-firing semantics the
+/// code base had before SBX.07, confined to targets where no real clock
+/// exists.
+#[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+#[must_use]
+pub fn shell_clock() -> impl Clock {
+    InstantClock::new()
+}
+
+/// Stopped-clock variant for targets without a sanctioned real clock. See
+/// [`shell_clock`].
+#[cfg(any(not(feature = "instant-clock"), target_arch = "wasm32"))]
+#[must_use]
+pub fn shell_clock() -> impl Clock {
+    FixedClock(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +187,19 @@ mod tests {
         let c = FixedClock(42);
         assert_eq!(c.now(), 42);
         assert_eq!(c.now(), 42);
+    }
+
+    /// SL-0.SBX.07: the adapter reports real elapsed time — monotonically,
+    /// and strictly increasing across a real wait (a frozen clock would
+    /// report the same reading twice).
+    #[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
+    #[test]
+    fn instant_clock_reports_real_elapsed_time() {
+        let c = InstantClock::new();
+        let first = c.now();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = c.now();
+        assert!(second >= first, "monotonic: never decreases");
+        assert!(second > first, "real time passes: strictly increasing");
     }
 }

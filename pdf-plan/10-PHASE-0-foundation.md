@@ -262,7 +262,7 @@ point you have 40 000 lines and no idea which of them are wrong.
     and should be re-baselined in a housekeeping task. (5) `wasmtime::Module` compiles per run;
     FILT.08 should hoist the engine and precompile/serialize the OpenJPEG module.
 
-- [ ] **SL-0.SBX.07 — Clock injection so `Budget::wall` is enforced on real parse paths** · deps:
+- [x] **SL-0.SBX.07 — Clock injection so `Budget::wall` is enforced on real parse paths** · deps:
   SBX.01 · owner: AI+
   - **Do:** `Session::open` (and every helper that builds a `BudgetGuard` below L4) hardcodes
     `FixedClock(0)` because purity rules forbid `Instant` below L4 — so the wall deadline never
@@ -276,6 +276,29 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Note:** Filed from the SL-1.ROB.01 local sweep (2026-09-09): per-file wall verdicts there
     come from the sweep's own watchdog, not from the engine — real deadline enforcement is
     structurally absent until this lands.
+  - **Status:** Landed 2026-09-10. `Session::open` and `selis_pdf_cos::parse`/`open` take
+    `&dyn Clock` from the caller (no `FixedClock` defaults below L4); the render/display-list
+    sub-guards measure against the same clock via the new `BudgetGuard::clock()`. The
+    `Instant`-backed adapter is `selis_sandbox::InstantClock` (behind the `instant-clock`
+    feature, compiled out for wasm32) with a `[[purity_allow]]` entry; the CLI and xtask
+    construct it (L5/tools), tests keep FixedClock/ManualClock. Two error-relabelling bugs
+    found and fixed en route (`resolve.rs` `scan_to_endstream`/`find_object_header_near` and
+    the engine's page-content fallback swallowed budget errors as malformed-input). Tests:
+    `selis-pdf-engine/tests/wall_deadline.rs` (mid-parse `BUDGET_WALL` abort, stopped-clock
+    semantics pin, display-list path abort), a wall test in the SL-1.ROB.03 `budget_exhaustion`
+    suite, CLI wiring proofs (`clock_wiring`); the ROB.01 sweep passes the real clock and its
+    `HANG_SLACK_SECS` shrank 30 → 10. Drive-by: `xtask sbom` now honours `CARGO_TARGET_DIR`
+    (it assumed `target/` under the workspace root and broke `xtask lint` under a relocated
+    target dir). `cargo fmt --all`, `cargo xtask lint`, and `cargo test --workspace` green;
+    touched crates also compile warning-free under `RUSTFLAGS=-D warnings` (both feature
+    states, plus wasm32 with and without the feature).
+  - **Honest gaps:** (1) Sub-guard deadlines are still per-guard construction times (each
+    resource-resolution closure gets a fresh `wall` window from its own start) — the shared
+    clock bounds the *rate* at which the deadline is observed, not the total operation wall;
+    a file with unboundedly many expensive sub-operations still terminates, but later than
+    one wall. True operation-scoped deadlines need the guard tree to share a start, not just
+    a clock. (2) The CLI constructs one `InstantClock` per command, not per process: deadlines
+    never leak across commands, but cross-command timing (e.g. `batch`) is not measured.
 
 ---
 

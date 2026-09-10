@@ -23,6 +23,11 @@ default = []
 # The native wasmtime embedding (SL-0.SBX.06). Off by default so pure-kernel
 # consumers (and the wasm32 build) never link Cranelift.
 wasm-host = ["dep:wasmtime"]
+# The `std::time::Instant`-backed clock adapter (SL-0.SBX.07). A platform
+# capability for L4/L5 shells: only binding/app crates enable this, and no
+# crate below L4 may construct `InstantClock` (they take `&dyn Clock` from
+# their caller). Compiled out for wasm32 (ADR-P0011).
+instant-clock = []
 
 [build-dependencies]
 serde = { workspace = true }

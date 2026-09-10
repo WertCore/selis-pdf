@@ -2,7 +2,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, Surface};
+use selis_sandbox::{Budget, FixedClock, Surface};
 
 // Selis-authored synthetic fixtures (corpus/fixtures/), committed so the test
 // does not depend on the fetched-corpus cache. Bytes are embedded at compile
@@ -14,7 +14,9 @@ static OUTLINES_FOR_EDITOR: &[u8] =
 
 fn open(src: &[u8]) -> Session {
     let budget = Budget::profile(Surface::Viewer);
-    Session::open(src.to_vec(), &budget).expect("Session::open")
+    // Tests keep a frozen clock: deterministic, and the wall deadline is
+    // exercised separately (tests/wall_deadline.rs).
+    Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("Session::open")
 }
 
 #[test]

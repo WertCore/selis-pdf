@@ -98,8 +98,11 @@ fn wild_hang_regressions_terminate_typed() {
             .name(format!("hang-regression:{id}"))
             .spawn(move || {
                 let budget = Budget::profile(Surface::Viewer);
+                // Real shell clock (SL-0.SBX.07): the engine enforces the
+                // Viewer wall itself and returns a typed `BUDGET_WALL`.
+                let clock = selis_sandbox::InstantClock::new();
                 let result = selis_sandbox::trampoline::catch("hang-regression", || {
-                    selis_pdf_engine::Session::open(bytes, &budget)
+                    selis_pdf_engine::Session::open(bytes, &budget, &clock)
                 });
                 let _ = tx.send(result.map(|_| ()).map_err(|e| e.code().name().to_owned()));
             })

@@ -4,10 +4,9 @@
 //! dump the pixels. The output is a portable pixmap (PPM/P6) — no PNG
 //! dependency needed.
 
-use selis_pdf_engine::{Session, TinySkiaBackend};
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
-
 use crate::{read_file, CliError, CliResult};
+use selis_pdf_engine::{Session, TinySkiaBackend};
+use selis_sandbox::{Budget, Surface};
 
 /// Render a page to a PPM file.
 ///
@@ -17,8 +16,9 @@ use crate::{read_file, CliError, CliResult};
 pub(crate) fn run(path: &str, page_num: usize, output: &str, dpi: u32) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
-    let session =
-        Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
     if page_num >= session.len() {
         return Err(CliError(format!(
             "page {page_num} out of range (document has {} pages)",
@@ -37,7 +37,7 @@ pub(crate) fn run(path: &str, page_num: usize, output: &str, dpi: u32) -> CliRes
     }
     let mut backend = TinySkiaBackend::new(w, h)
         .ok_or_else(|| CliError(format!("cannot create {w}x{h} canvas")))?;
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut g = budget.guard_with(&clock, crate::runtime::token());
     session
         .render_page(page_num, &mut backend, &budget, &mut g)
         .map_err(|e| CliError(format!("render failed: {e}")))?;

@@ -1,4 +1,4 @@
-//! `xtask fixtures` — SL-1A.WRITE.05's CI slot for the external structural
+﻿//! `xtask fixtures` â€” SL-1A.WRITE.05's CI slot for the external structural
 //! oracle.
 //!
 //! Generates a small formed document set (no corpus dependency), runs every
@@ -16,10 +16,8 @@ use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
 /// annotation, an AcroForm field, an OCG.
 fn formed_document() -> Vec<u8> {
     let budget = selis_sandbox::Budget::unlimited();
-    let mut g = budget.guard_with(
-        &selis_sandbox::FixedClock(0),
-        selis_sandbox::CancelToken::new(),
-    );
+    let clock = selis_sandbox::shell_clock();
+    let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
     let mut b = DocumentBuilder::new();
     for i in 0..3u8 {
         let mut c = ContentBuilder::new();

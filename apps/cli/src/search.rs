@@ -3,11 +3,10 @@
 //! Uses the normalised search pipeline (case folding, diacritics stripping,
 //! ligature decomposition) from `selis-pdf-text`.
 
-use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
-
 use crate::extract::page_lines;
 use crate::{read_file, CliError, CliResult};
+use selis_pdf_engine::Session;
+use selis_sandbox::{Budget, Surface};
 
 /// Search a page's text for a query.
 ///
@@ -17,15 +16,16 @@ use crate::{read_file, CliError, CliResult};
 pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
-    let session =
-        Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
     if page >= session.len() {
         return Err(CliError(format!(
             "page {page} out of range (document has {} pages)",
             session.len()
         )));
     }
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut g = budget.guard_with(&clock, crate::runtime::token());
     let dl = session
         .page_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;

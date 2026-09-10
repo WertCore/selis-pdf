@@ -13,6 +13,7 @@
 use selis_pdf_cos::{self, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::verify_report::Verification;
 use crate::write_gate::{self, Preserved, PRESERVE_ALL, PRESERVE_EXCEPT_PAGES};
 use crate::{read_file, CliError, CliResult};
 
@@ -26,13 +27,15 @@ struct MergeInput {
 
 /// Merge several PDFs into one (SL-1A.TOOL.01 + SL-1A.WRITE.04: outlines,
 /// named destinations, page labels, and embedded files survive and are
-/// reconciled across the inputs).
-pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
+/// reconciled across the inputs). Returns the operation's verification
+/// display (SL-1A.UI.02).
+pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> {
     if inputs.len() < 2 {
         return Err(CliError("merge needs at least two input files".to_string()));
     }
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let mut merged = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
 
@@ -68,30 +71,43 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<()> {
         .write(&budget, &mut g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
     // WRITE.05: structural verification before the output reaches disk.
-    // Merge copies every input's pages, so the expectation is the sum of the
-    // inputs' pages; other counts follow each input's survey.
-    let mut expected_pages = 0u64;
-    for input in &parsed {
+    // Merge preserves every input's structure (collisions are renamed, never
+    // dropped), so the expectation is the sum of the inputs' surveyed counts.
+    let mut input_observed = selis_pdf_cos::verify::Observed::default();
+    for (idx, input) in parsed.iter().enumerate() {
         let observed = selis_pdf_cos::verify::survey(&input.src, &budget, &mut g)
-            .map_err(|e| CliError(format!("{path}: {e}", path = inputs[0], e = e)))?;
-        expected_pages = expected_pages.saturating_add(observed.pages);
+            .map_err(|e| CliError(format!("{}: {e}", inputs[idx])))?;
+        input_observed.pages = input_observed.pages.saturating_add(observed.pages);
+        input_observed.annotations = input_observed
+            .annotations
+            .saturating_add(observed.annotations);
+        input_observed.fields = input_observed.fields.saturating_add(observed.fields);
+        input_observed.ocgs = input_observed.ocgs.saturating_add(observed.ocgs);
+        input_observed.outlines = input_observed.outlines.saturating_add(observed.outlines);
+        input_observed.embedded_files = input_observed
+            .embedded_files
+            .saturating_add(observed.embedded_files);
     }
-    write_gate::write_verified(
-        &bytes,
-        output,
-        &selis_pdf_cos::verify::Expectations {
-            pages: Some(expected_pages),
-            ..selis_pdf_cos::verify::Expectations::none()
-        },
-        &budget,
-        &mut g,
-    )?;
+    let expected = write_gate::expectations_from(&input_observed, &PRESERVE_ALL);
+    let in_bytes = parsed
+        .iter()
+        .map(|i| i.src.len())
+        .fold(0usize, usize::saturating_add);
+    let verdict = write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+    let verification = Verification::from_gate(
+        Some(&input_observed),
+        &verdict,
+        &expected,
+        u64::try_from(in_bytes).unwrap_or(u64::MAX),
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
     eprintln!(
         "merged {} file(s) into {output} ({} duplicate object(s) removed)",
         inputs.len(),
         deduplicated
     );
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Warn on stderr when the document carries a digital signature that a full
@@ -1159,6 +1175,19 @@ fn reconcile_single_input(
         }
     }
 
+    // Optional-content groups (WRITE.07): `/OCProperties` never references
+    // pages, so the whole dictionary carries through every page selection —
+    // dropping it would silently lose the document's layers. (The
+    // verification display asserts OCG counts on rewrite tools; this carry
+    // is what makes that promise true.)
+    if let Some(oc) =
+        rec::catalog_entry(src, doc, b"OCProperties", budget, g).map_err(|e| e.to_string())?
+    {
+        let copied = rec::copy_value_into(out, src, doc, &page_map, &mut cache, &oc, budget, g)
+            .map_err(|e| e.to_string())?;
+        out.add_catalog_entry(b"OCProperties", copied);
+    }
+
     // Page labels: re-keyed at the surviving pages' new indices.
     let mut new_idx_by_old: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
@@ -2074,11 +2103,18 @@ fn document_id(inputs: &[MergeInput]) -> [u8; 16] {
 }
 
 /// Split a PDF: extract the pages in `page_range` (inclusive, 0-based) into a
-/// new file (SL-1A.TOOL.02).
-pub(crate) fn split(path: &str, first: usize, last: usize, output: &str) -> CliResult<()> {
+/// new file (SL-1A.TOOL.02). Returns the operation's verification display.
+pub(crate) fn split(
+    path: &str,
+    first: usize,
+    last: usize,
+    output: &str,
+) -> CliResult<Verification> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2109,33 +2145,46 @@ pub(crate) fn split(path: &str, first: usize, last: usize, output: &str) -> CliR
     )
     .map_err(CliError)?;
     let expected_pages = u64::try_from(kept.len()).unwrap_or(u64::MAX);
+    // The annotation expectation counts the surviving ORIGINAL pages (the
+    // merged page numbers do not exist in the input document).
     let kept_annots = annots_on_pages(
         &src,
         &doc,
-        &kept.iter().map(|(_, _, r)| *r).collect::<Vec<_>>(),
+        &kept
+            .iter()
+            .map(|(_, old_num, _)| Ref::new(*old_num, 0))
+            .collect::<Vec<_>>(),
         &budget,
         &mut g,
     );
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_EXCEPT_PAGES,
         Some(expected_pages),
         Some(kept_annots),
+        in_bytes,
         &budget,
         &mut g,
     )?;
     eprintln!("split pages {first}..{last} into {output}");
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Set metadata fields (Info dictionary) and rewrite the document
-/// (SL-1A.TOOL.09).
-pub(crate) fn set_metadata(path: &str, fields: &[(&str, &str)], output: &str) -> CliResult<()> {
+/// (SL-1A.TOOL.09). Returns the operation's verification display.
+pub(crate) fn set_metadata(
+    path: &str,
+    fields: &[(&str, &str)],
+    output: &str,
+) -> CliResult<Verification> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2160,26 +2209,34 @@ pub(crate) fn set_metadata(path: &str, fields: &[(&str, &str)], output: &str) ->
         &mut out, &src, &doc, &page_refs, &kept, false, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_ALL,
         Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
         None,
+        in_bytes,
         &budget,
         &mut g,
     )?;
     eprintln!("set {} metadata field(s) -> {output}", fields.len());
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Redact regions: cover them with black and strip text that falls within
-/// them (SL-0.LEGAL.05).
-pub(crate) fn redact(path: &str, rects: &[(f64, f64, f64, f64)], output: &str) -> CliResult<()> {
+/// them (SL-0.LEGAL.05). Returns the operation's verification display.
+pub(crate) fn redact(
+    path: &str,
+    rects: &[(f64, f64, f64, f64)],
+    output: &str,
+) -> CliResult<Verification> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2206,18 +2263,20 @@ pub(crate) fn redact(path: &str, rects: &[(f64, f64, f64, f64)], output: &str) -
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_ALL,
         Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
         None,
+        in_bytes,
         &budget,
         &mut g,
     )?;
     eprintln!("redacted {} region(s) -> {output}", rects.len());
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Open a document and return its leaf page references.
@@ -2610,8 +2669,13 @@ fn rotate_extra(rotate: i64) -> Vec<(Vec<u8>, Obj)> {
 
 /// Rotate pages of a PDF (SL-1A.TOOL.03). `pages` is `None` for all pages,
 /// or a `0,2,5-7` selection; `angle` is added to each page's existing
-/// `/Rotate` (mod 360).
-pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) -> CliResult<()> {
+/// `/Rotate` (mod 360). Returns the operation's verification display.
+pub(crate) fn rotate(
+    path: &str,
+    angle: i64,
+    pages: Option<&str>,
+    output: &str,
+) -> CliResult<Verification> {
     let norm = angle.rem_euclid(360);
     if norm != 90 && norm != 180 && norm != 270 {
         return Err(CliError(format!(
@@ -2619,8 +2683,10 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
         )));
     }
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2659,13 +2725,14 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_ALL,
         Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
         None,
+        in_bytes,
         &budget,
         &mut g,
     )?;
@@ -2674,14 +2741,18 @@ pub(crate) fn rotate(path: &str, angle: i64, pages: Option<&str>, output: &str) 
         selected.len(),
         norm
     );
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Delete pages from a PDF (SL-1A.TOOL.03). `pages` is a `0,2,5-7` selection.
-pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<()> {
+/// Returns the operation's verification display.
+pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<Verification> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2720,33 +2791,42 @@ pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<()> {
         &mut g,
     )
     .map_err(CliError)?;
+    // The annotation expectation counts the surviving ORIGINAL pages (the
+    // merged page numbers do not exist in the input document).
     let kept_annots = annots_on_pages(
         &src,
         &doc,
-        &kept_pages.iter().map(|(_, _, r)| *r).collect::<Vec<_>>(),
+        &kept_pages
+            .iter()
+            .map(|(_, old_num, _)| Ref::new(*old_num, 0))
+            .collect::<Vec<_>>(),
         &budget,
         &mut g,
     );
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_EXCEPT_PAGES,
         Some(u64::try_from(kept_pages.len()).unwrap_or(u64::MAX)),
         Some(kept_annots),
+        in_bytes,
         &budget,
         &mut g,
     )?;
     eprintln!("deleted {} page(s), kept {kept} -> {output}", removed.len());
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Reorder the pages of a PDF (SL-1A.TOOL.03). `order` is a permutation such
-/// as `2,0,1` or `3-5,0-2`.
-pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<()> {
+/// as `2,0,1` or `3-5,0-2`. Returns the operation's verification display.
+pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<Verification> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
@@ -2772,18 +2852,20 @@ pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<()> {
         &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
     )
     .map_err(CliError)?;
-    write_document(
+    let verification = write_document(
         out,
         output,
         Some(&src),
         PRESERVE_ALL,
         Some(u64::try_from(order.len()).unwrap_or(u64::MAX)),
         None,
+        in_bytes,
         &budget,
         &mut g,
     )?;
     eprintln!("reordered {} page(s) -> {output}", order.len());
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Total `/Annots` items across a subset of pages (used by split/delete:
@@ -2820,11 +2902,13 @@ fn annots_on_pages(
 }
 
 /// Serialise and write a built document to `output` with WRITE.05 structural
-/// verification and an atomic commit. `preserved` selects which counts the
-/// operation promises to keep from the input's survey; `expected_pages` is
-/// asserted directly when the caller knows the number (split, reorder);
+/// verification and an atomic commit, and build the operation's verification
+/// display (SL-1A.UI.02). `preserved` selects which counts the operation
+/// promises to keep from the input's survey; `expected_pages` is asserted
+/// directly when the caller knows the number (split, reorder);
 /// `annotations_override` replaces the input-total annotation expectation
-/// when only a subset of pages survives (split, delete).
+/// when only a subset of pages survives (split, delete). `in_bytes` is the
+/// size of what was read (the display's `bytes_in`).
 fn write_document(
     builder: selis_pdf_cos::doc_writer::DocumentBuilder,
     output: &str,
@@ -2832,18 +2916,22 @@ fn write_document(
     preserved: Preserved,
     expected_pages: Option<u64>,
     annotations_override: Option<u64>,
+    in_bytes: u64,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> CliResult<()> {
+) -> CliResult<Verification> {
     let mut builder = builder;
     let bytes = builder
         .write(budget, g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
+    let mut input_observed = None;
     let mut expected = match input {
         Some(src) => {
             let observed = selis_pdf_cos::verify::survey(src, budget, g)
                 .map_err(|e| CliError(format!("input survey failed: {e}")))?;
-            write_gate::expectations_from(&observed, &preserved)
+            let e = write_gate::expectations_from(&observed, &preserved);
+            input_observed = Some(observed);
+            e
         }
         None => selis_pdf_cos::verify::Expectations::none(),
     };
@@ -2853,7 +2941,15 @@ fn write_document(
     if let Some(annots) = annotations_override {
         expected.annotations = Some(annots);
     }
-    write_gate::write_verified(&bytes, output, &expected, budget, g)
+    let verdict = write_gate::write_verified(&bytes, output, &expected, budget, g)?;
+    let verification = Verification::from_gate(
+        input_observed.as_ref(),
+        &verdict,
+        &expected,
+        in_bytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
+    Ok(verification)
 }
 
 /// A page's existing `/Rotate` (0 when absent).
@@ -2958,7 +3054,8 @@ fn parse_part(part: &str, count: usize) -> Result<Vec<usize>, String> {
 fn strip_text_in_regions(content: &[u8], rects: &[(f64, f64, f64, f64)]) -> Vec<u8> {
     use selis_pdf_cos::{Number, Token};
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let mut lexer = selis_pdf_cos::Lexer::new(content);
     let mut out: Vec<u8> = Vec::new();
     let mut tm = [1.0f64, 0.0, 0.0, 1.0, 0.0, 0.0];

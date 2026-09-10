@@ -360,6 +360,19 @@ impl<'c> BudgetGuard<'c> {
         &self.cancel
     }
 
+    /// The clock this guard measures against.
+    ///
+    /// Sub-operations — the engine's resource-resolution callbacks build their
+    /// own guards mid-render — must measure against the *same* clock the
+    /// caller injected, so an injected deadline advances for them too instead
+    /// of silently resetting at every sub-guard (SL-0.SBX.07). This is how the
+    /// clock is threaded below L4 without a purity violation: the reference
+    /// travels inside the [`BudgetGuard`] the caller already passes.
+    #[must_use]
+    pub fn clock(&self) -> &'c dyn Clock {
+        self.clock
+    }
+
     /// Nanoseconds elapsed since construction.
     #[must_use]
     pub fn elapsed(&self) -> Nanos {

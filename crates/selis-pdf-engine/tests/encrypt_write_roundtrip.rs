@@ -6,10 +6,9 @@
 
 use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
 use selis_pdf_engine::Session;
-use selis_sandbox::BudgetGuard;
+use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
 
 fn guard() -> BudgetGuard<'static> {
-    use selis_sandbox::{Budget, CancelToken, FixedClock};
     Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
 }
 
@@ -33,7 +32,7 @@ fn encrypted_document_roundtrip_through_session() {
     let bytes = b.write(&budget, &mut g).expect("write encrypted");
 
     // Session::open with the empty user password must decrypt the content.
-    let session = Session::open(bytes, &budget).expect("Session::open encrypted");
+    let session = Session::open(bytes, &budget, &FixedClock(0)).expect("Session::open encrypted");
     assert_eq!(session.len(), 1, "one page");
     assert!(session.page_size(0).is_some(), "page has a media box");
 }

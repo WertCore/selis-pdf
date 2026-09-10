@@ -1,4 +1,4 @@
-//! Synthetic corpus generator + mutator (SL-0.CORP.04).
+﻿//! Synthetic corpus generator + mutator (SL-0.CORP.04).
 //! Produces PDFs exercising specific constructs with known-correct
 //! expectations, plus a seeded, reproducible mutator that damages valid files.
 
@@ -67,10 +67,8 @@ pub fn generate() -> Result<(), String> {
     let count = std::cell::Cell::new(0usize);
     let gen = |id: &str, mut builder: DocumentBuilder, expect_pages: usize| -> Result<(), String> {
         let budget = selis_sandbox::Budget::unlimited();
-        let mut g = budget.guard_with(
-            &selis_sandbox::FixedClock(0),
-            selis_sandbox::CancelToken::new(),
-        );
+        let clock = selis_sandbox::shell_clock();
+        let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
         let bytes = builder
             .write(&budget, &mut g)
             .map_err(|e| format!("{id}: {e}"))?;
@@ -82,7 +80,7 @@ pub fn generate() -> Result<(), String> {
         Ok(())
     };
 
-    // ── Page-size / content variants ────────────────────────────────────────
+    // â”€â”€ Page-size / content variants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for (i, (w, h)) in [
         (612.0, 792.0),
         (595.0, 842.0),
@@ -104,7 +102,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("page_variant_{i}"), doc, 1)?;
     }
 
-    // ── Content text variants ──────────────────────────────────────────────
+    // â”€â”€ Content text variants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for i in 0..10 {
         let mut doc = DocumentBuilder::new();
         let content = ContentBuilder::new()
@@ -118,7 +116,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("content_variant_{i}"), doc, 1)?;
     }
 
-    // ── Multiple pages ─────────────────────────────────────────────────────
+    // â”€â”€ Multiple pages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for pages in [2usize, 5, 10] {
         let mut doc = DocumentBuilder::new();
         for p in 0..pages {
@@ -134,7 +132,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("multi_page_{pages}"), doc, pages)?;
     }
 
-    // ── Drawing operations ─────────────────────────────────────────────────
+    // â”€â”€ Drawing operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for (i, (r, g, b)) in [
         (0.9, 0.2, 0.2),
         (0.2, 0.9, 0.2),
@@ -153,7 +151,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("drawing_colour_{i}"), doc, 1)?;
     }
 
-    // ── Multi-colour / multi-rect drawings ────────────────────────────────
+    // â”€â”€ Multi-colour / multi-rect drawings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for i in 0..5 {
         let mut doc = DocumentBuilder::new();
         let mut cb = ContentBuilder::new();
@@ -165,7 +163,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("multi_rect_{i}"), doc, 1)?;
     }
 
-    // ── Form XObject ───────────────────────────────────────────────────────
+    // â”€â”€ Form XObject â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for depth in 0..3u32 {
         let mut doc = DocumentBuilder::new();
         let inner = ContentBuilder::new()
@@ -201,7 +199,7 @@ pub fn generate() -> Result<(), String> {
         gen(&format!("form_xobject_{depth}"), doc, 1)?;
     }
 
-    // ── FlateDecode content stream ─────────────────────────────────────────
+    // â”€â”€ FlateDecode content stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let mut doc = DocumentBuilder::new();
     let raw = ContentBuilder::new()
         .begin_text()
@@ -224,7 +222,7 @@ pub fn generate() -> Result<(), String> {
     doc.add_page_with(612.0, 792.0, &[Ref::new(content_num, 0)], None);
     gen("flate_content", doc, 1)?;
 
-    // ── Mutated variants (seeded) ──────────────────────────────────────────
+    // â”€â”€ Mutated variants (seeded) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let valid = std::fs::read(dir.join("page_variant_0.pdf"))
         .map_err(|e| format!("page_variant_0.pdf: {e}"))?;
     let mut mutants = mutate(&valid);
@@ -240,7 +238,7 @@ pub fn generate() -> Result<(), String> {
         // (SL-0.CORP.03): record the real outcome, so `corpus verify` flags
         // any later drift instead of silently accepting it. A damaged file
         // that opens after a tolerance fix is a *known-good* record, not a
-        // contradiction — the expectation diff is what documents that.
+        // contradiction â€” the expectation diff is what documents that.
         let expect = preserve_annotation(
             exp_dir.join(format!("mutant_{i}.toml")),
             crate::corpus::open_outcome_toml(&dest)?,
@@ -250,7 +248,7 @@ pub fn generate() -> Result<(), String> {
         count.set(count.get().saturating_add(1));
     }
 
-    // ── Combinatorial content: text x colour x position ───────────────────
+    // â”€â”€ Combinatorial content: text x colour x position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for t in 0..5 {
         for c in 0..4 {
             for pos in 0..5 {
@@ -283,7 +281,7 @@ pub fn generate() -> Result<(), String> {
         }
     }
 
-    // ── Rotated pages (extra page-dict entry) ─────────────────────────────
+    // â”€â”€ Rotated pages (extra page-dict entry) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for rot in [0i64, 90, 180, 270] {
         let id = format!("rotate_{rot}");
         let mut doc = DocumentBuilder::new();
@@ -312,7 +310,7 @@ pub fn generate() -> Result<(), String> {
         gen(&id, doc, 1)?;
     }
 
-    // ── Text-paint variants (stroke text matrix) ──────────────────────────
+    // â”€â”€ Text-paint variants (stroke text matrix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for t in 0..8 {
         let id = format!("text_paint_{t}");
         let mut doc = DocumentBuilder::new();
@@ -326,7 +324,7 @@ pub fn generate() -> Result<(), String> {
         gen(&id, doc, 1)?;
     }
 
-    // ── Two-page with resources (empty Resources dict) ────────────────────
+    // â”€â”€ Two-page with resources (empty Resources dict) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for i in 0..12 {
         let id = format!("resources_page_{i}");
         let mut doc = DocumentBuilder::new();
@@ -346,7 +344,7 @@ pub fn generate() -> Result<(), String> {
         gen(&id, doc, 1)?;
     }
 
-    // ── Additional mutants to reach ≥200 DoD ──────────────────────────────
+    // â”€â”€ Additional mutants to reach â‰¥200 DoD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if let Ok(large) = std::fs::read(dir.join("multi_page_10.pdf")) {
         // Byte-flip every 7th byte from offset 100.
         let mut b = large.to_vec();

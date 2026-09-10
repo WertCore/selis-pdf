@@ -223,3 +223,16 @@ FileSource / FileSink are the shipped native DocSource+DocSink implementations
 and are compiled only under the `native-io` feature. They exist precisely so
 that no crate above L1 needs to name the filesystem. WASM builds exclude them.
 Tests use env/process for temp dirs and unique file names."""
+
+[[purity_allow]]
+crate = "selis-sandbox"
+paths = ["std::time::Instant"]
+why = """
+`InstantClock` (SL-0.SBX.07) is the one sanctioned clock adapter: defined in
+the sandbox so every L4/L5 shell shares a single audited `std::time::Instant`
+wrapper instead of growing its own. Construction is restricted to shells by
+the `instant-clock` cargo feature (a platform capability L0-L3 crates do not
+enable — they receive `&dyn Clock` from their caller), and the module is
+compiled out for wasm32, where the browser shell wraps `performance.now`
+(ADR-P0011). The kernel itself (`Budget`, `BudgetGuard`, cancellation) never
+names it."""

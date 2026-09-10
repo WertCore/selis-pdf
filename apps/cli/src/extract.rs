@@ -5,14 +5,13 @@
 //! Markdown, or HTML.  With `--format=image`, writes each image XObject
 //! used on the page to a PPM file and prints a JSON manifest.
 
+use crate::render::write_ppm;
+use crate::{read_file, CliError, CliResult};
 use selis_pdf_content::display_list::Op;
 use selis_pdf_content::text::TextGlyph;
 use selis_pdf_engine::Session;
 use selis_pdf_text::TextLine;
-use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
-
-use crate::render::write_ppm;
-use crate::{read_file, CliError, CliResult};
+use selis_sandbox::{Budget, Surface};
 
 /// Extract a page's text or images.
 ///
@@ -28,12 +27,13 @@ pub(crate) fn run(
 ) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
-    let session =
-        Session::open(src, &budget).map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
 
     // Document-level formats don't need a page.
     if format == "embedded" {
-        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut g = budget.guard_with(&clock, crate::runtime::token());
         return extract_embedded(&session, &budget, &mut g, output);
     }
 
@@ -44,7 +44,7 @@ pub(crate) fn run(
             session.len()
         )));
     }
-    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut g = budget.guard_with(&clock, crate::runtime::token());
     let mut first_output = true;
     for p in page..=last {
         let dl = session

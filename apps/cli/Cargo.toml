@@ -20,7 +20,9 @@ selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-geom = { workspace = true }
 selis-io = { workspace = true, features = ["native-io"] }
-selis-sandbox = { workspace = true }
+# The CLI is the L5 binding boundary: it supplies the real monotonic clock
+# so `Budget::wall` is enforced on real parse paths (SL-0.SBX.07).
+selis-sandbox = { workspace = true, features = ["instant-clock"] }
 selis-log = { workspace = true }
 selis-crypto = { workspace = true }
 selis-pdf-cos = { workspace = true }

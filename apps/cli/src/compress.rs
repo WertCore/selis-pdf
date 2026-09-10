@@ -18,6 +18,7 @@ use selis_pdf_cos::doc_writer::write_objects_as_document;
 use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::verify_report::Verification;
 use crate::{read_file, CliError, CliResult};
 
 /// The maximum bytes a single stream may expand to while being re-encoded.
@@ -55,8 +56,8 @@ impl Report {
 ///
 /// `IO_READ_FAILED` when the input cannot be read, a typed parse error when
 /// the document is damaged, and a clean refusal for encrypted documents.
-pub(crate) fn run(path: &str, output: &str) -> CliResult<()> {
-    let report = optimise_file(path, output)?;
+pub(crate) fn run(path: &str, output: &str) -> CliResult<Verification> {
+    let (report, verification) = optimise_file(path, output)?;
     eprintln!(
         "compressed {path}: {} -> {} bytes (saved {}), {} objects, {} deduplicated, {} streams re-encoded -> {output}",
         report.in_bytes,
@@ -66,17 +67,23 @@ pub(crate) fn run(path: &str, output: &str) -> CliResult<()> {
         report.deduplicated,
         report.streams_recoded
     );
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// Optimise the document at `path`, writing the result to `output`, and
-/// return the size/structure report. Batch mode (SL-1A.TOOL.11) calls this
-/// per file.
-pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
+/// return the size/structure report plus the verification display
+/// (SL-1A.UI.02). Batch mode (SL-1A.TOOL.11) calls this per file.
+///
+/// # Errors
+///
+/// As [`run`].
+pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<(Report, Verification)> {
     let src = read_file(path)?;
     let in_bytes = src.len();
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
 
     let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = parse_revisions(&src, startxref, &budget, &mut g)?;
@@ -122,38 +129,43 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
     let out_bytes = bytes.len();
 
     // Structural verification (WRITE.05, via the shared gate): the output
-    // must reparse, every reference must resolve, the page count must match
-    // the input's, and the /Root must be preserved. Commit is atomic.
+    // must reparse, every reference must resolve, and the input's surveyed
+    // counts (pages, annotations, fields, OCGs, outlines, embedded files —
+    // the lossless tier preserves all of them) must hold. Commit is atomic.
     let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
-    crate::write_gate::write_verified(
-        &bytes,
-        output,
-        &selis_pdf_cos::verify::Expectations {
-            pages: Some(observed.pages),
-            ..selis_pdf_cos::verify::Expectations::none()
-        },
-        &budget,
-        &mut g,
-    )?;
+    let expected =
+        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
+    let verdict = crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
     // The output must also build a document model — a catalog with a usable
     // page tree. A root graph that parses but has no /Pages (e.g. the input
     // only opens through scan-based recovery) is not a compressible document;
-    // refuse rather than ship a broken file (WRITE.07).
+    // refuse rather than ship a broken file (WRITE.07). The typed error is
+    // propagated (not swallowed): a file that exceeds the model budget is
+    // reported as exactly that, with its measured usage (SL-1A.UI.06).
     let doc_budget = Budget::profile(selis_sandbox::Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (no usable document model)"
-        )));
-    }
+    let clock = crate::shell_clock();
+    // The typed error is propagated, not swallowed (SL-1A.UI.06).
+    selis_pdf_engine::Session::open(bytes.clone(), &doc_budget, &clock)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
 
-    Ok(Report {
-        objects: object_count,
-        deduplicated,
-        streams_recoded,
-        in_bytes,
-        out_bytes,
-    })
+    let verification = Verification::from_gate(
+        Some(&observed),
+        &verdict,
+        &expected,
+        u64::try_from(in_bytes).unwrap_or(u64::MAX),
+        u64::try_from(out_bytes).unwrap_or(u64::MAX),
+    );
+    Ok((
+        Report {
+            objects: object_count,
+            deduplicated,
+            streams_recoded,
+            in_bytes,
+            out_bytes,
+        },
+        verification,
+    ))
 }
 
 /// Re-encode one stream in place when it loses weight. Returns whether the
@@ -392,9 +404,23 @@ mod tests {
         let in_path = dir.join("plain.pdf");
         let out_path = dir.join("plain.out.pdf");
         std::fs::write(&in_path, build_pdf(false)).unwrap();
-        let report = super::optimise_file(in_path.to_str().unwrap(), out_path.to_str().unwrap())
-            .expect("compress");
+        let (report, verification) =
+            super::optimise_file(in_path.to_str().unwrap(), out_path.to_str().unwrap())
+                .expect("compress");
         assert!(report.objects >= 3, "kept the reachable objects");
+        assert_eq!(verification.verdict, "ok", "verification display present");
+        assert_eq!(verification.pages_out, 1);
+        assert_eq!(
+            verification.checked,
+            vec![
+                "pages",
+                "annotations",
+                "fields",
+                "ocgs",
+                "outline_entries",
+                "embedded_files"
+            ]
+        );
         assert!(out_path.exists(), "output written");
     }
 }

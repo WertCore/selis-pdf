@@ -16,6 +16,7 @@ use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
 use selis_pdf_doc::Resolver;
 use selis_sandbox::{Budget, Surface};
 
+use crate::verify_report::Verification;
 use crate::{read_file, CliError, CliResult};
 
 /// Run the unlock tool: decrypt `path` and write the result to `output`.
@@ -29,14 +30,15 @@ use crate::{read_file, CliError, CliResult};
 /// `IO_READ_FAILED` when the input cannot be read, a typed parse error when
 /// the document is damaged, and `WRONG_PASSWORD` when the password does not
 /// match the document's user or owner password.
-pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<()> {
-    let report = unlock_file(path, output, password)?;
+pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<Verification> {
+    let (report, verification) = unlock_file(path, output, password)?;
     if report.encrypted {
         eprintln!("unlocked {path} -> {output}");
     } else {
         eprintln!("{path}: not encrypted; copied as-is to {output}");
     }
-    Ok(())
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// The outcome of unlocking a file.
@@ -45,11 +47,18 @@ struct UnlockReport {
     encrypted: bool,
 }
 
-/// Core unlock logic: read, decrypt, write, verify.
-fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<UnlockReport> {
+/// Core unlock logic: read, decrypt, write, verify. Returns the outcome plus
+/// the operation's verification display (SL-1A.UI.02).
+fn unlock_file(
+    path: &str,
+    output: &str,
+    password: Option<&str>,
+) -> CliResult<(UnlockReport, Verification)> {
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
 
     let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = parse_revisions(&src, startxref, &budget, &mut g)
@@ -62,9 +71,13 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
     let policy = match rev.encrypt {
         None => {
             // Not encrypted: copy as-is (verbatim, atomic — the bytes are the
-            // user's original file, not writer output to verify).
-            crate::write_gate::atomic_write(&src, output)?;
-            return Ok(UnlockReport { encrypted: false });
+            // user's original file, not writer output to verify). The
+            // display says so honestly instead of inventing a verdict.
+            crate::write_gate::atomic_write(&src, output, &crate::runtime::token())?;
+            return Ok((
+                UnlockReport { encrypted: false },
+                Verification::copied(in_bytes),
+            ));
         }
         Some(r) => {
             let info = encrypt::parse_encrypt(&src, Some(r), &budget, &mut g)
@@ -149,20 +162,15 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
             .map_err(|e| CliError(format!("{path}: write: {e}")))?;
 
     // Structural verification (WRITE.05, via the shared gate): the output
-    // must reparse, every reference must resolve, and the page count must
-    // match the input's. Commit is atomic (temp + fsync + rename).
+    // must reparse, every reference must resolve, and the input's surveyed
+    // counts must hold — decryption rewrites no structure, so everything is
+    // asserted (pages, annotations, fields, OCGs, outlines, embedded files).
+    // Commit is atomic (temp + fsync + rename).
     let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
-    crate::write_gate::write_verified(
-        &bytes,
-        output,
-        &selis_pdf_cos::verify::Expectations {
-            pages: Some(observed.pages),
-            ..selis_pdf_cos::verify::Expectations::none()
-        },
-        &budget,
-        &mut g,
-    )?;
+    let expected =
+        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
+    let verdict = crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
     // The decrypted output must carry no /Encrypt and must build a usable
     // document model (WRITE.07).
     let sx = xref::find_startxref(&bytes, 4096).unwrap_or(0);
@@ -177,15 +185,22 @@ fn unlock_file(path: &str, output: &str, password: Option<&str>) -> CliResult<Un
             "{path}: output failed verification (/Encrypt still present)"
         )));
     }
-    // The output must also build a usable document model (WRITE.07).
+    // The output must also build a usable document model (WRITE.07). The
+    // typed error is propagated, not swallowed (SL-1A.UI.06).
     let doc_budget = Budget::profile(Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (no usable document model)"
-        )));
-    }
+    let clock = crate::shell_clock();
+    // The typed error is propagated, not swallowed (SL-1A.UI.06).
+    selis_pdf_engine::Session::open(bytes.clone(), &doc_budget, &clock)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
 
-    Ok(UnlockReport { encrypted: true })
+    let verification = crate::verify_report::Verification::from_gate(
+        Some(&observed),
+        &verdict,
+        &expected,
+        in_bytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
+    Ok((UnlockReport { encrypted: true }, verification))
 }
 
 /// Walk the object graph from `root`, resolving with decryption, collecting
@@ -358,7 +373,7 @@ mod tests {
         // Verify the output opens with the engine.
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
         assert!(
-            selis_pdf_engine::Session::open(out_bytes, &budget).is_ok(),
+            selis_pdf_engine::Session::open(out_bytes, &budget, &crate::shell_clock()).is_ok(),
             "output must open in the engine"
         );
     }

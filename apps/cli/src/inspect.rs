@@ -18,7 +18,10 @@ use selis_pdf_cos::{self, Deviation};
 pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
     let data = super::read_file(path)?;
     let budget = super::parse_budget();
-    let mut g = selis_sandbox::BudgetGuard::new(budget, &NO_CLOCK, Default::default());
+    // The real shell clock (SL-0.SBX.07): the wall deadline on this open is
+    // genuine elapsed time.
+    let clock = crate::shell_clock();
+    let mut g = selis_sandbox::BudgetGuard::new(budget, &clock, crate::runtime::token());
 
     // 1. Try the classic xref + revisions path.
     let doc = match selis_pdf_cos::parse_revisions(
@@ -155,8 +158,6 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
     }
     Ok(())
 }
-
-static NO_CLOCK: selis_sandbox::FixedClock = selis_sandbox::FixedClock(0);
 
 /// Extract the `%PDF-x.y` header, if any.
 fn header_version(data: &[u8]) -> Option<String> {

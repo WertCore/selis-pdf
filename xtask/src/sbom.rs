@@ -55,8 +55,14 @@ pub fn sbom() -> Result<(), String> {
     out.push_str("  ]\n");
     out.push_str("}\n");
 
-    std::fs::write("target/sbom.json", out)
-        .map_err(|e| format!("cannot write target/sbom.json: {e}"))?;
+    // The SBOM is a build artifact: it belongs in the cargo target dir, which
+    // may be relocated via CARGO_TARGET_DIR (the same convention as the
+    // fixture runner and size-check).
+    let dest = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("target"))
+        .join("sbom.json");
+    std::fs::write(&dest, out).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
     println!(
         "sbom: {} external components, {} distinct licences",
         externals.len(),
@@ -65,7 +71,7 @@ pub fn sbom() -> Result<(), String> {
     for (lic, n) in &licence_counts {
         println!("  {lic}: {n}");
     }
-    println!("written to target/sbom.json");
+    println!("written to {}", dest.display());
     Ok(())
 }
 

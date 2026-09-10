@@ -190,7 +190,14 @@ fn scan_to_endstream(src: &[u8], start: usize, g: &mut BudgetGuard<'_>) -> Resul
     let mut rel: Option<usize> = None;
     let mut i = 0usize;
     while i < hay.len() {
-        if g.tick().is_err() {
+        if let Err(e) = g.tick() {
+            // Budget and cancellation errors propagate as-is (SL-0.SBX.07):
+            // a wall deadline that fires during the scan must surface as
+            // BUDGET_WALL, not be rewrapped as a malformed-input error and
+            // silently swallowed by a tolerant caller.
+            if e.is_budget() || e.is_cancelled() {
+                return Err(e);
+            }
             return Err(err!(
                 Code::ObjUnexpected,
                 during = "resolve-object",
@@ -253,11 +260,17 @@ pub fn resolve_object_numbered(
     g: &mut BudgetGuard<'_>,
 ) -> Result<Obj> {
     let direct = resolve_object(src, pos, budget, g);
-    if direct.is_ok() {
-        return direct;
+    match direct {
+        Ok(_) => return direct,
+        // Budget, cancellation, and pending errors are never a trigger for
+        // offset recovery: an exhausted budget must surface as its typed
+        // error, not be retried as though the offset were damaged
+        // (SL-0.SBX.07).
+        Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => return Err(e),
+        Err(_) => {}
     }
     let p = usize::try_from(pos).unwrap_or(usize::MAX);
-    match find_object_header_near(src, p, num, g) {
+    match find_object_header_near(src, p, num, g)? {
         Some(found) if found != p => {
             let at = u64::try_from(found).unwrap_or(u64::MAX);
             resolve_object(src, at, budget, g)
@@ -344,35 +357,46 @@ fn resolve_object_bare(
 /// The forward range is scanned first: the common corruption is an offset
 /// that points a few bytes *short* of the header (at the EOL or `endobj`
 /// before it), so the object usually sits just after the indexed offset.
+///
+/// # Errors
+///
+/// Budget and cancellation errors from the deadline tick propagate as-is
+/// (SL-0.SBX.07) — recovery must never relabel an exhausted budget.
 fn find_object_header_near(
     src: &[u8],
     pos: usize,
     num: u32,
     g: &mut BudgetGuard<'_>,
-) -> Option<usize> {
+) -> Result<Option<usize>> {
     let lo = pos.saturating_sub(OFFSET_RECOVERY_WINDOW);
     let hi = pos.saturating_add(OFFSET_RECOVERY_WINDOW).min(src.len());
     let mut i = pos;
     while i < hi {
-        if g.tick().is_err() {
-            return None;
+        if let Err(e) = g.tick() {
+            if e.is_budget() || e.is_cancelled() {
+                return Err(e);
+            }
+            return Ok(None);
         }
         if object_header_at(src, i, num) {
-            return Some(i);
+            return Ok(Some(i));
         }
         i = i.saturating_add(1);
     }
     let mut i = lo;
     while i < pos {
-        if g.tick().is_err() {
-            return None;
+        if let Err(e) = g.tick() {
+            if e.is_budget() || e.is_cancelled() {
+                return Err(e);
+            }
+            return Ok(None);
         }
         if object_header_at(src, i, num) {
-            return Some(i);
+            return Ok(Some(i));
         }
         i = i.saturating_add(1);
     }
-    None
+    Ok(None)
 }
 
 /// True when `src[idx..]` begins `num <gen> obj` — the object number matches

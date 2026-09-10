@@ -1,4 +1,4 @@
-﻿//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
+//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
 //!
 //! Phase 1 ships the structural inspector the qpdf oracle compares against:
 //! `selis inspect --json <file>` dumps revisions, xref entries, and
@@ -23,19 +23,25 @@ use selis_error::{Code, Result};
 mod batch;
 mod check;
 mod clear_permissions;
+#[cfg(test)]
+mod clock_wiring;
 mod compress;
 mod convert;
 #[cfg(debug_assertions)]
 mod crash_save;
 mod extract;
+mod failure;
 mod img2pdf;
 mod inspect;
+mod progress;
 mod protect;
 mod render;
+mod runtime;
 mod search;
 mod tools;
 mod topdf;
 mod unlock;
+mod verify_report;
 mod write_gate;
 
 #[cfg(test)]
@@ -132,6 +138,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Extract a page range into a new PDF.
     Split {
@@ -146,6 +155,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Set metadata fields and rewrite a PDF.
     SetMetadata {
@@ -157,6 +169,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Redact regions of a PDF (cover + strip text).
     Redact {
@@ -168,6 +183,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Rotate pages of a PDF (adds to any existing /Rotate).
     Rotate {
@@ -182,6 +200,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Delete pages from a PDF.
     Delete {
@@ -193,6 +214,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Reorder the pages of a PDF.
     Reorder {
@@ -204,6 +228,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Convert images (JPEG/PNG) to a PDF, one page per image.
     #[command(name = "img2pdf")]
@@ -220,6 +247,9 @@ enum Command {
         /// The page margin in points (default 36).
         #[arg(long, default_value_t = 36.0)]
         margin: f64,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Convert a Markdown or HTML file to PDF (documented subset).
     Topdf {
@@ -237,6 +267,9 @@ enum Command {
         /// The document title recorded in the /Info dictionary.
         #[arg(long)]
         title: Option<String>,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Compress / optimise a PDF (lossless: no pixel changes).
     Compress {
@@ -245,6 +278,9 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Remove password protection from a PDF (decrypt and rewrite).
     Unlock {
@@ -256,6 +292,9 @@ enum Command {
         /// The password (default: empty â€” the user password).
         #[arg(short, long)]
         password: Option<String>,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Run a tool over many files with per-file isolation + a JSON report.
     Batch {
@@ -289,6 +328,9 @@ enum Command {
         /// The owner password.
         #[arg(short, long)]
         password: Option<String>,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Add password protection and set permission bits (AES-256, revision 6).
     #[command(after_long_help = PROTECT_PERMISSIONS_NOTE)]
@@ -314,6 +356,9 @@ enum Command {
         /// (/EncryptMetadata false). Default: metadata is encrypted.
         #[arg(long = "no-encrypt-metadata")]
         no_encrypt_metadata: bool,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// DEBUG BUILDS ONLY — run one save operation with crash injection
     /// active (SL-1A.WRITE.06 kill-test harness entry point). Hidden.
@@ -353,6 +398,11 @@ inside the encrypted document itself.";
 
 fn main() {
     let cli = Cli::parse();
+    // SL-1A.UI.06: the Ctrl-C hook feeds the CLI's cancel token, so every
+    // tool operation can stop cleanly at the next budget tick or output
+    // chunk (a hard kill remains safe — WRITE.06 crash-atomicity — the hook
+    // is what makes it clean).
+    runtime::init_cancel();
     // SL-0.ERR.03: the CLI is the binding boundary today, so the whole command
     // dispatch runs under the panic trampoline. A parser bug surfaces as the
     // typed `INTERNAL_PANIC` error (code path + panic site, no document bytes,
@@ -382,26 +432,33 @@ fn main() {
         } => convert::run(&path, &output, first, last),
         Command::Search { path, query, page } => search::run(&path, &query, page),
         Command::Check { path, profile } => check::run(&path, &profile),
-        Command::Merge { inputs, output } => tools::merge(&inputs, &output),
+        Command::Merge {
+            inputs,
+            output,
+            json,
+        } => finish(tools::merge(&inputs, &output), json),
         Command::Split {
             path,
             first,
             last,
             output,
-        } => tools::split(&path, first, last.unwrap_or(usize::MAX), &output),
+            json,
+        } => finish(tools::split(&path, first, last.unwrap_or(usize::MAX), &output), json),
         Command::SetMetadata {
             path,
             fields,
             output,
+            json,
         } => {
             let parsed: Vec<(&str, &str)> =
                 fields.iter().filter_map(|f| f.split_once('=')).collect();
-            tools::set_metadata(&path, &parsed, &output)
+            finish(tools::set_metadata(&path, &parsed, &output), json)
         }
         Command::Redact {
             path,
             rects,
             output,
+            json,
         } => {
             let parsed: Vec<(f64, f64, f64, f64)> = rects
                 .iter()
@@ -419,31 +476,35 @@ fn main() {
                     }
                 })
                 .collect();
-            tools::redact(&path, &parsed, &output)
+            finish(tools::redact(&path, &parsed, &output), json)
         }
         Command::Rotate {
             path,
             angle,
             pages,
             output,
-        } => tools::rotate(&path, angle, pages.as_deref(), &output),
+            json,
+        } => finish(tools::rotate(&path, angle, pages.as_deref(), &output), json),
         Command::Delete {
             path,
             pages,
             output,
-        } => tools::delete(&path, &pages, &output),
+            json,
+        } => finish(tools::delete(&path, &pages, &output), json),
         Command::Reorder {
             path,
             order,
             output,
-        } => tools::reorder(&path, &order, &output),
+            json,
+        } => finish(tools::reorder(&path, &order, &output), json),
         Command::Img2Pdf {
             inputs,
             output,
             page_size,
             margin,
+            json,
         } => match img2pdf::PageFit::parse(&page_size) {
-            Ok(fit) => img2pdf::img2pdf(&inputs, &output, &fit, margin),
+            Ok(fit) => finish(img2pdf::img2pdf(&inputs, &output, &fit, margin), json),
             Err(e) => Err(e),
         },
         Command::Topdf {
@@ -452,18 +513,29 @@ fn main() {
             format,
             page_size,
             title,
-        } => topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
-        Command::Compress { path, output } => compress::run(&path, &output),
+            json,
+        } => finish(
+            topdf::topdf(&input, &output, &format, &page_size, title.as_deref()),
+            json,
+        ),
+        Command::Compress { path, output, json } => {
+            finish(compress::run(&path, &output), json)
+        }
         Command::Unlock {
             path,
             output,
             password,
-        } => unlock::run(&path, &output, password.as_deref()),
+            json,
+        } => finish(unlock::run(&path, &output, password.as_deref()), json),
         Command::ClearPermissions {
             path,
             output,
             password,
-        } => clear_permissions::run(&path, &output, password.as_deref()),
+            json,
+        } => finish(
+            clear_permissions::run(&path, &output, password.as_deref()),
+            json,
+        ),
         Command::Protect {
             path,
             output,
@@ -471,13 +543,17 @@ fn main() {
             owner_password,
             permissions,
             no_encrypt_metadata,
-        } => protect::run(
-            &path,
-            &output,
-            user_password.as_deref(),
-            owner_password.as_deref(),
-            permissions.as_deref(),
-            !no_encrypt_metadata,
+            json,
+        } => finish(
+            protect::run(
+                &path,
+                &output,
+                user_password.as_deref(),
+                owner_password.as_deref(),
+                permissions.as_deref(),
+                !no_encrypt_metadata,
+            ),
+            json,
         ),
         Command::Batch {
             tool,
@@ -516,10 +592,25 @@ fn main() {
     match result {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("selis: error: {e}");
-            std::process::exit(1);
+            // SL-1A.UI.06: budget exhaustion and cancellation get the honest
+            // message (which budget, the measured usage, what to do); exit
+            // 130 marks a clean Ctrl-C so scripts can tell it from an error.
+            let failure = failure::classify(&e.to_string());
+            eprintln!("{}", failure::message(&e.to_string(), &failure));
+            std::process::exit(failure::exit_code(&failure));
         }
     }
+}
+
+/// Complete a tool dispatch: the tool printed its stderr lines; print the
+/// machine-readable verification twin on stdout when `--json` was given
+/// (SL-1A.UI.02).
+fn finish(result: CliResult<verify_report::Verification>, json: bool) -> CliResult<()> {
+    let verification = result?;
+    if json {
+        verification.print_json()?;
+    }
+    Ok(())
 }
 
 /// A readable error for the CLI.
@@ -650,6 +741,18 @@ pub(crate) fn write_file(path: &str, bytes: &[u8]) -> CliResult<()> {
 
 fn parse_budget() -> selis_sandbox::Budget {
     selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer)
+}
+
+/// The real clock for this shell (SL-0.SBX.07).
+///
+/// The CLI is the L5 binding boundary — the one place in the stack where
+/// `Budget::wall` may be measured against a genuine monotonic clock. Every
+/// command constructs one per operation and hands the same instance to
+/// `Session::open` and its guards, so an injected deadline bounds that
+/// operation (and every sub-guard below it) rather than never firing.
+#[must_use]
+pub(crate) fn shell_clock() -> impl selis_sandbox::Clock {
+    selis_sandbox::shell_clock()
 }
 
 fn err_unimplemented(what: &str) -> CliError {

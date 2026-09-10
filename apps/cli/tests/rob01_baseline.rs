@@ -46,9 +46,12 @@ use std::time::Duration;
 const OPEN_RATE_FLOOR: f64 = 0.99;
 
 /// Extra seconds a single file may exceed the Viewer budget's own wall limit
-/// before the sweep declares it a hang. The engine checks its deadline at
-/// every `tick`, so a healthy budget failure is well inside this slack.
-const HANG_SLACK_SECS: u64 = 30;
+/// before the sweep declares it a hang. With the real clock wired
+/// (SL-0.SBX.07) the engine aborts at its 5 s Viewer wall and reports
+/// `BUDGET_WALL` itself, so the watchdog is only a safety net: slack covers
+/// the tick-interval latency of a work-bounded stretch (e.g. one long filter
+/// decode between ticks) plus scheduler jitter — seconds, not tens.
+const HANG_SLACK_SECS: u64 = 10;
 
 /// One file's sweep outcome.
 #[derive(serde::Serialize, Clone)]
@@ -222,12 +225,16 @@ fn open_one(path: &std::path::Path, root: &std::path::Path, wall: Duration) -> F
             // A fresh per-file Budget: one document can never consume
             // another file's allowance (ADR-P0006).
             let budget = Budget::profile(Surface::Viewer);
+            // The real shell clock (SL-0.SBX.07): the Viewer wall deadline is
+            // enforced by the engine itself, so per-file verdicts below are
+            // genuine engine-side `BUDGET_WALL` outcomes, not watchdog reads.
+            let clock = selis_sandbox::InstantClock::new();
             let Ok(src) = std::fs::read(&path) else {
                 let _ = tx.send(("read-error", Some("IO_READ_FAILED".to_owned()), None));
                 return;
             };
             let result = selis_sandbox::trampoline::catch("rob01-open", || {
-                selis_pdf_engine::Session::open(src, &budget)
+                selis_pdf_engine::Session::open(src, &budget, &clock)
             });
             match result {
                 Ok(_) => {
