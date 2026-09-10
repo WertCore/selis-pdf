@@ -1,2 +1,7 @@
 open = "ok"
 pages = 2
+
+[annotation]
+triage = "selis_rejects"
+verdict = "OurBug"
+note = "missing /MediaBox refused; now falls back to the ISO 32000-2 s7.10.1 default (SL-2.CONF.05)"

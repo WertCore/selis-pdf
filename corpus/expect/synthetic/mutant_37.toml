@@ -3,4 +3,4 @@ code = "TrailerMissingRoot"
 [annotation]
 triage = "selis_rejects"
 verdict = "SpecAmbiguous"
-note = "deliberately damaged mutants we refuse by design; qpdf agrees"
+note = "no /Root: we refuse by design (typed error, no repair attempt); mutool repair finds one - both readings defensible"

@@ -325,10 +325,39 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
   - **DoD:** Every cluster file carries a triage verdict; behaviour-changing fixes add corpus
     entries.
 
-- [ ] **SL-2.CONF.05 — Typed-refusal review for batch render contexts** · deps: CONF.01 · owner: AI
+- [x] **SL-2.CONF.05 — Typed-refusal review for batch render contexts** · deps: CONF.01 · owner: AI
   - **Do:** Review the sweep's `selis_rejects` cluster (26 @150): `budget exceeded (objects) limit
     200000` on real-world govdocs files under the Viewer profile, and hard refusals on pages with
     no `/MediaBox` or zero area where other renderers fall back to a default size. Decide per
     case: a batch/profile budget tier, a default-page-size fallback (with a recorded deviation),
     or keep the refusal as the designed posture (with annotations).
   - **DoD:** Each refusal cluster annotated with the decision; expectations updated.
+  - **Done (2026-09-10):** all 26 files adjudicated; every file now either renders or refuses
+    with a deliberate, annotated typed reason — zero unexplained refusals (re-run:
+    `C:\selis-build\conf05-rerun\`, 26-file `--include` sweep @150).
+
+  **Profile changes** (`crates/selis-sandbox/profiles.toml`, the code-generated source of truth,
+  Viewer surface — both changes justified by the profile's own "500 MB behemoth" requirement):
+  * `objects` 200,000 → **1,000,000** (matches Editor): 200k refused four real-world documents
+    needing ~200,001 objects (govdocs1/000146, govdocs1/000380, issue12295, issue12810) that
+    MuPDF renders; real 500 MB PDFs average 200–500 B/object ≈ 1–2.5 M objects. `bytes`
+    (256 MiB) remains the binding memory constraint.
+  * `wall` 5 s → **15 s**: govdocs1/000146 needed 5.0006 s — a boundary flap; behemoth-class
+    open+first-paint measures ~5–11 s. Hostile work stays bounded; normal documents remain far
+    under the §12 first-paint budget.
+
+  **Behaviour change** (`Session::page_size`, engine): a page with no `/MediaBox` in its
+  inheritance chain, or a non-positive one, renders at the ISO 32000-2 §7.10.1 default
+  (612 × 792) — the fallback mainstream viewers apply; a missing box is incomplete authoring,
+  not a reason to refuse. Engine test `page_size_falls_back_to_the_iso_default_...` covers both.
+
+  **Per-file verdicts** (annotations in `corpus/expect/…`):
+  | Files | Disposition |
+  |---|---|
+  | govdocs1/000146, govdocs1/000380, issue12295, issue12810 | `OurBug` fixed — Viewer profile mis-tune (objects + wall); now render and compare |
+  | bug1721218_reduced | `OurBug` fixed — 200k-object reproducer needed ~9 s; renders within the 15 s wall and agrees within 5% |
+  | boundingBox_invalid, synthetic/mutant_11 | `OurBug` fixed — zero-area/missing `/MediaBox`; now render, match MuPDF |
+  | bug852992_reduced, issue7229, issue7872 | `OurBug` fixed — now render; compare as `size_skew` because MuPDF honours these pages' `/CropBox` while selis sizes from `/MediaBox` (CropBox-aware render size folds into SL-2.RAST.12's page-geometry work) |
+  | GHOSTSCRIPT-698804-1-fuzzed | kept — typed refusal is correct: the page tree yields 0 pages and rendering "page 0" is out of range; MuPDF fabricates a letter page |
+  | synthetic/mut_197–199/202, mutant_2/13/14/15/26/28/30/35/37/38 (14 files) | kept — `[E1103]` no `/Root`: refuse-by-design (typed error, no repair attempt); MuPDF's repair finds a root — both readings defensible (consistent with the seeded structural triage) |
+  | issue269_2 | `selis_timeout` annotated — needs ~90–120 s; renders with a 120 s harness budget; known-slow robustness follow-up (SL-1.ROB) |
