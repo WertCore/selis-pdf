@@ -31,6 +31,7 @@ tmp_*
 # cargo-fuzz output (SL-0.SEC.02)
 /fuzz/target/
 /fuzz/corpus/
+/fuzz/coverage/
 /fuzz/artifacts/
 
 # pnpm / node (SL-0.WS.10)

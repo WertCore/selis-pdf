@@ -10,8 +10,8 @@
 # write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
 # write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
 # test-slow      | nightly   | required for release (job pending)
-# fuzz-soak      | nightly   | non-blocking
-# perf           | nightly   | blocks release on >5% regression
+# fuzz-soak      | nightly + dispatch | non-blocking
+# perf           | nightly + dispatch | blocks release on >5% regression
 
 name: CI
 
@@ -26,6 +26,19 @@ on:
     # "every 48 hours" cron. Nightly-gated jobs (fuzz-soak, perf) run on
     # this schedule; scheduled runs always use main.
     - cron: '0 3 */2 * *'
+  workflow_dispatch:
+    # On-demand campaign legs (SL-1.ROB.02): the cron default keeps the
+    # 10-minute per-target soak, a dispatched run scales it, e.g.
+    #   gh workflow run ci.yml -f fuzz_minutes=120
+    inputs:
+      fuzz_minutes:
+        description: 'fuzz-soak: minutes per target (cron default: 10)'
+        required: false
+        default: '10'
+      run_perf:
+        description: 'Also run the perf job'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -188,11 +201,32 @@ jobs:
         run: cargo test -p selis-cli --test write06_kill_test -- --ignored --test-threads 4
         timeout-minutes: 40
 
-  # ── fuzz-soak (nightly, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02 ──────────
+  # ── fuzz-soak (nightly + dispatch, non-blocking) — SL-0.SEC.02 / SL-1.ROB.02
+  # One job per parser entry point (fuzz/Cargo.toml); a new fuzz target must
+  # be added to the matrix in the same commit (03-CONVENTIONS.md §6). The cron
+  # schedule keeps the 10-minute default; a dispatched leg scales it via the
+  # fuzz_minutes input, e.g. `gh workflow run ci.yml -f fuzz_minutes=120`.
   fuzz-soak:
     runs-on: ubuntu-24.04
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: [build]
+    timeout-minutes: ${{ fromJSON(inputs.fuzz_minutes || '10') + 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - cos_parse
+          - cos_lex
+          - doc_open
+          - filter_chain
+          - font_ttf
+          - font_cff
+          - font_cmap
+          - font_type1
+          - shaper
+    env:
+      FUZZ_MINUTES: ${{ inputs.fuzz_minutes || '10' }}
+      FUZZ_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -200,13 +234,68 @@ jobs:
           toolchain: nightly
           cache: true
       - run: cargo install cargo-fuzz --locked
-      - name: Soak cos_parse for 10 minutes
+      - name: Seed the corpus from the committed seeds
+        run: |
+          mkdir -p "fuzz/corpus/$FUZZ_TARGET"
+          if [ -d "fuzz/seeds/$FUZZ_TARGET" ]; then
+            cp -v fuzz/seeds/"$FUZZ_TARGET"/* "fuzz/corpus/$FUZZ_TARGET"/
+          fi
+      - name: Soak ${{ matrix.target }} for ${{ env.FUZZ_MINUTES }} minutes
         working-directory: fuzz
         run: |
-          cargo +nightly fuzz run cos_parse -- -max_total_time=600
-          cargo +nightly fuzz run cos_lex -- -max_total_time=600
-          cargo +nightly fuzz run doc_open -- -max_total_time=600
-        timeout-minutes: 40
+          cargo +nightly fuzz run "$FUZZ_TARGET" -- \
+            -max_total_time=$(( FUZZ_MINUTES * 60 )) \
+            -rss_limit_mb=4096 -timeout=60 -print_final_stats=1
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            fuzz/crash-*
+            fuzz/oom-*
+            fuzz/timeout-*
+            fuzz/leak-*
+          if-no-files-found: ignore
+      - name: Coverage report over the accumulated corpus
+        if: always()
+        working-directory: fuzz
+        run: |
+          rustup component add llvm-tools-preview
+          cargo +nightly fuzz coverage "$FUZZ_TARGET" "corpus/$FUZZ_TARGET"
+          covdir="coverage/$FUZZ_TARGET"
+          if [ ! -f "$covdir/lcov.info" ]; then
+            bin="$(find target -type f -path '*coverage*' -name "$FUZZ_TARGET" | head -1)"
+            "$(rustc --print sysroot)/bin/llvm-cov" export --format=lcov \
+              --instr-profile "$covdir/coverage.profdata" "$bin" \
+              > "$covdir/lcov.info"
+          fi
+          python3 - "$covdir/lcov.info" <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import sys
+          lf = lh = 0
+          for line in open(sys.argv[1]):
+              if line.startswith("LF:"):
+                  lf += int(line[3:])
+              elif line.startswith("LH:"):
+                  lh += int(line[3:])
+          pct = 100.0 * lh / lf if lf else 0.0
+          print(f"### {sys.argv[1].split('/')[1]} line coverage: {pct:.1f}% ({lh}/{lf})")
+          EOF
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.target }}
+          path: fuzz/coverage/${{ matrix.target }}/
+          if-no-files-found: ignore
+      - name: Upload accumulated corpus (dispatched legs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ── perf budgets (nightly) — SL-0.PERF.02; blocks release on >5% regression
   # per 03-CONVENTIONS.md §9. The baseline is re-recorded on the runner first,
@@ -214,7 +303,9 @@ jobs:
   # different machine cannot gate percentages).
   perf:
     runs-on: ubuntu-24.04
-    if: github.event_name == 'schedule'
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perf)
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
