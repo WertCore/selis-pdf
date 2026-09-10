@@ -31,14 +31,18 @@ fn formed_document() -> Vec<u8> {
 }
 
 /// The built `selis` binary (the workspace must be built first). Honours
-/// `CARGO_TARGET_DIR` and the platform executable suffix: CI's Linux runners
-/// produce `target/debug/selis`, Windows produces `selis.exe`.
+/// `CARGO_TARGET_DIR` and the platform executable suffix, and is returned as
+/// an absolute path: on Unix the child's `chdir` (from `current_dir`) happens
+/// before `exec`, so a relative executable path would resolve against the
+/// child's work directory and fail.
 fn selis_bin() -> PathBuf {
     let dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target"));
-    dir.join("debug")
-        .join(if cfg!(windows) { "selis.exe" } else { "selis" })
+    let path = dir
+        .join("debug")
+        .join(if cfg!(windows) { "selis.exe" } else { "selis" });
+    path.canonicalize().unwrap_or(path)
 }
 
 /// Run one tool invocation, failing loudly on non-zero exit.
