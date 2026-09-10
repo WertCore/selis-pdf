@@ -210,7 +210,10 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: [build]
-    timeout-minutes: ${{ fromJSON(inputs.fuzz_minutes || '10') + 30 }}
+    # Fixed ceiling (GH expressions have no arithmetic). Covers a dispatched
+    # leg of ~300 fuzz-minutes plus install/build/coverage overhead; the cron
+    # default (10 min/target) self-terminates in ~20 minutes regardless.
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
