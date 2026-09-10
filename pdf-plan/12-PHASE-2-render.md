@@ -198,12 +198,23 @@ every user on every page.
     engine has no page→device matrix yet (gap G-1, CONF.01 owns it); the
     18 ms absolute budget is NOT met (51.0 ms — gap G-2: batching atlas
     implemented, measured a 51→99 ms regression, and removed with a pinned
-    probe; residual itemised in the report §9b). PERF.03 not started
-    (still blocked behind this task).
-- [ ] **SL-2.PERF.03 — WASM-specific render optimisation** · deps: PERF.02 · owner: AI+
+    probe; residual itemised in the report §9b). PERF.03 DONE below
+    (unblocked by this task).
+- [x] **SL-2.PERF.03 — WASM-specific render optimisation** · deps: PERF.02 · owner: AI+
   - **Do:** SIMD128 where it is provably deterministic, memory-growth strategy, and avoiding the
     JS↔WASM boundary in the tile path.
   - **DoD:** WASM within 2.5× of native on the same machine.
+  - **Done 2026-09-10:** MET — 1.44× geomean (release, same machine,
+    same process; every page ≤ 2.33×) via the wasmtime-driven harness
+    (`xtask perf-wasm`, `crates/selis-pdf-wasm` one-call-per-page ABI per
+    ADR-P0041 — no JS/browser harness exists in-repo, stated honestly).
+    Guest checksums byte-identical to native on all six pages (RAST.09
+    cross-arch proof, asserted per run). +simd128 adopted after
+    checksum-proven determinism (2.13× → ~1.4×). Memory: exact pre-sizing
+    + 512 MiB wasmtime limiter. Cold start: wasmtime compile ≈3–6 s +
+    instantiate ≈1–15 ms (browsers differ — the 45 ms row stays
+    not-measurable). Full ledger in `30-RENDER-PERF-REPORT.md` §9c, record
+    in `bench/wasm-results.json`.
 
 ---
 

@@ -727,3 +727,24 @@ gets the documented API. The real-world Windows failure mode is not tearing but 
 (AV/indexers holding the destination) — callers surface that as a typed error and the original file
 is untouched. `selis-io` keeps its allowlist entry with this block named in `xtask/unsafe-allow.toml`
 commentary. Recorded at WRITE.06 sign-off; revisitable only by superseding ADR.
+
+## ADR-P0041 — WASM render ABI: one call per page, unsafe only at the boundary
+**Status:** Accepted (SL-2.PERF.03, 2026-09-10)
+**Decision:** `selis-pdf-wasm` (L4, `cdylib`) exposes exactly three exports —
+`selis_input_alloc` / `selis_render_page` / `selis_free` — over guest linear
+memory. The display list, tiling, and rasterisation stay inside the module;
+the host crosses the boundary twice per page (bytes in, pixels out) and never
+per op or per tile. Every crossing buffer uses `Layout::array::<u8>(len)`
+allocation discipline; any failure returns null, never a trap. The pointer
+dereferences are `unsafe` by construction, each with its SAFETY case, and the
+crate joins the `unsafe` allowlist (03-CONVENTIONS.md §2) with this ADR named.
+**Rationale:** A render ABI cannot avoid dereferencing host-provided guest
+pointers — the alternative (a call per op/tile) would dominate WASM render
+time with boundary crossings and serialize the engine through the host. The
+SAFETY cases are airtight where FFI usually is not: single-threaded guest,
+module-owned memory, explicit lengths, null checks, no aliasing across calls.
+**Consequences:** The wasmtime-driven perf harness (`xtask perf-wasm`)
+measures this ABI against native on the benchmark set (the PERF.03 gate);
+browsers reuse the same three exports through the wasm shell (Phase 5).
+Determinism is unaffected: no clock, no threads, no cross-call state —
+guest/native pixmap checksums must agree per page (the harness asserts it).

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "repeats": 5,
+  "simd128": true,
+  "driver": "wasmtime (embedded; no browser harness in-repo)",
+  "cold_compile_ms": 2986.6,
+  "cold_instantiate_ms": 1.109,
+  "pages": [
+    {
+      "file": "large-image.pdf",
+      "native_ms": 38.687,
+      "wasm_ms": 46.267,
+      "ratio_wasm_over_native": 1.1959,
+      "checksum_match": true
+    },
+    {
+      "file": "mixed.pdf",
+      "native_ms": 82.470,
+      "wasm_ms": 73.271,
+      "ratio_wasm_over_native": 0.8885,
+      "checksum_match": true
+    },
+    {
+      "file": "shading.pdf",
+      "native_ms": 0.720,
+      "wasm_ms": 1.489,
+      "ratio_wasm_over_native": 2.0692,
+      "checksum_match": true
+    },
+    {
+      "file": "text-heavy.pdf",
+      "native_ms": 39.839,
+      "wasm_ms": 59.913,
+      "ratio_wasm_over_native": 1.5039,
+      "checksum_match": true
+    },
+    {
+      "file": "transparency.pdf",
+      "native_ms": 10.267,
+      "wasm_ms": 21.358,
+      "ratio_wasm_over_native": 2.0804,
+      "checksum_match": true
+    },
+    {
+      "file": "vector-heavy.pdf",
+      "native_ms": 16.893,
+      "wasm_ms": 21.472,
+      "ratio_wasm_over_native": 1.2710,
+      "checksum_match": true
+    }
+  ],
+  "geomean_wasm_over_native": 1.4353,
+  "note": "guest time is the render_page call only (median of 5); wasmtime compile/instantiate reported separately as cold; simd128 adopted (-C target-feature=+simd128, checksums match native)"
+}

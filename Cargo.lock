@@ -1570,6 +1570,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-pdf-engine",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-policy"
 version = "0.1.0"
 dependencies = [
@@ -2371,6 +2380,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "wasmtime",
 ]
 
 [[package]]

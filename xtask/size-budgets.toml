@@ -3,9 +3,14 @@
 #
 # `artifact` names the linked wasm artefact a budget is evaluated against. A
 # budget whose artifact is not measured yet is reported as "not measured" —
-# never as passing (same principle as `xtask perf-check`). Today exactly one
-# linked artifact exists (the xtask automation binary, which pulls in the
-# whole engine); the dedicated chunk artifacts arrive with the wasm shell.
+# never as passing (same principle as `xtask perf-check`). Today two linked
+# artifacts exist: the xtask automation binary (which pulls in the whole
+# engine) and the `selis-pdf-wasm` render driver (SL-2.PERF.03 — measured but
+# unmatched by any budget row, so ignored by the gate); the dedicated chunk
+# artifacts arrive with the wasm shell. NOTE: the `engine-render-cdylib`
+# budget below anticipates the shell's chunk name — no cargo crate can emit
+# that dashed stem (cargo normalises `-` to `_`), so the name needs revisiting
+# when the shell lands; until then the row stays "not measured".
 
 [[budget]]
 chunk = "core-parser"

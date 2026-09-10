@@ -271,6 +271,96 @@ run (median of 9, release, pinned driver, geomean 2.78×) — same walk code,
 same checksums; the G-2 experiment runs (`batched.json`: 98.5 ms text with
 the batcher on) are evidence in this ledger, not records.
 
+## 9c. PERF.03 ledger — WASM within 2.5× of native (2026-09-10)
+
+DoD MET: **1.44× geomean** (reference run, release, same machine, same
+process), every page ≤ 2.33×, guest checksums byte-identical to native on
+all six pages. There is no JS/browser harness in the repo, so the comparison
+runs wasmtime-driven — recorded as such everywhere below.
+
+**What was built.** `crates/selis-pdf-wasm` (L4, `cdylib`, already listed in
+`xtask/layers.toml`): three exports over guest linear memory —
+`selis_input_alloc` / `selis_render_page` / `selis_free` (ADR-P0041, on the
+`unsafe` allowlist with SAFETY cases). One call per page: input bytes in,
+pixels out; display list, tiling, and rasterisation never cross the
+boundary — the tile path stays inside the module by construction, and the
+driver deliberately exposes no tile API. Native smoke tests cover the ABI
+(alloc/reject/free roundtrip + the engine's own minimal fixture end to end).
+
+**Harness.** `xtask perf-wasm` (native-only; the wasmtime dep is
+`cfg(not(wasm32))`-gated so the size-check wasm build of xtask still
+works): builds the driver for `wasm32-unknown-unknown`, instantiates it
+under embedded wasmtime, and renders the set twice per page — in-process
+native steady state and guest `render_page` call (median of 5, one warm-up).
+Guest time includes the out-copy (the honest boundary cost). Results in
+`bench/wasm-results.json` (reference record; the WASM budget rows stay
+`not-measurable` — CI cannot regenerate guest numbers, so the file
+documents rather than gates).
+
+**Numbers** (native → guest, same run):
+
+| Page | native | wasm (+simd128) | × native |
+|---|---|---|---|
+| text-heavy | 39.8 ms | 59.9 ms | 1.50× |
+| mixed | 82.5 ms | 73.3 ms | 0.89× |
+| large-image | 38.7 ms | 46.3 ms | 1.20× |
+| shading | 0.72 ms | 1.49 ms | 2.07× |
+| transparency | 10.3 ms | 21.4 ms | 2.08× |
+| vector-heavy | 16.9 ms | 21.5 ms | 1.27× |
+| **geomean** | | | **1.44×** |
+
+(Earlier runs: scalar guest 2.13×; +simd128 variant 1.33× on a loaded
+machine. Sub-ms pages price the boundary call itself — shading's 2.07× is
+~0.8 ms of call+copy overhead, not rendering.)
+
+**SIMD128 (adopted).** The driver builds with `-C target-feature=+simd128`
+(scoped to the harness invocation env, never the repo config).
+Transparency 5.73× → ~2.1×, geomean 2.13× → ~1.4×, and every guest checksum
+still matches native — the determinism proof the task demands ("provably
+deterministic"): WASM SIMD has fixed spec semantics, so the same module is
+bit-identical on any engine, and the per-page checksum equality asserts it
+per run instead of assuming it.
+
+**Memory-growth strategy.** Guest pre-sizes every buffer exactly (input,
+canvas `w×h×4` checked before allocation, out-copy); absurd canvases are
+rejected, never attempted. Host caps guest linear memory at 512 MiB via a
+wasmtime resource limiter — growth is bounded and loud (a trap names the
+limit).
+
+**Cold start.** wasmtime/Cranelift module compile ≈3–6 s (load-dependent;
+43 s observed under full machine load) + instantiate ≈1–15 ms. Browsers
+compile differently (baseline/JIT tiers), so the §12 45 ms cold-start row
+stays `not-measurable` with this breakdown — the wasmtime number is
+reported, not gated.
+
+**Honest gaps.** (1) No browser/V8 measurement — wasmtime Cranelift is the
+stand-in; same spec, different compiler; re-measure when the Phase 5 shell
+lands. (2) The four wasm-bindgen runtime shims (`__wbindgen_describe`,
+version-suffixed `__wbindgen_throw`, two externref table ops) come from
+`selis-crypto`'s deliberate getrandom→JS routing on wasm32 (ADR-P0011);
+the harness stubs them (never called on the render path — any call would
+trap loudly) and fails on any other import. (3) Sub-ms pages are
+boundary-dominated; the ratio floor there is call overhead, not engine
+speed. (4) Shared-host noise applies (see §6 G-5); the quiet-runner rule
+holds for this gate too.
+
+## 9d. Files changed (PERF.03 on top of the above)
+
+- `crates/selis-pdf-wasm/` (new): the render driver + native ABI tests.
+- `pdf-plan/02-ADRS.md`: ADR-P0041 (one call per page; unsafe only at the
+  boundary).
+- `xtask/unsafe-allow.toml`: `selis-pdf-wasm` entry naming ADR-P0041.
+- `xtask/src/perf_wasm.rs` + `perf-wasm` command (native-only): build,
+  instantiate, compare, record `bench/wasm-results.json` (committed).
+- `xtask/Cargo.toml`: wasmtime dep, `cfg(not(wasm32))`-gated (size-check
+  wasm build of xtask unaffected — verified).
+- `xtask/perf-budgets.toml`: WASM twin note carries the PERF.03 numbers
+  (row stays `not-measurable` — CI cannot regenerate guest numbers).
+- `xtask/size-budgets.toml`: comment updated (two linked artifacts now;
+  `engine-render-cdylib` name needs revisiting — cargo cannot emit that
+  dashed stem).
+- PERF.03 checkbox below.
+
 ## 9. Files changed (this task)
 
 - `xtask/src/render_set.rs` (+ `render-set` command): deterministic set
