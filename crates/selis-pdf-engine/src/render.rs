@@ -342,7 +342,8 @@ pub fn render_display_list_with_stats(
     // backend state only when they change.
     //
     // The text cache is walk-local (per-glyph font/cmap/outline resolution
-    // collapses to per-distinct-glyph; see `TextCache`).
+    // collapses to per-distinct-glyph; see `TextCache`), so determinism
+    // holds by construction.
     let mut text_cache = TextCache::new();
     let mut current_blend = selis_color::BlendMode::Normal;
     let mut current_clip: Vec<(
@@ -1306,11 +1307,13 @@ mod tests {
     #[test]
     fn text_walk_is_deterministic_with_stats() {
         let mut g = guard();
-        let content = b"BT /F1 12 Tf 10 90 Td (Hi) Tj ET";
+        // `H` and `i` are spaces apart — guaranteed disjoint, so they share
+        // one batch fill (the batcher is engaged, not silently bypassed).
+        let content = b"BT /F1 12 Tf 10 90 Td (H i) Tj ET";
         let dl =
             selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
                 .expect("execute");
-        assert_eq!(dl.ops.len(), 2, "one text op per glyph");
+        assert_eq!(dl.ops.len(), 3, "one text op per glyph");
 
         let mut first_stats = RenderStats::default();
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
@@ -1342,9 +1345,55 @@ mod tests {
         );
         assert_eq!(backend.pixmap().data(), &first_pixels);
         assert_eq!(second_stats, first_stats);
-        // Two glyphs, one font: the second op's lookups all hit.
+        // Three codes (`H`, space, `i`), two drawn glyphs, one font: the
+        // space resolves no outline and is skipped.
         assert_eq!(first_stats.font_resolves, 1);
-        assert_eq!(first_stats.glyph_lookups, 2);
+        assert_eq!(first_stats.glyph_lookups, 3);
         assert!(first_pixels.iter().any(|&b| b < 255), "glyphs paint pixels");
+    }
+
+    /// G-2 probe (pinned): same-paint merging is NOT pixel-exact under the
+    /// current rasteriser. Two overlapping fractional rects (left edges 10.2
+    /// vs 10.7 share pixel column [10,11)) painted as two fills vs one merged
+    /// fill differ: shared-pixel coverages do not combine multiplicatively,
+    /// so merging glyphs would change pixels. This killed the G-2 batching
+    /// atlas — only strictly-separated (>1px) inks merge exactly, and at
+    /// body-text sizes neighbours sit ~1px apart, so batches averaged 1.55
+    /// glyphs while adding per-glyph overhead (net ~2× slower; see the G-2
+    /// ledger in `30-RENDER-PERF-REPORT.md`). If a rasteriser upgrade ever
+    /// makes these equal, separation-free batching becomes valid: revisit.
+    #[test]
+    fn merged_fill_differs_from_sequential_fills_for_same_paint() {
+        let mut g = guard();
+        let render_content = |content: &[u8], g: &mut BudgetGuard<'_>| {
+            let dl =
+                selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, g)
+                    .expect("execute");
+            let mut stats = RenderStats::default();
+            let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
+            render_display_list_with_stats(
+                &dl,
+                &mut backend,
+                &fallback_font,
+                &no_smask,
+                &no_inline_image,
+                &no_shading,
+                &no_pattern,
+                g,
+                &mut stats,
+            );
+            backend.pixmap().data().to_vec()
+        };
+        let separate = render_content(b"0 g 10.2 10.2 10 10 re f 10.7 10.7 10 10 re f", &mut g);
+        let merged = render_content(b"0 g 10.2 10.2 10 10 re 10.7 10.7 10 10 re f", &mut g);
+        let diffs = separate
+            .iter()
+            .zip(merged.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            diffs > 0,
+            "expected the rasteriser to distinguish merged vs sequential shared-pixel coverage"
+        );
     }
 }

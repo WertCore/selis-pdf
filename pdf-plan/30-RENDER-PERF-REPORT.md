@@ -88,15 +88,19 @@ so any host can reproduce them.
 Committed as `bench/render-results.json` (reference record; the CI perf job
 regenerates it with the pinned driver before `perf-check`).
 
-| Page | selis render | dl-build | mutool | pdfium | × pdfium (raw) |
-|---|---|---|---|---|---|
-| text-heavy | 50.9 ms | 7.1 ms | 40.7 ms | 46.8 ms | **0.92×** |
-| mixed | 76.6 ms | 32.2 ms | 48.1 ms | 54.1 ms | **0.71×** |
-| large-image | 38.2 ms | 25.5 ms | 33.6 ms | 47.7 ms | **1.25×** |
-| shading | 0.86 ms | 0.03 ms | 67.4 ms | 63.2 ms | **73×** |
-| transparency | 14.9 ms | 0.8 ms | 33.5 ms | 50.2 ms | **3.37×** |
-| vector-heavy | 38.7 ms | 8.3 ms | 105.5 ms | 62.0 ms | **1.60×** |
-| **geomean** | | | | | **2.62×** |
+| Page | selis render | dl-build | × pdfium (raw) |
+|---|---|---|---|
+| text-heavy | 51.0 ms | 9.3 ms | **0.96×** |
+| mixed | 57.5 ms | 31.2 ms | **0.78×** |
+| large-image | 45.7 ms | 37.4 ms | **1.41×** |
+| shading | 1.09 ms | 0.04 ms | **56×** |
+| transparency | 16.5 ms | 0.7 ms | **3.01×** |
+| vector-heavy | 27.3 ms | 12.3 ms | **2.60×** |
+| **geomean** | | | **2.78×** |
+
+(Per-page oracle times in `bench/render-results.json`; spawn recorded
+there too. Earlier record for reference: 0.92/0.71/1.25/73/3.37/1.60,
+geomean 2.62× — same walk code, different machine-load window.)
 
 Spawn recorded in the file: mutool ≈ 9.9 ms, pdfium ≈ 13.4 ms per
 invocation (spawn-inclusive oracle times flatter us on fast pages — §6 G-3).
@@ -194,6 +198,78 @@ with MSVC (`cl /O2 … /link …\lib\pdfium.dll.lib`) exactly per its header
 comment. The authoritative comparison stays the GHCR image in the CI perf
 job (`xtask oracle image-ref pdfium` prints the pinned ref; the job
 extracts the driver from it — §12 wiring, no shell TOML parsing).
+
+## 9b. G-2 ledger — the 18 ms absolute budget (2026-09-10, follow-up)
+
+Task: close G-2 (text page ≈51 ms at 72 DPI native vs the 18 ms @150 DPI
+budget) with the glyph atlas the report predicted, per ADR-P0025 (LRU under
+budget), ADR-P0012 (bit-identical output), RAST.09 (determinism).
+
+**What the specified atlas would be.** A raster cache keyed per (font
+instance, glyph id, size, transform-class), LRU-evicted under a byte budget
+(reusing PERF.01's `LruCache` pattern). Design analysis killed it before
+code: every text instance carries a unique *fractional* device offset, so a
+translation-invariant bitmap must either key the exact offset (hit rate ~0
+on body text — a memo that never hits) or stamp with resampling (changes
+pixels — violates ADR-P0012/RAST.09). A translation-invariant raster cache
+is fundamentally incompatible with byte-identical fractional positioning.
+The maximal exact structure is therefore **paint-state batching**: merge
+same-paint glyph paths into one fill — same pixels *iff* merged inks never
+share a pixel.
+
+**What was implemented (then removed).** A walk-local keyed batcher
+(`BatchKey` = FNV over resolved paint + blend; `LruCache<BatchKey,
+GlyphBatch>` with 4 MB budget + 16-entry cap + per-batch cmd cap; eviction
+paints first; conflict-flush on arrival preserves walk order; same-key
+overlap flushes). Correctness proof: simultaneously-open batches are
+pairwise strictly-separated (>1px gap ⇒ no shared pixel under the
+rasteriser's half-open edge convention), so every emission is order-free;
+evicted/conflicting batches emit before later paints. All six set checksums
+stayed byte-identical with batching on.
+
+**Measurement (median of 5, release, pinned driver): text 51.0 → 98.5 ms,
+mixed 57.5 → 71.4 ms — a ~2× REGRESSION.** Counters diagnose it:
+`batch_fills=2481` for 3853 drawn glyphs = **1.55 glyphs/fill**. At 9pt body
+text, neighbour ink gaps cluster at ~1px, so the strict-separation rule
+flushes almost constantly — while each glyph pays bbox computation,
+conflict scans, and LRU take+reinsert overhead, and 1.55-glyph merged fills
+visit gap pixels the single fills never touch. Exact batching cannot pay on
+dense body text.
+
+**Probe (pinned in-tree test
+`merged_fill_differs_from_sequential_fills_for_same_paint`).** Two
+overlapping fractional rects (left edges 10.2 vs 10.7 share pixel column
+[10,11)) painted as two fills vs one merged fill DIFFER: shared-pixel
+coverages do not combine multiplicatively under tiny-skia, so merging
+without strict separation would change pixels. This test pins the property:
+if a rasteriser upgrade ever makes them equal, separation-free batching
+becomes valid — revisit then.
+
+**Decision: batcher REMOVED** (tree restored to the unbatched walk;
+post-removal checksums equal the committed record on all six pages).
+Also reverted: the `LruCache<K,V>` generalisation evaluated for the batcher
+(streaming batches don't need cross-entry LRU; the reverted file keeps the
+tree warning-free). Kept: the probe test, the G-2 analysis, the
+`RenderStats` counters that made it measurable.
+
+**Remaining delta to 18 ms (itemised).** Post-removal text page: ≈51 ms
+render + ≈7–9 ms DL-build at 72 DPI native. Residual, in order: (1)
+tiny-skia scalar per-glyph rasterisation (~60% — irreducible without
+changing pixels or the rasteriser); (2) per-glyph path build + fill call
+(~25% — only a separation-free merge would remove it, barred above);
+(3) DL-build exec dispatch (~15% — one op per glyph by construction).
+Reaching 18 ms needs at least one of: (a) a raster *atlas with quantised
+subpixel positioning* — CHANGES pixels, i.e. a new rendering-model decision
+owned by RAST/CONF with rebaselining, not a perf tweak; (b) a SIMD
+rasteriser (dependency/upstream territory — ADR-P0008 keeps tiny-skia);
+(c) at true 150 DPI the pixel workload quadruples anyway (G-1 device
+matrix first). The `duration-ms` row stays `not-measurable` with this
+pointer. The ratio gate (the PERF.02 DoD) is unaffected: 2.78× geomean.
+
+Record note: `bench/render-results.json` now holds the post-`main`-merge
+run (median of 9, release, pinned driver, geomean 2.78×) — same walk code,
+same checksums; the G-2 experiment runs (`batched.json`: 98.5 ms text with
+the batcher on) are evidence in this ledger, not records.
 
 ## 9. Files changed (this task)
 
