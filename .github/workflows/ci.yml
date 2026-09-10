@@ -267,7 +267,10 @@ jobs:
           tar -xzf ~/.cache/selis-corpus/verapdf.gz -C corpus/pdfs/verapdf \
             --strip-components=1
           mkdir -p corpus/pdfs/ghent
-          tar -xf ~/.cache/selis-corpus/ghent.zip -C corpus/pdfs/ghent
+          # GNU tar cannot read zip archives (the Ghent suite ships as one) —
+          # use python's zipfile module, guaranteed on the runner (run
+          # 34523221142: "This does not look like a tar archive").
+          python3 -m zipfile -e ~/.cache/selis-corpus/ghent.zip corpus/pdfs/ghent
           find corpus/pdfs/ghent -mindepth 2 -name '*.pdf' \
             -exec mv -t corpus/pdfs/ghent {} +
           n=$(find corpus/pdfs -name '*.pdf' | wc -l)

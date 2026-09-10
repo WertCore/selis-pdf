@@ -701,7 +701,7 @@ fn sweep_one(
     };
 
     let our_path = tmp.join("ours.ppm");
-    let their_path = tmp.join(oracle_ext(tool));
+    let their_path = tmp.join(format!("theirs.{}", oracle_ext(tool)));
     let _ = std::fs::remove_file(&our_path);
     let _ = std::fs::remove_file(&their_path);
 
