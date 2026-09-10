@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn percentiles_are_nearest_rank() {
-        let mut v = vec![10.0, 20.0, 30.0, 40.0];
+        let v = vec![10.0, 20.0, 30.0, 40.0];
         assert_eq!(percentile(&v, 50.0), Some(20.0));
         assert_eq!(percentile(&v, 51.0), Some(30.0));
         assert_eq!(percentile(&v, 100.0), Some(40.0));

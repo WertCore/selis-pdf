@@ -31,3 +31,12 @@ budget = 400000
 chunk = "engine-render"
 artifact = "engine-render-cdylib"
 budget = 600000
+
+# The SL-2.PERF.03 render driver cdylib (whole render+text engine, one call
+# per page). Measured 1098790 brotli bytes at introduction; the budget leaves
+# ~35% headroom for the Phase 3 text-extraction and Phase 5 OCR increments
+# that land in the same binary until the shell splits it into chunks.
+[[budget]]
+chunk = "engine-render-driver"
+artifact = "selis_pdf_wasm"
+budget = 1500000
