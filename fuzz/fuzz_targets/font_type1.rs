@@ -7,7 +7,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use selis_bytes::Bytes;
-use selis_font::{parse_type1, type1_glyph_count, type1_glyph_name, Type1Font};
+use selis_font::{parse_type1, type1_glyph_count, type1_glyph_name};
 use selis_sandbox::{Budget, Surface};
 
 fuzz_target!(|data: &[u8]| {
