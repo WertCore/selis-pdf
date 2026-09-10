@@ -34,7 +34,7 @@ zune-jpeg   = "0.4"
 # The plan's original choice, ttf-parser, was declared unmaintained
 # (RUSTSEC-2026-0192) — denied by the supply-chain gate (ADR-P0021); skrifa is
 # its maintained successor ecosystem.
-skrifa = "0.44"
+skrifa = "0.47"
 
 # Shaping (Phase 3, SL-3.SHAPE.01) — swash (MIT OR Apache-2.0, the fontations
 # shaping engine) is the maintained replacement for the plan's original
