@@ -27,11 +27,13 @@ smoke-rendered against `fixtures/smoke.pdf`, and pushed to GHCR).
 
 ## Dispatch model
 
-`xtask oracle render/compare/triage` are **local-first**: when the tool is
-installed on the host (qpdf, mutool, gs; or a locally-built
-`pdfium_driver.exe` for the PDFium path), it runs natively — faster for local
-development. Otherwise the pinned container is dispatched through Docker and
-is pulled **by digest** from GHCR.
+`xtask oracle render/compare/sweep` are **local-first**: when the tool is installed on the host
+(qpdf, mutool, gs; or a locally-built `pdfium_driver.exe` for the PDFium path), it runs natively —
+faster for local development. Otherwise the pinned container is dispatched through Docker and is
+pulled **by digest** from GHCR. pdf.js is container-first by default; when
+`docker/oracles/pdfjs/node_modules/` is present (`npm ci` from the committed lockfile) the same
+pinned `driver.mjs` runs locally under node — the SL-2.CONF.03 calibration legs use this. The
+container (or the pinned tarball for a local `pdfium_driver`) remains the comparable identity.
 
 ## Building and re-recording digests
 

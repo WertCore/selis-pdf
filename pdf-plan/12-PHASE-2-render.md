@@ -172,6 +172,15 @@ every user on every page.
   - **DoD:** Every cluster file either renders non-blank or reports a typed deviation; a corpus
     entry per confirmed root cause.
 
+- [ ] **SL-2.RAST.14 — 1–2% band fidelity excess (CONF.03 calibration)** · deps: RAST.09 · owner: AI
+  - **Do:** Close selis's ~36pp excess in the 1–2% differing-pixels band (42pp of pages vs the
+    oracle pairs' ~6pp; CONF.01 p50 = 1.68 vs oracle pairs' p50 = 0.06). One mechanical signature
+    across the corpus — investigate subpixel glyph positioning, stroke geometry rounding, and AA
+    coverage scaling against the display-list IR. Success criterion: selis's ≤1% band fraction
+    reaches the oracle envelope (≥ ~73%).
+  - **DoD:** Root cause identified and fixed, or an ADR records why the divergence is accepted;
+    CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope.
+
 ---
 
 ## 2.FILT — Codec completion
@@ -244,7 +253,7 @@ artifacts close the two open questions — our agreement against each of them, a
 with each other (calibration). Per §4 (21-TESTING-AND-ORACLES), two independent oracles are the
 minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the render-conf run.
 
-- [ ] **SL-2.CONF.03 — Oracle-vs-oracle calibration of the render tolerance** · deps: CONF.01 · owner: AI
+- [x] **SL-2.CONF.03 — Oracle-vs-oracle calibration of the render tolerance** · deps: CONF.01 · owner: AI
   - **Do:** Measure PDFium-vs-pdf.js agreement over the same render sample (CI `render-conf`
     artifacts; SL-0.ORACLE.02). The CONF.01 `diff<5` bucket (2,161 files @150, median 1.68%) is a
     single mode just above the 0.5% threshold; if independent oracles agree at ~1–2% on those
@@ -252,6 +261,60 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
     20-CONFORMANCE-PROGRAM.md get revised with the published calibration numbers.
   - **DoD:** Calibration table published next to the tolerances; the G2 threshold either confirmed
     or re-baselined with that data — never adjusted because a build is red.
+  - **Done (2026-09-10, local legs; CI confirmation pending):** `xtask oracle sweep --calibrate`
+    renders page 1 with every named oracle and compares all pairs under the identical metric
+    (ΔE76 > 2.3, overlap, ≤0.5/5/25% bands). Local legs used the pinned-version drivers on the dev
+    host — PDFium chromium/7961 (bblanchon win-x64 tarball + the checked-in C driver, gcc build),
+    pdf.js 6.2.108 (pinned pdfjs-dist via `npm ci` + `driver.mjs`), MuPDF mutool 1.23.0 — with
+    mutool run **twice** as the self-agreement sanity leg. Sample: 300-file stride over the
+    general corpus + the full 95-file Ghent suite, at 150 DPI. Artifacts:
+    `C:\selis-build\conf03-calibration{,-rest}\`. The CI `render-conf` job now runs the same two
+    calibration legs with the pinned GHCR images (digest-locked) — its artifacts are the
+    pin-identity confirmation of the numbers below.
+
+  **Measured matrix @150 DPI (fraction of comparable pages within band):**
+
+  | Pair | n | ≤0.5% | ≤1% | ≤2% | ≤5% | ≤10% | ≤25% | p50 | p90 | p99 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | mutool↔mutool (sanity) | 388 | 100% | 100% | 100% | 100% | 100% | 100% | 0.0 | 0.0 | 0.0 |
+  | pdfium↔pdfjs (general) | 296 | 70.3% | 75.0% | 81.1% | 86.1% | 91.9% | 97.0% | 0.06 | 7.89 | 39.0 |
+  | pdfium↔mutool (general) | 584 | 68.2% | 73.3% | 80.5% | 86.3% | 94.2% | 97.9% | 0.06 | 7.24 | 29.3 |
+  | pdfjs↔mutool (general) | 586 | 70.6% | 76.5% | 82.3% | 88.1% | 94.5% | 96.9% | 0.05 | 5.84 | 37.7 |
+  | pdfium↔pdfjs (ghent) | 95 | 0% | 0% | 0% | 2.1% | 30.5% | 77.9% | 15.97 | 36.9 | 54.1 |
+  | pdfium↔mutool (ghent) | 190 | 0% | 0% | 0% | 11.6% | 38.9% | 76.8% | 17.91 | 36.9 | 55.0 |
+  | pdfjs↔mutool (ghent) | 190 | 0% | 0% | 0% | 2.1% | 23.2% | 73.7% | 16.93 | 39.2 | 54.7 |
+  | **selis↔mutool (full corpus, CONF.01)** | 3,747 | **27.3%** | **34.1%** | **76.2%** | **85.1%** | **92.0%** | **97.0%** | **1.68** | **8.55** | **68.4** |
+
+  **Findings:**
+  1. **The current G2 bar (≤0.5% on ≥95%) is below the independent-renderer noise floor.** The
+     best pair reaches 70.6% on general content and 0% on Ghent; no pair reaches 95% at any band
+     below ≤25%. The criterion as written measures renderer identity, not correctness — exactly
+     the SL-0.ORACLE.02 prediction.
+  2. **Only part of the CONF.01 `diff<5` mass is noise.** The oracle pairs hold ~5pp of outcomes
+     in the 0.5–1% band; selis holds ~6.8pp — the same. But the 1–2% band holds ~6pp for pairs
+     and **~42pp for selis**: a real, uniform ~36pp fidelity excess with one mechanical signature
+     (subpixel positioning / AA coverage), not per-page bugs. → **SL-2.RAST.14**.
+  3. **From ≤2% upward, selis sits inside the oracle-pair envelope** (76.2 vs 80.5–82.3 at ≤2%;
+     85.1 vs 86.1–88.1 at ≤5%; 92.0 vs 91.9–94.5 at ≤10%; 97.0 vs 96.9–97.9 at ≤25%) — within the
+     pair spread + sampling noise.
+  4. **Selis's tail is the real bug list:** p99 = 68.4 vs pairs' 29–39 — the already-filed
+     `blank_selis` (RAST.13), `size_skew`/`/Rotate` (RAST.12), and gross-divergence (CONF.04)
+     clusters.
+  5. **Prepress content is a different regime for everyone:** all pairs at 0% within ≤2% on Ghent;
+     colour management / overprint / DeviceN divergence is industry-wide, not a Selis defect.
+
+  **Recommended calibrated G2 bar** (replaces the unattainable 0.5%/95% pair; tracked bands stay
+  published):
+  - **Bar A (per-page):** ≥95% of comparable pages ≤25% differing pixels @150 DPI — every oracle
+    pair passes (96.9–97.9%); **selis passes today (97.0%)**.
+  - **Bar B (fidelity envelope):** selis's ≤2%/≤5%/≤10% band fractions within 5pp of the best
+    oracle pair (5pp = pair spread + n≈300 sampling noise). **Selis today: fails ≤2% by 1.1pp**
+    (76.2 vs 82.3), passes ≤5% (−3.0pp) and ≤10% (−2.5pp). This is the honest current gap.
+  - **Tracked, not gated:** ≤0.5%/≤1% strict-fidelity fractions, and the Ghent-class CDFs against
+    the oracle-pair envelope (selis Ghent ≤25% = 61.1% vs pairs' 73.7–77.9% — the CONF.04 colour
+    gap).
+  - The 20-CONFORMANCE-PROGRAM.md §3 tolerances and SL-2.CONF.02 consume these numbers; the
+    threshold was re-baselined **from calibration data only**, per the §5 verdict discipline.
 
 - [ ] **SL-2.CONF.04 — Gross-divergence triage (CONF.01 `diff>=25%` cluster)** · deps: CONF.01 · owner: AI
   - **Do:** Root-cause the 94 files at ≥25% differing pixels @150 (worst: `ghent/GWG080_

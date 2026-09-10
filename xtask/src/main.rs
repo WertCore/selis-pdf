@@ -217,6 +217,18 @@ enum OracleSub {
         /// Skip (file, tool, dpi) outcomes already in verdicts.jsonl.
         #[arg(long, default_value_t = false)]
         resume: bool,
+        /// Oracle-vs-oracle calibration (SL-2.CONF.03): skip selis, render
+        /// every named oracle and compare all pairs under the same metric.
+        /// Repeat a tool for the self-agreement sanity leg.
+        #[arg(long, default_value_t = false)]
+        calibrate: bool,
+        /// Only sweep files whose corpus id contains one of these substrings
+        /// (repeatable; applied before sampling, e.g. `ghent/`).
+        #[arg(long = "include", value_name = "SUBSTRING")]
+        include: Vec<String>,
+        /// Skip files whose corpus id contains one of these substrings.
+        #[arg(long = "exclude", value_name = "SUBSTRING")]
+        exclude: Vec<String>,
     },
 }
 
@@ -347,6 +359,9 @@ fn main() -> ExitCode {
                 jobs,
                 selis,
                 resume,
+                calibrate,
+                include,
+                exclude,
             } => sweep::run(sweep::SweepConfig {
                 tools: tool,
                 dpis: dpi,
@@ -357,6 +372,9 @@ fn main() -> ExitCode {
                     .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())),
                 selis,
                 resume,
+                calibrate,
+                include,
+                exclude,
             }),
         },
         Command::Fuzz => fuzz::check(),

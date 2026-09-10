@@ -97,6 +97,46 @@ ourselves against them. If PDFium and pdf.js only agree to 1.2% on shadings, dem
 ourselves on shadings is measuring noise. Every tolerance in `20-CONFORMANCE-PROGRAM.md §3` is
 subject to revision by that calibration, and the calibration numbers are published alongside them.
 
+### The measured calibration (SL-2.CONF.03, 2026-09-10)
+
+`xtask oracle sweep --calibrate` renders page 1 with every named oracle and compares all pairs
+under the identical CONF.01 metric (ΔE76 > 2.3, overlap region, page 1 @150 DPI), with a repeated
+tool as the self-agreement sanity leg. Local legs: PDFium chromium/7961, pdf.js 6.2.108, MuPDF
+1.23.0 (mutool ×2 as sanity); the CI `render-conf` job re-runs the same legs on the pinned GHCR
+images. Sample: 300-file stride over the general corpus + the full 95-file Ghent suite. Fraction
+of comparable pages within each differing-pixels band:
+
+| Pair | corpus | n | ≤0.5% | ≤1% | ≤2% | ≤5% | ≤10% | ≤25% | p50 | p90 | p99 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| mutool↔mutool | mixed | 388 | 100% | 100% | 100% | 100% | 100% | 100% | 0.0 | 0.0 | 0.0 |
+| pdfium↔pdfjs | general | 296 | 70.3% | 75.0% | 81.1% | 86.1% | 91.9% | 97.0% | 0.06 | 7.89 | 39.0 |
+| pdfium↔mutool | general | 584 | 68.2% | 73.3% | 80.5% | 86.3% | 94.2% | 97.9% | 0.06 | 7.24 | 29.3 |
+| pdfjs↔mutool | general | 586 | 70.6% | 76.5% | 82.3% | 88.1% | 94.5% | 96.9% | 0.05 | 5.84 | 37.7 |
+| pdfium↔pdfjs | ghent | 95 | 0% | 0% | 0% | 2.1% | 30.5% | 77.9% | 15.97 | 36.9 | 54.1 |
+| pdfium↔mutool | ghent | 190 | 0% | 0% | 0% | 11.6% | 38.9% | 76.8% | 17.91 | 36.9 | 55.0 |
+| pdfjs↔mutool | ghent | 190 | 0% | 0% | 0% | 2.1% | 23.2% | 73.7% | 16.93 | 39.2 | 54.7 |
+
+For reference, selis↔mutool over the full comparable corpus (SL-2.CONF.01, same metric):
+27.3% / 34.1% / 76.2% / 85.1% / 92.0% / 97.0% at the same bands, p50 = 1.68, p90 = 8.55,
+p99 = 68.4 (n = 3,747).
+
+**What this calibrates:**
+
+* The original G2 criterion (≤0.5% differing pixels on ≥95% of the corpus @150) is **below the
+  independent-renderer noise floor**: the best oracle pair reaches 70.6% at ≤0.5% on general
+  content and 0% on prepress. No renderer pair satisfies it at any band below ≤25%.
+* **Recommended calibrated G2 bar** (recorded in `12-PHASE-2-render.md`, consumed by
+  SL-2.CONF.02): **Bar A** — ≥95% of comparable pages ≤25% differing pixels @150 (every oracle
+  pair passes); **Bar B** — selis's ≤2%/≤5%/≤10% band fractions within 5pp of the best oracle
+  pair (5pp = observed pair spread + n≈300 sampling noise). The ≤0.5%/≤1% strict bands and the
+  Ghent-class CDFs stay published as tracked fidelity metrics, not gates.
+* Selis's current position: inside the oracle envelope from ≤2% upward (76.2/85.1/92.0/97.0 vs
+  the pairs' 80.5–82.3/86.1–88.1/91.9–94.5/96.9–97.9), failing Bar B at ≤2% by 1.1pp, with the
+  deficit concentrated in a uniform 1–2% band excess (SL-2.RAST.14) and a heavy tail that is the
+  filed bug clusters (p99 68.4 vs pairs' 29.3–39.0).
+* Re-baselining used calibration data only; per §5, tolerances are never adjusted because a build
+  is red.
+
 ---
 
 ## 5. Triage workflow
