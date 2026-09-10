@@ -151,15 +151,27 @@ pub struct SwashShaper;
 
 impl Shaper for SwashShaper {
     fn shape(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
-        // swash 0.2.10 panics on a malformed `hhea` whose `numberOfHMetrics`
-        // is zero (`xmtx::advance` computes `long_metric_count - 1`;
-        // fuzzer-found, SL-1.ROB.02 — no fixed swash release exists yet).
-        // Reject that case with a typed error before handing the face over.
-        if hmetrics_zero(params.font_data) {
+        // swash 0.2.10 can shape with a zero long-metric count and then
+        // panics in `xmtx::advance` (`long_metric_count - 1` under
+        // overflow checks). Two routes produce that state, both
+        // fuzzer-found (SL-1.ROB.02, no fixed swash release exists):
+        //
+        // 1. `MetricsProxy::from_font` discards `fill`'s result and keeps
+        //    the all-zero default whenever `fill` bails — which it does
+        //    when `head` or `maxp` is not resolvable through swash's
+        //    *binary* directory search (a directory that is not sorted by
+        //    tag hides valid tables from swash);
+        // 2. `hhea`/`vhea` IS resolvable but its count field reads as 0
+        //    (`read(34).unwrap_or(0)` — declared zero or a truncated
+        //    table).
+        //
+        // The predicate below mirrors swash's lookup exactly, so it
+        // rejects precisely the faces swash itself would crash on.
+        if swash_metrics_degenerate(params.font_data) {
             return Err(err!(
                 Code::ShapeFont,
                 during = "shape",
-                detail = "hhea numberOfHMetrics is zero (malformed font)"
+                detail = "font metrics unusable for swash (malformed sfnt directory or zero hhea/vhea count)"
             ));
         }
         let font = FontRef::from_index(params.font_data, 0).ok_or_else(|| {
@@ -207,39 +219,70 @@ impl Shaper for SwashShaper {
     }
 }
 
-/// Reports whether the face's `hhea` table declares `numberOfHMetrics == 0`.
+/// Reports whether swash 0.2.10 would shape this face with a zero
+/// long-metric count — the exact precondition of its `xmtx::advance`
+/// underflow panic.
 ///
-/// Scans the sfnt table directory (one level of `ttcf` indirection for face 0)
-/// without any arithmetic on document-derived values — every offset addition
-/// is `checked_*` and every read is bounds-checked via `get`.
-fn hmetrics_zero(font_data: &[u8]) -> bool {
-    hmetrics_zero_inner(font_data, 0).unwrap_or(false)
-}
-
-fn hmetrics_zero_inner(font_data: &[u8], depth: u8) -> Option<bool> {
-    if depth > 2 {
-        return None;
-    }
-    // A collection: face 0's table directory lives at the first offset.
-    let face: &[u8] = if font_data.get(0..4)? == *b"ttcf" {
-        let off = read_u32(font_data, 12)?;
-        font_data.get(off as usize..)?
+/// Mirrors swash's `RawFont::table_range` bit for bit: a *binary* search
+/// over the table directory (which only ever finds records in a
+/// tag-sorted directory, so unsorted directories hide tables from swash
+/// exactly as they hide them here), the same record bounds handling, and
+/// the same `numberOfHMetrics = read(34).unwrap_or(0)` of the table
+/// bytes. One level of `ttcf` indirection for face 0, as in
+/// `swash::internal::raw_data::offset`. No arithmetic on font-derived
+/// values — every operation is `checked_*` and every read bounds-checked.
+fn swash_metrics_degenerate(font_data: &[u8]) -> bool {
+    let face = if font_data.get(0..4) == Some(&b"ttcf"[..]) {
+        match read_u32(font_data, 12) {
+            Some(off) => match font_data.get(off as usize..) {
+                Some(f) => f,
+                None => return false,
+            },
+            None => return false,
+        }
     } else {
         font_data
     };
-    let n_tables = read_u16(face, 4)?.min(4096);
-    for i in 0u16..n_tables {
-        let rec = usize::from(i).checked_mul(16)?.checked_add(12)?;
-        if face.get(rec..rec.checked_add(4)?)? != *b"hhea" {
-            continue;
-        }
-        // Table record: tag(4) checksum(4) offset(4) — read the offset at +8.
-        let t_off = read_u32(face, rec.checked_add(8)?)?;
-        // hhea: numberOfHMetrics is the final u16 field, at +34.
-        let n = read_u16(face, (t_off as usize).checked_add(34)?)?;
-        return Some(n == 0);
+    // swash's `MetricsProxy::from_font` discards `fill`'s `Option` and
+    // keeps the zero-initialized `hmtx_count` whenever `head` or `maxp`
+    // is unresolvable — that alone is the degenerate state.
+    const HEAD: u32 = u32::from_be_bytes(*b"head");
+    const MAXP: u32 = u32::from_be_bytes(*b"maxp");
+    if swash_table_data(face, HEAD).is_none() || swash_table_data(face, MAXP).is_none() {
+        return true;
     }
-    Some(false)
+    const HHEA: u32 = u32::from_be_bytes(*b"hhea");
+    const VHEA: u32 = u32::from_be_bytes(*b"vhea");
+    [HHEA, VHEA].into_iter().any(|tag| {
+        swash_table_data(face, tag).is_some_and(|table| read_u16(table, 34).unwrap_or(0) == 0)
+    })
+}
+
+/// Mirrors swash's `RawFont::table_range`: binary search for `tag` over
+/// the directory records of `face`, returning the table bytes exactly
+/// when swash would find them (a directory that is not sorted by tag, or
+/// a record/offset pair that does not resolve inside the file, makes the
+/// table unfindable — for swash and here alike).
+fn swash_table_data(face: &[u8], tag: u32) -> Option<&[u8]> {
+    let len = usize::from(read_u16(face, 4)?);
+    let (mut l, mut h) = (0usize, len);
+    while l < h {
+        let i = l.checked_add(h)?.checked_div(2)?;
+        let rec = 12usize.checked_add(i.checked_mul(16)?)?;
+        let r = face.get(rec..rec.checked_add(16)?)?;
+        let tag_bytes: [u8; 4] = r.get(0..4)?.try_into().ok()?;
+        let table_tag = u32::from_be_bytes(tag_bytes);
+        if tag < table_tag {
+            h = i;
+        } else if tag > table_tag {
+            l = i.checked_add(1)?;
+        } else {
+            let start = read_u32(r, 8)? as usize;
+            let end = start.checked_add(read_u32(r, 12)? as usize)?;
+            return face.get(start..end);
+        }
+    }
+    None
 }
 
 fn read_u16(data: &[u8], off: usize) -> Option<u16> {
