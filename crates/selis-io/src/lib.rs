@@ -17,10 +17,12 @@
 //! this is how a linearised 200 MB PDF opens before the first megabyte has
 //! arrived.
 
-// `unsafe` is denied crate-wide except `replace.rs` (Windows MoveFileExW FFI
-// on the 03-CONVENTIONS.md §2 allowlist — see xtask/unsafe-allow.toml).
-#![cfg_attr(not(windows), forbid(unsafe_code))]
-#![cfg_attr(windows, deny(unsafe_code))]
+// `unsafe` is denied crate-wide except the two allowlisted FFI modules —
+// `replace.rs` (Windows MoveFileExW save-commit) and `cancel_host.rs`
+// (console-handler/signal hooks, both platform branches) — per
+// 03-CONVENTIONS.md §2 and xtask/unsafe-allow.toml. `deny` (not `forbid`)
+// so those two modules can opt in with a scoped allow.
+#![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod append_sink;

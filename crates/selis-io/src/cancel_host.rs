@@ -17,8 +17,10 @@
 //! branches are warning-free.
 
 // The `unsafe` blocks below (console/signal FFI) are allowlisted for this
-// crate under 03-CONVENTIONS.md §2 / xtask/unsafe-allow.toml.
-#![cfg_attr(windows, allow(unsafe_code))]
+// crate under 03-CONVENTIONS.md §2 / xtask/unsafe-allow.toml — both platform
+// branches need it (Windows console handler, POSIX signal), so the allow is
+// not platform-gated; the wasm32 fallback contains no unsafe code at all.
+#![cfg_attr(not(target_arch = "wasm32"), allow(unsafe_code))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -114,7 +116,9 @@ mod imp {
             // handler was registered, is never mutated or freed (leaked for
             // the process lifetime), and only a plain atomic store happens
             // here — the async-signal-safe subset.
-            (*ptr).store(true, Ordering::Release);
+            unsafe {
+                (*ptr).store(true, Ordering::Release);
+            }
         }
     }
 
