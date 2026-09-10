@@ -10,6 +10,10 @@ name = "selis-fuzz"
 edition = "2021"
 publish = false
 
+# Standalone workspace root: the parent workspace excludes this directory,
+# and a package without its own [workspace] table cannot be built locally.
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 

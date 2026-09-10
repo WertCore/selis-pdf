@@ -151,23 +151,23 @@ pub struct SwashShaper;
 
 impl Shaper for SwashShaper {
     fn shape(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
-        // swash 0.2.10 panics on malformed font metrics under overflow
-        // checks, in two families, all fuzzer-found (SL-1.ROB.02, no
-        // fixed swash release exists):
+        // swash 0.2.10 has an open-ended family of arithmetic-overflow
+        // panics reachable from hostile font data (fuzzer-found,
+        // SL-1.ROB.02 — no fixed swash release exists): zero long-metric
+        // counts into `xmtx::advance`, i16::MIN descenders negated in
+        // `Metrics::fill`, overflowing cmap idDelta arithmetic, and more
+        // of the same kind. Two layers contain it:
         //
-        // 1. `xmtx::advance` underflows (`long_metric_count - 1`) whenever
-        //    shaping runs with a zero long-metric count. That state is
-        //    produced two ways: `MetricsProxy::from_font` discards
-        //    `fill`'s result and keeps the zero default whenever `fill`
-        //    bails (it bails when `head` or `maxp` is not resolvable
-        //    through swash's *binary* directory search — an unsorted
-        //    directory hides valid tables from swash), or a resolvable
-        //    `hhea`/`vhea` whose count field reads as 0.
-        // 2. `Metrics::fill` negates descenders into i16 fields; a
-        //    -32768 descender overflows the negation.
-        //
-        // The predicate below mirrors swash's lookups and reads exactly,
-        // so it rejects precisely the faces swash itself would crash on.
+        // 1. The `swash_metrics_degenerate` predicate below mirrors
+        //    swash's own lookups to reject the known metric-level
+        //    degenerate states up front (precise diagnostics, no unwind
+        //    cost).
+        // 2. `catch_unwind` backstops everything else swash can panic on,
+        //    turning it into a typed error. libFuzzer would otherwise
+        //    abort the whole campaign leg on the first such input, while
+        //    in production the same input would only panic under
+        //    overflow checks (which release builds do not enable) — the
+        //    containment is strictly a robustness upgrade.
         if swash_metrics_degenerate(params.font_data) {
             return Err(err!(
                 Code::ShapeFont,
@@ -175,6 +175,21 @@ impl Shaper for SwashShaper {
                 detail = "font metrics unusable for swash (malformed sfnt directory, zero hmtx count, or i16::MIN descender)"
             ));
         }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.shape_with_swash(params)
+        })) {
+            Ok(result) => result,
+            Err(_) => Err(err!(
+                Code::ShapeFont,
+                during = "shape",
+                detail = "swash panicked on malformed font (contained)"
+            )),
+        }
+    }
+}
+
+impl SwashShaper {
+    fn shape_with_swash(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
         let font = FontRef::from_index(params.font_data, 0).ok_or_else(|| {
             err!(
                 Code::ShapeFont,

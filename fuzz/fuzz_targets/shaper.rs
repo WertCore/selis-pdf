@@ -7,11 +7,29 @@
 //! vertical, etc.) internally; this target catches panics or hangs in the
 //! shaping path.  The `Fuzz` budget bounds the input length indirectly (the
 //! shaper is internally bounded by the font data size).
+//!
+//! Containment note (SL-1.ROB.02): swash 0.2.10 panics on an open-ended
+//! family of malformed font inputs (overflow checks are forced on in fuzz
+//! builds). `SwashShaper::shape` contains those panics behind typed errors
+//! (precise mirror-guard + `catch_unwind`), so this target replaces
+//! libfuzzer-sys's abort-on-panic hook with a printing one: a contained
+//! swash panic is a *deviation*, not a campaign crash. Panics escaping
+//! `shape` still unwind into libfuzzer-sys's own catch_unwind and abort
+//! the process as usual. Every found input is pinned as a regression
+//! fixture in `crates/selis-shape/tests/`.
 
 use libfuzzer_sys::fuzz_target;
 use selis_shape::{Shaper, ShapingParams, SwashShaper};
+use std::sync::Once;
+
+static PRINTING_PANIC_HOOK: Once = Once::new();
 
 fuzz_target!(|data: &[u8]| {
+    PRINTING_PANIC_HOOK.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("{info}");
+        }));
+    });
     if data.len() < 4 {
         return;
     }

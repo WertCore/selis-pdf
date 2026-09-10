@@ -66,3 +66,17 @@ fn fuzz_neg_i16_descent_is_typed_error() {
     let (text, font_data) = split_input(data);
     assert!(SwashShaper.shape(&shape_params(&text, &font_data)).is_err());
 }
+
+/// `fuzz-cmap-delta-overflow.font` (verification leg 34517954828
+/// finding): swash's cmap lookup adds the group delta as u32 and
+/// overflows on a hostile subtable — the first of the *arithmetic*
+/// family inside swash's parsers. `SwashShaper::shape`'s `catch_unwind`
+/// containment turns it into a typed error; when swash ships a fixed
+/// release, the containment can be dropped and this test keeps pinning
+/// the input.
+#[test]
+fn fuzz_cmap_delta_overflow_is_typed_error() {
+    let data = include_bytes!("fixtures/fuzz-cmap-delta-overflow.font");
+    let (text, font_data) = split_input(data);
+    assert!(SwashShaper.shape(&shape_params(&text, &font_data)).is_err());
+}
