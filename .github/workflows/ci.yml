@@ -271,7 +271,14 @@ jobs:
           covdir="coverage/$FUZZ_TARGET"
           if [ ! -f "$covdir/lcov.info" ]; then
             bin="$(find target -type f -path '*coverage*' -name "$FUZZ_TARGET" | head -1)"
-            "$(rustc --print sysroot)/bin/llvm-cov" export --format=lcov \
+            # llvm-tools-preview installs llvm-cov under lib/rustlib/<host>/bin
+            # on current nightlies, not under <sysroot>/bin (run 34474171477
+            # died here with exit 127) — search the sysroot, then PATH.
+            llvm_cov="$(find "$(rustc --print sysroot)" -type f -name llvm-cov | head -1)"
+            if [ -z "$llvm_cov" ] && command -v llvm-cov >/dev/null 2>&1; then
+              llvm_cov="$(command -v llvm-cov)"
+            fi
+            "$llvm_cov" export --format=lcov \
               --instr-profile "$covdir/coverage.profdata" "$bin" \
               > "$covdir/lcov.info"
           fi
@@ -294,7 +301,9 @@ jobs:
           path: fuzz/coverage/${{ matrix.target }}/
           if-no-files-found: ignore
       - name: Upload accumulated corpus (dispatched legs only)
-        if: github.event_name == 'workflow_dispatch'
+        # always(): a failed coverage step must not skip corpus minting —
+        # every pre-2026-09-11 leg lost its corpus this way.
+        if: always() && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: corpus-${{ matrix.target }}
