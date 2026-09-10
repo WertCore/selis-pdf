@@ -151,6 +151,17 @@ pub struct SwashShaper;
 
 impl Shaper for SwashShaper {
     fn shape(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
+        // swash 0.2.10 panics on a malformed `hhea` whose `numberOfHMetrics`
+        // is zero (`xmtx::advance` computes `long_metric_count - 1`;
+        // fuzzer-found, SL-1.ROB.02 — no fixed swash release exists yet).
+        // Reject that case with a typed error before handing the face over.
+        if hmetrics_zero(params.font_data) {
+            return Err(err!(
+                Code::ShapeFont,
+                during = "shape",
+                detail = "hhea numberOfHMetrics is zero (malformed font)"
+            ));
+        }
         let font = FontRef::from_index(params.font_data, 0).ok_or_else(|| {
             err!(
                 Code::ShapeFont,
@@ -194,6 +205,56 @@ impl Shaper for SwashShaper {
 
         Ok(ShapedBuffer { glyphs, width })
     }
+}
+
+/// Reports whether the face's `hhea` table declares `numberOfHMetrics == 0`.
+///
+/// Scans the sfnt table directory (one level of `ttcf` indirection for face 0)
+/// without any arithmetic on document-derived values — every offset addition
+/// is `checked_*` and every read is bounds-checked via `get`.
+fn hmetrics_zero(font_data: &[u8]) -> bool {
+    hmetrics_zero_inner(font_data, 0).unwrap_or(false)
+}
+
+fn hmetrics_zero_inner(font_data: &[u8], depth: u8) -> Option<bool> {
+    if depth > 2 {
+        return None;
+    }
+    // A collection: face 0's table directory lives at the first offset.
+    let face: &[u8] = if font_data.get(0..4)? == *b"ttcf" {
+        let off = read_u32(font_data, 12)?;
+        font_data.get(off as usize..)?
+    } else {
+        font_data
+    };
+    let n_tables = read_u16(face, 4)?.min(4096);
+    for i in 0u16..n_tables {
+        let rec = usize::from(i).checked_mul(16)?.checked_add(12)?;
+        if face.get(rec..rec.checked_add(4)?)? != *b"hhea" {
+            continue;
+        }
+        // Table record: tag(4) checksum(4) offset(4) — read the offset at +8.
+        let t_off = read_u32(face, rec.checked_add(8)?)?;
+        // hhea: numberOfHMetrics is the final u16 field, at +34.
+        let n = read_u16(face, (t_off as usize).checked_add(34)?)?;
+        return Some(n == 0);
+    }
+    Some(false)
+}
+
+fn read_u16(data: &[u8], off: usize) -> Option<u16> {
+    let b = data.get(off..off.checked_add(2)?)?;
+    Some(u16::from_be_bytes([*b.first()?, *b.get(1)?]))
+}
+
+fn read_u32(data: &[u8], off: usize) -> Option<u32> {
+    let b = data.get(off..off.checked_add(4)?)?;
+    Some(u32::from_be_bytes([
+        *b.first()?,
+        *b.get(1)?,
+        *b.get(2)?,
+        *b.get(3)?,
+    ]))
 }
 
 #[cfg(test)]
