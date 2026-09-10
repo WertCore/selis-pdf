@@ -56,12 +56,6 @@ fn crash_config() -> (Option<u64>, Option<&'static str>) {
     (bytes, phase)
 }
 
-/// No-op in release builds.
-#[cfg(not(debug_assertions))]
-fn crash_config() -> (Option<u64>, Option<&'static str>) {
-    (None, None)
-}
-
 /// An in-place append sink over an existing file (the incremental-save
 /// destination). The file must exist; the sink never truncates and never
 /// touches bytes before its append position.

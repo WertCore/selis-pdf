@@ -63,6 +63,22 @@ fn tool(args: &[&str], workdir: &Path) -> Result<(), String> {
 /// Generate the smoke fixtures, run the tool suite, and point the caller at
 /// the output directory.
 pub fn run(outdir: &Path) -> Result<(), String> {
+    // Build the CLI in the same target dir this xtask runs from. CI's
+    // rust-cache restores compilation artifacts but not always the final
+    // binary, so do not assume a previous step left it in place; a fresh
+    // build is a no-op when it is.
+    let build = Command::new("cargo")
+        .args(["build", "-p", "selis-cli"])
+        .output()
+        .map_err(|e| format!("cargo build -p selis-cli: {e}"))?;
+    if !build.status.success() {
+        return Err(format!(
+            "cargo build -p selis-cli failed:\n{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        ));
+    }
+
     std::fs::create_dir_all(outdir).map_err(|e| format!("{outdir:?}: {e}"))?;
     // Absolute paths: the child processes run with `current_dir` = the work
     // directory, so relative inputs/outputs would not resolve.

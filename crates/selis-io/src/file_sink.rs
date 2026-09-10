@@ -38,12 +38,6 @@ fn crash_config() -> (Option<u64>, Option<&'static str>) {
     (bytes, phase)
 }
 
-/// No-op in release builds.
-#[cfg(not(debug_assertions))]
-fn crash_config() -> (Option<u64>, Option<&'static str>) {
-    (None, None)
-}
-
 /// A file-backed sink that commits atomically.
 pub struct FileSink {
     /// The temp file being written (`None` once finished).

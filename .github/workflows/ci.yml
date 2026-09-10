@@ -164,12 +164,12 @@ jobs:
           cache: true
       - name: Install qpdf (structural oracle, Apache-2.0)
         run: sudo apt-get update && sudo apt-get install -y qpdf
-      - name: Build the CLI
-        run: cargo build -p selis-cli
       - name: Run the tool suite over the smoke fixtures
+        # `xtask fixtures` builds the CLI itself (rust-cache restores
+        # compilation artifacts but not reliably the final binary) and then
+        # runs every Phase 1A write path over a formed fixture set.
         run: |
           mkdir -p target/tool-outputs
-          # A formed multi-page fixture from the corpus builder test sources.
           cargo xtask fixtures --outdir target/tool-outputs
       - name: qpdf --check every tool output
         run: cargo xtask oracle check-output-dir target/tool-outputs
