@@ -256,47 +256,74 @@ pub(crate) fn plan_oracle_render(
         return Err(format!("{}: no such file", file.display()));
     }
     let dpi_str = dpi.to_string();
-    // pdf.js has no local binary: its comparability comes from the pinned
-    // pdfjs-dist version inside the container, so it is always dispatched
-    // there (see docker/oracles/pdfjs/).
-    if tool != "pdfjs" {
-        if let Some(binary) = local_binary(tool) {
-            let (file_str, out_str) = (file.display().to_string(), out.display().to_string());
-            let args = match tool {
-                "ghostscript" => vec![
-                    "-sDEVICE=png16m".to_string(),
-                    "-dFirstPage=1".to_string(),
-                    "-dLastPage=1".to_string(),
-                    "-r".to_string(),
-                    dpi_str,
-                    "-o".to_string(),
-                    out_str,
-                    file_str,
-                ],
-                "mupdf" | "mutool" => vec![
-                    "draw".to_string(),
-                    "-r".to_string(),
-                    dpi_str,
-                    "-o".to_string(),
-                    out_str,
-                    file_str,
-                    // Page range: page 1 only (see doc comment).
-                    "1".to_string(),
-                ],
-                "pdfium" => vec![
-                    "--page".to_string(),
-                    "1".to_string(),
-                    "--dpi".to_string(),
-                    dpi_str,
-                    file_str,
-                    out_str,
-                ],
-                other => return Err(format!("unknown oracle tool `{other}`")),
-            };
-            return Ok((binary, args));
+    // pdf.js is container-first: its comparability comes from the pinned
+    // pdfjs-dist version. A local node_modules (docker/oracles/pdfjs/,
+    // `npm ci` from the committed lockfile) runs the same pinned driver
+    // locally — accepted as the same oracle identity for local calibration.
+    if tool == "pdfjs" {
+        if let Some(plan) = pdfjs_local_plan(&dpi_str, file, out) {
+            return Ok(plan);
         }
+    } else if let Some(binary) = local_binary(tool) {
+        let (file_str, out_str) = (file.display().to_string(), out.display().to_string());
+        let args = match tool {
+            "ghostscript" => vec![
+                "-sDEVICE=png16m".to_string(),
+                "-dFirstPage=1".to_string(),
+                "-dLastPage=1".to_string(),
+                "-r".to_string(),
+                dpi_str,
+                "-o".to_string(),
+                out_str,
+                file_str,
+            ],
+            "mupdf" | "mutool" => vec![
+                "draw".to_string(),
+                "-r".to_string(),
+                dpi_str,
+                "-o".to_string(),
+                out_str,
+                file_str,
+                // Page range: page 1 only (see doc comment).
+                "1".to_string(),
+            ],
+            "pdfium" => vec![
+                "--page".to_string(),
+                "1".to_string(),
+                "--dpi".to_string(),
+                dpi_str,
+                file_str,
+                out_str,
+            ],
+            other => return Err(format!("unknown oracle tool `{other}`")),
+        };
+        return Ok((binary, args));
     }
     container_plan(tool, &dpi_str, file, out)
+}
+
+/// The local pdf.js plan when the pinned driver + its `npm ci`ed
+/// dependencies are present (SL-0.ORACLE.01 local-first, extended for the
+/// CONF.03 calibration legs).
+fn pdfjs_local_plan(dpi: &str, file: &Path, out: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let dir = Path::new("docker/oracles/pdfjs");
+    if !dir.join("driver.mjs").is_file() || !dir.join("node_modules/pdfjs-dist").is_dir() {
+        return None;
+    }
+    let node = find_local("node")?;
+    let script = dir.join("driver.mjs").display().to_string();
+    Some((
+        node,
+        vec![
+            script,
+            "--page".to_string(),
+            "1".to_string(),
+            "--dpi".to_string(),
+            dpi.to_string(),
+            file.display().to_string(),
+            out.display().to_string(),
+        ],
+    ))
 }
 
 /// The pinned-container render plan (see `xtask/oracles.toml`): the file is

@@ -12,7 +12,8 @@
 # write07        | every PR  | required (conformance posture over the smoke corpus)
 # render-conf    | nightly (cron) + workflow_dispatch | non-blocking (SL-2.CONF.01
 #                | differential render sweep: selis vs pinned PDFium + pdf.js
-#                | containers at 72/150/300 DPI; artifacts for triage/G2 readout)
+#                | containers at 72/150/300 DPI, plus the SL-2.CONF.03
+#                | oracle-vs-oracle calibration legs; artifacts for triage)
 # test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
 # perf           | nightly   | blocks release on >5% regression
@@ -289,7 +290,10 @@ jobs:
           tar -xzf ~/.cache/selis-corpus/verapdf.gz -C corpus/pdfs/verapdf \
             --strip-components=1
           mkdir -p corpus/pdfs/ghent
-          tar -xf ~/.cache/selis-corpus/ghent.zip -C corpus/pdfs/ghent
+          # GNU tar cannot read zip archives (the Ghent suite ships as one) —
+          # use python's zipfile module, guaranteed on the runner (run
+          # 34523221142: "This does not look like a tar archive").
+          python3 -m zipfile -e ~/.cache/selis-corpus/ghent.zip corpus/pdfs/ghent
           find corpus/pdfs/ghent -mindepth 2 -name '*.pdf' \
             -exec mv -t corpus/pdfs/ghent {} +
           n=$(find corpus/pdfs -name '*.pdf' | wc -l)
@@ -309,6 +313,24 @@ jobs:
             --timeout-secs 120 \
             --selis target/release/selis \
             --out sweep
+      - name: Oracle-vs-oracle calibration (SL-2.CONF.03)
+        # What two INDEPENDENT renderers agree on under the identical metric:
+        # every pair of {PDFium, pdf.js, MuPDF, MuPDF-again} on the same
+        # pages. MuPDF runs twice — the second copy is the self-agreement
+        # sanity leg (must stay ~100% at ~0%). Two legs: a stride sample of
+        # the general corpus, and the full Ghent prepress suite, whose
+        # colour-management divergence is calibrated separately.
+        run: |
+          cargo xtask oracle sweep --calibrate \
+            --tool pdfium --tool pdfjs --tool mutool --tool mutool \
+            --dpi 150 --sample 300 --exclude ghent/ \
+            --jobs 4 --timeout-secs 180 \
+            --out sweep-calibration
+          cargo xtask oracle sweep --calibrate \
+            --tool pdfium --tool pdfjs --tool mutool --tool mutool \
+            --dpi 150 --include ghent/ \
+            --jobs 4 --timeout-secs 180 \
+            --out sweep-calibration-ghent
       - name: Upload the sweep artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -316,4 +338,14 @@ jobs:
           path: |
             sweep/sweep-report.json
             sweep/verdicts.jsonl
+          if-no-files-found: error
+      - name: Upload the calibration artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-conf-calibration
+          path: |
+            sweep-calibration/sweep-report.json
+            sweep-calibration/verdicts.jsonl
+            sweep-calibration-ghent/sweep-report.json
+            sweep-calibration-ghent/verdicts.jsonl
           if-no-files-found: error

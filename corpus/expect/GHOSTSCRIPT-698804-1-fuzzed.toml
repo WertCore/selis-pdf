@@ -1,2 +1,7 @@
 open = "ok"
 pages = 0
+
+[annotation]
+triage = "selis_rejects"
+verdict = "SpecAmbiguous"
+note = "page tree yields 0 pages; refusing to render page 0 is the typed policy; mutool fabricates a letter page"

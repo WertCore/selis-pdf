@@ -172,6 +172,15 @@ every user on every page.
   - **DoD:** Every cluster file either renders non-blank or reports a typed deviation; a corpus
     entry per confirmed root cause.
 
+- [ ] **SL-2.RAST.14 — 1–2% band fidelity excess (CONF.03 calibration)** · deps: RAST.09 · owner: AI
+  - **Do:** Close selis's ~36pp excess in the 1–2% differing-pixels band (42pp of pages vs the
+    oracle pairs' ~6pp; CONF.01 p50 = 1.68 vs oracle pairs' p50 = 0.06). One mechanical signature
+    across the corpus — investigate subpixel glyph positioning, stroke geometry rounding, and AA
+    coverage scaling against the display-list IR. Success criterion: selis's ≤1% band fraction
+    reaches the oracle envelope (≥ ~73%).
+  - **DoD:** Root cause identified and fixed, or an ADR records why the divergence is accepted;
+    CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope.
+
 ---
 
 ## 2.FILT — Codec completion
@@ -265,7 +274,7 @@ artifacts close the two open questions — our agreement against each of them, a
 with each other (calibration). Per §4 (21-TESTING-AND-ORACLES), two independent oracles are the
 minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the render-conf run.
 
-- [ ] **SL-2.CONF.03 — Oracle-vs-oracle calibration of the render tolerance** · deps: CONF.01 · owner: AI
+- [x] **SL-2.CONF.03 — Oracle-vs-oracle calibration of the render tolerance** · deps: CONF.01 · owner: AI
   - **Do:** Measure PDFium-vs-pdf.js agreement over the same render sample (CI `render-conf`
     artifacts; SL-0.ORACLE.02). The CONF.01 `diff<5` bucket (2,161 files @150, median 1.68%) is a
     single mode just above the 0.5% threshold; if independent oracles agree at ~1–2% on those
@@ -273,6 +282,74 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
     20-CONFORMANCE-PROGRAM.md get revised with the published calibration numbers.
   - **DoD:** Calibration table published next to the tolerances; the G2 threshold either confirmed
     or re-baselined with that data — never adjusted because a build is red.
+  - **Done (2026-09-10, local legs; CI confirmation pending):** `xtask oracle sweep --calibrate`
+    renders page 1 with every named oracle and compares all pairs under the identical metric
+    (ΔE76 > 2.3, overlap, ≤0.5/5/25% bands). Local legs used the pinned-version drivers on the dev
+    host — PDFium chromium/7961 (bblanchon win-x64 tarball + the checked-in C driver, gcc build),
+    pdf.js 6.2.108 (pinned pdfjs-dist via `npm ci` + `driver.mjs`), MuPDF mutool 1.23.0 — with
+    mutool run **twice** as the self-agreement sanity leg. Sample: 300-file stride over the
+    general corpus + the full 95-file Ghent suite, at 150 DPI. Artifacts:
+    `C:\selis-build\conf03-calibration{,-rest}\`. The CI `render-conf` job now runs the same two
+    calibration legs with the pinned GHCR images (digest-locked) — its artifacts are the
+    pin-identity confirmation of the numbers below.
+
+  **Measured matrix @150 DPI (fraction of comparable pages within band):**
+
+  | Pair | n | ≤0.5% | ≤1% | ≤2% | ≤5% | ≤10% | ≤25% | p50 | p90 | p99 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | mutool↔mutool (sanity) | 388 | 100% | 100% | 100% | 100% | 100% | 100% | 0.0 | 0.0 | 0.0 |
+  | pdfium↔pdfjs (general) | 296 | 70.3% | 75.0% | 81.1% | 86.1% | 91.9% | 97.0% | 0.06 | 7.89 | 39.0 |
+  | pdfium↔mutool (general) | 584 | 68.2% | 73.3% | 80.5% | 86.3% | 94.2% | 97.9% | 0.06 | 7.24 | 29.3 |
+  | pdfjs↔mutool (general) | 586 | 70.6% | 76.5% | 82.3% | 88.1% | 94.5% | 96.9% | 0.05 | 5.84 | 37.7 |
+  | pdfium↔pdfjs (ghent) | 95 | 0% | 0% | 0% | 2.1% | 30.5% | 77.9% | 15.97 | 36.9 | 54.1 |
+  | pdfium↔mutool (ghent) | 190 | 0% | 0% | 0% | 11.6% | 38.9% | 76.8% | 17.91 | 36.9 | 55.0 |
+  | pdfjs↔mutool (ghent) | 190 | 0% | 0% | 0% | 2.1% | 23.2% | 73.7% | 16.93 | 39.2 | 54.7 |
+  | **selis↔mutool (full corpus, CONF.01)** | 3,747 | **27.3%** | **34.1%** | **76.2%** | **85.1%** | **92.0%** | **97.0%** | **1.68** | **8.55** | **68.4** |
+
+  **Findings:**
+  1. **The current G2 bar (≤0.5% on ≥95%) is below the independent-renderer noise floor.** The
+     best pair reaches 70.6% on general content and 0% on Ghent; no pair reaches 95% at any band
+     below ≤25%. The criterion as written measures renderer identity, not correctness — exactly
+     the SL-0.ORACLE.02 prediction.
+  2. **Only part of the CONF.01 `diff<5` mass is noise.** The oracle pairs hold ~5pp of outcomes
+     in the 0.5–1% band; selis holds ~6.8pp — the same. But the 1–2% band holds ~6pp for pairs
+     and **~42pp for selis**: a real, uniform ~36pp fidelity excess with one mechanical signature
+     (subpixel positioning / AA coverage), not per-page bugs. → **SL-2.RAST.14**.
+  3. **From ≤2% upward, selis sits inside the oracle-pair envelope** (76.2 vs 80.5–82.3 at ≤2%;
+     85.1 vs 86.1–88.1 at ≤5%; 92.0 vs 91.9–94.5 at ≤10%; 97.0 vs 96.9–97.9 at ≤25%) — within the
+     pair spread + sampling noise.
+  4. **Selis's tail is the real bug list:** p99 = 68.4 vs pairs' 29–39 — the already-filed
+     `blank_selis` (RAST.13), `size_skew`/`/Rotate` (RAST.12), and gross-divergence (CONF.04)
+     clusters.
+  5. **Prepress content is a different regime for everyone:** all pairs at 0% within ≤2% on Ghent;
+     colour management / overprint / DeviceN divergence is industry-wide, not a Selis defect.
+
+  **Recommended calibrated G2 bar** (replaces the unattainable 0.5%/95% pair; tracked bands stay
+  published):
+  - **Bar A (per-page):** ≥95% of comparable pages ≤25% differing pixels @150 DPI — every oracle
+    pair passes (96.9–97.9%); **selis passes today (97.0%)**.
+  - **Bar B (fidelity envelope):** selis's ≤2%/≤5%/≤10% band fractions within 5pp of the best
+    oracle pair (5pp = pair spread + n≈300 sampling noise). **Selis today: fails ≤2% by 1.1pp**
+    (76.2 vs 82.3), passes ≤5% (−3.0pp) and ≤10% (−2.5pp). This is the honest current gap.
+  - **Tracked, not gated:** ≤0.5%/≤1% strict-fidelity fractions, and the Ghent-class CDFs against
+    the oracle-pair envelope (selis Ghent ≤25% = 61.1% vs pairs' 73.7–77.9% — the CONF.04 colour
+    gap).
+  - The 20-CONFORMANCE-PROGRAM.md §3 tolerances and SL-2.CONF.02 consume these numbers; the
+    threshold was re-baselined **from calibration data only**, per the §5 verdict discipline.
+
+  **CI confirmation status (2026-09-10):** dispatch attempt run
+  [34523221142](https://github.com/WertCore/selis-pdf/actions/runs/34523221142)
+  (`workflow_dispatch`, ref main) failed in the corpus-extraction step before reaching the sweep —
+  GNU tar on ubuntu cannot read the Ghent **zip** (`This does not look like a tar archive`; the
+  dev host's bsdtar could, which is why local legs worked). Fixed on this branch (python
+  `zipfile`, verified against the pinned zip: 95 PDFs). Pushing is out of scope for this task, so
+  the completed confirmation run fires on the first `render-conf` dispatch/cron after this branch
+  merges — it then reports (a) selis↔pdfium/pdf.js on the pinned images (completing the
+  calibration triangle: selis was only compared against MuPDF locally, and pair distances are not
+  transitive) and (b) the oracle-vs-oracle legs of this matrix on the pinned identities. The
+  same run's `size-check` failure (3 wasm cdylibs "NOT MEASURED — no artifact in this run") is a
+  pre-existing main-branch issue: runs 34483545072 (28fca97) and 34479582812 (f95f6ff) failed
+  before this branch's merge; not caused by this work.
 
 - [ ] **SL-2.CONF.04 — Gross-divergence triage (CONF.01 `diff>=25%` cluster)** · deps: CONF.01 · owner: AI
   - **Do:** Root-cause the 94 files at ≥25% differing pixels @150 (worst: `ghent/GWG080_
@@ -283,10 +360,39 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
   - **DoD:** Every cluster file carries a triage verdict; behaviour-changing fixes add corpus
     entries.
 
-- [ ] **SL-2.CONF.05 — Typed-refusal review for batch render contexts** · deps: CONF.01 · owner: AI
+- [x] **SL-2.CONF.05 — Typed-refusal review for batch render contexts** · deps: CONF.01 · owner: AI
   - **Do:** Review the sweep's `selis_rejects` cluster (26 @150): `budget exceeded (objects) limit
     200000` on real-world govdocs files under the Viewer profile, and hard refusals on pages with
     no `/MediaBox` or zero area where other renderers fall back to a default size. Decide per
     case: a batch/profile budget tier, a default-page-size fallback (with a recorded deviation),
     or keep the refusal as the designed posture (with annotations).
   - **DoD:** Each refusal cluster annotated with the decision; expectations updated.
+  - **Done (2026-09-10):** all 26 files adjudicated; every file now either renders or refuses
+    with a deliberate, annotated typed reason — zero unexplained refusals (re-run:
+    `C:\selis-build\conf05-rerun\`, 26-file `--include` sweep @150).
+
+  **Profile changes** (`crates/selis-sandbox/profiles.toml`, the code-generated source of truth,
+  Viewer surface — both changes justified by the profile's own "500 MB behemoth" requirement):
+  * `objects` 200,000 → **1,000,000** (matches Editor): 200k refused four real-world documents
+    needing ~200,001 objects (govdocs1/000146, govdocs1/000380, issue12295, issue12810) that
+    MuPDF renders; real 500 MB PDFs average 200–500 B/object ≈ 1–2.5 M objects. `bytes`
+    (256 MiB) remains the binding memory constraint.
+  * `wall` 5 s → **15 s**: govdocs1/000146 needed 5.0006 s — a boundary flap; behemoth-class
+    open+first-paint measures ~5–11 s. Hostile work stays bounded; normal documents remain far
+    under the §12 first-paint budget.
+
+  **Behaviour change** (`Session::page_size`, engine): a page with no `/MediaBox` in its
+  inheritance chain, or a non-positive one, renders at the ISO 32000-2 §7.10.1 default
+  (612 × 792) — the fallback mainstream viewers apply; a missing box is incomplete authoring,
+  not a reason to refuse. Engine test `page_size_falls_back_to_the_iso_default_...` covers both.
+
+  **Per-file verdicts** (annotations in `corpus/expect/…`):
+  | Files | Disposition |
+  |---|---|
+  | govdocs1/000146, govdocs1/000380, issue12295, issue12810 | `OurBug` fixed — Viewer profile mis-tune (objects + wall); now render and compare |
+  | bug1721218_reduced | `OurBug` fixed — 200k-object reproducer needed ~9 s; renders within the 15 s wall and agrees within 5% |
+  | boundingBox_invalid, synthetic/mutant_11 | `OurBug` fixed — zero-area/missing `/MediaBox`; now render, match MuPDF |
+  | bug852992_reduced, issue7229, issue7872 | `OurBug` fixed — now render; compare as `size_skew` because MuPDF honours these pages' `/CropBox` while selis sizes from `/MediaBox` (CropBox-aware render size folds into SL-2.RAST.12's page-geometry work) |
+  | GHOSTSCRIPT-698804-1-fuzzed | kept — typed refusal is correct: the page tree yields 0 pages and rendering "page 0" is out of range; MuPDF fabricates a letter page |
+  | synthetic/mut_197–199/202, mutant_2/13/14/15/26/28/30/35/37/38 (14 files) | kept — `[E1103]` no `/Root`: refuse-by-design (typed error, no repair attempt); MuPDF's repair finds a root — both readings defensible (consistent with the seeded structural triage) |
+  | issue269_2 | `selis_timeout` annotated — needs ~90–120 s; renders with a 120 s harness budget; known-slow robustness follow-up (SL-1.ROB) |

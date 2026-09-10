@@ -67,6 +67,15 @@ pub struct SweepConfig {
     pub jobs: usize,
     pub selis: Option<PathBuf>,
     pub resume: bool,
+    /// Oracle-vs-oracle calibration (SL-2.CONF.03): render with every named
+    /// oracle only (no selis) and compare all pairs under the identical
+    /// metric, so selis's disagreement distribution can be classified as
+    /// noise-vs-bug against what independent renderers agree on.
+    pub calibrate: bool,
+    /// Only sweep files whose corpus id contains one of these substrings.
+    pub include: Vec<String>,
+    /// Skip files whose corpus id contains one of these substrings.
+    pub exclude: Vec<String>,
 }
 
 /// One (file, tool, dpi) outcome, appended to `verdicts.jsonl`.
@@ -197,13 +206,16 @@ fn size_skewed(selis: Result<&Rgb, &SideFail>, oracle: Result<&Rgb, &SideFail>) 
 
 /// The conformance area(s) a signature maps to, for the SL-2.CONF.02
 /// promotion readout. Error codes map through the registry ranges of
-/// 03-CONVENTIONS.md §3; the detail line carries `[Ennnn]`.
+/// 03-CONVENTIONS.md §3; the detail line carries `[Ennnn]`. Pairwise
+/// calibration signatures (SL-2.CONF.03) name the failing side only in the
+/// detail, so they aggregate across pairs.
 fn areas_for(signature: &str, detail: Option<&str>) -> Vec<&'static str> {
     match signature {
         "match" | "both_reject" | "oversized" => vec![],
         // Oracle-side failures are not our conformance claims.
-        "oracle_rejects" | "oracle_timeout" => vec![],
-        "diff<5" | "diff<25" | "diff>=25" | "blank_selis" | "blank_oracle" | "selis_timeout" => {
+        "oracle_rejects" | "oracle_timeout" | "reject" | "timeout" => vec![],
+        "diff<5" | "diff<25" | "diff>=25" | "blank_selis" | "blank_oracle" | "blank"
+        | "selis_timeout" => {
             vec!["render"]
         }
         "size_skew" => vec!["document", "render"],
@@ -316,6 +328,16 @@ fn row_slice(data: &[u8], y: usize, stride: usize, row_bytes: usize) -> Option<&
 }
 
 // ── Render loading (with the oversized-canvas guard) ───────────────────────
+
+/// The oracle render's on-disk format: `mutool` writes PPM natively; every
+/// other oracle (pdfium driver, pdf.js driver, ghostscript png16m) writes PNG.
+fn oracle_ext(tool: &str) -> &'static str {
+    if tool == "mutool" || tool == "mupdf" {
+        "ppm"
+    } else {
+        "png"
+    }
+}
 
 /// Peek a render's dimensions from its header (PPM when `ppm`, else PNG),
 /// without loading the payload.
@@ -437,10 +459,22 @@ fn path_str(p: &Path) -> String {
 /// `cfg.out`.
 pub fn run(cfg: SweepConfig) -> Result<(), String> {
     std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out.display()))?;
-    let selis_bin = resolve_selis(cfg.selis.as_deref())?;
-    let files = sample_files(cfg.sample)?;
+    // Calibration legs render oracles only; selis is not required.
+    let selis_bin = if cfg.calibrate {
+        PathBuf::from("selis (not used: oracle-vs-oracle calibration leg)")
+    } else {
+        resolve_selis(cfg.selis.as_deref())?
+    };
+    let files = sample_files(cfg.sample, &cfg.include, &cfg.exclude)?;
     if files.is_empty() {
         return Err("no corpus PDFs found under corpus/pdfs".to_string());
+    }
+    if cfg.calibrate && cfg.tools.len() < 2 {
+        return Err(
+            "calibration needs at least two oracle renders per page — repeat a tool for the \
+             self-agreement sanity leg (e.g. --tool mutool --tool mutool)"
+                .to_string(),
+        );
     }
     let jobs = cfg.jobs.max(1);
     for w in 0..jobs {
@@ -466,6 +500,7 @@ pub fn run(cfg: SweepConfig) -> Result<(), String> {
     let tools = cfg.tools.clone();
     let timeout = cfg.timeout;
     let out_dir = cfg.out.clone();
+    let calibrate = cfg.calibrate;
 
     std::thread::scope(|scope| {
         for w in 0..jobs {
@@ -484,17 +519,42 @@ pub fn run(cfg: SweepConfig) -> Result<(), String> {
                         break;
                     }
                     let file = &files_ref[i];
-                    for tool in tools_ref {
-                        for dpi in dpis_ref {
-                            let key = format!("{}|{tool}|{dpi}", oracle::corpus_id(file));
-                            if done_ref.lock().is_ok_and(|mut d| !d.insert(key)) {
+                    for dpi in dpis_ref {
+                        let id = oracle::corpus_id(file);
+                        if calibrate {
+                            // One verdict per unordered tool pair; the
+                            // renders themselves are shared across pairs.
+                            let pair_count = tools_ref.len() * (tools_ref.len() - 1) / 2;
+                            let mut emitted = 0usize;
+                            for (a, b) in pair_labels(tools_ref) {
+                                let key = format!("{id}|{a}↔{b}|{dpi}");
+                                if done_ref.lock().is_ok_and(|mut d| !d.insert(key)) {
+                                    emitted += 1;
+                                }
+                            }
+                            if emitted == pair_count {
                                 continue;
                             }
-                            let verdict = sweep_one(selis_ref, tool, *dpi, file, &tmp, timeout);
-                            if let Ok(mut wr) = writer_ref.lock() {
-                                let _ = serde_json::to_writer(&mut *wr, &verdict);
-                                let _ = wr.write_all(b"\n");
-                                let _ = wr.flush();
+                            for verdict in sweep_calibrate_one(tools_ref, *dpi, file, &tmp, timeout)
+                            {
+                                if let Ok(mut wr) = writer_ref.lock() {
+                                    let _ = serde_json::to_writer(&mut *wr, &verdict);
+                                    let _ = wr.write_all(b"\n");
+                                    let _ = wr.flush();
+                                }
+                            }
+                        } else {
+                            for tool in tools_ref {
+                                let key = format!("{id}|{tool}|{dpi}");
+                                if done_ref.lock().is_ok_and(|mut d| !d.insert(key)) {
+                                    continue;
+                                }
+                                let verdict = sweep_one(selis_ref, tool, *dpi, file, &tmp, timeout);
+                                if let Ok(mut wr) = writer_ref.lock() {
+                                    let _ = serde_json::to_writer(&mut *wr, &verdict);
+                                    let _ = wr.write_all(b"\n");
+                                    let _ = wr.flush();
+                                }
                             }
                         }
                     }
@@ -505,12 +565,119 @@ pub fn run(cfg: SweepConfig) -> Result<(), String> {
     });
 
     let verdicts = load_verdicts(&verdict_path)?;
-    let report = build_report(&selis_bin, files.len(), &verdicts, &cfg.tools, &cfg.dpis)?;
+    let report = build_report(
+        &selis_bin,
+        files.len(),
+        &verdicts,
+        &cfg.tools,
+        &cfg.dpis,
+        cfg.calibrate,
+    )?;
     let report_path = cfg.out.join("sweep-report.json");
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&report_path, json).map_err(|e| format!("{}: {e}", report_path.display()))?;
     print_report(&report);
     Ok(())
+}
+
+/// All unordered label pairs of the tool list, in stable order. Repeating a
+/// tool (self-agreement sanity leg) yields pairs like `mutool↔mutool` — two
+/// independent renders of the same file by the same renderer.
+fn pair_labels(tools: &[String]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for i in 0..tools.len() {
+        for j in (i + 1)..tools.len() {
+            out.push((tools[i].clone(), tools[j].clone()));
+        }
+    }
+    out
+}
+
+/// Calibration leg (SL-2.CONF.03): render page 1 with every named oracle,
+/// then compare every pair under the identical metric. Renders are shared
+/// across pairs, so N oracles cost N renders, not N².
+fn sweep_calibrate_one(
+    tools: &[String],
+    dpi: u32,
+    file: &Path,
+    tmp: &Path,
+    timeout: Duration,
+) -> Vec<Verdict> {
+    // Render + load each tool once. Output names carry the tool index so a
+    // repeated tool (self-agreement leg) renders twice, into distinct files.
+    let mut renders: Vec<Result<Rgb, SideFail>> = Vec::with_capacity(tools.len());
+    for (i, tool) in tools.iter().enumerate() {
+        let path = tmp.join(format!("oracle-{i}.{}", oracle_ext(tool)));
+        let _ = std::fs::remove_file(&path);
+        let loaded =
+            render_oracle(tool, file, dpi, &path, timeout).and_then(|()| load_oracle(&path, tool));
+        renders.push(loaded);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    let mut out = Vec::new();
+    for x in 0..tools.len() {
+        for y in (x + 1)..tools.len() {
+            let (ra, rb) = (&renders[x], &renders[y]);
+            let mut verdict = Verdict {
+                id: oracle::corpus_id(file),
+                tool: format!("{}↔{}", tools[x], tools[y]),
+                dpi,
+                signature: "match".to_string(),
+                diff_pct: None,
+                ours: ra.as_ref().ok().map(|r| [r.width, r.height]),
+                theirs: rb.as_ref().ok().map(|r| [r.width, r.height]),
+                detail: None,
+            };
+            let comparison = match (ra, rb) {
+                (Ok(a), Ok(b)) => Some(compare_images(a, b)),
+                _ => None,
+            };
+            if let Some(c) = &comparison {
+                verdict.diff_pct = Some((c.diff_pct * 100.0).round() / 100.0);
+            }
+            let (signature, detail) = classify_pair(ra.as_ref(), rb.as_ref(), comparison.as_ref());
+            verdict.signature = signature.to_string();
+            verdict.detail = detail;
+            out.push(verdict);
+        }
+    }
+    out
+}
+
+/// Pairwise classification: the same buckets and precedence as [`classify`],
+/// with side-agnostic names — which oracle failed goes into the detail.
+fn classify_pair(
+    a: Result<&Rgb, &SideFail>,
+    b: Result<&Rgb, &SideFail>,
+    cmp: Option<&Comparison>,
+) -> (&'static str, Option<String>) {
+    match (a, b) {
+        (Err(x), Err(y)) => (
+            "reject",
+            Some(format!("a: {} | b: {}", fail_text(x), fail_text(y))),
+        ),
+        (Err(x), _) => ("reject", Some(format!("a: {}", fail_text(x)))),
+        (_, Err(y)) => ("reject", Some(format!("b: {}", fail_text(y)))),
+        (Ok(_), Ok(_)) => {
+            let cmp = cmp.expect("both sides rendered, comparison must exist");
+            if size_skewed(a, b) {
+                return ("size_skew", None);
+            }
+            if cmp.selis_blank != cmp.oracle_blank && cmp.diff_pct > G2_MAX_DIFF_PCT {
+                return ("blank", None);
+            }
+            if cmp.diff_pct <= G2_MAX_DIFF_PCT {
+                ("match", None)
+            } else if cmp.diff_pct < 5.0 {
+                ("diff<5", None)
+            } else if cmp.diff_pct < 25.0 {
+                ("diff<25", None)
+            } else {
+                ("diff>=25", None)
+            }
+        }
+    }
 }
 
 /// Sweep one (file, tool, dpi): render both sides, compare, classify.
@@ -534,11 +701,7 @@ fn sweep_one(
     };
 
     let our_path = tmp.join("ours.ppm");
-    let their_path = tmp.join(if tool == "mutool" || tool == "mupdf" {
-        "theirs.ppm"
-    } else {
-        "theirs.png"
-    });
+    let their_path = tmp.join(format!("theirs.{}", oracle_ext(tool)));
     let _ = std::fs::remove_file(&our_path);
     let _ = std::fs::remove_file(&their_path);
 
@@ -642,9 +805,21 @@ fn unverbatim(p: &Path) -> PathBuf {
         .map_or_else(|| p.to_path_buf(), PathBuf::from)
 }
 
-/// The corpus file list, deterministically stride-sampled when `sample` is set.
-fn sample_files(sample: Option<usize>) -> Result<Vec<PathBuf>, String> {
+/// The corpus file list, filtered by include/exclude id substrings, then
+/// deterministically stride-sampled when `sample` is set.
+fn sample_files(
+    sample: Option<usize>,
+    include: &[String],
+    exclude: &[String],
+) -> Result<Vec<PathBuf>, String> {
     let mut pdfs = oracle::collect_corpus_pdfs()?;
+    if !include.is_empty() || !exclude.is_empty() {
+        pdfs.retain(|p| {
+            let id = oracle::corpus_id(p);
+            (include.is_empty() || include.iter().any(|i| id.contains(i.as_str())))
+                && !exclude.iter().any(|x| id.contains(x.as_str()))
+        });
+    }
     pdfs.sort();
     if let Some(want) = sample {
         let want = want.max(1);
@@ -697,6 +872,10 @@ struct Report {
 struct ToolReport {
     comparable: u64,
     per_dpi: BTreeMap<String, DpiReport>,
+    /// Distribution of the comparable diff_pct per DPI — the CDF the
+    /// SL-2.CONF.03 calibration reads (selis-vs-oracle rows vs oracle-pair
+    /// rows separate where correctness ends and rasteriser identity begins).
+    diff_stats: BTreeMap<String, DiffStats>,
     /// Per-source corpus agreement at 150 DPI (the G2 DPI).
     sources_150: BTreeMap<String, SourceAgreement>,
     clusters: Vec<Cluster>,
@@ -708,6 +887,45 @@ struct DpiReport {
     outcomes: BTreeMap<String, u64>,
     comparable: u64,
     within_tolerance: u64,
+}
+
+/// Percentiles of the differing-pixels percentage over comparable outcomes.
+#[derive(Serialize, Default)]
+struct DiffStats {
+    n: u64,
+    p50: Option<f64>,
+    p75: Option<f64>,
+    p90: Option<f64>,
+    p95: Option<f64>,
+    p99: Option<f64>,
+    max: Option<f64>,
+}
+
+/// Nearest-rank percentile of a sorted sample.
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = (p / 100.0 * sorted.len() as f64).ceil();
+    let idx = rank.max(1.0) as usize - 1;
+    sorted.get(idx.min(sorted.len() - 1)).copied()
+}
+
+fn diff_stats(values: &mut Vec<f64>) -> DiffStats {
+    values.sort_by(|a, b| a.total_cmp(b));
+    DiffStats {
+        n: u64::try_from(values.len()).unwrap_or(u64::MAX),
+        p50: percentile(values, 50.0).map(round2),
+        p75: percentile(values, 75.0).map(round2),
+        p90: percentile(values, 90.0).map(round2),
+        p95: percentile(values, 95.0).map(round2),
+        p99: percentile(values, 99.0).map(round2),
+        max: values.last().copied().map(round2),
+    }
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }
 
 #[derive(Serialize, Default)]
@@ -737,15 +955,17 @@ struct G2Readout {
 }
 
 /// Aggregate the verdict JSONL into the report (G2 readout at 150 DPI per
-/// tool + ranked signature clusters).
+/// tool/pair + ranked signature clusters + the diff-pct CDF per DPI).
 fn build_report(
     selis_bin: &Path,
     files: usize,
     verdicts: &[Verdict],
     tools: &[String],
     dpis: &[u32],
+    calibrate: bool,
 ) -> Result<Report, String> {
     let mut per_tool: BTreeMap<String, ToolReport> = BTreeMap::new();
+    let mut pct_by_tool_dpi: BTreeMap<(String, u32), Vec<f64>> = BTreeMap::new();
     for v in verdicts {
         let tr = per_tool.entry(v.tool.clone()).or_default();
         let dr = tr.per_dpi.entry(v.dpi.to_string()).or_default();
@@ -756,6 +976,12 @@ fn build_report(
             if v.signature == "match" {
                 dr.within_tolerance += 1;
             }
+            if let Some(pct) = v.diff_pct {
+                pct_by_tool_dpi
+                    .entry((v.tool.clone(), v.dpi))
+                    .or_default()
+                    .push(pct);
+            }
             if v.dpi == 150 {
                 let sa = tr.sources_150.entry(source_of(&v.id)).or_default();
                 sa.comparable += 1;
@@ -765,9 +991,24 @@ fn build_report(
             }
         }
     }
+    for ((tool, dpi), mut values) in pct_by_tool_dpi {
+        if let Some(tr) = per_tool.get_mut(&tool) {
+            tr.diff_stats
+                .insert(dpi.to_string(), diff_stats(&mut values));
+        }
+    }
     let mut report = Report {
-        task: "SL-2.CONF.01",
-        scope: "page 1 of each corpus file, 72/150/300 DPI, selis vs oracle render",
+        task: if calibrate {
+            "SL-2.CONF.03"
+        } else {
+            "SL-2.CONF.01"
+        },
+        scope: if calibrate {
+            "page 1 of each sampled corpus file, oracle-vs-oracle pairs under the CONF.01 metric \
+             (dE76 > 2.3, overlap region)"
+        } else {
+            "page 1 of each corpus file, 72/150/300 DPI, selis vs oracle render"
+        },
         selis: selis_bin.display().to_string(),
         tools: tools.to_vec(),
         dpis: dpis.to_vec(),
@@ -775,29 +1016,37 @@ fn build_report(
         tolerance: serde_json::json!({
             "delta_e": DELTA_E_TOLERANCE,
             "max_differing_pixels_pct": G2_MAX_DIFF_PCT,
+            "bands_pct": [0.5, 5.0, 25.0],
         }),
         per_tool,
     };
     for (tool, tr) in report.per_tool.iter_mut() {
         tr.clusters = ranked_clusters(tool, verdicts);
 
-        // G2 readout at 150 DPI (the gate's DPI), against this oracle.
+        // G2 readout at 150 DPI (the gate's DPI), against this oracle/pair.
         let dr = tr.per_dpi.get("150").cloned().unwrap_or_default();
         let agreement = if dr.comparable > 0 {
             dr.within_tolerance as f64 / dr.comparable as f64 * 100.0
         } else {
             0.0
         };
-        tr.g2_150 = G2Readout {
-            criterion: format!(
+        let criterion = if calibrate {
+            "pairwise oracle agreement under the CONF.01 metric — the G2 95% bar applies to \
+             selis, not to the oracles; read the diff_stats CDF instead"
+                .to_string()
+        } else {
+            format!(
                 "<= {G2_MAX_DIFF_PCT}% differing pixels (dE76 > {DELTA_E_TOLERANCE}) on >= 95% of \
                  the render corpus at 150 DPI"
-            ),
+            )
+        };
+        tr.g2_150 = G2Readout {
+            criterion,
             oracle: oracle_identity(tool),
             comparable: dr.comparable,
             within_tolerance: dr.within_tolerance,
             agreement_pct: (agreement * 100.0).round() / 100.0,
-            met: dr.comparable > 0 && agreement >= 95.0,
+            met: !calibrate && dr.comparable > 0 && agreement >= 95.0,
         };
     }
     Ok(report)
@@ -863,6 +1112,11 @@ fn file_weight(id: &str) -> usize {
 
 /// The comparable identity of an oracle tool (local install or pinned image).
 fn oracle_identity(tool: &str) -> String {
+    if tool.contains('↔') {
+        return format!(
+            "pairwise oracle comparison ({tool}); each side per its xtask/oracles.toml pin"
+        );
+    }
     match tool {
         "mutool" | "mupdf" => {
             "MuPDF mutool (local install; pinned container: xtask/oracles.toml [tool.mupdf])"
@@ -907,6 +1161,12 @@ fn print_report(report: &Report) {
                 c.outcomes,
                 c.areas,
                 c.examples.join(", ")
+            );
+        }
+        if let Some(stats) = tr.diff_stats.get("150") {
+            println!(
+                "    diff-pct CDF @150: n={} p50={:?} p75={:?} p90={:?} p95={:?} p99={:?} max={:?}",
+                stats.n, stats.p50, stats.p75, stats.p90, stats.p95, stats.p99, stats.max
             );
         }
     }
@@ -1049,6 +1309,74 @@ mod tests {
         assert_eq!(file_weight("synthetic/basic-text"), 1);
         assert_eq!(source_of("verapdf/PDF_A-1b/file"), "verapdf");
         assert_eq!(source_of("160F-2019"), "flat");
+    }
+
+    #[test]
+    fn pair_labels_cover_all_unordered_pairs() {
+        let two = vec!["a".to_string(), "b".to_string()];
+        let labels = pair_labels(&two);
+        assert_eq!(labels, vec![("a".to_string(), "b".to_string())]);
+        let three = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(pair_labels(&three).len(), 3);
+        // Repeating a tool is the self-agreement sanity leg: two independent
+        // renders of the same renderer compared against each other.
+        let sane = vec!["mutool".to_string(), "mutool".to_string()];
+        assert_eq!(
+            pair_labels(&sane),
+            vec![("mutool".to_string(), "mutool".to_string())]
+        );
+    }
+
+    #[test]
+    fn classify_pair_mirrors_the_conf_buckets() {
+        let painted = rgb_paint(10, 10);
+        let blank = rgb_blank(10, 10);
+        let fail = SideFail::Rejected("cannot authenticate".to_string());
+        let (sig, _) = classify_pair(Err(&fail), Err(&fail), None);
+        assert_eq!(sig, "reject");
+        let cmp = Comparison {
+            diff_pct: 0.4,
+            selis_blank: false,
+            oracle_blank: false,
+        };
+        let (sig, _) = classify_pair(Ok(&painted), Ok(&painted), Some(&cmp));
+        assert_eq!(sig, "match");
+        let cmp = Comparison {
+            diff_pct: 90.0,
+            selis_blank: true,
+            oracle_blank: false,
+        };
+        let (sig, _) = classify_pair(Ok(&blank), Ok(&painted), Some(&cmp));
+        assert_eq!(sig, "blank");
+        let skewed = rgb_paint(100, 100);
+        let cmp = Comparison {
+            diff_pct: 30.0,
+            selis_blank: false,
+            oracle_blank: false,
+        };
+        let (sig, _) = classify_pair(Ok(&skewed), Ok(&rgb_paint(120, 100)), Some(&cmp));
+        assert_eq!(sig, "size_skew");
+        let cmp = Comparison {
+            diff_pct: 40.0,
+            selis_blank: false,
+            oracle_blank: false,
+        };
+        let (sig, _) = classify_pair(Ok(&painted), Ok(&rgb_paint(10, 10)), Some(&cmp));
+        assert_eq!(sig, "diff>=25");
+    }
+
+    #[test]
+    fn percentiles_are_nearest_rank() {
+        let mut v = vec![10.0, 20.0, 30.0, 40.0];
+        assert_eq!(percentile(&v, 50.0), Some(20.0));
+        assert_eq!(percentile(&v, 51.0), Some(30.0));
+        assert_eq!(percentile(&v, 100.0), Some(40.0));
+        assert_eq!(percentile(&v, 0.0), Some(10.0));
+        assert_eq!(percentile(&mut Vec::new(), 50.0), None);
+        let stats = diff_stats(&mut vec![100.0, 1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(stats.n, 5);
+        assert_eq!(stats.p50, Some(3.0));
+        assert_eq!(stats.max, Some(100.0));
     }
 
     // ── helpers ──

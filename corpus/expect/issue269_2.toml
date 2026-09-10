@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "selis_timeout"
+verdict = "OurBug"
+note = "needs ~90-120s: exceeds the CONF.01 90s harness budget; renders with 120s - known-slow (SL-1.ROB follow-up)"

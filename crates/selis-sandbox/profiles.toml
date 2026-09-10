@@ -38,10 +38,23 @@ pixels = 4000000           # e.g. 2000 x 2000
 
 [[surface]]
 name = "Viewer"
+# SL-2.CONF.05 corpus tuning: the 5 s wall flapped at the boundary on real
+# 200k-object documents (govdocs1/000146 needed 5.0006 s) and could not honour
+# this profile's own "500 MB behemoth" requirement — opening + first paint on
+# such files takes ~5-11 s of resolution. 15 s keeps a 3x margin over the
+# observed corpus need while still bounding hostile work; normal documents
+# stay far under the 03-CONVENTIONS §12 first-paint budget (250 ms/5 MB).
 bytes = 268435456          # 256 MiB
-wall = 5000000000          # 5 s
+wall = 15000000000         # 15 s
 depth = 64
-objects = 200000
+# SL-2.CONF.05 corpus tuning: 200,000 refused four real-world documents
+# (govdocs1/000/000146, govdocs1/000/000380, issue12295, issue12810) that need
+# ~200,001 resolved objects and that MuPDF renders — and contradicted this
+# profile's own requirement to open a "500 MB behemoth" (real 500 MB PDFs
+# average 200-500 bytes per indirect object, i.e. ~1-2.5 M objects). 1 M
+# matches the Editor surface; the binding memory constraint stays `bytes`
+# (256 MiB), which objects do not relax.
+objects = 1000000
 pixels = 200000000
 
 [[surface]]

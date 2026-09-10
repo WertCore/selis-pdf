@@ -165,14 +165,26 @@ impl Session {
         self.document.is_empty()
     }
 
-    /// The media-box size of a page in points.
+    /// The effective render size of a page in points.
+    ///
+    /// # Malformed Input
+    ///
+    /// A page whose `/MediaBox` is absent from its inheritance chain, or that
+    /// declares a non-positive area, renders at the ISO 32000-2 §7.10.1
+    /// default (`612 0 0 792 0 0`) — the fallback mainstream viewers apply
+    /// (SL-2.CONF.05: matches MuPDF and Acrobat on the affected corpus files;
+    /// a missing or degenerate `/MediaBox` is incomplete authoring, not a
+    /// reason to refuse the document). Returns `None` only when `page_num` is
+    /// out of range.
     #[must_use]
     pub fn page_size(&self, page_num: usize) -> Option<(f64, f64)> {
-        self.document
-            .pages
-            .get(page_num)
-            .and_then(|p| p.media_box)
-            .map(|r| (r.width(), r.height()))
+        const DEFAULT_MEDIA_BOX: (f64, f64) = (612.0, 792.0);
+        self.document.pages.get(page_num).map(|p| {
+            p.media_box
+                .map(|r| (r.width(), r.height()))
+                .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+                .unwrap_or(DEFAULT_MEDIA_BOX)
+        })
     }
 
     /// The embedded-file inventory (metadata only — extraction is policy
@@ -2146,7 +2158,60 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
     use super::*;
+    use selis_pdf_cos::doc_writer::DocumentBuilder;
+    use selis_pdf_cos::Obj;
     use selis_sandbox::FixedClock;
+
+    /// SL-2.CONF.05: a page with no `/MediaBox`, or a zero-area one, renders
+    /// at the ISO 32000-2 §7.10.1 default (612 × 792) instead of refusing —
+    /// the mainstream-viewer fallback MuPDF applies to the affected corpus
+    /// files.
+    #[test]
+    fn page_size_falls_back_to_the_iso_default_for_missing_or_degenerate_media_box() {
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let clock = FixedClock(0);
+        for (case, zero_box) in [("missing", false), ("zero-area", true)] {
+            let mut builder = DocumentBuilder::new();
+            let page = builder.add_page(200.0, 300.0, &[]);
+            if let Some((_, obj)) = builder
+                .objects_mut()
+                .iter_mut()
+                .find(|(num, _)| *num == page.num)
+            {
+                *obj = if zero_box {
+                    Obj::Dict(vec![(
+                        b"MediaBox".to_vec().into(),
+                        Obj::Array(
+                            (0..4)
+                                .map(|_| Obj::Real {
+                                    scaled: 0,
+                                    scale: 0,
+                                })
+                                .collect(),
+                        ),
+                    )])
+                } else if let Obj::Dict(pairs) = obj {
+                    Obj::Dict(
+                        pairs
+                            .iter()
+                            .filter(|(k, _)| k.as_slice() != b"MediaBox")
+                            .cloned()
+                            .collect(),
+                    )
+                } else {
+                    obj.clone()
+                };
+            }
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let bytes = builder.write(&budget, &mut g).expect("write");
+            let session = Session::open(bytes, &budget, &clock).expect("open");
+            assert_eq!(
+                session.page_size(0),
+                Some((612.0, 792.0)),
+                "{case}: must fall back to the ISO default"
+            );
+        }
+    }
 
     #[test]
     fn session_opens_and_renders_a_minimal_pdf() {

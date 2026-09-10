@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "selis_rejects"
+verdict = "OurBug"
+note = "Viewer wall 5s + object cap 200k refused; objects 1M + wall 15s now render it in ~9s (SL-2.CONF.05)"
