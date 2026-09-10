@@ -69,7 +69,7 @@ fn object_tree_is_bounded_by_the_budget() {
     };
     let g = budget.guard_with(&FixedClock(0), CancelToken::new());
     let b = *g.budget();
-    let result = selis_pdf_cos::parse(&doc, &b);
+    let result = selis_pdf_cos::parse(&doc, &b, &FixedClock(0));
     match result {
         Ok(_) => panic!("50k objects must exceed a 1k object budget"),
         Err(e) => {

@@ -83,6 +83,7 @@ fn rotate_incremental_for_kill_test(
     let session = selis_pdf_engine::Session::open(
         src.clone(),
         &Budget::profile(selis_sandbox::Surface::Viewer),
+        &crate::shell_clock(),
     )
     .map_err(|e| crate::CliError(format!("{path}: {e}")))?;
     let _ = session;

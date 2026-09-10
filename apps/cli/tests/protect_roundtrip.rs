@@ -94,7 +94,8 @@ fn find_pdfium() -> Option<PathBuf> {
 fn corpus_fixture_is_a_valid_unencrypted_pdf() {
     let src = std::fs::read(fixture()).expect("fixture present");
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    let session = selis_pdf_engine::Session::open(src, &budget).expect("fixture opens");
+    let clock = selis_sandbox::InstantClock::new();
+    let session = selis_pdf_engine::Session::open(src, &budget, &clock).expect("fixture opens");
     assert_eq!(session.len(), 1, "one page");
 }
 
@@ -246,8 +247,10 @@ fn protect_corpus_fixture_round_trips() {
         .expect("spawn selis unlock");
     assert!(status.success(), "unlock failed with {status}");
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    let session = selis_pdf_engine::Session::open(std::fs::read(&unlocked).unwrap(), &budget)
-        .expect("unlocked output opens");
+    let clock = selis_sandbox::InstantClock::new();
+    let session =
+        selis_pdf_engine::Session::open(std::fs::read(&unlocked).unwrap(), &budget, &clock)
+            .expect("unlocked output opens");
     assert_eq!(session.len(), 1, "one page after unlock");
 }
 
@@ -271,7 +274,8 @@ fn protect_owner_only_corpus_variant_opens_without_password() {
         .expect("spawn selis protect");
     assert!(status.success(), "protect failed with {status}");
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-    let session = selis_pdf_engine::Session::open(std::fs::read(&out).unwrap(), &budget)
+    let clock = selis_sandbox::InstantClock::new();
+    let session = selis_pdf_engine::Session::open(std::fs::read(&out).unwrap(), &budget, &clock)
         .expect("owner-only protected output opens with the empty password");
     assert_eq!(session.len(), 1, "one page");
 }
@@ -425,9 +429,11 @@ fn qpdf_encrypted_r6_file_opens_in_our_engine() {
         .expect("spawn selis unlock");
     assert!(status.success(), "unlock of a qpdf-authored R6 file failed");
     let doc_budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
+    let clock = selis_sandbox::InstantClock::new();
     let session = selis_pdf_engine::Session::open(
         std::fs::read(&unlocked).expect("unlocked output"),
         &doc_budget,
+        &clock,
     )
     .expect("unlocked qpdf-authored file opens in the engine");
     assert_eq!(session.len(), 1, "one page");

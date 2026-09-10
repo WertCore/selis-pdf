@@ -14,7 +14,7 @@ use selis_pdf_doc::Resolver;
 use selis_raster::image::{decode_image, Decode, DecodedImage};
 use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
 use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
-use selis_sandbox::{Budget, BudgetGuard, CancelToken, FixedClock};
+use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 
 use crate::render::render_display_list;
 
@@ -33,15 +33,27 @@ pub struct Session {
 
 impl Session {
     /// Open a PDF document from its source bytes.
-    pub fn open(src: Vec<u8>, budget: &Budget) -> Result<Self> {
-        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
-        // Parse the revisions. When there is no `startxref` at all — truncated
-        // and fuzzed files commonly omit it — or the `startxref` is present but
-        // its target is damaged beyond the xref parser's recovery window, fall
-        // back to scanning for object headers and a `/Root` (SL-1.ROB.01)
-        // instead of refusing the document. Budget, cancellation, and pending
-        // errors propagate as-is; only malformed-input parse failures trigger
-        // the scan-based recovery.
+    ///
+    /// # Budget
+    ///
+    /// Charged against `budget` for the whole open. The clock is injected by
+    /// the caller (SL-0.SBX.07): an L4/L5 shell passes a real monotonic clock
+    /// ([`selis_sandbox::InstantClock`], or a `performance.now` wrapper on the
+    /// web) so the `Budget::wall` deadline actually fires on this path; tests
+    /// pass `FixedClock`/`ManualClock` for determinism. Every sub-guard the
+    /// session builds later measures against the same clock.
+    ///
+    /// # Malformed Input
+    ///
+    /// When there is no `startxref` at all — truncated and fuzzed files
+    /// commonly omit it — or the `startxref` is present but its target is
+    /// damaged beyond the xref parser's recovery window, fall back to
+    /// scanning for object headers and a `/Root` (SL-1.ROB.01) instead of
+    /// refusing the document. Budget, cancellation, and pending errors
+    /// propagate as-is; only malformed-input parse failures trigger the
+    /// scan-based recovery.
+    pub fn open(src: Vec<u8>, budget: &Budget, clock: &dyn Clock) -> Result<Self> {
+        let mut g = budget.guard_with(clock, CancelToken::new());
         let parsed = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
             Some(startxref) => {
                 match selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g) {
@@ -233,28 +245,32 @@ impl Session {
                 detail = "page index"
             )
         })?;
+        // Sub-guards measure against the same injected clock the open path
+        // used (SL-0.SBX.07): the caller's deadline advances for resource
+        // resolution too, instead of resetting at every closure.
+        let clock = g.clock();
         let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
             font_data_inner(&mut res, page.resources.as_ref(), font_name, &mut bg)
         };
         let resolve_smask = move |key: &Bytes| -> Option<Mask> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
             resolve_smask_inner(&mut res, key, &mut bg)
         };
         let resolve_inline_image = move |dict: &[(Bytes, Bytes)], data: &[u8]| {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             resolve_inline_image_inner(dict, data, &mut bg)
         };
         let resolve_shading =
             move |name: &Bytes, state: &selis_pdf_content::display_list::ResolvedState| {
-                let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+                let mut bg = budget_copy.guard_with(clock, CancelToken::new());
                 let mut res = self.new_resolver(&budget_copy);
                 resolve_shading_inner(&mut res, page.resources.as_ref(), name, state, &mut bg)
             };
         let resolve_pattern = move |name: &Bytes| -> Option<selis_raster::pattern::TilingPattern> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             resolve_pattern_inner(self, page.resources.as_ref(), name, &budget_copy, &mut bg)
         };
         // The page's initial backdrop is white (PDF 32000-2 §11.3.1), not
@@ -307,15 +323,16 @@ fn build_display_list(
     g: &mut BudgetGuard<'_>,
 ) -> Result<selis_pdf_content::display_list::DisplayList> {
     let budget_copy = *budget;
+    let clock = g.clock();
     let font_width = move |font_name: &Bytes, code: u16, key: Option<&Bytes>| -> f64 {
-        let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+        let mut bg = budget_copy.guard_with(clock, CancelToken::new());
         let mut res = session.new_resolver(&budget_copy);
         let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
         font_width_inner(&mut res, r.as_ref(), font_name, code, &mut bg).unwrap_or(0.0)
     };
     let resolve_do =
         move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = session.new_resolver(&budget_copy);
             let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
             resolve_xobject_inner(&mut res, r.as_ref(), name, &mut bg)
@@ -326,7 +343,7 @@ fn build_display_list(
         move |name: &Bytes,
               key: Option<&Bytes>|
               -> Option<Vec<(Bytes, selis_pdf_content::dispatch::Operand)>> {
-            let mut bg = budget_copy.guard_with(&FixedClock(0), CancelToken::new());
+            let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = session.new_resolver(&budget_copy);
             let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
             resolve_ext_gstate_inner(&mut res, r.as_ref(), name, &mut bg)
@@ -570,7 +587,11 @@ fn resolve_page_content(
     let mut out = Vec::new();
     for r in refs {
         // `resolve_object` cannot parse streams; read the stream directly from
-        // the source at the xref offset.
+        // the source at the xref offset. Malformed-input failures on one
+        // stream are tolerated (the page renders with the rest); budget,
+        // cancellation, and pending errors propagate as-is — an injected wall
+        // deadline must abort the page, not shrink its content
+        // (SL-0.SBX.07).
         match resolve_stream(resolver, *r, g) {
             Ok(Some((dict, data))) => {
                 let filter = dict
@@ -590,6 +611,7 @@ fn resolve_page_content(
                     out.extend_from_slice(&data);
                 }
             }
+            Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => return Err(e),
             _ => {}
         }
     }
@@ -2093,12 +2115,13 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
     use super::*;
+    use selis_sandbox::FixedClock;
 
     #[test]
     fn session_opens_and_renders_a_minimal_pdf() {
         let src = include_bytes!("fixtures/minimal.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
         assert_eq!(session.len(), 1);
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
@@ -2118,7 +2141,7 @@ mod tests {
     fn session_renders_an_image_xobject() {
         let src = include_bytes!("fixtures/image.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
         assert_eq!(session.len(), 1);
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
@@ -2137,7 +2160,7 @@ mod tests {
     fn session_renders_an_image_xobject_with_indirect_resources() {
         let src = include_bytes!("fixtures/image-indirect-resources.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
         assert_eq!(session.len(), 1);
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
@@ -2155,7 +2178,7 @@ mod tests {
     fn session_renders_embedded_text() {
         let src = include_bytes!("fixtures/text.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2000, 200).expect("pixmap");
         session
@@ -2181,7 +2204,7 @@ mod tests {
     fn session_renders_a_form_xobject() {
         let src = include_bytes!("fixtures/form.pdf");
         let budget = Budget::profile(selis_sandbox::Surface::Viewer);
-        let session = Session::open(src.to_vec(), &budget).expect("open");
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
         assert_eq!(session.len(), 1);
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");

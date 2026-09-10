@@ -1,4 +1,4 @@
-﻿//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
+//! The `selis` command-line interface (SL-1.COS.10, SL-1.COS.11).
 //!
 //! Phase 1 ships the structural inspector the qpdf oracle compares against:
 //! `selis inspect --json <file>` dumps revisions, xref entries, and
@@ -23,6 +23,8 @@ use selis_error::{Code, Result};
 mod batch;
 mod check;
 mod clear_permissions;
+#[cfg(test)]
+mod clock_wiring;
 mod compress;
 mod convert;
 #[cfg(debug_assertions)]
@@ -650,6 +652,18 @@ pub(crate) fn write_file(path: &str, bytes: &[u8]) -> CliResult<()> {
 
 fn parse_budget() -> selis_sandbox::Budget {
     selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer)
+}
+
+/// The real clock for this shell (SL-0.SBX.07).
+///
+/// The CLI is the L5 binding boundary — the one place in the stack where
+/// `Budget::wall` may be measured against a genuine monotonic clock. Every
+/// command constructs one per operation and hands the same instance to
+/// `Session::open` and its guards, so an injected deadline bounds that
+/// operation (and every sub-guard below it) rather than never firing.
+#[must_use]
+pub(crate) fn shell_clock() -> selis_sandbox::InstantClock {
+    selis_sandbox::InstantClock::new()
 }
 
 fn err_unimplemented(what: &str) -> CliError {

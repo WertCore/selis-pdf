@@ -51,7 +51,7 @@ pub use xref::{parse_classic_xref, XrefEntry, XrefIndex};
 pub use xref_stream::{parse_object_stream, parse_xref_stream, XrefStream};
 
 use selis_error::Result;
-use selis_sandbox::{Budget, BudgetGuard, FixedClock, Surface};
+use selis_sandbox::{Budget, BudgetGuard, Clock, Surface};
 
 /// A parsed document, placeholder for the full document model (SL-1.DOC.*).
 ///
@@ -75,15 +75,19 @@ pub struct Document {
 ///
 /// # Budget
 ///
-/// The caller supplies a [`Budget`]; every token and object is charged, and the
-/// wall-clock is checked so a hostile file of infinite tokens terminates.
+/// The caller supplies a [`Budget`]; every token and object is charged, and
+/// the wall-clock deadline is checked at every `tick`, so a hostile file of
+/// infinite tokens terminates. The clock is likewise the caller's: below L4
+/// this crate cannot name a real clock, so the shell injects one (a real
+/// monotonic clock at the L4/L5 boundary, `FixedClock`/`ManualClock` in
+/// tests and fuzz harnesses — SL-0.SBX.07).
 ///
 /// # Malformed Input
 ///
 /// Anything that is not strict COS is either recorded as a [`Deviation`] or
 /// returned as a typed error — never a panic.
-pub fn parse(src: &[u8], budget: &Budget) -> Result<Document> {
-    let mut g = BudgetGuard::new(*budget, &NO_CLOCK, Default::default());
+pub fn parse(src: &[u8], budget: &Budget, clock: &dyn Clock) -> Result<Document> {
+    let mut g = BudgetGuard::new(*budget, clock, Default::default());
     let mut lexer = Lexer::new(src);
     let mut tokens = Vec::new();
     while let Some(tok) = lexer.next_token(&mut g)? {
@@ -98,17 +102,16 @@ pub fn parse(src: &[u8], budget: &Budget) -> Result<Document> {
     })
 }
 
-static NO_CLOCK: FixedClock = FixedClock(0);
-
 /// Open a document under the viewer profile, for tools and tests.
 ///
 /// # Budget
 ///
-/// Uses the [`Surface::Viewer`] profile.
+/// Uses the [`Surface::Viewer`] profile; the clock is the caller's (see
+/// [`parse`]).
 ///
 /// # Malformed Input
 ///
 /// As [`parse`].
-pub fn open(src: &[u8]) -> Result<Document> {
-    parse(src, &Budget::profile(Surface::Viewer))
+pub fn open(src: &[u8], clock: &dyn Clock) -> Result<Document> {
+    parse(src, &Budget::profile(Surface::Viewer), clock)
 }

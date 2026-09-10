@@ -141,7 +141,8 @@ pub(crate) fn optimise_file(path: &str, output: &str) -> CliResult<Report> {
     // only opens through scan-based recovery) is not a compressible document;
     // refuse rather than ship a broken file (WRITE.07).
     let doc_budget = Budget::profile(selis_sandbox::Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget).is_err() {
+    let clock = crate::shell_clock();
+    if selis_pdf_engine::Session::open(bytes.clone(), &doc_budget, &clock).is_err() {
         return Err(CliError(format!(
             "{path}: output failed verification (no usable document model)"
         )));

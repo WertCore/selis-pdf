@@ -336,7 +336,8 @@ fn verify_output(bytes: &[u8], expected_root: Ref, path: &str) -> CliResult<()> 
         )));
     }
     let doc_budget = Budget::profile(Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget).is_err() {
+    let clock = crate::shell_clock();
+    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock).is_err() {
         return Err(CliError(format!(
             "{path}: output failed verification (no usable document model)"
         )));
@@ -645,8 +646,8 @@ mod tests {
         // The output still opens in the engine with the empty user password,
         // and the content stream still decrypts (same file key).
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let session =
-            selis_pdf_engine::Session::open(out, &budget).expect("output opens in the engine");
+        let session = selis_pdf_engine::Session::open(out, &budget, &crate::shell_clock())
+            .expect("output opens in the engine");
         assert_eq!(session.len(), 1, "one page");
     }
 
@@ -677,8 +678,8 @@ mod tests {
         );
         // The output opens in the engine with the (empty) user password.
         let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
-        let session =
-            selis_pdf_engine::Session::open(out, &budget).expect("output opens in the engine");
+        let session = selis_pdf_engine::Session::open(out, &budget, &crate::shell_clock())
+            .expect("output opens in the engine");
         assert_eq!(session.len(), 1, "one page");
     }
 }

@@ -12,7 +12,9 @@ clap = { workspace = true, features = ["derive"] }
 selis-bytes = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-engine = { workspace = true }
-selis-sandbox = { workspace = true }
+# xtask is a tool at the shell boundary: it supplies the real monotonic clock
+# so engine calls it drives measure genuine wall deadlines (SL-0.SBX.07).
+selis-sandbox = { workspace = true, features = ["instant-clock"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

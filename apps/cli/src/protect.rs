@@ -576,7 +576,8 @@ fn verify_output(bytes: &[u8], expect: VerifyExpectations, path: &str) -> CliRes
     // is proven by the authenticate + /Perms checks above and the round-trip
     // tests).
     let doc_budget = Budget::profile(Surface::Viewer);
-    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget).is_err() {
+    let clock = crate::shell_clock();
+    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock).is_err() {
         return Err(CliError(format!(
             "{path}: output failed verification (no usable document model)"
         )));
@@ -974,7 +975,7 @@ mod tests {
         );
         let budget = Budget::profile(Surface::Viewer);
         assert!(
-            selis_pdf_engine::Session::open(unlocked, &budget).is_ok(),
+            selis_pdf_engine::Session::open(unlocked, &budget, &crate::shell_clock()).is_ok(),
             "unlocked output opens"
         );
     }
@@ -1176,7 +1177,8 @@ mod tests {
         .expect("protect");
         let out = std::fs::read(&paths.output).unwrap();
         let budget = Budget::profile(Surface::Viewer);
-        let session = selis_pdf_engine::Session::open(out, &budget).expect("opens");
+        let session =
+            selis_pdf_engine::Session::open(out, &budget, &crate::shell_clock()).expect("opens");
         assert_eq!(session.len(), 1, "one page");
     }
 
