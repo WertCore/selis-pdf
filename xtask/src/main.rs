@@ -17,11 +17,13 @@ mod fuzz;
 mod layers;
 mod oracle;
 mod perf_check;
+mod png;
 mod purity;
 mod render_perf;
 mod render_set;
 mod sbom;
 mod size_check;
+mod sweep;
 mod synthetic;
 mod unsafe_check;
 mod wild;
@@ -232,6 +234,36 @@ enum OracleSub {
         #[arg(long = "clear", value_name = "SIGNATURE")]
         clear: Vec<String>,
     },
+    /// Full-corpus differential render sweep (SL-2.CONF.01): render page 1 of
+    /// every corpus PDF with selis and the named oracles at the given DPIs,
+    /// compare with the compare-render machinery, and group outcomes by
+    /// disagreement signature. Report + per-file verdicts go to `--out`.
+    Sweep {
+        /// Oracle tools to compare against (repeatable).
+        #[arg(long = "tool", value_name = "TOOL", default_value = "mutool")]
+        tool: Vec<String>,
+        /// DPIs to sweep (comma-separated).
+        #[arg(long, value_delimiter = ',', default_value = "72,150,300")]
+        dpi: Vec<u32>,
+        /// Deterministic stride sample instead of the whole corpus.
+        #[arg(long)]
+        sample: Option<usize>,
+        /// Output directory for verdicts.jsonl + sweep-report.json.
+        #[arg(long, default_value = "target/sweep")]
+        out: std::path::PathBuf,
+        /// Wall-clock budget per render (seconds).
+        #[arg(long, default_value_t = 60)]
+        timeout_secs: u64,
+        /// Parallel workers (default: one per CPU).
+        #[arg(long)]
+        jobs: Option<usize>,
+        /// Explicit selis binary (default: the release target dir).
+        #[arg(long)]
+        selis: Option<std::path::PathBuf>,
+        /// Skip (file, tool, dpi) outcomes already in verdicts.jsonl.
+        #[arg(long, default_value_t = false)]
+        resume: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -352,6 +384,26 @@ fn main() -> ExitCode {
                     note,
                     clear,
                 })
+            }),
+            OracleSub::Sweep {
+                tool,
+                dpi,
+                sample,
+                out,
+                timeout_secs,
+                jobs,
+                selis,
+                resume,
+            } => sweep::run(sweep::SweepConfig {
+                tools: tool,
+                dpis: dpi,
+                sample,
+                out,
+                timeout: std::time::Duration::from_secs(timeout_secs),
+                jobs: jobs
+                    .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())),
+                selis,
+                resume,
             }),
         },
         Command::Fuzz => fuzz::check(),

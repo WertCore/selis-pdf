@@ -2366,6 +2366,7 @@ dependencies = [
  "selis-pdf-content",
  "selis-pdf-cos",
  "selis-pdf-engine",
+ "selis-pdf-filter",
  "selis-sandbox",
  "serde",
  "serde_json",

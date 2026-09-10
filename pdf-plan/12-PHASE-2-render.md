@@ -152,6 +152,26 @@ every user on every page.
     configuration, "for print" vs "for screen", text-rendering hints, and a `RenderIntent`.
   - **DoD:** Every parameter has a corpus case proving it changes output as documented.
 
+- [ ] **SL-2.RAST.12 — Page `/Rotate` in the render surface** · deps: RAST.11 · owner: AI
+  - **Do:** Apply page `/Rotate` (0/90/180/270) to the render canvas and CTM so a rotated page's
+    output geometry matches other renderers. Found by the SL-2.CONF.01 sweep: 17 files render
+    1240×1755 where the oracle renders 1755×1240 — selis paints the unrotated `/MediaBox`
+    (ISO 32000-2 §14.11.2: rotation is part of the rendered page view, and `font_ascent_descent`,
+    `synthetic/rotate_270`, and 15 govdocs files show it).
+  - **Files:** `crates/selis-pdf-engine` (page geometry in the render path), `apps/cli/src/render.rs`.
+  - **DoD:** Corpus `page-rotate` (90/180/270, plus `/Rotate` with swapped MediaBox dimensions)
+    matches MuPDF at 150 DPI within tolerance; the sweep's `size_skew` cluster empties.
+
+- [ ] **SL-2.RAST.13 — Silent blank renders (CONF.01 `blank_selis` cluster)** · deps: RAST.04 · owner: AI
+  - **Do:** Root-cause the 25 files where selis paints page 1 (near-)blank while MuPDF paints
+    content (`bug1743245`, veraPDF test suite `6-3-3-t01-fail-b` (annotation appearances),
+    `govdocs1/000/000164`, `issue11124`, `issue11878`). Candidates: annotation `/AP` appearance
+    streams, soft-mask backdrops, silently-skipped XObjects. A silent no-draw is a correctness
+    bug even when the construct is otherwise unsupported — it must at least surface as a typed
+    deviation.
+  - **DoD:** Every cluster file either renders non-blank or reports a typed deviation; a corpus
+    entry per confirmed root cause.
+
 ---
 
 ## 2.FILT — Codec completion
@@ -187,10 +207,73 @@ every user on every page.
 
 ## 2.CONF — Conformance checkpoint
 
-- [ ] **SL-2.CONF.01 — Full-corpus differential render sweep** · deps: RAST.11 · owner: AI+
+- [x] **SL-2.CONF.01 — Full-corpus differential render sweep** · deps: RAST.11 · owner: AI+
   - **Do:** Render the whole corpus at 72/150/300 DPI against PDFium and pdf.js; triage per
     `SL-0.ORACLE.05`; file a task per root cause.
   - **DoD:** The G2 threshold met, or an explicit, itemised list of what is not met and why.
+  - **Done (2026-09-10):** `xtask oracle sweep` (ORACLE.05-style signature clustering over page 1
+    of every corpus file, ΔE76 > 2.3, 0.5% per-file threshold) ran the full 3,836-file corpus at
+    72/150/300 DPI — 11,508 (file, DPI) outcomes, 11,240 comparable — selis (per-file Viewer
+    Budget, wall-clock bounded, every failure a typed outcome) vs the locally available oracle
+    **MuPDF mutool 1.23.0**. Docker is unavailable on the dev host, so the PDFium/pdf.js legs run
+    in the scheduled CI `render-conf` job (pinned GHCR oracle images; cron + workflow_dispatch).
+    Sweep artifacts live outside the repo (`C:\selis-build\conf01-sweep\`).
+    **G2 is NOT met locally: 27.17% within tolerance at 150 DPI (1,018/3,747 comparable) vs the
+    ≥95% criterion** — the itemised gap list and the filed root-cause tasks are in
+    *2.CONF.01 sweep readout* below.
+
 - [ ] **SL-2.CONF.02 — Promote conformance areas** · deps: CONF.01 · owner: AI
   - **Do:** Update `conformance/areas.toml`. Areas that did not reach `Render` stay at `Parse` and
     are marked as such publicly (ADR-P0010).
+
+### 2.CONF.01 sweep readout — G2 gap list (2026-09-10, selis vs MuPDF, page 1, ΔE76 > 2.3)
+
+G2 exit criterion: "perceptual diff vs PDFium ≤ 0.5% differing pixels on ≥95% of the render corpus
+at 150 DPI". **Not met.** Itemised, per signature (SL-0.ORACLE.05 clustering):
+
+| Signature @150 DPI | Files | Reading / disposition |
+|---|---|---|
+| `match` (≤ 0.5%) | 1,018 of 3,747 comparable = **27.17%** (72 DPI: 24.0%, 300 DPI: 27.9%) | **G2 not met.** Agreement *rises* with DPI — the dominant mass sits just above the threshold |
+| `diff<5` (0.5–5%) | 2,161 (median 1.68%) | One dominant mode ~1–2% — the rasteriser-AA/edge-coverage signature. Whether this is "wrong" or noise is exactly what oracle-vs-oracle calibration (SL-0.ORACLE.02) must decide: PDFium-vs-pdf.js agreement on this corpus is unmeasured, and two independent engines rarely agree to 0.5% at ΔE76 > 2.3. → **SL-2.CONF.03** |
+| `diff<25` (5–25%) | 439 | Substantive divergence (fonts, images, shadings). → **SL-2.CONF.04** |
+| `diff>=25` | 94 | Gross divergence; worst are DeviceN 6-colour (55.9%), ICC source profiles, softmask text — prepress colour paths. Ghent suite: **0/95** within tolerance. → **SL-2.CONF.04** |
+| `blank_selis` | 18 (25 distinct files) | We paint page 1 (near-)blank where MuPDF paints — annotation `/AP` appearance candidates; a silent no-draw is a bug even for unsupported constructs. → **SL-2.RAST.13** |
+| `size_skew` | 17 | Page `/Rotate` rendered unrotated (ours 1240×1755 vs oracle 1755×1240). A definite our-bug. → **SL-2.RAST.12** |
+| `selis_rejects` | 26 | `budget exceeded (objects) limit 200000` on real-world govdocs files under the Viewer profile; hard refusals on zero-area / missing-`/MediaBox` pages. → **SL-2.CONF.05** |
+| `oracle_rejects` | 35 | MuPDF-side failures (encryption/repair) — not a Selis conformance claim. |
+| `both_reject` | 28 | Agreement on genuinely broken files (mutants, fuzzed files). |
+
+By source @150 (within-tolerance / comparable): verapdf 805/2679 · flat (pdf.js corpus + pdfassoc)
+169/610 · synthetic 42/165 · govdocs1 2/198 · ghent 0/95.
+
+Explicitly **not yet measured**: the G2 oracle pair itself. PDFium and pdf.js render the same
+sample in the CI `render-conf` job (pinned GHCR images, digest-locked in `xtask/oracles.toml`); its
+artifacts close the two open questions — our agreement against each of them, and their agreement
+with each other (calibration). Per §4 (21-TESTING-AND-ORACLES), two independent oracles are the
+minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the render-conf run.
+
+- [ ] **SL-2.CONF.03 — Oracle-vs-oracle calibration of the render tolerance** · deps: CONF.01 · owner: AI
+  - **Do:** Measure PDFium-vs-pdf.js agreement over the same render sample (CI `render-conf`
+    artifacts; SL-0.ORACLE.02). The CONF.01 `diff<5` bucket (2,161 files @150, median 1.68%) is a
+    single mode just above the 0.5% threshold; if independent oracles agree at ~1–2% on those
+    pages, the threshold measures rasteriser identity, not correctness, and the §3 tolerances of
+    20-CONFORMANCE-PROGRAM.md get revised with the published calibration numbers.
+  - **DoD:** Calibration table published next to the tolerances; the G2 threshold either confirmed
+    or re-baselined with that data — never adjusted because a build is red.
+
+- [ ] **SL-2.CONF.04 — Gross-divergence triage (CONF.01 `diff>=25%` cluster)** · deps: CONF.01 · owner: AI
+  - **Do:** Root-cause the 94 files at ≥25% differing pixels @150 (worst: `ghent/GWG080_
+    DeviceN-Support_6c_x3` 55.9%, `ghent/GWG1610_Softmasks_Text_part1_X4` 55.1%, `issue6296`,
+    `issue6298`, `issue8565`, `franz_2`). Suspects: DeviceN/Separation tint→RGB paths, CMYK→RGB
+    conversion, JPX/JBIG2 decode differences. One filed task per confirmed root cause; verdicts
+    recorded per SL-0.ORACLE.05.
+  - **DoD:** Every cluster file carries a triage verdict; behaviour-changing fixes add corpus
+    entries.
+
+- [ ] **SL-2.CONF.05 — Typed-refusal review for batch render contexts** · deps: CONF.01 · owner: AI
+  - **Do:** Review the sweep's `selis_rejects` cluster (26 @150): `budget exceeded (objects) limit
+    200000` on real-world govdocs files under the Viewer profile, and hard refusals on pages with
+    no `/MediaBox` or zero area where other renderers fall back to a default size. Decide per
+    case: a batch/profile budget tier, a default-page-size fallback (with a recorded deviation),
+    or keep the refusal as the designed posture (with annotations).
+  - **DoD:** Each refusal cluster annotated with the decision; expectations updated.

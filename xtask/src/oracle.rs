@@ -190,36 +190,32 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
     }
 }
 
-/// Render a PDF page to a PNG. Uses the local binary when present, else the
-/// pinned container.
+/// Render a PDF page to an image. Uses the local binary when present, else
+/// the pinned container.
 fn render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
-    if !file.exists() {
-        return Err(format!("{}: no such file", file.display()));
-    }
     let out_dir = std::env::temp_dir().join("selis-oracle-render");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("{out_dir:?}: {e}"))?;
-
-    // pdf.js has no local binary: its comparability comes from the pinned
-    // pdfjs-dist version inside the container, so it is always dispatched
-    // there (see docker/oracles/pdfjs/).
-    if tool == "pdfjs" {
-        return render_container(tool, dpi, file, &out_dir);
+    let ext = if tool == "mutool" || tool == "mupdf" {
+        "ppm"
+    } else {
+        "png"
+    };
+    let out = out_dir.join(format!("{tool}-{dpi}.{ext}"));
+    let (program, args) = plan_oracle_render(tool, dpi, file, &out)?;
+    let status = Command::new(&program)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("cannot run {tool} ({program:?}): {e}"))?;
+    if status.success() && out.exists() {
+        println!("{}: rendered {} -> {}", tool, file.display(), out.display());
+        Ok(())
+    } else {
+        Err(format!("{tool}: render failed (exit {status})"))
     }
-
-    let binary = TOOL_BINARY
-        .iter()
-        .find(|(id, _)| *id == tool)
-        .map(|(_, b)| *b)
-        .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
-
-    if let Some(local) = find_local(binary) {
-        return render_local(tool, &local, dpi, file, &out_dir);
-    }
-    render_container(tool, dpi, file, &out_dir)
 }
 
 /// The path to a local oracle binary, if installed on PATH.
-fn find_local(binary: &str) -> Option<PathBuf> {
+pub(crate) fn find_local(binary: &str) -> Option<PathBuf> {
     let probe = if std::env::consts::OS == "windows" {
         format!("{binary}.exe")
     } else {
@@ -231,57 +227,88 @@ fn find_local(binary: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Rasterise with the native binary.
-fn render_local(
-    tool: &str,
-    binary: &Path,
-    dpi: u32,
-    file: &Path,
-    out_dir: &Path,
-) -> Result<(), String> {
-    let out = out_dir.join(format!("{tool}-{dpi}.png"));
-    let status = match tool {
-        "ghostscript" => Command::new(binary)
-            .arg("-sDEVICE=png16m")
-            .arg("-r")
-            .arg(dpi.to_string())
-            .arg("-o")
-            .arg(&out)
-            .arg(file)
-            .status(),
-        "mupdf" | "mutool" => Command::new(binary)
-            .arg("draw")
-            .arg("-r")
-            .arg(dpi.to_string())
-            .arg("-o")
-            .arg(&out)
-            .arg(file)
-            .status(),
-        "pdfium" => Command::new(binary)
-            .arg("--page")
-            .arg("1")
-            .arg("--dpi")
-            .arg(dpi.to_string())
-            .arg(file)
-            .arg(&out)
-            .status(),
-        _ => return Err(format!("unknown oracle tool `{tool}`")),
-    }
-    .map_err(|e| format!("cannot run {tool} ({binary:?}): {e}"))?;
-    if status.success() && out.exists() {
-        println!("{}: rendered {} -> {}", tool, file.display(), out.display());
-        Ok(())
-    } else {
-        Err(format!("{tool}: render failed (exit {status})"))
-    }
+/// The local binary that renders for `tool`, if one is installed.
+fn local_binary(tool: &str) -> Option<PathBuf> {
+    TOOL_BINARY
+        .iter()
+        .find(|(id, _)| *id == tool)
+        .map(|(_, binary)| *binary)
+        .and_then(find_local)
 }
 
-/// Rasterise with the pinned container image (see `xtask/oracles.toml`).
+/// The exact command that renders **page 1** of `file` at `dpi` into `out`
+/// with the named oracle: local-first, pinned-container fallback.
 ///
-/// The image runs `docker/oracles/<tool>/driver.*` with the same CLI
-/// contract the local binary honours; the file is mounted read-only and the
-/// PNG is written to a bind-mounted output path.
-fn render_container(tool: &str, dpi: u32, file: &Path, out_dir: &Path) -> Result<(), String> {
+/// Every oracle is pinned to page 1 -- `mutool draw` without a page range
+/// renders *every* page into the same `-o` file (last page wins), which
+/// silently compared selis's page 0 against the oracle's *last* page.
+/// Selis's `--page 0` (0-based) is the same page as the oracles' page 1.
+///
+/// The sweep executes the returned plan under a wall-clock budget
+/// (`xtask/src/sweep.rs`); `oracle render` runs it directly.
+pub(crate) fn plan_oracle_render(
+    tool: &str,
+    dpi: u32,
+    file: &Path,
+    out: &Path,
+) -> Result<(PathBuf, Vec<String>), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    let dpi_str = dpi.to_string();
+    // pdf.js has no local binary: its comparability comes from the pinned
+    // pdfjs-dist version inside the container, so it is always dispatched
+    // there (see docker/oracles/pdfjs/).
+    if tool != "pdfjs" {
+        if let Some(binary) = local_binary(tool) {
+            let (file_str, out_str) = (file.display().to_string(), out.display().to_string());
+            let args = match tool {
+                "ghostscript" => vec![
+                    "-sDEVICE=png16m".to_string(),
+                    "-dFirstPage=1".to_string(),
+                    "-dLastPage=1".to_string(),
+                    "-r".to_string(),
+                    dpi_str,
+                    "-o".to_string(),
+                    out_str,
+                    file_str,
+                ],
+                "mupdf" | "mutool" => vec![
+                    "draw".to_string(),
+                    "-r".to_string(),
+                    dpi_str,
+                    "-o".to_string(),
+                    out_str,
+                    file_str,
+                    // Page range: page 1 only (see doc comment).
+                    "1".to_string(),
+                ],
+                "pdfium" => vec![
+                    "--page".to_string(),
+                    "1".to_string(),
+                    "--dpi".to_string(),
+                    dpi_str,
+                    file_str,
+                    out_str,
+                ],
+                other => return Err(format!("unknown oracle tool `{other}`")),
+            };
+            return Ok((binary, args));
+        }
+    }
+    container_plan(tool, &dpi_str, file, out)
+}
+
+/// The pinned-container render plan (see `xtask/oracles.toml`): the file is
+/// mounted read-only at `/in.pdf`, the output written to `/out.img`. The argv
+/// per tool mirrors the smoke-tested contracts in `oracle-images.yml` --
+/// `mutool draw` takes `-r`, not `--dpi`, and writes via `-o`.
+fn container_plan(
+    tool: &str,
+    dpi: &str,
+    file: &Path,
+    out: &Path,
+) -> Result<(PathBuf, Vec<String>), String> {
     if find_local("docker").is_none() {
         return Err(format!(
             "{tool}: not installed locally and Docker is not available. \
@@ -293,44 +320,53 @@ fn render_container(tool: &str, dpi: u32, file: &Path, out_dir: &Path) -> Result
         .get(tool)
         .ok_or_else(|| format!("{tool}: no [tool.{tool}] pin recorded in {ORACLES_TOML}"))?;
     let image = image_ref(pin, tool)?;
-    let out = out_dir.join(format!("{tool}-{dpi}.png"));
-    // Contract per oracle driver (see docker/oracles/*/Dockerfile):
-    //   mutool draw | gs | pdfium_driver --page 1 --dpi N <in> <out> | pdfjs ...
-    let mut cmd = Command::new("docker");
-    cmd.arg("run")
-        .arg("--rm")
-        .arg("-v")
-        .arg(format!(
-            "{}:/in.pdf:ro",
-            file.canonicalize().map_err(|e| e.to_string())?.display()
-        ))
-        .arg("-v")
-        .arg(format!("{}:/out.png", out.display()));
-    match tool {
-        "mupdf" | "mutool" => {
-            cmd.arg(image).arg("draw");
-        }
-        "ghostscript" => {
-            cmd.arg(image).arg("-sDEVICE=png16m");
-        }
-        "pdfium" | "pdfjs" => {
-            cmd.arg(image).arg("--page").arg("1");
-        }
-        _ => return Err(format!("unknown oracle tool `{tool}`")),
-    }
-    let status = cmd
-        .arg("--dpi")
-        .arg(dpi.to_string())
-        .arg("/in.pdf")
-        .arg("/out.png")
-        .status()
-        .map_err(|e| format!("cannot run docker: {e}"))?;
-    if status.success() && out.exists() {
-        println!("{}: rendered {} -> {}", tool, file.display(), out.display());
-        Ok(())
-    } else {
-        Err(format!("{tool}: container render failed (exit {status})"))
-    }
+    let mount_in = format!(
+        "{}:/in.pdf:ro",
+        file.canonicalize().map_err(|e| e.to_string())?.display()
+    );
+    let mount_out = format!("{}:/out.img", out.display());
+    let tool_args = match tool {
+        "mupdf" | "mutool" => vec![
+            "draw".to_string(),
+            "-r".to_string(),
+            dpi.to_string(),
+            "-o".to_string(),
+            "/out.img".to_string(),
+            "/in.pdf".to_string(),
+            // Page range: page 1 only (see `plan_oracle_render`).
+            "1".to_string(),
+        ],
+        "ghostscript" => vec![
+            "-sDEVICE=png16m".to_string(),
+            "-dFirstPage=1".to_string(),
+            "-dLastPage=1".to_string(),
+            "-r".to_string(),
+            dpi.to_string(),
+            "-o".to_string(),
+            "/out.img".to_string(),
+            "/in.pdf".to_string(),
+        ],
+        "pdfium" | "pdfjs" => vec![
+            "--page".to_string(),
+            "1".to_string(),
+            "--dpi".to_string(),
+            dpi.to_string(),
+            "/in.pdf".to_string(),
+            "/out.img".to_string(),
+        ],
+        other => return Err(format!("unknown oracle tool `{other}`")),
+    };
+    let mut args: Vec<String> = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "-v".to_string(),
+        mount_in,
+        "-v".to_string(),
+        mount_out,
+        image,
+    ];
+    args.extend(tool_args);
+    Ok((PathBuf::from("docker"), args))
 }
 
 /// Print the pinned container image ref for one tool (digest-qualified when
@@ -645,7 +681,6 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
 
     let our_ppm = out_dir.join("our.ppm");
-    let their_ppm = out_dir.join("their.ppm");
 
     // 1. Render with selis (same DPI as the oracle).
     let status = Command::new(&selis_bin)
@@ -662,30 +697,36 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
         return Err("selis render failed".to_string());
     }
 
-    // 2. Render with the oracle (mutool draw to PPM).
-    let binary = TOOL_BINARY
-        .iter()
-        .find(|(id, _)| *id == tool)
-        .map(|(_, b)| *b)
-        .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
-    let local = find_local(binary)
-        .ok_or_else(|| format!("{tool} not installed locally; install it first"))?;
-    let status = Command::new(&local)
-        .arg("draw")
-        .arg("-r")
-        .arg(dpi.to_string())
-        .arg("-o")
-        .arg(&their_ppm)
-        .arg(file)
+    // 2. Render page 1 with the oracle (planner: local-first, container
+    //    fallback; PPM for mutool, PNG for the driver-based oracles).
+    let ext = if tool == "mutool" || tool == "mupdf" {
+        "ppm"
+    } else {
+        "png"
+    };
+    let their_img = out_dir.join(format!("their.{ext}"));
+    let (program, args) = plan_oracle_render(tool, dpi, file, &their_img)?;
+    let status = Command::new(&program)
+        .args(&args)
         .status()
         .map_err(|e| format!("{tool}: {e}"))?;
     if !status.success() {
         return Err(format!("{tool}: render failed"));
     }
 
-    // 3. Parse both PPMs and compare.
+    // 3. Parse both images and compare.
     let ours = parse_ppm(&std::fs::read(&our_ppm).map_err(|e| format!("our.ppm: {e}"))?)?;
-    let theirs = parse_ppm(&std::fs::read(&their_ppm).map_err(|e| format!("their.ppm: {e}"))?)?;
+    let their_bytes = std::fs::read(&their_img).map_err(|e| format!("their.{ext}: {e}"))?;
+    let theirs = if ext == "ppm" {
+        parse_ppm(&their_bytes)?
+    } else {
+        let d = crate::png::decode(&their_bytes)?;
+        PpmImage {
+            width: d.width,
+            height: d.height,
+            rgb: d.rgb,
+        }
+    };
 
     if ours.width != theirs.width || ours.height != theirs.height {
         // selis uses ceil scaling, mutool rounds — tolerate a small delta by
@@ -745,25 +786,26 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     }
 }
 
-/// A minimal PPM P6 decoder (header + RGB bytes).
-struct PpmImage {
-    width: u32,
-    height: u32,
-    rgb: Vec<u8>,
+/// A minimal PPM P6 decoder (header + RGB bytes). Shared with the render
+/// sweep, which normalises both sides into this shape.
+pub(crate) struct PpmImage {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgb: Vec<u8>,
 }
 
-fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
-    // PPM header: "P6\n<width> <height>\n<maxval>\n" followed by raw RGB.
-    // Parse token by token (whitespace-delimited, skipping `#` comments).
+/// Scan up to `want` whitespace-delimited PPM header tokens (skipping `#`
+/// comments). Returns fewer only when the data ends first, with the offset
+/// just past the last token.
+fn ppm_tokens(data: &[u8], want: usize) -> Result<(Vec<String>, usize), String> {
     let mut pos = 0usize;
     let mut tokens = Vec::new();
-    while tokens.len() < 4 {
-        // Skip whitespace.
+    while tokens.len() < want {
         while pos < data.len() && (data[pos] as char).is_whitespace() {
             pos += 1;
         }
         if pos >= data.len() {
-            return Err("invalid PPM header".to_string());
+            break;
         }
         // Skip a `#` comment to end of line.
         if data[pos] == b'#' {
@@ -781,6 +823,28 @@ fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
                 .map_err(|_| "invalid PPM header token")?
                 .to_string(),
         );
+    }
+    Ok((tokens, pos))
+}
+
+/// PPM header dimensions (`P6 <w> <h> <maxval>`), parseable from a header
+/// prefix alone — the sweep's oversized-canvas check runs before the payload
+/// is read.
+pub(crate) fn ppm_dimensions(data: &[u8]) -> Result<(u32, u32), String> {
+    let (tokens, _) = ppm_tokens(data, 3)?;
+    if tokens.first().is_none_or(|m| *m != "P6") || tokens.len() < 3 {
+        return Err("invalid PPM header".to_string());
+    }
+    let width: u32 = tokens[1].parse().map_err(|_| "invalid width")?;
+    let height: u32 = tokens[2].parse().map_err(|_| "invalid height")?;
+    Ok((width, height))
+}
+
+pub(crate) fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
+    // PPM header: "P6\n<width> <height>\n<maxval>\n" followed by raw RGB.
+    let (tokens, mut pos) = ppm_tokens(data, 4)?;
+    if tokens.len() < 4 {
+        return Err("invalid PPM header".to_string());
     }
     if tokens[0] != "P6" {
         return Err(format!("expected PPM P6, got {}", tokens[0]));
@@ -807,7 +871,7 @@ fn parse_ppm(data: &[u8]) -> Result<PpmImage, String> {
 }
 
 /// CIE76 ΔE between two sRGB pixels, computed in CIE Lab space.
-fn delta_e76(a: &[u8; 3], b: &[u8; 3]) -> f64 {
+pub(crate) fn delta_e76(a: &[u8; 3], b: &[u8; 3]) -> f64 {
     let la = srgb_to_lab(a);
     let lb = srgb_to_lab(b);
     let dl = la[0] - lb[0];
@@ -1293,11 +1357,29 @@ fn count_qpdf_objects(theirs: &serde_json::Value) -> u64 {
 }
 
 /// Every `*.pdf` under `corpus/pdfs`, recursively.
-fn collect_corpus_pdfs() -> Result<Vec<PathBuf>, String> {
+pub(crate) fn collect_corpus_pdfs() -> Result<Vec<PathBuf>, String> {
     let root = PathBuf::from("corpus/pdfs");
     let mut out = Vec::new();
     collect_pdfs_rec(&root, &mut out)?;
     Ok(out)
+}
+
+/// The corpus id of a PDF: its path relative to `corpus/pdfs` minus the
+/// `.pdf` suffix, `/`-separated (the expectation-record id). Files outside
+/// the corpus fall back to their file name stem.
+pub(crate) fn corpus_id(pdf: &Path) -> String {
+    let base = pdf
+        .strip_prefix("corpus/pdfs")
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|| {
+            pdf.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        });
+    match base.strip_suffix(".pdf") {
+        Some(stem) => stem.to_string(),
+        None => base,
+    }
 }
 
 fn collect_pdfs_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {

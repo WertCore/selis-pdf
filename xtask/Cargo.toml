@@ -13,6 +13,9 @@ miniz_oxide = { workspace = true }
 selis-bytes = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-pdf-cos = { workspace = true }
+# The render sweep decodes oracle-driver PNG output (PDFium/pdf.js) with the
+# shared flate filter — harness-side decode of oracle output only (ADR-P0009).
+selis-pdf-filter = { workspace = true }
 selis-pdf-engine = { workspace = true }
 # xtask is a tool at the shell boundary: it supplies the real monotonic clock
 # so engine calls it drives measure genuine wall deadlines (SL-0.SBX.07).

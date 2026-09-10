@@ -9,6 +9,10 @@
 # determinism    | every PR  | required (job pending)
 # write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
 # write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
+# write07        | every PR  | required (conformance posture over the smoke corpus)
+# render-conf    | nightly (cron) + workflow_dispatch | non-blocking (SL-2.CONF.01
+#                | differential render sweep: selis vs pinned PDFium + pdf.js
+#                | containers at 72/150/300 DPI; artifacts for triage/G2 readout)
 # test-slow      | nightly   | required for release (job pending)
 # fuzz-soak      | nightly   | non-blocking
 # perf           | nightly   | blocks release on >5% regression
@@ -20,6 +24,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: {}
   schedule:
     # Every 2 days at 03:00 UTC. GitHub cron steps by day-of-month, so the
     # gap at a month boundary is 1 day instead of 2; there is no true
@@ -249,3 +254,66 @@ jobs:
       - name: Compare budgets against the fresh baseline
         run: cargo xtask perf-check
         timeout-minutes: 20
+
+  # ── render-conf (scheduled + dispatch) — SL-2.CONF.01: differential render
+  # sweep against the two *independent* render oracles (21-TESTING §4: two
+  # minimum for a Render promotion). selis vs the pinned PDFium and pdf.js
+  # GHCR images (xtask/oracles.toml, digest-pinned) at 72/150/300 DPI over a
+  # deterministic stride sample of the fetched render corpus (page 1 per
+  # file, ΔE76 > 2.3, G2 per-file threshold 0.5%). Scheduled, never per-push:
+  # thousands of per-file container dispatches are hours of runner time no PR
+  # gate should pay. Disagreements collapse into root-cause signatures in
+  # sweep-report.json (SL-0.ORACLE.05); artifacts feed the G2 readout and the
+  # SL-2.CONF.02 area promotion.
+  render-conf:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Log in to GHCR (pinned oracle images)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Fetch and extract the render corpus (pdfjs, pdfassoc, ghent, verapdf)
+        run: |
+          cargo xtask corpus fetch --tag render
+          cargo xtask corpus fetch --tag conformance
+          mkdir -p corpus/pdfs
+          tar -xzf ~/.cache/selis-corpus/pdfjs.gz -C corpus/pdfs \
+            --wildcards "pdf.js-*/test/pdfs/*.pdf" --strip-components=3
+          tar -xzf ~/.cache/selis-corpus/pdfassoc.gz -C corpus/pdfs \
+            --wildcards "pdf20examples-master/*.pdf" --strip-components=1
+          mkdir -p corpus/pdfs/verapdf
+          tar -xzf ~/.cache/selis-corpus/verapdf.gz -C corpus/pdfs/verapdf \
+            --strip-components=1
+          mkdir -p corpus/pdfs/ghent
+          tar -xf ~/.cache/selis-corpus/ghent.zip -C corpus/pdfs/ghent
+          find corpus/pdfs/ghent -mindepth 2 -name '*.pdf' \
+            -exec mv -t corpus/pdfs/ghent {} +
+          n=$(find corpus/pdfs -name '*.pdf' | wc -l)
+          echo "render corpus: $n files"
+          test "$n" -gt 1000
+      - name: Generate the deterministic synthetic corpus
+        run: cargo xtask corpus synthetic-generate
+      - name: Build selis (release)
+        run: cargo build --release -p selis-cli
+      - name: Sweep selis vs PDFium + pdf.js at 72/150/300 DPI
+        run: |
+          cargo xtask oracle sweep \
+            --tool pdfium --tool pdfjs \
+            --dpi 72,150,300 \
+            --sample 400 \
+            --jobs 4 \
+            --timeout-secs 120 \
+            --selis target/release/selis \
+            --out sweep
+      - name: Upload the sweep artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-conf-sweep
+          path: |
+            sweep/sweep-report.json
+            sweep/verdicts.jsonl
+          if-no-files-found: error
