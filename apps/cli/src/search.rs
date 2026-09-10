@@ -3,11 +3,10 @@
 //! Uses the normalised search pipeline (case folding, diacritics stripping,
 //! ligature decomposition) from `selis-pdf-text`.
 
-use selis_pdf_engine::Session;
-use selis_sandbox::{Budget, CancelToken, Surface};
-
 use crate::extract::page_lines;
 use crate::{read_file, CliError, CliResult};
+use selis_pdf_engine::Session;
+use selis_sandbox::{Budget, Surface};
 
 /// Search a page's text for a query.
 ///
@@ -26,7 +25,7 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
             session.len()
         )));
     }
-    let mut g = budget.guard_with(&clock, CancelToken::new());
+    let mut g = budget.guard_with(&clock, crate::runtime::token());
     let dl = session
         .page_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;

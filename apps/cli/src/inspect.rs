@@ -21,7 +21,7 @@ pub(super) fn run(path: &str, json: bool) -> CliResult<()> {
     // The real shell clock (SL-0.SBX.07): the wall deadline on this open is
     // genuine elapsed time.
     let clock = crate::shell_clock();
-    let mut g = selis_sandbox::BudgetGuard::new(budget, &clock, Default::default());
+    let mut g = selis_sandbox::BudgetGuard::new(budget, &clock, crate::runtime::token());
 
     // 1. Try the classic xref + revisions path.
     let doc = match selis_pdf_cos::parse_revisions(

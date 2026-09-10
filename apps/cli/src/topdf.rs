@@ -13,8 +13,9 @@ pub(crate) fn topdf(
     format: &str,
     page_size: &str,
     title: Option<&str>,
-) -> CliResult<()> {
+) -> CliResult<crate::verify_report::Verification> {
     let data = read_file(input)?;
+    let in_bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
     let text = String::from_utf8_lossy(&data);
 
     let fmt = match format {
@@ -42,7 +43,8 @@ pub(crate) fn topdf(
     };
 
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let opts = Options {
         page_size: size,
         title: title.map(str::to_string),
@@ -56,9 +58,17 @@ pub(crate) fn topdf(
     // WRITE.05: generated output is verified (reference resolution + page
     // tree; no count expectations — there is no input document to survey)
     // and committed atomically.
-    crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
+    let verdict = crate::write_gate::write_generated(&bytes, output, &budget, &mut g)?;
+    let display = crate::verify_report::Verification::from_gate(
+        None,
+        &verdict,
+        &selis_pdf_cos::verify::Expectations::none(),
+        in_bytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
     eprintln!("wrote {output} ({} bytes)", bytes.len());
-    Ok(())
+    display.emit_line();
+    Ok(display)
 }
 
 /// Infer the source format from the file extension.

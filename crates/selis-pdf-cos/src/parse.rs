@@ -212,10 +212,13 @@ impl<'a> ObjectParser<'a> {
         self.depth = self.depth.saturating_add(1);
         let limit = self.budget.limit(selis_sandbox::Resource::Depth);
         if u64::from(self.depth) > limit {
+            // Same detail shape as BudgetGuard::exceeded: the resource name
+            // and the two numbers (ADR-P0017 — engine-controlled, no
+            // document bytes), so shells can report the measured usage.
             return Err(err!(
                 Code::BudgetDepth,
                 during = "cos-parse",
-                detail = "nesting exceeds the depth budget"
+                detail = std::format!("depth limit={limit} requested={}", self.depth)
             ));
         }
         g.enter()

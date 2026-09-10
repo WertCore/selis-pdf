@@ -33,7 +33,7 @@
 use std::collections::HashSet;
 
 use selis_error::Result;
-use selis_sandbox::{Budget, BudgetGuard, Resource};
+use selis_sandbox::{Budget, BudgetGuard, DepthGuard, Resource};
 
 use crate::copy::resolve_ref;
 use crate::obj::{Obj, Ref};
@@ -53,7 +53,11 @@ pub const MAX_WALK_DEPTH: usize = 48;
 /// * `annotations` — total items across every page's `/Annots` array;
 /// * `fields` — form-field dictionaries under `/AcroForm`/`/Fields`, counted
 ///   recursively through `/Kids` (roots and children each count one);
-/// * `ocgs` — items in `/OCProperties`' `/OCGs` array.
+/// * `ocgs` — items in `/OCProperties`' `/OCGs` array;
+/// * `outlines` — outline items reachable from the catalog's `/Outlines`
+///   root over every `/First`/`/Next` chain at every nesting level;
+/// * `embedded_files` — key/value pairs across the
+///   `/Names`/`/EmbeddedFiles` name tree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Expectations {
     /// Expected page count.
@@ -64,6 +68,10 @@ pub struct Expectations {
     pub fields: Option<u64>,
     /// Expected item count in `/OCProperties`/`/OCGs`.
     pub ocgs: Option<u64>,
+    /// Expected outline entry count.
+    pub outlines: Option<u64>,
+    /// Expected embedded-file entry count.
+    pub embedded_files: Option<u64>,
 }
 
 impl Expectations {
@@ -75,6 +83,8 @@ impl Expectations {
             annotations: None,
             fields: None,
             ocgs: None,
+            outlines: None,
+            embedded_files: None,
         }
     }
 }
@@ -90,6 +100,10 @@ pub struct Observed {
     pub fields: u64,
     /// Item count in `/OCProperties`/`/OCGs`.
     pub ocgs: u64,
+    /// Outline entries reachable from the catalog's `/Outlines` root.
+    pub outlines: u64,
+    /// Key/value pairs across the `/Names`/`/EmbeddedFiles` name tree.
+    pub embedded_files: u64,
 }
 
 /// One structural fault found in the verified bytes.
@@ -164,6 +178,20 @@ pub enum Fault {
         /// Observed OCGs.
         actual: u64,
     },
+    /// The caller expected a different outline entry count.
+    OutlineCountMismatch {
+        /// Expected outline entries.
+        expected: u64,
+        /// Observed outline entries.
+        actual: u64,
+    },
+    /// The caller expected a different embedded-file count.
+    EmbeddedFileCountMismatch {
+        /// Expected embedded files.
+        expected: u64,
+        /// Observed embedded files.
+        actual: u64,
+    },
 }
 
 impl Fault {
@@ -183,6 +211,8 @@ impl Fault {
             Fault::AnnotationCountMismatch { .. } => "annotation-count",
             Fault::FieldCountMismatch { .. } => "field-count",
             Fault::OcgCountMismatch { .. } => "ocg-count",
+            Fault::OutlineCountMismatch { .. } => "outline-count",
+            Fault::EmbeddedFileCountMismatch { .. } => "embedded-file-count",
         }
     }
 }
@@ -223,6 +253,14 @@ impl std::fmt::Display for Fault {
             Fault::OcgCountMismatch { expected, actual } => write!(
                 f,
                 "expected {expected} optional-content group(s), output has {actual}"
+            ),
+            Fault::OutlineCountMismatch { expected, actual } => write!(
+                f,
+                "expected {expected} outline entr(y/ies), output has {actual}"
+            ),
+            Fault::EmbeddedFileCountMismatch { expected, actual } => write!(
+                f,
+                "expected {expected} embedded file(s), output has {actual}"
             ),
         }
     }
@@ -436,6 +474,12 @@ pub fn verify_structural(
         }
     }
 
+    // Outline entries and embedded files. The count definitions are the
+    // survey's by construction (same walk, same helpers), so an expectation
+    // captured from an input document is asserted with identical semantics.
+    observed.outlines = count_outline_items(g, &mut w, &catalog)?;
+    observed.embedded_files = count_embedded_files(g, &mut w, &catalog)?;
+
     // Expectation comparisons.
     if let Some(exp) = expected.pages {
         if exp != observed.pages {
@@ -466,6 +510,22 @@ pub fn verify_structural(
             faults.push(Fault::OcgCountMismatch {
                 expected: exp,
                 actual: observed.ocgs,
+            });
+        }
+    }
+    if let Some(exp) = expected.outlines {
+        if exp != observed.outlines {
+            faults.push(Fault::OutlineCountMismatch {
+                expected: exp,
+                actual: observed.outlines,
+            });
+        }
+    }
+    if let Some(exp) = expected.embedded_files {
+        if exp != observed.embedded_files {
+            faults.push(Fault::EmbeddedFileCountMismatch {
+                expected: exp,
+                actual: observed.embedded_files,
             });
         }
     }
@@ -534,6 +594,11 @@ impl Walker<'_> {
     /// Walk every reference reachable from `obj` (owned by `owner`),
     /// resolving each exactly once. Stream payloads are opaque here; their
     /// dictionaries are walked.
+    ///
+    /// Each nesting level is an RAII [`DepthGuard`]: the depth charge is
+    /// released on every return path (an early `?` cannot leak it — a leaked
+    /// level would make the caller's depth budget a count of *total* walk
+    /// steps instead of true nesting).
     fn walk_refs(
         &mut self,
         g: &mut BudgetGuard<'_>,
@@ -547,7 +612,8 @@ impl Walker<'_> {
             });
             return Ok(());
         }
-        g.enter()?;
+        let mut level = DepthGuard::enter(g)?;
+        let g = level.guard();
         match obj {
             Obj::Ref(r) => {
                 if self.seen.insert((r.num, r.gen)) {
@@ -573,7 +639,8 @@ impl Walker<'_> {
 
     /// Walk a `/Pages` tree collecting resolved leaf page dicts (and the root
     /// node's declared `/Count`). Unresolvable nodes are faults from
-    /// [`Self::resolve`].
+    /// [`Self::resolve`]. The nesting level is an RAII [`DepthGuard`] (see
+    /// [`Self::walk_refs`]).
     fn walk_page_tree(
         &mut self,
         g: &mut BudgetGuard<'_>,
@@ -589,7 +656,8 @@ impl Walker<'_> {
             });
             return Ok(());
         }
-        g.enter()?;
+        let mut level = DepthGuard::enter(g)?;
+        let g = level.guard();
         let Some(obj) = self.resolve(g, parent, node)? else {
             return Ok(());
         };
@@ -694,6 +762,121 @@ fn dict_ref(obj: &Obj, key: &[u8]) -> Option<Ref> {
         Some(Obj::Ref(r)) => Some(*r),
         _ => None,
     }
+}
+
+/// Hard cap on outline entries and name-tree keys counted for one document.
+/// A hostile `/Next` cycle is already terminated by the seen-set; this bound
+/// keeps the count itself cheap on pathological (but acyclic) chains.
+const MAX_COUNTED_ENTRIES: u64 = 1_000_000;
+
+/// Total outline entries reachable from the catalog's `/Outlines` root: every
+/// item on every `/First`/`/Next` chain at every nesting level. Items stored
+/// inline (not as indirect references) are pathological and count zero; the
+/// reference-closure walk reports whatever else is wrong with them.
+///
+/// # Budget
+///
+/// Charged to the caller's guard like every resolution (objects, depth,
+/// ticks). Cycles terminate via a seen-set; nesting is capped at 32 levels.
+fn count_outline_items(g: &mut BudgetGuard<'_>, w: &mut Walker<'_>, catalog: &Obj) -> Result<u64> {
+    let Some(outlines_ref) = dict_ref(catalog, b"Outlines") else {
+        return Ok(0);
+    };
+    let Some(root) = w.resolve(g, Ref::new(0, 0), outlines_ref)? else {
+        return Ok(0);
+    };
+    let mut count = 0u64;
+    count_outline_chain(g, w, &root, &mut HashSet::new(), 0, &mut count)?;
+    Ok(count)
+}
+
+/// Walk one outline chain (`/First` → `/Next` under `node`), recursing into
+/// each item's children. `seen` terminates cyclic chains.
+fn count_outline_chain(
+    g: &mut BudgetGuard<'_>,
+    w: &mut Walker<'_>,
+    node: &Obj,
+    seen: &mut HashSet<(u32, u16)>,
+    depth: usize,
+    count: &mut u64,
+) -> Result<()> {
+    if depth > 32 || *count >= MAX_COUNTED_ENTRIES {
+        return Ok(());
+    }
+    let Some(mut cur) = dict_ref(node, b"First") else {
+        return Ok(());
+    };
+    loop {
+        if *count >= MAX_COUNTED_ENTRIES || !seen.insert((cur.num, cur.gen)) {
+            return Ok(());
+        }
+        let Some(item) = w.resolve(g, Ref::new(0, 0), cur)? else {
+            return Ok(());
+        };
+        *count = count.saturating_add(1);
+        if dict_ref(&item, b"First").is_some() {
+            count_outline_chain(g, w, &item, seen, depth.saturating_add(1), count)?;
+        }
+        match dict_ref(&item, b"Next") {
+            Some(next) => cur = next,
+            None => return Ok(()),
+        }
+    }
+}
+
+/// Embedded-file entries in the catalog's `/Names`/`/EmbeddedFiles` name
+/// tree: the number of key/value pairs across every node of the tree.
+fn count_embedded_files(g: &mut BudgetGuard<'_>, w: &mut Walker<'_>, catalog: &Obj) -> Result<u64> {
+    let Some(names_ref) = dict_ref(catalog, b"Names") else {
+        return Ok(0);
+    };
+    let Some(names) = w.resolve(g, Ref::new(0, 0), names_ref)? else {
+        return Ok(0);
+    };
+    let Some(files_val) = dict_get(&names, b"EmbeddedFiles") else {
+        return Ok(0);
+    };
+    let files = resolve_inline(g, files_val, w)?;
+    let mut count = 0u64;
+    count_name_tree_keys(g, w, &files, 0, &mut count)?;
+    Ok(count)
+}
+
+/// Count the key/value pairs of one name-tree node, recursing through
+/// `/Kids`. Depth is capped; the count itself is bounded.
+fn count_name_tree_keys(
+    g: &mut BudgetGuard<'_>,
+    w: &mut Walker<'_>,
+    node: &Obj,
+    depth: usize,
+    count: &mut u64,
+) -> Result<()> {
+    if depth > 32 || *count >= MAX_COUNTED_ENTRIES {
+        return Ok(());
+    }
+    if let Some(pairs_val) = dict_get(node, b"Names") {
+        let pairs = resolve_inline(g, pairs_val, w)?;
+        if let Obj::Array(items) = &pairs {
+            // Key/value pairs: chunk into twos (an odd trailing item is a
+            // malformed tree; `chunks(2)` counts the partial pair, which is
+            // the conservative reading).
+            let pairs = items.chunks(2).count();
+            *count = count.saturating_add(u64::try_from(pairs).unwrap_or(u64::MAX));
+        }
+    }
+    if let Some(kids_val) = dict_get(node, b"Kids") {
+        let kids = resolve_inline(g, kids_val, w)?;
+        if let Obj::Array(items) = &kids {
+            for kid in items {
+                if *count >= MAX_COUNTED_ENTRIES {
+                    return Ok(());
+                }
+                let kid = resolve_inline(g, kid, w)?;
+                count_name_tree_keys(g, w, &kid, depth.saturating_add(1), count)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -837,6 +1020,8 @@ mod tests {
             annotations: Some(2),
             fields: Some(2),
             ocgs: Some(1),
+            outlines: None,
+            embedded_files: None,
         }
     }
 
@@ -1216,6 +1401,171 @@ mod tests {
         let verdict =
             verify_structural(&doc, &Expectations::none(), &budget, &mut g).expect("verify runs");
         assert!(verdict.ok, "cyclic graph must verify: {:?}", verdict.faults);
+    }
+
+    /// A document with an outline tree (two top-level items, one carrying a
+    /// child) and a two-node `/Names`/`/EmbeddedFiles` tree: the survey
+    /// observes 3 outline entries and 2 embedded files, and wrong
+    /// expectations for either are caught with the right fault.
+    #[test]
+    fn outline_and_embedded_file_counts_are_observed_and_enforced() {
+        let files = |a: &str, b: &str| {
+            Obj::Array(vec![
+                Obj::String(bytes(a.as_bytes())),
+                Obj::Dict(vec![(bytes(b"F"), Obj::String(bytes(b"f.pdf")))]),
+                Obj::String(bytes(b.as_bytes())),
+                Obj::Dict(vec![(bytes(b"F"), Obj::String(bytes(b"f.pdf")))]),
+            ])
+        };
+        let objects = vec![
+            (
+                1,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Catalog"))),
+                    (bytes(b"Pages"), Obj::Ref(Ref::new(2, 0))),
+                    (bytes(b"Outlines"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Names"), Obj::Ref(Ref::new(6, 0))),
+                ]),
+            ),
+            (
+                2,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Pages"))),
+                    (bytes(b"Kids"), Obj::Array(vec![Obj::Ref(Ref::new(4, 0))])),
+                    (bytes(b"Count"), Obj::Int(1)),
+                ]),
+            ),
+            (
+                3,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Outlines"))),
+                    (bytes(b"First"), Obj::Ref(Ref::new(5, 0))),
+                    (bytes(b"Last"), Obj::Ref(Ref::new(7, 0))),
+                    (bytes(b"Count"), Obj::Int(3)),
+                ]),
+            ),
+            (
+                4,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(2, 0))),
+                    (
+                        bytes(b"MediaBox"),
+                        Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(10), Obj::Int(10)]),
+                    ),
+                ]),
+            ),
+            (
+                5,
+                Obj::Dict(vec![
+                    (bytes(b"Title"), Obj::String(bytes(b"a"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Next"), Obj::Ref(Ref::new(7, 0))),
+                    (bytes(b"First"), Obj::Ref(Ref::new(8, 0))),
+                    (bytes(b"Last"), Obj::Ref(Ref::new(8, 0))),
+                    (bytes(b"Count"), Obj::Int(1)),
+                    (bytes(b"Dest"), Obj::Ref(Ref::new(4, 0))),
+                ]),
+            ),
+            (
+                6,
+                Obj::Dict(vec![(bytes(b"EmbeddedFiles"), Obj::Ref(Ref::new(9, 0)))]),
+            ),
+            (
+                7,
+                Obj::Dict(vec![
+                    (bytes(b"Title"), Obj::String(bytes(b"b"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Prev"), Obj::Ref(Ref::new(5, 0))),
+                    (bytes(b"Dest"), Obj::Ref(Ref::new(4, 0))),
+                ]),
+            ),
+            (
+                8,
+                Obj::Dict(vec![
+                    (bytes(b"Title"), Obj::String(bytes(b"a1"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(5, 0))),
+                    (bytes(b"Dest"), Obj::Ref(Ref::new(4, 0))),
+                ]),
+            ),
+            (
+                9,
+                Obj::Dict(vec![(
+                    bytes(b"Kids"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(10, 0))]),
+                )]),
+            ),
+            (
+                10,
+                Obj::Dict(vec![(bytes(b"Names"), files("file1", "file2"))]),
+            ),
+        ];
+        let doc =
+            write_objects_as_document(&objects, Ref::new(1, 0), &Budget::unlimited(), &mut guard())
+                .expect("write");
+        let budget = Budget::unlimited();
+        let mut g = guard();
+
+        let observed = survey(&doc, &budget, &mut g).expect("survey runs");
+        assert_eq!(observed.outlines, 3, "two top-level items + one child");
+        assert_eq!(observed.embedded_files, 2, "both name-tree keys counted");
+
+        let verdict = verify_structural(
+            &doc,
+            &Expectations {
+                outlines: Some(3),
+                embedded_files: Some(2),
+                ..Expectations::none()
+            },
+            &budget,
+            &mut g,
+        )
+        .expect("verify runs");
+        assert!(
+            verdict.ok,
+            "matching counts must verify: {:?}",
+            verdict.faults
+        );
+
+        // Wrong outline expectation → the outline-count fault.
+        let verdict = verify_structural(
+            &doc,
+            &Expectations {
+                outlines: Some(9),
+                ..Expectations::none()
+            },
+            &budget,
+            &mut g,
+        )
+        .expect("verify runs");
+        assert!(!verdict.ok, "wrong outline count must fail");
+        assert!(matches!(
+            verdict.faults.first(),
+            Some(Fault::OutlineCountMismatch {
+                expected: 9,
+                actual: 3
+            })
+        ));
+
+        // Wrong embedded-file expectation → the embedded-file-count fault.
+        let verdict = verify_structural(
+            &doc,
+            &Expectations {
+                embedded_files: Some(1),
+                ..Expectations::none()
+            },
+            &budget,
+            &mut g,
+        )
+        .expect("verify runs");
+        assert!(!verdict.ok, "wrong embedded-file count must fail");
+        assert!(matches!(
+            verdict.faults.first(),
+            Some(Fault::EmbeddedFileCountMismatch {
+                expected: 1,
+                actual: 2
+            })
+        ));
     }
 
     /// Find a byte subslice (test helper; same-length corruptions need it).

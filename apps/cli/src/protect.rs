@@ -34,6 +34,7 @@ use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
 use selis_pdf_doc::Resolver;
 use selis_sandbox::{Budget, Surface};
 
+use crate::verify_report::Verification;
 use crate::{read_file, CliError, CliResult};
 
 /// All permission bits granted, restricted only by the spec's reserved-bit
@@ -152,14 +153,16 @@ pub(crate) fn run(
     owner_password: Option<&str>,
     permissions: Option<&str>,
     encrypt_metadata: bool,
-) -> CliResult<()> {
-    protect_file(
+) -> CliResult<Verification> {
+    let verification = protect_file(
         path,
         output,
         &PasswordOptions::from_args(user_password, owner_password),
         permissions,
         encrypt_metadata,
-    )
+    )?;
+    verification.emit_line();
+    Ok(verification)
 }
 
 /// The password material for one protect invocation: an optional user
@@ -224,7 +227,7 @@ pub(crate) fn protect_file(
     passwords: &PasswordOptions,
     permissions: Option<&str>,
     encrypt_metadata: bool,
-) -> CliResult<()> {
+) -> CliResult<Verification> {
     let (user_pw, owner_pw) = passwords.resolve();
     if user_pw.is_empty() && owner_pw.is_empty() {
         return Err(CliError(
@@ -240,8 +243,10 @@ pub(crate) fn protect_file(
     let p = compute_p(granted);
 
     let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
 
     let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = parse_revisions(&src, startxref, &budget, &mut g)
@@ -390,11 +395,17 @@ pub(crate) fn protect_file(
     // Commit through the shared gate: structural verification + atomic
     // write (temp + fsync + rename). A failing verification leaves the
     // destination untouched.
-    crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+    let verdict = crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
 
     record_operation(&granted);
     eprintln!("protected {path} -> {output} (AES-256, revision 6)");
-    Ok(())
+    Ok(crate::verify_report::Verification::from_gate(
+        Some(&observed),
+        &verdict,
+        &expected,
+        in_bytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    ))
 }
 
 /// Resolve a password: the argument wins; otherwise the named environment
@@ -497,7 +508,8 @@ struct VerifyExpectations {
 /// `output failed verification` error and no file is written.
 fn verify_output(bytes: &[u8], expect: VerifyExpectations, path: &str) -> CliResult<()> {
     let budget = Budget::unlimited();
-    let mut g = budget.guard();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
     let sx = xref::find_startxref(bytes, 4096).unwrap_or(0);
     let parsed = parse_revisions(bytes, sx, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
@@ -577,11 +589,9 @@ fn verify_output(bytes: &[u8], expect: VerifyExpectations, path: &str) -> CliRes
     // tests).
     let doc_budget = Budget::profile(Surface::Viewer);
     let clock = crate::shell_clock();
-    if selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock).is_err() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (no usable document model)"
-        )));
-    }
+    // The typed error is propagated, not swallowed (SL-1A.UI.06).
+    selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
     Ok(())
 }
 
@@ -774,6 +784,7 @@ mod tests {
             args.permissions,
             args.encrypt_metadata,
         )
+        .map(|_verification| ())
     }
 
     /// protect() argument bundle with sensible defaults.

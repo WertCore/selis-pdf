@@ -401,10 +401,24 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-- [ ] **SL-1A.UI.02 — Per-tool result verification display** · deps: `SL-1A.WRITE.05` · owner: AI
+- [x] **SL-1A.UI.02 — Per-tool result verification display** · deps: `SL-1A.WRITE.05` · owner: AI
   - **Do:** Show what was verified after each operation — page count, preserved features, size
     delta. Turning the verification pass into visible UI is a trust asset competitors cannot copy
     without doing the work.
+  - **Done (SL-1A.UI.02):** every tool operation prints a compact `verified: …` line (pages,
+    annotations, form fields, OCGs, outline entries, embedded files — in→out — plus byte sizes and
+    the verdict) built from the WRITE.05 gate's own measurements, and every tool command takes
+    `--json` emitting the machine-readable twin (`{"verification": {…}}` on stdout, same fields,
+    a `checked` array naming exactly which preservation promises were asserted) for the Phase 4
+    web/extension UI to consume unchanged. Copy is honest and compact: failing verification writes
+    no file and no line; a verbatim copy reports `copied` instead of inventing a verdict; batch
+    `report.json` carries the same object per file. The extended counts (outlines, embedded files)
+    joined the WRITE.05 survey/verify with one shared definition, and the count display exposed —
+    and drove the fix of — a real WRITE.07 bug: single-input rewrites (rotate/split/delete/reorder/
+    set-metadata) silently dropped `/OCProperties`; it is now carried. Corpus entry:
+    `corpus/fixtures/verification_features.pdf` + `apps/cli/tests/verification_display.rs`
+    (line, JSON twin, page-selection display, batch fields); report-builder unit + property tests
+    in `apps/cli/src/verify_report.rs`.
 - [ ] **SL-1A.UI.03 — "Your file never left this device" indicator** · deps: `SL-8.BOUND.03` · owner: AI+
   - **Do:** Pull the data-flow indicator forward from Phase 8. On a tools product it is the single
     most valuable piece of UI on the page.
@@ -418,10 +432,29 @@ operation is available identically in the CLI, the web app, and the extension.
     fiddliest extension work from the first ship.
 - [ ] **SL-1A.UI.05 — Offline-first PWA** · deps: `SL-4.WEB.02` · owner: AI
   - **Do:** The whole toolkit works airplane-mode. Demonstrably. It is the proof of the claim.
-- [ ] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
+- [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
   - **Do:** Progress, cancellation, and honest failure when a file exceeds the WASM budget —
     with a clear message rather than a dead tab. Competitors have server-side memory; we have a
     tab, so this must be graceful.
+  - **Done (CLI/engine surface; web surface deferred to Phase 4):** the CLI installs a platform
+    Ctrl-C hook (`selis_io::install_ctrl_c_flag`: Windows console handler / POSIX SIGINT, best-effort
+    and warning-free on every CI target) feeding the shared CancelToken, and every tool and
+    read-side command runs under a guard wired to it — Ctrl-C surfaces as the typed `CANCELLED`
+    error with a "no partial file was written" message and exit code 130, never a stack trace or a
+    torn destination (WRITE.06 atomicity holds under kill *and* clean cancel; output chunks check
+    the token between 1 MiB appends, and large writes report byte progress at deterministic
+    milestones). Budget exhaustion is honest: the CLI classifies the typed error and prints which
+    budget tripped (alloc/objects/depth/wall/pixels), the measured usage when the error carries it,
+    and the remedy (split the file) — `BUDGET_POISONED` is classified through its resource word;
+    batch `report.json` carries the same fields (`budget: {resource, limit, requested, remedy}`).
+    Tests: progress/cancel plumbing driven deterministically (byte-milestone function, in-memory
+    sinks, CancelToken — no clock dependence), the depth-exceeding fixture produces the typed
+    message (`selis check`), batch JSON verified. The **web "dead tab" surface (progress UI,
+    cancel button, in-tab budget messaging over the WASM boundary) is deferred to Phase 4** — the
+    CLI/engine plumbing it needs (token, typed errors, honest messages) is in place; tracked as
+    SL-4.UI.13 in `14-PHASE-4-web-alpha.md`. The incremental *append* path has no shipped tool
+    surface yet beyond the crash harness, so per-chunk progress there lands with the first
+    incremental-save tool.
 
 ---
 

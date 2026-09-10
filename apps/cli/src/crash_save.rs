@@ -38,14 +38,14 @@ pub(crate) enum CrashOp {
 /// injected crash (the sink aborts the process); on success prints a marker.
 pub(crate) fn run_crash_save(op: CrashOp, input: &str, output: &str) -> crate::CliResult<()> {
     match op {
-        CrashOp::Split => crate::tools::split(input, 0, 0, output),
-        CrashOp::RotateRewrite => crate::tools::rotate(input, 90, Some("0"), output),
+        CrashOp::Split => crate::tools::split(input, 0, 0, output).map(|_v| ()),
+        CrashOp::RotateRewrite => crate::tools::rotate(input, 90, Some("0"), output).map(|_v| ()),
         CrashOp::RotateIncremental => {
             let budget = Budget::unlimited();
             let mut g = budget.guard();
             rotate_incremental_for_kill_test(input, output, &budget, &mut g)
         }
-        CrashOp::Compress => crate::compress::optimise_file(input, output).map(|_| ()),
+        CrashOp::Compress => crate::compress::optimise_file(input, output).map(|_pair| ()),
     }
 }
 

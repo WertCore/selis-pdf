@@ -58,23 +58,27 @@ fn run_tools(
         runs.push((name.to_string(), out, ran));
     };
     run("split", &|out| {
-        crate::tools::split(&input, 0, page_count.saturating_sub(1), out)
+        crate::tools::split(&input, 0, page_count.saturating_sub(1), out).map(|_| ())
     });
-    run("rotate", &|out| crate::tools::rotate(&input, 90, None, out));
+    run("rotate", &|out| {
+        crate::tools::rotate(&input, 90, None, out).map(|_| ())
+    });
     if page_count >= 2 {
         run("delete", &|out| {
             let last = page_count.saturating_sub(1);
-            crate::tools::delete(&input, &last.to_string(), out)
+            crate::tools::delete(&input, &last.to_string(), out).map(|_| ())
         });
         let reversed: Vec<String> = (0..page_count).rev().map(|i| i.to_string()).collect();
         let order = reversed.join(",");
-        run("reorder", &|out| crate::tools::reorder(&input, &order, out));
+        run("reorder", &|out| {
+            crate::tools::reorder(&input, &order, out).map(|_| ())
+        });
     }
     run("set-metadata", &|out| {
-        crate::tools::set_metadata(&input, &[("Title", "conformance hook")], out)
+        crate::tools::set_metadata(&input, &[("Title", "conformance hook")], out).map(|_| ())
     });
     run("compress", &|out| {
-        crate::compress::optimise_file(&input, out).map(|_| ())
+        crate::compress::optimise_file(&input, out).map(|_r| ())
     });
     runs
 }
