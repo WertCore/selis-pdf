@@ -55,3 +55,14 @@ fn fuzz_xmtx_unsorted_dir_is_typed_error() {
     let (text, font_data) = split_input(data);
     assert!(SwashShaper.shape(&shape_params(&text, &font_data)).is_err());
 }
+
+/// `fuzz-neg-i16-descent.font` (verification leg 34515763631 finding): a
+/// well-formed directory whose `hhea.descender` is -32768 — swash's
+/// `Metrics::fill` negates it into an i16 field and overflows. The
+/// reject predicate turns the face into a typed error.
+#[test]
+fn fuzz_neg_i16_descent_is_typed_error() {
+    let data = include_bytes!("fixtures/fuzz-neg-i16-descent.font");
+    let (text, font_data) = split_input(data);
+    assert!(SwashShaper.shape(&shape_params(&text, &font_data)).is_err());
+}

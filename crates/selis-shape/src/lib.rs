@@ -151,27 +151,28 @@ pub struct SwashShaper;
 
 impl Shaper for SwashShaper {
     fn shape(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
-        // swash 0.2.10 can shape with a zero long-metric count and then
-        // panics in `xmtx::advance` (`long_metric_count - 1` under
-        // overflow checks). Two routes produce that state, both
-        // fuzzer-found (SL-1.ROB.02, no fixed swash release exists):
+        // swash 0.2.10 panics on malformed font metrics under overflow
+        // checks, in two families, all fuzzer-found (SL-1.ROB.02, no
+        // fixed swash release exists):
         //
-        // 1. `MetricsProxy::from_font` discards `fill`'s result and keeps
-        //    the all-zero default whenever `fill` bails — which it does
-        //    when `head` or `maxp` is not resolvable through swash's
-        //    *binary* directory search (a directory that is not sorted by
-        //    tag hides valid tables from swash);
-        // 2. `hhea`/`vhea` IS resolvable but its count field reads as 0
-        //    (`read(34).unwrap_or(0)` — declared zero or a truncated
-        //    table).
+        // 1. `xmtx::advance` underflows (`long_metric_count - 1`) whenever
+        //    shaping runs with a zero long-metric count. That state is
+        //    produced two ways: `MetricsProxy::from_font` discards
+        //    `fill`'s result and keeps the zero default whenever `fill`
+        //    bails (it bails when `head` or `maxp` is not resolvable
+        //    through swash's *binary* directory search — an unsorted
+        //    directory hides valid tables from swash), or a resolvable
+        //    `hhea`/`vhea` whose count field reads as 0.
+        // 2. `Metrics::fill` negates descenders into i16 fields; a
+        //    -32768 descender overflows the negation.
         //
-        // The predicate below mirrors swash's lookup exactly, so it
-        // rejects precisely the faces swash itself would crash on.
+        // The predicate below mirrors swash's lookups and reads exactly,
+        // so it rejects precisely the faces swash itself would crash on.
         if swash_metrics_degenerate(params.font_data) {
             return Err(err!(
                 Code::ShapeFont,
                 during = "shape",
-                detail = "font metrics unusable for swash (malformed sfnt directory or zero hhea/vhea count)"
+                detail = "font metrics unusable for swash (malformed sfnt directory, zero hmtx count, or i16::MIN descender)"
             ));
         }
         let font = FontRef::from_index(params.font_data, 0).ok_or_else(|| {
@@ -253,9 +254,31 @@ fn swash_metrics_degenerate(font_data: &[u8]) -> bool {
     }
     const HHEA: u32 = u32::from_be_bytes(*b"hhea");
     const VHEA: u32 = u32::from_be_bytes(*b"vhea");
-    [HHEA, VHEA].into_iter().any(|tag| {
-        swash_table_data(face, tag).is_some_and(|table| read_u16(table, 34).unwrap_or(0) == 0)
-    })
+    const OS2: u32 = u32::from_be_bytes(*b"OS/2");
+    const I16_MIN: u16 = 0x8000;
+    // `xmtx::advance` underflows on a zero long-metric count.
+    if let Some(hhea) = swash_table_data(face, HHEA) {
+        if read_u16(hhea, 34).unwrap_or(0) == 0 || read_u16(hhea, 6) == Some(I16_MIN) {
+            return true;
+        }
+    }
+    if let Some(vhea) = swash_table_data(face, VHEA) {
+        if read_u16(vhea, 34).unwrap_or(0) == 0 || read_u16(vhea, 6) == Some(I16_MIN) {
+            return true;
+        }
+    }
+    // `fill` negates descenders into i16 fields; -32768 overflows
+    // (hhea/vhea unconditionally, OS/2's typographic descender when the
+    // USE_TYPO_METRICS fsSelection bit is set — swash reads fsSelection
+    // at 62 and sTypoDescender at 70).
+    if let Some(os2) = swash_table_data(face, OS2) {
+        if let Some(flags) = read_u16(os2, 62) {
+            if flags & 0x0080 != 0 && read_u16(os2, 70) == Some(I16_MIN) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Mirrors swash's `RawFont::table_range`: binary search for `tag` over
