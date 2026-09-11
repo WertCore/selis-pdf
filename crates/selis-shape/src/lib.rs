@@ -146,6 +146,51 @@ fn script_tag(script: unicode_script::Script) -> u32 {
     tag
 }
 
+/// An ISO 15924 script tag as a `u32` (e.g. `iso_tag(b"Deva")`).
+const fn iso_tag(letters: &[u8; 4]) -> u32 {
+    u32::from_be_bytes(*letters)
+}
+
+/// The swash script for an ISO 15924 tag (SL-3.SHAPE.04).
+///
+/// swash's `Script::from_opentype` only knows OpenType tags (`dev2`, not
+/// `Deva` — not even `Latn`), so passing [`ShapingParams::script`] through
+/// directly fell back to Latin for *every* script: complex shaping silently
+/// never engaged (no reordering, no conjuncts, no joining). The map below
+/// routes each ISO tag to its swash script, whose `to_opentype` then selects
+/// the font's `dev2`-style lookups; anything unmapped keeps the old
+/// behaviour (OpenType tag, else Latin).
+fn script_from_iso(tag: u32) -> swash::text::Script {
+    use swash::text::Script as S;
+    match tag {
+        t if t == iso_tag(b"Latn") => S::Latin,
+        t if t == iso_tag(b"Arab") => S::Arabic,
+        t if t == iso_tag(b"Hebr") => S::Hebrew,
+        t if t == iso_tag(b"Deva") => S::Devanagari,
+        t if t == iso_tag(b"Beng") => S::Bengali,
+        t if t == iso_tag(b"Taml") => S::Tamil,
+        t if t == iso_tag(b"Telu") => S::Telugu,
+        t if t == iso_tag(b"Knda") => S::Kannada,
+        t if t == iso_tag(b"Mlym") => S::Malayalam,
+        t if t == iso_tag(b"Gujr") => S::Gujarati,
+        t if t == iso_tag(b"Guru") => S::Gurmukhi,
+        t if t == iso_tag(b"Orya") => S::Oriya,
+        t if t == iso_tag(b"Sinh") => S::Sinhala,
+        t if t == iso_tag(b"Grek") => S::Greek,
+        t if t == iso_tag(b"Cyrl") => S::Cyrillic,
+        t if t == iso_tag(b"Armn") => S::Armenian,
+        t if t == iso_tag(b"Geor") => S::Georgian,
+        t if t == iso_tag(b"Thai") => S::Thai,
+        t if t == iso_tag(b"Mymr") => S::Myanmar,
+        t if t == iso_tag(b"Khmr") => S::Khmer,
+        t if t == iso_tag(b"Copt") => S::Coptic,
+        t if t == iso_tag(b"Ethi") => S::Ethiopic,
+        t if t == iso_tag(b"Tibt") => S::Tibetan,
+        t if t == iso_tag(b"Thaa") => S::Thaana,
+        _ => swash::text::Script::from_opentype(tag).unwrap_or(S::Latin),
+    }
+}
+
 /// The `swash` shaping backend (SL-3.SHAPE.01).
 pub struct SwashShaper;
 
@@ -160,10 +205,7 @@ impl Shaper for SwashShaper {
         })?;
         let ppem = params.font_size; // swash's size is pixels per em = font size
 
-        // The ISO 15924 tag is directly a swash OpenType tag; unknown scripts
-        // fall back to Latin.
-        let script =
-            swash::text::Script::from_opentype(params.script).unwrap_or(swash::text::Script::Latin);
+        let script = script_from_iso(params.script);
         let lang = params.language.and_then(swash::text::Language::parse);
 
         let mut ctx = ShapeContext::new();
@@ -286,5 +328,33 @@ mod tests {
             // The cluster byte offset is within the 10-byte input.
             assert!(g.cluster < 10);
         }
+    }
+
+    /// SL-3.SHAPE.04: ISO 15924 tags route to the swash script whose
+    /// `to_opentype` selects the font's lookups — `Deva` must reach `dev2`,
+    /// not fall back to Latin (which silently disabled complex shaping).
+    #[test]
+    fn iso_tags_route_to_opentype_scripts() {
+        use swash::text::Script as S;
+        assert_eq!(script_from_iso(iso_tag(b"Deva")), S::Devanagari);
+        assert_eq!(script_from_iso(iso_tag(b"Beng")), S::Bengali);
+        assert_eq!(script_from_iso(iso_tag(b"Taml")), S::Tamil);
+        assert_eq!(script_from_iso(iso_tag(b"Arab")), S::Arabic);
+        assert_eq!(script_from_iso(iso_tag(b"Hebr")), S::Hebrew);
+        assert_eq!(script_from_iso(iso_tag(b"Latn")), S::Latin);
+        assert_eq!(
+            script_from_iso(iso_tag(b"Deva")).to_opentype(),
+            u32::from_be_bytes(*b"dev2")
+        );
+        assert_eq!(
+            script_from_iso(iso_tag(b"Beng")).to_opentype(),
+            u32::from_be_bytes(*b"bng2")
+        );
+        assert_eq!(
+            script_from_iso(iso_tag(b"Taml")).to_opentype(),
+            u32::from_be_bytes(*b"tml2")
+        );
+        // Unknown tags keep the old behaviour: OpenType tag, else Latin.
+        assert_eq!(script_from_iso(0x5A7A7A5A), S::Latin);
     }
 }

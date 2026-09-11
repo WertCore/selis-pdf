@@ -10,9 +10,17 @@
 //! * `begincidchar` / `endcidchar` — `<code> <cid>` pairs;
 //! * `beginnotdefrange` / `endnotdefrange` — recorded but not used for
 //!   mapping;
+//! * `beginbfchar` / `endbfchar` — `<code> <unicode>` pairs (a `/ToUnicode`
+//!   CMap, consumed by text extraction in SL-3.TEXT.02/SHAPE.04);
+//! * `beginbfrange` / `endbfrange` — `<start> <end> <unicode>` triples (the
+//!   explicit-destination array form is skipped);
 //! * `/WMode n def` — the writing mode (0 horizontal, 1 vertical);
 //! * `usecmap /Name` — a reference to another CMap, surfaced for the caller
 //!   to resolve.
+//!
+//! `<<...>>` dictionaries (the `/CIDSystemInfo` preamble every real
+//! `/ToUnicode` stream carries) and `(...)` strings are skipped: only
+//! mapping operators matter.
 //!
 //! Numbers may be decimal or hexadecimal (`<00FF>`). A malformed CMap is a
 //! deviation — `Ok(None)` — never an error.
@@ -277,6 +285,13 @@ impl<'a> Tokenizer<'a> {
             return Some(Token::Name(self.data.get(name_start..self.pos)?));
         }
         if c == b'<' {
+            // `<<` opens a dictionary (`/CIDSystemInfo <<...>> def`): skip
+            // the balanced dict and continue after it — a bare `return None`
+            // here would abandon the mappings that follow it.
+            if self.data.get(self.pos.saturating_add(1)).copied() == Some(b'<') {
+                self.skip_dict();
+                return self.next();
+            }
             // Hex number `<00FF>`.
             self.pos = self.pos.saturating_add(1);
             let hex_start = self.pos;
@@ -291,6 +306,12 @@ impl<'a> Tokenizer<'a> {
             let text = std::str::from_utf8(hex).ok()?;
             let value = u32::from_str_radix(text, 16).ok()?;
             return Some(Token::Number(f64::from(value)));
+        }
+        if c == b'(' {
+            // A string (only strings inside skipped dicts matter, but a
+            // stray one must not become a `Raw` word either).
+            self.skip_string();
+            return self.next();
         }
         if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
             self.skip_number();
@@ -333,6 +354,63 @@ impl<'a> Tokenizer<'a> {
             .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'))
         {
             self.pos = self.pos.saturating_add(1);
+        }
+    }
+
+    /// Skip a `<<...>>` dictionary, honouring nesting and `(…)` strings
+    /// inside (a `>` in a string must not close the dict). Stops at end of
+    /// data for an unbalanced dict — the caller then yields `None`.
+    fn skip_dict(&mut self) {
+        let mut depth = 0usize;
+        while self.pos < self.data.len() {
+            let pair = (
+                self.data.get(self.pos).copied(),
+                self.data.get(self.pos.saturating_add(1)).copied(),
+            );
+            match pair {
+                (Some(b'<'), Some(b'<')) => {
+                    depth = depth.saturating_add(1);
+                    self.pos = self.pos.saturating_add(2);
+                }
+                (Some(b'>'), Some(b'>')) => {
+                    self.pos = self.pos.saturating_add(2);
+                    if depth <= 1 {
+                        return;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                (Some(b'('), _) => self.skip_string(),
+                _ => {
+                    self.pos = self.pos.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// Skip a `(…)` string, honouring nesting and backslash escapes.
+    fn skip_string(&mut self) {
+        if self.data.get(self.pos).copied() != Some(b'(') {
+            return;
+        }
+        let mut depth = 1usize;
+        self.pos = self.pos.saturating_add(1);
+        while self.pos < self.data.len() && depth > 0 {
+            match self.data.get(self.pos).copied() {
+                Some(b'\\') => {
+                    self.pos = self.pos.saturating_add(2);
+                }
+                Some(b'(') => {
+                    depth = depth.saturating_add(1);
+                    self.pos = self.pos.saturating_add(1);
+                }
+                Some(b')') => {
+                    depth = depth.saturating_sub(1);
+                    self.pos = self.pos.saturating_add(1);
+                }
+                _ => {
+                    self.pos = self.pos.saturating_add(1);
+                }
+            }
         }
     }
 }
@@ -397,5 +475,42 @@ mod tests {
         let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
         assert_eq!(cmap.notdef_ranges.len(), 1);
         assert_eq!(cmap.code_to_cid(0x20), Some(5));
+    }
+
+    #[test]
+    fn bfchar_recovers_unicode() {
+        let mut g = guard();
+        let src = b"2 beginbfchar\n<0038> <0915>\n<0020> <093F>\nendbfchar\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x38), Some(0x0915));
+        assert_eq!(cmap.unicode_map(0x20), Some(0x093F));
+        assert_eq!(cmap.unicode_map(0x07), None);
+    }
+
+    #[test]
+    fn cidsysteminfo_dict_does_not_abandon_later_mappings() {
+        let mut g = guard();
+        // The preamble every real /ToUnicode stream carries: without dict
+        // skipping, tokenisation dies here and the bfchar block is lost.
+        let src = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n1 beginbfchar\n<0041> <0041>\nendbfchar\nendcmap\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x41), Some(0x41));
+    }
+
+    #[test]
+    fn dict_skipping_survives_strings_with_brackets() {
+        let mut g = guard();
+        // A `>` (and parens, escapes) inside a dict string must not close it.
+        let src = b"/X <</Registry (a>>b \\( c (d)) /Ordering (UCS)>> def\n1 beginbfchar\n<0041> <0042>\nendbfchar\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x41), Some(0x42));
+    }
+
+    #[test]
+    fn unbalanced_dict_at_eof_is_a_deviation() {
+        let mut g = guard();
+        assert!(parse_cmap(b"/X <</Registry (Adobe)\n", &mut g)
+            .expect("parse")
+            .is_none());
     }
 }

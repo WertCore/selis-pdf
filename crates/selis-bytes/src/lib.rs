@@ -251,9 +251,9 @@ impl BytesMut {
     pub fn with_capacity(cap: usize) -> Self {
         // Engine-chosen reservation only: the caller owns the budget
         // obligation for `cap`, exactly as with `Vec::with_capacity`.
-        let mut v = Vec::new();
-        v.reserve(cap);
-        Self { v }
+        Self {
+            v: Vec::with_capacity(cap),
+        }
     }
 
     /// Append a slice.

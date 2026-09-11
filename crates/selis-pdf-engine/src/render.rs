@@ -84,6 +84,40 @@ struct FontMaps {
     outlines: HashMap<u16, Option<Vec<selis_font::OutlineCmd>>>,
 }
 
+/// How a run's codes map to glyph ids in the font program.
+///
+/// Simple fonts show Unicode scalars (the font's cmap maps them); CID fonts
+/// (Type0 composites, SL-3.SHAPE.04) show CIDs resolved through
+/// `/CIDToGIDMap` — the cmap must not see them.
+#[derive(Debug, Clone)]
+pub enum GlyphMapping {
+    /// Simple font: the code is a Unicode scalar.
+    Unicode,
+    /// CID font: the code is a CID.
+    Cid(selis_font::CidToGid),
+}
+
+/// A font program resolved for the raster walk: the bytes plus how its
+/// codes map to glyph ids.
+#[derive(Debug, Clone)]
+pub struct ResolvedFontProgram {
+    /// The font program bytes.
+    pub bytes: Vec<u8>,
+    /// The code → glyph mapping.
+    pub mapping: GlyphMapping,
+}
+
+impl ResolvedFontProgram {
+    /// A simple (non-CID) font program: codes are Unicode scalars.
+    #[must_use]
+    pub fn simple(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            mapping: GlyphMapping::Unicode,
+        }
+    }
+}
+
 /// A resolved font program with its units-per-em and per-glyph caches.
 ///
 /// The cmap and outline maps live per font (not in one global map keyed by
@@ -95,6 +129,8 @@ struct CachedFont {
     bytes: selis_bytes::Bytes,
     /// Units per em (constant per font program).
     upem: f64,
+    /// How codes map to glyph ids.
+    mapping: GlyphMapping,
     /// The per-glyph maps.
     maps: FontMaps,
 }
@@ -109,6 +145,8 @@ enum FontView<'a> {
         bytes: selis_bytes::Bytes,
         /// Units per em.
         upem: f64,
+        /// How codes map to glyph ids.
+        mapping: GlyphMapping,
         /// The shared per-glyph maps.
         maps: &'a mut FontMaps,
     },
@@ -118,6 +156,8 @@ enum FontView<'a> {
         bytes: selis_bytes::Bytes,
         /// Units per em.
         upem: f64,
+        /// How codes map to glyph ids.
+        mapping: GlyphMapping,
         /// The run-local per-glyph maps.
         maps: FontMaps,
     },
@@ -143,6 +183,13 @@ impl FontView<'_> {
         match self {
             FontView::Cached { maps, .. } => maps,
             FontView::Scratch { maps, .. } => maps,
+        }
+    }
+
+    /// How this font's codes map to glyph ids.
+    fn mapping(&self) -> &GlyphMapping {
+        match self {
+            FontView::Cached { mapping, .. } | FontView::Scratch { mapping, .. } => mapping,
         }
     }
 }
@@ -175,7 +222,7 @@ impl TextCache {
     /// identical output — only cross-run sharing is lost.
     fn font<'a>(
         &'a mut self,
-        font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+        font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram>,
         name: &selis_bytes::Bytes,
         stats: &mut RenderStats,
     ) -> Option<FontView<'a>> {
@@ -184,15 +231,16 @@ impl TextCache {
             return self.fonts.get_mut(name).map(|font| FontView::Cached {
                 bytes: font.bytes.clone(),
                 upem: font.upem,
+                mapping: font.mapping.clone(),
                 maps: &mut font.maps,
             });
         }
         stats.font_resolves = stats.font_resolves.saturating_add(1);
-        let bytes = font_data(name)?;
+        let program = font_data(name)?;
         stats.font_bytes = stats
             .font_bytes
-            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        let fb = selis_bytes::Bytes::from(bytes);
+            .saturating_add(u64::try_from(program.bytes.len()).unwrap_or(u64::MAX));
+        let fb = selis_bytes::Bytes::from(program.bytes);
         let upem = selis_font::units_per_em(&fb)
             .map(f64::from)
             .unwrap_or(1000.0);
@@ -202,6 +250,7 @@ impl TextCache {
                 CachedFont {
                     bytes: fb.clone(),
                     upem,
+                    mapping: program.mapping.clone(),
                     maps: FontMaps {
                         gids: HashMap::new(),
                         outlines: HashMap::new(),
@@ -211,12 +260,14 @@ impl TextCache {
             return self.fonts.get_mut(name).map(|font| FontView::Cached {
                 bytes: font.bytes.clone(),
                 upem: font.upem,
+                mapping: font.mapping.clone(),
                 maps: &mut font.maps,
             });
         }
         Some(FontView::Scratch {
             bytes: fb,
             upem,
+            mapping: program.mapping,
             maps: FontMaps {
                 gids: HashMap::new(),
                 outlines: HashMap::new(),
@@ -228,6 +279,7 @@ impl TextCache {
     fn glyph_id(
         maps: &mut FontMaps,
         bytes: &selis_bytes::Bytes,
+        mapping: &GlyphMapping,
         code: u16,
         stats: &mut RenderStats,
     ) -> Option<u16> {
@@ -238,7 +290,12 @@ impl TextCache {
             }
             None => {
                 stats.glyph_lookups = stats.glyph_lookups.saturating_add(1);
-                let gid = selis_font::glyph_id_for_char(bytes, u32::from(code));
+                let gid = match mapping {
+                    GlyphMapping::Unicode => selis_font::glyph_id_for_char(bytes, u32::from(code)),
+                    // A CID is not a Unicode scalar: resolve through
+                    // /CIDToGIDMap, never the cmap (SL-3.SHAPE.04).
+                    GlyphMapping::Cid(map) => selis_font::map_cid(map, code),
+                };
                 if maps.gids.len() < MAX_CACHED_GIDS {
                     maps.gids.insert(code, gid);
                 }
@@ -277,8 +334,9 @@ impl TextCache {
 
 /// Render a display list onto a backend.
 ///
-/// `font_data` resolves a font resource name to the font program bytes (the
-/// engine's document layer provides this).
+/// `font_data` resolves a font resource name to the font program plus its
+/// code → glyph mapping (the engine's document layer provides this: Unicode
+/// for simple fonts, `/CIDToGIDMap` for CID fonts).
 ///
 /// # Malformed Input
 ///
@@ -287,7 +345,7 @@ impl TextCache {
 pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
-    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
         &[(selis_bytes::Bytes, selis_bytes::Bytes)],
@@ -324,7 +382,7 @@ pub fn render_display_list(
 pub fn render_display_list_with_stats(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
-    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
         &[(selis_bytes::Bytes, selis_bytes::Bytes)],
@@ -445,9 +503,11 @@ pub fn render_display_list_with_stats(
                     let paint = paint(&state.fill, state.alpha_fill);
                     let base = state.ctm.then(Matrix::scale(scale, scale));
                     let fb = view.bytes().clone();
+                    let mapping = view.mapping().clone();
                     for &code in &run.glyphs {
                         let maps = view.maps();
-                        let Some(gid) = TextCache::glyph_id(maps, &fb, code, stats) else {
+                        let Some(gid) = TextCache::glyph_id(maps, &fb, &mapping, code, stats)
+                        else {
                             continue;
                         };
                         let Some(cmds) = TextCache::outline(maps, &fb, gid, g, stats) else {
@@ -785,8 +845,12 @@ mod tests {
         500.0
     }
 
-    fn no_font(_font: &selis_bytes::Bytes) -> Option<Vec<u8>> {
+    fn no_font(_font: &selis_bytes::Bytes) -> Option<ResolvedFontProgram> {
         None
+    }
+
+    fn no_cid(_font: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>) -> bool {
+        false
     }
 
     fn no_do(
@@ -830,9 +894,15 @@ mod tests {
     fn a_filled_rectangle_renders_pixels() {
         let mut g = guard();
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 1 0 0 rg f";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -856,9 +926,15 @@ mod tests {
         let mut g = guard();
         // Fill the whole page blue first, then a red square in the centre.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0 0 1 rg f 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -899,6 +975,7 @@ mod tests {
         let dl = selis_pdf_content::exec::execute(
             content,
             &const_width,
+            &no_cid,
             &do_image,
             &no_ext_gstate,
             &mut g,
@@ -945,8 +1022,9 @@ mod tests {
                 None
             }
         };
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
-            .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_cid, &no_do, &ext, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -980,9 +1058,15 @@ mod tests {
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 0.5 g f \
                         0 0 m 50 0 l 50 50 l 0 50 l h W \
                         0 0 m 100 0 l 100 100 l 0 100 l h 1 0 0 rg f";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -1027,8 +1111,9 @@ mod tests {
                 None
             }
         };
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
-            .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_cid, &no_do, &ext, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -1077,8 +1162,9 @@ mod tests {
             }
         };
         let content = b"/GS1 gs 0 0 m 100 0 l 100 100 l 0 100 l h 0 g f";
-        let dl = selis_pdf_content::exec::execute(content, &const_width, &no_do, &ext, &mut g)
-            .expect("execute");
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_cid, &no_do, &ext, &mut g)
+                .expect("execute");
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         render_display_list(
             &dl,
@@ -1105,9 +1191,15 @@ mod tests {
         let content = b"100 0 0 100 0 0 cm \
                         BI /W 2 /H 2 /BPC 8 /CS /RGB /L 12 ID \
                         \xff\x00\x00\x00\x00\xff\x00\x00\xff\x00\x00\xff EI";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let resolve_inline = |dict: &[(selis_bytes::Bytes, selis_bytes::Bytes)],
                               data: &[u8]|
          -> Option<(u32, u32, selis_bytes::Bytes)> {
@@ -1150,9 +1242,15 @@ mod tests {
     fn pattern_fill_renders_tiles() {
         let mut g = guard();
         let content = b"/Pattern cs /Pat1 scn 0 0 m 100 0 l 100 100 l 0 100 l h f";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         let resolve_pattern = |name: &selis_bytes::Bytes| {
             if name.as_slice() == b"Pat1" {
                 Some(selis_raster::pattern::TilingPattern {
@@ -1196,9 +1294,15 @@ mod tests {
     fn shading_renders() {
         let mut g = guard();
         let content = b"/GS1 sh";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         assert!(matches!(dl.ops[0], Op::Shading { .. }));
         let resolve_shading = |name: &selis_bytes::Bytes,
                                _state: &ResolvedState|
@@ -1233,9 +1337,10 @@ mod tests {
 
     /// The fallback font resolves through the test stub (LiberationSans for
     /// Helvetica), so the cache tests below exercise the real font pipeline.
-    fn fallback_font(name: &selis_bytes::Bytes) -> Option<Vec<u8>> {
+    fn fallback_font(name: &selis_bytes::Bytes) -> Option<ResolvedFontProgram> {
         if name.as_slice() == b"F1" {
-            selis_font::fallback::fallback_bytes("Helvetica").map(|b| b.to_vec())
+            selis_font::fallback::fallback_bytes("Helvetica")
+                .map(|b| ResolvedFontProgram::simple(b.to_vec()))
         } else {
             None
         }
@@ -1271,9 +1376,21 @@ mod tests {
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            let gid = TextCache::glyph_id(
+                maps,
+                &fb,
+                &GlyphMapping::Unicode,
+                u16::from(b'A'),
+                &mut stats,
+            );
             assert!(gid.is_some());
-            let gid2 = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            let gid2 = TextCache::glyph_id(
+                maps,
+                &fb,
+                &GlyphMapping::Unicode,
+                u16::from(b'A'),
+                &mut stats,
+            );
             assert_eq!(gid, gid2);
         }
         assert_eq!(stats.glyph_lookups, 1);
@@ -1285,7 +1402,14 @@ mod tests {
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            let gid = TextCache::glyph_id(
+                maps,
+                &fb,
+                &GlyphMapping::Unicode,
+                u16::from(b'A'),
+                &mut stats,
+            )
+            .expect("gid");
             TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
         };
         let second = {
@@ -1293,7 +1417,14 @@ mod tests {
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            let gid = TextCache::glyph_id(
+                maps,
+                &fb,
+                &GlyphMapping::Unicode,
+                u16::from(b'A'),
+                &mut stats,
+            )
+            .expect("gid");
             TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
         };
         assert_eq!(first, second);
@@ -1310,9 +1441,15 @@ mod tests {
         // `H` and `i` are spaces apart — guaranteed disjoint, so they share
         // one batch fill (the batcher is engaged, not silently bypassed).
         let content = b"BT /F1 12 Tf 10 90 Td (H i) Tj ET";
-        let dl =
-            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
-                .expect("execute");
+        let dl = selis_pdf_content::exec::execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         assert_eq!(dl.ops.len(), 3, "one text op per glyph");
 
         let mut first_stats = RenderStats::default();
@@ -1366,9 +1503,15 @@ mod tests {
     fn merged_fill_differs_from_sequential_fills_for_same_paint() {
         let mut g = guard();
         let render_content = |content: &[u8], g: &mut BudgetGuard<'_>| {
-            let dl =
-                selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, g)
-                    .expect("execute");
+            let dl = selis_pdf_content::exec::execute(
+                content,
+                &const_width,
+                &no_cid,
+                &no_do,
+                &no_ext_gstate,
+                g,
+            )
+            .expect("execute");
             let mut stats = RenderStats::default();
             let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
             render_display_list_with_stats(

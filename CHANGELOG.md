@@ -25,6 +25,14 @@ sections; every entry states what changed and what it means for the user.
 
 ### Fixed
 
+- Indic and other complex scripts (Devanagari, Tamil, Bengali, …) now shape
+  correctly: reordered matras, conjuncts, `reph`, and split vowels render as
+  the font intends. Previously every script tag fell back to Latin shaping,
+  so complex-script text rendered unshaped (no reordering, no conjuncts).
+- Embedded composite fonts (Type0/Identity-H, the standard carrier for
+  complex scripts) now render and extract: `/W` widths, `/CIDToGIDMap`, and
+  `/ToUnicode` recovery are honoured; such text was previously dropped from
+  output.
 - Page operations (`split`, `delete`, `rotate`, `reorder`, `set-metadata`,
   `redact`) no longer silently drop optional-content groups
   (`/OCProperties`): layers survive every rewrite, and the verification line

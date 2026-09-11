@@ -7,6 +7,9 @@
 
 use selis_bytes::Bytes;
 
+use crate::cid::{CidToGid, CidWidths};
+use crate::cmapfile::CMap;
+
 /// The font subtype (`/Subtype`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontSubtype {
@@ -112,6 +115,13 @@ pub struct FontDict {
     pub font_file: Option<FontFile>,
     /// `/DescendantFonts[0]` — present on a Type0 composite font.
     pub descendant: Option<Box<FontDict>>,
+    /// `/W` + `/DW` of a CIDFont (on the descendant for a Type0 wrapper),
+    /// resolved into per-CID widths (SL-3.FONT.07).
+    pub cid_widths: Option<CidWidths>,
+    /// `/CIDToGIDMap` of a CIDFont (identity unless a stream says otherwise).
+    pub cid_to_gid: CidToGid,
+    /// The `/ToUnicode` CMap stream, parsed (SL-3.TEXT.02).
+    pub to_unicode: Option<CMap>,
 }
 
 impl FontDict {
@@ -128,6 +138,21 @@ impl FontDict {
             descriptor: None,
             font_file: None,
             descendant: None,
+            cid_widths: None,
+            cid_to_gid: CidToGid::default(),
+            to_unicode: None,
+        }
+    }
+
+    /// Whether codes for this font are CIDs: 2-byte codes resolved through
+    /// `/CIDToGIDMap` rather than the font's cmap (ISO 32000-2:2020 §9.7.4).
+    /// A Type0 wrapper with a descendant, or a bare descendant CIDFont.
+    #[must_use]
+    pub fn is_cid(&self) -> bool {
+        match self.subtype {
+            FontSubtype::Type0 => self.descendant.is_some(),
+            FontSubtype::CidFontType0 | FontSubtype::CidFontType2 => true,
+            _ => false,
         }
     }
 
@@ -212,5 +237,20 @@ mod tests {
         let f = FontFile::TrueType(data.clone());
         assert_eq!(f.data(), &data);
         assert_eq!(f.data().as_slice(), b"\x00\x01sfnt");
+    }
+
+    #[test]
+    fn cid_fonts_are_detected() {
+        assert!(!FontDict::simple(FontSubtype::TrueType).is_cid());
+        assert!(!FontDict::simple(FontSubtype::Type3).is_cid());
+        // A Type0 without a descendant carries no metrics: not a CID font.
+        assert!(!FontDict::simple(FontSubtype::Type0).is_cid());
+        let with_desc = FontDict {
+            descendant: Some(Box::new(FontDict::simple(FontSubtype::CidFontType2))),
+            ..FontDict::simple(FontSubtype::Type0)
+        };
+        assert!(with_desc.is_cid());
+        assert!(FontDict::simple(FontSubtype::CidFontType0).is_cid());
+        assert!(FontDict::simple(FontSubtype::CidFontType2).is_cid());
     }
 }
