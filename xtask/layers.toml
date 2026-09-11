@@ -78,6 +78,15 @@ Object streams (/ObjStm) and cross-reference streams are Flate-encoded by
 construction; the COS layer cannot build an index without decoding them."""
 
 [[edge]]
+from = "selis-crypto"
+to = "selis-sandbox"
+why = """
+SL-1.ENC.03: the PKCS#7/CMS parse consumes untrusted document bytes (the
+/Recipients blobs) and must charge the budget kernel per ADR-P0006. The
+sandbox is L1 kernel infrastructure like selis-error itself; the edge is
+kernel-to-kernel, not a domain dependency."""
+
+[[edge]]
 from = "selis-pdf-edit"
 to = "selis-pdf-cos"
 why = "01-ARCHITECTURE.md §3 — declared exception. The writer serialises COS objects."

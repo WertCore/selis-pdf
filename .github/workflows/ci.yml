@@ -227,6 +227,7 @@ jobs:
           - cos_lex
           - doc_open
           - filter_chain
+          - pkcs7_cms
           - font_ttf
           - font_cff
           - font_cmap

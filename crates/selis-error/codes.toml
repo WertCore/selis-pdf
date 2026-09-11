@@ -394,6 +394,15 @@ user_msg = "This PDF is already password-protected. Remove the password with `se
 retryable = false
 doc_state = "NotLoaded"
 
+[[code]]
+id = 1807
+name = "RECIPIENT_NO_MATCH"
+kind = "Auth"
+meaning = "The supplied public-key credential did not open any recipient of the PKCS#7 /Encrypt dictionary (SL-1.ENC.03)."
+user_msg = "The supplied certificate or private key does not open this PDF."
+retryable = true
+doc_state = "NotLoaded"
+
 # ---------------------------------------------------------------------------
 # 2000–2299 — Fonts and text
 # ---------------------------------------------------------------------------

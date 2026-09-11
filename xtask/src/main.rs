@@ -19,6 +19,7 @@ mod oracle;
 mod perf_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod perf_wasm;
+mod pkcs7_fixtures;
 mod png;
 mod purity;
 mod render_perf;
@@ -163,6 +164,17 @@ enum Command {
     Fixtures {
         /// Output directory for the produced tool outputs.
         #[arg(long, default_value = "target/tool-outputs")]
+        outdir: std::path::PathBuf,
+    },
+    /// Generate the committed SL-1.ENC.03 public-key fixtures, or `--check`
+    /// them against their generator.
+    PubkeyFixtures {
+        /// Verify the committed fixtures against their generator instead of
+        /// regenerating them.
+        #[arg(long)]
+        check: bool,
+        /// Output directory for the produced PDFs.
+        #[arg(long, default_value = "crates/selis-pdf-engine/tests/fixtures")]
         outdir: std::path::PathBuf,
     },
     /// CycloneDX SBOM (SL-0.WS.07).
@@ -450,6 +462,13 @@ fn main() -> ExitCode {
                 render_set::check(&outdir)
             } else {
                 render_set::generate(&outdir)
+            }
+        }
+        Command::PubkeyFixtures { check, outdir } => {
+            if check {
+                pkcs7_fixtures::check(&outdir)
+            } else {
+                pkcs7_fixtures::run(&outdir)
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
