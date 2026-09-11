@@ -1,2 +1,6 @@
 open = "ok"
 pages = 3
+[annotation]
+triage = "blank_selis"
+verdict = "OurBug"
+note = "RAST.13: JPX image; decodes only under the wasm-host Tier-2 codec (SL-1.FILT.08). Typed deviation."

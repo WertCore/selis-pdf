@@ -10,6 +10,12 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Tier-2 WASM codec sandbox passthrough (SL-1.FILT.08): enables the JPXDecode
+# path in the render pipeline; a default build surfaces JPX as a typed
+# deviation instead.
+wasm-host = ["selis-pdf-filter/wasm-host"]
+
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }

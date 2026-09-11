@@ -172,7 +172,7 @@ every user on every page.
     standard-14 font absent from `/Resources` now falls back to the bundled font instead of
     drawing nothing (MuPDF/PDFium tolerance; a silent no-draw otherwise).
 
-- [ ] **SL-2.RAST.13 — Silent blank renders (CONF.01 `blank_selis` cluster)** · deps: RAST.04 · owner: AI
+- [x] **SL-2.RAST.13 — Silent blank renders (CONF.01 `blank_selis` cluster)** · deps: RAST.04 · owner: AI
   - **Do:** Root-cause the 25 files where selis paints page 1 (near-)blank while MuPDF paints
     content (`bug1743245`, veraPDF test suite `6-3-3-t01-fail-b` (annotation appearances),
     `govdocs1/000/000164`, `issue11124`, `issue11878`). Candidates: annotation `/AP` appearance
@@ -181,6 +181,27 @@ every user on every page.
     deviation.
   - **DoD:** Every cluster file either renders non-blank or reports a typed deviation; a corpus
     entry per confirmed root cause.
+  - **Done (2026-09-11):** Every one of the 25 files root-caused; the sweep's `blank_selis`
+    cluster shrank 25 files → 2, both carrying typed deviations below. Fixes, each with a
+    regression corpus entry where the construct is synthesisable:
+    `/Contents` as an indirect ref to an array kept as the bare array ref (doc layer;
+    corpus `contents_ref_array`); 1/2/4-bit packed samples treated as 1 byte/sample
+    (`decode_image` now unpacks MSB-first per §8.9.3.2); DCT images silently skipped
+    (terminal codecs pass through the filter chain and decode via the JPEG path in the
+    engine); JPEG SOF component count mistaken for zune's OUTPUT channels (channels now
+    derive from the decoded byte length); image placement origin translated BEFORE the
+    DPI scale (`pre_translate` → `post_translate`; corpus `image_offset`); LZW decoding
+    MSB-first reads with width widening per `/EarlyChange` (spec default 1 now), plus a
+    public `lzw_encode` reference encoder (corpus `lzw_content`); `TD` moved by (tx, −ty)
+    instead of (tx, ty) (corpus `text_td`); annotation `/AP` `/N` appearances never
+    rendered (§12.5.5 mapping incl. `/Rect` placement; corpus `annotation_appearance`);
+    truncated inline-image data zero-filled MuPDF-style below a 64 MiB bound
+    (corpus `inline_image_truncated`). Typed deviations (expectation records): JPXDecode
+    images (`jp2k-resetprob`, `issue5475/5481/5549/5567` + scan residuals) decode only
+    under the Tier-2 WASM codec (`wasm-host`, SL-1.FILT.08) — the engine path is
+    feature-gated accordingly; embedded Type1C subset advances (`ghent` GWG051/052,
+    font-stack fidelity); a `/Redact` annot without `/AP` needs default appearance
+    synthesis (the two `6-3-3-t01-fail-b` files).
 
 ---
 

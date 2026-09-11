@@ -78,6 +78,22 @@ pub fn decode(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
 /// arithmetic-coded or otherwise-unimplemented frame.
 pub fn decode_jpeg(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
     let dct = selis_pdf_filter::dct_decode(data, g)?;
+    dct_to_rgba(&dct, g)
+}
+
+/// Convert decoded JPEG-family samples ([`DctImage`]) to RGBA8.
+///
+/// Grey expands to RGB; CMYK converts to RGB honouring the inversion Adobe
+/// APP14 transform 0 / Photoshop files use (surfaced by the DCT decoder).
+///
+/// # Budget
+///
+/// Charges the decoded pixel count against `Pixels`.
+///
+/// # Malformed Input
+///
+/// `IMAGE_UNSUPPORTED` for an unsupported component count.
+pub fn dct_to_rgba(dct: &selis_pdf_filter::DctImage, g: &mut BudgetGuard<'_>) -> Result<Image> {
     let pixels = usize::try_from(dct.width)
         .unwrap_or(usize::MAX)
         .saturating_mul(usize::try_from(dct.height).unwrap_or(usize::MAX));

@@ -75,14 +75,63 @@ pub fn decode_image(
     }
 
     let per_pixel = usize::from(components.max(1));
+    // Sub-byte sample widths (1/2/4 bpc) are packed MSB-first across each
+    // row (PDF §8.9.3.2). Unpack to one byte per sample first; rows are
+    // byte-aligned, so the row stride is ceil(w × components × bpc / 8).
+    let unpacked;
+    let samples: &[u8] = if bits_per_component < 8 {
+        let row_bits = u64::from(width)
+            .saturating_mul(u64::from(u32::try_from(per_pixel).unwrap_or(u32::MAX)));
+        let row_bytes = row_bits
+            .saturating_mul(u64::from(bits_per_component.max(1)))
+            .saturating_add(7)
+            .wrapping_div(8);
+        let expected = row_bytes.saturating_mul(u64::from(height));
+        if u64::try_from(samples.len()).unwrap_or(u64::MAX) < expected {
+            return Err(err!(
+                Code::ImageMalformed,
+                during = "image-decode",
+                detail = "image sample data truncated"
+            ));
+        }
+        unpacked = unpack_packed_samples(
+            samples,
+            width,
+            height,
+            per_pixel,
+            usize::from(bits_per_component.max(1)),
+            g,
+        )?;
+        &unpacked
+    } else {
+        samples
+    };
+
     let expected = pixel_count.saturating_mul(per_pixel as u64);
-    if u64::try_from(samples.len()).unwrap_or(u64::MAX) < expected {
+    // Truncated sample data is tolerated MuPDF-style — missing samples are
+    // zero-filled (black) so an inline image with a short data run still
+    // paints instead of silently vanishing (SL-2.RAST.13) — but only below a
+    // 64 MiB bound, so a declared 20k×20k image never materialises a gigabyte
+    // of zeros (the allocation-bomb guard the workspace audits for).
+    let padded;
+    let samples: &[u8] = if u64::try_from(samples.len()).unwrap_or(u64::MAX) < expected
+        && expected <= 64 * 1024 * 1024
+    {
+        let expected_len = usize::try_from(expected).unwrap_or(usize::MAX);
+        let mut buf = alloc::vec_with_capacity::<u8>(g, expected_len)?;
+        buf.extend_from_slice(samples);
+        buf.resize(expected_len, 0);
+        padded = buf;
+        &padded
+    } else if u64::try_from(samples.len()).unwrap_or(u64::MAX) < expected {
         return Err(err!(
             Code::ImageMalformed,
             during = "image-decode",
             detail = "image sample data truncated"
         ));
-    }
+    } else {
+        samples
+    };
 
     let mut rgba = alloc::vec_with_capacity::<u8>(
         g,
@@ -105,6 +154,64 @@ pub fn decode_image(
         height,
         rgba8: rgba,
     })
+}
+
+/// Unpack 1/2/4-bit packed samples into one byte per sample, scaling each
+/// sample to the full 0–255 range (PDF §8.9.3.2: rows are packed MSB-first
+/// with no per-row padding beyond the byte boundary).
+fn unpack_packed_samples(
+    packed: &[u8],
+    width: u32,
+    height: u32,
+    components: usize,
+    bpc: usize,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let width = usize::try_from(width).unwrap_or(0);
+    let height = usize::try_from(height).unwrap_or(0);
+    let row_bits = width.saturating_mul(components).saturating_mul(bpc);
+    let row_bytes = row_bits.saturating_add(7).wrapping_div(8);
+    let total = width.saturating_mul(height).saturating_mul(components);
+    let mut out = alloc::vec_with_capacity::<u8>(g, total)?;
+    // max is 2^bpc − 1 (bpc ≤ 4 here); ≥ 1 so the scaling divide is safe.
+    let max: u32 = 1u32
+        .checked_shl(u32::try_from(bpc).unwrap_or(1).min(30))
+        .unwrap_or(2)
+        .saturating_sub(1)
+        .max(1);
+    // The MSB-first bit at a flat bit index (row-local), 0 or 1.
+    let bit_at = |packed: &[u8], idx: usize| -> u32 {
+        let byte = packed.get(idx.wrapping_div(8)).copied().unwrap_or(0);
+        let off = u32::try_from(idx.wrapping_rem(8)).unwrap_or(0);
+        // off < 8, so the shift is bounded.
+        u32::from(byte.checked_shl(off).unwrap_or(0) & 0x80 != 0)
+    };
+    for y in 0..height {
+        let row_base = y.saturating_mul(row_bytes).saturating_mul(8);
+        for x in 0..width {
+            for c in 0..components {
+                let start = row_base
+                    .saturating_add(x.saturating_mul(components).saturating_add(c))
+                    .saturating_mul(bpc);
+                // Accumulate bpc bits MSB-first.
+                let mut raw = 0u32;
+                for b in 0..bpc {
+                    let bit = bit_at(packed, start.saturating_add(b));
+                    raw = raw.wrapping_mul(2).wrapping_add(bit);
+                }
+                // Scale to 0–255 with rounding; exact for 1 bpc. `max` is
+                // ≥ 1, so the divide is safe (wrapping forms satisfy the
+                // workspace's no-partial-arithmetic lint).
+                let scaled = raw
+                    .wrapping_mul(255)
+                    .wrapping_add(max.wrapping_div(2))
+                    .checked_div(max)
+                    .unwrap_or(0);
+                out.push(u8::try_from(scaled).unwrap_or(255));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Decode one pixel's samples into RGBA8.
@@ -370,18 +477,42 @@ mod tests {
     }
 
     #[test]
-    fn truncated_samples_are_a_typed_error() {
+    fn truncated_samples_are_zero_filled_mupdf_style() {
+        // A short sample run is tolerated: missing samples paint black
+        // instead of the image silently vanishing (SL-2.RAST.13). The rows
+        // given are complete; the missing last row is zeros.
         let mut g = guard();
-        let e = decode_image(
+        let img = decode_image(
             2,
             2,
             3,
             8,
-            &[1, 2, 3], // not enough for 2Ã—2Ã—3
+            &[255, 128, 255, 128, 255, 128],
             &Decode::identity(3),
             &mut g,
         )
-        .expect_err("truncated");
-        assert_eq!(e.code(), Code::ImageMalformed);
+        .expect("decode");
+        assert_eq!(img.rgba8.len(), 2 * 2 * 4);
+        // First two pixels use the given samples…
+        assert_eq!(&img.rgba8[0..8], &[255, 128, 255, 255, 128, 255, 128, 255]);
+        // …the missing row is zero-filled (black), not a typed error.
+        assert_eq!(&img.rgba8[8..16], &[0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+
+    /// 1-bit packed samples unpack MSB-first across each byte-aligned row
+    /// (PDF §8.9.3.2): a bitonal scan decodes instead of erroring as
+    /// truncated (SL-2.RAST.13).
+    #[test]
+    fn one_bpp_packed_samples_unpack() {
+        let mut g = guard();
+        // Two rows, 8 px each: row 1 = 10101010, row 2 = 01010101.
+        let samples = [0b1010_1010u8, 0b0101_0101u8];
+        let img = decode_image(8, 2, 1, 1, &samples, &Decode::identity(1), &mut g).expect("decode");
+        assert_eq!(img.rgba8.len(), 8 * 2 * 4);
+        // 1 bits scale to 255 (white), 0 bits to 0 (black).
+        let first_row: Vec<u8> = img.rgba8[0..32].iter().step_by(4).copied().collect();
+        assert_eq!(first_row, vec![255, 0, 255, 0, 255, 0, 255, 0]);
+        let second_row: Vec<u8> = img.rgba8[32..64].iter().step_by(4).copied().collect();
+        assert_eq!(second_row, vec![0, 255, 0, 255, 0, 255, 0, 255]);
     }
 }

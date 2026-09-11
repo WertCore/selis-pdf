@@ -42,7 +42,7 @@ pub use jbig2_full::{
 pub use jbig2_mq::MqDecoder;
 #[cfg(feature = "wasm-host")]
 pub use jpx::jpx_decode;
-pub use lzw::lzw_decode;
+pub use lzw::{lzw_decode, lzw_encode};
 pub use pipeline::{decode_chain, decode_stream, DecodeParms};
 
 use selis_error::Result;
@@ -70,14 +70,19 @@ pub fn decode(
     match filter {
         "FlateDecode" | "Fl" => flate_decode_bounded(data, output_limit, g),
         "LZWDecode" | "LZW" => {
-            // /EarlyChange is a /DecodeParms concern (SL-1.FILT.01); the
-            // default 0 is used here.
+            // /EarlyChange is a /DecodeParms concern (SL-1.FILT.01); this
+            // single-filter entry has no parms, so the spec default of 1
+            // applies (ISO 32000-2 §7.4.6.2).
             let _ = output_limit;
-            lzw_decode(data, 0, g)
+            lzw_decode(data, 1, g)
         }
         "ASCIIHexDecode" | "AHx" => ascii_hex_decode(data, g),
         "ASCII85Decode" | "A85" => ascii85_decode(data, g),
         "RunLengthDecode" | "RL" => runlength_decode(data, g),
+        // Terminal image codecs are pass-throughs at the byte-filter layer:
+        // their payload stays image-coded and is decoded by the image layer
+        // with the stream dict's geometry (SL-2.RAST.13).
+        "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" => Ok(data.to_vec()),
         // /Crypt is a decryption marker, not a byte transform: the resolver
         // already decrypted the stream body per its crypt filter, so the
         // pipeline passes the data through unchanged (SL-1.FILT.09).

@@ -1,4 +1,4 @@
-﻿//! Synthetic corpus generator + mutator (SL-0.CORP.04).
+//! Synthetic corpus generator + mutator (SL-0.CORP.04).
 //! Produces PDFs exercising specific constructs with known-correct
 //! expectations, plus a seeded, reproducible mutator that damages valid files.
 
@@ -423,6 +423,217 @@ pub fn generate() -> Result<(), String> {
         gen(&id, doc, 1)?;
     }
 
+    // ── SL-2.RAST.13 regression corpus: one file per confirmed root cause ──
+
+    // Text positioned with `TD` (which also sets the leading): the move uses
+    // the positive ty (a negated ty mirrored TD text below the page).
+    {
+        let id = "text_td".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"BT /Helvetica 14 Tf 20 20 TD (TD-positioned text) Tj ET".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        doc.add_page_with_extra(300.0, 120.0, &[Ref::new(content_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
+    // /Contents as an indirect reference to an array of stream refs (ISO
+    // 32000-2 §7.7.3.3): a page model that keeps the bare array ref renders
+    // blank.
+    {
+        let id = "contents_ref_array".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"1 0 0 rg 20 20 260 80 re f".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        // The array of content-stream refs, itself an indirect object.
+        let array_num = doc.allocate();
+        doc.add_object(
+            array_num,
+            Obj::Array(vec![Obj::Ref(Ref::new(content_num, 0))]),
+        );
+        // /Contents points at the array object (single-ref shape).
+        doc.add_page_with_extra(300.0, 120.0, &[Ref::new(array_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
+    // An LZW-encoded content stream: the decoder must read codes MSB-first
+    // and widen the code width per /EarlyChange (the spec default 1 applies
+    // when /DecodeParms is absent).
+    {
+        let id = "lzw_content".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"1 0 0 rg 20 20 260 80 re f 0 0 1 rg 40 40 200 40 re f".to_vec();
+        let encoded = selis_pdf_filter::lzw_encode(&content, 1);
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![
+                    (bytes(b"Length"), Obj::Int(encoded.len() as i64)),
+                    (bytes(b"Filter"), Obj::Name(bytes(b"LZWDecode"))),
+                ],
+                data: selis_bytes::Bytes::from(encoded),
+            },
+        );
+        doc.add_page_with_extra(300.0, 120.0, &[Ref::new(content_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
+    // An annotation whose /AP /N normal appearance carries the page's only
+    // visible content: the appearance must render as a form mapped onto the
+    // /Rect (ISO 32000-2 §12.5.5).
+    {
+        let id = "annotation_appearance".to_string();
+        let mut doc = DocumentBuilder::new();
+        // Empty page content: everything visible comes from the annot.
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(0))],
+                data: selis_bytes::Bytes::new(),
+            },
+        );
+        // The normal-appearance form: a filled rect + text in form space.
+        let form_content =
+            b"0.1 0.4 1 rg 0 0 400 200 re f 0 0 0 rg BT /Helvetica 24 Tf 20 90 Td (Annotation appearance) Tj ET"
+                .to_vec();
+        let form_num = doc.allocate();
+        doc.add_object(
+            form_num,
+            Obj::Stream {
+                dict: vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Form"))),
+                    (
+                        bytes(b"BBox"),
+                        Obj::Array(vec![int(0), int(0), int(400), int(200)]),
+                    ),
+                    (bytes(b"Length"), Obj::Int(form_content.len() as i64)),
+                ],
+                data: selis_bytes::Bytes::from(form_content),
+            },
+        );
+        // /AP << /N form >>.
+        let ap_num = doc.allocate();
+        doc.add_object(
+            ap_num,
+            Obj::Dict(vec![(bytes(b"N"), Obj::Ref(Ref::new(form_num, 0)))]),
+        );
+        // The annotation itself.
+        let annot_num = doc.allocate();
+        doc.add_object(
+            annot_num,
+            Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"Annot"))),
+                (bytes(b"Subtype"), Obj::Name(bytes(b"Square"))),
+                (
+                    bytes(b"Rect"),
+                    Obj::Array(vec![real(100.0), real(100.0), real(500.0), real(300.0)]),
+                ),
+                (bytes(b"F"), Obj::Int(4)),
+                (bytes(b"AP"), Obj::Ref(Ref::new(ap_num, 0))),
+            ]),
+        );
+        doc.add_page_with_extra(
+            612.0,
+            792.0,
+            &[Ref::new(content_num, 0)],
+            None,
+            vec![(
+                b"Annots".to_vec(),
+                Obj::Array(vec![Obj::Ref(Ref::new(annot_num, 0))]),
+            )],
+        );
+        gen(&id, doc, 1)?;
+    }
+
+    // An image XObject placed at an offset (the placement origin must
+    // translate AFTER the DPI scale — a pre-scaled origin drew the image off
+    // the canvas at high DPI).
+    {
+        let id = "image_offset".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"q 100 0 0 80 60 30 cm /Im0 Do Q".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        // A 2×2 DeviceRGB image, raw samples (red/green/blue/white).
+        let samples: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let image_num = doc.allocate();
+        doc.add_object(
+            image_num,
+            Obj::Stream {
+                dict: vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Image"))),
+                    (bytes(b"Width"), Obj::Int(2)),
+                    (bytes(b"Height"), Obj::Int(2)),
+                    (bytes(b"ColorSpace"), Obj::Name(bytes(b"DeviceRGB"))),
+                    (bytes(b"BitsPerComponent"), Obj::Int(8)),
+                    (bytes(b"Length"), Obj::Int(samples.len() as i64)),
+                ],
+                data: selis_bytes::Bytes::from(samples),
+            },
+        );
+        let resources_num = doc.allocate();
+        doc.add_object(
+            resources_num,
+            Obj::Dict(vec![(
+                bytes(b"XObject"),
+                Obj::Dict(vec![(bytes(b"Im0"), Obj::Ref(Ref::new(image_num, 0)))]),
+            )]),
+        );
+        doc.add_page_with_extra(
+            300.0,
+            160.0,
+            &[Ref::new(content_num, 0)],
+            Some(Ref::new(resources_num, 0)),
+            Vec::new(),
+        );
+        gen(&id, doc, 1)?;
+    }
+
+    // An inline image whose data run is shorter than /W × /H needs: missing
+    // samples are zero-filled (black), matching the render oracle, instead of
+    // the image silently vanishing.
+    {
+        let id = "inline_image_truncated".to_string();
+        let mut doc = DocumentBuilder::new();
+        let mut content = b"100 0 0 100 0 0 cm\nBI /W 4 /H 4 /CS /RGB /BPC 8\nID\n".to_vec();
+        // Only 6 of the required 48 sample bytes.
+        content.extend_from_slice(b"\x40\x80\xc0\x20\x60\xa0");
+        content.extend_from_slice(b"\nEI");
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        doc.add_page_with_extra(100.0, 100.0, &[Ref::new(content_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
     println!("synthetic: {} files generated", count.get());
     Ok(())
 }
@@ -498,6 +709,13 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
 fn bytes(s: &[u8]) -> selis_bytes::Bytes {
     selis_bytes::Bytes::copy_from_slice(s)
 }
+/// A real-number object (milli-unit scaled, matching the writer's convention).
+fn real(v: f64) -> Obj {
+    #[allow(clippy::cast_possible_truncation)]
+    let scaled = (v * 1000.0).round() as i64;
+    Obj::Real { scaled, scale: 3 }
+}
+
 fn int(n: i64) -> Obj {
     Obj::Int(n)
 }

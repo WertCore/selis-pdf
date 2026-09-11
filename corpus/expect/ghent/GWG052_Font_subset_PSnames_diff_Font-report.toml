@@ -1,0 +1,6 @@
+open = "ok"
+pages = 5
+[annotation]
+triage = "blank_selis"
+verdict = "OurBug"
+note = "RAST.13: embedded Type1C subset advances unresolvable; glyphs stack (font-stack fidelity). Typed."
