@@ -153,31 +153,24 @@ fn render(pdf: &[u8], page: u32) -> Option<(Vec<u8>, u32, u32)> {
     if page_idx >= session.len() {
         return None;
     }
-    let (w_pt, h_pt) = session.page_size(page_idx)?;
-    let (w, h) = (dim(w_pt)?, dim(h_pt)?);
+    // The rendered view at 72 DPI (1 pt → 1 px, matching the old `dim`
+    // ceil): it carries the `/Rotate`-aware canvas size and the matching
+    // page-to-device transform (SL-2.RAST.12).
+    let view = session.page_view(page_idx, 72.0)?;
+    if view.width == 0
+        || view.width > MAX_CANVAS_DIM
+        || view.height == 0
+        || view.height > MAX_CANVAS_DIM
+    {
+        return None;
+    }
+    let (w, h) = (view.width, view.height);
     let mut backend = TinySkiaBackend::new(w, h)?;
     let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
     session
-        .render_page(page_idx, &mut backend, &budget, &mut g)
+        .render_page(page_idx, &mut backend, view.ctm, &budget, &mut g)
         .ok()?;
     Some((backend.pixmap().data().to_vec(), w, h))
-}
-
-/// A finite, positive f64 dimension as a u32 canvas size (ceil), rejecting
-/// absurd canvases before the pixel buffer exists.
-fn dim(v: f64) -> Option<u32> {
-    if !v.is_finite() || v <= 0.0 || v > f64::from(MAX_CANVAS_DIM) {
-        return None;
-    }
-    let c = v.ceil();
-    if c < 1.0 || c > f64::from(MAX_CANVAS_DIM) {
-        return None;
-    }
-    // c is in [1, MAX_CANVAS_DIM]: the cast is exact, and std offers no
-    // fallible f64→u32 conversion, so the pedantic cast lints are allowed
-    // here with this justification.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some(c as u32)
 }
 
 /// Copy the pixmap into a fresh out-buffer and publish its geometry.

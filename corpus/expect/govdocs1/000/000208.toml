@@ -1,0 +1,6 @@
+open = "ok"
+pages = 76
+[annotation]
+triage = "blank_selis"
+verdict = "OurBug"
+note = "RAST.13: paints since DCT/1bpp fixes; the missing scan images are JPX (wasm-host, SL-1.FILT.08). Typed."

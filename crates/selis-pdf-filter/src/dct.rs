@@ -95,14 +95,35 @@ pub fn dct_decode(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<DctImage> {
             detail = "no JPEG info"
         )
     })?;
-    let channels = info.components;
+    // The OUTPUT channel count comes from the decoded byte length, not the
+    // SOF component count: zune-jpeg converts some 4-component JPEGs (Adobe
+    // CMYK without a CMYK colour transform) to RGB, so `info.components == 4`
+    // while the output carries 3 bytes per pixel. Deriving channels from the
+    // byte count keeps every consumer's arithmetic consistent (SL-2.RAST.13:
+    // a 3/4-size buffer made `Pixmap::from_vec` reject the image and the
+    // page paint blank).
+    let px_count = usize::try_from(u64::from(info.width))
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::try_from(u64::from(info.height)).unwrap_or(usize::MAX));
+    let channels = if pixels.len() == px_count.saturating_mul(4) {
+        4u8
+    } else if pixels.len() == px_count.saturating_mul(3) {
+        3u8
+    } else if pixels.len() == px_count {
+        1u8
+    } else {
+        return Err(err!(
+            Code::DctCorrupt,
+            during = "dct-decode",
+            detail = "decoded sample count does not match the frame dimensions"
+        ));
+    };
     let precision = 8; // zune-jpeg outputs 8-bit regardless of input precision
     let width = u32::from(info.width);
     let height = u32::from(info.height);
 
-    // Detect Adobe APP14 transform from the decoder's metadata.
-    // zune-jpeg exposes the components; we infer CMYK from the component
-    // count (4) and the conventional ordering.
+    // Adobe CMYK JPEGs store inverted samples (APP14 transform 0); only a
+    // true 4-channel output is CMYK.
     let inverted_cmyk = channels == 4;
 
     g.charge(selis_sandbox::Resource::Bytes, pixels.len() as u64)?;

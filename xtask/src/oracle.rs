@@ -703,9 +703,25 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     let out_dir = std::env::temp_dir().join("selis-oracle-cmp");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("{out_dir:?}: {e}"))?;
 
-    let selis_bin = find_local("selis")
-        .or_else(|| find_local("selis.exe"))
-        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
+    // Same resolution order as the sweep (CARGO_TARGET_DIR release/debug
+    // first): a workspace build elsewhere on the machine must not shadow the
+    // binary under test.
+    let selis_bin = {
+        let exe = if cfg!(windows) { "selis.exe" } else { "selis" };
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+            candidates.push(Path::new(&dir).join("release").join(exe));
+            candidates.push(Path::new(&dir).join("debug").join(exe));
+        }
+        candidates.push(Path::new("target").join("release").join(exe));
+        candidates.push(Path::new("target").join("debug").join(exe));
+        candidates
+            .into_iter()
+            .find(|c| c.is_file())
+            .ok_or_else(|| {
+                "selis binary not found — build it (cargo build --release -p selis-cli)".to_string()
+            })?
+    };
 
     let our_ppm = out_dir.join("our.ppm");
 

@@ -19,6 +19,8 @@ use selis_raster::soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskTyp
 use selis_raster::{FillRule, Paint as RasterPaint, Path as RasterPath, PathCmd, TinySkiaBackend};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 
+use crate::page::{page_view as compute_page_view, PageView};
+use crate::render::render_display_list;
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -187,6 +189,20 @@ impl Session {
         })
     }
 
+    /// The rendered view of a page at `dpi` (SL-2.RAST.12): the output canvas
+    /// size and the user-space → device transform, honouring page `/Rotate`
+    /// (ISO 32000-2 §14.11.2 — rotation is part of the rendered page view, and
+    /// the canvas dimensions swap for 90/270).
+    ///
+    /// `None` when the page does not exist or has no `/MediaBox`.
+    #[must_use]
+    pub fn page_view(&self, page_num: usize, dpi: f64) -> Option<PageView> {
+        let page = self.document.pages.get(page_num)?;
+        let box_ = page.media_box?;
+        let rotate = selis_geom::Rotation::from_degrees(i64::from(page.rotate.unwrap_or(0)));
+        Some(compute_page_view(box_, rotate, dpi))
+    }
+
     /// The embedded-file inventory (metadata only — extraction is policy
     /// gated).
     pub fn attachments(
@@ -242,15 +258,20 @@ impl Session {
     }
 
     /// Render a page onto a backend.
+    ///
+    /// `page_ctm` is the page-to-device transform from
+    /// [`Session::page_view`] — the caller sizes the backend from the same
+    /// view, so the transform and the canvas agree (RAST.12).
     pub fn render_page(
         &self,
         page_num: usize,
         backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<()> {
         let mut stats = crate::render::RenderStats::default();
-        self.render_page_with_stats(page_num, backend, budget, g, &mut stats)
+        self.render_page_with_stats(page_num, backend, page_ctm, budget, g, &mut stats)
     }
 
     /// Render a page onto a backend, filling `stats` with the raster walk's
@@ -259,6 +280,8 @@ impl Session {
         &self,
         page_num: usize,
         backend: &mut TinySkiaBackend,
+
+        page_ctm: selis_geom::Matrix,
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
         stats: &mut crate::render::RenderStats,
@@ -306,6 +329,7 @@ impl Session {
         crate::render::render_display_list_with_stats(
             &dl,
             backend,
+            page_ctm,
             &font_data,
             &resolve_smask,
             &resolve_inline_image,
@@ -314,6 +338,24 @@ impl Session {
             g,
             stats,
         );
+        // Annotation appearance streams (SL-2.RAST.13, ISO 32000-2 §12.5.5):
+        // a page whose visible content is annotation-borne must not paint
+        // blank. Each /AP /N appearance renders as a form mapped onto its
+        // /Rect, after the page content.
+        let annot_dl = annotation_appearance_display_list(self, page, budget, g)?;
+        if !annot_dl.ops.is_empty() {
+            render_display_list(
+                &annot_dl,
+                backend,
+                page_ctm,
+                &font_data,
+                &resolve_smask,
+                &resolve_inline_image,
+                &resolve_shading,
+                &resolve_pattern,
+                g,
+            );
+        }
         Ok(())
     }
 
@@ -338,6 +380,186 @@ impl Session {
         }
         build_display_list(self, content, page.resources.as_ref(), budget, g)
     }
+}
+
+/// The display list of every drawable annotation appearance on a page
+/// (SL-2.RAST.13): each `/Annots` entry with a `/AP` `/N` normal appearance
+/// renders as a form XObject mapped onto its `/Rect` (ISO 32000-2 §12.5.5).
+/// Annotations without an appearance (or hidden ones) contribute nothing.
+fn annotation_appearance_display_list(
+    session: &Session,
+    page: &selis_pdf_doc::Page,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<selis_pdf_content::display_list::DisplayList> {
+    let mut dl = selis_pdf_content::display_list::DisplayList::new();
+    let mut resolver = session.new_resolver(budget);
+    // The page dict: /Annots lives there, not in the doc model's Page.
+    let Some(page_obj) = resolver
+        .resolve(selis_pdf_cos::Ref::new(page.num, 0), g)
+        .ok()
+    else {
+        return Ok(dl);
+    };
+    let pairs: &[(Bytes, Obj)] = match &page_obj {
+        Obj::Dict(pairs) => pairs,
+        _ => return Ok(dl),
+    };
+    let Some(annots_obj) = dict_get_obj(pairs, b"Annots") else {
+        return Ok(dl);
+    };
+    let annots: Vec<Obj> = match annots_obj {
+        Obj::Array(items) => items
+            .iter()
+            .filter_map(|o| match o {
+                Obj::Ref(r) => resolver.resolve(*r, g).ok(),
+                o @ Obj::Dict(_) => Some(o.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => return Ok(dl),
+    };
+    for annot in &annots {
+        let annot_pairs: &[(Bytes, Obj)] = match annot {
+            Obj::Dict(pairs) => pairs,
+            _ => continue,
+        };
+        // Hidden flag (/F bit 2): not displayed, not printed.
+        if dict_get_obj(annot_pairs, b"F")
+            .and_then(|v| match v {
+                Obj::Int(n) => Some(*n),
+                _ => None,
+            })
+            .is_some_and(|f| f & 2 != 0)
+        {
+            continue;
+        }
+        // /AP /N: the normal appearance. /N may be a stream ref, an array
+        // (take the first), or a state-name dict (take the first entry).
+        let Some(ap) = dict_get_obj(annot_pairs, b"AP") else {
+            continue;
+        };
+        let ap_resolved: Obj = match ap {
+            Obj::Dict(_) => ap.clone(),
+            Obj::Ref(r) => match resolver.resolve(*r, g) {
+                Ok(d) => d,
+                Err(_) => continue,
+            },
+            _ => continue,
+        };
+        let ap_pairs: &[(Bytes, Obj)] = match &ap_resolved {
+            Obj::Dict(ap_pairs) => ap_pairs,
+            _ => continue,
+        };
+        let n_resolved: Option<Obj> = match dict_get_obj(ap_pairs, b"N") {
+            Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
+            Some(Obj::Array(items)) => items.first().and_then(|o| match o {
+                Obj::Ref(r) => resolver.resolve(*r, g).ok(),
+                _ => None,
+            }),
+            Some(Obj::Dict(state_pairs)) => match dict_first_value(state_pairs) {
+                Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(Obj::Stream { dict, data }) = n_resolved else {
+            continue;
+        };
+        // The appearance form's own /Resources (annotations carry them on
+        // the appearance stream, not the page).
+        let appearance_resources = dict_get_obj(&dict, b"Resources").map(|o| match o {
+            Obj::Ref(r) => resolver.resolve(*r, g).unwrap_or(Obj::Null),
+            other => other.clone(),
+        });
+        let content = unfilter_stream_data(&dict, &data, g);
+        // Form /Matrix (form space → appearance user space; default identity).
+        let form_matrix = dict_get_obj(&dict, b"Matrix")
+            .and_then(matrix_from_obj)
+            .unwrap_or(Matrix::IDENTITY);
+        // /Rect maps the appearance /BBox onto the page. Rect values may be
+        // swapped (lower-left > upper-right is legal); normalise.
+        let Some(Obj::Array(rect_arr)) = dict_get_obj(annot_pairs, b"Rect") else {
+            continue;
+        };
+        let num = |v: Option<&Obj>| -> Option<f64> {
+            match v? {
+                Obj::Int(n) => Some(*n as f64),
+                Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+                _ => None,
+            }
+        };
+        let (Some(rx0), Some(ry0), Some(rx1), Some(ry1)) = (
+            num(rect_arr.first()),
+            num(rect_arr.get(1)),
+            num(rect_arr.get(2)),
+            num(rect_arr.get(3)),
+        ) else {
+            continue;
+        };
+        let (rx0, rx1) = (rx0.min(rx1), rx1.max(rx0));
+        let (ry0, ry1) = (ry0.min(ry1), ry1.max(ry0));
+        let (rw, rh) = (rx1 - rx0, ry1 - ry0);
+        if !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
+            continue; // degenerate /Rect: nothing drawable
+        }
+        // BBox (form space); default the full unit square-ish box if absent.
+        let bbox = dict_get_obj(&dict, b"BBox")
+            .and_then(|o| match o {
+                Obj::Array(arr) => Some((
+                    num(arr.first()),
+                    num(arr.get(1)),
+                    num(arr.get(2)),
+                    num(arr.get(3)),
+                )),
+                _ => None,
+            })
+            .and_then(|(a, b, c, d)| Some((a?, b?, c?, d?)))
+            .unwrap_or((0.0, 0.0, rw, rh));
+        let (bw, bh) = (bbox.2 - bbox.0, bbox.3 - bbox.1);
+        if !bw.is_finite() || !bh.is_finite() || bw <= 0.0 || bh <= 0.0 {
+            continue;
+        }
+        // Placement: scale the BBox onto the /Rect and translate.
+        let sx = rw / bw;
+        let sy = rh / bh;
+        let place = Matrix::new(sx, 0.0, 0.0, sy, rx0 - bbox.0 * sx, ry0 - bbox.1 * sy);
+        if !place.is_finite() {
+            continue;
+        }
+        // Content transform: /Matrix first, then the placement. The content
+        // interpreter starts from an identity CTM, so both are prepended as
+        // `cm` operators in application order.
+        let prefix = format!(
+            "{} {} {} {} {} {} cm {} {} {} {} {} {} cm\n",
+            form_matrix.a,
+            form_matrix.b,
+            form_matrix.c,
+            form_matrix.d,
+            form_matrix.e,
+            form_matrix.f,
+            place.a,
+            place.b,
+            place.c,
+            place.d,
+            place.e,
+            place.f
+        );
+        let mut full = prefix.into_bytes();
+        full.extend_from_slice(&content);
+        let Ok(appearance_dl) =
+            build_display_list(session, full, appearance_resources.as_ref(), budget, g)
+        else {
+            continue; // a broken appearance is a deviation, never fatal
+        };
+        dl.ops.extend(appearance_dl.ops);
+    }
+    Ok(dl)
+}
+
+/// The first value of a dictionary (for appearance-state /N dicts).
+fn dict_first_value(pairs: &[(Bytes, Obj)]) -> Option<&Obj> {
+    pairs.iter().map(|(_, v)| v).next()
 }
 
 /// Build a display list from a content stream against a resource dictionary.
@@ -521,6 +743,7 @@ fn resolve_pattern_inner(
     crate::render::render_display_list(
         &dl,
         &mut tile,
+        Matrix::IDENTITY,
         &no_font,
         &no_smask,
         &no_inline,
@@ -610,13 +833,21 @@ fn font_data_inner(
     g: &mut BudgetGuard<'_>,
 ) -> Option<Vec<u8>> {
     // Prefer the embedded font program.
-    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
-    if let Some(font_file) = font_dict.font_file {
-        return Some(font_file.data().as_slice().to_vec());
+    if let Some(font_dict) = resolve_font_dict(resolver, resources, font_name, g) {
+        if let Some(font_file) = font_dict.font_file {
+            return Some(font_file.data().as_slice().to_vec());
+        }
+        // A non-embedded standard-14 font falls back to the bundled Liberation
+        // font (SL-0.LEAD.07), keyed by the /BaseFont name.
+        if let Some(bytes) = selis_font::fallback::fallback_bytes(&font_dict.base_font) {
+            return Some(bytes.to_vec());
+        }
     }
-    // A non-embedded standard-14 font falls back to the bundled Liberation
-    // font (SL-0.LEAD.07), keyed by the /BaseFont name.
-    selis_font::fallback::fallback_bytes(&font_dict.base_font).map(|bytes| bytes.to_vec())
+    // A `Tf` naming a standard-14 font that /Resources does not declare still
+    // renders in every mainstream viewer (and MuPDF, the render oracle) — a
+    // missing font resource is a deviation, not a silent no-draw.
+    let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+    selis_font::fallback::fallback_bytes(name).map(|bytes| bytes.to_vec())
 }
 
 fn resolve_page_content(
@@ -637,22 +868,11 @@ fn resolve_page_content(
         // (SL-0.SBX.07).
         match resolve_stream(resolver, *r, g) {
             Ok(Some((dict, data))) => {
-                let filter = dict
-                    .iter()
-                    .find(|(k, _)| k.as_slice() == b"Filter")
-                    .and_then(|(_, v)| match v {
-                        Obj::Name(n) => {
-                            Some(std::str::from_utf8(n.as_slice()).unwrap_or("").to_string())
-                        }
-                        _ => None,
-                    });
-                if let Some(filt) = filter {
-                    if let Ok(decoded) = selis_pdf_filter::decode(&filt, &data, u64::MAX, g) {
-                        out.extend_from_slice(&decoded);
-                    }
-                } else {
-                    out.extend_from_slice(&data);
-                }
+                // `unfilter_stream_data` handles filter chains and
+                // /DecodeParms (a single-filter decode silently ignored
+                // /EarlyChange, so real-world LZW content failed to decode
+                // and the page painted blank).
+                out.extend_from_slice(&unfilter_stream_data(&dict, &data, g));
             }
             Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => return Err(e),
             _ => {}
@@ -728,7 +948,17 @@ fn font_width_inner(
     code: u16,
     g: &mut BudgetGuard<'_>,
 ) -> Option<f64> {
-    let font_dict = resolve_font_dict(resolver, resources, font_name, g)?;
+    let font_dict = match resolve_font_dict(resolver, resources, font_name, g) {
+        Some(fd) => fd,
+        None => {
+            // Undeclared standard-14 font: metrics from the name itself
+            // (the same tolerance as `font_data_inner`).
+            let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+            let mut fd = selis_font::FontDict::simple(selis_font::FontSubtype::Type1);
+            fd.base_font = name.to_string();
+            fd
+        }
+    };
     let resolved = selis_font::resolve_widths(&font_dict, g).ok()?;
     Some(resolved.width(u32::from(code)))
 }
@@ -882,7 +1112,8 @@ fn decode_parms_from_obj(obj: Option<&Obj>) -> Vec<selis_pdf_filter::DecodeParms
             .unwrap_or(8);
         p.early_change = int(b"EarlyChange")
             .and_then(|n| u8::try_from(n).ok())
-            .unwrap_or(0);
+            // The spec default is 1 (ISO 32000-2 §7.4.6.2), not 0.
+            .unwrap_or(1);
         p
     };
     match obj {
@@ -977,6 +1208,16 @@ fn resolve_xobject_inner(
         _ => 3,
     };
     let unfiltered = unfilter_stream_data(&dict, &data, g);
+    // Terminal image codecs first: DCT/JPX streams carry compressed image
+    // data the raw-sample decoder cannot read — silently skipping them is
+    // how a scanned page renders blank (SL-2.RAST.13).
+    if let Some(img) = decode_terminal_image_rgba(&dict, &unfiltered, g) {
+        return Ok(Some(selis_pdf_content::exec::DoTarget::Image {
+            width: img.width,
+            height: img.height,
+            rgba8: Bytes::copy_from_slice(&img.rgba8),
+        }));
+    }
     let decode = selis_raster::image::Decode::identity(usize::from(components));
     let img =
         selis_raster::image::decode_image(width, height, components, bpc, &unfiltered, &decode, g)?;
@@ -985,6 +1226,68 @@ fn resolve_xobject_inner(
         height: img.height,
         rgba8: Bytes::copy_from_slice(&img.rgba8),
     }))
+}
+
+/// Decode an image stream whose samples are still in a terminal image codec
+/// (DCTDecode/JPXDecode, or a payload with the codecs' magic bytes) into
+/// straight RGBA8. `None` when the stream is not a terminal-codec image and
+/// the raw-sample decoder should take it.
+///
+/// # Malformed Input
+///
+/// A corrupt JPEG/JPX payload returns `None` here only after this function
+/// already committed to the codec path — the caller surfaces the failure as a
+/// typed decode error rather than drawing nothing.
+fn decode_terminal_image_rgba(
+    dict: &[(Bytes, Obj)],
+    unfiltered: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Option<DecodedImage> {
+    let names = filter_names_from_dict(dict);
+    let is_dct = names.iter().any(|f| f == "DCTDecode" || f == "DCT")
+        || unfiltered.starts_with(&[0xFF, 0xD8]);
+    let is_jpx = names.iter().any(|f| f == "JPXDecode")
+        || unfiltered.starts_with(&[0x00, 0x00, 0x00, 0x0C, b'j', b'P', b' ', b' ']);
+    if is_dct {
+        let img = selis_image::decode_jpeg(unfiltered, g).ok()?;
+        return Some(DecodedImage {
+            width: img.width,
+            height: img.height,
+            rgba8: img.rgba,
+        });
+    }
+    // JPXDecode runs OpenJPEG behind the Tier-2 WASM sandbox (SL-1.FILT.08);
+    // the codec is only compiled in with the `wasm-host` feature, so a
+    // default build surfaces it as a typed deviation instead (the record, not
+    // a silent claim of support).
+    #[cfg(feature = "wasm-host")]
+    if is_jpx {
+        let dct = selis_pdf_filter::jpx_decode(unfiltered, g).ok()?;
+        let img = selis_image::dct_to_rgba(&dct, g).ok()?;
+        return Some(DecodedImage {
+            width: img.width,
+            height: img.height,
+            rgba8: img.rgba,
+        });
+    }
+    let _ = is_jpx;
+    None
+}
+
+/// The `/Filter` chain of a stream dict (Name or array of Names), lowercased
+/// names as written.
+fn filter_names_from_dict(dict: &[(Bytes, Obj)]) -> Vec<String> {
+    match dict_get_obj(dict, b"Filter") {
+        Some(Obj::Name(n)) => vec![String::from_utf8_lossy(n.as_slice()).to_string()],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .filter_map(|o| match o {
+                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Decode a stream (dict + raw data) as an image into straight RGBA8.
@@ -1020,6 +1323,9 @@ fn decode_image_rgba(
         _ => 3,
     };
     let unfiltered = unfilter_stream_data(dict, data, g);
+    if let Some(img) = decode_terminal_image_rgba(dict, &unfiltered, g) {
+        return Ok(img);
+    }
     let decode = Decode::identity(usize::from(components));
     decode_image(width, height, components, bpc, &unfiltered, &decode, g)
 }
@@ -2222,7 +2528,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The black-filled square covers the page: the centre is black.
@@ -2242,7 +2548,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The top-left pixel is white (255 gray); the rest are black.
@@ -2261,7 +2567,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2, 2).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The top-left pixel is white (255 gray); the rest are black.
@@ -2278,7 +2584,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(2000, 200).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The canvas has no background fill; glyphs paint black with alpha 255.
@@ -2305,7 +2611,7 @@ mod tests {
         let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
         let mut backend = TinySkiaBackend::new(100, 100).expect("pixmap");
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
             .expect("render");
         let data = backend.pixmap().data();
         // The form's red square fills the page: the centre pixel is red.

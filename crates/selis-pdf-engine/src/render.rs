@@ -1,7 +1,7 @@
-//! The engine's render path (SL-2.RAST.11 → the page renderer).
+//! The engine's render path (SL-2.RAST.11 â†’ the page renderer).
 //!
 //! Walks a [`DisplayList`] and paints each op onto a raster [`Backend`]. This
-//! is the composition point the architecture (§8) describes: content streams
+//! is the composition point the architecture (Â§8) describes: content streams
 //! become display lists (`selis-pdf-content::exec`), which become pixels
 //! here.
 //!
@@ -22,7 +22,7 @@ use selis_sandbox::BudgetGuard;
 
 /// Per-walk workload counters (SL-2.PERF.02 instrumentation).
 ///
-/// Counts only — no clocks, no allocation — so filling one cannot perturb
+/// Counts only â€” no clocks, no allocation â€” so filling one cannot perturb
 /// determinism (SL-2.RAST.09): two walks over the same display list produce
 /// identical counters as well as identical pixels. The `xtask perf-render`
 /// harness records these beside the wall times; that pairing is the top-10
@@ -31,7 +31,7 @@ use selis_sandbox::BudgetGuard;
 pub struct RenderStats {
     /// Display-list ops visited (including group boundaries).
     pub ops: u64,
-    /// `font_data` invocations (cache misses — at most one per distinct
+    /// `font_data` invocations (cache misses â€” at most one per distinct
     /// font per walk; the pre-cache walk resolved per glyph).
     pub font_resolves: u64,
     /// Font program bytes returned by `font_data` (copies).
@@ -77,10 +77,10 @@ const MAX_CACHED_OUTLINES: usize = 1024;
 
 /// The writable per-glyph maps for one font.
 struct FontMaps {
-    /// Code → glyph id (`None` = unmapped, cached too: spaces are common
+    /// Code â†’ glyph id (`None` = unmapped, cached too: spaces are common
     /// and must not re-run the cmap per instance).
     gids: HashMap<u16, Option<u16>>,
-    /// Gid → font-unit outline commands (`None` = no outline).
+    /// Gid â†’ font-unit outline commands (`None` = no outline).
     outlines: HashMap<u16, Option<Vec<selis_font::OutlineCmd>>>,
 }
 
@@ -99,8 +99,8 @@ struct CachedFont {
     maps: FontMaps,
 }
 
-/// The font a run renders with: the cached entry, or — past the
-/// hostile-input cap — a run-local scratch with the same behaviour (the run
+/// The font a run renders with: the cached entry, or â€” past the
+/// hostile-input cap â€” a run-local scratch with the same behaviour (the run
 /// still renders; only cross-run sharing is lost).
 enum FontView<'a> {
     /// The shared per-walk entry.
@@ -157,7 +157,7 @@ impl FontView<'_> {
 /// reads after insertion (never iterated), so output is unaffected and
 /// determinism (SL-2.RAST.09) holds by construction.
 struct TextCache {
-    /// Font name → resolved program and per-glyph maps.
+    /// Font name â†’ resolved program and per-glyph maps.
     fonts: HashMap<selis_bytes::Bytes, CachedFont>,
 }
 
@@ -172,7 +172,7 @@ impl TextCache {
     /// The entry for `name`, resolving the font program on first use.
     /// `None` when the font does not resolve (the run is skipped). Past the
     /// hostile-input cap the run renders from a run-local scratch with
-    /// identical output — only cross-run sharing is lost.
+    /// identical output â€” only cross-run sharing is lost.
     fn font<'a>(
         &'a mut self,
         font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
@@ -274,8 +274,14 @@ impl TextCache {
         }
     }
 }
+use crate::page::device_scale;
 
 /// Render a display list onto a backend.
+///
+/// `page_ctm` is the page-to-device transform (RAST.12): the matrix that maps
+/// PDF user space onto the backend's pixels, honouring DPI scale, y-flip, and
+/// page `/Rotate` (`crate::page::page_view` builds it). Every op's own CTM â€”
+/// user space â†’ device â€” composes with it.
 ///
 /// `font_data` resolves a font resource name to the font program bytes (the
 /// engine's document layer provides this).
@@ -287,6 +293,7 @@ impl TextCache {
 pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
+    page_ctm: Matrix,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
@@ -304,6 +311,7 @@ pub fn render_display_list(
     render_display_list_with_stats(
         dl,
         backend,
+        page_ctm,
         font_data,
         resolve_smask,
         resolve_inline_image,
@@ -324,6 +332,7 @@ pub fn render_display_list(
 pub fn render_display_list_with_stats(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
+    page_ctm: Matrix,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
@@ -372,8 +381,13 @@ pub fn render_display_list_with_stats(
         if state.clip != current_clip {
             backend.clear_clip();
             stats.clip_rebuilds = stats.clip_rebuilds.saturating_add(1);
+            // Clip paths are stored in user space; they must reach the
+            // rasteriser through the same total transform as the fills (the
+            // op's CTM composed with the page transform).
+            let clip_m = state.ctm.then(page_ctm);
             for (path, rule) in &state.clip {
                 if let Some(p) = to_raster_path(path) {
+                    let p = transform_raster_path(&p, clip_m);
                     backend.clip(
                         &p,
                         match rule {
@@ -402,11 +416,11 @@ pub fn render_display_list_with_stats(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 if let Some(pattern_name) = &state.fill_pattern {
                     stats.pattern_resolves = stats.pattern_resolves.saturating_add(1);
                     if let Some(pattern) = resolve_pattern(pattern_name) {
-                        draw_pattern(backend, &pattern, &p, &state.fill, state, g);
+                        draw_pattern(backend, &pattern, &p, &state.fill, state, page_ctm, g);
                         continue;
                     }
                 }
@@ -417,20 +431,20 @@ pub fn render_display_list_with_stats(
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 let paint = paint(&state.stroke, state.alpha_stroke);
-                let spec = stroke_spec(state);
+                let spec = stroke_spec(state, state.ctm.then(page_ctm));
                 let _ = selis_raster::render::stroke(backend, &p, &spec, &paint);
             }
             Op::FillStroke { path, state } => {
                 let Some(p) = to_raster_path(path) else {
                     continue;
                 };
-                let p = transform_raster_path(&p, state.ctm);
+                let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 let fill_paint = paint(&state.fill, state.alpha_fill);
                 let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
                 let stroke_paint = paint(&state.stroke, state.alpha_stroke);
-                let spec = stroke_spec(state);
+                let spec = stroke_spec(state, state.ctm.then(page_ctm));
                 let _ = selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
             }
             Op::Text { at, state, runs } => {
@@ -443,7 +457,6 @@ pub fn render_display_list_with_stats(
                     // one `Arc`-bump font-bytes clone (the maps are mutated
                     // through the view below, so the bytes cannot borrow it).
                     let paint = paint(&state.fill, state.alpha_fill);
-                    let base = state.ctm.then(Matrix::scale(scale, scale));
                     let fb = view.bytes().clone();
                     for &code in &run.glyphs {
                         let maps = view.maps();
@@ -453,7 +466,13 @@ pub fn render_display_list_with_stats(
                         let Some(cmds) = TextCache::outline(maps, &fb, gid, g, stats) else {
                             continue;
                         };
-                        let m = base.then(Matrix::translate(at.x, at.y));
+                        // Glyph outline → text space (size scale) → user
+                        // space (position) → device (CTM) → page view
+                        // (DPI/flip/`/Rotate`).
+                        let m = Matrix::scale(scale, scale)
+                            .then(Matrix::translate(at.x, at.y))
+                            .then(state.ctm)
+                            .then(page_ctm);
                         let transformed = transform_outline(&cmds, m);
                         if transformed.is_empty() {
                             continue;
@@ -481,7 +500,11 @@ pub fn render_display_list_with_stats(
                     height: *height,
                     rgba8: rgba8.as_slice().to_vec(),
                 };
-                let placement = selis_raster::ImagePlacement { rect: *rect };
+                // The placement rect is already in (1:1) device space from the
+                // content pass; the page transform maps it onto the canvas.
+                let placement = selis_raster::ImagePlacement {
+                    rect: rect.transform(page_ctm),
+                };
                 backend.draw_image(&img, &placement);
             }
             Op::InlineImage { dict, data, state } => {
@@ -492,21 +515,26 @@ pub fn render_display_list_with_stats(
                 stats.image_bytes = stats
                     .image_bytes
                     .saturating_add(u64::try_from(rgba8.len()).unwrap_or(u64::MAX));
-                let p0 = state.ctm.apply(Point::new(0.0, 0.0));
-                let p1 = state.ctm.apply(Point::new(1.0, 1.0));
                 let img = selis_raster::Image {
                     width: w,
                     height: h,
                     rgba8: rgba8.as_slice().to_vec(),
                 };
+                // The unit-square image maps through the CTM and the page
+                // view onto the canvas (SL-2.RAST.12).
+                let m = state.ctm.then(page_ctm);
                 let placement = selis_raster::ImagePlacement {
-                    rect: selis_geom::Rect::new(p0.x, p0.y, p1.x, p1.y),
+                    rect: crate::page::unit_square_aabb(m),
                 };
                 backend.draw_image(&img, &placement);
             }
             Op::Shading { name, state } => {
                 stats.shading_resolves = stats.shading_resolves.saturating_add(1);
-                let Some((w, h, rgba8, rect)) = resolve_shading(name, state) else {
+                // The shading rasteriser computes its device rect from the
+                // state's CTM, so it must see the total transform.
+                let mut st = state.clone();
+                st.ctm = state.ctm.then(page_ctm);
+                let Some((w, h, rgba8, rect)) = resolve_shading(name, &st) else {
                     continue;
                 };
                 stats.image_draws = stats.image_draws.saturating_add(1);
@@ -569,10 +597,10 @@ fn to_raster_path(content: &ContentPath) -> Option<RasterPath> {
 }
 
 /// Transform glyph outline commands (in font units) by a matrix, producing
-/// raster path commands. Quadratic Béziers are converted to cubics.
+/// raster path commands. Quadratic BÃ©ziers are converted to cubics.
 #[must_use]
 fn transform_outline(cmds: &[selis_font::OutlineCmd], m: Matrix) -> Vec<PathCmd> {
-    // Quad→cubic conversion is 1:1, so the output is exactly as long.
+    // Quadâ†’cubic conversion is 1:1, so the output is exactly as long.
     let mut out = Vec::new();
     out.reserve(cmds.len());
     let mut current: Option<Point> = None;
@@ -592,7 +620,7 @@ fn transform_outline(cmds: &[selis_font::OutlineCmd], m: Matrix) -> Vec<PathCmd>
                 let start = current.unwrap_or(Point::new(0.0, 0.0));
                 let c = m.apply(Point::new(*cx, *cy));
                 let end = m.apply(Point::new(*x, *y));
-                // Quadratic → cubic conversion.
+                // Quadratic â†’ cubic conversion.
                 let c1 = Point::new(
                     start.x + 2.0 / 3.0 * (c.x - start.x),
                     start.y + 2.0 / 3.0 * (c.y - start.y),
@@ -663,19 +691,23 @@ fn op_state(op: &Op) -> &ResolvedState {
 /// Draw a tiling pattern over a fill region (the path's device bounding box):
 /// plan the tile instances and draw each. Uncoloured patterns (type 2) are
 /// tinted by the current fill colour. The path is already in device space
-/// (transformed by the CTM).
+/// (transformed by the total CTM); the pattern planner sees the same total
+/// transform through `page_ctm`.
 fn draw_pattern(
     backend: &mut TinySkiaBackend,
     pattern: &selis_raster::pattern::TilingPattern,
     path: &selis_raster::Path,
     tint: &[f64; 3],
     state: &ResolvedState,
+    page_ctm: Matrix,
     g: &mut BudgetGuard<'_>,
 ) {
     let Some(region) = path_bounds(path) else {
         return;
     };
-    let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, state.ctm, region, g) else {
+    let mut st = state.clone();
+    st.ctm = state.ctm.then(page_ctm);
+    let Ok(plan) = selis_raster::pattern::plan_pattern(pattern, st.ctm, region, g) else {
         return;
     };
     let tile_rgba = if pattern.paint_type == selis_raster::pattern::PatternType::Uncoloured {
@@ -755,10 +787,13 @@ fn paint(rgb: &[f64; 3], alpha: f64) -> RasterPaint {
     }
 }
 
-/// The resolved stroke spec from the display-list state.
-fn stroke_spec(state: &selis_pdf_content::display_list::ResolvedState) -> StrokeSpec {
+/// The resolved stroke spec from the display-list state. `m` is the total
+/// user-space â†’ device transform: the line width is a user-space magnitude
+/// (PDF Â§8.4.3.2) and scales with the CTM, so it reaches the rasteriser in
+/// device pixels.
+fn stroke_spec(state: &selis_pdf_content::display_list::ResolvedState, m: Matrix) -> StrokeSpec {
     StrokeSpec {
-        width: state.line_width,
+        width: state.line_width * device_scale(m),
         cap: state.line_cap,
         join: state.line_join,
         miter_limit: 10.0,
@@ -825,6 +860,162 @@ mod tests {
         None
     }
 
+    /// A fill at user-space coordinates lands on the y-flipped, DPI-scaled
+    /// device position under a 72-DPI page transform (RAST.12): the rect
+    /// `10 10 â€¦ 60 110 re` (y-up) paints near the *bottom*-left of the canvas.
+    #[test]
+    fn page_transform_flips_y() {
+        let mut g = guard();
+        let content = b"10 10 m 60 10 l 60 110 l 10 110 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::None,
+            72.0,
+        );
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 612 + x) * 4;
+        // User (10,10) is the rect's bottom-left â†’ device (10, 792-110..792-10).
+        assert_eq!(&data[at(20, 700)..at(20, 700) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(20, 690)..at(20, 690) + 3], &[255, 0, 0]);
+        // Above the rect (user y â‰ˆ 110+) is white.
+        assert_eq!(&data[at(20, 660)..at(20, 660) + 3], &[0, 0, 0]);
+    }
+
+    /// Under a 90Â° page rotation the content rotates with the page: a rect at
+    /// the user page's bottom-left paints at the rotated canvas's top-left,
+    /// on a canvas whose dimensions are swapped (RAST.12, ISO 32000-2
+    /// Â§14.11.2).
+    #[test]
+    fn page_rotate_90_rotates_the_content_and_swaps_the_canvas() {
+        let mut g = guard();
+        // A rect covering user (0,0)..(50,100) â€” the page's left edge.
+        let content = b"0 0 m 50 0 l 50 100 l 0 100 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::Clockwise90,
+            72.0,
+        );
+        // Portrait page + 90Â° cw â†’ landscape canvas.
+        assert_eq!((page.width, page.height), (792, 612));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 792 + x) * 4;
+        // The page's bottom-left displays at the top-left (90Â° cw): the rect
+        // covers device x âˆˆ [0,100] (page height), y âˆˆ [0,50] (page width).
+        assert_eq!(&data[at(10, 10)..at(10, 10) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(90, 40)..at(90, 40) + 3], &[255, 0, 0]);
+        // Right of the rect (user x > 50) is untouched.
+        assert_eq!(&data[at(70, 60)..at(70, 60) + 3], &[0, 0, 0]);
+    }
+
+    /// The compound case: a landscape (swapped) MediaBox with /Rotate 90 â€”
+    /// the canvas is portrait again and the content rotates with it.
+    #[test]
+    fn page_rotate_composes_with_a_swapped_media_box() {
+        let mut g = guard();
+        // A rect at the user page's top-left corner: user (0, 550)..(100, 612)
+        // on a 792Ã—612 MediaBox.
+        let content = b"0 550 m 100 550 l 100 612 l 0 612 l h 1 0 0 rg f";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 792.0, 612.0),
+            selis_geom::Rotation::Clockwise90,
+            72.0,
+        );
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 612 + x) * 4;
+        // The page's top-left corner displays at the top-right after a 90Â° cw
+        // rotation: red at device (x â‰ˆ 612-62, y â‰ˆ 0..100).
+        assert_eq!(&data[at(570, 50)..at(570, 50) + 3], &[255, 0, 0]);
+        // The canvas's left edge (device x small) is untouched.
+        assert_eq!(&data[at(10, 50)..at(10, 50) + 3], &[0, 0, 0]);
+    }
+
+    /// A stroke's line width scales with the page transform (a user-space
+    /// magnitude, PDF Â§8.4.3.2).
+    #[test]
+    fn stroke_width_scales_with_the_page_transform() {
+        let mut g = guard();
+        // A horizontal line at user y=400 across the page, width 10.
+        let content = b"1 0 0 RG 10 w 100 400 m 500 400 l S";
+        let dl =
+            selis_pdf_content::exec::execute(content, &const_width, &no_do, &no_ext_gstate, &mut g)
+                .expect("execute");
+        let page = crate::page::page_view(
+            selis_geom::Rect::new(0.0, 0.0, 612.0, 792.0),
+            selis_geom::Rotation::None,
+            144.0,
+        );
+        assert_eq!((page.width, page.height), (1224, 1584));
+        let mut backend = TinySkiaBackend::new(page.width, page.height).expect("pixmap");
+        render_display_list(
+            &dl,
+            &mut backend,
+            page.ctm,
+            &no_font,
+            &no_smask,
+            &no_inline_image,
+            &no_shading,
+            &no_pattern,
+            &mut g,
+        );
+        let data = backend.pixmap().data();
+        let at = |x: usize, y: usize| (y * 1224 + x) * 4;
+        // The line's centre: user y=400 â†’ device y = 792*2 - 400*2 = 1584-800 =
+        // 784. A 10-unit stroke is 20 device px wide at 144 DPI.
+        assert_eq!(&data[at(400, 784)..at(400, 784) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(400, 775)..at(400, 775) + 3], &[255, 0, 0]);
+        assert_eq!(&data[at(400, 793)..at(400, 793) + 3], &[255, 0, 0]);
+        // 30 device px from the centre is beyond the 20 px stroke (untouched).
+        assert_eq!(&data[at(400, 754)..at(400, 754) + 3], &[0, 0, 0]);
+        assert_eq!(&data[at(400, 814)..at(400, 814) + 3], &[0, 0, 0]);
+    }
+
     /// A content stream drawing a filled red square renders red pixels.
     #[test]
     fn a_filled_rectangle_renders_pixels() {
@@ -837,6 +1028,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -863,6 +1055,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -878,7 +1071,7 @@ mod tests {
         assert_eq!(&data[corner..corner + 3], &[0, 0, 255]);
     }
 
-    /// A content stream with a `Do` for a 2×2 image renders it scaled.
+    /// A content stream with a `Do` for a 2Ã—2 image renders it scaled.
     #[test]
     fn an_image_xobject_renders() {
         use selis_pdf_content::exec::DoTarget;
@@ -910,6 +1103,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -930,7 +1124,7 @@ mod tests {
     #[test]
     fn multiply_blend_darkens_the_fill() {
         let mut g = guard();
-        // Gray page, then red on top with /Multiply: red = 0.5 × 1.0 = 0.5.
+        // Gray page, then red on top with /Multiply: red = 0.5 Ã— 1.0 = 0.5.
         let content = b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 g f \
                         /GS1 gs 25 25 m 25 75 l 75 75 l 75 25 l h 1 0 0 rg f";
         let ext = |name: &selis_bytes::Bytes, _key: Option<&selis_bytes::Bytes>| {
@@ -951,6 +1145,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -960,7 +1155,7 @@ mod tests {
         );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
-        // Multiply of gray (≈128) and red (255) leaves ≈128 red, not 255, and
+        // Multiply of gray (â‰ˆ128) and red (255) leaves â‰ˆ128 red, not 255, and
         // the green/blue channels are suppressed.
         assert!(
             data[centre] < 200,
@@ -975,7 +1170,7 @@ mod tests {
     #[test]
     fn clip_restricts_rendered_pixels() {
         let mut g = guard();
-        // Fill the whole canvas gray, then clip to a 50×50 rect and paint
+        // Fill the whole canvas gray, then clip to a 50Ã—50 rect and paint
         // red inside it. Pixels outside the clip should be gray, not red.
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h 0.5 g f \
                         0 0 m 50 0 l 50 50 l 0 50 l h W \
@@ -987,6 +1182,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -1002,7 +1198,7 @@ mod tests {
             &[255, 0, 0],
             "inside clip should be red"
         );
-        // Outside the clip (75, 75): gray (0.5 → 127), not red.
+        // Outside the clip (75, 75): gray (0.5 â†’ 127), not red.
         let outside = (75 * 100 + 75) * 4;
         assert_eq!(data[outside], 127, "outside clip should be gray");
         assert_eq!(data[outside + 1], 127);
@@ -1033,6 +1229,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -1042,10 +1239,10 @@ mod tests {
         );
         let data = backend.pixmap().data();
         let centre = (50 * 100 + 50) * 4;
-        // 0.5 × blue(0,0,255) + 0.5 × red(255,0,0) = 127.5 → 128.
-        assert_eq!(data[centre], 128, "red channel ≈127.5");
+        // 0.5 Ã— blue(0,0,255) + 0.5 Ã— red(255,0,0) = 127.5 â†’ 128.
+        assert_eq!(data[centre], 128, "red channel â‰ˆ127.5");
         assert_eq!(data[centre + 1], 0, "green channel none");
-        assert_eq!(data[centre + 2], 128, "blue channel ≈127.5");
+        assert_eq!(data[centre + 2], 128, "blue channel â‰ˆ127.5");
     }
 
     /// A soft mask (from `/GS1 gs` with an SMask key) modulates the alpha of
@@ -1083,6 +1280,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &resolve_smask,
             &no_inline_image,
@@ -1130,6 +1328,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &resolve_inline,
@@ -1174,6 +1373,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -1219,6 +1419,7 @@ mod tests {
         render_display_list(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &no_font,
             &no_smask,
             &no_inline_image,
@@ -1307,7 +1508,7 @@ mod tests {
     #[test]
     fn text_walk_is_deterministic_with_stats() {
         let mut g = guard();
-        // `H` and `i` are spaces apart — guaranteed disjoint, so they share
+        // `H` and `i` are spaces apart â€” guaranteed disjoint, so they share
         // one batch fill (the batcher is engaged, not silently bypassed).
         let content = b"BT /F1 12 Tf 10 90 Td (H i) Tj ET";
         let dl =
@@ -1320,6 +1521,7 @@ mod tests {
         render_display_list_with_stats(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &fallback_font,
             &no_smask,
             &no_inline_image,
@@ -1335,6 +1537,7 @@ mod tests {
         render_display_list_with_stats(
             &dl,
             &mut backend,
+            Matrix::IDENTITY,
             &fallback_font,
             &no_smask,
             &no_inline_image,
@@ -1357,9 +1560,9 @@ mod tests {
     /// vs 10.7 share pixel column [10,11)) painted as two fills vs one merged
     /// fill differ: shared-pixel coverages do not combine multiplicatively,
     /// so merging glyphs would change pixels. This killed the G-2 batching
-    /// atlas — only strictly-separated (>1px) inks merge exactly, and at
+    /// atlas â€” only strictly-separated (>1px) inks merge exactly, and at
     /// body-text sizes neighbours sit ~1px apart, so batches averaged 1.55
-    /// glyphs while adding per-glyph overhead (net ~2× slower; see the G-2
+    /// glyphs while adding per-glyph overhead (net ~2Ã— slower; see the G-2
     /// ledger in `30-RENDER-PERF-REPORT.md`). If a rasteriser upgrade ever
     /// makes these equal, separation-free batching becomes valid: revisit.
     #[test]
@@ -1374,6 +1577,7 @@ mod tests {
             render_display_list_with_stats(
                 &dl,
                 &mut backend,
+                Matrix::IDENTITY,
                 &fallback_font,
                 &no_smask,
                 &no_inline_image,

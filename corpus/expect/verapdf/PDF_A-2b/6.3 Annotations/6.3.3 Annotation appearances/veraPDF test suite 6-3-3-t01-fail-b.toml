@@ -1,2 +1,6 @@
 open = "ok"
 pages = 1
+[annotation]
+triage = "blank_selis"
+verdict = "OurBug"
+note = "RAST.13: /Redact annot without /AP. Default appearance synthesis unimplemented. Typed deviation."
