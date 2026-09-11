@@ -11,10 +11,25 @@ use selis_sandbox::{Budget, BudgetGuard};
 use crate::obj::{Obj, Ref};
 use crate::resolve::resolve_object_numbered;
 
+/// Which security handler a parsed `/Encrypt` dictionary belongs to
+/// (ISO 32000-2 §7.6.3–§7.6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handler {
+    /// The standard (password) security handler.
+    Standard,
+    /// The public-key (PKCS#7/CMS) handler, read side (SL-1.ENC.03).
+    PubKey,
+}
+
 /// The parsed `/Encrypt` dictionary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptInfo {
-    /// The handler revision (`/R`).
+    /// Which security handler this dictionary describes.
+    pub handler: Handler,
+    /// The handler revision (`/R`). For the public-key handler the
+    /// per-object cipher revision equals `/V` (4 = AESV2-salted, 5 =
+    /// direct-key AESV3); the standard handler's `/R` algorithms do not
+    /// apply (no `/O`/`/U`), and [`authenticate`] refuses public-key infos.
     pub r: u8,
     /// The algorithm (`/V`): 1 = RC4-40, 2 = RC4-128, 4 = AES-128, 5 = AES-256.
     pub v: u8,
@@ -43,25 +58,65 @@ pub struct EncryptInfo {
     /// `/CF` — the crypt filter definitions, resolved when indirect. Used to
     /// select a per-stream `/Crypt` filter's algorithm (SL-1.FILT.09).
     pub cf: Vec<(selis_bytes::Bytes, Obj)>,
+    /// `/SubFilter` of the public-key handler (`adbe.pkcs7.s4`/`s5`).
+    /// `None` for the standard handler.
+    pub subfilter: Option<String>,
+    /// `/Recipients` — the raw PKCS#7/CMS blobs (public-key handler only),
+    /// from the `/Encrypt` dictionary or its default crypt filter.
+    pub recipients: Vec<Vec<u8>>,
 }
 
 impl EncryptInfo {
-    /// Whether the stream crypt filter is the standard handler (streams are
-    /// encrypted). `/Identity` streams are not.
+    /// Whether the stream crypt filter is a real handler filter (streams are
+    /// encrypted). `/Identity` streams are not. Beyond the standard
+    /// handler's `/StdCF`, a named filter (the public-key handler's
+    /// `/DefaultCryptFilter`) is encrypted unless its `/CFM` is `/None`.
     #[must_use]
     pub fn stream_encrypted(&self) -> bool {
-        self.stmf == "StdCF"
+        self.filter_encrypted(&self.stmf)
     }
 
-    /// Whether the string crypt filter is the standard handler (strings are
+    /// Whether the string crypt filter is a real handler filter (strings are
     /// encrypted). `/Identity` strings are not.
     #[must_use]
     pub fn string_encrypted(&self) -> bool {
-        self.strf == "StdCF"
+        self.filter_encrypted(&self.strf)
     }
 
-    /// The stream crypt filter (`/StmF`) — currently only `/Identity` and
-    /// `/StdCF` are supported.
+    /// Whether the named crypt filter encrypts its targets: `/Identity`
+    /// never, a filter missing from `/CF` defaults to the standard handler
+    /// (encrypted), a present filter is encrypted unless its `/CFM` is
+    /// `/None` (ISO 32000-1 §7.4.10 / §7.6.6.2).
+    fn filter_encrypted(&self, name: &str) -> bool {
+        if name == "Identity" {
+            return false;
+        }
+        match self.cfm_for(name) {
+            Some(cfm) => cfm != "None",
+            // No /CF entry: the standard handler's /StdCF shortcut, and the
+            // sub-filter-era default (everything encrypted).
+            None => true,
+        }
+    }
+
+    /// The `/CFM` of a named crypt filter, when `/CF` defines it.
+    fn cfm_for(&self, name: &str) -> Option<String> {
+        self.cf
+            .iter()
+            .find(|(k, _)| k.as_slice() == name.as_bytes())
+            .and_then(|(_, v)| match v {
+                Obj::Dict(p) => p.iter().find(|(k, _)| k.as_slice() == b"CFM"),
+                _ => None,
+            })
+            .and_then(|(_, v)| match v {
+                Obj::Name(n) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+                _ => None,
+            })
+    }
+
+    /// The stream crypt filter (`/StmF`) — the standard handler's `/StdCF`
+    /// (the public-key handler names its default filter
+    /// `/DefaultCryptFilter`).
     pub fn supports(&self) -> bool {
         self.v <= 5 && self.r >= 2 && self.r <= 6
     }
@@ -94,6 +149,7 @@ impl EncryptInfo {
             (bytes(b"AuthEvent"), Obj::Name(bytes(b"DocOpen"))),
         ]);
         let info = Self {
+            handler: Handler::Standard,
             r: 6,
             v: 5,
             length: 256,
@@ -108,6 +164,8 @@ impl EncryptInfo {
             oe,
             perms,
             cf: vec![(bytes(b"StdCF"), cf_std_cf)],
+            subfilter: None,
+            recipients: Vec::new(),
         };
         (info, file_key)
     }
@@ -219,19 +277,44 @@ pub fn parse_encrypt(
             .find(|(k, _)| k.as_slice() == key)
             .map(|(_, v)| v)
     };
+    let filter = match get(b"Filter") {
+        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
+        _ => return Ok(None),
+    };
+    // /CF may be a direct dict or an indirect reference; resolve it when
+    // it's a Ref so per-stream filter selection works (SL-1.FILT.09).
+    let cf = resolve_cf_dict(src, budget, g, get(b"CF"));
+    // Dispatch: the standard security handler, or the public-key handler
+    // (SL-1.ENC.03). Acrobat writes /Adobe.PPKLite; PDFBox writes the
+    // /Adobe.PubSec alias with the same dictionary shape.
+    match filter.as_str() {
+        "Standard" => parse_standard_encrypt(pairs, cf),
+        "Adobe.PPKLite" | "Adobe.PubSec" => parse_pubkey_encrypt(pairs, cf),
+        // An unknown security handler: reported as "no encryption info"
+        // (the established tolerant-open posture; the document opens
+        // without a key).
+        _ => Ok(None),
+    }
+}
+
+/// Parse the standard security handler's `/Encrypt` dictionary fields from
+/// the already-resolved dict pairs.
+fn parse_standard_encrypt(
+    pairs: &[(selis_bytes::Bytes, Obj)],
+    cf: Vec<(selis_bytes::Bytes, Obj)>,
+) -> Result<Option<EncryptInfo>> {
+    let get = |key: &[u8]| -> Option<&Obj> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
+    };
     let int = |key: &[u8]| -> Option<i64> {
         match get(key) {
             Some(Obj::Int(n)) => Some(*n),
             _ => None,
         }
     };
-    let filter = match get(b"Filter") {
-        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
-        _ => return Ok(None),
-    };
-    if filter != "Standard" {
-        return Ok(None); // only the standard security handler
-    }
     let r = int(b"R").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
     let v = int(b"V").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
     let length = int(b"Length")
@@ -264,9 +347,6 @@ pub fn parse_encrypt(
         Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
         _ => "Identity".to_string(),
     };
-    // /CF may be a direct dict or an indirect reference. Resolve it when
-    // it's a Ref so per-stream filter selection works (SL-1.FILT.09).
-    let cf = resolve_cf_dict(src, budget, g, get(b"CF"));
     // AES is used when the handler revision requires it (`/V` 4 or 5 are
     // AES-128/AES-256 by definition, ISO 32000-1 §7.6.3.2), or when the
     // standard crypt filter declares AESV2/AESV3 in `/CF/StdCF/CFM`. The
@@ -300,6 +380,7 @@ pub fn parse_encrypt(
         _ => Vec::new(),
     };
     Ok(Some(EncryptInfo {
+        handler: Handler::Standard,
         r,
         v,
         length,
@@ -314,7 +395,111 @@ pub fn parse_encrypt(
         oe,
         perms,
         cf,
+        subfilter: None,
+        recipients: Vec::new(),
     }))
+}
+
+/// Parse the public-key security handler's `/Encrypt` dictionary
+/// (ISO 32000-2 §7.6.6.2, SL-1.ENC.03): `/V` (4 = AESV2, 5 = AESV3),
+/// `/SubFilter` (`adbe.pkcs7.s4`/`s5`), and the `/Recipients` CMS blobs —
+/// either directly on the dictionary (the s4 shape) or inside the crypt
+/// filter named by `/StmF` (Acrobat's `/DefaultCryptFilter`, the s5 shape).
+fn parse_pubkey_encrypt(
+    pairs: &[(selis_bytes::Bytes, Obj)],
+    cf: Vec<(selis_bytes::Bytes, Obj)>,
+) -> Result<Option<EncryptInfo>> {
+    let get = |key: &[u8]| -> Option<&Obj> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
+    };
+    let int = |key: &[u8]| -> Option<i64> {
+        match get(key) {
+            Some(Obj::Int(n)) => Some(*n),
+            _ => None,
+        }
+    };
+    let v = int(b"V").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
+    // The per-object cipher revision follows /V: 4 → salted AES-128
+    // (Algorithm 1), 5 → direct-key AES-256 (Algorithm 1a). Anything below 4
+    // is the RC4-era s3 shape — parsed for inspection, refused at
+    // authentication.
+    let r = v;
+    let length = int(b"Length")
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(if v >= 5 { 256 } else { 128 });
+    let subfilter = match get(b"SubFilter") {
+        Some(Obj::Name(n)) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
+        _ => None,
+    };
+    let encrypt_metadata = match get(b"EncryptMetadata") {
+        Some(Obj::Name(n)) => n.as_slice() != b"false",
+        Some(Obj::Bool(b)) => *b,
+        _ => true,
+    };
+    let stmf_owned = match get(b"StmF") {
+        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
+        // The public-key handler's default crypt filter name (ISO 32000-1
+        // Table 25; PDFBox's COSName.DEFAULT_CRYPT_FILTER).
+        _ => "DefaultCryptFilter".to_string(),
+    };
+    let strf = match get(b"StrF") {
+        Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
+        _ => stmf_owned.clone(),
+    };
+    // /Recipients: directly on the dictionary (s4/PDFBox shape) or inside
+    // the crypt filter /StmF names (Acrobat's /DefaultCryptFilter shape).
+    let mut recipients = strings_of(get(b"Recipients"));
+    if recipients.is_empty() {
+        recipients = cf
+            .iter()
+            .find(|(k, _)| k.as_slice() == stmf_owned.as_bytes())
+            .and_then(|(_, v)| match v {
+                Obj::Dict(p) => p.iter().find(|(k, _)| k.as_slice() == b"Recipients"),
+                _ => None,
+            })
+            .map(|(_, v)| strings_of(Some(v)))
+            .unwrap_or_default();
+    }
+    // AES per the named crypt filter's /CFM (AESV2/AESV3); /V ≥ 4 public-key
+    // documents are AES by definition.
+    let aes = v >= 4;
+    Ok(Some(EncryptInfo {
+        handler: Handler::PubKey,
+        r,
+        v,
+        length,
+        o: Vec::new(),
+        u: Vec::new(),
+        p: 0,
+        stmf: stmf_owned,
+        strf,
+        aes,
+        encrypt_metadata,
+        ue: Vec::new(),
+        oe: Vec::new(),
+        perms: Vec::new(),
+        cf,
+        subfilter,
+        recipients,
+    }))
+}
+
+/// The raw byte strings of a COS string or array-of-strings object.
+fn strings_of(obj: Option<&Obj>) -> Vec<Vec<u8>> {
+    match obj {
+        Some(Obj::String(b)) => vec![b.as_slice().to_vec()],
+        Some(Obj::Array(items)) => items
+            .iter()
+            .filter_map(|o| match o {
+                Obj::String(b) => Some(b.as_slice().to_vec()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the `/CF` dictionary, which may be a direct `<<...>>` or an
@@ -363,8 +548,13 @@ pub fn document_id(trailer: &[(selis_bytes::Bytes, Obj)]) -> Vec<u8> {
 /// # Malformed Input
 ///
 /// A wrong password or damaged `/O`/`/U` values yield `None`, never an error
-/// and never a partial key.
+/// and never a partial key. A public-key `/Encrypt` dictionary (which has no
+/// `/O`/`/U`) yields `None` — authenticate it with
+/// [`authenticate_public_key`].
 pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<Vec<u8>> {
+    if info.handler != Handler::Standard {
+        return None;
+    }
     selis_crypto::authenticate_user(
         &info.o,
         &info.u,
@@ -377,6 +567,60 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
         &info.ue,
         &info.oe,
         password,
+    )
+}
+
+/// Authenticate a public-key document with the recipient's private key and
+/// return the derived file encryption key plus the recipient's permission
+/// bits (SL-1.ENC.03, ISO 32000-2 §7.6.6.4 Algorithm 1).
+///
+/// Recipients are tried in `/Recipients` array order; the first blob that
+/// decrypts to a valid 24-byte payload under `credential` wins (the draft's
+/// certificate-selection policy — the design note §4 records why no X.509
+/// matching is needed for it).
+///
+/// # Budget
+///
+/// The CMS parses charge each blob's wire bytes to `g`; the seed-hash
+/// concatenation is charged before allocation. A hostile blob set
+/// terminates within its own byte budget.///
+/// # Malformed Input
+///
+/// Structural CMS damage is `ENCRYPT_MALFORMED`; a recognised but
+/// unimplemented algorithm (RC4/3DES content, s3-era RC4 documents) is
+/// `ENCRYPT_UNSUPPORTED`; a credential that opens no recipient is
+/// `RECIPIENT_NO_MATCH` (the public-key wrong-key error — typed, never a
+/// partial decrypt).
+pub fn authenticate_public_key(
+    info: &EncryptInfo,
+    credential: &selis_crypto::pkcs7::PubKeyCredential,
+    g: &mut BudgetGuard<'_>,
+) -> Result<selis_crypto::pkcs7::PubKeyAuth> {
+    if info.handler != Handler::PubKey {
+        return Err(err!(
+            Code::EncryptMalformed,
+            during = "encrypt",
+            detail = "authenticate_public_key on a non-public-key handler"
+        ));
+    }
+    // The RC4-era sub-filters (adbe.pkcs7.s3, /V ≤ 3) are refused: RC4
+    // content has no padding, so a wrong key would derive a wrong file key
+    // silently instead of failing typed (design note §5).
+    if info.v < 4 {
+        return Err(err!(
+            Code::EncryptUnsupported,
+            during = "encrypt",
+            detail = "adbe.pkcs7.s3-era public-key encryption is not supported"
+        ));
+    }
+    let blobs: Vec<&[u8]> = info.recipients.iter().map(|r| r.as_slice()).collect();
+    selis_crypto::pkcs7::authenticate_public_key(
+        &blobs,
+        credential,
+        info.length,
+        info.v >= 5,
+        info.encrypt_metadata,
+        g,
     )
 }
 
@@ -520,4 +764,135 @@ fn offset_of(src: &[u8], r: Ref, budget: &Budget, g: &mut BudgetGuard<'_>) -> Re
 
 fn bytes(v: &[u8]) -> selis_bytes::Bytes {
     selis_bytes::Bytes::copy_from_slice(v)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
+    use super::*;
+
+    /// Build the dict pairs `parse_pubkey_encrypt` expects (the same shape
+    /// the resolver hands `parse_encrypt`).
+    macro_rules! dict_pairs {
+        ($($name:literal => $value:expr),+ $(,)?) => {{
+            vec![$((bytes($name.as_bytes()), $value)),+]
+        }};
+    }
+
+    /// `/Adobe.PPKLite` s5 shape: recipients inside /CF/DefaultCryptFilter.
+    #[test]
+    fn pubkey_s5_dispatch_reads_crypt_filter_recipients() {
+        let blob = Obj::String(bytes(vec![0x30u8; 40].as_slice()));
+        let default_cf = Obj::Dict(vec![
+            (bytes(b"CFM"), Obj::Name(bytes(b"AESV3"))),
+            (bytes(b"Length"), Obj::Int(256)),
+            (bytes(b"Recipients"), Obj::Array(vec![blob])),
+        ]);
+        let pairs = dict_pairs! {
+            "Filter" => Obj::Name(bytes(b"Adobe.PPKLite")),
+            "V" => Obj::Int(5),
+            "Length" => Obj::Int(256),
+            "SubFilter" => Obj::Name(bytes(b"adbe.pkcs7.s5")),
+            "StmF" => Obj::Name(bytes(b"DefaultCryptFilter")),
+            "StrF" => Obj::Name(bytes(b"DefaultCryptFilter")),
+        };
+        let cf = vec![(bytes(b"DefaultCryptFilter"), default_cf)];
+        let info = parse_pubkey_encrypt(&pairs, cf)
+            .expect("parse")
+            .expect("info");
+        assert_eq!(info.handler, Handler::PubKey);
+        assert_eq!(info.v, 5);
+        assert_eq!(info.r, 5);
+        assert_eq!(info.subfilter.as_deref(), Some("adbe.pkcs7.s5"));
+        assert!(info.aes, "AESV3 crypt filter means AES");
+        assert_eq!(info.recipients.len(), 1);
+        assert!(
+            info.stream_encrypted(),
+            "DefaultCryptFilter encrypts streams"
+        );
+        assert!(info.string_encrypted());
+        // The standard-handler authentication refuses a public-key info.
+        assert!(authenticate(&info, b"", b"").is_none());
+    }
+
+    /// `/Adobe.PubSec` s4 shape: /Recipients directly on the dictionary.
+    #[test]
+    fn pubkey_s4_dispatch_reads_dict_recipients() {
+        let blob = Obj::String(bytes(vec![0x31u8; 40].as_slice()));
+        let pairs = dict_pairs! {
+            "Filter" => Obj::Name(bytes(b"Adobe.PubSec")),
+            "V" => Obj::Int(4),
+            "Length" => Obj::Int(128),
+            "SubFilter" => Obj::Name(bytes(b"adbe.pkcs7.s4")),
+            "Recipients" => Obj::Array(vec![blob]),
+        };
+        let info = parse_pubkey_encrypt(&pairs, Vec::new())
+            .expect("parse")
+            .expect("info");
+        assert_eq!(info.handler, Handler::PubKey);
+        assert_eq!(info.v, 4);
+        assert!(info.aes);
+        assert_eq!(info.recipients.len(), 1);
+        // No /CF, no /StmF: the default crypt filter still encrypts.
+        assert!(info.stream_encrypted());
+    }
+
+    /// The s3-era (RC4, /V ≤ 3) public-key shape parses but is refused at
+    /// authentication with a typed error.
+    #[test]
+    fn pubkey_s3_is_unsupported_at_authentication() {
+        let pairs = dict_pairs! {
+            "Filter" => Obj::Name(bytes(b"Adobe.PPKLite")),
+            "V" => Obj::Int(2),
+            "Length" => Obj::Int(128),
+            "SubFilter" => Obj::Name(bytes(b"adbe.pkcs7.s3")),
+            "Recipients" => Obj::Array(vec![Obj::String(bytes(vec![0x30u8; 40].as_slice()))]),
+        };
+        let info = parse_pubkey_encrypt(&pairs, Vec::new())
+            .expect("parse")
+            .expect("info");
+        assert_eq!(info.v, 2);
+        let credential = selis_crypto::pkcs7::PubKeyCredential::Rsa(vec![0u8; 8]);
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let e = authenticate_public_key(&info, &credential, &mut g).expect_err("s3 refused");
+        assert_eq!(e.code(), Code::EncryptUnsupported);
+    }
+
+    /// `authenticate_public_key` refuses standard-handler infos.
+    #[test]
+    fn pubkey_authentication_refuses_standard_infos() {
+        let (info, _) = EncryptInfo::new_r6(b"", b"", 0xFFFF_F0C0, &[0u8; 16]);
+        let credential = selis_crypto::pkcs7::PubKeyCredential::Rsa(vec![0u8; 8]);
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let e = authenticate_public_key(&info, &credential, &mut g).expect_err("wrong handler");
+        assert_eq!(e.code(), Code::EncryptMalformed);
+    }
+
+    /// `stream_encrypted` keeps treating a named /CFM /None filter as
+    /// unencrypted (the SL-1.FILT.09 identity posture).
+    #[test]
+    fn named_crypt_filter_with_none_cfm_is_not_encrypted() {
+        let none_cf = Obj::Dict(vec![(bytes(b"CFM"), Obj::Name(bytes(b"None")))]);
+        let pairs = dict_pairs! {
+            "Filter" => Obj::Name(bytes(b"Adobe.PPKLite")),
+            "V" => Obj::Int(5),
+            "StmF" => Obj::Name(bytes(b"DefaultCryptFilter")),
+            "StrF" => Obj::Name(bytes(b"DefaultCryptFilter")),
+        };
+        let cf = vec![(bytes(b"DefaultCryptFilter"), none_cf)];
+        let info = parse_pubkey_encrypt(&pairs, cf)
+            .expect("parse")
+            .expect("info");
+        assert!(!info.stream_encrypted());
+        assert!(!info.string_encrypted());
+    }
 }
