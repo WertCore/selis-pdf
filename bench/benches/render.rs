@@ -53,27 +53,8 @@ fn open_session(src: &[u8]) -> Option<Session> {
     Session::open(src.to_vec(), &budget, &clock).ok()
 }
 
-fn canvas(session: &Session) -> Option<(u32, u32)> {
-    let (w_pt, h_pt) = session.page_size(0)?;
-    let w = dim(w_pt)?;
-    let h = dim(h_pt)?;
-    Some((w, h))
-}
-
-/// A finite, positive f64 dimension as a u32 canvas size (ceil, saturate).
-fn dim(v: f64) -> Option<u32> {
-    if !v.is_finite() || v <= 0.0 {
-        return None;
-    }
-    let c = v.ceil();
-    if c >= f64::from(u32::MAX) {
-        return None;
-    }
-    // c is in (0, u32::MAX): the float-to-int cast below is exact, and std
-    // offers no fallible f64→u32 conversion, so the pedantic cast lints are
-    // allowed here with this justification.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some(c as u32)
+fn page_view_of(session: &Session) -> Option<selis_pdf_engine::PageView> {
+    session.page_view(0, 72.0)
 }
 
 fn bench_render(c: &mut Criterion) {
@@ -86,13 +67,15 @@ fn bench_render(c: &mut Criterion) {
                 std::process::exit(1);
             }
         };
-        let (w, h) = match canvas(&session) {
-            Some(d) => d,
+        let view = match page_view_of(&session) {
+            Some(v) => v,
             None => {
                 eprintln!("render bench: {file}: page has no usable media box");
                 std::process::exit(1);
             }
         };
+        let (w, h) = (view.width, view.height);
+        let ctm = view.ctm;
         c.bench_function(name, |b| {
             b.iter_batched(
                 || open_session(&src),
@@ -103,8 +86,13 @@ fn bench_render(c: &mut Criterion) {
                         if let Some(mut backend) = selis_pdf_engine::TinySkiaBackend::new(w, h) {
                             let mut g =
                                 budget.guard_with(&clock, selis_sandbox::CancelToken::new());
-                            let _ =
-                                black_box(session.render_page(0, &mut backend, &budget, &mut g));
+                            let _ = black_box(session.render_page(
+                                0,
+                                &mut backend,
+                                ctm,
+                                &budget,
+                                &mut g,
+                            ));
                         }
                     }
                 },

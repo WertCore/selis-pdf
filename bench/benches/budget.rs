@@ -25,7 +25,6 @@ fn bench_charge(c: &mut Criterion) {
     });
 
     c.bench_function("budget_tick", |b| {
-        use selis_sandbox::Clock;
         let clock = selis_sandbox::FixedClock(0);
         let budget = Budget::unlimited();
         let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
