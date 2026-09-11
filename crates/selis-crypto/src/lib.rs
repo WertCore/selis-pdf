@@ -1,13 +1,16 @@
-//! `selis-crypto` — the PDF standard security handler (ISO 32000-2 §7.6).
+//! `selis-crypto` — the PDF security handlers (ISO 32000-2 §7.6).
 //!
-//! Implements the password-based encryption algorithms: RC4 (revisions 2–3),
-//! AES-128 (revision 4) key derivation (Algorithms 2/2a), user
+//! Implements the password-based standard security handler: RC4 (revisions
+//! 2–3), AES-128 (revision 4) key derivation (Algorithms 2/2a), user
 //! authentication (Algorithms 4/5 for R2–R4, Algorithm 2.A for R5/R6), the
 //! hardened hash of revision 6 (Algorithm 2.B), and the per-object
-//! stream/string decryption (Algorithms 1/1a with the leading-IV rule).
+//! stream/string decryption (Algorithms 1/1a with the leading-IV rule) —
+//! plus the public-key (PKCS#7/CMS) handler, read side (SL-1.ENC.03,
+//! [`pkcs7`], ISO 32000-2 §7.6.6 with the minimal DER reader of [`der`]).
 //!
-//! No unsafe code; crypto from the `aes`/`md-5`/`sha2` crates (RustCrypto,
-//! MIT/Apache-2.0 — cleared by the licence policy).
+//! No unsafe code; crypto from the `aes`/`md-5`/`sha1`/`sha2`/`rsa`/`p256`
+//! crates (RustCrypto, MIT/Apache-2.0 — cleared by the licence policy,
+//! ADR-P0021).
 
 #![allow(
     clippy::indexing_slicing,
@@ -16,6 +19,9 @@
     clippy::cast_sign_loss,
     clippy::integer_division
 )]
+
+pub mod der;
+pub mod pkcs7;
 
 use aes::cipher::generic_array::typenum::U16;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
