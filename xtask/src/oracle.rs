@@ -326,6 +326,45 @@ fn pdfjs_local_plan(dpi: &str, file: &Path, out: &Path) -> Option<(PathBuf, Vec<
     ))
 }
 
+/// The `[tool.<id>]` pin a CLI invocation name resolves to. `mutool` is
+/// MuPDF's CLI binary — the sweep and calibration legs name the binary, the
+/// pin names the tool — so both spellings dispatch through the pinned
+/// `oracle-mupdf` image. (The CI `render-conf` run 34567473855 measured zero
+/// comparable pages on the mutool legs because the `mutool` spelling looked
+/// up a pin that does not exist.)
+fn pin_id(tool: &str) -> &str {
+    match tool {
+        "mutool" => "mupdf",
+        other => other,
+    }
+}
+
+/// Absolute form of `path` for a docker `-v` bind-mount source. Docker
+/// rejects relative host paths (`... includes invalid characters for a local
+/// volume name` — the CI `render-conf` run 34567473855 measured zero
+/// comparable pages on every container leg for this reason), and
+/// `canonicalize` cannot serve here: the output file does not exist yet (the
+/// container creates it), so a missing path is absolutized against the cwd.
+fn absolutize(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    Ok(cwd.join(path))
+}
+
+/// The two `-v` bind mounts of the pinned-container render plan: the input
+/// (must exist — canonicalized) read-only at `/in.pdf`, and the output
+/// (created by the container — absolutized, never relative) at `/out.img`.
+fn container_mounts(file: &Path, out: &Path) -> Result<(String, String), String> {
+    let mount_in = format!(
+        "{}:/in.pdf:ro",
+        file.canonicalize().map_err(|e| e.to_string())?.display()
+    );
+    let mount_out = format!("{}:/out.img", absolutize(out)?.display());
+    Ok((mount_in, mount_out))
+}
+
 /// The pinned-container render plan (see `xtask/oracles.toml`): the file is
 /// mounted read-only at `/in.pdf`, the output written to `/out.img`. The argv
 /// per tool mirrors the smoke-tested contracts in `oracle-images.yml` --
@@ -343,15 +382,14 @@ fn container_plan(
         ));
     }
     let pins = load_pins()?;
-    let pin = pins
-        .get(tool)
-        .ok_or_else(|| format!("{tool}: no [tool.{tool}] pin recorded in {ORACLES_TOML}"))?;
+    let pin = pins.get(pin_id(tool)).ok_or_else(|| {
+        format!(
+            "{tool}: no [tool.{}] pin recorded in {ORACLES_TOML}",
+            pin_id(tool)
+        )
+    })?;
     let image = image_ref(pin, tool)?;
-    let mount_in = format!(
-        "{}:/in.pdf:ro",
-        file.canonicalize().map_err(|e| e.to_string())?.display()
-    );
-    let mount_out = format!("{}:/out.img", out.display());
+    let (mount_in, mount_out) = container_mounts(file, out)?;
     let tool_args = match tool {
         "mupdf" | "mutool" => vec![
             "draw".to_string(),
@@ -402,7 +440,7 @@ fn container_plan(
 fn image_ref_cmd(tool: &str) -> Result<(), String> {
     let pins = load_pins()?;
     let pin = pins
-        .get(tool)
+        .get(pin_id(tool))
         .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
     println!("{}", image_ref(pin, tool)?);
     Ok(())
@@ -413,7 +451,7 @@ fn check() -> Result<(), String> {
     let pins = load_pins()?;
     println!("oracle check (local-first; Docker only for CI pinning):");
     let display = |id: &str, local: String| {
-        let image = match pins.get(id) {
+        let image = match pins.get(pin_id(id)) {
             Some(p) if !p.digest.is_empty() => format!("{}@{}", p.image, p.digest),
             Some(p) if !p.version.is_empty() => {
                 format!("{}:{} (digest pending CI build)", p.image, p.version)
@@ -1481,6 +1519,45 @@ licence = "AGPL-3.0"
     fn empty_pins_file_is_rejected() {
         assert!(parse_pins("# nothing here\n").is_err());
         assert!(parse_pins("not = \"toml schema\"\n").is_err());
+    }
+
+    #[test]
+    fn mutool_spelling_resolves_to_the_mupdf_pin() {
+        // The CI render-conf run 34567473855 measured zero comparable pages
+        // on the mutool legs: the sweep names the binary, the pins file
+        // names the tool. Both spellings must find the same pin — no
+        // duplicate [tool.mutool] table to drift.
+        let pins = parse_pins(PIN_TOML).expect("valid pins");
+        assert!(pins.get("mutool").is_none(), "no duplicate pin expected");
+        assert_eq!(pin_id("mutool"), "mupdf");
+        assert!(pins.get(pin_id("mutool")).is_some());
+        for id in ["mupdf", "pdfium", "pdfjs", "ghostscript", "qpdf"] {
+            assert_eq!(pin_id(id), id);
+        }
+    }
+
+    #[test]
+    fn container_mounts_absolutize_a_relative_out() {
+        // Docker rejects relative -v sources; the sweep passes --out
+        // relative (CI run 34567473855: every container leg failed on the
+        // output mount while the canonicalized input mount was fine).
+        let tmp = std::env::temp_dir().join(format!("selis-mount-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pdf = tmp.join("t.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4\n").unwrap();
+        let (mount_in, mount_out) =
+            container_mounts(&pdf, Path::new("rel-out/theirs.png")).unwrap();
+        for mount in [&mount_in, &mount_out] {
+            let src = mount.split(":/").next().unwrap_or("");
+            assert!(
+                Path::new(src).is_absolute(),
+                "mount source must be absolute: {mount}"
+            );
+        }
+        assert!(mount_in.ends_with(":/in.pdf:ro"));
+        assert!(mount_out.ends_with(":/out.img"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
