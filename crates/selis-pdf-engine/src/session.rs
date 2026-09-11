@@ -21,6 +21,75 @@ use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 
 use crate::page::{page_view as compute_page_view, PageView};
 use crate::render::render_display_list;
+
+/// Detect encryption and build the resolved document model (the shared open
+/// path of [`Session::open`] and [`Session::open_public_key`]).
+///
+/// `credential` is the public-key credential for `/Adobe.PPKLite`
+/// documents; `None` opens a public-key document tolerantly without a key
+/// (the standard handler authenticates with the empty user password).
+///
+/// # Malformed Input
+///
+/// A standard-handler document whose (empty) password does not authenticate
+/// resolves without a key (tolerant open). A public-key document opened with
+/// a credential propagates the typed authentication error
+/// (`RECIPIENT_NO_MATCH`/`ENCRYPT_MALFORMED`/`ENCRYPT_UNSUPPORTED`); budget,
+/// cancellation, and pending errors always propagate as-is.
+fn open_doc(
+    src: &[u8],
+    doc: &Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    credential: Option<&selis_crypto::pkcs7::PubKeyCredential>,
+) -> Result<(
+    Doc,
+    selis_pdf_doc::Document,
+    Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+)> {
+    let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
+        let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
+        match encrypt_ref {
+            None => None,
+            Some(r) => {
+                match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
+                    Ok(Some(info)) => match info.handler {
+                        selis_pdf_cos::encrypt::Handler::Standard => {
+                            let id = doc
+                                .revisions()
+                                .last()
+                                .map(|v| v.trailer.clone())
+                                .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                                .unwrap_or_default();
+                            selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
+                                selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
+                            })
+                        }
+                        selis_pdf_cos::encrypt::Handler::PubKey => match credential {
+                            Some(c) => {
+                                let auth =
+                                    selis_pdf_cos::encrypt::authenticate_public_key(&info, c, g)?;
+                                Some(selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(
+                                    &info, auth.key,
+                                ))
+                            }
+                            // No credential: tolerant open without a key
+                            // (the wrong-credential path is
+                            // open_public_key's typed error).
+                            None => None,
+                        },
+                    },
+                    // Unreadable or non-standard handler: open unencrypted.
+                    Ok(None) => None,
+                    Err(_) => None,
+                }
+            }
+        }
+    };
+    let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
+    Ok((doc.clone(), document, key))
+}
+
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -77,44 +146,10 @@ impl Session {
         // password we cannot supply still *opens* (catalog + page tree resolve)
         // even without a key; content just won't decode. We therefore treat a
         // failed authentication as "open unencrypted", matching tolerant
-        // viewers, rather than refusing the document (SL-1.ROB.01).
-        fn open_doc(
-            src: &[u8],
-            doc: &Doc,
-            budget: &Budget,
-            g: &mut BudgetGuard<'_>,
-        ) -> Result<(
-            Doc,
-            selis_pdf_doc::Document,
-            Option<selis_pdf_cos::encrypt::DecryptPolicy>,
-        )> {
-            let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
-                let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
-                match encrypt_ref {
-                    None => None,
-                    Some(r) => {
-                        match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
-                            Ok(Some(info)) => {
-                                let id = doc
-                                    .revisions()
-                                    .last()
-                                    .map(|v| v.trailer.clone())
-                                    .map(|t| selis_pdf_cos::encrypt::document_id(&t))
-                                    .unwrap_or_default();
-                                selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
-                                    selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
-                                })
-                            }
-                            // Unreadable or non-standard handler: open unencrypted.
-                            Ok(None) => None,
-                            Err(_) => None,
-                        }
-                    }
-                }
-            };
-            let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
-            Ok((doc.clone(), document, key))
-        }
+        // viewers, rather than refusing the document (SL-1.ROB.01). A
+        // public-key document opens the same tolerant way without a
+        // credential; with one, [`Session::open_public_key`] authenticates
+        // the /Recipients blobs (SL-1.ENC.03).
 
         // A parsed xref that resolves is preferred; when its document model
         // cannot be built (the catalog's object is marked free or absent in a
@@ -122,7 +157,7 @@ impl Session {
         // which recovers live object bodies regardless of the xref state
         // (SL-1.ROB.01).
         if let Some(doc) = &parsed {
-            match open_doc(&src, doc, budget, &mut g) {
+            match open_doc(&src, doc, budget, &mut g, None) {
                 Ok((doc, document, key)) => {
                     return Ok(Self {
                         doc,
@@ -138,7 +173,87 @@ impl Session {
             }
         }
         let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
-        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g)?;
+        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, None)?;
+        let _ = g;
+        Ok(Self {
+            doc,
+            src,
+            document,
+            key,
+        })
+    }
+
+    /// Open an encrypted PDF with a public-key (PKCS#7) credential
+    /// (SL-1.ENC.03, ISO 32000-2 §7.6.6): the recipient's private key in
+    /// PKCS#8 DER, matched against the `/Recipients` blobs of the
+    /// `/Adobe.PPKLite` (or `/Adobe.PubSec`) `/Encrypt` dictionary.
+    ///
+    /// Unlike [`Session::open`], an authentication failure is a **typed
+    /// error**, not a tolerant open — the caller supplied a credential, so a
+    /// wrong key is a wrong answer (`RECIPIENT_NO_MATCH`), never a partially
+    /// decrypted document.
+    ///
+    /// # Budget
+    ///
+    /// Charged against `budget` for the whole open, including the CMS
+    /// recipient-blob parses, which charge their wire bytes to this guard.
+    ///
+    /// # Malformed Input
+    ///
+    /// A structurally damaged `/Encrypt` dictionary or CMS blob yields
+    /// `ENCRYPT_MALFORMED`; an unimplemented algorithm (RC4/3DES, s3-era)
+    /// yields `ENCRYPT_UNSUPPORTED`; a credential matching no recipient
+    /// yields `RECIPIENT_NO_MATCH`. Parse-level recovery (missing
+    /// `startxref`, damaged xref) follows the same scan-based fallback as
+    /// [`Session::open`] (SL-1.ROB.01).
+    pub fn open_public_key(
+        src: Vec<u8>,
+        credential: &selis_crypto::pkcs7::PubKeyCredential,
+        budget: &Budget,
+        clock: &dyn Clock,
+    ) -> Result<Self> {
+        let mut g = budget.guard_with(clock, CancelToken::new());
+        let parsed = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
+            Some(startxref) => {
+                match selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g) {
+                    Ok(doc) => Some(doc),
+                    Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                        return Err(e);
+                    }
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        };
+        if let Some(doc) = &parsed {
+            match open_doc(&src, doc, budget, &mut g, Some(credential)) {
+                Ok((doc, document, key)) => {
+                    return Ok(Self {
+                        doc,
+                        src,
+                        document,
+                        key,
+                    });
+                }
+                Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                    return Err(e);
+                }
+                // A typed authentication failure is an answer, not a parse
+                // accident: the wrong key never gets a second chance (and
+                // never a tolerant open).
+                Err(e)
+                    if matches!(
+                        e.code(),
+                        Code::RecipientNoMatch | Code::EncryptUnsupported | Code::EncryptMalformed
+                    ) =>
+                {
+                    return Err(e);
+                }
+                Err(_) => {}
+            }
+        }
+        let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
+        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, Some(credential))?;
         let _ = g;
         Ok(Self {
             doc,

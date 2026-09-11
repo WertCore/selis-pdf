@@ -19,6 +19,7 @@ wasm-host = ["selis-pdf-filter/wasm-host"]
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
+selis-crypto = { workspace = true }
 selis-geom = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
