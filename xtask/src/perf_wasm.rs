@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Guest linear-memory cap in bytes (the growth ceiling).
-const GUEST_MEMORY_CAP: usize = 512 * 1024 * 1024;
+pub(crate) const GUEST_MEMORY_CAP: usize = 512 * 1024 * 1024;
 
 /// One page's native-vs-guest measurement.
 struct PageResult {
@@ -50,8 +50,8 @@ struct PageResult {
 }
 
 /// The host state behind the wasmtime store (just the memory limiter).
-struct HostState {
-    limiter: wasmtime::StoreLimits,
+pub(crate) struct HostState {
+    pub(crate) limiter: wasmtime::StoreLimits,
 }
 
 /// Define the wasm-bindgen runtime shims the driver links (ADR-P0011:
@@ -63,7 +63,7 @@ struct HostState {
 /// for entropy, and rendering does not (proven per run: any call would trap
 /// loudly below instead of rendering). Any import outside this closed set
 /// fails loudly: the driver must not grow silent host dependencies.
-fn define_shims(
+pub(crate) fn define_shims(
     linker: &mut wasmtime::Linker<HostState>,
     module: &wasmtime::Module,
 ) -> Result<(), String> {
@@ -200,7 +200,7 @@ pub fn run(set: &Path, repeats: usize, out: &Path) -> Result<(), String> {
 
 /// Build the wasm driver and return the `.wasm` artifact path (parsed from
 /// cargo's JSON output, not guessed from the target dir).
-fn build_driver() -> Result<PathBuf, String> {
+pub(crate) fn build_driver() -> Result<PathBuf, String> {
     let cargo = resolve_cargo()?;
     let mut cmd = std::process::Command::new(&cargo);
     cmd.args([
@@ -436,7 +436,7 @@ fn median_ms(mut samples: Vec<f64>) -> f64 {
 /// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
 
 /// A wrapping FNV-1a hash of the pixmap (the cross-arch identity check).
-fn checksum(pixels: &[u8]) -> String {
+pub(crate) fn checksum(pixels: &[u8]) -> String {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for chunk in pixels.chunks(1024) {
         for &b in chunk {

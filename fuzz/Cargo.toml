@@ -25,6 +25,7 @@ selis-pdf-filter = { path = "../crates/selis-pdf-filter" }
 selis-bytes = { path = "../crates/selis-bytes" }
 selis-font = { path = "../crates/selis-font" }
 selis-shape = { path = "../crates/selis-shape" }
+selis-pdf-wasm = { path = "../crates/selis-pdf-wasm" }
 
 [[bin]]
 name = "cos_parse"
@@ -88,3 +89,11 @@ path = "fuzz_targets/filter_chain.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wasm_dispatch"
+path = "fuzz_targets/wasm_dispatch.rs"
+test = false
+doc = false
+bench = false
+

@@ -28,6 +28,8 @@ mod size_check;
 mod sweep;
 mod synthetic;
 mod unsafe_check;
+#[cfg(not(target_arch = "wasm32"))]
+mod wasm_protocol;
 mod wild;
 mod wild_hygiene;
 
@@ -148,6 +150,12 @@ enum Command {
         #[arg(long, default_value = "bench/wasm-results.json")]
         out: std::path::PathBuf,
     },
+    /// Drive the Worker protocol (SL-4.WASM.01) through the compiled guest
+    /// on wasmtime: round-trips, guest==native render checksums, budget
+    /// exhaustion, cancellation, and malformed-message containment.
+    /// Native-only (the guest is built for wasm32 first).
+    #[cfg(not(target_arch = "wasm32"))]
+    WasmProtocol,
     /// Generate the deterministic render benchmark set (SL-2.PERF.02).
     RenderSet {
         /// Verify the committed fixtures against their generator instead of
@@ -454,6 +462,8 @@ fn main() -> ExitCode {
         }
         #[cfg(not(target_arch = "wasm32"))]
         Command::PerfWasm { set, repeats, out } => perf_wasm::run(&set, repeats, &out),
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::WasmProtocol => wasm_protocol::run(),
         Command::PerfRender {
             set,
             dpi,

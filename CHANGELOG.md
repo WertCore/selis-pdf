@@ -8,6 +8,15 @@ sections; every entry states what changed and what it means for the user.
 
 ### Added
 
+- The WASM binding speaks the versioned Worker protocol (ADR-P0042): a JS
+  shell drives document open, page metadata, tiled page render, text
+  extraction, search, and document close over one message boundary, with
+  typed error codes (including `CANCELLED` and the budget family) and
+  per-document budget profiles crossing it. Cancellation has two channels —
+  pre-cancel messages and an out-of-band cancel slot for shared-memory
+  hosts — and progress is published to an exported slot at every stage
+  boundary. Editing is not wired yet: `mutate`/`save` answer a typed
+  "unsupported" until Phase 5.
 - Every tool operation now ends with a compact verification line on stderr —
   pages, annotations, form fields, OCGs, outline entries, and embedded files
   (in→out), byte sizes, and the structural-check verdict — built from the

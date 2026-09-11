@@ -8,15 +8,23 @@ authors.workspace = true
 repository.workspace = true
 
 [lib]
-# The wasmtime-driven render driver (SL-2.PERF.03) loads this artifact's
-# `.wasm` directly; browsers use the same exports through the wasm shell
-# (Phase 5). `cdylib` only — no rlib (nothing in-process links it).
-crate-type = ["cdylib"]
+# The wasmtime-driven harnesses (`xtask perf-wasm`, `xtask wasm-protocol`)
+# load this artifact's `.wasm` directly; browsers use the same exports
+# through the wasm shell (SL-4.WASM.01+). The `rlib` exists for the
+# conformance tooling that links the protocol schema natively (the fuzz
+# target, ADR-P0042); browsers still load only the cdylib.
+crate-type = ["cdylib", "rlib"]
 
 [lints]
 workspace = true
 
 [dependencies]
 selis-bytes = { workspace = true }
+selis-error = { workspace = true }
+selis-geom = { workspace = true }
+selis-pdf-content = { workspace = true }
 selis-pdf-engine = { workspace = true }
+selis-pdf-text = { workspace = true }
 selis-sandbox = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
