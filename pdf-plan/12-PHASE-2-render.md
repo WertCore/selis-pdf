@@ -244,9 +244,43 @@ every user on every page.
     ≥95% criterion** — the itemised gap list and the filed root-cause tasks are in
     *2.CONF.01 sweep readout* below.
 
-- [ ] **SL-2.CONF.02 — Promote conformance areas** · deps: CONF.01 · owner: AI
+- [x] **SL-2.CONF.02 — Promote conformance areas** · deps: CONF.01 · owner: AI
   - **Do:** Update `conformance/areas.toml`. Areas that did not reach `Render` stay at `Parse` and
     are marked as such publicly (ADR-P0010).
+  - **Done (2026-09-11):** first ladder update (`conformance/areas.toml` + regenerated
+    `conformance/REPORT.md`). **No area meets the full calibrated bar, so nothing promotes to
+    Render** — that is the honest outcome per ADR-P0010, not a gap in the update:
+
+    | Area | Level | Evidence |
+    |---|---|---|
+    | cos, xref | Parse | SL-1.COS.* DoDs; CONF.01 3,836-file parse coverage; CONF.05 zero unexplained refusals |
+    | filters | Parse | SL-1.FILT.* + SL-2.FILT.01/02; CONF.04 JPX/JBIG2 decode suspects tracked, not parse failures |
+    | encryption | Parse | SL-1.ENCRYPT.* DoDs; RC4/AESV2 read over the corpus |
+    | document | Parse | SL-1.DOC.* DoDs; /Rotate page geometry open in RAST.12 (parse unaffected) |
+    | **render** | **Parse (not Render)** | **Bar A pass** (97.0% ≤25% @150, n=3,747 vs MuPDF) **but Bar B fails** (≤2%: 76.2 vs best pair 82.3 — 6.1pp raw, 1.1pp past the 5pp allowance; ≤5%/≤10% pass). Open: size_skew 17 files (RAST.12), blank_selis 25 files (RAST.13), diff≥25 94 files (CONF.04) |
+    | text, annot, forms, edit, redact, sign, pdfa, pdfua | None | Unmeasured — including the G2 Identify targets for annot/forms (no detection gate run; /AP appearances suspected in the blank_selis cluster). Claiming them would be the exact failure mode ADR-P0010 exists to prevent. |
+
+    **Calibration verdict (local vs CI):** the CONF.03 matrix is **confirmed, unadjusted**. Local legs
+    were re-derived from the verdicts and reproduce every published cell exactly (sanity 100% both
+    legs; selis↔mutool full-corpus 27.3/34.1/76.2/85.1/92.0/97.0, p50 1.68, p99 68.4). The CI
+    `render-conf` dispatch (run [34567473855](https://github.com/WertCore/selis-pdf/actions/runs/34567473855),
+    2026-09-11, ref main @2aacac2) completed green at the job level but **measured 0 comparable
+    pages on every oracle leg** — a job bug, not a measurement: (1) the sweep passes `--out`
+    relative, and `container_plan` put it verbatim into the docker `-v` mount (daemon: `includes
+    invalid characters for a local volume name`) — all pdfium/pdfjs legs; (2) the calibration legs
+    name the binary `mutool` but the pin names the tool `mupdf`, so the lookup found no pin — all
+    mutool legs. Both fixed on this branch (`xtask/src/oracle.rs`: `absolutize()` +
+    `container_mounts()` + `pin_id()`, two regression tests; `oracle check` now resolves
+    mutool→oracle-mupdf@digest). An unpushed branch cannot re-dispatch, so the confirming run
+    fires on the first `render-conf` dispatch/cron after merge; the matrix stands on the local
+    legs until then.
+  - **SL-2.RAST.14 precondition verdict: PENDING (assessed, not implemented).** The precondition —
+    a CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope — is not satisfied by
+    any current data: selis ≤1% = 34.1% vs the pair envelope ~73.3–76.5%, and ≤2% = 76.2% vs
+    80.5–82.3%. The envelope itself is confirmed (local legs reproduced exactly); the CI re-run
+    that re-baselines it on the pinned identities is outstanding post-merge (see above). Nothing
+    refutes the RAST.14 premise — the uniform 1–2% mechanical signature stands — so this is
+    pending its owner's engine work, not failed.
 
 ### 2.CONF.01 sweep readout — G2 gap list (2026-09-10, selis vs MuPDF, page 1, ΔE76 > 2.3)
 
@@ -348,8 +382,22 @@ minimum for a `Render` promotion, so SL-2.CONF.02 consumes this readout plus the
   calibration triangle: selis was only compared against MuPDF locally, and pair distances are not
   transitive) and (b) the oracle-vs-oracle legs of this matrix on the pinned identities. The
   same run's `size-check` failure (3 wasm cdylibs "NOT MEASURED — no artifact in this run") is a
-  pre-existing main-branch issue: runs 34483545072 (28fca97) and 34479582812 (f95f6ff) failed
-  before this branch's merge; not caused by this work.
+   pre-existing main-branch issue: runs 34483545072 (28fca97) and 34479582812 (f95f6ff) failed
+   before this branch's merge; not caused by this work.
+
+   **CI confirmation status, update 2026-09-11 (SL-2.CONF.02):** dispatched run
+   [34567473855](https://github.com/WertCore/selis-pdf/actions/runs/34567473855)
+   (`workflow_dispatch`, ref main @2aacac2 — which carries the zip fix) completed green at the job
+   level but measured **0 comparable pages on every oracle leg**: the sweep's 396 files × 3 DPIs
+   vs pdfium/pdf.js all `oracle_rejects`, and all calibration pairs `reject` including the
+   mutool↔mutool sanity leg. Root causes, both in `xtask/src/oracle.rs` (never exercised end to
+   end before — the dev host has no Docker): (1) the output bind mount used the relative `--out`
+   path verbatim (`sweep/tmp-wN/theirs.png` → daemon rejects it); the input mount was already
+   canonicalized, which is why only the output side failed. (2) the mutool legs look up
+   `[tool.mutool]`, but the pin is recorded as `[tool.mupdf]` (the binary vs the tool). Fixed on
+   the CONF.02 branch with regression tests; the confirming measurement run fires on the first
+   `render-conf` dispatch/cron after merge. The calibration matrix above stands on the local
+   legs (re-derived exactly) until then.
 
 - [ ] **SL-2.CONF.04 — Gross-divergence triage (CONF.01 `diff>=25%` cluster)** · deps: CONF.01 · owner: AI
   - **Do:** Root-cause the 94 files at ≥25% differing pixels @150 (worst: `ghent/GWG080_
