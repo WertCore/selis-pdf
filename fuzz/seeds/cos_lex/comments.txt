@@ -1,0 +1,4 @@
+% leading comment
+1 % trailing
+(str % not comment) % real
+(brace { inside)

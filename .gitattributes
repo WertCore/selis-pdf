@@ -5,3 +5,7 @@
 *.pdf binary
 *.png binary
 *.ppm binary
+
+# Fuzz seeds are libFuzzer corpus inputs: byte-exact, never EOL-translated
+# (SL-1.ROB.02).
+fuzz/seeds/** -text

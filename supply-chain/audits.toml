@@ -1,4 +1,20 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.font-types]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+delta = "0.12.4 -> 0.12.5"
+notes = "Publisher-consistent minor upgrade (cmyr/fontations); picked up transitively by the skrifa 0.44 -> 0.47 move that carries the upstream glyf repeat-flag panic fix found by the SL-1.ROB.02 fuzz campaign. Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."
+
+[[audits.read-fonts]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+delta = "0.41.0 -> 0.44.0"
+notes = "Publisher-consistent upgrade (cmyr/fontations); contains the upstream fix for the repeat-flag glyf panic exercised by the fuzz-glyf-repeat-flag regression fixture (SL-1.ROB.02). Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."
+
+[[audits.skrifa]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+delta = "0.44.0 -> 0.47.0"
+notes = "Publisher-consistent upgrade (cmyr/fontations); required so selis-font links the read-fonts version with the glyf repeat-flag panic fix (SL-1.ROB.02 finding). Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."

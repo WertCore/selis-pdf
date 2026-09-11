@@ -65,6 +65,11 @@ impl ManualClock {
     }
 
     /// Advance by `delta` nanoseconds, saturating.
+    // `fetch_update` is renamed to `try_update` on new toolchains; the MSRV
+    // (1.85) has only the old name, so silence the deprecation until the
+    // MSRV moves past the rename. Nightly fuzz/coverage builds run with
+    // `-D warnings` and fail the soak otherwise (SL-1.ROB.02).
+    #[allow(deprecated)]
     pub fn advance(&self, delta: Nanos) {
         let _ = self
             .now

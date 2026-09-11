@@ -267,40 +267,51 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn next(&mut self) -> Option<Token<'a>> {
-        self.skip_space();
-        let start = self.pos;
-        let c = self.data.get(self.pos).copied()?;
-        if c == b'/' {
-            self.pos = self.pos.saturating_add(1);
-            let name_start = self.pos;
-            self.skip_word();
-            return Some(Token::Name(self.data.get(name_start..self.pos)?));
-        }
-        if c == b'<' {
-            // Hex number `<00FF>`.
-            self.pos = self.pos.saturating_add(1);
-            let hex_start = self.pos;
-            while self.data.get(self.pos).copied().is_some_and(|b| b != b'>') {
+        // Every branch either consumes at least one byte or loops — a bare
+        // `>` (not a hex-string closer) used to fall through to `skip_word`,
+        // which stops at `>`, producing a zero-length token forever and
+        // hanging `parse_cmap` (fuzz finding, SL-1.ROB.02).
+        loop {
+            self.skip_space();
+            let start = self.pos;
+            let c = self.data.get(self.pos).copied()?;
+            if c == b'>' {
+                // Stray closer: skip it and keep tokenising.
                 self.pos = self.pos.saturating_add(1);
+                continue;
             }
-            if self.data.get(self.pos).copied()? != b'>' {
-                return None;
+            if c == b'/' {
+                self.pos = self.pos.saturating_add(1);
+                let name_start = self.pos;
+                self.skip_word();
+                return Some(Token::Name(self.data.get(name_start..self.pos)?));
             }
-            self.pos = self.pos.saturating_add(1); // skip '>'
-            let hex = self.data.get(hex_start..self.pos.saturating_sub(1))?;
-            let text = std::str::from_utf8(hex).ok()?;
-            let value = u32::from_str_radix(text, 16).ok()?;
-            return Some(Token::Number(f64::from(value)));
+            if c == b'<' {
+                // Hex number `<00FF>`.
+                self.pos = self.pos.saturating_add(1);
+                let hex_start = self.pos;
+                while self.data.get(self.pos).copied().is_some_and(|b| b != b'>') {
+                    self.pos = self.pos.saturating_add(1);
+                }
+                if self.data.get(self.pos).copied()? != b'>' {
+                    return None;
+                }
+                self.pos = self.pos.saturating_add(1); // skip '>'
+                let hex = self.data.get(hex_start..self.pos.saturating_sub(1))?;
+                let text = std::str::from_utf8(hex).ok()?;
+                let value = u32::from_str_radix(text, 16).ok()?;
+                return Some(Token::Number(f64::from(value)));
+            }
+            if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
+                self.skip_number();
+                let text = self.data.get(start..self.pos)?;
+                let value = std::str::from_utf8(text).ok()?.parse().ok()?;
+                return Some(Token::Number(value));
+            }
+            self.skip_word();
+            let word = self.data.get(start..self.pos)?;
+            return Some(Token::Raw(word));
         }
-        if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
-            self.skip_number();
-            let text = self.data.get(start..self.pos)?;
-            let value = std::str::from_utf8(text).ok()?.parse().ok()?;
-            return Some(Token::Number(value));
-        }
-        self.skip_word();
-        let word = self.data.get(start..self.pos)?;
-        Some(Token::Raw(word))
     }
 
     fn skip_space(&mut self) {
@@ -375,6 +386,18 @@ mod tests {
         assert_eq!(cmap.code_to_cid(65), Some(101));
         assert_eq!(cmap.code_to_cid(90), Some(101 + 25));
         assert_eq!(cmap.uses.as_deref(), Some("Another"));
+    }
+
+    /// A stray `>` must be skipped, not returned as a zero-length token:
+    /// `skip_word` stops at `>`, so the old tokenizer handed back `Raw(b"")`
+    /// forever and hung `parse_cmap` (fuzzer-found, SL-1.ROB.02).
+    #[test]
+    fn stray_gt_token_terminates() {
+        let mut g = guard();
+        let src = b"1 begincidrange\n65 90 101 >\nendcidrange\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.code_to_cid(65), Some(101));
+        assert_eq!(cmap.code_to_cid(90), Some(101 + 25));
     }
 
     #[test]

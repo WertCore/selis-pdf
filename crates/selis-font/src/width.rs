@@ -163,13 +163,16 @@ pub fn parse_ttf_metrics(data: &Bytes, g: &mut BudgetGuard<'_>) -> Result<Option
         selis_sandbox::Resource::Bytes,
         u64::try_from(data.len()).unwrap_or(u64::MAX),
     )?;
-    let font = match FontRef::new(data.as_slice()) {
-        Ok(f) => f,
-        Err(_) => return Ok(None),
+    let units_per_em = crate::contain(|| {
+        FontRef::new(data.as_slice()).ok().map(|f| {
+            f.metrics(Size::unscaled(), LocationRef::default())
+                .units_per_em
+        })
+    })
+    .flatten();
+    let Some(units_per_em) = units_per_em else {
+        return Ok(None);
     };
-    let units_per_em = font
-        .metrics(Size::unscaled(), LocationRef::default())
-        .units_per_em;
     if units_per_em == 0 {
         return Ok(None); // a font without units-per-em cannot provide widths
     }

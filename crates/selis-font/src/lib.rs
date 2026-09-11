@@ -14,6 +14,20 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
+/// Runs an upstream font-parser call (skrifa/read-fonts), containing a
+/// panic and reporting it as `None` — the documented deviation outcome.
+///
+/// The upstream fontation crates carry an open-ended family of
+/// arithmetic-overflow panics on hostile font data (fuzz builds force
+/// overflow checks on; SL-1.ROB.02 found them in `read-fonts`' Type1
+/// number parser and glyf decoding, and in swash). Every panic they can
+/// produce is a deviation of a malformed font, never a Selis bug: this
+/// crate's own code is panic-free by lint policy. Tracked by SL-1.ROB.06;
+/// drop this containment when the upstream releases are overflow-clean.
+pub(crate) fn contain<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
 pub mod agl;
 pub mod cid;
 pub mod cjk;
