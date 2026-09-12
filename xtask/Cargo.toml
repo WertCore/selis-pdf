@@ -25,6 +25,12 @@ selis-sandbox = { workspace = true, features = ["instant-clock"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+# Native-only tooling. wasmtime has no wasm32 target, and the SL-1.ENC.03
+# fixture generator builds committed PDFs (never needed in a wasm build).
+# The size-check job builds `-p xtask --target wasm32-unknown-unknown`, so
+# both must stay cfg-gated or their weight lands in the wasm size canary.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wasmtime = { workspace = true }
 # SL-1.ENC.03 fixture generator: builds the committed public-key fixtures
 # (RSA/EC CMS envelopes) and hashes the Algorithm-1 seed independently of
 # selis-crypto's pkcs7 module, so the engine DoD tests cross-check it.
@@ -34,9 +40,3 @@ p256 = { workspace = true }
 rsa = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
-
-# The wasmtime embedding for `perf-wasm` (SL-2.PERF.03). Native-only:
-# wasmtime has no wasm32 target, and the size-check job builds `-p xtask
-# --target wasm32-unknown-unknown`, so this must stay cfg-gated.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wasmtime = { workspace = true }

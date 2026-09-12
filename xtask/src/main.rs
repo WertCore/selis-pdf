@@ -19,6 +19,7 @@ mod oracle;
 mod perf_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod perf_wasm;
+#[cfg(not(target_arch = "wasm32"))]
 mod pkcs7_fixtures;
 mod png;
 mod purity;
@@ -167,7 +168,9 @@ enum Command {
         outdir: std::path::PathBuf,
     },
     /// Generate the committed SL-1.ENC.03 public-key fixtures, or `--check`
-    /// them against their generator.
+    /// them against their generator. Native-only tooling (its crypto stack
+    /// must not ride the wasm size canary).
+    #[cfg(not(target_arch = "wasm32"))]
     PubkeyFixtures {
         /// Verify the committed fixtures against their generator instead of
         /// regenerating them.
@@ -464,6 +467,7 @@ fn main() -> ExitCode {
                 render_set::generate(&outdir)
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
         Command::PubkeyFixtures { check, outdir } => {
             if check {
                 pkcs7_fixtures::check(&outdir)
