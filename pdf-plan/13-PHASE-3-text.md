@@ -220,40 +220,54 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
 
 - [x] **SL-3.CONF.01 — Full text/font differential sweep** · owner: AI+
   - **Do:** Render + extract the whole corpus against PDFium and pdf.js; triage; file per root cause.
-  - **Status:** Sweep run 2026-09-11 over all 3,836 corpus PDFs (page 1 per file), selis vs the
-    MuPDF text oracle locally (`mutool draw -F txt`, mutool 1.23.0), selis golden renders hashed
-    at 72/150/300 DPI (selis pinned binary sha256 `f4a21235…22c911a`). Normaliser N1–N6
-    documented and unit-tested in `xtask/src/text_norm.rs` (bidi controls stripped, soft hyphens
-    and hyphen-linebreak joins, ligature folding, whitespace collapse; mirroring deliberately
-    NOT folded). Sweep harness `cargo xtask oracle text-sweep` (`xtask/src/text_sweep.rs`,
-    worker pool/resume/typed outcomes mirroring the render sweep); artifacts (verdicts.jsonl,
-    golden.jsonl, text-report.json) on `C:\selis-build\conf01-text`, never in the repo. PDFium/
-    pdf.js text legs wired into the scheduled `render-conf` job (drivers gained `--text` modes;
-    oracle-images smoke extended; **digests must be re-pinned in xtask/oracles.toml after the
-    oracle-images job rebuilds the images — until then those two CI legs fail loudly against the
-    old images**; the mutool leg runs against the current pin immediately).
-  - **Readout (honest):** G3 bar (≥98% normalised similarity on ≥95% of comparable files) **not
-    met**: 169/1,718 comparable = 9.8%. Comparable = both sides produced text. The itemised gap
-    list, by signature (files; weight×3 for wild/govdocs):
-    * `empty_both` 2,039 — no text on page 1 on either side (image-only/blank test-suite pages);
-      expected, not a failure.
-    * `diff>=25` 1,302 — the systemic extraction defect, two root causes (SL-3.TEXT.09 word-gap
-      inference splits nearly every glyph: "n 2 6 0 d 'id e n tific a tio n" for
-      "n° d'identification", 160F-2019; even the smoke fixture extracts "S e lis o ra cle sm o ke
-      te st"; SL-3.TEXT.08 non-ASCII emitted as literal PDF-string octal escapes:
-      "m o d 3 5 0 le" for "modèle", \350 as digits).
-    * `diff<25` 118 + `diff<5` 5 — same causes, milder.
-    * `empty_selis` 117 — selis extracts nothing where MuPDF finds text (SL-3.TEXT.10; e.g.
-      TAMReview: mutool 1,696 chars, selis 0, page renders non-blank).
-    * `empty_oracle` 9 — selis recovers text MuPDF misses (selis superset; keep).
-    * Rejections/timeouts: `both_reject` 23, `oracle_rejects` 33 (12 with clean stderr: mutool
-      refuses encrypted-no-password files selis recovers), `selis_rejects` 17 (14× E1103
-      recover-root, 2× budget, 1× zero pages), 6 timeouts — mostly pre-existing recovery/scope
-      items (SL-2.CONF.02 areas), none new.
-  - **Font side (recorded per file, oracle inventory + selis span fonts; verdicts carry both):**
-    all_embedded 1,107 comparable (38 within G3), has_external 392 (28), has_type3 63 (3),
-    no-inventory 156 (100). Divergence is **systemic, not substitution-driven**: unembedded-font
-    files diverge at 92.9% vs 96.6% for fully-embedded — a real but marginal elevation; the
-    dominant cause (TEXT.08/09) hits both classes. Type3-heavy files diverge most in relative
-    terms (95.2%) but are 63 files. No verdict may blame substitution while TEXT.09 stands.
+  - **Status:** Sweep run twice on 2026-09-11 / 2026-09-12 — pre-merge (against selis @ 2aacac21
+    with the pinned binary sha256 `f4a21235…22c911a`, 3,836 files) and again post-merge with main's
+    SHAPE.04 (CID replay), RAST.12 (/Rotate page-to-device transform), and RAST.13 (blank-render
+    fixes) landed (3,848 files, SHAPE.04 added 12 new synthetic indic fixtures; pinned post-merge
+    binary sha256 `76deee66…d5dc533d`). The post-merge numbers below supersede the pre-merge ones.
+    Harness: `cargo xtask oracle text-sweep` (`xtask/src/text_sweep.rs`); normaliser N1–N6
+    documented and unit-tested in `xtask/src/text_norm.rs` (bidi controls / BOM / soft-hyphen /
+    line-break hyphen / ligature folding, whitespace collapse; mirroring deliberately NOT folded).
+    Oracle: locally `mutool draw -F txt` (mutool 1.23.0). Artifacts on `C:\selis-build\
+    conf01-text-post-merge` (`verdicts.jsonl` + `golden.jsonl` + `text-report.json`), never in the
+    repo. PDFium/pdf.js text legs wired into the scheduled `render-conf` job (drivers gained
+    `--text` modes; oracle-images smoke extended); digest re-pin required after the oracle-images
+    CI job rebuilds the images — until then the two CI legs fail loudly against the old images
+    (`xtask: ok`-typed `oracle_rejects` in the artifacts), while the mutool leg uses the current
+    pin immediately.
+  - **Readout (honest):** G3 bar (≥98% normalised similarity on ≥95% of comparable files) NOT
+    MET: 72/1,730 comparable files = **4.16%**. Comparable = both sides produced text (i.e., not
+    both_reject, timeouts, or the empty_* signatures). Compared with the pre-merge run, the match
+    band COLLAPSED: 167 → 70 matched, 1,302 → 1,429 in `diff>=25`. The overall text-corpus
+    agreement got WORSE on merge — most likely a side effect of SHAPE.04's `apps/cli/src/
+    extract.rs` change; the SHAPE.04 DoD was about Indic shaping parity at G2 render tolerance,
+    and this is a text-agreement regression that its CI leg (Indic fixtures) does not cover. The
+    itemised signature gap list:
+    * `empty_both` 2,040 — no text on page 1 on either side (image-only + blank pages). Not a
+      failure; expected in test-suite corpora.
+    * `diff>=25` 1,429 — the systemic divergence, three root causes (SL-3.TEXT.08 non-ASCII
+      emitted as literal PDF-string octal escapes: "modèle" → "m o d 3 5 0 le"; SL-3.TEXT.09
+      word-gap inference splits nearly every glyph, e.g. "n° d'identification" →
+      "n 2 6 0 d 'id e n tific a tio n" and the single-word smoke fixture yields
+      "S e lis o ra cle sm o ke te st"; plus a post-SHAPE.04 regression cohort that shifted
+      from `match`/`diff<25` into this band on merge).
+    * `diff<25` 127 + `diff<5` 6 — same causes, milder similarity bands.
+    * `empty_selis` 87 — selis extracts zero characters where MuPDF recovers text; SL-3.TEXT.10
+      (the count dropped 117→87 after SHAPE.04, i.e. some CID cases improved — the CID replay
+      fix worked for those, so this gap narrowed).
+    * `empty_oracle` 11 — selis recovers text MuPDF misses (superset recovery). Not a bug.
+    * Rejections/timeouts: `oracle_rejects` 34 (12 with a clean stderr prefix: mutool refuses
+      some encrypted-no-password files selis recovers), `both_reject` 23, `selis_rejects` 17
+      (14× E1103 recover-root, 2× budget, 1× zero-pages), `oracle_timeout` 4, and 2 selis
+      timeouts on monster pages. None new.
+  - **Font side (per file, oracle inventory + selis span-font names; verdicts carry both):**
+    all_embedded 1,108 files comparable (38 within G3 = 3.4%), has_external 395 (29 = 7.3%),
+    has_type3 63 (3 = 4.8%), unknown (no font inventory on this leg) 164 (2 = 1.2%). Divergence
+    is **systemic, not substitution-driven** — unembedded-font and embedded-font files diverge at
+    similar rates. The CONF.01 gap list correctly blames TEXT.08/09, not SL-3.FONT.08/09.
+  - **SHAPE.04 side-effect finding (NEW):** Post-merge, the match band collapsed. The delta:
+    pre-sweep 167 files at ≥99% similarity → post-sweep 70; a ~97-file regression cohort now
+    disagrees at the highest band. SHAPE.04's `apps/cli/src/extract.rs` change is the top
+    suspect; recommend a follow-up `bisect` task. Not filed here (this task's scope is running
+    the sweep + filing root-cause tasks, not bisecting main).
 - [ ] **SL-3.CONF.02 — Promote conformance areas; publish the report** · owner: AI

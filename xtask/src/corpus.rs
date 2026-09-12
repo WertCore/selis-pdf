@@ -456,22 +456,54 @@ fn expect_merge(from: &Path) -> Result<(), String> {
             push_example(&mut examples, &format!("{id} (open drifted)"));
             continue;
         }
-        let Some(g) = goldens.get(id) else {
-            skipped_no_golden += 1;
-            push_example(&mut examples, &format!("{id} (no golden)"));
-            continue;
+        let has_sweep_baseline = match goldens.get(id) {
+            Some(g) => !(g.render.is_empty() && g.text.is_none()),
+            None => false,
         };
-        if g.render.is_empty() && g.text.is_none() {
-            skipped_empty += 1;
-            push_example(&mut examples, &format!("{id} (no baseline)"));
+        if !has_sweep_baseline {
+            // The current sweep produced no baseline. Clear stale goldens so
+            // `corpus verify --golden` cannot report a spurious drift against
+            // a superseded binary; the open outcome is the sole contract.
+            let stale = record.render.is_some() || record.text.is_some();
+            record.render = None;
+            record.text = None;
+            if stale && !old.trim().is_empty() {
+                let mut with_annotation =
+                    toml::to_string(&record).map_err(|e| format!("{id}: {e}"))?;
+                if let Some(annotation) = crate::synthetic::extract_annotation_table(&old) {
+                    with_annotation.push_str(&annotation);
+                }
+                if let Some(parent) = dest.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                write_expect(&dest, &with_annotation, id)?;
+            }
+            if goldens.contains_key(id) {
+                skipped_empty += 1;
+                push_example(&mut examples, &format!("{id} (no baseline)"));
+            } else {
+                skipped_no_golden += 1;
+                push_example(&mut examples, &format!("{id} (no golden)"));
+            }
             continue;
         }
-        if !g.render.is_empty() {
-            record.render = Some(g.render.clone());
-        }
-        if let Some(hash) = &g.text {
-            record.text = Some(TextGolden { hash: hash.clone() });
-        }
+        let g = goldens
+            .get(id)
+            .expect("has_sweep_baseline only true when the sweep recorded the id");
+        // Overwrite the render/text fields from the sweep — the sweep is
+        // authoritative. When the sweep recorded an empty render (all DPIs
+        // failed) but a text hash succeeds, we still want the file's
+        // `[text]` golden and NO stale `[render]` table from a previous
+        // baseline; and symmetrically for the text-only case.
+        record.render = if g.render.is_empty() {
+            None
+        } else {
+            Some(g.render.clone())
+        };
+        record.text = g
+            .text
+            .as_ref()
+            .map(|hash| TextGolden { hash: hash.clone() });
         if g.render.len() >= 3 && g.text.is_some() {
             full += 1;
         }
