@@ -644,6 +644,104 @@ pub fn generate() -> Result<(), String> {
         gen(&id, doc, 1)?;
     }
 
+    // ── SL-2.RAST.14 regression corpus: one file per confirmed root cause ──
+
+    // Octal string escapes (`\ddd`, ISO 32000-2 §7.3.4.2): the content lexer
+    // decoded `\101` as the literal digit `1` (the first octal digit), so
+    // text built from escaped codes rendered with wrong glyphs.
+    {
+        let id = "text_octal_escape".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"BT /Helvetica 14 Tf 20 90 Td (\\101\\102\\103 octal) Tj ET".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        doc.add_page_with_extra(300.0, 120.0, &[Ref::new(content_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
+    // A clip path is frozen in user space at the time `W`/`W*` runs
+    // (ISO 32000-2 §8.5.4): a `cm` inside the same `q` (here the stroked
+    // rule) must not move the clip for the following text. When the walk
+    // re-transformed clip paths with each op's CTM, the stroke's rebuild
+    // shifted the clip and the text painted clipped away.
+    {
+        let id = "clip_frozen_at_definition".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"q\n0 0.028 299.971 111.971 re\nW* n\nq\n1 0 0 1 20 20 cm\n0.1 w 1 j\n0 0 m\n0 60 l\nS\nQ\nBT\n/Helvetica 14 Tf\n2 60 Td\n(Frozen) Tj\nET\nQ".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        doc.add_page_with_extra(300.0, 120.0, &[Ref::new(content_num, 0)], None, Vec::new());
+        gen(&id, doc, 1)?;
+    }
+
+    // A simple TrueType/Type1 font with `/Differences` glyph names
+    // (ISO 32000-2 §9.6.6.2): codes must map through the encoding model
+    // (`/Adieresis` → the Ä glyph), not raw bytes through the cmap.
+    {
+        let id = "encoding_differences".to_string();
+        let mut doc = DocumentBuilder::new();
+        let content = b"BT /F1 14 Tf 20 90 Td (\\101\\141 differences) Tj ET".to_vec();
+        let content_num = doc.allocate();
+        doc.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(content.len() as i64))],
+                data: selis_bytes::Bytes::from(content),
+            },
+        );
+        // The font dict with /Differences: code 65 names /Adieresis (Ä),
+        // code 97 names /aacute (á). Non-embedded → the bundled fallback
+        // carries both glyphs.
+        let font_num = doc.allocate();
+        doc.add_object(
+            font_num,
+            Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
+                (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
+                (bytes(b"BaseFont"), Obj::Name(bytes(b"Helvetica"))),
+                (
+                    bytes(b"Encoding"),
+                    Obj::Dict(vec![(
+                        bytes(b"Differences"),
+                        Obj::Array(vec![
+                            Obj::Int(65),
+                            Obj::Name(bytes(b"Adieresis")),
+                            Obj::Name(bytes(b"aacute")),
+                        ]),
+                    )]),
+                ),
+            ]),
+        );
+        let resources_num = doc.allocate();
+        doc.add_object(
+            resources_num,
+            Obj::Dict(vec![(
+                bytes(b"Font"),
+                Obj::Dict(vec![(bytes(b"F1"), Obj::Ref(Ref::new(font_num, 0)))]),
+            )]),
+        );
+        doc.add_page_with_extra(
+            300.0,
+            120.0,
+            &[Ref::new(content_num, 0)],
+            Some(Ref::new(resources_num, 0)),
+            Vec::new(),
+        );
+        gen(&id, doc, 1)?;
+    }
+
     println!("synthetic: {} files generated", count.get());
     generate_indic()?;
     Ok(())

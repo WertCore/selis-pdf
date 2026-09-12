@@ -180,6 +180,96 @@ fn flate_idat(idat: &[u8], expected: usize) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("png: flate: {e}"))
 }
 
+// ── Encoding (SL-0.ORACLE.02 diff artefacts) ────────────────────────────────
+
+/// Encode 8-bit RGB scanlines as a PNG (truecolour, filter 0 per row).
+///
+/// The IDAT uses stored (uncompressed) deflate blocks — the artefacts are
+/// written once for human inspection and determinism of the harness matters
+/// more than their size. This is the encoder counterpart of the PDFium
+/// driver's stored-block output, which [`decode`] already reads.
+///
+/// # Budget
+///
+/// Harness-side tooling (L5): the input is a comparison artefact already
+/// capped by the caller's pixel cap, not hostile document data.
+#[must_use]
+pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
+    let stride = usize::try_from(width).unwrap_or(0) * 3;
+    let mut idat = Vec::with_capacity(
+        (stride + 1)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_add(64),
+    );
+    for y in 0..usize::try_from(height).unwrap_or(0) {
+        idat.push(0); // filter None
+        let start = y.saturating_mul(stride);
+        let end = start.saturating_add(stride);
+        let row = rgb.get(start..end).unwrap_or(&[]);
+        idat.extend_from_slice(row);
+    }
+    let mut png = Vec::with_capacity(idat.len() + 128);
+    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit truecolour, no interlace
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &zlib_stored(&idat));
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// Wrap `body` in a zlib stream with stored (uncompressed) deflate blocks
+/// and a correct adler32.
+fn zlib_stored(body: &[u8]) -> Vec<u8> {
+    let mut zlib = vec![0x78u8, 0x01];
+    let chunk_count = body.len().div_ceil(65_535).max(1);
+    for (i, part) in body.chunks(65_535).enumerate() {
+        zlib.push(u8::from(i + 1 == chunk_count));
+        let len = u16::try_from(part.len()).unwrap_or(0);
+        zlib.extend_from_slice(&len.to_le_bytes());
+        zlib.extend_from_slice(&(!len).to_le_bytes());
+        zlib.extend_from_slice(part);
+    }
+    if body.is_empty() {
+        // One empty final block keeps the stream well-formed.
+        zlib.push(1);
+        zlib.extend_from_slice(&0u16.to_le_bytes());
+        zlib.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    }
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for &byte in body {
+        a = (a + u32::from(byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    zlib.extend_from_slice(&(b << 16 | a).to_be_bytes());
+    zlib
+}
+
+/// Wrap `body` in a chunk with its length and CRC32.
+fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+    out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(0).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+    let mut crc_input = Vec::with_capacity(4 + body.len());
+    crc_input.extend_from_slice(kind);
+    crc_input.extend_from_slice(body);
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for byte in &crc_input {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                0xEDB8_8320 ^ (crc >> 1)
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    out.extend_from_slice(&(crc ^ 0xFFFF_FFFF).to_be_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +325,36 @@ mod tests {
         let png = stored_block_png(7, 5, &[0u8; 7 * 5 * 3]);
         assert_eq!(dimensions(&png), Ok((7, 5)));
         assert!(dimensions(b"short").is_err());
+    }
+
+    #[test]
+    fn encode_rgb_round_trips_through_decode() {
+        // A 3×2 RGB image with distinct pixel values, encoded and decoded.
+        let rgb: Vec<u8> = (0..3 * 3 * 2).map(|i| (i * 37 % 251) as u8).collect();
+        let png = encode_rgb(3, 2, &rgb);
+        let img = decode(&png).expect("decodes own artefact");
+        assert_eq!((img.width, img.height), (3, 2));
+        assert_eq!(img.rgb, rgb);
+    }
+
+    #[test]
+    fn encode_rgb_round_trips_multi_row_and_chunked_blocks() {
+        // Wide enough to cross a 65 535-byte deflate block boundary: 300 rows
+        // × 300 px × 3 = 270 000 bytes of scanline data.
+        let (w, h) = (300u32, 300u32);
+        let rgb: Vec<u8> = (0..w as usize * h as usize * 3)
+            .map(|i| (i % 253) as u8)
+            .collect();
+        let png = encode_rgb(w, h, &rgb);
+        let img = decode(&png).expect("decodes chunked artefact");
+        assert_eq!((img.width, img.height), (w, h));
+        assert_eq!(img.rgb, rgb);
+    }
+
+    #[test]
+    fn encode_rgb_is_deterministic() {
+        let rgb = vec![128u8; 9 * 4 * 3];
+        assert_eq!(encode_rgb(9, 4, &rgb), encode_rgb(9, 4, &rgb));
     }
 
     // ── helpers ──
