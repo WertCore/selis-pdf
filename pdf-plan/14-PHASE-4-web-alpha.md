@@ -60,7 +60,7 @@ proves the engine in the harshest environment, and it costs nothing to distribut
 Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`, no direct
 `fetch`, no direct storage — all through a `PlatformAdapter` interface.
 
-- [ ] **SL-4.UI.01 — `PlatformAdapter` interface** · owner: AI+
+- [x] **SL-4.UI.01 — `PlatformAdapter` interface** · owner: AI+
   - **Do:** The one seam between the UI and its host: open/save/pick file, storage, clipboard,
     print, telemetry, window/menu integration, deep links, and capability flags. Web, extension,
     and desktop each implement it.
@@ -69,6 +69,18 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Note:** The `PlatformAdapter` is the *host* seam (what the OS can do). ADR-P0035 adds the
     *logic* seam: app state lives in `selis-viewmodel`, and the UI renders published diffs. Keep
     them distinct — conflating them is how logic leaks back into the shell.
+  - **Delivered:** `apps/ui/src/platform/` (the monorepo's shared UI package; `apps/web/ui` paths
+    here refer to it before the `web`/`desktop` split). `adapter.ts` defines the host seam plus a
+    transport-agnostic `EnginePort` (open/render-tile/extract/search, `AbortSignal` cancellation →
+    code 4020, progress callback, opt-in telemetry with a no-document-data type boundary per
+    ADR-P0016/P0017). `errors.ts` uses only registry codes. `mock-adapter.ts` is a full in-process
+    reference; `contract.ts` is the one suite every transport runs. The DoD "lint" is a unit-test
+    scan (`platform-globals.test.ts`, no Biome restricted-globals rule) that fails on bare platform
+    globals in production code — passing.
+  - **Open (deferred to the shell + WASM.01 JS leg):** no concrete browser/extension/Tauri adapter
+    ships yet; the WASM.01 Worker protocol exists in `selis-pdf-wasm` (Rust) and maps onto
+    `DocumentSourceDescriptor` inside a future transport, not in the UI. `apps/web/host` still owns
+    that wiring.
 - [ ] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
   - **Do:** Windowed rendering with a placeholder→low-res→full-res tile ladder, correct scroll
     anchoring on zoom, and page-fit/width/spread modes.
@@ -99,8 +111,17 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.UI.09 — Document health panel** · deps: SL-1.COS.11 · owner: AI
   - **Do:** Surface deviations, conformance claims, encryption state, signature presence, and
     tagging status. Honest reporting as a feature.
-- [ ] **SL-4.UI.10 — Design system + theming** · owner: AI
+- [x] **SL-4.UI.10 — Design system + theming** · owner: AI
   - **Do:** `packages/ui-kit`, light/dark, high contrast, reduced motion, and a density setting.
+  - **Note:** Token data is the single source of truth in `packages/ui-kit/src/tokens/`
+    (`colour.ts`, `scale.ts`) → generated `css/tokens.css` (byte-synced by test) + hand-rolled
+    `css/base.css` (no dependency; ADR-P0021). Four effective themes via CSS custom properties
+    keyed on `data-theme` / `data-contrast` / `data-density`; reduced motion honoured from both
+    `prefers-reduced-motion` and `data-motion` (duration tokens collapse to 0ms). `theming.ts`
+    applies preferences DOM-free so hosts persist them via the SL-4.UI.01 storage port. Visual-free
+    gates: role completeness + distinctness, WCAG 2.x contrast over declared fg/bg pairs in all
+    four themes (4.5 body / 3 non-text / 7 high-contrast), variable-reference + class-namespace
+    integrity, TS↔CSS sync. Usage documented in `packages/ui-kit/README.md` for UI.02+.
 - [ ] **SL-4.UI.11 — i18n scaffolding** · deps: SL-0.ERR.04 · owner: AI
   - **Do:** Every string a key from day 1 (ADR-P0034). Ship English; wire pseudo-locale into CI.
 - [ ] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
