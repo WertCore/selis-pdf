@@ -8,10 +8,15 @@
 #![forbid(unsafe_code)]
 
 pub mod cache;
+pub mod page;
 pub mod render;
 pub mod session;
 
 pub use cache::{matrix_id, CacheKey, LruCache};
-pub use render::{render_display_list, render_display_list_with_stats, RenderStats};
+pub use page::{page_view, PageView};
+pub use render::{
+    render_display_list, render_display_list_with_stats, GlyphMapping, RenderStats,
+    ResolvedFontProgram,
+};
 pub use selis_raster::TinySkiaBackend;
 pub use session::Session;

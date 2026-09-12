@@ -103,10 +103,14 @@ pub fn process(
             Vec::new()
         }
         "TD" => {
+            // TD sets the leading to −ty and then moves the line by (tx, ty)
+            // (PDF §9.4.3: "TD = −ty TL; tx ty Td") — the move uses the
+            // positive ty. Negating it mirrored TD-positioned text below the
+            // page (SL-2.RAST.13).
             let (tx, ty) = (num(operands, 0), num(operands, 1));
-            state.line_matrix = state.line_matrix.then(Matrix::translate(tx, -ty));
-            state.matrix = state.line_matrix;
             state.leading = -ty;
+            state.line_matrix = state.line_matrix.then(Matrix::translate(tx, ty));
+            state.matrix = state.line_matrix;
             Vec::new()
         }
         "Tm" => {
@@ -383,6 +387,20 @@ mod tests {
         state.font = Some(Bytes::copy_from_slice(b"F1"));
         state.font_size = 12.0;
         process(&mut state, "Td", &[n(10.0), n(20.0)], false, &const_width);
+        let glyphs = process(&mut state, "Tj", &[s(b"A")], false, &const_width);
+        assert_eq!(glyphs[0].at, Point::new(10.0, 20.0));
+    }
+
+    /// `TD` moves the line by the POSITIVE ty and records the leading as −ty
+    /// (PDF §9.4.3: "TD = −ty TL; tx ty Td"). A negated move mirrored
+    /// TD-positioned text to the wrong side of the origin (SL-2.RAST.13).
+    #[test]
+    fn capital_td_uses_positive_ty() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 12.0;
+        process(&mut state, "TD", &[n(10.0), n(20.0)], false, &const_width);
+        assert_eq!(state.leading, -20.0);
         let glyphs = process(&mut state, "Tj", &[s(b"A")], false, &const_width);
         assert_eq!(glyphs[0].at, Point::new(10.0, 20.0));
     }

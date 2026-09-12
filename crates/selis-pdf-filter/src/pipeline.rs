@@ -15,7 +15,7 @@ use selis_sandbox::{alloc, BudgetGuard};
 use crate::decode;
 
 /// Per-filter decode parameters.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct DecodeParms {
     /// `/Predictor` for Flate/LZW (1 = none, 2 = TIFF, 10-15 = PNG).
     pub predictor: u16,
@@ -25,8 +25,22 @@ pub struct DecodeParms {
     pub colors: u32,
     /// `/BitsPerComponent` for predictors.
     pub bits_per_component: u32,
-    /// `/EarlyChange` for LZW (0 or 1).
+    /// `/EarlyChange` for LZW (0 or 1). The spec default is 1 (ISO 32000-2
+    /// §7.4.6.2) — writers emit early-change codes unless told otherwise, so
+    /// a missing `/DecodeParms` must decode with 1, not 0.
     pub early_change: u8,
+}
+
+impl Default for DecodeParms {
+    fn default() -> Self {
+        Self {
+            predictor: 1,
+            columns: 1,
+            colors: 1,
+            bits_per_component: 8,
+            early_change: 1,
+        }
+    }
 }
 
 /// Decode a stream through a filter chain.
@@ -74,6 +88,17 @@ fn apply_filter(
     output_limit: u64,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
+    // Terminal image codecs are pass-throughs at the byte-filter layer: their
+    // output is still image-coded samples that the image layer (which knows
+    // the dict's width/height/colour space) must decode (SL-2.RAST.13). A
+    // chain like `/ASCIIHexDecode /DCTDecode` must not error here — that
+    // turned hex+JPEG image XObjects into silent blanks.
+    if matches!(
+        name,
+        "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF"
+    ) {
+        return Ok(data.to_vec());
+    }
     let decoded = match name {
         "LZWDecode" | "LZW" => crate::lzw_decode(data, parms.early_change, g)?,
         _ => decode(name, data, output_limit, g)?,

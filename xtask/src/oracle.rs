@@ -326,6 +326,45 @@ fn pdfjs_local_plan(dpi: &str, file: &Path, out: &Path) -> Option<(PathBuf, Vec<
     ))
 }
 
+/// The `[tool.<id>]` pin a CLI invocation name resolves to. `mutool` is
+/// MuPDF's CLI binary — the sweep and calibration legs name the binary, the
+/// pin names the tool — so both spellings dispatch through the pinned
+/// `oracle-mupdf` image. (The CI `render-conf` run 34567473855 measured zero
+/// comparable pages on the mutool legs because the `mutool` spelling looked
+/// up a pin that does not exist.)
+fn pin_id(tool: &str) -> &str {
+    match tool {
+        "mutool" => "mupdf",
+        other => other,
+    }
+}
+
+/// Absolute form of `path` for a docker `-v` bind-mount source. Docker
+/// rejects relative host paths (`... includes invalid characters for a local
+/// volume name` — the CI `render-conf` run 34567473855 measured zero
+/// comparable pages on every container leg for this reason), and
+/// `canonicalize` cannot serve here: the output file does not exist yet (the
+/// container creates it), so a missing path is absolutized against the cwd.
+fn absolutize(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    Ok(cwd.join(path))
+}
+
+/// The two `-v` bind mounts of the pinned-container render plan: the input
+/// (must exist — canonicalized) read-only at `/in.pdf`, and the output
+/// (created by the container — absolutized, never relative) at `/out.img`.
+fn container_mounts(file: &Path, out: &Path) -> Result<(String, String), String> {
+    let mount_in = format!(
+        "{}:/in.pdf:ro",
+        file.canonicalize().map_err(|e| e.to_string())?.display()
+    );
+    let mount_out = format!("{}:/out.img", absolutize(out)?.display());
+    Ok((mount_in, mount_out))
+}
+
 /// The pinned-container render plan (see `xtask/oracles.toml`): the file is
 /// mounted read-only at `/in.pdf`, the output written to `/out.img`. The argv
 /// per tool mirrors the smoke-tested contracts in `oracle-images.yml` --
@@ -343,15 +382,14 @@ fn container_plan(
         ));
     }
     let pins = load_pins()?;
-    let pin = pins
-        .get(tool)
-        .ok_or_else(|| format!("{tool}: no [tool.{tool}] pin recorded in {ORACLES_TOML}"))?;
+    let pin = pins.get(pin_id(tool)).ok_or_else(|| {
+        format!(
+            "{tool}: no [tool.{}] pin recorded in {ORACLES_TOML}",
+            pin_id(tool)
+        )
+    })?;
     let image = image_ref(pin, tool)?;
-    let mount_in = format!(
-        "{}:/in.pdf:ro",
-        file.canonicalize().map_err(|e| e.to_string())?.display()
-    );
-    let mount_out = format!("{}:/out.img", out.display());
+    let (mount_in, mount_out) = container_mounts(file, out)?;
     let tool_args = match tool {
         "mupdf" | "mutool" => vec![
             "draw".to_string(),
@@ -402,7 +440,7 @@ fn container_plan(
 fn image_ref_cmd(tool: &str) -> Result<(), String> {
     let pins = load_pins()?;
     let pin = pins
-        .get(tool)
+        .get(pin_id(tool))
         .ok_or_else(|| format!("unknown oracle tool `{tool}`"))?;
     println!("{}", image_ref(pin, tool)?);
     Ok(())
@@ -413,7 +451,7 @@ fn check() -> Result<(), String> {
     let pins = load_pins()?;
     println!("oracle check (local-first; Docker only for CI pinning):");
     let display = |id: &str, local: String| {
-        let image = match pins.get(id) {
+        let image = match pins.get(pin_id(id)) {
             Some(p) if !p.digest.is_empty() => format!("{}@{}", p.image, p.digest),
             Some(p) if !p.version.is_empty() => {
                 format!("{}:{} (digest pending CI build)", p.image, p.version)
@@ -703,9 +741,25 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
     let out_dir = std::env::temp_dir().join("selis-oracle-cmp");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("{out_dir:?}: {e}"))?;
 
-    let selis_bin = find_local("selis")
-        .or_else(|| find_local("selis.exe"))
-        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
+    // Same resolution order as the sweep (CARGO_TARGET_DIR release/debug
+    // first): a workspace build elsewhere on the machine must not shadow the
+    // binary under test.
+    let selis_bin = {
+        let exe = if cfg!(windows) { "selis.exe" } else { "selis" };
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+            candidates.push(Path::new(&dir).join("release").join(exe));
+            candidates.push(Path::new(&dir).join("debug").join(exe));
+        }
+        candidates.push(Path::new("target").join("release").join(exe));
+        candidates.push(Path::new("target").join("debug").join(exe));
+        candidates
+            .into_iter()
+            .find(|c| c.is_file())
+            .ok_or_else(|| {
+                "selis binary not found — build it (cargo build --release -p selis-cli)".to_string()
+            })?
+    };
 
     let our_ppm = out_dir.join("our.ppm");
 

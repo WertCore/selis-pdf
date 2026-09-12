@@ -5,7 +5,7 @@
 //! output directory.  Text/HTML conversion is `selis extract`; `selis render`
 //! is the single-page case.
 
-use crate::render::{dim, write_ppm};
+use crate::render::write_ppm;
 use crate::{read_file, CliError, CliResult};
 use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_sandbox::{Budget, Surface};
@@ -44,11 +44,12 @@ pub(crate) fn run(
 
     let mut converted = 0usize;
     for page in first..=last {
-        let (w_pt, h_pt) = session
-            .page_size(page)
+        // The page view carries the canvas size and transform, honouring
+        // /Rotate (SL-2.RAST.12); convert renders at 72 DPI (1 px/pt).
+        let view = session
+            .page_view(page, 72.0)
             .ok_or_else(|| CliError(format!("page {page} has no media box")))?;
-        let w = dim(w_pt);
-        let h = dim(h_pt);
+        let (w, h) = (view.width, view.height);
         if w == 0 || h == 0 {
             return Err(CliError(format!("page {page} has zero area")));
         }
@@ -56,7 +57,7 @@ pub(crate) fn run(
             .ok_or_else(|| CliError(format!("cannot create {w}x{h} canvas")))?;
         let mut g = budget.guard_with(&clock, crate::runtime::token());
         session
-            .render_page(page, &mut backend, &budget, &mut g)
+            .render_page(page, &mut backend, view.ctm, &budget, &mut g)
             .map_err(|e| CliError(format!("render page {page}: {e}")))?;
         let file = format!("{output_dir}/page-{page}.ppm");
         write_ppm(&file, backend.pixmap().data(), w, h)?;

@@ -41,6 +41,16 @@ deny = [
 version = 2
 unmaintained = "all"
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin-style timing side channel in `rsa` decryption
+    # (v1.5/OAEP), unfixed upstream. Accepted for SL-1.ENC.03: the operation is
+    # a *local* decryption of the user's own document with the user's own key
+    # (no remote oracle surface) — the same posture as every local PDF tool.
+    # A multi-tenant `Surface::Server` deployment must revisit before shipping
+    # public-key decryption as a service. Full argument and sign-off item:
+    # pdf-plan/31-ENC03-DESIGN-NOTE.md §6.1. Re-review when `rsa` ships a fix.
+    "RUSTSEC-2023-0071",
+]
 
 [sources]
 unknown-registry = "deny"

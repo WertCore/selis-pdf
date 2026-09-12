@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Guest linear-memory cap in bytes (the growth ceiling).
-const GUEST_MEMORY_CAP: usize = 512 * 1024 * 1024;
+pub(crate) const GUEST_MEMORY_CAP: usize = 512 * 1024 * 1024;
 
 /// One page's native-vs-guest measurement.
 struct PageResult {
@@ -50,8 +50,8 @@ struct PageResult {
 }
 
 /// The host state behind the wasmtime store (just the memory limiter).
-struct HostState {
-    limiter: wasmtime::StoreLimits,
+pub(crate) struct HostState {
+    pub(crate) limiter: wasmtime::StoreLimits,
 }
 
 /// Define the wasm-bindgen runtime shims the driver links (ADR-P0011:
@@ -63,7 +63,7 @@ struct HostState {
 /// for entropy, and rendering does not (proven per run: any call would trap
 /// loudly below instead of rendering). Any import outside this closed set
 /// fails loudly: the driver must not grow silent host dependencies.
-fn define_shims(
+pub(crate) fn define_shims(
     linker: &mut wasmtime::Linker<HostState>,
     module: &wasmtime::Module,
 ) -> Result<(), String> {
@@ -200,7 +200,7 @@ pub fn run(set: &Path, repeats: usize, out: &Path) -> Result<(), String> {
 
 /// Build the wasm driver and return the `.wasm` artifact path (parsed from
 /// cargo's JSON output, not guessed from the target dir).
-fn build_driver() -> Result<PathBuf, String> {
+pub(crate) fn build_driver() -> Result<PathBuf, String> {
     let cargo = resolve_cargo()?;
     let mut cmd = std::process::Command::new(&cargo);
     cmd.args([
@@ -281,15 +281,15 @@ fn measure_native(src: &[u8], file: &Path, repeats: usize) -> Result<(f64, Strin
     let clock = selis_sandbox::shell_clock();
     let session = selis_pdf_engine::Session::open(src.to_vec(), &budget, &clock)
         .map_err(|e| format!("{}: open: {e}", file.display()))?;
-    let (w_pt, h_pt) = session
-        .page_size(0)
+    let view = session
+        .page_view(0, 72.0)
         .ok_or_else(|| format!("{}: no media box", file.display()))?;
-    let (w, h) = (dim(w_pt)?, dim(h_pt)?);
+    let (w, h) = (view.width, view.height);
     let mut backend = selis_pdf_engine::TinySkiaBackend::new(w, h)
         .ok_or_else(|| format!("{}: cannot create {w}x{h} canvas", file.display()))?;
     let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
     session
-        .render_page(0, &mut backend, &budget, &mut g)
+        .render_page(0, &mut backend, view.ctm, &budget, &mut g)
         .map_err(|e| format!("{}: warm-up: {e}", file.display()))?;
     let mut samples: Vec<f64> = Vec::new();
     let mut sum = String::new();
@@ -299,7 +299,7 @@ fn measure_native(src: &[u8], file: &Path, repeats: usize) -> Result<(f64, Strin
         let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
         let t = Instant::now();
         session
-            .render_page(0, &mut backend, &budget, &mut g)
+            .render_page(0, &mut backend, view.ctm, &budget, &mut g)
             .map_err(|e| format!("{}: render: {e}", file.display()))?;
         samples.push(t.elapsed().as_secs_f64() * 1000.0);
         sum = checksum(backend.pixmap().data());
@@ -434,23 +434,9 @@ fn median_ms(mut samples: Vec<f64>) -> f64 {
 }
 
 /// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
-fn dim(v: f64) -> Result<u32, String> {
-    if !v.is_finite() || v < 0.0 {
-        return Err("zero-area canvas".to_string());
-    }
-    let c = v.ceil();
-    if c < 1.0 || c >= f64::from(u32::MAX) {
-        return Err("canvas too large".to_string());
-    }
-    // c is in [1, u32::MAX): the float-to-int cast below is exact, and std
-    // offers no fallible f64→u32 conversion, so the pedantic cast lints are
-    // allowed here with this justification.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    u32::try_from(c as u64).map_err(|_| "canvas too large".to_string())
-}
 
 /// A wrapping FNV-1a hash of the pixmap (the cross-arch identity check).
-fn checksum(pixels: &[u8]) -> String {
+pub(crate) fn checksum(pixels: &[u8]) -> String {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for chunk in pixels.chunks(1024) {
         for &b in chunk {

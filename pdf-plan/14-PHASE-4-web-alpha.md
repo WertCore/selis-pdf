@@ -13,12 +13,21 @@ proves the engine in the harshest environment, and it costs nothing to distribut
 
 ## 4.WASM — The WASM binding
 
-- [ ] **SL-4.WASM.01 — `selis-pdf-wasm` surface + Worker protocol** · owner: AI+
+- [x] **SL-4.WASM.01 — `selis-pdf-wasm` surface + Worker protocol** · owner: AI+
   - **Do:** Implement `24-BINDINGS-SPEC.md §2`: a request/response protocol over `postMessage`
     with transferable buffers, correlation ids, cancellation, and progress. The engine lives in a
-    Worker; the main thread holds only handles.
+    Worker; the main thread holds only handles. *(Done in Rust: schema v1 (`selis-pdf-wasm::protocol`,
+    ADR-P0042), the `selis_dispatch` cdylib export with copy-in/copy-out buffer discipline, the
+    document registry + budgeted ops, pre-cancel + exported cancel slot, progress slot, ERR.03
+    trampoline at the worker entry. The JS Worker file and the Vitest leg are UI.01 scope.)*
   - **DoD:** Protocol conformance tests in Vitest against a real worker; every message type
-    round-trips; cancellation mid-render is observed within 50 ms.
+    round-trips; cancellation mid-render is observed within 50 ms. *(Rust-side conformance runs in
+    CI (`wasm-protocol` job: `cargo xtask wasm-protocol` — every message round-trips over the
+    compiled guest on wasmtime, guest==native render checksums, budget exhaustion and
+    cancellation cross the boundary as typed codes, malformed messages contained; in-crate tests
+    prove deterministic mid-render cancellation at a budget tick). The Vitest/real-worker leg
+    lands with the JS shell (UI.01); the wire schema and export contract it must implement are
+    pinned by ADR-P0042.)*
 - [ ] **SL-4.WASM.02 — Code splitting and lazy chunks** · deps: WASM.01 · owner: AI+
   - **Do:** Split the WASM into: core (COS + render + text), and lazily-loaded chunks for OCR,
     convert, JPX, CJK fonts, and (later) the editor. Chunks are separate modules, not one binary

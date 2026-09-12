@@ -394,6 +394,15 @@ user_msg = "This PDF is already password-protected. Remove the password with `se
 retryable = false
 doc_state = "NotLoaded"
 
+[[code]]
+id = 1807
+name = "RECIPIENT_NO_MATCH"
+kind = "Auth"
+meaning = "The supplied public-key credential did not open any recipient of the PKCS#7 /Encrypt dictionary (SL-1.ENC.03)."
+user_msg = "The supplied certificate or private key does not open this PDF."
+retryable = true
+doc_state = "NotLoaded"
+
 # ---------------------------------------------------------------------------
 # 2000–2299 — Fonts and text
 # ---------------------------------------------------------------------------
@@ -771,3 +780,12 @@ meaning = "The codec sandbox host itself failed to initialise or operate."
 user_msg = "Selis hit an internal error in the codec sandbox. Your document was not modified."
 retryable = false
 doc_state = "Loaded"
+
+[[code]]
+id = 6017
+name = "BINDING_UNSUPPORTED_OP"
+kind = "Unsupported"
+meaning = "A request crossing a binding boundary named an operation, source adapter, or protocol version this engine build does not provide (a capability or version mismatch, not a malformed request)."
+user_msg = "That action is not available in this version of Selis."
+retryable = false
+doc_state = "Unchanged"

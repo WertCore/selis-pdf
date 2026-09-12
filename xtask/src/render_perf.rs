@@ -204,11 +204,11 @@ fn measure_page(
             session.len()
         ));
     }
-    let (w_pt, h_pt) = session
-        .page_size(0)
+    let dpi_f = if dpi == 0 { 72.0 } else { f64::from(dpi) };
+    let view = session
+        .page_view(0, dpi_f)
         .ok_or_else(|| format!("{}: page 0 has no media box", file.display()))?;
-    let scale = if dpi == 0 { 1.0 } else { f64::from(dpi) / 72.0 };
-    let (w, h) = (dim(w_pt * scale), dim(h_pt * scale));
+    let (w, h) = (view.width, view.height);
     if w == 0 || h == 0 {
         return Err(format!("{}: zero-area canvas", file.display()));
     }
@@ -228,7 +228,7 @@ fn measure_page(
         .ok_or_else(|| format!("{stem}: cannot create {w}x{h} canvas"))?;
     let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
     session
-        .render_page(0, &mut backend, &budget, &mut g)
+        .render_page(0, &mut backend, view.ctm, &budget, &mut g)
         .map_err(|e| format!("{}: warm-up render: {e}", file.display()))?;
     let mut samples: Vec<f64> = Vec::new();
     let mut checksums: Vec<String> = Vec::new();
@@ -240,7 +240,7 @@ fn measure_page(
         let mut stats = selis_pdf_engine::RenderStats::default();
         let t = Instant::now();
         session
-            .render_page_with_stats(0, &mut backend, &budget, &mut g, &mut stats)
+            .render_page_with_stats(0, &mut backend, view.ctm, &budget, &mut g, &mut stats)
             .map_err(|e| format!("{}: render: {e}", file.display()))?;
         samples.push(t.elapsed().as_secs_f64() * 1000.0);
         checksums.push(checksum(backend.pixmap().data()));
@@ -358,16 +358,6 @@ fn checksum(pixels: &[u8]) -> String {
 }
 
 /// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
-fn dim(v: f64) -> u32 {
-    if !v.is_finite() || v < 0.0 {
-        return 0;
-    }
-    let c = v.ceil();
-    if c >= f64::from(u32::MAX) {
-        return u32::MAX;
-    }
-    c as u32
-}
 
 /// The cost axis from the file stem (`text-heavy` → `text`).
 fn axis_of(stem: &str) -> &str {

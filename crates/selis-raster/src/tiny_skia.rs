@@ -280,7 +280,10 @@ impl Backend for TinySkiaBackend {
             placement.rect.width() as f32 / image.width as f32,
             placement.rect.height() as f32 / image.height as f32,
         )
-        .pre_translate(placement.rect.x0 as f32, placement.rect.y0 as f32);
+        // Translate AFTER scaling: the rect origin is in device pixels, and
+        // `pre_translate` would scale it too (an image at x0=50pt drew at
+        // 50×scale — off-canvas at high DPI, SL-2.RAST.13).
+        .post_translate(placement.rect.x0 as f32, placement.rect.y0 as f32);
         let paint = tiny_skia::PixmapPaint {
             blend_mode: to_ts_blend(self.blend),
             ..PixmapPaint::default()

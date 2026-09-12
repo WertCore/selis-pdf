@@ -136,6 +136,11 @@ p99 = 68.4 (n = 3,747).
   filed bug clusters (p99 68.4 vs pairs' 29.3–39.0).
 * Re-baselining used calibration data only; per §5, tolerances are never adjusted because a build
   is red.
+* **CI confirmation (2026-09-11, SL-2.CONF.02):** run 34567473855 completed green but measured 0
+  comparable pages (relative docker `-v` output mounts + a `mutool`-vs-`mupdf` pin lookup miss;
+  both fixed on the CONF.02 branch with regression tests). The matrix stands on the local legs;
+  the pinned-identity confirmation re-runs post-merge. Full record in `12-PHASE-2-render.md`
+  SL-2.CONF.02.
 
 ---
 

@@ -373,7 +373,24 @@ fn materialize_page(
         Some(Obj::Ref(r)) => resolve_ref(view, src, *r, budget, g, key).ok(),
         other => other.cloned(),
     };
-    let contents = dict_get(node, b"Contents").and_then(contents_refs);
+    // `/Contents` may be an indirect reference to an *array* of content-stream
+    // references (ISO 32000-2 §7.7.3.3: "an array or a reference to one");
+    // writers emit both shapes. Dereference the reference here so the page
+    // model always carries content-stream refs — a bare ref to the array
+    // would surface as a page with no content (a silent blank render).
+    let contents = dict_get(node, b"Contents").and_then(|o| match o {
+        Obj::Ref(r) => {
+            let resolved = resolve_ref(view, src, *r, budget, g, key).ok();
+            match resolved.as_ref() {
+                Some(Obj::Array(_)) => resolved.as_ref().and_then(contents_refs),
+                // A reference to a single content stream keeps its ref; an
+                // unresolvable ref stays as the ref (a typed read failure at
+                // content time, not a silent empty page).
+                _ => Some(vec![*r]),
+            }
+        }
+        other => contents_refs(other),
+    });
     Ok(Page {
         num,
         media_box,
@@ -573,6 +590,65 @@ mod tests {
         );
         let xobjects = dict_get(resources, b"XObject").expect("XObject dict");
         assert!(dict_get(xobjects, b"Im7").is_some());
+    }
+
+    /// A `/Contents` that is an indirect reference to an ARRAY of stream refs
+    /// must dereference to the array's items (ISO 32000-2 §7.7.3.3): keeping
+    /// the bare array ref surfaced the page as contentless — a silent blank
+    /// render (SL-2.RAST.13).
+    #[test]
+    fn indirect_contents_array_dereferences_to_stream_refs() {
+        let mut out = Vec::new();
+        let mut entries = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let off = out.len() as u64;
+        out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        entries.push((1, off));
+        // Object 2: page tree root.
+        let off = out.len() as u64;
+        out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        entries.push((2, off));
+        // Object 3: a page whose /Contents is a reference to object 6.
+        let off = out.len() as u64;
+        out.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 6 0 R >>\nendobj\n",
+        );
+        entries.push((3, off));
+        // Object 6: the array of content-stream refs.
+        let off = out.len() as u64;
+        out.extend_from_slice(b"6 0 obj\n[4 0 R 5 0 R]\nendobj\n");
+        entries.push((6, off));
+        // Objects 4 and 5: empty content streams.
+        let off = out.len() as u64;
+        out.extend_from_slice(b"4 0 obj\n<< /Length 0 >>\nstream\nendstream\nendobj\n");
+        entries.push((4, off));
+        let off = out.len() as u64;
+        out.extend_from_slice(b"5 0 obj\n<< /Length 0 >>\nstream\nendstream\nendobj\n");
+        entries.push((5, off));
+
+        let mut g = guard();
+        let budget = Budget::unlimited();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, off) in &entries {
+            xref.insert(
+                *num,
+                XrefEntry::InUse {
+                    offset: *off,
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        let doc = Doc::from_single_revision(xref, trailer);
+        let document = Document::resolve(&doc, &out, &budget, &mut g, None).expect("resolve");
+        assert_eq!(document.len(), 1);
+        assert_eq!(
+            document.pages[0].contents,
+            Some(vec![Ref::new(4, 0), Ref::new(5, 0)])
+        );
     }
 
     /// A cyclic page tree must terminate with OBJ_CYCLE, not hang.

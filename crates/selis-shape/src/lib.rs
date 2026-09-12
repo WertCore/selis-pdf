@@ -146,11 +146,95 @@ fn script_tag(script: unicode_script::Script) -> u32 {
     tag
 }
 
+/// An ISO 15924 script tag as a `u32` (e.g. `iso_tag(b"Deva")`).
+const fn iso_tag(letters: &[u8; 4]) -> u32 {
+    u32::from_be_bytes(*letters)
+}
+
+/// The swash script for an ISO 15924 tag (SL-3.SHAPE.04).
+///
+/// swash's `Script::from_opentype` only knows OpenType tags (`dev2`, not
+/// `Deva` — not even `Latn`), so passing [`ShapingParams::script`] through
+/// directly fell back to Latin for *every* script: complex shaping silently
+/// never engaged (no reordering, no conjuncts, no joining). The map below
+/// routes each ISO tag to its swash script, whose `to_opentype` then selects
+/// the font's `dev2`-style lookups; anything unmapped keeps the old
+/// behaviour (OpenType tag, else Latin).
+fn script_from_iso(tag: u32) -> swash::text::Script {
+    use swash::text::Script as S;
+    match tag {
+        t if t == iso_tag(b"Latn") => S::Latin,
+        t if t == iso_tag(b"Arab") => S::Arabic,
+        t if t == iso_tag(b"Hebr") => S::Hebrew,
+        t if t == iso_tag(b"Deva") => S::Devanagari,
+        t if t == iso_tag(b"Beng") => S::Bengali,
+        t if t == iso_tag(b"Taml") => S::Tamil,
+        t if t == iso_tag(b"Telu") => S::Telugu,
+        t if t == iso_tag(b"Knda") => S::Kannada,
+        t if t == iso_tag(b"Mlym") => S::Malayalam,
+        t if t == iso_tag(b"Gujr") => S::Gujarati,
+        t if t == iso_tag(b"Guru") => S::Gurmukhi,
+        t if t == iso_tag(b"Orya") => S::Oriya,
+        t if t == iso_tag(b"Sinh") => S::Sinhala,
+        t if t == iso_tag(b"Grek") => S::Greek,
+        t if t == iso_tag(b"Cyrl") => S::Cyrillic,
+        t if t == iso_tag(b"Armn") => S::Armenian,
+        t if t == iso_tag(b"Geor") => S::Georgian,
+        t if t == iso_tag(b"Thai") => S::Thai,
+        t if t == iso_tag(b"Mymr") => S::Myanmar,
+        t if t == iso_tag(b"Khmr") => S::Khmer,
+        t if t == iso_tag(b"Copt") => S::Coptic,
+        t if t == iso_tag(b"Ethi") => S::Ethiopic,
+        t if t == iso_tag(b"Tibt") => S::Tibetan,
+        t if t == iso_tag(b"Thaa") => S::Thaana,
+        _ => swash::text::Script::from_opentype(tag).unwrap_or(S::Latin),
+    }
+}
+
 /// The `swash` shaping backend (SL-3.SHAPE.01).
 pub struct SwashShaper;
 
 impl Shaper for SwashShaper {
     fn shape(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
+        // swash 0.2.10 has an open-ended family of arithmetic-overflow
+        // panics reachable from hostile font data (fuzzer-found,
+        // SL-1.ROB.02 — no fixed swash release exists): zero long-metric
+        // counts into `xmtx::advance`, i16::MIN descenders negated in
+        // `Metrics::fill`, overflowing cmap idDelta arithmetic, and more
+        // of the same kind. Two layers contain it:
+        //
+        // 1. The `swash_metrics_degenerate` predicate below mirrors
+        //    swash's own lookups to reject the known metric-level
+        //    degenerate states up front (precise diagnostics, no unwind
+        //    cost).
+        // 2. `catch_unwind` backstops everything else swash can panic on,
+        //    turning it into a typed error. libFuzzer would otherwise
+        //    abort the whole campaign leg on the first such input, while
+        //    in production the same input would only panic under
+        //    overflow checks (which release builds do not enable) — the
+        //    containment is strictly a robustness upgrade.
+        if swash_metrics_degenerate(params.font_data) {
+            return Err(err!(
+                Code::ShapeFont,
+                during = "shape",
+                detail = "font metrics unusable for swash (malformed sfnt directory, zero hmtx count, or i16::MIN descender)"
+            ));
+        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.shape_with_swash(params)
+        })) {
+            Ok(result) => result,
+            Err(_) => Err(err!(
+                Code::ShapeFont,
+                during = "shape",
+                detail = "swash panicked on malformed font (contained)"
+            )),
+        }
+    }
+}
+
+impl SwashShaper {
+    fn shape_with_swash(&self, params: &ShapingParams<'_>) -> Result<ShapedBuffer> {
         let font = FontRef::from_index(params.font_data, 0).ok_or_else(|| {
             err!(
                 Code::ShapeFont,
@@ -160,10 +244,7 @@ impl Shaper for SwashShaper {
         })?;
         let ppem = params.font_size; // swash's size is pixels per em = font size
 
-        // The ISO 15924 tag is directly a swash OpenType tag; unknown scripts
-        // fall back to Latin.
-        let script =
-            swash::text::Script::from_opentype(params.script).unwrap_or(swash::text::Script::Latin);
+        let script = script_from_iso(params.script);
         let lang = params.language.and_then(swash::text::Language::parse);
 
         let mut ctx = ShapeContext::new();
@@ -194,6 +275,109 @@ impl Shaper for SwashShaper {
 
         Ok(ShapedBuffer { glyphs, width })
     }
+}
+
+/// Reports whether swash 0.2.10 would shape this face with a zero
+/// long-metric count — the exact precondition of its `xmtx::advance`
+/// underflow panic.
+///
+/// Mirrors swash's `RawFont::table_range` bit for bit: a *binary* search
+/// over the table directory (which only ever finds records in a
+/// tag-sorted directory, so unsorted directories hide tables from swash
+/// exactly as they hide them here), the same record bounds handling, and
+/// the same `numberOfHMetrics = read(34).unwrap_or(0)` of the table
+/// bytes. One level of `ttcf` indirection for face 0, as in
+/// `swash::internal::raw_data::offset`. No arithmetic on font-derived
+/// values — every operation is `checked_*` and every read bounds-checked.
+fn swash_metrics_degenerate(font_data: &[u8]) -> bool {
+    let face = if font_data.get(0..4) == Some(&b"ttcf"[..]) {
+        match read_u32(font_data, 12) {
+            Some(off) => match font_data.get(off as usize..) {
+                Some(f) => f,
+                None => return false,
+            },
+            None => return false,
+        }
+    } else {
+        font_data
+    };
+    // swash's `MetricsProxy::from_font` discards `fill`'s `Option` and
+    // keeps the zero-initialized `hmtx_count` whenever `head` or `maxp`
+    // is unresolvable — that alone is the degenerate state.
+    const HEAD: u32 = u32::from_be_bytes(*b"head");
+    const MAXP: u32 = u32::from_be_bytes(*b"maxp");
+    if swash_table_data(face, HEAD).is_none() || swash_table_data(face, MAXP).is_none() {
+        return true;
+    }
+    const HHEA: u32 = u32::from_be_bytes(*b"hhea");
+    const VHEA: u32 = u32::from_be_bytes(*b"vhea");
+    const OS2: u32 = u32::from_be_bytes(*b"OS/2");
+    const I16_MIN: u16 = 0x8000;
+    // `xmtx::advance` underflows on a zero long-metric count.
+    if let Some(hhea) = swash_table_data(face, HHEA) {
+        if read_u16(hhea, 34).unwrap_or(0) == 0 || read_u16(hhea, 6) == Some(I16_MIN) {
+            return true;
+        }
+    }
+    if let Some(vhea) = swash_table_data(face, VHEA) {
+        if read_u16(vhea, 34).unwrap_or(0) == 0 || read_u16(vhea, 6) == Some(I16_MIN) {
+            return true;
+        }
+    }
+    // `fill` negates descenders into i16 fields; -32768 overflows
+    // (hhea/vhea unconditionally, OS/2's typographic descender when the
+    // USE_TYPO_METRICS fsSelection bit is set — swash reads fsSelection
+    // at 62 and sTypoDescender at 70).
+    if let Some(os2) = swash_table_data(face, OS2) {
+        if let Some(flags) = read_u16(os2, 62) {
+            if flags & 0x0080 != 0 && read_u16(os2, 70) == Some(I16_MIN) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mirrors swash's `RawFont::table_range`: binary search for `tag` over
+/// the directory records of `face`, returning the table bytes exactly
+/// when swash would find them (a directory that is not sorted by tag, or
+/// a record/offset pair that does not resolve inside the file, makes the
+/// table unfindable — for swash and here alike).
+fn swash_table_data(face: &[u8], tag: u32) -> Option<&[u8]> {
+    let len = usize::from(read_u16(face, 4)?);
+    let (mut l, mut h) = (0usize, len);
+    while l < h {
+        let i = l.checked_add(h)?.checked_div(2)?;
+        let rec = 12usize.checked_add(i.checked_mul(16)?)?;
+        let r = face.get(rec..rec.checked_add(16)?)?;
+        let tag_bytes: [u8; 4] = r.get(0..4)?.try_into().ok()?;
+        let table_tag = u32::from_be_bytes(tag_bytes);
+        if tag < table_tag {
+            h = i;
+        } else if tag > table_tag {
+            l = i.checked_add(1)?;
+        } else {
+            let start = read_u32(r, 8)? as usize;
+            let end = start.checked_add(read_u32(r, 12)? as usize)?;
+            return face.get(start..end);
+        }
+    }
+    None
+}
+
+fn read_u16(data: &[u8], off: usize) -> Option<u16> {
+    let b = data.get(off..off.checked_add(2)?)?;
+    Some(u16::from_be_bytes([*b.first()?, *b.get(1)?]))
+}
+
+fn read_u32(data: &[u8], off: usize) -> Option<u32> {
+    let b = data.get(off..off.checked_add(4)?)?;
+    Some(u32::from_be_bytes([
+        *b.first()?,
+        *b.get(1)?,
+        *b.get(2)?,
+        *b.get(3)?,
+    ]))
 }
 
 #[cfg(test)]
@@ -286,5 +470,33 @@ mod tests {
             // The cluster byte offset is within the 10-byte input.
             assert!(g.cluster < 10);
         }
+    }
+
+    /// SL-3.SHAPE.04: ISO 15924 tags route to the swash script whose
+    /// `to_opentype` selects the font's lookups — `Deva` must reach `dev2`,
+    /// not fall back to Latin (which silently disabled complex shaping).
+    #[test]
+    fn iso_tags_route_to_opentype_scripts() {
+        use swash::text::Script as S;
+        assert_eq!(script_from_iso(iso_tag(b"Deva")), S::Devanagari);
+        assert_eq!(script_from_iso(iso_tag(b"Beng")), S::Bengali);
+        assert_eq!(script_from_iso(iso_tag(b"Taml")), S::Tamil);
+        assert_eq!(script_from_iso(iso_tag(b"Arab")), S::Arabic);
+        assert_eq!(script_from_iso(iso_tag(b"Hebr")), S::Hebrew);
+        assert_eq!(script_from_iso(iso_tag(b"Latn")), S::Latin);
+        assert_eq!(
+            script_from_iso(iso_tag(b"Deva")).to_opentype(),
+            u32::from_be_bytes(*b"dev2")
+        );
+        assert_eq!(
+            script_from_iso(iso_tag(b"Beng")).to_opentype(),
+            u32::from_be_bytes(*b"bng2")
+        );
+        assert_eq!(
+            script_from_iso(iso_tag(b"Taml")).to_opentype(),
+            u32::from_be_bytes(*b"tml2")
+        );
+        // Unknown tags keep the old behaviour: OpenType tag, else Latin.
+        assert_eq!(script_from_iso(0x5A7A7A5A), S::Latin);
     }
 }

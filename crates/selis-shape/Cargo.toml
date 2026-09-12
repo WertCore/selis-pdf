@@ -19,3 +19,8 @@ swash = { workspace = true }
 unicode-script = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-linebreak = { workspace = true }
+
+[dev-dependencies]
+# Font introspection for shaping expectations (cmap lookups, design
+# advances) — test-only, never in the shaping path (SL-3.SHAPE.04).
+skrifa = { workspace = true }
