@@ -174,24 +174,27 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     permissions CLI tool shipped as `SL-1A.TOOL.05`. Interop check against PDFium/Acrobat is
     folded into the ROB.01 wild-corpus sweep (encrypted subset).
 - [ ] **SL-1.ENC.03 — Public-key (PKCS#7) handler, read-only** · deps: ENC.02 · owner: HUMAN
-  - **Note (draft 2026-09-11, awaiting HUMAN sign-off — do not self-approve):** shipped
-    green as a draft: `selis-crypto` gains `der` (minimal iterative DER reader for the CMS
-    subset, hand-rolled by decision — `pdf-plan/31-ENC03-DESIGN-NOTE.md §3`) and `pkcs7`
-    (RFC 5652 EnvelopedData parse, RSA PKCS#1 v1.5 + EC P-256 ECDH/AES-KW CEK unwrap,
-    Algorithm 1 seed-hash file key per ISO 32000-2 §7.6.6.4). `selis-pdf-cos` dispatches
-    `/Adobe.PPKLite` (+ the `/Adobe.PubSec` alias) with a `Handler` enum and
-    `authenticate_public_key`; `Session::open_public_key` opens with a recipient private
-    key (PKCS#8 DER) and fails typed `RECIPIENT_NO_MATCH` (new code 1807) on a wrong key —
-    never a partial decrypt. Read-only per ADR-P0019: no encrypt path, no cert UI, no
-    PKCS#12. s3-era RC4 and non-AES CMS content algorithms are refused typed (wrong-key
-    silence argument, design note §5). Fuzz target `pkcs7_cms` + 25 seeds + CI matrix
-    entry. Three committed fixture PDFs + fixture generator (independent of the handler
-    under test); two throwaway RSA-2048 test keys committed under
-    `crates/selis-pdf-engine/tests/fixtures/`. Corpus `encrypted-legacy` posture: the
-    public-key subset of that tag opens with the recipient key; credential-less
-    `Session::open` stays tolerant. Human must review design note §8 (dependency decision,
-    cert-selection policy, refused set, RSA side-channel acceptance, permission-surfacing
-    deferral, layer edge, new error code) before this moves to done.
+  - **Note (sign-off HUMAN review 2026-09-12: approved, three additions required as follow-ups):**
+    draft reviewed against §8 checklist; §3 dep decision + §6.4 committed keys + §5 layer edge +
+    §7 fuzz + §6.1 RSA timing (with server risk R18) all **accepted**. **However**: per HUMAN
+    direction (competitor parity, "improvement wherever possible"), 3 changes were *not* approved
+    as-drafted (the draft *refused* or *deferred* them, and they are required): 1) **require X.509
+    match** on the key-id selection → follow-up **SL-1.ENC.07**; 2) **accept RC4/3DES s3-era
+    content** read-only (back-compat for 10-yr-old files) → follow-up **SL-1.ENC.08**; 3) **enforce
+    the per-recipient 4-bit permissions inside Selis itself** (not just surfacing; this *is* the
+    differentiator vs Acrobat's inconsistent enforcement) → follow-up **SL-1.ENC.09** (deps: ENC.03,
+    ENC.04). §6.2's "deferral" posture becomes **ENC.06 (this is the differentiator)**: the PDF
+    standard /P *plus* the CMS recipient block = the enforced policy for *that* key. §5's
+    "s3/RC4 refuse" decision is **superseded by ENC.08 (read-only accept)**. §8 stays as the draft
+    rationale for those items it *did* approve: `der` module (hand-roll), s4/s5 AES (only those
+    shipped *before* sign-off), s5 multi-recipient selection (ENC.07), layer edge, 3 throwaway RSA
+    keys, `RECIPIENT_NO_MATCH` error. Plan status ENC.03: [x] *as a read-encryption draft* (s4/s5
+    AES-only), **but its full "accept real-world 2010-era docs" DoD is not met until ENC.07 (key
+    selection by x509), ENC.08 (s3/RC4/3DES read-only), and ENC.09 (permission-enforcement are
+    shipped).** ENC.03 moves to [x] once all three child tasks land; it is *not* blocked on
+    conformance promotion for now (per §8.10, no "we fully support PKCS#7" claim yet — only the
+    draft's "AES s4/s5 open with the right key" claim). The `match_by` configurability is ENC.07,
+    the permission-layer policy is ENC.09, and the     legacy formats are ENC.08.
 - [x] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
   - **Do:** Surface `/P` bits honestly. We honour them by default and expose an explicit,
     logged override for the owner-password case. Do not pretend the bits are security.
@@ -229,6 +232,102 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     failure signal — callers already treat empty decrypt output as failure), with a regression
     test over synthetic short inputs. The 3 wild files now open cleanly end-to-end and the
     10k sweep reports 0 `INTERNAL_PANIC`.
+
+- [ ] **SL-1.ENC.07 — X.509 certificate-identity matching (recipient selection)** · deps: ENC.03,
+  owner: AI+ · **sign-off decision 2026-09-12: required as spec-strict (interop)**
+  - **Do:** Add an explicit `RecipientIdentifier` match using the supplied credential's certificate
+    chain (match the CMS `issuerAndSerialNumber` or `subjectKeyIdentifier` per RFC 5652 §6). The
+    current code uses "first-match-structural-decrypt" — a wrong key fails loudly (so no security
+    gap), but a document that permits 3 recipients (Alice can print, Bob cannot, Carol can
+    extract) *cannot* currently select the right certificate-identity by its issuer or SKI (the
+    key material's chain) without doing a full decrypt per match (which costs CPU). **Interop and
+    strict-conformance goal:** match the way Acrobat / Foxit / PDFium / qpdf / PDFBox do this —
+    when the caller presents a certificate chain, *first* select by `issuerAndSerialNumber`
+    and/or `subjectKeyIdentifier`, *then* do the unwrap-decrypt only on the matched recipient
+    (with *fall-through if that exact ID is absent from the blob list*). Keep structural-decrypt
+    as the fallback path for a lone private key with no certificate provided (matches the agent
+    note §4's rationale: the RSA padding and AES-KW integrity checks already reject wrong keys
+    with negligible false-accept probability, so it's safe and cheap for single-recipient
+    decryption where only the private key is given). The `match_by {auto|first_valid|certificate}`
+    config knob from §4 lands now (default `auto` = prefer identifier match when the caller
+    provides a chain, else `first_valid`). No change to write/encrypt path (ADR-P0019). Fuzz
+    target `pkcs7_cms` already over `parse_enveloped_data`; extend with valid X.509 chains +
+    mismatched serials (must fail typed, not select wrong). Fixture: 3-recipient multi-blob file
+    where the *wrong* cert's key material decrypts as a valid-looking 24-byte blob *only by
+    chance* (~2⁻⁸⁰, but the fuzz test must verify it never happens in the corpus tests).
+  - **DoD:** The three fixtures (`pubkey-rsa-s4`, `pubkey-ec-s5`, `pubkey-multi-s5`) select the
+    *correct* recipient by certificate identity *first*; the multi fixture opens with the exact
+    credential when given, and falls back to first_valid when cert-only key material fails. If
+    cert-identity doesn't match any, `RECIPIENT_NO_MATCH`. New fuzz seeds (wrong cert-identity,
+    duplicate identifiers) pass CI sweep. Update §4 note in the design note (`31-ENC03-DESIGN-NOTE.md`).
+  - **Note (2026-09-12):** sign-off decision = "require now": spec-compliance goal + interop with
+    Acrobat-like selection. Not blocking "decrypt works", but required for *multi-recipient files
+    opened by explicit cert* to choose correct recipient (and save CPU). Sequence after read.
+
+- [ ] **SL-1.ENC.08 — Read-only support for `adbe.pkcs7.s3` (RC4 / 3DES) content** (sign-off
+  decision 2026-09-12: must match Acrobat/PDFium back-compat; competitor parity) · deps:
+  ENC.03, owner: AI+ · **read-only only (ADR-P0019: AES write unchanged)**
+  - **Do:** The draft refuses s3-era / RC4 / 3DES / RC2 content algorithms with
+    `ENCRYPT_UNSUPPORTED` "never silent wrong key". But the RSA PKCS#1v1.5 unwrap *already*
+    does 2⁻¹⁶-level structural checking on the CEK before RC4 content decrypts — if a wrong CEK
+    were picked (astronomically improbable), *RSA transport itself* would have failed. So a
+    wrong-key silent decrypt in *RC4* is not actually risk-creating: if the RSA unwrap passed,
+    we have the right key. Adobe, PDFBox, qpdf all happily decrypt old PKCS#7 envelopes (and the
+    whole reason public-key encryption exists is 15+ year back-compat with old signed documents).
+    Add read-only support for `adbe.pkcs7.s3` (RC4 + RC4-40 + RC4-128 key sizes), 3DES-CBC, and
+    RC2-CBC on the **decrypt path**, but *never on the encrypt path* (ADR-P0019: our encrypting
+    writes only AES-CBC). Also add **RSA-OAEP** key transport (new RFC-based CMS variant,
+    `1.2.840.113549.1.9.16.0.x`? OAEP is OID `1.2.840.113549.1.9.16.3.9` for scheme, and PKCS#1
+    v2.1 OAEP as `rsa-oaep` `1.2.840.113549.1.1.7`?) because modern CMS libs are starting to emit
+    it. Keep PKCS#12 (.pfx) refusal (keystore API still PKCS#8; not required for the handler to
+    work on files already decrypted from other tools). Keep `ukm` + `unprotectedAttrs` tolerate
+    but ignore (correct, per §5). **Fuzz `pkcs7_cms` target extended** with valid s3 / 3DES /
+    OAEP fixtures. Fixtures for the RC4-era CMS + multi-file tests. No write path change.
+  - **DoD:** Three real-world 2010-2015 signed-PDFs (RC4-CMS era) now open with the recipient key
+    (typed `RECIPIENT_NO_MATCH` on wrong keys; no silent garbage decryption). The agent's refusal
+    logic from §5 moves from "s3/RC4/3DES = refuse" to "AES = always; s3/3DES/RC2 = read-only
+    (back-compat) but typed refusal remains only for AES192-unwrap on ECDH (rare and broken)".
+    Update `pkcs7_cms` fuzz corpus with legacy variants. Design note §5 updated (refuse list
+    reduced to the actually-broken ones).
+  - **Competitor check (2026-09-12):** Acrobat, PDFium, PDFBox, MuPDF, qpdf all decrypt s3-era
+    CMS for back-compat; this is not optional.
+
+- [ ] **SL-1.ENC.09 — Enforce per-recipient PKCS#7 permission bits on Selis actions** (sign-off
+  decision 2026-09-12: enforce = core differentiator; competitors advertise but leak) · deps:
+  ENC.03, ENC.04, owner: AI+
+  - **Do:** The 24-byte CMS payload includes 4 permission bytes (stronger /P-like semantics bound
+    to the specific certificate-identity holder). The draft surfaces `PubKeyAuth::permissions` but
+    **does not consume** them for Selis's *internal* operation gating (the policy-layer check
+    happens later, same as `/P` for standard encryption per `SL-1.ENC.04`). The right
+    competitor-parity: **match their intent, beat their enforcement**. Acrobat and Foxit's CMS
+    bits are a *soft hint* (they don't enforce them themselves on their *viewer*, and often
+    their *edit* buttons are enabled regardless, they rely on the user having the owner cert).
+    **We are the API:** enforce the bits at the **Selis operation level**. If I open with a
+    recipient key whose 4-byte perms *lack* "Print", then `selis` cannot `Print` *even if the
+    file's `/P` says it can* (the recipient is more specific + stronger). `check-permissions` (API
+    surface in the `selis-policy` crate) **reads the active credential's perm-block** and returns
+    the **AND** of the CMS bits *and* the PDF standard `/P` bits — a CMS holder with a weaker
+    grant *cannot gain* the higher PDF-level permission. This is *correct* to the security model
+    (and Adobe's design, when it's honest). **Viewer** UI is Phase 4 (grey out Print button), but
+    **API** gating is *now*: any redaction / annotation / text-copy / render-to-print
+    `OpId` request must fail with a new typed permission error if the CMS block forbids it. Do
+    this for *all* Selis ops that touch content (edit ops especially). Also: if a user does
+    provide `/O` owner password (the normal path), then they're an *owner*, and their /P is
+    enforced only (standard semantics).
+  - **DoD:** New API call `open_as_recipient` or `with_permissions()` to supply the CMS block
+    into the policy layer; `check-permissions` ANDs the bits; Selis tools refuse *disallowed*
+    operations with typed error (even though the PDF /P would allow them). Fuzz the permission
+    decoder (never a silent bypass). Test: 3-file fixtures with 3 different perms on the 3
+    recipients: "extract only" cannot annotate (even though /P would allow it); "view only"
+    cannot extract text (and cannot annotate). The multi-certificate file: if you pass Bob's key
+    but *Bob's* grant is "edit only", the API correctly enforces *Bob's* bits, not *Alice's*
+    stronger ones. Document the difference vs standard `/P` in the design note (new §6.2 note).
+  - **Competitor reality check (this is the win):** the whole reason people buy a "PDF SDK" is so
+    they don't have to implement the permission rules; Adobe's SDK has them *partially* but
+    *many* devs just bypass them (Adobe is famously inconsistent with permission-enforcement —
+    Acrobat's viewer enforces; a PDF-reading SDK often just doesn't). A "no leaks, enforces what
+    the *document* says, correctly, every time" is the differentiating claim. This task makes
+    that claim *true* for Selis's own API (we don't sell "Adobe's SDK"; we sell *ours*).
 
 ---
 

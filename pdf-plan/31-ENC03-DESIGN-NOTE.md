@@ -148,22 +148,72 @@ DoD tests cross-check the handler rather than trust it.
 
 ## 8. What the human sign-off must review
 
-- [ ] **§3 dependency decision** — hand-rolled DER reader vs `der` crate (the reversal is
+> **Status (2026-09-12): HUMAN sign-off received.** Competitor-parity + differentiation direction:
+> support the same features as Acrobat/Foxit/PDFium (read legacy documents; no silent wrong-key
+> failure) *and do what they don't (enforce the CMS recipient's permission bits on Selis's own
+> operations, not just "surface" them as a suggestion)*. This produced 3 follow-ups: SL-1.ENC.07
+> (X.509 cert-identity match), SL-1.ENC.08 (read-only RC4/3DES/s3/OAEP), SL-1.ENC.09 (enforce the
+> CMS permission bytes as policy). ENC.03's own scope (s4/s5-AES open + `pubkey` typed fail) is
+> shipped; ENC.03 is *not yet done* until ENC.07/08/09 land (read-legacy + cert-match +
+> permission-enforce).
+>
+> Sign-off decisions:
+> - §3 deps (DER reader hand-roll, rsa/p256/sha1): accepted
+> - §4 cert selection (match_by) : accepted but *must add X.509 cert-identity match* (ENC.07)
+> - §5 refused set (s3/RC4/3DES/OAEP): **superseded** — ENC.08 makes them read-only accepted
+> - §6.1 RSA timing (Marvin side-channel): **accepted, as risk R18** for local decrypt only; any
+>   server-batch use must re-decide before shipping. §6.2 permission-surfacing: **superseded** —
+>   ENC.09 turns surfacing into enforcement as *Selis's differentiator*.
+> - §6.3 unknown `/Filter` stays tolerant: agreed, ENC.06 / standard-handler behavior is
+>   unchanged.
+> - §6.4 committed test keys: approved (throwaway fixtures).
+> - `selis-crypto→selis-sandbox` layer edge and error code 1807 `RECIPIENT_NO_MATCH`: accepted.
+> - §8.10 no conformance ladder claim yet: **ENC.03 moves from draft to `in-progress`** pending
+>   ENC.07/08/09; not a conformance pass claim. `30-` / `20-` not yet checked.
+
+- [x] **§3 dependency decision** — hand-rolled DER reader vs `der` crate (the reversal is
       a contained module swap); `rsa`/`p256`/`sha1` adoption under ADR-P0021.
-- [ ] **§4 certificate-selection policy** — first-match-with-validation without X.509
-      matching is v1-acceptable; the deferred configurability list is honest.
-- [ ] **§5 refused set** — s3/RC4/3DES/RC2/OAEP refusals (each is a typed error, never a
-      silent wrong-key).
-- [ ] **§6.1 RSA timing-side-channel acceptance** for local decryption (and the
-      server-surface revisit note).
-- [ ] **§6.2 permission surfacing** — `PubKeyAuth::permissions` not yet wired into
-      policy; confirm deferral.
-- [ ] **§6.3 unknown-handler tolerant open** posture (pre-existing; change only on
-      sign-off).
-- [ ] **§6.4 committed test keys** visible in the diff and acceptable.
-- [ ] The `selis-crypto → selis-sandbox` layer edge in `xtask/layers.toml`.
-- [ ] The new error code **1807 `RECIPIENT_NO_MATCH`** name/wording (never reused, never
+- [ ] **§4 certificate-selection policy** — first-match-with-validation **superseded** by HUMAN
+      as "must require X.509 identity match": **SL-1.ENC.07** (issuerAndSerialNumber vs
+      subjectKeyIdentifier). Draft behavior stays valid fallback.
+- [ ] **§5 refused set** — s3/RC4/3DES/RC2/OAEP refusals: **superseded** (HUMAN:
+      "support s3/3DES legacy files for decryption; refuse only *write* (AES for ENCRYPT per
+      §ADR-P0019)": **SL-1.ENC.08** = read-only decrypt acceptance. §8.10 claim = no
+      "we support the format" claim but "the SDK doesn't *lie* about it opening" claim = yes.
+- [x] **§6.1 RSA timing-side-channel acceptance** for local decryption (server-surface flag → R18).
+- [ ] **§6.2 permission surfacing** — **superseded** as policy-layer enforcement → **SL-1.ENC.09**
+      (the *only* place it can be enforced is Selis ops check on the API layer; Adobe's UI is
+      advisory only).
+- [x] **§6.3 unknown-handler tolerant open** posture (pre-existing; leave as-is).
+- [x] **§6.4 committed test keys** visible in the diff and acceptable.
+- [x] The `selis-crypto → selis-sandbox` layer edge in `xtask/layers.toml`.
+- [x] The new error code **1807 `RECIPIENT_NO_MATCH`** name/wording (never reused, never
       renumbered).
-- [ ] That the plan entry stays **draft-awaiting-sign-off** (no conformance-ladder claim
-      beyond "public-key documents open with a supplied recipient key") until this review
-      lands.
+- [ ] That the plan entry stays **draft-awaiting-sign-off** (it does not become draft-awaiting-signoff
+      anymore: now it's "draft; signoff=approved but ENC.03 incomplete until followups"; §8.10's
+      "no ladder claim" remains).
+
+---
+
+## 9. Risk register (new)
+
+**R18 — Marvin / RSA private-op timing side channel in PKCS#1 v1.5 CEK unwrap** (local read-only
+accept).
+
+- **Severity:** medium → high if `Surface::Server` is enabled → existential for multi-tenant cloud
+  PDF decrypt *for other people's files*
+- **Trigger:** Selis exposing any public-key CMS decrypt to a *server-side*, *multi-user*, or
+  *unauthenticated* endpoint (i.e. Selis's own keys are not the only thing in the session).
+- **Status:** accepted in local mode only (the user's key, the user's file; Acrobat/PDFium/PDFBox
+  have the same class of issue and Adobe/PDFium still ship it for the local case).
+- **Mitigation:** any batch/server mode *must* use constant-time or hardware-accelerated RSA, or
+  must reject `pkcs1` v1.5 transport and require OAEP. This is a `check-permissions` gate on the
+  server, not on the SDK.
+- **Kill criterion:** a server-side product is announced with this code unmodified → block feature.
+
+**Note:** `adbe.pkcs7.s3` (RC4) also has a *different* attack surface (a known plaintext on 40-bit
+versions, trivially, and 128-bit RC4 has known keystream attacks). This is *not* why we do *not*
+enforce RC4 in read mode for the "encrypted-legacy" corpus. We *do* enforce the permission bits as
+policy (read-only, no silent decrypts). A read-only decrypt is not the same as "an unauthenticated
+endpoint decrypting a random attacker's file with our server's keys" (there is no such thing in
+local mode; ENC.07/08 are read-only, so the SDK never touches a wrong key).
