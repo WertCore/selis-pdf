@@ -2748,6 +2748,7 @@ dependencies = [
  "selis-shape",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "toml",
  "wasmtime",
