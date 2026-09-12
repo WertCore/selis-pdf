@@ -1,0 +1,7 @@
+open = "ok"
+pages = 2
+
+[render]
+150 = "a3184e4ac3d5d4c157ba395dd2c6d887bc23318637a3e48f015cfafcf8bf26bd"
+300 = "b4dd9bad32483e8b946c4a4b2d03bfe2e47429ff6aee5e289424ed468b0971e8"
+72 = "42d0f3b47e4700dfa78aa1ff0afe1ad3020bd84b8a29b8d187c8eff5dddce43d"
