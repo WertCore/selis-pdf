@@ -1,0 +1,225 @@
+/* GENERATED FILE — do not edit by hand.
+ * Source of truth: packages/ui-kit/src/tokens/*.ts
+ * Update: UPDATE_TOKENS_CSS=1 pnpm --filter @selis/ui-kit test
+ * Part of SL-4.UI.10 (design system + theming). */
+
+
+:root {
+	color-scheme: light;
+	--selis-color-bg: #f2f4f7;
+	--selis-color-surface: #ffffff;
+	--selis-color-surface-sunken: #e4e8ec;
+	--selis-color-text: #171b1f;
+	--selis-color-text-secondary: #47525c;
+	--selis-color-text-muted: #5d6975;
+	--selis-color-text-disabled: #9aa4ad;
+	--selis-color-border-subtle: #d3d9df;
+	--selis-color-border-strong: #8a949e;
+	--selis-color-focus-ring: #2557d0;
+	--selis-color-accent: #2b5bc4;
+	--selis-color-accent-hover: #234aa8;
+	--selis-color-accent-soft: #dbe5fb;
+	--selis-color-on-accent: #ffffff;
+	--selis-color-link: #1d4fc0;
+	--selis-color-selection-bg: #2b5bc4;
+	--selis-color-selection-text: #ffffff;
+	--selis-color-highlight-bg: #ffe066;
+	--selis-color-highlight-active-bg: #ffab40;
+	--selis-color-highlight-text: #171b1f;
+	--selis-color-success: #1e7d43;
+	--selis-color-success-soft: #dcf2e3;
+	--selis-color-success-text: #1a6b38;
+	--selis-color-warning: #7a4d00;
+	--selis-color-warning-soft: #fdeec8;
+	--selis-color-warning-text: #7a4d00;
+	--selis-color-danger: #b3261e;
+	--selis-color-danger-soft: #fbe2e0;
+	--selis-color-danger-text: #a12118;
+	--selis-color-page-placeholder: #dfe3e8;
+	--selis-color-page-placeholder-text: #47525c;
+	--selis-color-scrollbar-thumb: #b8bfc7;
+	--selis-color-shadow: #0f1720;
+	--selis-shadow-1: 0 1px 2px rgba(15, 23, 32, 0.08), 0 2px 8px rgba(15, 23, 32, 0.10);
+	--selis-shadow-2: 0 8px 32px rgba(15, 23, 32, 0.22);
+	--selis-space-0: 0px;
+	--selis-space-1: 2px;
+	--selis-space-2: 4px;
+	--selis-space-3: 6px;
+	--selis-space-4: 8px;
+	--selis-space-5: 12px;
+	--selis-space-6: 16px;
+	--selis-space-7: 20px;
+	--selis-space-8: 24px;
+	--selis-space-9: 32px;
+	--selis-space-10: 40px;
+	--selis-space-11: 48px;
+	--selis-space-12: 64px;
+	--selis-radius-sm: 3px;
+	--selis-radius-md: 6px;
+	--selis-radius-lg: 10px;
+	--selis-radius-full: 999px;
+	--selis-border-hairline: 1px;
+	--selis-border-thick: 2px;
+	--selis-text-xs: 0.75rem;
+	--selis-text-sm: 0.8125rem;
+	--selis-text-md: 0.875rem;
+	--selis-text-lg: 1rem;
+	--selis-text-xl: 1.125rem;
+	--selis-text-2xl: 1.375rem;
+	--selis-text-3xl: 1.75rem;
+	--selis-leading-tight: 1.2;
+	--selis-leading-normal: 1.45;
+	--selis-weight-regular: 400;
+	--selis-weight-medium: 500;
+	--selis-weight-semibold: 600;
+	--selis-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--selis-font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+	--selis-duration-fast: 120ms;
+	--selis-duration-base: 200ms;
+	--selis-duration-slow: 320ms;
+	--selis-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+	--selis-ease-entrance: cubic-bezier(0, 0, 0.2, 1);
+	--selis-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+	--selis-z-base: 0;
+	--selis-z-toolbar: 10;
+	--selis-z-panel: 20;
+	--selis-z-dialog-backdrop: 40;
+	--selis-z-dialog: 50;
+	--selis-z-toast: 60;
+	--selis-density-control-height: 32px;
+	--selis-density-control-gap: 8px;
+	--selis-density-control-pad-x: 12px;
+	--selis-density-toolbar-pad-block: 6px;
+	--selis-density-toolbar-pad-inline: 8px;
+	--selis-density-panel-header-height: 40px;
+	--selis-density-row-height: 32px;
+	--selis-density-page-gap: 16px;
+}
+
+[data-theme="dark"] {
+	color-scheme: dark;
+	--selis-color-bg: #121519;
+	--selis-color-surface: #1d2229;
+	--selis-color-surface-sunken: #0d1014;
+	--selis-color-text: #e9edf1;
+	--selis-color-text-secondary: #b6c0c9;
+	--selis-color-text-muted: #8f9aa4;
+	--selis-color-text-disabled: #5c6670;
+	--selis-color-border-subtle: #333b44;
+	--selis-color-border-strong: #7d8892;
+	--selis-color-focus-ring: #8fb4f5;
+	--selis-color-accent: #3667dc;
+	--selis-color-accent-hover: #4a78ea;
+	--selis-color-accent-soft: #223252;
+	--selis-color-on-accent: #ffffff;
+	--selis-color-link: #9cbdf3;
+	--selis-color-selection-bg: #3667dc;
+	--selis-color-selection-text: #ffffff;
+	--selis-color-highlight-bg: #7a5c00;
+	--selis-color-highlight-active-bg: #965700;
+	--selis-color-highlight-text: #e9edf1;
+	--selis-color-success: #35a05f;
+	--selis-color-success-soft: #1d3a28;
+	--selis-color-success-text: #63c788;
+	--selis-color-warning: #ecc069;
+	--selis-color-warning-soft: #413410;
+	--selis-color-warning-text: #ecc069;
+	--selis-color-danger: #c33c30;
+	--selis-color-danger-soft: #44201d;
+	--selis-color-danger-text: #f28f85;
+	--selis-color-page-placeholder: #232a32;
+	--selis-color-page-placeholder-text: #b6c0c9;
+	--selis-color-scrollbar-thumb: #454f59;
+	--selis-color-shadow: #000000;
+	--selis-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.50);
+	--selis-shadow-2: 0 8px 32px rgba(0, 0, 0, 0.65);
+}
+
+[data-theme="light"][data-contrast="high"] {
+	--selis-color-bg: #fafafa;
+	--selis-color-surface: #ffffff;
+	--selis-color-surface-sunken: #f0f0f0;
+	--selis-color-text: #000000;
+	--selis-color-text-secondary: #1a1d21;
+	--selis-color-text-muted: #333a41;
+	--selis-color-border-subtle: #6d7780;
+	--selis-color-border-strong: #000000;
+	--selis-color-focus-ring: #00339e;
+	--selis-color-accent: #123a9e;
+	--selis-color-accent-hover: #0e2f82;
+	--selis-color-accent-soft: #dce6ff;
+	--selis-color-link: #00339e;
+	--selis-color-selection-bg: #00339e;
+	--selis-color-highlight-bg: #ffd23f;
+	--selis-color-highlight-active-bg: #ff9e1f;
+	--selis-color-success: #0d5c2e;
+	--selis-color-success-soft: #d6f0dd;
+	--selis-color-success-text: #0d5c2e;
+	--selis-color-warning: #5f3d00;
+	--selis-color-warning-soft: #ffefc2;
+	--selis-color-warning-text: #5f3d00;
+	--selis-color-danger: #a81b12;
+	--selis-color-danger-soft: #ffd9d5;
+	--selis-color-danger-text: #8f1d15;
+	--selis-color-page-placeholder: #eceef1;
+	--selis-color-page-placeholder-text: #1a1d21;
+	--selis-color-scrollbar-thumb: #6d7780;
+}
+
+[data-theme="dark"][data-contrast="high"] {
+	--selis-color-bg: #000000;
+	--selis-color-surface: #0d1014;
+	--selis-color-surface-sunken: #000000;
+	--selis-color-text: #ffffff;
+	--selis-color-text-secondary: #dbe3ea;
+	--selis-color-text-muted: #c3ccd4;
+	--selis-color-text-disabled: #6d7780;
+	--selis-color-border-subtle: #8a949e;
+	--selis-color-border-strong: #ffffff;
+	--selis-color-focus-ring: #bfe3ff;
+	--selis-color-accent: #2451c8;
+	--selis-color-accent-hover: #3763dd;
+	--selis-color-accent-soft: #12233f;
+	--selis-color-link: #cfe2ff;
+	--selis-color-selection-bg: #2451c8;
+	--selis-color-highlight-bg: #6e5200;
+	--selis-color-highlight-active-bg: #7a4300;
+	--selis-color-highlight-text: #ffffff;
+	--selis-color-success: #4cc27a;
+	--selis-color-success-soft: #14301f;
+	--selis-color-success-text: #7fe0a2;
+	--selis-color-warning: #ffd07a;
+	--selis-color-warning-soft: #3a2c08;
+	--selis-color-warning-text: #ffd07a;
+	--selis-color-danger: #c9372b;
+	--selis-color-danger-soft: #431815;
+	--selis-color-danger-text: #ffb0a6;
+	--selis-color-page-placeholder: #1d2229;
+	--selis-color-page-placeholder-text: #ffffff;
+	--selis-color-scrollbar-thumb: #6d7780;
+}
+
+[data-density="compact"] {
+	--selis-density-control-height: 28px;
+	--selis-density-control-gap: 6px;
+	--selis-density-control-pad-x: 8px;
+	--selis-density-toolbar-pad-block: 4px;
+	--selis-density-toolbar-pad-inline: 6px;
+	--selis-density-panel-header-height: 34px;
+	--selis-density-row-height: 26px;
+	--selis-density-page-gap: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+		:root {
+		--selis-duration-fast: 0ms;
+		--selis-duration-base: 0ms;
+		--selis-duration-slow: 0ms;
+	}
+}
+
+[data-motion="reduced"] {
+	--selis-duration-fast: 0ms;
+	--selis-duration-base: 0ms;
+	--selis-duration-slow: 0ms;
+}
