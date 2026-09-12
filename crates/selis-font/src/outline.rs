@@ -196,6 +196,41 @@ pub fn glyph_id_for_char(data: &Bytes, code: u32) -> Option<u16> {
     .flatten()
 }
 
+/// Map a byte through the font's Mac Roman `(1, 0)` cmap subtable (format 0).
+///
+/// Subset fonts frequently carry *only* a `(1, 0)` subtable (LibreOffice-class
+/// producers), which skrifa's charmap does not select (RAST.14): the byte is
+/// the format-0 glyph-index array index, per the TrueType spec (the `(1, 0)`
+/// subtable maps Mac Roman codes 0–255 to glyph ids).
+///
+/// # Malformed Input
+///
+/// A missing/unparseable cmap, no `(1, 0)` subtable, or a non-format-0
+/// subtable is `None` — the caller falls back to its next strategy, never a
+/// panic.
+#[must_use]
+pub fn glyph_id_for_byte_cmap(data: &Bytes, code: u8) -> Option<u16> {
+    crate::contain(|| {
+        use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
+        use skrifa::raw::TableProvider;
+        let font = skrifa::raw::FontRef::new(data.as_slice()).ok()?;
+        let cmap = font.cmap().ok()?;
+        for record in cmap.encoding_records() {
+            if record.platform_id() != PlatformId::Macintosh || record.encoding_id() != 0 {
+                continue;
+            }
+            let subtable: CmapSubtable<'_> = record.subtable(cmap.offset_data()).ok()?;
+            if let CmapSubtable::Format0(format0) = subtable {
+                return format0
+                    .map_codepoint(u32::from(code))
+                    .map(|gid| u16::try_from(gid.to_u32()).unwrap_or(u16::MAX));
+            }
+        }
+        None
+    })
+    .flatten()
+}
+
 /// A [`OutlinePen`] that collects [`OutlineCmd`]s.
 #[derive(Default)]
 pub(crate) struct OutlineSink {

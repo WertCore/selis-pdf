@@ -224,10 +224,13 @@ impl TextCache {
         })
     }
 
-    /// The glyph id for `code` (`None` = unmapped).
+    /// The glyph id for a code of the font `name` (`None` = unmapped).
+    ///
+    /// The walk-level cache dedupes per distinct code; the resolver itself is
+    /// the engine's (encoding-model) mapping, RAST.14.
     fn glyph_id(
         maps: &mut FontMaps,
-        bytes: &selis_bytes::Bytes,
+        resolve_glyph: &dyn Fn(u16) -> Option<u16>,
         code: u16,
         stats: &mut RenderStats,
     ) -> Option<u16> {
@@ -238,7 +241,7 @@ impl TextCache {
             }
             None => {
                 stats.glyph_lookups = stats.glyph_lookups.saturating_add(1);
-                let gid = selis_font::glyph_id_for_char(bytes, u32::from(code));
+                let gid = resolve_glyph(code);
                 if maps.gids.len() < MAX_CACHED_GIDS {
                     maps.gids.insert(code, gid);
                 }
@@ -284,7 +287,9 @@ use crate::page::device_scale;
 /// user space â†’ device â€” composes with it.
 ///
 /// `font_data` resolves a font resource name to the font program bytes (the
-/// engine's document layer provides this).
+/// engine's document layer provides this). `resolve_glyph` maps a
+/// content-stream code to the font's glyph id through the font's encoding
+/// model (RAST.14: `/Encoding` glyph names and Type0 CIDs, not raw codes).
 ///
 /// # Malformed Input
 ///
@@ -295,6 +300,7 @@ pub fn render_display_list(
     backend: &mut TinySkiaBackend,
     page_ctm: Matrix,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    resolve_glyph: &dyn Fn(&selis_bytes::Bytes, u16) -> Option<u16>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
         &[(selis_bytes::Bytes, selis_bytes::Bytes)],
@@ -313,6 +319,7 @@ pub fn render_display_list(
         backend,
         page_ctm,
         font_data,
+        resolve_glyph,
         resolve_smask,
         resolve_inline_image,
         resolve_shading,
@@ -334,6 +341,7 @@ pub fn render_display_list_with_stats(
     backend: &mut TinySkiaBackend,
     page_ctm: Matrix,
     font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<Vec<u8>>,
+    resolve_glyph: &dyn Fn(&selis_bytes::Bytes, u16) -> Option<u16>,
     resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
     resolve_inline_image: &dyn Fn(
         &[(selis_bytes::Bytes, selis_bytes::Bytes)],
@@ -381,13 +389,14 @@ pub fn render_display_list_with_stats(
         if state.clip != current_clip {
             backend.clear_clip();
             stats.clip_rebuilds = stats.clip_rebuilds.saturating_add(1);
-            // Clip paths are stored in user space; they must reach the
-            // rasteriser through the same total transform as the fills (the
-            // op's CTM composed with the page transform).
-            let clip_m = state.ctm.then(page_ctm);
+            // Clip paths are frozen in user space at clip time (§8.5.4, the
+            // exec pass transforms them once when `W`/`W*` runs) — they reach
+            // the rasteriser through the page transform only. Applying the
+            // op's CTM here would move the clip whenever a `cm` changed the
+            // space between the clip and this op (RAST.14).
             for (path, rule) in &state.clip {
                 if let Some(p) = to_raster_path(path) {
-                    let p = transform_raster_path(&p, clip_m);
+                    let p = transform_raster_path(&p, page_ctm);
                     backend.clip(
                         &p,
                         match rule {
@@ -458,9 +467,12 @@ pub fn render_display_list_with_stats(
                     // through the view below, so the bytes cannot borrow it).
                     let paint = paint(&state.fill, state.alpha_fill);
                     let fb = view.bytes().clone();
+                    // Per-run glyph resolver: the engine's encoding-model
+                    // mapping for this font (RAST.14), walk-cached per code.
+                    let resolve = |code: u16| resolve_glyph(&run.font, code);
                     for &code in &run.glyphs {
                         let maps = view.maps();
-                        let Some(gid) = TextCache::glyph_id(maps, &fb, code, stats) else {
+                        let Some(gid) = TextCache::glyph_id(maps, &resolve, code, stats) else {
                             continue;
                         };
                         let Some(cmds) = TextCache::outline(maps, &fb, gid, g, stats) else {
@@ -860,6 +872,19 @@ mod tests {
         None
     }
 
+    fn no_glyph(_font: &selis_bytes::Bytes, _code: u16) -> Option<u16> {
+        None
+    }
+
+    /// The glyph resolver for the test fallback font: the code-as-character
+    /// cmap mapping (what the engine's resolver falls back to for fonts
+    /// without an `/Encoding`).
+    fn fallback_glyphs(name: &selis_bytes::Bytes, code: u16) -> Option<u16> {
+        let bytes = fallback_font(name)?;
+        let fb = selis_bytes::Bytes::from(bytes);
+        selis_font::glyph_id_for_char(&fb, u32::from(code))
+    }
+
     /// A fill at user-space coordinates lands on the y-flipped, DPI-scaled
     /// device position under a 72-DPI page transform (RAST.12): the rect
     /// `10 10 â€¦ 60 110 re` (y-up) paints near the *bottom*-left of the canvas.
@@ -882,6 +907,7 @@ mod tests {
             &mut backend,
             page.ctm,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -922,6 +948,7 @@ mod tests {
             &mut backend,
             page.ctm,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -961,6 +988,7 @@ mod tests {
             &mut backend,
             page.ctm,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -998,6 +1026,7 @@ mod tests {
             &mut backend,
             page.ctm,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1030,6 +1059,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1057,6 +1087,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1105,6 +1136,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1147,6 +1179,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1184,6 +1217,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1231,6 +1265,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1282,6 +1317,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &resolve_smask,
             &no_inline_image,
             &no_shading,
@@ -1330,6 +1366,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &resolve_inline,
             &no_shading,
@@ -1375,6 +1412,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1421,6 +1459,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &no_font,
+            &no_glyph,
             &no_smask,
             &no_inline_image,
             &resolve_shading,
@@ -1467,14 +1506,15 @@ mod tests {
         // The cmap entry for 'A' resolves once, then hits.
         let fb = selis_font::fallback::fallback_bytes("Helvetica").expect("fallback");
         let fb = selis_bytes::Bytes::copy_from_slice(fb);
+        let resolve_glyph = |code: u16| selis_font::glyph_id_for_char(&fb, u32::from(code));
         {
             let mut view = cache
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            let gid = TextCache::glyph_id(maps, &resolve_glyph, u16::from(b'A'), &mut stats);
             assert!(gid.is_some());
-            let gid2 = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats);
+            let gid2 = TextCache::glyph_id(maps, &resolve_glyph, u16::from(b'A'), &mut stats);
             assert_eq!(gid, gid2);
         }
         assert_eq!(stats.glyph_lookups, 1);
@@ -1486,7 +1526,8 @@ mod tests {
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            let gid = TextCache::glyph_id(maps, &resolve_glyph, u16::from(b'A'), &mut stats)
+                .expect("gid");
             TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
         };
         let second = {
@@ -1494,7 +1535,8 @@ mod tests {
                 .font(&fallback_font, &name, &mut stats)
                 .expect("cached");
             let maps = view.maps();
-            let gid = TextCache::glyph_id(maps, &fb, u16::from(b'A'), &mut stats).expect("gid");
+            let gid = TextCache::glyph_id(maps, &resolve_glyph, u16::from(b'A'), &mut stats)
+                .expect("gid");
             TextCache::outline(maps, &fb, gid, &mut g, &mut stats).expect("outline")
         };
         assert_eq!(first, second);
@@ -1523,6 +1565,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &fallback_font,
+            &fallback_glyphs,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1539,6 +1582,7 @@ mod tests {
             &mut backend,
             Matrix::IDENTITY,
             &fallback_font,
+            &fallback_glyphs,
             &no_smask,
             &no_inline_image,
             &no_shading,
@@ -1579,6 +1623,7 @@ mod tests {
                 &mut backend,
                 Matrix::IDENTITY,
                 &fallback_font,
+                &fallback_glyphs,
                 &no_smask,
                 &no_inline_image,
                 &no_shading,
