@@ -18,6 +18,7 @@ selis-pdf-cos = { workspace = true }
 # shared flate filter — harness-side decode of oracle output only (ADR-P0009).
 selis-pdf-filter = { workspace = true }
 selis-pdf-engine = { workspace = true }
+selis-shape = { workspace = true }
 # xtask is a tool at the shell boundary: it supplies the real monotonic clock
 # so engine calls it drives measure genuine wall deadlines (SL-0.SBX.07).
 selis-sandbox = { workspace = true, features = ["instant-clock"] }

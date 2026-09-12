@@ -47,14 +47,17 @@ const MAX_FORM_DEPTH: usize = 32;
 /// Execute a content stream into a display list.
 ///
 /// `font_width` resolves a glyph's advance width (1000/em units) for text
-/// positioning; `resolve_do` resolves a `Do` resource name to an XObject; and
+/// positioning; `font_is_cid` says whether a font resource shows 2-byte CID
+/// codes (a Type0 composite font — word spacing does not apply, §9.2.7);
+/// `resolve_do` resolves a `Do` resource name to an XObject; and
 /// `resolve_ext_gstate` resolves a `/ExtGState` resource name (used by `gs`)
 /// to its dictionary, merging blend mode, alpha, soft mask, and overprint into
-/// the graphics state. The engine provides all three from the document's
+/// the graphics state. The engine provides all four from the document's
 /// resources.
 pub fn execute(
     content: &[u8],
     font_width: &dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64,
+    font_is_cid: &dyn Fn(&Bytes, Option<&Bytes>) -> bool,
     resolve_do: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget>,
     resolve_ext_gstate: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>>,
     g: &mut BudgetGuard<'_>,
@@ -64,6 +67,7 @@ pub fn execute(
     execute_inner(
         content,
         font_width,
+        font_is_cid,
         resolve_do,
         resolve_ext_gstate,
         None,
@@ -82,6 +86,7 @@ pub fn execute(
 fn execute_inner(
     content: &[u8],
     font_width: &dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64,
+    font_is_cid: &dyn Fn(&Bytes, Option<&Bytes>) -> bool,
     resolve_do: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget>,
     resolve_ext_gstate: &dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>>,
     resources: Option<&Bytes>,
@@ -299,7 +304,8 @@ fn execute_inner(
                 let font = text_state.font.clone();
                 let empty = Bytes::new();
                 let font_slice: &Bytes = font.as_ref().unwrap_or(&empty);
-                let glyphs = text::process(&mut text_state, n, operands, false, &|code| {
+                let is_cid = font_is_cid(font_slice, resources);
+                let glyphs = text::process(&mut text_state, n, operands, is_cid, &|code| {
                     font_width(font_slice, code, resources)
                 });
                 for glyph in glyphs {
@@ -380,6 +386,7 @@ fn execute_inner(
                             execute_inner(
                                 &content,
                                 font_width,
+                                font_is_cid,
                                 resolve_do,
                                 resolve_ext_gstate,
                                 resources.as_ref(),
@@ -604,6 +611,10 @@ mod tests {
         500.0
     }
 
+    fn no_cid(_font: &Bytes, _key: Option<&Bytes>) -> bool {
+        false
+    }
+
     fn no_do(_name: &Bytes, _key: Option<&Bytes>) -> Option<DoTarget> {
         None
     }
@@ -618,6 +629,7 @@ mod tests {
         let dl = execute(
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -633,6 +645,7 @@ mod tests {
         let dl = execute(
             b"0 0 m 0 100 l 100 100 l 100 0 l h 0.5 0.3 0.1 rg f",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -653,6 +666,7 @@ mod tests {
         let dl = execute(
             b"BT /F1 12 Tf 0 0 Td (A) Tj ET",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -668,6 +682,57 @@ mod tests {
         }
     }
 
+    /// A CID font (SL-3.SHAPE.04): the `font_is_cid` closure selects 2-byte
+    /// codes, so `<0041>` shows one glyph with code 0x41.
+    #[test]
+    fn cid_font_shows_two_byte_codes() {
+        fn is_cid(_font: &Bytes, _key: Option<&Bytes>) -> bool {
+            true
+        }
+        let mut g = guard();
+        let dl = execute(
+            b"BT /F1 12 Tf 0 0 Td <0041> Tj ET",
+            &const_width,
+            &is_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 1);
+        if let Op::Text { runs, .. } = &dl.ops[0] {
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].glyphs, vec![0x41]);
+        } else {
+            panic!("expected text");
+        }
+    }
+
+    #[test]
+    fn cid_font_shows_two_byte_codes_in_tj() {
+        fn is_cid(_font: &Bytes, _key: Option<&Bytes>) -> bool {
+            true
+        }
+        let mut g = guard();
+        let dl = execute(
+            b"BT /F1 12 Tf 0 0 Td [<0041> 0 <0042>] TJ ET",
+            &const_width,
+            &is_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 2);
+        let mut codes = Vec::new();
+        for op in &dl.ops {
+            if let Op::Text { runs, .. } = op {
+                codes.extend(runs[0].glyphs.iter().copied());
+            }
+        }
+        assert_eq!(codes, vec![0x41, 0x42]);
+    }
+
     #[test]
     fn q_and_q_restore_state() {
         let mut g = guard();
@@ -675,6 +740,7 @@ mod tests {
         let dl = execute(
             b"q 0.5 0 0 0.5 0 0 cm Q 0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -706,6 +772,7 @@ mod tests {
         let dl = execute(
             b"/GS1 gs 0 0 m 0 100 l 100 100 l 100 0 l h 0 g f",
             &const_width,
+            &no_cid,
             &no_do,
             &ext,
             &mut g,
@@ -725,6 +792,7 @@ mod tests {
         let dl = execute(
             b"1 0 0 rg BT /F1 12 Tf 0 0 Td (A) Tj ET",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -747,7 +815,15 @@ mod tests {
         // clip rect (0,0)-(100,100), then paint a path (clipped), Q, paint again
         // (no clip).
         let content = b"0 0 m 100 0 l 100 100 l 0 100 l h q W 10 10 m 90 90 l 0 g f Q 0 0 m 50 0 l 50 50 l 0 50 l h 0 g f";
-        let dl = execute(content, &const_width, &no_do, &no_ext_gstate, &mut g).expect("execute");
+        let dl = execute(
+            content,
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
         assert_eq!(dl.ops.len(), 2);
         if let Op::Fill { state, .. } = &dl.ops[0] {
             assert_eq!(state.clip.len(), 1, "first fill is clipped");
@@ -785,6 +861,7 @@ mod tests {
         let dl = execute(
             b"/GS1 BDC 0 0 m 100 0 l 100 100 l 0 100 l h 0 g f EMC",
             &const_width,
+            &no_cid,
             &no_do,
             &ext,
             &mut g,
@@ -809,6 +886,7 @@ mod tests {
         let dl = execute(
             b"/DeviceGray cs 0.5 scn 0 0 m 0 100 l 100 100 l 100 0 l h f",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -829,6 +907,7 @@ mod tests {
         let dl = execute(
             b"/Pattern cs 0.5 /Pat1 scn 0 0 m 0 100 l 100 100 l 100 0 l h f",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
@@ -853,6 +932,7 @@ mod tests {
             b"BI /W 2 /H 2 /BPC 8 /CS /RGB /L 12 ID \
               \x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff EI",
             &const_width,
+            &no_cid,
             &no_do,
             &no_ext_gstate,
             &mut g,
