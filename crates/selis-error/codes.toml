@@ -780,3 +780,12 @@ meaning = "The codec sandbox host itself failed to initialise or operate."
 user_msg = "Selis hit an internal error in the codec sandbox. Your document was not modified."
 retryable = false
 doc_state = "Loaded"
+
+[[code]]
+id = 6017
+name = "BINDING_UNSUPPORTED_OP"
+kind = "Unsupported"
+meaning = "A request crossing a binding boundary named an operation, source adapter, or protocol version this engine build does not provide (a capability or version mismatch, not a malformed request)."
+user_msg = "That action is not available in this version of Selis."
+retryable = false
+doc_state = "Unchanged"
