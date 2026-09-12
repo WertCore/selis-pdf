@@ -365,16 +365,35 @@ point you have 40 000 lines and no idea which of them are wrong.
     hash to be pinned on completion). `xtask corpus stats`: 3,936 PDFs (977 flat + 2,556
     verapdf + 200 govdocs1 + 203 synthetic), tag distribution reported.
 
-- [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
+- [x] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
   - **Do:** `corpus/expect/<id>.toml` holding, per file: expected open outcome (`Ok` / a specific
     error code), golden render hashes per DPI, expected extracted text hash, oracle-comparison
     tolerance, and an `annotation` field for "the oracle is wrong here, and why".
   - **DoD:** `xtask corpus verify` compares actual against expected and reports a typed diff.
-  - **Note:** Open-outcome expectations (3936 records, 3901 ok + 35 err) are written and
-    verified; `xtask corpus expect-generate` and `corpus verify` are implemented. The 35 err
-    outcomes are typed codes: 4 pre-existing wild/damaged cases + 31 govdocs1 files (wild fuzz
-    seeds are expected to fail opening in interesting ways). Golden render hashes and
-    extracted-text hashes depend on Phase 2/3 and are not yet generated.
+  - **Close-out (2026-09-11, from the SL-3.CONF.01 sweep run):** Records now carry, per file, the
+    open outcome + `[render]` golden hashes (page-1 selis renders at 72/150/300, sha256 of the
+    CLI PPM bytes; selis pinned binary sha256 `f4a21235…22c911a`) + `[text]` golden hash
+    (sha256 of the normalised page-1 selis text) + the pre-existing `[annotation]` triage tables.
+    Merge counts (`cargo xtask corpus expect-merge`): **3,796 merged (1,614 full render+text),
+    34 skipped (open ≠ ok — no baseline is meaningful for a file that does not open), 6 skipped
+    (no baseline — selis rejected/timed out in the sweep: GHOSTSCRIPT-698804-1-fuzzed,
+    issue11651, issue3371, issue8061, poppler-85140-0, pr6531_1), 0 open drift.** Files with no
+    `[text]` hash are pages with no extractable text (2,039 empty-both + 117 empty-selis + 9
+    empty-oracle per the CONF.01 readout) — an image-only page has no text baseline by design.
+    `corpus verify` reports typed diffs (`render MISMATCH @<dpi>`, `text MISMATCH`,
+    `render UNREPRODUCIBLE`); `--golden` re-renders/re-extracts, the default pass is the fast
+    open-outcome check. Hygiene bound raised 256→768 bytes (three 64-hex render hashes + one
+    text hash + annotation fit; `check-wild-hygiene` updated with the arithmetic).
+  - **Record reconciliation (honest):** The record set was brought to parity with the fetched
+    corpus (3,836 files: verapdf 2,694, flat 644, synthetic 203, govdocs1 200, ghent 95 — the
+    verapdf tree upstream-reorganised from 2,556 and pdf.js symlink-target files do not
+    materialise from the tarball, so flat shrank 977→644; restoring them is a corpus-refresh
+    item, not a CORP.03 one). 3,568 stale records deleted (files gone or renamed upstream; 11
+    annotated flat `govdocs1` records transplanted to the nested `govdocs1/000/` ids first).
+    Four annotated flat records were deleted with their files (auth-event-ef-open,
+    encrypted-attachment, issue19484_1/2 — removed from the pdf.js test set upstream); their
+    CONF.05 triage verdicts remain in git history. 294 missing records regenerated;
+    open outcomes re-baselined with the pinned binary (3,802 ok + 34 err).
 
 - [x] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
   - **Note:** `xtask corpus synthetic-generate` emits 203 seeded, reproducible files under

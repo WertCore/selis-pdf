@@ -27,6 +27,8 @@ mod sbom;
 mod size_check;
 mod sweep;
 mod synthetic;
+mod text_norm;
+mod text_sweep;
 mod unsafe_check;
 mod wild;
 mod wild_hygiene;
@@ -293,6 +295,50 @@ enum OracleSub {
         #[arg(long = "exclude", value_name = "SUBSTRING")]
         exclude: Vec<String>,
     },
+    /// Full-corpus differential text/font sweep (SL-3.CONF.01): extract page
+    /// 1 of every corpus PDF with selis and the named text oracles, compare
+    /// with the documented normaliser, record the per-file font inventory,
+    /// and hash selis's page-1 renders per DPI (the CORP.03 golden records).
+    /// Report + per-file verdicts and goldens go to `--out`.
+    TextSweep {
+        /// Text oracle tools to compare against (repeatable).
+        #[arg(long = "tool", value_name = "TOOL", default_value = "mutool")]
+        tool: Vec<String>,
+        /// DPIs for the selis golden renders (comma-separated; extraction
+        /// itself is DPI-independent).
+        #[arg(long, value_delimiter = ',', default_value = "72,150,300")]
+        dpi: Vec<u32>,
+        /// Deterministic stride sample instead of the whole corpus.
+        #[arg(long)]
+        sample: Option<usize>,
+        /// Output directory for verdicts.jsonl + golden.jsonl +
+        /// text-report.json.
+        #[arg(long, default_value = "target/text-sweep")]
+        out: std::path::PathBuf,
+        /// Wall-clock budget per extract/render (seconds).
+        #[arg(long, default_value_t = 60)]
+        timeout_secs: u64,
+        /// Parallel workers (default: one per CPU).
+        #[arg(long)]
+        jobs: Option<usize>,
+        /// Explicit selis binary (default: the release target dir).
+        #[arg(long)]
+        selis: Option<std::path::PathBuf>,
+        /// Skip files fully recorded in verdicts.jsonl + golden.jsonl.
+        #[arg(long, default_value_t = false)]
+        resume: bool,
+        /// Oracle-vs-oracle text calibration: also compare every tool pair
+        /// under the identical metric (SL-0.ORACLE.02 for text).
+        #[arg(long, default_value_t = false)]
+        calibrate: bool,
+        /// Only sweep files whose corpus id contains one of these substrings
+        /// (repeatable; applied before sampling, e.g. `ghent/`).
+        #[arg(long = "include", value_name = "SUBSTRING")]
+        include: Vec<String>,
+        /// Skip files whose corpus id contains one of these substrings.
+        #[arg(long = "exclude", value_name = "SUBSTRING")]
+        exclude: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,8 +355,26 @@ enum CorpusSub {
     Stats,
     /// Write open-outcome expectations for every corpus PDF (SL-0.CORP.03).
     ExpectGenerate,
+    /// Record CORP.03 golden render hashes per DPI + the extracted-text hash
+    /// from a text-sweep `golden.jsonl` into `corpus/expect/<id>.toml`
+    /// (SL-0.CORP.03). Existing `[annotation]` tables are preserved.
+    ExpectMerge {
+        /// The text-sweep output directory holding `golden.jsonl`.
+        #[arg(long)]
+        from: std::path::PathBuf,
+    },
     /// Re-open every corpus PDF and diff against its expectation record.
-    Verify,
+    Verify {
+        /// Also re-render every recorded golden DPI and re-extract the
+        /// page-1 text, diffing the hashes (the full CORP.03 regression
+        /// check; slower than the open-outcome pass).
+        #[arg(long, default_value_t = false)]
+        golden: bool,
+        /// Explicit selis binary for `--golden` (default: the release target
+        /// dir).
+        #[arg(long)]
+        selis: Option<std::path::PathBuf>,
+    },
     /// Generate the synthetic corpus (SL-0.CORP.04).
     SyntheticGenerate,
     /// Gated acquisition of wild corpus samples (SL-0.CORP.05).
@@ -367,7 +431,12 @@ fn main() -> ExitCode {
             CorpusSub::List => corpus::run(corpus::CorpusCommand::List),
             CorpusSub::Stats => corpus::run(corpus::CorpusCommand::Stats),
             CorpusSub::ExpectGenerate => corpus::run(corpus::CorpusCommand::ExpectGenerate),
-            CorpusSub::Verify => corpus::run(corpus::CorpusCommand::Verify),
+            CorpusSub::ExpectMerge { from } => {
+                corpus::run(corpus::CorpusCommand::ExpectMerge { from })
+            }
+            CorpusSub::Verify { golden, selis } => {
+                corpus::run(corpus::CorpusCommand::Verify { golden, selis })
+            }
             CorpusSub::SyntheticGenerate => synthetic::generate(),
             CorpusSub::Wild(args) => match args.sub {
                 WildSub::Fetch {
@@ -427,6 +496,32 @@ fn main() -> ExitCode {
                 include,
                 exclude,
             } => sweep::run(sweep::SweepConfig {
+                tools: tool,
+                dpis: dpi,
+                sample,
+                out,
+                timeout: std::time::Duration::from_secs(timeout_secs),
+                jobs: jobs
+                    .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())),
+                selis,
+                resume,
+                calibrate,
+                include,
+                exclude,
+            }),
+            OracleSub::TextSweep {
+                tool,
+                dpi,
+                sample,
+                out,
+                timeout_secs,
+                jobs,
+                selis,
+                resume,
+                calibrate,
+                include,
+                exclude,
+            } => text_sweep::run(sweep::SweepConfig {
                 tools: tool,
                 dpis: dpi,
                 sample,

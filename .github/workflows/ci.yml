@@ -265,7 +265,9 @@ jobs:
   # thousands of per-file container dispatches are hours of runner time no PR
   # gate should pay. Disagreements collapse into root-cause signatures in
   # sweep-report.json (SL-0.ORACLE.05); artifacts feed the G2 readout and the
-  # SL-2.CONF.02 area promotion.
+  # SL-2.CONF.02 area promotion. The SL-3.CONF.01 text legs ride the same job:
+  # page-1 extraction with selis vs MuPDF/PDFium/pdf.js through the pinned
+  # images (text-sweep step + text-report.json artifacts).
   render-conf:
     runs-on: ubuntu-24.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -331,6 +333,27 @@ jobs:
             --dpi 150 --include ghent/ \
             --jobs 4 --timeout-secs 180 \
             --out sweep-calibration-ghent
+      - name: Sweep the text legs (SL-3.CONF.01)
+        # Page-1 text extraction with selis and the three text oracles through
+        # the PINNED GHCR IMAGES (MuPDF needs no driver change; PDFium/pdf.js
+        # use their drivers' `--text` modes), compared under the documented
+        # normaliser (xtask/src/text_norm.rs), plus the selis golden renders
+        # per DPI and the extracted-text hash. Same schedule/dispatch gating
+        # as the render legs above. Calibration pairs included: the G3 bar is
+        # read off selis-vs-oracle agreement, the oracle pairs calibrate it.
+        #
+        # Re-pin note: the pdfium/pdfjs `--text` driver modes land in the
+        # images when the oracle-images job rebuilds them after this merges;
+        # until their digests are re-recorded in xtask/oracles.toml, those two
+        # legs fail LOUDLY (typed oracle_rejects in the artifacts) against the
+        # old images. The mutool text leg runs against the current pin now.
+        run: |
+          cargo xtask oracle text-sweep \
+            --tool mutool --tool pdfium --tool pdfjs \
+            --dpi 72,150,300 --sample 400 --calibrate \
+            --jobs 4 --timeout-secs 180 \
+            --selis target/release/selis \
+            --out sweep-text
       - name: Upload the sweep artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -348,4 +371,13 @@ jobs:
             sweep-calibration/verdicts.jsonl
             sweep-calibration-ghent/sweep-report.json
             sweep-calibration-ghent/verdicts.jsonl
+          if-no-files-found: error
+      - name: Upload the text-sweep artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-conf-text
+          path: |
+            sweep-text/text-report.json
+            sweep-text/verdicts.jsonl
+            sweep-text/golden.jsonl
           if-no-files-found: error

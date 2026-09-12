@@ -1,4 +1,4 @@
-﻿//! `xtask corpus` â€” SL-0.CORP.01.
+//! `xtask corpus` â€” SL-0.CORP.01.
 //!
 //! `corpus fetch` downloads each manifest entry to a local cache (default
 //! `~/.cache/selis-corpus`, overridable with `SELIS_CORPUS_CACHE`), verifies
@@ -41,7 +41,13 @@ pub enum CorpusCommand {
     List,
     Stats,
     ExpectGenerate,
-    Verify,
+    ExpectMerge {
+        from: PathBuf,
+    },
+    Verify {
+        golden: bool,
+        selis: Option<PathBuf>,
+    },
 }
 
 pub fn run(cmd: CorpusCommand) -> Result<(), String> {
@@ -51,7 +57,8 @@ pub fn run(cmd: CorpusCommand) -> Result<(), String> {
         CorpusCommand::List => list(&entries),
         CorpusCommand::Stats => stats(&entries),
         CorpusCommand::ExpectGenerate => expect_generate(),
-        CorpusCommand::Verify => verify(),
+        CorpusCommand::ExpectMerge { from } => expect_merge(&from),
+        CorpusCommand::Verify { golden, selis } => verify(golden, selis.as_deref()),
     }
 }
 
@@ -340,15 +347,37 @@ fn collect_pdfs_inner(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// The expected open outcome of one corpus file: `Ok` with a page count, or a
-/// typed error code (SL-0.CORP.03).
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+/// The expectation record of one corpus file (SL-0.CORP.03):
+/// `corpus/expect/<id>.toml`.
+///
+/// The open outcome (`open`/`code`/`pages`) is the original CORP.03 record.
+/// The `[render]` table (golden page-1 render hashes per DPI) and the
+/// `[text]` table (the normalised page-1 extracted-text hash) are recorded
+/// by `corpus expect-merge` from a CONF.01 text-sweep `golden.jsonl`, with
+/// selis's own output as the regression baseline. The `[annotation]` table
+/// (SL-0.ORACLE.05 triage verdicts) is preserved across regenerations.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 struct ExpectRecord {
     open: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pages: Option<usize>,
+    /// Golden page-1 render hashes, DPI → sha256 hex of the PPM bytes the
+    /// selis CLI wrote. Absent until `corpus expect-merge` records them.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    render: Option<BTreeMap<String, String>>,
+    /// Golden normalised page-1 extracted-text hash. Absent until
+    /// `corpus expect-merge` records it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    text: Option<TextGolden>,
+}
+
+/// The golden extracted-text hash: sha256 over the normalised (N1–N6)
+/// page-1 text in UTF-8.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+struct TextGolden {
+    hash: String,
 }
 
 fn open_outcome(path: &Path) -> ExpectRecord {
@@ -360,17 +389,148 @@ fn open_outcome(path: &Path) -> ExpectRecord {
             open: "ok".to_string(),
             code: None,
             pages: Some(session.len()),
+            render: None,
+            text: None,
         },
         Err(e) => ExpectRecord {
             open: "err".to_string(),
             code: Some(format!("{:?}", e.code())),
             pages: None,
+            render: None,
+            text: None,
         },
     }
 }
 
-/// Serialise the open-outcome expectation for one PDF on disk (SL-0.CORP.03).
+/// Record CORP.03 golden render hashes per DPI + the extracted-text hash
+/// from a CONF.01 text-sweep `golden.jsonl` into `corpus/expect/<id>.toml`.
 ///
+/// Rules, all reported in the summary:
+/// * only files whose recorded open outcome is `ok` receive goldens (a
+///   render/text baseline for a file that does not open is meaningless);
+/// * the current open outcome must still equal the recorded one — a file
+///   whose behaviour drifted between the sweep and the merge is skipped
+///   rather than critiqued against a stale baseline;
+/// * existing `[annotation]` tables (SL-0.ORACLE.05 verdicts) are preserved
+///   byte-for-byte; golden tables are (over)written, never the annotations;
+/// * files with no golden entry, or a golden with neither renders nor text,
+///   are skipped and counted with their reason.
+fn expect_merge(from: &Path) -> Result<(), String> {
+    let golden_path = from.join("golden.jsonl");
+    let text = std::fs::read_to_string(&golden_path)
+        .map_err(|e| format!("{}: {e}", golden_path.display()))?;
+    let mut goldens: BTreeMap<String, SweepGolden> = BTreeMap::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let g: SweepGolden =
+            serde_json::from_str(line).map_err(|e| format!("{}: {e}", golden_path.display()))?;
+        goldens.insert(g.id.clone(), g);
+    }
+    let expect_dir = Path::new("corpus/expect");
+    let files = collect_pdfs();
+    let mut merged = 0usize;
+    let mut full = 0usize;
+    let mut skipped_not_ok = 0usize;
+    let mut skipped_drift = 0usize;
+    let mut skipped_no_golden = 0usize;
+    let mut skipped_empty = 0usize;
+    let mut examples: Vec<String> = Vec::new();
+    for (id, path) in &files {
+        let dest = expect_dir.join(format!("{id}.toml"));
+        let old = std::fs::read_to_string(&dest).unwrap_or_default();
+        let mut record: ExpectRecord = if old.trim().is_empty() {
+            open_outcome(path)
+        } else {
+            toml::from_str(&old).map_err(|e| format!("{id}: {e}"))?
+        };
+        if record.open != "ok" {
+            skipped_not_ok += 1;
+            continue;
+        }
+        let actual = open_outcome(path);
+        if actual.open != record.open || actual.code != record.code || actual.pages != record.pages
+        {
+            skipped_drift += 1;
+            push_example(&mut examples, &format!("{id} (open drifted)"));
+            continue;
+        }
+        let Some(g) = goldens.get(id) else {
+            skipped_no_golden += 1;
+            push_example(&mut examples, &format!("{id} (no golden)"));
+            continue;
+        };
+        if g.render.is_empty() && g.text.is_none() {
+            skipped_empty += 1;
+            push_example(&mut examples, &format!("{id} (no baseline)"));
+            continue;
+        }
+        if !g.render.is_empty() {
+            record.render = Some(g.render.clone());
+        }
+        if let Some(hash) = &g.text {
+            record.text = Some(TextGolden { hash: hash.clone() });
+        }
+        if g.render.len() >= 3 && g.text.is_some() {
+            full += 1;
+        }
+        let mut serialised = toml::to_string(&record).map_err(|e| format!("{id}: {e}"))?;
+        if let Some(annotation) = crate::synthetic::extract_annotation_table(&old) {
+            serialised.push_str(&annotation);
+        }
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        write_expect(&dest, &serialised, id)?;
+        merged += 1;
+    }
+    println!(
+        "corpus expect merge: {merged} merged ({full} full render+text), \
+         {skipped_not_ok} skipped (open != ok), {skipped_drift} skipped (open drifted), \
+         {skipped_no_golden} skipped (no golden), {skipped_empty} skipped (no baseline)"
+    );
+    for e in examples.iter().take(10) {
+        println!("  skipped: {e}");
+    }
+    Ok(())
+}
+
+fn push_example(examples: &mut Vec<String>, s: &str) {
+    if examples.len() < 64 {
+        examples.push(s.to_string());
+    }
+}
+
+/// Write an expectation record, retrying the transient Windows file locks a
+/// concurrent indexer can hold on `corpus/expect` files (os error 32/1224:
+/// sharing violation / user-mapped section). Six tries with a short backoff;
+/// a lock held longer than that is a genuine failure.
+fn write_expect(dest: &Path, body: &str, id: &str) -> Result<(), String> {
+    let mut last = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        match std::fs::write(dest, body) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(format!("{id}: {}: {last:?}", dest.display()))
+}
+
+/// One `golden.jsonl` line as the text sweep wrote it (the merge reads only
+/// the baseline fields; verdicts live in `verdicts.jsonl`).
+#[derive(serde::Deserialize)]
+struct SweepGolden {
+    id: String,
+    #[serde(default)]
+    render: BTreeMap<String, String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
 /// Shared by `expect-generate` and the synthetic generator so both record
 /// *actual* outcomes â€” the expectation set tracks reality, and `corpus verify`
 /// flags any later drift.
@@ -379,6 +539,9 @@ pub(crate) fn open_outcome_toml(path: &Path) -> Result<String, String> {
 }
 
 /// Write open-outcome expectations for every corpus PDF (SL-0.CORP.03).
+/// Existing records keep their golden `[render]`/`[text]` tables and their
+/// `[annotation]` triage verdicts — regeneration only refreshes the open
+/// outcome, so a re-run can never silently wipe the CORP.03 goldens.
 fn expect_generate() -> Result<(), String> {
     let expect_dir = Path::new("corpus/expect");
     std::fs::create_dir_all(expect_dir).map_err(|e| format!("cannot create corpus/expect: {e}"))?;
@@ -386,18 +549,35 @@ fn expect_generate() -> Result<(), String> {
     let mut ok = 0usize;
     let mut err = 0usize;
     for (id, path) in &files {
-        let record = open_outcome(path);
-        if record.open == "ok" {
+        let fresh = open_outcome(path);
+        if fresh.open == "ok" {
             ok += 1;
         } else {
             err += 1;
         }
         let dest = expect_dir.join(format!("{id}.toml"));
+        let old = std::fs::read_to_string(&dest).unwrap_or_default();
+        let record: ExpectRecord = if old.trim().is_empty() {
+            fresh
+        } else {
+            let mut kept: ExpectRecord = toml::from_str(&old).map_err(|e| format!("{id}: {e}"))?;
+            kept.open = fresh.open;
+            kept.code = fresh.code;
+            kept.pages = fresh.pages;
+            kept
+        };
+        // A file whose open outcome changed out from under a golden baseline
+        // keeps its goldens: `verify` fails on the open drift (loudly), and
+        // the next merge re-baselines the goldens once the drift is
+        // understood — silently dropping them here would hide the change.
+        let mut text = toml::to_string(&record).map_err(|e| format!("{id}: {e}"))?;
+        if let Some(annotation) = crate::synthetic::extract_annotation_table(&old) {
+            text.push_str(&annotation);
+        }
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let text = toml::to_string(&record).map_err(|e| format!("{id}: {e}"))?;
-        std::fs::write(&dest, text).map_err(|e| format!("{id}: {e}"))?;
+        write_expect(&dest, &text, id)?;
     }
     println!(
         "corpus expect generate: {ok} ok, {err} err ({ok} pages-open of {} files)",
@@ -407,34 +587,234 @@ fn expect_generate() -> Result<(), String> {
 }
 
 /// Re-open every corpus PDF and diff against its expectation record,
-/// reporting any outcome changes as a typed diff (SL-0.CORP.03 DoD).
-fn verify() -> Result<(), String> {
+/// reporting any outcome changes as a typed diff (SL-0.CORP.03 DoD). With
+/// `golden`, additionally re-render every recorded golden DPI and
+/// re-extract the page-1 text, diffing the hashes — the full CORP.03
+/// regression check. Any change fails: the command passes on a clean tree.
+fn verify(golden: bool, selis: Option<&Path>) -> Result<(), String> {
     let expect_dir = Path::new("corpus/expect");
     let files = collect_pdfs();
+    let golden_ctx = if golden {
+        Some(golden_context(selis)?)
+    } else {
+        None
+    };
     let mut checked = 0usize;
     let mut changed = 0usize;
+    let mut missing = 0usize;
     for (id, path) in &files {
         let expect_path = expect_dir.join(format!("{id}.toml"));
         let expected: ExpectRecord = match std::fs::read_to_string(&expect_path) {
             Ok(text) => toml::from_str(&text).map_err(|e| format!("{id}: {e}"))?,
             Err(_) => {
                 println!("  {id}: NO EXPECTATION");
+                missing += 1;
                 continue;
             }
         };
         let actual = open_outcome(path);
-        let same = match (&expected, &actual) {
-            (a, b) if a.open != b.open => false,
-            (a, b) if a.code != b.code => false,
-            (a, b) if a.pages != b.pages => false,
-            _ => true,
-        };
+        let same = expected.open == actual.open
+            && expected.code == actual.code
+            && expected.pages == actual.pages;
         checked += 1;
         if !same {
             changed += 1;
             println!("  {id}: expected {:?} got {:?}", expected, actual);
+            continue;
+        }
+        if let Some(ctx) = &golden_ctx {
+            let diffs = verify_golden(ctx, path, &expected);
+            if !diffs.is_empty() {
+                changed += 1;
+                for d in diffs {
+                    println!("  {id}: {d}");
+                }
+            }
         }
     }
-    println!("corpus verify: {checked} checked, {changed} changed");
+    println!("corpus verify: {checked} checked, {changed} changed, {missing} without expectation");
+    if changed > 0 {
+        return Err(format!(
+            "corpus verify: {changed} changed of {checked} checked"
+        ));
+    }
     Ok(())
+}
+
+/// The executables and scratch space a golden verification needs: the
+/// canonicalised selis CLI plus a worker tmp dir outside the repo.
+struct GoldenContext {
+    selis: PathBuf,
+    tmp: PathBuf,
+}
+
+fn golden_context(selis: Option<&Path>) -> Result<GoldenContext, String> {
+    let selis = crate::sweep::resolve_selis(selis)?;
+    let tmp = std::env::temp_dir().join(format!("selis-golden-verify-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    Ok(GoldenContext { selis, tmp })
+}
+
+/// Re-render every recorded golden DPI and re-extract the page-1 text,
+/// returning the typed diffs (empty when the file still matches its
+/// goldens). Files whose open outcome already drifted never reach here.
+fn verify_golden(ctx: &GoldenContext, file: &Path, expected: &ExpectRecord) -> Vec<String> {
+    let mut diffs = Vec::new();
+    let timeout = std::time::Duration::from_secs(120);
+    if let Some(render) = &expected.render {
+        let mut dpis: Vec<&String> = render.keys().collect();
+        dpis.sort();
+        for dpi in dpis {
+            let want = &render[dpi.as_str()];
+            match golden_render_hash(ctx, file, dpi, timeout) {
+                Ok(got) => {
+                    if &got != want {
+                        diffs.push(format!("render MISMATCH @{dpi}"));
+                    }
+                }
+                Err(detail) => diffs.push(format!("render UNREPRODUCIBLE @{dpi} ({detail})")),
+            }
+        }
+    }
+    if let Some(text) = &expected.text {
+        match golden_text_hash(ctx, file, timeout) {
+            Ok(got) => {
+                if got.as_deref() != Some(text.hash.as_str()) {
+                    diffs.push("text MISMATCH".to_string());
+                }
+            }
+            Err(detail) => diffs.push(format!("text UNREPRODUCIBLE ({detail})")),
+        }
+    }
+    diffs
+}
+
+/// The golden render hash of one file at one DPI: `selis render --page 0`
+/// into scratch, sha256 over exactly the bytes the CLI wrote.
+fn golden_render_hash(
+    ctx: &GoldenContext,
+    file: &Path,
+    dpi: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let out = ctx.tmp.join("verify.ppm");
+    let _ = std::fs::remove_file(&out);
+    let args = vec![
+        "render".to_string(),
+        "--page".to_string(),
+        "0".to_string(),
+        "--dpi".to_string(),
+        dpi.to_string(),
+        crate::sweep::path_str(file),
+        crate::sweep::path_str(&out),
+    ];
+    crate::sweep::run_with_timeout(&ctx.selis, &args, timeout)
+        .map_err(|f| crate::sweep::fail_text(&f))?;
+    let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out);
+    Ok(crate::text_sweep::sha256_hex_bytes(&bytes))
+}
+
+/// The golden text hash of one file: `selis extract --format text --page 0`,
+/// normalised N1–N6, sha256 over the UTF-8. `Ok(None)` is a successful
+/// extraction with no text (an image-only page has no text baseline).
+fn golden_text_hash(
+    ctx: &GoldenContext,
+    file: &Path,
+    timeout: std::time::Duration,
+) -> Result<Option<String>, String> {
+    let out = ctx.tmp.join("verify.txt");
+    let _ = std::fs::remove_file(&out);
+    let args = vec![
+        "extract".to_string(),
+        "--format".to_string(),
+        "text".to_string(),
+        "--page".to_string(),
+        "0".to_string(),
+        crate::sweep::path_str(file),
+    ];
+    crate::text_sweep::run_to_file(&ctx.selis, &args, &out, timeout)
+        .map_err(|f| crate::sweep::fail_text(&f))?;
+    let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out);
+    let normalised = crate::text_norm::normalize(&String::from_utf8_lossy(&bytes));
+    if normalised.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::text_sweep::sha256_hex_bytes(
+        normalised.as_bytes(),
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn golden_record() -> ExpectRecord {
+        ExpectRecord {
+            open: "ok".to_string(),
+            code: None,
+            pages: Some(3),
+            render: Some(BTreeMap::from([
+                ("72".to_string(), "ab".repeat(32)),
+                ("150".to_string(), "cd".repeat(32)),
+                ("300".to_string(), "ef".repeat(32)),
+            ])),
+            text: Some(TextGolden {
+                hash: "01".repeat(32),
+            }),
+        }
+    }
+
+    #[test]
+    fn golden_record_round_trips_through_toml() {
+        let text = toml::to_string(&golden_record()).expect("serialise");
+        assert!(text.contains("open = \"ok\""));
+        assert!(text.contains("pages = 3"));
+        assert!(text.contains("[render]"));
+        assert!(text.contains("[text]"));
+        let back: ExpectRecord = toml::from_str(&text).expect("parse");
+        assert_eq!(back.open, "ok");
+        assert_eq!(back.pages, Some(3));
+        assert_eq!(back.render.expect("render").len(), 3);
+        assert_eq!(back.text.expect("text").hash, "01".repeat(32));
+    }
+
+    #[test]
+    fn golden_record_stays_within_the_hygiene_bounds() {
+        // check-wild-hygiene caps expectation records at 768 bytes with no
+        // line over 160 chars: golden hashes are metadata, and the record
+        // must prove it fits.
+        let text = toml::to_string(&golden_record()).expect("serialise");
+        assert!(text.len() <= 768, "golden record is {} bytes", text.len());
+        for line in text.lines() {
+            assert!(line.len() <= 160, "overlong line: {line}");
+        }
+    }
+
+    #[test]
+    fn open_only_record_has_no_golden_tables() {
+        let record = ExpectRecord {
+            open: "err".to_string(),
+            code: Some("TrailerMissingRoot".to_string()),
+            pages: None,
+            render: None,
+            text: None,
+        };
+        let text = toml::to_string(&record).expect("serialise");
+        assert!(!text.contains("[render]"));
+        assert!(!text.contains("[text]"));
+        let back: ExpectRecord = toml::from_str(&text).expect("parse");
+        assert_eq!(back.open, "err");
+        assert!(back.render.is_none() && back.text.is_none());
+    }
+
+    #[test]
+    fn sweep_golden_line_parses_into_the_merge_shape() {
+        let line = r#"{"id":"flat/x","render":{"72":"aa","150":"bb","300":"cc"},"render_err":{},"text":"dd","text_chars":12,"text_err":null}"#;
+        let g: SweepGolden = serde_json::from_str(line).expect("parse");
+        assert_eq!(g.id, "flat/x");
+        assert_eq!(g.render.len(), 3);
+        assert_eq!(g.text.expect("text"), "dd");
+    }
 }

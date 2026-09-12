@@ -137,11 +137,20 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     Report a per-run confidence.
   - **DoD:** Extraction corpus ≥98% agreement with PDFium; files with no `/ToUnicode` and symbolic
     encodings are correctly flagged low-confidence rather than emitting mojibake silently.
+  - **Status:** Marked done before a corpus-wide measurement existed. SL-3.CONF.01 (2026-09-11)
+    falsifies the agreement claim: only 9.8% of comparable files reach ≥98% similarity, and the
+    sweep exposed a concrete defect in this area — non-ASCII text is emitted as literal PDF-string
+    octal escapes ("modèle" → "m o d 3 5 0 le") instead of decoded Unicode (SL-3.TEXT.08).
 - [x] **SL-3.TEXT.03 — Run, word, and line assembly** · deps: TEXT.01 · owner: AI+
   - **Do:** Group glyphs into runs by style continuity, infer word boundaries from advance gaps
     relative to the font's space width, and assemble lines by baseline clustering.
   - **DoD:** Word segmentation matches PDFium on the extraction corpus; a test for the
     "no space characters in the content stream at all" case, which is common in generated PDFs.
+  - **Status:** Marked done before a corpus-wide measurement existed. SL-3.CONF.01 (2026-09-11)
+    falsifies the segmentation claim: the extractor inserts a word break between nearly every
+    glyph ("n° d'identification" → "n 2 6 0 d 'id e n tific a tio n"; the single-word smoke
+    fixture yields "S e lis o ra cle sm o ke te st"), dominating the diff>=25 signature
+    (1,302 files). Root cause and fix tracked as SL-3.TEXT.09.
 - [x] **SL-3.TEXT.04 — Reading order: structure-first, geometry-fallback** · deps: TEXT.03, SL-1.DOC.06 · owner: AI+
   - **Do:** When a structure tree exists, use it (ADR-P0031). Otherwise infer with column detection
     and an XY-cut or similar layout analysis. Return a confidence; never silently guess on a
@@ -160,10 +169,77 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     bbox), or as Markdown/HTML. Foundation for the convert product and for any AI/RAG integration.
   - **DoD:** JSON schema versioned and documented; `selis extract --format=json|text|md|html`.
 
+- [ ] **SL-3.TEXT.08 — Text output must emit Unicode, not PDF string escapes** · deps: TEXT.02 ·
+  owner: AI+ · **filed by SL-3.CONF.01**
+  - **Defect:** The plain-text formatter emits non-ASCII bytes as literal PDF-string octal
+    escapes: "modèle" extracts as "m o d 3 5 0 le" (\350 printed as digits), "n°" as "n 2 6 0".
+    Affects every file with non-ASCII text; on the CONF.01 sweep it is a primary cause of the
+    `diff>=25` signature (1,302 files, the corpus's largest divergence cluster after word
+    splitting).
+  - **Do:** Decode through ToUnicode/encoding to Unicode and emit UTF-8 in all text formats; add
+    a formatter test with é/°/CJK through each of `--format text|json|md|html`; verify the CONF.01
+    sweep's `diff>=25` cluster shrinks accordingly.
+- [ ] **SL-3.TEXT.09 — Word-gap inference splits every glyph** · deps: TEXT.03 · owner: AI+ ·
+  **filed by SL-3.CONF.01**
+  - **Defect:** The extractor's inter-glyph gap threshold treats nearly every advance as a word
+    break, so all text extracts as single-glyph "words" ("S e lis o ra cle sm o ke te st" for the
+    one-line smoke fixture; "n 2 6 0 d 'id e n tific a tio n" for "n° d'identification").
+    Rendering is unaffected (the CONF.01 render sweep passes G2), so the defect is in the
+    extraction path's gap→space inference, not in advance computation — prime suspect is a
+    text-space/font-unit scale mismatch in the extractor's gap threshold.
+  - **Do:** Fix the threshold against the font's space width; add the TEXT.03 DoD's
+    "no space characters in the content stream" test at the extractor level; the CONF.01 sweep's
+    `match` band should rise from 9.8% toward the G3 bar.
+- [ ] **SL-3.TEXT.10 — Silent empty extraction on text-bearing pages** · deps: TEXT.01 ·
+  owner: AI+ · **filed by SL-3.CONF.01**
+  - **Defect:** 117 corpus files extract zero characters with selis while MuPDF recovers text
+    (e.g. TAMReview: mutool 1,696 chars, selis 0 — and the page renders non-blank at 72 DPI, so
+    text-showing operators execute). No error is surfaced: the typed outcome is a silent empty
+    string, indistinguishable from a blank page.
+  - **Do:** Diagnose the operator/font path that drops the text (the sweep's verdicts carry the
+    file list and per-file font inventory on `C:\selis-build\conf01-text`); emit a low-confidence
+    marker instead of silently returning empty on pages whose display list drew text.
+
 ---
 
 ## 3.CONF — Conformance checkpoint
 
-- [ ] **SL-3.CONF.01 — Full text/font differential sweep** · owner: AI+
+- [x] **SL-3.CONF.01 — Full text/font differential sweep** · owner: AI+
   - **Do:** Render + extract the whole corpus against PDFium and pdf.js; triage; file per root cause.
+  - **Status:** Sweep run 2026-09-11 over all 3,836 corpus PDFs (page 1 per file), selis vs the
+    MuPDF text oracle locally (`mutool draw -F txt`, mutool 1.23.0), selis golden renders hashed
+    at 72/150/300 DPI (selis pinned binary sha256 `f4a21235…22c911a`). Normaliser N1–N6
+    documented and unit-tested in `xtask/src/text_norm.rs` (bidi controls stripped, soft hyphens
+    and hyphen-linebreak joins, ligature folding, whitespace collapse; mirroring deliberately
+    NOT folded). Sweep harness `cargo xtask oracle text-sweep` (`xtask/src/text_sweep.rs`,
+    worker pool/resume/typed outcomes mirroring the render sweep); artifacts (verdicts.jsonl,
+    golden.jsonl, text-report.json) on `C:\selis-build\conf01-text`, never in the repo. PDFium/
+    pdf.js text legs wired into the scheduled `render-conf` job (drivers gained `--text` modes;
+    oracle-images smoke extended; **digests must be re-pinned in xtask/oracles.toml after the
+    oracle-images job rebuilds the images — until then those two CI legs fail loudly against the
+    old images**; the mutool leg runs against the current pin immediately).
+  - **Readout (honest):** G3 bar (≥98% normalised similarity on ≥95% of comparable files) **not
+    met**: 169/1,718 comparable = 9.8%. Comparable = both sides produced text. The itemised gap
+    list, by signature (files; weight×3 for wild/govdocs):
+    * `empty_both` 2,039 — no text on page 1 on either side (image-only/blank test-suite pages);
+      expected, not a failure.
+    * `diff>=25` 1,302 — the systemic extraction defect, two root causes (SL-3.TEXT.09 word-gap
+      inference splits nearly every glyph: "n 2 6 0 d 'id e n tific a tio n" for
+      "n° d'identification", 160F-2019; even the smoke fixture extracts "S e lis o ra cle sm o ke
+      te st"; SL-3.TEXT.08 non-ASCII emitted as literal PDF-string octal escapes:
+      "m o d 3 5 0 le" for "modèle", \350 as digits).
+    * `diff<25` 118 + `diff<5` 5 — same causes, milder.
+    * `empty_selis` 117 — selis extracts nothing where MuPDF finds text (SL-3.TEXT.10; e.g.
+      TAMReview: mutool 1,696 chars, selis 0, page renders non-blank).
+    * `empty_oracle` 9 — selis recovers text MuPDF misses (selis superset; keep).
+    * Rejections/timeouts: `both_reject` 23, `oracle_rejects` 33 (12 with clean stderr: mutool
+      refuses encrypted-no-password files selis recovers), `selis_rejects` 17 (14× E1103
+      recover-root, 2× budget, 1× zero pages), 6 timeouts — mostly pre-existing recovery/scope
+      items (SL-2.CONF.02 areas), none new.
+  - **Font side (recorded per file, oracle inventory + selis span fonts; verdicts carry both):**
+    all_embedded 1,107 comparable (38 within G3), has_external 392 (28), has_type3 63 (3),
+    no-inventory 156 (100). Divergence is **systemic, not substitution-driven**: unembedded-font
+    files diverge at 92.9% vs 96.6% for fully-embedded — a real but marginal elevation; the
+    dominant cause (TEXT.08/09) hits both classes. Type3-heavy files diverge most in relative
+    terms (95.2%) but are 63 files. No verdict may blame substitution while TEXT.09 stands.
 - [ ] **SL-3.CONF.02 — Promote conformance areas; publish the report** · owner: AI

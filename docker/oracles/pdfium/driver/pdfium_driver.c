@@ -2,8 +2,10 @@
  * pdfium render driver for the pinned PDFium oracle container (SL-0.ORACLE.01).
  *
  * CLI contract (must match `xtask oracle render`, which invokes the container
- * with: <driver> --page N --dpi N <in.pdf> <out.png>):
+ * with: <driver> --page N --dpi N <in.pdf> <out.png>; the SL-3.CONF.01 text
+ * leg invokes: <driver> --page N --text <out.txt> <in.pdf>):
  *     pdfium_driver --page <n> --dpi <n> <in.pdf> <out.png>
+ *     pdfium_driver --page <n> --text <out.txt> <in.pdf>
  *
  * Renders one page (1-based, default 1) at `--dpi` into a PNG. PNG encoding
  * uses a tiny self-contained writer (no libpng dependency): zlib stored
@@ -22,6 +24,7 @@
 #include <string.h>
 
 #include "fpdfview.h"
+#include "fpdf_text.h"
 
 /* ---- minimal PNG writer (zlib stream with stored (uncompressed) blocks) --- */
 
@@ -171,6 +174,15 @@ static int arg_int(int argc, char **argv, const char *name, int fallback) {
     return fallback;
 }
 
+static const char *arg_str(int argc, char **argv, const char *name,
+                           const char *fallback) {
+    for (int i = 1; i < argc - 1; i++) {
+        if (strcmp(argv[i], name) == 0)
+            return argv[i + 1];
+    }
+    return fallback;
+}
+
 static const char *arg_pos(int argc, char **argv, int want) {
     /* Positional arguments are the ones not consumed by --name value pairs. */
     static const char *pos[8];
@@ -188,14 +200,92 @@ static const char *arg_pos(int argc, char **argv, int want) {
     return pos[want];
 }
 
+/* ---- text extraction (SL-3.CONF.01) -----------------------------------------
+ * FPDFText yields UTF-16LE; this encodes it as UTF-8 (lone surrogates become
+ * U+FFFD). Output is capped at TEXT_MAX_CHARS code units: a monster page
+ * fails loudly (a typed oracle failure in the sweep) rather than silently
+ * truncating, so a capped extraction can never masquerade as a complete one.
+ */
+#define TEXT_MAX_CHARS (2u * 1024u * 1024u)
+
+static void put_utf8(FILE *f, uint32_t cp) {
+    if (cp < 0x80) {
+        fputc((int)cp, f);
+    } else if (cp < 0x800) {
+        fputc((int)(0xC0 | (cp >> 6)), f);
+        fputc((int)(0x80 | (cp & 0x3F)), f);
+    } else if (cp < 0x10000) {
+        fputc((int)(0xE0 | (cp >> 12)), f);
+        fputc((int)(0x80 | ((cp >> 6) & 0x3F)), f);
+        fputc((int)(0x80 | (cp & 0x3F)), f);
+    } else {
+        fputc((int)(0xF0 | (cp >> 18)), f);
+        fputc((int)(0x80 | ((cp >> 12) & 0x3F)), f);
+        fputc((int)(0x80 | ((cp >> 6) & 0x3F)), f);
+        fputc((int)(0x80 | (cp & 0x3F)), f);
+    }
+}
+
+/* Returns 0 on success, -1 on I/O failure, -2 when the page exceeds the cap. */
+static int write_page_text(FPDF_PAGE page, const char *path) {
+    FPDF_TEXTPAGE tp = FPDFText_LoadPage(page);
+    if (!tp)
+        return -1;
+    int n = FPDFText_CountChars(tp);
+    if (n < 0)
+        n = 0;
+    if ((unsigned)n > TEXT_MAX_CHARS) {
+        FPDFText_ClosePage(tp);
+        return -2;
+    }
+    unsigned short *buf = malloc(((size_t)n + 16) * sizeof(unsigned short));
+    if (!buf) {
+        FPDFText_ClosePage(tp);
+        return -1;
+    }
+    int got = FPDFText_GetText(tp, 0, n, buf);
+    FPDFText_ClosePage(tp);
+    if (got < 0)
+        got = 0;
+    if (got > n)
+        got = n;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        free(buf);
+        return -1;
+    }
+    for (int i = 0; i < got; i++) {
+        uint32_t u = buf[i];
+        if (u >= 0xD800 && u <= 0xDBFF && i + 1 < got) {
+            uint32_t lo = buf[i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                u = 0x10000u + ((u - 0xD800u) << 10) + (lo - 0xDC00u);
+                i++;
+            } else {
+                u = 0xFFFDu;
+            }
+        } else if (u >= 0xD800 && u <= 0xDFFF) {
+            u = 0xFFFDu;
+        }
+        put_utf8(f, u);
+    }
+    free(buf);
+    int ok = ferror(f) == 0;
+    if (fclose(f) != 0)
+        ok = 0;
+    return ok ? 0 : -1;
+}
+
 int main(int argc, char **argv) {
     int page_no = arg_int(argc, argv, "--page", 1);
     int dpi = arg_int(argc, argv, "--dpi", 150);
+    const char *out_txt = arg_str(argc, argv, "--text", NULL);
     const char *in_pdf = arg_pos(argc, argv, 0);
     const char *out_png = arg_pos(argc, argv, 1);
-    if (!in_pdf || !out_png) {
+    if (!in_pdf || (!out_png && !out_txt)) {
         fprintf(stderr,
-                "usage: pdfium_driver --page <n> --dpi <n> <in.pdf> <out.png>\n");
+                "usage: pdfium_driver --page <n> --dpi <n> [--text <out.txt>] "
+                "<in.pdf> [out.png]\n");
         return 2;
     }
     if (dpi <= 0 || page_no <= 0) {
@@ -233,6 +323,24 @@ int main(int argc, char **argv) {
         FPDF_CloseDocument(doc);
         FPDF_DestroyLibrary();
         return 1;
+    }
+    if (out_txt) {
+        int rc = write_page_text(page, out_txt);
+        FPDF_ClosePage(page);
+        FPDF_CloseDocument(doc);
+        FPDF_DestroyLibrary();
+        if (rc == -2) {
+            fprintf(stderr, "pdfium_driver: page %d exceeds the text cap\n",
+                    page_no);
+            return 1;
+        }
+        if (rc != 0) {
+            fprintf(stderr, "pdfium_driver: cannot write %s\n", out_txt);
+            return 1;
+        }
+        printf("pdfium driver: extracted page %d of %s -> %s\n", page_no,
+               in_pdf, out_txt);
+        return 0;
     }
     double scale = (double)dpi / 72.0;
     int w = (int)(FPDF_GetPageWidthF(page) * scale + 0.5);

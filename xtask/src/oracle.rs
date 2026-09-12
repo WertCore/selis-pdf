@@ -1022,6 +1022,286 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
+// ── Text-oracle legs (SL-3.CONF.01) ────────────────────────────────────────
+
+/// One font in the oracle's page-1 inventory (the CONF.01 font side).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OracleFont {
+    /// The font's base name (`ABCDEF+ArialMT`, `Helvetica`, or empty for an
+    /// anonymous Type3 font).
+    pub(crate) name: String,
+    /// The font type token as reported (`Type1`, `TrueType`, `Type3`, …).
+    pub(crate) ftype: String,
+    /// The embedding class (see [`FontClass`]).
+    pub(crate) class: FontClass,
+}
+
+/// The embedding class of an inventoried font.
+///
+/// The oracle inventory (`mutool info -F`) reports the base name and the
+/// type, not the embedding. The subset tag is the only certain signal: a
+/// producer-applied `XXXXXX+` prefix means the font program is embedded.
+/// Everything else is classed [`FontClass::External`] — unembedded (selis
+/// substitutes or falls back) *or* fully embedded without a subset tag, and
+/// the inventory cannot tell the two apart. The sweep treats `External` as
+/// a substitution *candidate* and says so in the report, rather than
+/// asserting a substitution it cannot see.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FontClass {
+    /// A subset-tagged name (`ABCDEF+…`): certainly embedded.
+    Embedded,
+    /// No subset tag and not Type3: selis substitutes or falls back, unless
+    /// the producer embedded the full program untagged.
+    External,
+    /// A Type3 font (glyphs are content streams, often without a Unicode
+    /// mapping): extraction divergence is expected, not a recovery bug.
+    Type3,
+}
+
+/// The exact command that extracts **page 1** of `file` into `out` (a UTF-8
+/// text file) with the named text oracle: local-first, pinned-container
+/// fallback. Spawned through the sweep's wall-clock budget; the caller reads
+/// `out` back (mutool writes no page header when `-o` is used).
+///
+/// Every oracle is pinned to page 1, like the render legs: selis's `--page
+/// 0` (0-based) is the same page as the oracles' page 1.
+pub(crate) fn plan_oracle_text(
+    tool: &str,
+    file: &Path,
+    out: &Path,
+) -> Result<(PathBuf, Vec<String>), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    if tool == "pdfjs" {
+        if let Some(plan) = pdfjs_local_text_plan(file, out) {
+            return Ok(plan);
+        }
+    } else if let Some(binary) = local_binary(tool) {
+        let (file_str, out_str) = (file.display().to_string(), out.display().to_string());
+        let args = match tool {
+            "mupdf" | "mutool" => vec![
+                "draw".to_string(),
+                "-F".to_string(),
+                "txt".to_string(),
+                "-o".to_string(),
+                out_str,
+                file_str,
+                // Page range: page 1 only (see doc comment).
+                "1".to_string(),
+            ],
+            // The pinned driver's `--text` mode (docker/oracles/pdfium);
+            // an older local driver without the flag fails loudly with its
+            // usage line, which the sweep records as a typed oracle failure.
+            "pdfium" => vec![
+                "--page".to_string(),
+                "1".to_string(),
+                "--text".to_string(),
+                out_str,
+                file_str,
+            ],
+            other => return Err(format!("unknown text oracle tool `{other}`")),
+        };
+        return Ok((canonical_binary(binary), args));
+    }
+    container_text_plan(tool, file, out)
+}
+
+/// The local pdf.js text plan when the pinned driver + its `npm ci`ed
+/// dependencies are present (same identity rule as the render leg).
+fn pdfjs_local_text_plan(file: &Path, out: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let dir = Path::new("docker/oracles/pdfjs");
+    if !dir.join("driver.mjs").is_file() || !dir.join("node_modules/pdfjs-dist").is_dir() {
+        return None;
+    }
+    let node = find_local("node")?;
+    let script = dir.join("driver.mjs").display().to_string();
+    Some((
+        canonical_binary(node),
+        vec![
+            script,
+            "--page".to_string(),
+            "1".to_string(),
+            "--text".to_string(),
+            out.display().to_string(),
+            file.display().to_string(),
+        ],
+    ))
+}
+
+/// The exact command that reports the **page-1** font inventory of `file`
+/// with the named oracle, captured from stdout. Only `mutool`/`mupdf` has a
+/// font-inventory leg (`mutool info -F`); PDFium's text API exposes no font
+/// query and pdf.js font names are resource-scoped guesses, so those tools
+/// report "no leg" and the sweep records the gap instead of inventing one.
+pub(crate) fn plan_oracle_fonts(tool: &str, file: &Path) -> Result<(PathBuf, Vec<String>), String> {
+    if !file.exists() {
+        return Err(format!("{}: no such file", file.display()));
+    }
+    if tool != "mutool" && tool != "mupdf" {
+        return Err(format!("{tool}: no font-inventory leg (mutool only)"));
+    }
+    if let Some(binary) = local_binary(tool) {
+        return Ok((
+            canonical_binary(binary),
+            vec![
+                "info".to_string(),
+                "-F".to_string(),
+                file.display().to_string(),
+                "1".to_string(),
+            ],
+        ));
+    }
+    // Pinned-container leg: the mupdf image's entrypoint is mutool itself.
+    let pins = load_pins()?;
+    let pin = pins
+        .get("mupdf")
+        .ok_or_else(|| format!("{tool}: no [tool.mupdf] pin recorded in {ORACLES_TOML}"))?;
+    let image = image_ref(pin, tool)?;
+    let mount_in = format!(
+        "{}:/in.pdf:ro",
+        file.canonicalize().map_err(|e| e.to_string())?.display()
+    );
+    Ok((
+        PathBuf::from("docker"),
+        vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-v".to_string(),
+            mount_in,
+            image,
+            "info".to_string(),
+            "-F".to_string(),
+            "/in.pdf".to_string(),
+            "1".to_string(),
+        ],
+    ))
+}
+
+/// The pinned-container text-extraction plan: the file is mounted read-only
+/// at `/in.pdf`, the text written to `/out.txt`. The argv per tool mirrors
+/// the driver contracts — `mutool draw` takes `-F txt -o`, the pdfium/pdf.js
+/// drivers take `--page 1 --text` (their images' entrypoints are the
+/// drivers, like the render legs).
+fn container_text_plan(
+    tool: &str,
+    file: &Path,
+    out: &Path,
+) -> Result<(PathBuf, Vec<String>), String> {
+    if find_local("docker").is_none() {
+        return Err(format!(
+            "{tool}: not installed locally and Docker is not available. \
+             Install the tool (e.g. `choco install mupdf`) or Docker."
+        ));
+    }
+    let pins = load_pins()?;
+    let pin = pins
+        .get(tool)
+        .ok_or_else(|| format!("{tool}: no [tool.{tool}] pin recorded in {ORACLES_TOML}"))?;
+    let image = image_ref(pin, tool)?;
+    let mount_in = format!(
+        "{}:/in.pdf:ro",
+        file.canonicalize().map_err(|e| e.to_string())?.display()
+    );
+    let mount_out = format!("{}:/out.txt", out.display());
+    let tool_args = match tool {
+        "mupdf" | "mutool" => vec![
+            "draw".to_string(),
+            "-F".to_string(),
+            "txt".to_string(),
+            "-o".to_string(),
+            "/out.txt".to_string(),
+            "/in.pdf".to_string(),
+            // Page range: page 1 only (see `plan_oracle_text`).
+            "1".to_string(),
+        ],
+        "pdfium" | "pdfjs" => vec![
+            "--page".to_string(),
+            "1".to_string(),
+            "--text".to_string(),
+            "/out.txt".to_string(),
+            "/in.pdf".to_string(),
+        ],
+        other => return Err(format!("unknown text oracle tool `{other}`")),
+    };
+    let mut args: Vec<String> = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "-v".to_string(),
+        mount_in,
+        "-v".to_string(),
+        mount_out,
+        image,
+    ];
+    args.extend(tool_args);
+    Ok((PathBuf::from("docker"), args))
+}
+
+/// Canonicalised absolute form of a spawned executable (long verapdf paths
+/// exceed MAX_PATH otherwise); falls back to the given path when
+/// canonicalisation fails.
+fn canonical_binary(p: PathBuf) -> PathBuf {
+    crate::sweep::unverbatim(&p.canonicalize().unwrap_or(p))
+}
+
+/// Parse `mutool info -F` output into the page-`page` font inventory.
+///
+/// A font line looks like `\t1\t(22 0 R):\tType1 'ACAAKP+LucidaSans-Bold'
+/// (31 0 R)` or `\t1\t(6 0 R):\tType3 '' (10 0 R)` — page, object ref, the
+/// type token, the quoted base name (empty for anonymous Type3 fonts), and
+/// an optional encoding. Anything else is ignored: the inventory is a
+/// heuristic input, and a line the parser does not understand is skipped,
+/// never fatal.
+pub(crate) fn parse_mutool_fonts(info: &str, page: u32) -> Vec<OracleFont> {
+    let mut out = Vec::new();
+    for line in info.lines() {
+        let Some(rest) = line.strip_prefix('\t') else {
+            continue;
+        };
+        let mut cols = rest.split('\t');
+        let (Some(page_col), Some(ref_col), Some(desc)) = (cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        if page_col.trim().parse::<u32>().ok() != Some(page) {
+            continue;
+        }
+        if !ref_col.contains(" 0 R") {
+            continue;
+        }
+        let Some(quote) = desc.find('\'') else {
+            continue;
+        };
+        let ftype = desc[..quote].trim().to_string();
+        let after = &desc[quote + 1..];
+        let Some(end) = after.find('\'') else {
+            continue;
+        };
+        let name = after[..end].to_string();
+        if ftype.is_empty() {
+            continue;
+        }
+        let class = classify_font(&ftype, &name);
+        out.push(OracleFont { name, ftype, class });
+    }
+    out
+}
+
+/// The embedding class from the type token and the base name: Type3 by
+/// type, embedded by subset tag (`XXXXXX+…`), external otherwise (see
+/// [`FontClass`] for why untagged-embedded is not distinguished).
+fn classify_font(ftype: &str, name: &str) -> FontClass {
+    if ftype.replace(' ', "").eq_ignore_ascii_case("type3") {
+        return FontClass::Type3;
+    }
+    if let Some((tag, _)) = name.split_once('+') {
+        if !tag.is_empty() && tag.len() <= 6 && tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return FontClass::Embedded;
+        }
+    }
+    FontClass::External
+}
+
 // ── Triage workflow (SL-0.ORACLE.05) ───────────────────────────────────────
 
 /// One triage cluster: files sharing a disagreement signature.
@@ -1481,6 +1761,44 @@ licence = "AGPL-3.0"
     fn empty_pins_file_is_rejected() {
         assert!(parse_pins("# nothing here\n").is_err());
         assert!(parse_pins("not = \"toml schema\"\n").is_err());
+    }
+
+    #[test]
+    fn mutool_font_lines_parse_into_typed_inventory() {
+        let info = "Info object (15 0 R):\n<</Title(x)>>\nPages: 1\n\n\
+            Retrieving info from pages 1-1...\nFonts (3):\n\
+            \t1\t(22 0 R):\tType1 'ACAAKP+LucidaSans-Bold' (31 0 R)\n\
+            \t1\t(5 0 R):\tType1 'Helvetica' WinAnsiEncoding (3 0 R)\n\
+            \t1\t(6 0 R):\tType3 '' (10 0 R)\n";
+        let fonts = parse_mutool_fonts(info, 1);
+        assert_eq!(fonts.len(), 3);
+        assert_eq!(fonts[0].name, "ACAAKP+LucidaSans-Bold");
+        assert_eq!(fonts[0].ftype, "Type1");
+        assert_eq!(fonts[0].class, FontClass::Embedded);
+        assert_eq!(fonts[1].class, FontClass::External);
+        assert_eq!(fonts[2].ftype, "Type3");
+        assert_eq!(fonts[2].class, FontClass::Type3);
+        // Other pages are excluded; header lines never parse.
+        assert!(parse_mutool_fonts(info, 2).is_empty());
+    }
+
+    #[test]
+    fn font_classification_is_documented_not_clever() {
+        // Subset tags of any short alphanumeric shape count as embedded.
+        assert_eq!(
+            classify_font("TrueType", "XRIMAZ+ArialMT"),
+            FontClass::Embedded
+        );
+        assert_eq!(classify_font("CIDFontType2", "AB+Foo"), FontClass::Embedded);
+        // Untagged names are external even when they look system-standard.
+        assert_eq!(classify_font("Type1", "Helvetica"), FontClass::External);
+        assert_eq!(classify_font("TrueType", "ArialMT"), FontClass::External);
+        // A stray '+' does not make an embedded font.
+        assert_eq!(classify_font("Type1", "+Foo"), FontClass::External);
+        assert_eq!(classify_font("Type1", "ABCDEFG+Foo"), FontClass::External);
+        // Type3 by type token, whatever the name (often empty).
+        assert_eq!(classify_font("Type3", ""), FontClass::Type3);
+        assert_eq!(classify_font("Type 3", "Foo"), FontClass::Type3);
     }
 
     #[test]
