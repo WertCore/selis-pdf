@@ -6,7 +6,7 @@
 //! ordering trap that is easy to get subtly wrong: in `f W`, the fill paints
 //! with the *old* clip and the clip applies to everything after.
 
-use selis_geom::{Point, Rect};
+use selis_geom::{Matrix, Point, Rect};
 
 /// A path segment.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +41,30 @@ impl Path {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The path with every point transformed by `m` (RAST.14: clip paths are
+    /// frozen in user space at the time the clip is set, §8.5.4 — later `cm`
+    /// changes must not move them).
+    #[must_use]
+    pub fn transformed(&self, m: Matrix) -> Self {
+        let map = |p: Point| m.apply(p);
+        Self {
+            segments: self
+                .segments
+                .iter()
+                .map(|s| match s {
+                    Segment::Move(p) => Segment::Move(map(*p)),
+                    Segment::Line(p) => Segment::Line(map(*p)),
+                    Segment::Cubic(a, b, c) => Segment::Cubic(map(*a), map(*b), map(*c)),
+                    Segment::CubicFirst(b, c) => Segment::CubicFirst(map(*b), map(*c)),
+                    Segment::CubicSecond(a, c) => Segment::CubicSecond(map(*a), map(*c)),
+                    Segment::Close => Segment::Close,
+                })
+                .collect(),
+            current: self.current.map(map),
+            subpath_start: self.subpath_start.map(map),
+        }
     }
 
     /// `m x y` — start a new subpath.
