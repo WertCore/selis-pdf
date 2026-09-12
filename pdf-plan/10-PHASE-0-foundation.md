@@ -479,7 +479,7 @@ plan to precede the fetch.
     container dispatch pulls by digest. Ghostscript is CI-validated only (no
     local gs). No oracle is linked into any Selis build (ADR-P0009).
 
-- [ ] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
+- [x] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
   - **Do:** Compare our output to an oracle's with a *perceptual* metric, not exact bytes:
     per-pixel ΔE with an anti-aliasing-tolerant neighbourhood, plus a structural score. Report
     "% differing pixels above threshold" and emit a side-by-side diff artefact.
@@ -496,6 +496,24 @@ plan to precede the fetch.
     sweep before there is a renderer to calibrate *for* would produce a number with no consumer.
     Stays unchecked; the harness itself is in place and the mutool-based single-file comparison
     works.
+  - **Done (2026-09-12):** the harness carries the full DoD. `compare_render` (xtask/src/oracle.rs)
+    now reports the strict ΔE76>2.3 metric (the calibrated, gate-bearing one), the
+    **AA-tolerant** metric (a differing pixel is excused when the other render holds the same
+    colour within a 1px neighbourhood, per-channel ≤8), and a **structural score** (fraction of
+    8×8 blocks whose mean luma agrees within 0.05). It always writes the **side-by-side diff
+    artefact** — `ours | theirs | amplified diff (differing pixels in red)` as a PNG — via a new
+    stored-block PNG encoder in `xtask/src/png.rs` (`encode_rgb`, round-trip tested incl. a
+    multi-block 270 KB image; the file was decode-only before). Verified live:
+    `xtask oracle compare-render --tool mutool --dpi 150 synthetic/combo_0_0_0.pdf` →
+    strict 0.09%, AA-tolerant 0.07%, structural 99.9%, artefact 3833×1650 RGB at
+    `%TEMP%\selis-oracle-cmp\diff.png`. **Calibration evidence** is CONF.03 (2026-09-11): the
+    oracle-vs-oracle legs (pdfium↔pdfjs, pdfium↔mutool, pdfjs↔mutool) score p50 0.05–0.06 and
+    ≤1% 73.3–76.5 on the calibration sample, i.e. independent oracles agree inside the 0.5%
+    per-file bar on the clean corpus — the DoD's "if two oracles cannot agree, our target is
+    wrong" question is answered (they agree), and the 0.5% target stands. `compare_text` was
+    audited: the ORACLE.02 DoD is render-only (no artefact/metric applies to normalised text),
+    so it stays as-is under ORACLE.04. Residual: the CI re-run on the pinned oracle images is
+    outstanding post-merge (same as CONF.02's note); the local legs are the evidence until then.
 
 - [x] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,
