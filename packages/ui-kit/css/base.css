@@ -1,0 +1,403 @@
+/* Selis base styles (SL-4.UI.10) — hand-rolled, token-driven, no component
+ * library (ADR-P0021). Every colour, space, radius, and duration comes from
+ * css/tokens.css custom properties; nothing here may hard-code a value the
+ * tokens define. Classnames stay under the `selis-` namespace (a unit test
+ * enforces both rules).
+ *
+ * Themes key on the host element (typically <html> or the viewer root):
+ *   [data-theme="light"|"dark"] [data-contrast="high"]
+ *   [data-density="compact"]    [data-motion="reduced"]
+ * Tokens default to light / normal contrast / comfortable / system motion.
+ */
+
+/* ── Shell ─────────────────────────────────────────────────────────────── */
+
+.selis-root,
+.selis-root * {
+	box-sizing: border-box;
+}
+
+.selis-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	background: var(--selis-color-bg);
+	color: var(--selis-color-text);
+	font-family: var(--selis-font-sans);
+	font-size: var(--selis-text-md);
+	line-height: var(--selis-leading-normal);
+	-webkit-font-smoothing: antialiased;
+}
+
+.selis-root :focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+	border-radius: var(--selis-radius-sm);
+}
+
+.selis-root ::selection {
+	background: var(--selis-color-selection-bg);
+	color: var(--selis-color-selection-text);
+}
+
+.selis-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+
+.selis-toolbar {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-density-control-gap);
+	padding: var(--selis-density-toolbar-pad-block) var(--selis-density-toolbar-pad-inline);
+	background: var(--selis-color-surface);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	z-index: var(--selis-z-toolbar);
+}
+
+.selis-toolbar__spacer {
+	flex: 1;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.selis-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--selis-space-2);
+	height: var(--selis-density-control-height);
+	padding: 0 var(--selis-density-control-pad-x);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-surface);
+	color: var(--selis-color-text);
+	font: inherit;
+	font-weight: var(--selis-weight-medium);
+	cursor: pointer;
+	transition: background-color var(--selis-duration-fast) var(--selis-ease-standard), border-color
+		var(--selis-duration-fast) var(--selis-ease-standard);
+}
+
+.selis-btn:hover:not(:disabled) {
+	background: var(--selis-color-surface-sunken);
+}
+
+.selis-btn:active:not(:disabled) {
+	border-color: var(--selis-color-border-strong);
+}
+
+.selis-btn:disabled {
+	color: var(--selis-color-text-disabled);
+	border-color: var(--selis-color-border-subtle);
+	cursor: default;
+}
+
+.selis-btn--primary {
+	background: var(--selis-color-accent);
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-on-accent);
+}
+
+.selis-btn--primary:hover:not(:disabled) {
+	background: var(--selis-color-accent-hover);
+	border-color: var(--selis-color-accent-hover);
+}
+
+.selis-btn--quiet {
+	border-color: transparent;
+	background: transparent;
+}
+
+.selis-btn--quiet:hover:not(:disabled) {
+	background: var(--selis-color-accent-soft);
+}
+
+.selis-btn--danger {
+	background: var(--selis-color-danger);
+	border-color: var(--selis-color-danger);
+	color: var(--selis-color-on-accent);
+}
+
+.selis-btn--danger:hover:not(:disabled) {
+	filter: brightness(1.1);
+}
+
+.selis-btn--icon {
+	width: var(--selis-density-control-height);
+	padding: 0;
+}
+
+/* ── Inputs ────────────────────────────────────────────────────────────── */
+
+.selis-input {
+	height: var(--selis-density-control-height);
+	padding: 0 var(--selis-density-control-pad-x);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-surface);
+	color: var(--selis-color-text);
+	font: inherit;
+}
+
+.selis-input::placeholder {
+	color: var(--selis-color-text-muted);
+}
+
+.selis-input:hover {
+	border-color: var(--selis-color-focus-ring);
+}
+
+/* ── Panels and lists (outline, thumbnails) ────────────────────────────── */
+
+.selis-panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: var(--selis-color-surface);
+	border-right: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	z-index: var(--selis-z-panel);
+}
+
+.selis-panel__header {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	height: var(--selis-density-panel-header-height);
+	padding: 0 var(--selis-space-4);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-semibold);
+	color: var(--selis-color-text-secondary);
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.selis-panel__body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: var(--selis-space-3);
+}
+
+.selis-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-1);
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.selis-list__item {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	min-height: var(--selis-density-row-height);
+	padding: 0 var(--selis-space-3);
+	border-radius: var(--selis-radius-md);
+	color: var(--selis-color-text-secondary);
+	cursor: pointer;
+}
+
+.selis-list__item:hover {
+	background: var(--selis-color-surface-sunken);
+}
+
+.selis-list__item[aria-current="true"] {
+	background: var(--selis-color-accent-soft);
+	color: var(--selis-color-text);
+	font-weight: var(--selis-weight-medium);
+}
+
+/* ── Document area and page tiles ──────────────────────────────────────── */
+
+.selis-doc-area {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	background: var(--selis-color-surface-sunken);
+	padding: var(--selis-space-6);
+}
+
+.selis-page-list {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--selis-density-page-gap);
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.selis-page-tile {
+	position: relative;
+	background: var(--selis-color-surface);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border-radius: var(--selis-radius-sm);
+	box-shadow: var(--selis-shadow-1);
+	overflow: hidden;
+}
+
+.selis-page-tile--loading {
+	background: var(--selis-color-page-placeholder);
+	box-shadow: none;
+}
+
+.selis-page-tile__label {
+	position: absolute;
+	inset-inline-end: var(--selis-space-2);
+	inset-block-end: var(--selis-space-2);
+	padding: 0 var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	background: var(--selis-color-page-placeholder);
+	color: var(--selis-color-page-placeholder-text);
+	font-family: var(--selis-font-mono);
+	font-size: var(--selis-text-xs);
+	line-height: var(--selis-leading-tight);
+}
+
+/* ── Text layer, selection, search highlights (UI.04/UI.05 build on these) ── */
+
+.selis-text-layer {
+	position: absolute;
+	inset: 0;
+	color: transparent;
+	cursor: text;
+	user-select: text;
+}
+
+.selis-highlight {
+	position: absolute;
+	background: var(--selis-color-highlight-bg);
+	border-radius: var(--selis-radius-sm);
+	mix-blend-mode: multiply;
+}
+
+[data-theme="dark"] .selis-highlight {
+	mix-blend-mode: screen;
+}
+
+.selis-highlight--active {
+	background: var(--selis-color-highlight-active-bg);
+}
+
+/* ── Badges and status (health panel, UI.09) ───────────────────────────── */
+
+.selis-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--selis-space-2);
+	height: var(--selis-density-row-height);
+	padding: 0 var(--selis-space-3);
+	border-radius: var(--selis-radius-full);
+	font-size: var(--selis-text-xs);
+	font-weight: var(--selis-weight-medium);
+}
+
+.selis-badge--success {
+	background: var(--selis-color-success-soft);
+	color: var(--selis-color-success-text);
+}
+
+.selis-badge--warning {
+	background: var(--selis-color-warning-soft);
+	color: var(--selis-color-warning-text);
+}
+
+.selis-badge--danger {
+	background: var(--selis-color-danger-soft);
+	color: var(--selis-color-danger-text);
+}
+
+/* ── Dialogs, error and empty states (UI.12) ───────────────────────────── */
+
+.selis-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--selis-color-bg) 60%, transparent);
+	z-index: var(--selis-z-dialog-backdrop);
+}
+
+.selis-dialog {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	max-width: 32rem;
+	padding: var(--selis-space-6);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border-radius: var(--selis-radius-lg);
+	background: var(--selis-color-surface);
+	box-shadow: var(--selis-shadow-2);
+	z-index: var(--selis-z-dialog);
+}
+
+.selis-dialog__title {
+	margin: 0;
+	font-size: var(--selis-text-xl);
+	font-weight: var(--selis-weight-semibold);
+	line-height: var(--selis-leading-tight);
+}
+
+.selis-dialog__body {
+	margin: 0;
+	color: var(--selis-color-text-secondary);
+}
+
+.selis-dialog__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--selis-density-control-gap);
+}
+
+.selis-error-state__code {
+	font-family: var(--selis-font-mono);
+	font-size: var(--selis-text-xs);
+	color: var(--selis-color-danger-text);
+}
+
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
+
+.selis-root * {
+	scrollbar-color: var(--selis-color-scrollbar-thumb) transparent;
+	scrollbar-width: thin;
+}
+
+/* ── Motion discipline ─────────────────────────────────────────────────── */
+/* Duration tokens collapse to 0ms under prefers-reduced-motion or
+ * [data-motion="reduced"] (generated in tokens.css); the placeholder pulse
+ * is gated separately because it is an animation, not a transition. */
+
+@media (prefers-reduced-motion: no-preference) {
+	.selis-page-tile--loading {
+		animation: selis-placeholder-pulse var(--selis-duration-slow) var(--selis-ease-standard)
+			infinite alternate;
+	}
+}
+
+[data-motion="reduced"] .selis-page-tile--loading {
+	animation: none;
+}
+
+@keyframes selis-placeholder-pulse {
+	from {
+		opacity: 1;
+	}
+
+	to {
+		opacity: 0.55;
+	}
+}
