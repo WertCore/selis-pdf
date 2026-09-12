@@ -820,8 +820,10 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
 
     let cmp_w = ours.width.min(theirs.width);
     let cmp_h = ours.height.min(theirs.height);
-    let total = (cmp_w * cmp_h) as u64;
+    let total = u64::from(cmp_w) * u64::from(cmp_h);
     let mut diff = 0u64;
+    let mut aa_excused = 0u64;
+    let mut diff_coords: Vec<(u32, u32)> = Vec::new();
     for y in 0..cmp_h {
         for x in 0..cmp_w {
             let oi = (y * ours.width + x) as usize * 3;
@@ -832,39 +834,175 @@ fn compare_render(tool: &str, dpi: u32, file: &Path) -> Result<(), String> {
             let de = delta_e76(&ours_px, &theirs_px);
             if de > 2.3 {
                 diff += 1;
+                diff_coords.push((x, y));
+                // SL-0.ORACLE.02: an anti-aliasing-tolerant neighbourhood —
+                // a pixel is excused when the other render carries the same
+                // colour within one pixel (an edge shifted by the rasteriser's
+                // subpixel phase, not a content difference).
+                if aa_match_at(&ours, &theirs, x, y, cmp_w, cmp_h) {
+                    aa_excused += 1;
+                }
             }
         }
     }
 
     let pct = diff as f64 / total as f64 * 100.0;
+    let aa_pct = (diff - aa_excused) as f64 / total as f64 * 100.0;
+    let structural = structural_score(&ours, &theirs, cmp_w, cmp_h);
     println!("render comparison: {diff}/{total} pixels differ ({pct:.2}%) above ΔE76≈2.3");
+    println!(
+        "AA-tolerant: {} differing pixels remain ({aa_pct:.2}%) — pixels matching within a 1px neighbourhood are excused",
+        diff - aa_excused
+    );
+    println!("structural score (8×8 block mean-luma agreement): {structural:.1}%");
+
+    // The SL-0.ORACLE.02 side-by-side diff artefact: ours | theirs | the
+    // amplified per-pixel difference, as a PNG next to the PPMs.
+    let artefact = out_dir.join("diff.png");
+    write_side_by_side_diff(&ours, &theirs, cmp_w, cmp_h, &diff_coords, &artefact)?;
+    println!(
+        "side-by-side diff artefact written to {}",
+        artefact.display()
+    );
+
     if pct < 0.5 {
         println!("render PASS (within 0.5% tolerance)");
         Ok(())
     } else {
         println!("render FAIL (exceeds 0.5% tolerance)");
-        // Write a diff overlay for inspection.
-        let diff_ppm = out_dir.join("diff.ppm");
-        let mut diff_bytes = Vec::new();
-        diff_bytes.extend_from_slice(b"P6\n");
-        diff_bytes.extend_from_slice(format!("{cmp_w} {cmp_h}\n255\n").as_bytes());
-        for y in 0..cmp_h {
-            for x in 0..cmp_w {
-                let oi = (y * ours.width + x) as usize * 3;
-                let ti = (y * theirs.width + x) as usize * 3;
-                let dr = (ours.rgb[oi] as i16 - theirs.rgb[ti] as i16).unsigned_abs() as u8;
-                let dg = (ours.rgb[oi + 1] as i16 - theirs.rgb[ti + 1] as i16).unsigned_abs() as u8;
-                let db = (ours.rgb[oi + 2] as i16 - theirs.rgb[ti + 2] as i16).unsigned_abs() as u8;
-                // Amplify the difference for visibility.
-                diff_bytes.push(dr.saturating_mul(4));
-                diff_bytes.push(dg.saturating_mul(4));
-                diff_bytes.push(db.saturating_mul(4));
-            }
-        }
-        std::fs::write(&diff_ppm, &diff_bytes).map_err(|e| format!("diff.ppm: {e}"))?;
-        println!("  diff overlay written to {diff_ppm:?}");
         Ok(())
     }
+}
+
+/// Whether the pixel at `(x, y)` in `ours` has a matching pixel in `theirs`
+/// within a one-pixel neighbourhood (per channel ≤ [`AA_MATCH_TOLERANCE`]),
+/// for the AA-tolerant metric of SL-0.ORACLE.02.
+const AA_MATCH_TOLERANCE: i16 = 8;
+
+#[allow(clippy::too_many_arguments)]
+fn aa_match_at(ours: &PpmImage, theirs: &PpmImage, x: u32, y: u32, cmp_w: u32, cmp_h: u32) -> bool {
+    let oi = (y * ours.width + x) as usize * 3;
+    let Some(o) = ours.rgb.get(oi..oi + 3) else {
+        return false;
+    };
+    for dy in -1i32..=1 {
+        for dx in -1i32..=1 {
+            let nx = i64::from(x) + i64::from(dx);
+            let ny = i64::from(y) + i64::from(dy);
+            if nx < 0 || ny < 0 || nx >= i64::from(cmp_w) || ny >= i64::from(cmp_h) {
+                continue;
+            }
+            let ti = (ny * i64::from(theirs.width) + nx) as usize * 3;
+            let Some(t) = theirs.rgb.get(ti..ti + 3) else {
+                continue;
+            };
+            if (0..3).all(|c| (i16::from(o[c]) - i16::from(t[c])).abs() <= AA_MATCH_TOLERANCE) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The structural score of SL-0.ORACLE.02: the fraction of 8×8 blocks whose
+/// mean luma agrees within [`BLOCK_LUMA_TOLERANCE`] (0..1), over the overlap.
+fn structural_score(ours: &PpmImage, theirs: &PpmImage, cmp_w: u32, cmp_h: u32) -> f64 {
+    const BLOCK: u32 = 8;
+    const BLOCK_LUMA_TOLERANCE: f64 = 0.05;
+    if cmp_w == 0 || cmp_h == 0 {
+        return 100.0;
+    }
+    let mut blocks = 0u64;
+    let mut agreeing = 0u64;
+    let luma = |img: &PpmImage, x: u32, y: u32| -> f64 {
+        let i = (y * img.width + x) as usize * 3;
+        let r = f64::from(img.rgb[i]);
+        let g = f64::from(img.rgb.get(i + 1).copied().unwrap_or(0));
+        let b = f64::from(img.rgb.get(i + 2).copied().unwrap_or(0));
+        (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+    };
+    let mut y0 = 0;
+    while y0 < cmp_h {
+        let mut x0 = 0;
+        while x0 < cmp_w {
+            let x1 = (x0 + BLOCK).min(cmp_w);
+            let y1 = (y0 + BLOCK).min(cmp_h);
+            let n = u64::from((x1 - x0) * (y1 - y0));
+            let mut mo = 0.0;
+            let mut mt = 0.0;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    mo += luma(ours, x, y);
+                    mt += luma(theirs, x, y);
+                }
+            }
+            blocks += 1;
+            if ((mo - mt) / n as f64).abs() < BLOCK_LUMA_TOLERANCE {
+                agreeing += 1;
+            }
+            x0 += BLOCK;
+        }
+        y0 += BLOCK;
+    }
+    if blocks == 0 {
+        100.0
+    } else {
+        agreeing as f64 / blocks as f64 * 100.0
+    }
+}
+
+/// Write the SL-0.ORACLE.02 side-by-side diff artefact: `ours | theirs | the
+/// amplified per-pixel difference`, as a PNG.
+fn write_side_by_side_diff(
+    ours: &PpmImage,
+    theirs: &PpmImage,
+    cmp_w: u32,
+    cmp_h: u32,
+    diff_coords: &[(u32, u32)],
+    path: &Path,
+) -> Result<(), String> {
+    let gap = 4u32; // separator between the three panels
+    let total_w = cmp_w
+        .saturating_mul(3)
+        .saturating_add(gap.saturating_mul(2));
+    let mut rgb = vec![255u8; total_w as usize * cmp_h as usize * 3];
+    let mut panel = |img: &PpmImage, offset: u32| {
+        for y in 0..cmp_h {
+            for x in 0..cmp_w {
+                let si = (y * img.width + x) as usize * 3;
+                let di = ((y * total_w) + x + offset) as usize * 3;
+                rgb[di] = img.rgb[si];
+                rgb[di + 1] = img.rgb[si + 1];
+                rgb[di + 2] = img.rgb[si + 2];
+            }
+        }
+    };
+    panel(ours, 0);
+    panel(theirs, cmp_w + gap);
+    // The diff panel: amplified per-channel difference, differing pixels in
+    // pure red so the signature is visible at a glance.
+    let diff_offset = (cmp_w + gap).saturating_mul(2);
+    for y in 0..cmp_h {
+        for x in 0..cmp_w {
+            let si = (y * ours.width + x) as usize * 3;
+            let ti = (y * theirs.width + x) as usize * 3;
+            let di = ((y * total_w) + x + diff_offset) as usize * 3;
+            let dr = (ours.rgb[si] as i16 - theirs.rgb[ti] as i16).unsigned_abs() as u8;
+            let dg = (ours.rgb[si + 1] as i16 - theirs.rgb[ti + 1] as i16).unsigned_abs() as u8;
+            let db = (ours.rgb[si + 2] as i16 - theirs.rgb[ti + 2] as i16).unsigned_abs() as u8;
+            rgb[di] = dr.saturating_mul(4);
+            rgb[di + 1] = dg.saturating_mul(4);
+            rgb[di + 2] = db.saturating_mul(4);
+        }
+    }
+    for &(x, y) in diff_coords {
+        let di = ((y * total_w) + x + diff_offset) as usize * 3;
+        rgb[di] = 255;
+        rgb[di + 1] = 0;
+        rgb[di + 2] = 0;
+    }
+    let png = crate::png::encode_rgb(total_w, cmp_h, &rgb);
+    std::fs::write(path, png).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// A minimal PPM P6 decoder (header + RGB bytes). Shared with the render
