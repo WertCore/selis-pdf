@@ -11,21 +11,32 @@ publish = false
 clap = { workspace = true, features = ["derive"] }
 miniz_oxide = { workspace = true }
 selis-bytes = { workspace = true }
+selis-crypto = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-pdf-cos = { workspace = true }
 # The render sweep decodes oracle-driver PNG output (PDFium/pdf.js) with the
 # shared flate filter — harness-side decode of oracle output only (ADR-P0009).
 selis-pdf-filter = { workspace = true }
 selis-pdf-engine = { workspace = true }
+selis-shape = { workspace = true }
 # xtask is a tool at the shell boundary: it supplies the real monotonic clock
 # so engine calls it drives measure genuine wall deadlines (SL-0.SBX.07).
 selis-sandbox = { workspace = true, features = ["instant-clock"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
-
-# The wasmtime embedding for `perf-wasm` (SL-2.PERF.03). Native-only:
-# wasmtime has no wasm32 target, and the size-check job builds `-p xtask
-# --target wasm32-unknown-unknown`, so this must stay cfg-gated.
+# Native-only tooling. wasmtime has no wasm32 target, and the SL-1.ENC.03
+# fixture generator builds committed PDFs (never needed in a wasm build).
+# The size-check job builds `-p xtask --target wasm32-unknown-unknown`, so
+# both must stay cfg-gated or their weight lands in the wasm size canary.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wasmtime = { workspace = true }
+# SL-1.ENC.03 fixture generator: builds the committed public-key fixtures
+# (RSA/EC CMS envelopes) and hashes the Algorithm-1 seed independently of
+# selis-crypto's pkcs7 module, so the engine DoD tests cross-check it.
+aes = { workspace = true }
+md-5 = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }

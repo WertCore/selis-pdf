@@ -3,11 +3,14 @@
 //! The DoD is that every code resolves to a real width, because width errors
 //! accumulate into visibly wrong line lengths. The precedence:
 //!
-//! 1. the `/Widths` array when it covers the code (and is correctly sized);
-//! 2. the embedded font's own metrics (a TrueType `hmtx` advance via `skrifa`,
+//! 1. the `/W` CID widths (+ `/DW` default) when the font is a CIDFont —
+//!    a CID is not a Unicode scalar, so the cmap-keyed fallback below
+//!    must not see it;
+//! 2. the `/Widths` array when it covers the code (and is correctly sized);
+//! 3. the embedded font's own metrics (a TrueType `hmtx` advance via `skrifa`,
 //!    scaled from font units to PDF glyph space — 1000 units per em) — the
 //!    missing-`/Widths` fallback;
-//! 3. `/MissingWidth`.
+//! 4. `/MissingWidth`.
 //!
 //! A broken embedded font is a deviation, never a page failure: it falls
 //! through to `/MissingWidth`.
@@ -26,6 +29,10 @@ use crate::model::{FontDict, FontFile};
 pub struct ResolvedFont {
     /// The `/Widths` array, when present and correctly sized.
     widths: Option<WidthsArray>,
+    /// The `/W` + `/DW` CID widths, for CID fonts (checked first: a CID
+    /// code is not a Unicode scalar, so the cmap-based embedded fallback
+    /// below must not see it).
+    cid_widths: Option<crate::cid::CidWidths>,
     /// The embedded font's own metrics (the missing-`/Widths` fallback).
     embedded: Option<EmbeddedMetrics>,
     /// The `/MissingWidth` (0 by default).
@@ -115,6 +122,7 @@ pub fn resolve(dict: &FontDict, g: &mut BudgetGuard<'_>) -> Result<ResolvedFont>
                 // No descendant to resolve against: a font with no metrics.
                 return Ok(ResolvedFont {
                     widths: None,
+                    cid_widths: None,
                     embedded: None,
                     missing_width: dict.missing_width(),
                 });
@@ -138,9 +146,20 @@ pub fn resolve(dict: &FontDict, g: &mut BudgetGuard<'_>) -> Result<ResolvedFont>
         Some(_) => None, // Type1 (PFB) and CFF metrics land in FONT.04/05.
         None => None,
     };
+    // A CIDFont resolves widths from `/W` (+ `/DW` default), never from a
+    // simple `/Widths` array or the cmap-keyed embedded metrics.
+    let cid_widths = if matches!(
+        target.subtype,
+        crate::model::FontSubtype::CidFontType0 | crate::model::FontSubtype::CidFontType2
+    ) {
+        target.cid_widths.clone()
+    } else {
+        None
+    };
 
     Ok(ResolvedFont {
         widths,
+        cid_widths,
         embedded,
         missing_width: target.missing_width(),
     })
@@ -212,11 +231,15 @@ fn standard14_widths(dict: &FontDict) -> Option<WidthsArray> {
 impl ResolvedFont {
     /// The resolved width for `code`.
     ///
-    /// Order: `/Widths` array → embedded metrics → standard-14 AFM →
-    /// `/MissingWidth`. Every code resolves (never `None`); the final
-    /// fallback is `/MissingWidth`, which defaults to 0.
+    /// Order: `/W` CID widths (CID fonts only) → `/Widths` array → embedded
+    /// metrics → standard-14 AFM → `/MissingWidth`. Every code resolves
+    /// (never `None`); the final fallback is `/MissingWidth`, which
+    /// defaults to 0.
     #[must_use]
     pub fn width(&self, code: u32) -> f64 {
+        if let Some(cid_widths) = &self.cid_widths {
+            return cid_widths.width(code);
+        }
         self.widths
             .as_ref()
             .and_then(|w| w.width(code))
@@ -361,6 +384,31 @@ mod tests {
         let resolved = resolve(&dict, &mut g).expect("resolve");
         assert_eq!(resolved.width(0), 333.0);
         assert_eq!(resolved.width(1), 444.0);
+    }
+
+    #[test]
+    fn cid_font_resolves_w_widths_before_simple_widths() {
+        use crate::cid::{resolve_cid_widths, CidWidthEntry};
+        let mut g = guard();
+        let desc = FontDict {
+            // A stray simple /Widths must not win for a CIDFont.
+            first_char: 0,
+            last_char: 0,
+            widths: Some(vec![111.0]),
+            cid_widths: Some(resolve_cid_widths(
+                &[CidWidthEntry::Cid(7), CidWidthEntry::Widths(vec![777.0])],
+                1000.0,
+            )),
+            ..FontDict::simple(FontSubtype::CidFontType2)
+        };
+        let dict = FontDict {
+            subtype: FontSubtype::Type0,
+            descendant: Some(Box::new(desc)),
+            ..FontDict::simple(FontSubtype::Type0)
+        };
+        let resolved = resolve(&dict, &mut g).expect("resolve");
+        assert_eq!(resolved.width(7), 777.0);
+        assert_eq!(resolved.width(9), 1000.0); // /DW default
     }
 
     #[test]

@@ -21,6 +21,75 @@ use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 
 use crate::page::{page_view as compute_page_view, PageView};
 use crate::render::render_display_list;
+
+/// Detect encryption and build the resolved document model (the shared open
+/// path of [`Session::open`] and [`Session::open_public_key`]).
+///
+/// `credential` is the public-key credential for `/Adobe.PPKLite`
+/// documents; `None` opens a public-key document tolerantly without a key
+/// (the standard handler authenticates with the empty user password).
+///
+/// # Malformed Input
+///
+/// A standard-handler document whose (empty) password does not authenticate
+/// resolves without a key (tolerant open). A public-key document opened with
+/// a credential propagates the typed authentication error
+/// (`RECIPIENT_NO_MATCH`/`ENCRYPT_MALFORMED`/`ENCRYPT_UNSUPPORTED`); budget,
+/// cancellation, and pending errors always propagate as-is.
+fn open_doc(
+    src: &[u8],
+    doc: &Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    credential: Option<&selis_crypto::pkcs7::PubKeyCredential>,
+) -> Result<(
+    Doc,
+    selis_pdf_doc::Document,
+    Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+)> {
+    let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
+        let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
+        match encrypt_ref {
+            None => None,
+            Some(r) => {
+                match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
+                    Ok(Some(info)) => match info.handler {
+                        selis_pdf_cos::encrypt::Handler::Standard => {
+                            let id = doc
+                                .revisions()
+                                .last()
+                                .map(|v| v.trailer.clone())
+                                .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                                .unwrap_or_default();
+                            selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
+                                selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
+                            })
+                        }
+                        selis_pdf_cos::encrypt::Handler::PubKey => match credential {
+                            Some(c) => {
+                                let auth =
+                                    selis_pdf_cos::encrypt::authenticate_public_key(&info, c, g)?;
+                                Some(selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(
+                                    &info, auth.key,
+                                ))
+                            }
+                            // No credential: tolerant open without a key
+                            // (the wrong-credential path is
+                            // open_public_key's typed error).
+                            None => None,
+                        },
+                    },
+                    // Unreadable or non-standard handler: open unencrypted.
+                    Ok(None) => None,
+                    Err(_) => None,
+                }
+            }
+        }
+    };
+    let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
+    Ok((doc.clone(), document, key))
+}
+
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -77,44 +146,10 @@ impl Session {
         // password we cannot supply still *opens* (catalog + page tree resolve)
         // even without a key; content just won't decode. We therefore treat a
         // failed authentication as "open unencrypted", matching tolerant
-        // viewers, rather than refusing the document (SL-1.ROB.01).
-        fn open_doc(
-            src: &[u8],
-            doc: &Doc,
-            budget: &Budget,
-            g: &mut BudgetGuard<'_>,
-        ) -> Result<(
-            Doc,
-            selis_pdf_doc::Document,
-            Option<selis_pdf_cos::encrypt::DecryptPolicy>,
-        )> {
-            let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
-                let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
-                match encrypt_ref {
-                    None => None,
-                    Some(r) => {
-                        match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
-                            Ok(Some(info)) => {
-                                let id = doc
-                                    .revisions()
-                                    .last()
-                                    .map(|v| v.trailer.clone())
-                                    .map(|t| selis_pdf_cos::encrypt::document_id(&t))
-                                    .unwrap_or_default();
-                                selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
-                                    selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
-                                })
-                            }
-                            // Unreadable or non-standard handler: open unencrypted.
-                            Ok(None) => None,
-                            Err(_) => None,
-                        }
-                    }
-                }
-            };
-            let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
-            Ok((doc.clone(), document, key))
-        }
+        // viewers, rather than refusing the document (SL-1.ROB.01). A
+        // public-key document opens the same tolerant way without a
+        // credential; with one, [`Session::open_public_key`] authenticates
+        // the /Recipients blobs (SL-1.ENC.03).
 
         // A parsed xref that resolves is preferred; when its document model
         // cannot be built (the catalog's object is marked free or absent in a
@@ -122,7 +157,7 @@ impl Session {
         // which recovers live object bodies regardless of the xref state
         // (SL-1.ROB.01).
         if let Some(doc) = &parsed {
-            match open_doc(&src, doc, budget, &mut g) {
+            match open_doc(&src, doc, budget, &mut g, None) {
                 Ok((doc, document, key)) => {
                     return Ok(Self {
                         doc,
@@ -138,7 +173,87 @@ impl Session {
             }
         }
         let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
-        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g)?;
+        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, None)?;
+        let _ = g;
+        Ok(Self {
+            doc,
+            src,
+            document,
+            key,
+        })
+    }
+
+    /// Open an encrypted PDF with a public-key (PKCS#7) credential
+    /// (SL-1.ENC.03, ISO 32000-2 §7.6.6): the recipient's private key in
+    /// PKCS#8 DER, matched against the `/Recipients` blobs of the
+    /// `/Adobe.PPKLite` (or `/Adobe.PubSec`) `/Encrypt` dictionary.
+    ///
+    /// Unlike [`Session::open`], an authentication failure is a **typed
+    /// error**, not a tolerant open — the caller supplied a credential, so a
+    /// wrong key is a wrong answer (`RECIPIENT_NO_MATCH`), never a partially
+    /// decrypted document.
+    ///
+    /// # Budget
+    ///
+    /// Charged against `budget` for the whole open, including the CMS
+    /// recipient-blob parses, which charge their wire bytes to this guard.
+    ///
+    /// # Malformed Input
+    ///
+    /// A structurally damaged `/Encrypt` dictionary or CMS blob yields
+    /// `ENCRYPT_MALFORMED`; an unimplemented algorithm (RC4/3DES, s3-era)
+    /// yields `ENCRYPT_UNSUPPORTED`; a credential matching no recipient
+    /// yields `RECIPIENT_NO_MATCH`. Parse-level recovery (missing
+    /// `startxref`, damaged xref) follows the same scan-based fallback as
+    /// [`Session::open`] (SL-1.ROB.01).
+    pub fn open_public_key(
+        src: Vec<u8>,
+        credential: &selis_crypto::pkcs7::PubKeyCredential,
+        budget: &Budget,
+        clock: &dyn Clock,
+    ) -> Result<Self> {
+        let mut g = budget.guard_with(clock, CancelToken::new());
+        let parsed = match selis_pdf_cos::xref::find_startxref(&src, 2048) {
+            Some(startxref) => {
+                match selis_pdf_cos::parse_revisions(&src, startxref, budget, &mut g) {
+                    Ok(doc) => Some(doc),
+                    Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                        return Err(e);
+                    }
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        };
+        if let Some(doc) = &parsed {
+            match open_doc(&src, doc, budget, &mut g, Some(credential)) {
+                Ok((doc, document, key)) => {
+                    return Ok(Self {
+                        doc,
+                        src,
+                        document,
+                        key,
+                    });
+                }
+                Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
+                    return Err(e);
+                }
+                // A typed authentication failure is an answer, not a parse
+                // accident: the wrong key never gets a second chance (and
+                // never a tolerant open).
+                Err(e)
+                    if matches!(
+                        e.code(),
+                        Code::RecipientNoMatch | Code::EncryptUnsupported | Code::EncryptMalformed
+                    ) =>
+                {
+                    return Err(e);
+                }
+                Err(_) => {}
+            }
+        }
+        let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
+        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, Some(credential))?;
         let _ = g;
         Ok(Self {
             doc,
@@ -234,6 +349,46 @@ impl Session {
         Ok(tree.mcid_order())
     }
 
+    /// The Unicode scalar for a shown code in a page's font (SL-3.SHAPE.04).
+    ///
+    /// CID fonts (Type0 composites) resolve through the font's `/ToUnicode`
+    /// CMap; anything else (simple fonts, missing maps) returns `None` and
+    /// the caller keeps the legacy code-as-character reading — simple-font
+    /// recovery through encodings and glyph names is the TEXT.02 follow-up,
+    /// deliberately untouched here. Resolution is against the page's own
+    /// `/Resources`: a form XObject shadowing the same font name resolves
+    /// against the page scope instead (documented limitation).
+    ///
+    /// # Budget
+    ///
+    /// Resolution runs under the caller's guard; the font dict parse charges
+    /// embedded-program bytes through `selis-font` as usual.
+    ///
+    /// # Malformed Input
+    ///
+    /// An unresolvable font or a broken `/ToUnicode` stream yields `None`
+    /// (a deviation), never an error — a page must not fail over text
+    /// recovery.
+    pub fn text_unicode(
+        &self,
+        page_num: usize,
+        font_name: &Bytes,
+        code: u16,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Option<u32> {
+        let page = self.document.pages.get(page_num)?;
+        let mut resolver = self.new_resolver(budget);
+        let font_dict = resolve_font_dict(&mut resolver, page.resources.as_ref(), font_name, g)?;
+        if !font_dict.is_cid() {
+            return None;
+        }
+        font_dict
+            .to_unicode
+            .as_ref()
+            .and_then(|cmap| cmap.unicode_map(u32::from(code)))
+    }
+
     /// Evaluate the conformance rules for a profile.
     pub fn conformance(
         &self,
@@ -299,7 +454,7 @@ impl Session {
         // used (SL-0.SBX.07): the caller's deadline advances for resource
         // resolution too, instead of resetting at every closure.
         let clock = g.clock();
-        let font_data = move |font_name: &Bytes| -> Option<Vec<u8>> {
+        let font_data = move |font_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
             font_data_inner(&mut res, page.resources.as_ref(), font_name, &mut bg)
@@ -595,6 +750,23 @@ fn build_display_list(
         }
         w
     };
+    // Whether a font resource shows 2-byte CID codes (walk-local cache next
+    // to the width cache: the interpreter asks per show operation).
+    let cid_cache: RefCell<HashMap<(Bytes, Option<Bytes>), bool>> = RefCell::new(HashMap::new());
+    let font_is_cid = move |font_name: &Bytes, key: Option<&Bytes>| -> bool {
+        let cache_key = (font_name.clone(), key.cloned());
+        if let Some(known) = cid_cache.borrow().get(&cache_key) {
+            return *known;
+        }
+        let mut bg = budget_copy.guard_with(clock, CancelToken::new());
+        let mut res = session.new_resolver(&budget_copy);
+        let r = resolve_resources_for_key(&mut res, key, resources, &mut bg);
+        let is_cid = font_is_cid_inner(&mut res, r.as_ref(), font_name, &mut bg);
+        if cid_cache.borrow().len() < 1024 {
+            cid_cache.borrow_mut().insert(cache_key, is_cid);
+        }
+        is_cid
+    };
     let resolve_do =
         move |name: &Bytes, key: Option<&Bytes>| -> Option<selis_pdf_content::exec::DoTarget> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
@@ -615,7 +787,14 @@ fn build_display_list(
                 .ok()
                 .flatten()
         };
-    selis_pdf_content::exec::execute(&content, &font_width, &resolve_do, &resolve_ext_gstate, g)
+    selis_pdf_content::exec::execute(
+        &content,
+        &font_width,
+        &font_is_cid,
+        &resolve_do,
+        &resolve_ext_gstate,
+        g,
+    )
 }
 
 /// Resolve the resources dict for a resource key (a form XObject's object
@@ -733,7 +912,7 @@ fn resolve_pattern_inner(
     let w = dim_ceil(bbox.width()).max(1);
     let h = dim_ceil(bbox.height()).max(1);
     let mut tile = TinySkiaBackend::new(w, h)?;
-    let no_font = |_name: &Bytes| -> Option<Vec<u8>> { None };
+    let no_font = |_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> { None };
     let no_smask = |_key: &Bytes| -> Option<Mask> { None };
     let no_inline = |_d: &[(Bytes, Bytes)], _data: &[u8]| -> Option<(u32, u32, Bytes)> { None };
     let no_shading = |_n: &Bytes,
@@ -831,25 +1010,63 @@ fn font_data_inner(
     resources: Option<&Obj>,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
-) -> Option<Vec<u8>> {
-    // Prefer the embedded font program.
-    if let Some(font_dict) = resolve_font_dict(resolver, resources, font_name, g) {
-        if let Some(font_file) = font_dict.font_file {
-            return Some(font_file.data().as_slice().to_vec());
+) -> Option<crate::render::ResolvedFontProgram> {
+    use crate::render::{GlyphMapping, ResolvedFontProgram};
+    // Prefer the embedded font program (a Type0 wrapper carries it on the
+    // descendant CIDFont — SL-3.SHAPE.04). A `Tf` naming a standard-14 font
+    // that /Resources does not declare still renders in every mainstream
+    // viewer (and MuPDF, the render oracle) — a missing font resource is a
+    // deviation, not a silent no-draw, so the undeclared case falls back by
+    // name exactly as the pre-CID behaviour did.
+    let font_dict = match resolve_font_dict(resolver, resources, font_name, g) {
+        Some(fd) => fd,
+        None => {
+            let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+            return selis_font::fallback::fallback_bytes(name)
+                .map(|bytes| ResolvedFontProgram::simple(bytes.to_vec()));
         }
-        // A non-embedded standard-14 font falls back to the bundled Liberation
-        // font (SL-0.LEAD.07), keyed by the /BaseFont name.
-        if let Some(bytes) = selis_font::fallback::fallback_bytes(&font_dict.base_font) {
-            return Some(bytes.to_vec());
-        }
+    };
+    let file = font_dict
+        .font_file
+        .as_ref()
+        .or_else(|| {
+            font_dict
+                .descendant
+                .as_ref()
+                .and_then(|d| d.font_file.as_ref())
+        })
+        .map(|font_file| font_file.data().as_slice().to_vec());
+    if let Some(bytes) = file {
+        let mapping = if font_dict.is_cid() {
+            GlyphMapping::Cid(
+                font_dict
+                    .descendant
+                    .as_ref()
+                    .map(|d| d.cid_to_gid.clone())
+                    .unwrap_or_else(|| font_dict.cid_to_gid.clone()),
+            )
+        } else {
+            GlyphMapping::Unicode
+        };
+        return Some(ResolvedFontProgram { bytes, mapping });
     }
-    // A `Tf` naming a standard-14 font that /Resources does not declare still
-    // renders in every mainstream viewer (and MuPDF, the render oracle) — a
-    // missing font resource is a deviation, not a silent no-draw.
-    let name = std::str::from_utf8(font_name.as_slice()).ok()?;
-    selis_font::fallback::fallback_bytes(name).map(|bytes| bytes.to_vec())
+    // A non-embedded standard-14 font falls back to the bundled Liberation
+    // font (SL-0.LEAD.07), keyed by the /BaseFont name.
+    selis_font::fallback::fallback_bytes(&font_dict.base_font)
+        .map(|bytes| ResolvedFontProgram::simple(bytes.to_vec()))
 }
 
+/// Whether a font resource shows 2-byte CID codes (a Type0 composite font).
+/// Unresolvable fonts report `false`: the interpreter then reads 1-byte
+/// codes exactly as before (legacy behaviour, never a new failure mode).
+fn font_is_cid_inner(
+    resolver: &mut Resolver<'_>,
+    resources: Option<&Obj>,
+    font_name: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> bool {
+    resolve_font_dict(resolver, resources, font_name, g).is_some_and(|fd| fd.is_cid())
+}
 fn resolve_page_content(
     resolver: &mut Resolver<'_>,
     page: &selis_pdf_doc::Page,
@@ -969,6 +1186,28 @@ fn resolve_font_dict(
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Option<selis_font::FontDict> {
+    if let Some(fd) = resolve_font_dict_resource(resolver, resources, font_name, g) {
+        return Some(fd);
+    }
+    // No `/Font` resource declares this name. A stream that selects a
+    // standard-14 base font directly (`/Helvetica 12 Tf` with no `/Resources`)
+    // is malformed, but every mainstream viewer substitutes the built-in
+    // metric font rather than dropping the text — key the substitute by the
+    // name itself so paint, widths, and CID detection all agree.
+    let name = std::str::from_utf8(font_name.as_slice()).ok()?;
+    selis_font::fallback::fallback_bytes(name)?;
+    let mut fd = selis_font::FontDict::simple(selis_font::FontSubtype::Type1);
+    fd.base_font = name.to_string();
+    Some(fd)
+}
+
+/// Look up a font resource by name in the page's `/Font` sub-dictionary.
+fn resolve_font_dict_resource(
+    resolver: &mut Resolver<'_>,
+    resources: Option<&Obj>,
+    font_name: &Bytes,
+    g: &mut BudgetGuard<'_>,
+) -> Option<selis_font::FontDict> {
     let resources = resources?;
     let fonts = dict_get(resources, b"Font")?;
     let font_obj = dict_get(fonts, font_name.as_slice())?;
@@ -1024,44 +1263,210 @@ fn parse_font_dict(
             fd.widths = Some(widths);
         }
     }
-    if let Some(Obj::Ref(r)) = dict_get_obj(dict, b"FontDescriptor") {
-        if let Ok(Obj::Dict(desc)) = resolver.resolve(*r, g) {
-            let mut descriptor = selis_font::FontDescriptor::default();
-            if let Some(Obj::Int(v)) = dict_get_obj(&desc, b"Flags") {
-                descriptor.flags = u32::try_from(*v).unwrap_or(0);
-            }
-            if let Some(Obj::Int(v)) = dict_get_obj(&desc, b"MissingWidth") {
-                descriptor.missing_width = *v as f64;
-            }
-            if let Some(Obj::Real { scaled, scale }) = dict_get_obj(&desc, b"MissingWidth") {
-                descriptor.missing_width = *scaled as f64 / 10f64.powi(*scale as i32);
-            }
-            for (tag, make_font_file) in &[
-                (
-                    &b"FontFile"[..],
-                    selis_font::FontFile::Type1 as fn(Bytes) -> selis_font::FontFile,
-                ),
-                (
-                    &b"FontFile2"[..],
-                    selis_font::FontFile::TrueType as fn(Bytes) -> selis_font::FontFile,
-                ),
-                (
-                    &b"FontFile3"[..],
-                    selis_font::FontFile::OpenType as fn(Bytes) -> selis_font::FontFile,
-                ),
-            ] {
-                if let Some(Obj::Ref(r)) = dict_get_obj(&desc, tag) {
-                    if let Ok(Some((dict, data))) = resolve_stream(resolver, *r, g) {
-                        let unfiltered = unfilter_stream_data(&dict, &data, g);
-                        fd.font_file = Some(make_font_file(Bytes::copy_from_slice(&unfiltered)));
-                        break;
-                    }
+    if let Some(desc_obj) = dict_get_obj(dict, b"FontDescriptor") {
+        let (descriptor, font_file) = parse_font_descriptor(resolver, desc_obj, g);
+        if let Some(descriptor) = descriptor {
+            fd.descriptor = Some(descriptor);
+        }
+        if font_file.is_some() {
+            fd.font_file = font_file;
+        }
+    }
+    if fd.subtype == selis_font::FontSubtype::Type0 {
+        // A composite font's program, metrics, and mapping live in the first
+        // descendant CIDFont (SL-3.SHAPE.04): without it the font cannot
+        // render or extract, as before — `descendant: None` preserves the
+        // legacy skip-the-run behaviour exactly.
+        if let Some(Obj::Array(items)) = dict_get_obj(dict, b"DescendantFonts") {
+            if let Some(first) = items.first() {
+                let child = match first {
+                    Obj::Ref(r) => resolver.resolve(*r, g).ok(),
+                    Obj::Dict(_) => Some(first.clone()),
+                    _ => None,
+                };
+                if let Some(child) = child {
+                    fd.descendant = parse_descendant_font(resolver, &child, g).map(Box::new);
                 }
             }
-            fd.descriptor = Some(descriptor);
+        }
+    } else if matches!(
+        fd.subtype,
+        selis_font::FontSubtype::CidFontType0 | selis_font::FontSubtype::CidFontType2
+    ) {
+        // A bare descendant CIDFont used directly as a page font
+        // (non-standard but seen in the wild): lift its own mapping and
+        // widths onto the top dict so the CID path below applies.
+        if let Some(child) = parse_descendant_font(resolver, obj, g) {
+            fd.cid_to_gid = child.cid_to_gid;
+            fd.cid_widths = child.cid_widths;
+            if fd.font_file.is_none() {
+                fd.font_file = child.font_file;
+            }
+            if fd.descriptor.is_none() {
+                fd.descriptor = child.descriptor;
+            }
+        }
+    }
+    // `/ToUnicode` is parsed for any font (the stream is usually
+    // FlateDecode'd); only the text-recovery path consults it, and only for
+    // CID fonts today (SL-3.SHAPE.04) — simple-font extraction is unchanged.
+    if let Some(Obj::Ref(r)) = dict_get_obj(dict, b"ToUnicode") {
+        if let Ok(Some((stream_dict, data))) = resolve_stream(resolver, *r, g) {
+            let decoded = unfilter_stream_data(&stream_dict, &data, g);
+            if let Ok(parsed) = selis_font::parse_cmap(&decoded, g) {
+                fd.to_unicode = parsed;
+            }
         }
     }
     fd
+}
+
+/// Parse a `/FontDescriptor` object (reference or inline dict) into its
+/// descriptor plus the embedded program, if any.
+fn parse_font_descriptor(
+    resolver: &mut Resolver<'_>,
+    obj: &Obj,
+    g: &mut BudgetGuard<'_>,
+) -> (
+    Option<selis_font::FontDescriptor>,
+    Option<selis_font::FontFile>,
+) {
+    let desc = match obj {
+        Obj::Ref(r) => match resolver.resolve(*r, g) {
+            Ok(Obj::Dict(desc)) => desc,
+            _ => return (None, None),
+        },
+        Obj::Dict(desc) => desc.clone(),
+        _ => return (None, None),
+    };
+    let mut descriptor = selis_font::FontDescriptor::default();
+    if let Some(Obj::Int(v)) = dict_get_obj(&desc, b"Flags") {
+        descriptor.flags = u32::try_from(*v).unwrap_or(0);
+    }
+    if let Some(Obj::Int(v)) = dict_get_obj(&desc, b"MissingWidth") {
+        descriptor.missing_width = *v as f64;
+    }
+    if let Some(Obj::Real { scaled, scale }) = dict_get_obj(&desc, b"MissingWidth") {
+        descriptor.missing_width = *scaled as f64 / 10f64.powi(*scale as i32);
+    }
+    let mut font_file = None;
+    for (tag, make_font_file) in &[
+        (
+            &b"FontFile"[..],
+            selis_font::FontFile::Type1 as fn(Bytes) -> selis_font::FontFile,
+        ),
+        (
+            &b"FontFile2"[..],
+            selis_font::FontFile::TrueType as fn(Bytes) -> selis_font::FontFile,
+        ),
+        (
+            &b"FontFile3"[..],
+            selis_font::FontFile::OpenType as fn(Bytes) -> selis_font::FontFile,
+        ),
+    ] {
+        if let Some(Obj::Ref(r)) = dict_get_obj(&desc, tag) {
+            if let Ok(Some((dict, data))) = resolve_stream(resolver, *r, g) {
+                let unfiltered = unfilter_stream_data(&dict, &data, g);
+                font_file = Some(make_font_file(Bytes::copy_from_slice(&unfiltered)));
+                break;
+            }
+        }
+    }
+    (Some(descriptor), font_file)
+}
+
+/// Bound on `/W` entries parsed from one descendant (a hostile million-entry
+/// array must not grow the width map without limit; past the cap the rest
+/// falls back to `/DW`).
+const MAX_CID_WIDTH_ENTRIES: usize = 65536;
+
+/// Parse a descendant CIDFont dict (the referent of `/DescendantFonts[0]`)
+/// into a [`selis_font::FontDict`]: subtype, descriptor + program,
+/// `/CIDToGIDMap`, and `/W` + `/DW` widths (SL-3.FONT.07/SHAPE.04).
+/// `None` when the object is not a usable CIDFont dict — the caller's
+/// Type0 wrapper then keeps `descendant: None` (legacy behaviour).
+fn parse_descendant_font(
+    resolver: &mut Resolver<'_>,
+    obj: &Obj,
+    g: &mut BudgetGuard<'_>,
+) -> Option<selis_font::FontDict> {
+    let dict = match obj {
+        Obj::Dict(d) => d,
+        _ => return None,
+    };
+    let mut fd = selis_font::FontDict::simple(selis_font::FontSubtype::CidFontType2);
+    if let Some(Obj::Name(n)) = dict_get_obj(dict, b"Subtype") {
+        fd.subtype = match std::str::from_utf8(n.as_slice()).unwrap_or("") {
+            "CIDFontType0" => selis_font::FontSubtype::CidFontType0,
+            "CIDFontType2" => selis_font::FontSubtype::CidFontType2,
+            _ => return None, // not a CIDFont: no usable descendant
+        };
+    }
+    if let Some(Obj::Name(n)) = dict_get_obj(dict, b"BaseFont") {
+        fd.base_font = String::from_utf8_lossy(n.as_slice()).to_string();
+    }
+    if let Some(desc_obj) = dict_get_obj(dict, b"FontDescriptor") {
+        let (descriptor, font_file) = parse_font_descriptor(resolver, desc_obj, g);
+        if let Some(descriptor) = descriptor {
+            fd.descriptor = Some(descriptor);
+        }
+        if font_file.is_some() {
+            fd.font_file = font_file;
+        }
+    }
+    // `/CIDToGIDMap`: absent or `/Identity` is identity (the spec default);
+    // a stream maps 2-byte big-endian GIDs per CID. Anything unresolvable
+    // degrades to identity rather than a blank run.
+    fd.cid_to_gid = match dict_get_obj(dict, b"CIDToGIDMap") {
+        None | Some(Obj::Name(_)) => selis_font::CidToGid::Identity,
+        Some(Obj::Ref(r)) => match resolve_stream(resolver, *r, g) {
+            Ok(Some((stream_dict, data))) => {
+                let decoded = unfilter_stream_data(&stream_dict, &data, g);
+                selis_font::CidToGid::Table(Bytes::copy_from_slice(&decoded))
+            }
+            _ => selis_font::CidToGid::Identity,
+        },
+        Some(Obj::Stream { data, .. }) => selis_font::CidToGid::Table(data.clone()),
+        _ => selis_font::CidToGid::Identity,
+    };
+    // `/DW` (default 1000) + `/W`.
+    let mut dw = 1000.0f64;
+    if let Some(Obj::Int(v)) = dict_get_obj(dict, b"DW") {
+        dw = *v as f64;
+    }
+    if let Some(Obj::Real { scaled, scale }) = dict_get_obj(dict, b"DW") {
+        dw = *scaled as f64 / 10f64.powi(*scale as i32);
+    }
+    let mut entries = Vec::new();
+    if let Some(Obj::Array(items)) = dict_get_obj(dict, b"W") {
+        for item in items.iter().take(MAX_CID_WIDTH_ENTRIES) {
+            let _ = g.charge_one(selis_sandbox::Resource::Objects);
+            match item {
+                Obj::Int(c) => {
+                    entries.push(selis_font::CidWidthEntry::Cid(
+                        u32::try_from(*c).unwrap_or(u32::MAX),
+                    ));
+                }
+                Obj::Array(widths) => {
+                    let mut values = Vec::new();
+                    for w in widths.iter().take(MAX_CID_WIDTH_ENTRIES) {
+                        let _ = g.charge_one(selis_sandbox::Resource::Objects);
+                        match w {
+                            Obj::Int(v) => values.push(*v as f64),
+                            Obj::Real { scaled, scale } => {
+                                values.push(*scaled as f64 / 10f64.powi(*scale as i32))
+                            }
+                            _ => {}
+                        }
+                    }
+                    entries.push(selis_font::CidWidthEntry::Widths(values));
+                }
+                _ => {}
+            }
+        }
+    }
+    fd.cid_widths = Some(selis_font::resolve_cid_widths(&entries, dw));
+    Some(fd)
 }
 
 /// Unfilter a stream's data through its `/Filter` chain (Name or array) with
@@ -2601,6 +3006,42 @@ mod tests {
         );
     }
 
+    /// A malformed page that selects a standard-14 base font with no `/Font`
+    /// resource still paints text: mainstream viewers substitute the built-in
+    /// metric font rather than dropping the show op.
+    #[test]
+    fn standard14_font_without_resource_still_paints() {
+        use selis_pdf_cos::doc_writer::ContentBuilder;
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let clock = FixedClock(0);
+        let mut builder = DocumentBuilder::new();
+        let content = ContentBuilder::new()
+            .begin_text()
+            .set_font("Helvetica", 48.0)
+            .text_at(50.0, 300.0)
+            .show_text("Hello")
+            .end_text()
+            .to_bytes();
+        builder.add_page(612.0, 792.0, &content);
+        let mut g = budget.guard_with(&clock, CancelToken::new());
+        let bytes = builder.write(&budget, &mut g).expect("write");
+        let session = Session::open(bytes, &budget, &clock).expect("open");
+        let mut backend = TinySkiaBackend::new(612, 792).expect("pixmap");
+        session
+            .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
+            .expect("render");
+        let mut painted = 0usize;
+        for px in backend.pixmap().data().chunks(4) {
+            if px[0] < 128 {
+                painted = painted.saturating_add(1);
+            }
+        }
+        assert!(
+            painted > 100,
+            "expected substituted-font glyph pixels, got {painted}"
+        );
+    }
+
     /// A PDF with a form XObject renders its content (a red square).
     #[test]
     fn session_renders_a_form_xobject() {
@@ -2667,6 +3108,303 @@ mod tests {
         let parms = decode_parms_from_obj(Some(&arr));
         assert_eq!(parms.len(), 1);
         assert_eq!(parms[0].predictor, 2);
+    }
+
+    /// A Type0 composite font (SL-3.SHAPE.04): the descendant CIDFont's
+    /// program, `/W` widths, and `/ToUnicode` map drive render + recovery.
+    /// The fixture embeds Noto Sans Devanagari and shows CIDs 56 (U+0915 KA)
+    /// and 32 (U+093F vowel sign I) as 2-byte codes.
+    mod type0 {
+        use super::*;
+        use selis_pdf_cos::Ref;
+
+        const DEVA_TTF: &[u8] =
+            include_bytes!("../../../corpus/fixtures/fonts/NotoSansDevanagari-Regular.ttf");
+
+        fn name(v: &[u8]) -> Obj {
+            Obj::Name(Bytes::copy_from_slice(v))
+        }
+
+        fn stream_obj(dict: Vec<(Bytes, Obj)>, data: &[u8]) -> Obj {
+            Obj::Stream {
+                dict,
+                data: Bytes::copy_from_slice(data),
+            }
+        }
+
+        fn type0_pdf() -> Vec<u8> {
+            type0_pdf_with_filter(false)
+        }
+
+        /// The same Type0 fixture with the embedded program FlateDecode'd
+        /// (what real producers emit — e.g. the pdf.js Arabic files).
+        fn type0_pdf_filtered() -> Vec<u8> {
+            type0_pdf_with_filter(true)
+        }
+
+        fn type0_pdf_with_filter(filtered: bool) -> Vec<u8> {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut builder = DocumentBuilder::new();
+            let ttf = DEVA_TTF;
+            let (font_bytes, filter): (Vec<u8>, Option<&[u8]>) = if filtered {
+                (selis_pdf_filter::flate_encode(ttf, 6), Some(b"FlateDecode"))
+            } else {
+                (ttf.to_vec(), None)
+            };
+            let font_file = builder.allocate();
+            let mut font_dict = vec![
+                (
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(font_bytes.len()).unwrap_or(i64::MAX)),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Length1"),
+                    Obj::Int(i64::try_from(ttf.len()).unwrap_or(i64::MAX)),
+                ),
+            ];
+            if let Some(filter) = filter {
+                font_dict.push((
+                    Bytes::copy_from_slice(b"Filter"),
+                    Obj::Name(Bytes::copy_from_slice(filter)),
+                ));
+            }
+            builder.add_object(font_file, stream_obj(font_dict, &font_bytes));
+            let font_file_ref = Obj::Ref(Ref::new(font_file, 0));
+            let to_unicode = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo <</Registry (Adobe)/Ordering (UCS)/Supplement 0>> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n2 beginbfchar\n<0038> <0915>\n<0020> <093F>\nendbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+            let to_unicode_num = builder.allocate();
+            builder.add_object(
+                to_unicode_num,
+                stream_obj(
+                    vec![(
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(to_unicode.len()).unwrap_or(i64::MAX)),
+                    )],
+                    to_unicode,
+                ),
+            );
+            let descendant = builder.allocate();
+            builder.add_object(
+                descendant,
+                Obj::Dict(vec![
+                    (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                    (Bytes::copy_from_slice(b"Subtype"), name(b"CIDFontType2")),
+                    (
+                        Bytes::copy_from_slice(b"BaseFont"),
+                        name(b"NotoSansDevanagari"),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"CIDSystemInfo"),
+                        Obj::Dict(vec![
+                            (
+                                Bytes::copy_from_slice(b"Registry"),
+                                Obj::String(Bytes::copy_from_slice(b"Adobe")),
+                            ),
+                            (
+                                Bytes::copy_from_slice(b"Ordering"),
+                                Obj::String(Bytes::copy_from_slice(b"Identity")),
+                            ),
+                            (Bytes::copy_from_slice(b"Supplement"), Obj::Int(0)),
+                        ]),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"FontDescriptor"),
+                        Obj::Dict(vec![
+                            (
+                                Bytes::copy_from_slice(b"FontName"),
+                                name(b"NotoSansDevanagari"),
+                            ),
+                            (Bytes::copy_from_slice(b"Flags"), Obj::Int(4)),
+                            (
+                                Bytes::copy_from_slice(b"FontBBox"),
+                                Obj::Array(vec![
+                                    Obj::Int(-585),
+                                    Obj::Int(-530),
+                                    Obj::Int(1574),
+                                    Obj::Int(1347),
+                                ]),
+                            ),
+                            (Bytes::copy_from_slice(b"ItalicAngle"), Obj::Int(0)),
+                            (Bytes::copy_from_slice(b"Ascent"), Obj::Int(896)),
+                            (Bytes::copy_from_slice(b"Descent"), Obj::Int(-408)),
+                            (Bytes::copy_from_slice(b"FontFile2"), font_file_ref),
+                        ]),
+                    ),
+                    (Bytes::copy_from_slice(b"CIDToGIDMap"), name(b"Identity")),
+                    (Bytes::copy_from_slice(b"DW"), Obj::Int(1000)),
+                    (
+                        Bytes::copy_from_slice(b"W"),
+                        Obj::Array(vec![
+                            Obj::Int(56),
+                            Obj::Array(vec![Obj::Int(768)]),
+                            Obj::Int(32),
+                            Obj::Array(vec![Obj::Int(259)]),
+                        ]),
+                    ),
+                ]),
+            );
+            let font = builder.allocate();
+            builder.add_object(
+                font,
+                Obj::Dict(vec![
+                    (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                    (Bytes::copy_from_slice(b"Subtype"), name(b"Type0")),
+                    (
+                        Bytes::copy_from_slice(b"BaseFont"),
+                        name(b"NotoSansDevanagari"),
+                    ),
+                    (Bytes::copy_from_slice(b"Encoding"), name(b"Identity-H")),
+                    (
+                        Bytes::copy_from_slice(b"DescendantFonts"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(descendant, 0))]),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"ToUnicode"),
+                        Obj::Ref(Ref::new(to_unicode_num, 0)),
+                    ),
+                ]),
+            );
+            let resources = builder.allocate();
+            builder.add_object(
+                resources,
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"Font"),
+                    Obj::Dict(vec![(
+                        Bytes::copy_from_slice(b"F1"),
+                        Obj::Ref(Ref::new(font, 0)),
+                    )]),
+                )]),
+            );
+            let content: &[u8] = b"BT /F1 48 Tf 72 700 Td <00380020> Tj ET\n";
+            let content_num = builder.allocate();
+            builder.add_object(
+                content_num,
+                stream_obj(
+                    vec![(
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                    )],
+                    content,
+                ),
+            );
+            builder.add_page_with(
+                612.0,
+                792.0,
+                &[Ref::new(content_num, 0)],
+                Some(Ref::new(resources, 0)),
+            );
+            builder.write(&budget, &mut g).expect("write")
+        }
+
+        /// The interpreter reads 2-byte CIDs for a Type0 font.
+        #[test]
+        fn type0_shows_two_byte_cids() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(type0_pdf(), &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let dl = session
+                .page_display_list(0, &budget, &mut g)
+                .expect("display list");
+            let mut codes = Vec::new();
+            for op in &dl.ops {
+                if let selis_pdf_content::display_list::Op::Text { runs, .. } = op {
+                    for run in runs {
+                        codes.extend(run.glyphs.iter().copied());
+                    }
+                }
+            }
+            assert_eq!(codes, vec![56u16, 32u16]);
+        }
+
+        /// The interpreter reads 2-byte CIDs for a Type0 font in `TJ` arrays.
+        #[test]
+        fn type0_shows_two_byte_cids_in_tj() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(type0_pdf(), &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let dl = session
+                .page_display_list(0, &budget, &mut g)
+                .expect("display list");
+            let mut codes = Vec::new();
+            for op in &dl.ops {
+                if let selis_pdf_content::display_list::Op::Text { runs, .. } = op {
+                    for run in runs {
+                        codes.extend(run.glyphs.iter().copied());
+                    }
+                }
+            }
+            assert_eq!(codes, vec![56u16, 32u16]);
+        }
+
+        /// The descendant's program replays by CID: glyphs paint pixels.
+        #[test]
+        fn type0_renders_descendant_glyphs() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(type0_pdf(), &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut backend = TinySkiaBackend::new(612, 792).expect("pixmap");
+            session
+                .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
+                .expect("render");
+            let mut painted = 0usize;
+            for px in backend.pixmap().data().chunks(4) {
+                if px[3] == 255 {
+                    painted = painted.saturating_add(1);
+                }
+            }
+            assert!(
+                painted > 100,
+                "expected painted CID glyph pixels, got {painted}"
+            );
+        }
+
+        /// A FlateDecode'd embedded program inflates before replay (the
+        /// real-producer shape): glyphs paint pixels.
+        #[test]
+        fn type0_renders_filtered_descendant_program() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(type0_pdf_filtered(), &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut backend = TinySkiaBackend::new(612, 792).expect("pixmap");
+            session
+                .render_page(0, &mut backend, Matrix::IDENTITY, &budget, &mut g)
+                .expect("render");
+            let mut painted = 0usize;
+            for px in backend.pixmap().data().chunks(4) {
+                if px[3] == 255 {
+                    painted = painted.saturating_add(1);
+                }
+            }
+            assert!(
+                painted > 100,
+                "expected painted CID glyph pixels, got {painted}"
+            );
+        }
+
+        /// `/ToUnicode` recovers the Devanagari scalars for the shown CIDs.
+        #[test]
+        fn type0_recovers_unicode_for_shown_cids() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(type0_pdf(), &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let f1 = Bytes::copy_from_slice(b"F1");
+            assert_eq!(
+                session.text_unicode(0, &f1, 56, &budget, &mut g),
+                Some(0x0915)
+            );
+            assert_eq!(
+                session.text_unicode(0, &f1, 32, &budget, &mut g),
+                Some(0x093F)
+            );
+            // An unmapped CID has no recovery (deviation, not an error).
+            assert_eq!(session.text_unicode(0, &f1, 7, &budget, &mut g), None);
+        }
     }
 
     /// A type-4 Gouraud mesh with one triangle decodes from the packed bit

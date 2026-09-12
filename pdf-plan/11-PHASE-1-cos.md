@@ -174,6 +174,24 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     permissions CLI tool shipped as `SL-1A.TOOL.05`. Interop check against PDFium/Acrobat is
     folded into the ROB.01 wild-corpus sweep (encrypted subset).
 - [ ] **SL-1.ENC.03 — Public-key (PKCS#7) handler, read-only** · deps: ENC.02 · owner: HUMAN
+  - **Note (draft 2026-09-11, awaiting HUMAN sign-off — do not self-approve):** shipped
+    green as a draft: `selis-crypto` gains `der` (minimal iterative DER reader for the CMS
+    subset, hand-rolled by decision — `pdf-plan/31-ENC03-DESIGN-NOTE.md §3`) and `pkcs7`
+    (RFC 5652 EnvelopedData parse, RSA PKCS#1 v1.5 + EC P-256 ECDH/AES-KW CEK unwrap,
+    Algorithm 1 seed-hash file key per ISO 32000-2 §7.6.6.4). `selis-pdf-cos` dispatches
+    `/Adobe.PPKLite` (+ the `/Adobe.PubSec` alias) with a `Handler` enum and
+    `authenticate_public_key`; `Session::open_public_key` opens with a recipient private
+    key (PKCS#8 DER) and fails typed `RECIPIENT_NO_MATCH` (new code 1807) on a wrong key —
+    never a partial decrypt. Read-only per ADR-P0019: no encrypt path, no cert UI, no
+    PKCS#12. s3-era RC4 and non-AES CMS content algorithms are refused typed (wrong-key
+    silence argument, design note §5). Fuzz target `pkcs7_cms` + 25 seeds + CI matrix
+    entry. Three committed fixture PDFs + fixture generator (independent of the handler
+    under test); two throwaway RSA-2048 test keys committed under
+    `crates/selis-pdf-engine/tests/fixtures/`. Corpus `encrypted-legacy` posture: the
+    public-key subset of that tag opens with the recipient key; credential-less
+    `Session::open` stays tolerant. Human must review design note §8 (dependency decision,
+    cert-selection policy, refused set, RSA side-channel acceptance, permission-surfacing
+    deferral, layer edge, new error code) before this moves to done.
 - [x] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
   - **Do:** Surface `/P` bits honestly. We honour them by default and expose an explicit,
     logged override for the owner-password case. Do not pretend the bits are security.

@@ -19,6 +19,8 @@ mod oracle;
 mod perf_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod perf_wasm;
+#[cfg(not(target_arch = "wasm32"))]
+mod pkcs7_fixtures;
 mod png;
 mod purity;
 mod render_perf;
@@ -28,6 +30,8 @@ mod size_check;
 mod sweep;
 mod synthetic;
 mod unsafe_check;
+#[cfg(not(target_arch = "wasm32"))]
+mod wasm_protocol;
 mod wild;
 mod wild_hygiene;
 
@@ -148,6 +152,12 @@ enum Command {
         #[arg(long, default_value = "bench/wasm-results.json")]
         out: std::path::PathBuf,
     },
+    /// Drive the Worker protocol (SL-4.WASM.01) through the compiled guest
+    /// on wasmtime: round-trips, guest==native render checksums, budget
+    /// exhaustion, cancellation, and malformed-message containment.
+    /// Native-only (the guest is built for wasm32 first).
+    #[cfg(not(target_arch = "wasm32"))]
+    WasmProtocol,
     /// Generate the deterministic render benchmark set (SL-2.PERF.02).
     RenderSet {
         /// Verify the committed fixtures against their generator instead of
@@ -163,6 +173,19 @@ enum Command {
     Fixtures {
         /// Output directory for the produced tool outputs.
         #[arg(long, default_value = "target/tool-outputs")]
+        outdir: std::path::PathBuf,
+    },
+    /// Generate the committed SL-1.ENC.03 public-key fixtures, or `--check`
+    /// them against their generator. Native-only tooling (its crypto stack
+    /// must not ride the wasm size canary).
+    #[cfg(not(target_arch = "wasm32"))]
+    PubkeyFixtures {
+        /// Verify the committed fixtures against their generator instead of
+        /// regenerating them.
+        #[arg(long)]
+        check: bool,
+        /// Output directory for the produced PDFs.
+        #[arg(long, default_value = "crates/selis-pdf-engine/tests/fixtures")]
         outdir: std::path::PathBuf,
     },
     /// CycloneDX SBOM (SL-0.WS.07).
@@ -453,7 +476,17 @@ fn main() -> ExitCode {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
+        Command::PubkeyFixtures { check, outdir } => {
+            if check {
+                pkcs7_fixtures::check(&outdir)
+            } else {
+                pkcs7_fixtures::run(&outdir)
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         Command::PerfWasm { set, repeats, out } => perf_wasm::run(&set, repeats, &out),
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::WasmProtocol => wasm_protocol::run(),
         Command::PerfRender {
             set,
             dpi,

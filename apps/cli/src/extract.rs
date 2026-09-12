@@ -60,7 +60,8 @@ pub(crate) fn run(
             .mcid_order(&budget, &mut g)
             .ok()
             .filter(|v| !v.is_empty());
-        let (lines, line_texts) = page_lines(&dl, mcid_order.as_deref(), &mut g)?;
+        let (lines, line_texts) =
+            page_lines(&session, p, &budget, &dl, mcid_order.as_deref(), &mut g)?;
         let page_out = match format {
             "json" => {
                 let run_texts: Vec<Vec<String>> = lines
@@ -99,10 +100,18 @@ pub(crate) fn run(
 /// order) enables structure-first ordering for tagged PDFs; `None` falls back
 /// to column-aware geometry.
 ///
+/// Codes from CID fonts (Type0 composites) are replaced by their `/ToUnicode`
+/// recovery before assembly text is read, so `line_text` below sees Unicode
+/// scalars (SL-3.SHAPE.04). Simple-font codes pass through byte-identical —
+/// their encoding/glyph-name recovery is the TEXT.02 follow-up, untouched.
+///
 /// # Errors
 ///
 /// `BUDGET_BYTES` when the reading-order ranking buffer cannot be budgeted.
 pub(crate) fn page_lines(
+    session: &Session,
+    page: usize,
+    budget: &selis_sandbox::Budget,
     dl: &selis_pdf_content::display_list::DisplayList,
     mcid_order: Option<&[u32]>,
     g: &mut selis_sandbox::BudgetGuard<'_>,
@@ -124,6 +133,10 @@ pub(crate) fn page_lines(
             }
         }
     }
+    // CID codes become Unicode scalars BEFORE assembly: the word splitter
+    // strips `0x20` glyphs, and a raw CID can equal 0x20 without being a
+    // space (SL-3.SHAPE.04 — e.g. Devanagari CID 32 is vowel sign I).
+    resolve_cid_unicode(session, page, budget, &mut glyphs, g);
     let lines = selis_pdf_text::assemble(glyphs);
     // Reading order: column detection + XY-cut (no structure-tree MCIDs).
     let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
@@ -141,6 +154,34 @@ pub(crate) fn page_lines(
         .map_err(|e| CliError(format!("cannot order text: {e}")))?;
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
     Ok((ordered.lines, line_texts))
+}
+
+/// Replace CID codes with their `/ToUnicode` Unicode scalars in place, so
+/// downstream readers (assembly included) see characters, not CIDs
+/// (SL-3.SHAPE.04). Resolution is cached per (font, code); a recovered
+/// scalar above `u16::MAX` cannot be carried in the glyph code and keeps the
+/// raw CID (documented limitation — Indic scripts live in the BMP, so the
+/// corpus is unaffected).
+fn resolve_cid_unicode(
+    session: &Session,
+    page: usize,
+    budget: &selis_sandbox::Budget,
+    glyphs: &mut [TextGlyph],
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+) {
+    let mut cache: std::collections::HashMap<(Vec<u8>, u16), Option<u32>> =
+        std::collections::HashMap::new();
+    for glyph in glyphs.iter_mut() {
+        let key = (glyph.font.as_slice().to_vec(), glyph.code);
+        let cached = cache
+            .entry(key)
+            .or_insert_with(|| session.text_unicode(page, &glyph.font, glyph.code, budget, g));
+        if let Some(uni) = cached {
+            if let Ok(narrow) = u16::try_from(*uni) {
+                glyph.code = narrow;
+            }
+        }
+    }
 }
 
 /// List the document's embedded files (metadata only, newline-delimited JSON),

@@ -20,6 +20,39 @@
 
 use std::collections::BTreeMap;
 
+use selis_bytes::Bytes;
+
+/// How a CID maps to a glyph id in the embedded font program
+/// (ISO 32000-2:2020 §9.7.4.2, `/CIDToGIDMap`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CidToGid {
+    /// `/CIDToGIDMap /Identity` — or absent, which the spec defines as
+    /// identity: the CID *is* the glyph id in the embedded program.
+    #[default]
+    Identity,
+    /// A stream `/CIDToGIDMap`: 2-byte big-endian glyph ids, one per CID.
+    /// A short stream is a deviation: CIDs past its end have no glyph.
+    Table(Bytes),
+}
+
+/// The glyph id for `cid`, or `None` when a stream map has no entry for it
+/// (a deviation — the caller skips the glyph, never fails the page).
+#[must_use]
+pub fn map_cid(map: &CidToGid, cid: u16) -> Option<u16> {
+    match map {
+        CidToGid::Identity => Some(cid),
+        CidToGid::Table(bytes) => {
+            let i = usize::from(cid).checked_mul(2)?;
+            let pair = bytes.as_slice().get(i..i.saturating_add(2))?;
+            let (hi, lo) = (pair.first().copied(), pair.get(1).copied());
+            match (hi, lo) {
+                (Some(h), Some(l)) => Some(u16::from_be_bytes([h, l])),
+                _ => None,
+            }
+        }
+    }
+}
+
 /// One element of a `/W` (or `/W2`) array: a CID, or a width array.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CidWidthEntry {
@@ -180,5 +213,32 @@ mod tests {
         let widths = resolve_cid_widths(&[], 42.0);
         assert_eq!(widths.width(0), 42.0);
         assert_eq!(widths.default_width(), 42.0);
+    }
+
+    #[test]
+    fn identity_maps_cid_to_itself() {
+        assert_eq!(map_cid(&CidToGid::Identity, 0), Some(0));
+        assert_eq!(map_cid(&CidToGid::Identity, 56), Some(56));
+        assert_eq!(map_cid(&CidToGid::Identity, u16::MAX), Some(u16::MAX));
+        // Absent is identity (the spec default).
+        assert_eq!(map_cid(&CidToGid::default(), 7), Some(7));
+    }
+
+    #[test]
+    fn table_maps_per_cid_big_endian() {
+        // CIDs 0..=2 → GIDs 10, 0x0102, 0xFFFF.
+        let table = CidToGid::Table(Bytes::copy_from_slice(&[0, 10, 1, 2, 255, 255]));
+        assert_eq!(map_cid(&table, 0), Some(10));
+        assert_eq!(map_cid(&table, 1), Some(0x0102));
+        assert_eq!(map_cid(&table, 2), Some(0xFFFF));
+    }
+
+    #[test]
+    fn short_table_is_a_deviation_not_an_error() {
+        let table = CidToGid::Table(Bytes::copy_from_slice(&[0, 10, 1]));
+        assert_eq!(map_cid(&table, 0), Some(10));
+        // CID 1's pair is truncated: no glyph, not a panic.
+        assert_eq!(map_cid(&table, 1), None);
+        assert_eq!(map_cid(&table, 60000), None);
     }
 }
