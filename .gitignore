@@ -38,3 +38,4 @@ tmp_*
 node_modules/
 dist/
 target-agent/
+/target-ci
