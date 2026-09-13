@@ -237,7 +237,12 @@ pub(crate) fn build_driver() -> Result<PathBuf, String> {
 }
 
 /// Resolve the cargo binary (canonicalised absolute path, like the oracle
-/// spawns — never a bare PATH lookup at spawn time).
+/// spawns — never a bare PATH lookup at spawn time). On Linux `~/.cargo/bin`
+/// holds the proxies as symlinks to the rustup multi-call binary; canonicalising
+/// the symlink *file* collapses `<dir>/cargo` to `<dir>/rustup` and the child
+/// then runs as rustup's CLI (which rejects `build … -p`). Canonicalise the
+/// parent directory and re-attach the tool name, so the proxy resolves by its
+/// `argv[0]` basename (`cargo`) exactly as a PATH invocation would.
 fn resolve_cargo() -> Result<PathBuf, String> {
     let path = std::env::var_os("PATH").ok_or_else(|| "no PATH".to_string())?;
     let probe = if std::env::consts::OS == "windows" {
@@ -248,8 +253,8 @@ fn resolve_cargo() -> Result<PathBuf, String> {
     for dir in std::env::split_paths(&path) {
         let cand = dir.join(probe);
         if cand.is_file() {
-            if let Ok(abs) = std::fs::canonicalize(&cand) {
-                return Ok(abs);
+            if let Ok(abs_dir) = std::fs::canonicalize(&dir) {
+                return Ok(abs_dir.join(probe));
             }
         }
     }
