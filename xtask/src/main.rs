@@ -397,6 +397,13 @@ enum CorpusSub {
         /// dir).
         #[arg(long)]
         selis: Option<std::path::PathBuf>,
+        /// Only verify files whose corpus id contains one of these
+        /// substrings (repeatable; e.g. `ghent/` to re-check one slice).
+        #[arg(long = "include", value_name = "SUBSTRING")]
+        include: Vec<String>,
+        /// Skip files whose corpus id contains one of these substrings.
+        #[arg(long = "exclude", value_name = "SUBSTRING")]
+        exclude: Vec<String>,
     },
     /// Generate the synthetic corpus (SL-0.CORP.04).
     SyntheticGenerate,
@@ -457,9 +464,17 @@ fn main() -> ExitCode {
             CorpusSub::ExpectMerge { from } => {
                 corpus::run(corpus::CorpusCommand::ExpectMerge { from })
             }
-            CorpusSub::Verify { golden, selis } => {
-                corpus::run(corpus::CorpusCommand::Verify { golden, selis })
-            }
+            CorpusSub::Verify {
+                golden,
+                selis,
+                include,
+                exclude,
+            } => corpus::run(corpus::CorpusCommand::Verify {
+                golden,
+                selis,
+                include,
+                exclude,
+            }),
             CorpusSub::SyntheticGenerate => synthetic::generate(),
             CorpusSub::Wild(args) => match args.sub {
                 WildSub::Fetch {

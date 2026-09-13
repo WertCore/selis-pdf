@@ -47,6 +47,8 @@ pub enum CorpusCommand {
     Verify {
         golden: bool,
         selis: Option<PathBuf>,
+        include: Vec<String>,
+        exclude: Vec<String>,
     },
 }
 
@@ -58,7 +60,12 @@ pub fn run(cmd: CorpusCommand) -> Result<(), String> {
         CorpusCommand::Stats => stats(&entries),
         CorpusCommand::ExpectGenerate => expect_generate(),
         CorpusCommand::ExpectMerge { from } => expect_merge(&from),
-        CorpusCommand::Verify { golden, selis } => verify(golden, selis.as_deref()),
+        CorpusCommand::Verify {
+            golden,
+            selis,
+            include,
+            exclude,
+        } => verify(golden, selis.as_deref(), &include, &exclude),
     }
 }
 
@@ -622,45 +629,121 @@ fn expect_generate() -> Result<(), String> {
 /// reporting any outcome changes as a typed diff (SL-0.CORP.03 DoD). With
 /// `golden`, additionally re-render every recorded golden DPI and
 /// re-extract the page-1 text, diffing the hashes — the full CORP.03
-/// regression check. Any change fails: the command passes on a clean tree.
-fn verify(golden: bool, selis: Option<&Path>) -> Result<(), String> {
+/// regression check (parallel workers, per-worker scratch; deterministic
+/// id-sorted output). Any change fails: the command passes on a clean tree.
+fn verify(
+    golden: bool,
+    selis: Option<&Path>,
+    include: &[String],
+    exclude: &[String],
+) -> Result<(), String> {
     let expect_dir = Path::new("corpus/expect");
-    let files = collect_pdfs();
-    let golden_ctx = if golden {
-        Some(golden_context(selis)?)
-    } else {
-        None
-    };
+    let mut files = collect_pdfs();
+    if !include.is_empty() {
+        files.retain(|(id, _)| include.iter().any(|s| id.contains(s.as_str())));
+    }
+    if !exclude.is_empty() {
+        files.retain(|(id, _)| !exclude.iter().any(|s| id.contains(s.as_str())));
+    }
     let mut checked = 0usize;
     let mut changed = 0usize;
     let mut missing = 0usize;
-    for (id, path) in &files {
-        let expect_path = expect_dir.join(format!("{id}.toml"));
-        let expected: ExpectRecord = match std::fs::read_to_string(&expect_path) {
-            Ok(text) => toml::from_str(&text).map_err(|e| format!("{id}: {e}"))?,
-            Err(_) => {
-                println!("  {id}: NO EXPECTATION");
+    if !golden {
+        for (id, path) in &files {
+            let expected = match read_expect(expect_dir, id) {
+                Ok(Some(e)) => e,
+                Ok(None) => {
+                    println!("  {id}: NO EXPECTATION");
+                    missing += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let actual = open_outcome(path);
+            checked += 1;
+            if expected.open != actual.open
+                || expected.code != actual.code
+                || expected.pages != actual.pages
+            {
+                changed += 1;
+                println!("  {id}: expected {:?} got {:?}", expected, actual);
+            }
+        }
+    } else {
+        let ctx = golden_context(selis)?;
+        let jobs = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(1, 8));
+        for w in 0..jobs {
+            let dir = ctx.tmp.join(format!("w{w}"));
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results: std::sync::Mutex<Vec<(String, Vec<String>)>> =
+            std::sync::Mutex::new(Vec::new());
+        let files_ref = &files;
+        let ctx_ref = &ctx;
+        std::thread::scope(|scope| {
+            for w in 0..jobs {
+                let tmp_w = ctx.tmp.join(format!("w{w}"));
+                let next_ref = &next;
+                let results_ref = &results;
+                scope.spawn(move || loop {
+                    let i = next_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if i >= files_ref.len() {
+                        break;
+                    }
+                    let id = &files_ref[i].0;
+                    let path = &files_ref[i].1;
+                    let expected = match read_expect(expect_dir, id) {
+                        Ok(Some(e)) => e,
+                        Ok(None) => {
+                            if let Ok(mut r) = results_ref.lock() {
+                                r.push((id.clone(), vec![format!("NO EXPECTATION")]));
+                            }
+                            continue;
+                        }
+                        Err(e) => {
+                            if let Ok(mut r) = results_ref.lock() {
+                                r.push((id.clone(), vec![format!("corrupt: {e}")]));
+                            }
+                            continue;
+                        }
+                    };
+                    let actual = open_outcome(path);
+                    let mut row_diffs = Vec::new();
+                    if expected.open != actual.open
+                        || expected.code != actual.code
+                        || expected.pages != actual.pages
+                    {
+                        row_diffs.push(format!("open expected {:?} got {:?}", &expected, actual));
+                    } else {
+                        row_diffs = verify_golden(ctx_ref, &tmp_w, path, &expected);
+                    }
+                    if !row_diffs.is_empty() {
+                        if let Ok(mut r) = results_ref.lock() {
+                            r.push((id.clone(), row_diffs));
+                        }
+                    }
+                });
+            }
+        });
+        let _ = std::fs::remove_dir_all(&ctx.tmp);
+        let mut diffs: Vec<(String, Vec<String>)> = std::mem::take(
+            &mut *results
+                .lock()
+                .map_err(|_| "verify thread panicked".to_string())?,
+        );
+        diffs.sort_by(|a, b| a.0.cmp(&b.0));
+        checked = files.len();
+        for (id, row) in &diffs {
+            changed += 1;
+            if row.first().is_some_and(|d| d.starts_with("NO EXPECTATION")) {
                 missing += 1;
+                changed -= 1;
+                println!("  {id}: NO EXPECTATION");
                 continue;
             }
-        };
-        let actual = open_outcome(path);
-        let same = expected.open == actual.open
-            && expected.code == actual.code
-            && expected.pages == actual.pages;
-        checked += 1;
-        if !same {
-            changed += 1;
-            println!("  {id}: expected {:?} got {:?}", expected, actual);
-            continue;
-        }
-        if let Some(ctx) = &golden_ctx {
-            let diffs = verify_golden(ctx, path, &expected);
-            if !diffs.is_empty() {
-                changed += 1;
-                for d in diffs {
-                    println!("  {id}: {d}");
-                }
+            for d in row {
+                println!("  {id}: {d}");
             }
         }
     }
@@ -671,6 +754,18 @@ fn verify(golden: bool, selis: Option<&Path>) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Read and parse the open-outcome expectation for one corpus id (`None`
+/// when no record exists yet).
+fn read_expect(expect_dir: &Path, id: &str) -> Result<Option<ExpectRecord>, String> {
+    let dest = expect_dir.join(format!("{id}.toml"));
+    match std::fs::read_to_string(&dest) {
+        Ok(text) => toml::from_str(&text)
+            .map(Some)
+            .map_err(|e| format!("{id}: {e}")),
+        Err(_) => Ok(None),
+    }
 }
 
 /// The executables and scratch space a golden verification needs: the
@@ -689,8 +784,14 @@ fn golden_context(selis: Option<&Path>) -> Result<GoldenContext, String> {
 
 /// Re-render every recorded golden DPI and re-extract the page-1 text,
 /// returning the typed diffs (empty when the file still matches its
-/// goldens). Files whose open outcome already drifted never reach here.
-fn verify_golden(ctx: &GoldenContext, file: &Path, expected: &ExpectRecord) -> Vec<String> {
+/// goldens). `scratch` is the calling worker's directory. Files whose open
+/// outcome already drifted never reach here.
+fn verify_golden(
+    ctx: &GoldenContext,
+    scratch: &Path,
+    file: &Path,
+    expected: &ExpectRecord,
+) -> Vec<String> {
     let mut diffs = Vec::new();
     let timeout = std::time::Duration::from_secs(120);
     if let Some(render) = &expected.render {
@@ -698,7 +799,7 @@ fn verify_golden(ctx: &GoldenContext, file: &Path, expected: &ExpectRecord) -> V
         dpis.sort();
         for dpi in dpis {
             let want = &render[dpi.as_str()];
-            match golden_render_hash(ctx, file, dpi, timeout) {
+            match golden_render_hash(ctx, scratch, file, dpi, timeout) {
                 Ok(got) => {
                     if &got != want {
                         diffs.push(format!("render MISMATCH @{dpi}"));
@@ -709,7 +810,7 @@ fn verify_golden(ctx: &GoldenContext, file: &Path, expected: &ExpectRecord) -> V
         }
     }
     if let Some(text) = &expected.text {
-        match golden_text_hash(ctx, file, timeout) {
+        match golden_text_hash(ctx, scratch, file, timeout) {
             Ok(got) => {
                 if got.as_deref() != Some(text.hash.as_str()) {
                     diffs.push("text MISMATCH".to_string());
@@ -725,11 +826,12 @@ fn verify_golden(ctx: &GoldenContext, file: &Path, expected: &ExpectRecord) -> V
 /// into scratch, sha256 over exactly the bytes the CLI wrote.
 fn golden_render_hash(
     ctx: &GoldenContext,
+    scratch: &Path,
     file: &Path,
     dpi: &str,
     timeout: std::time::Duration,
 ) -> Result<String, String> {
-    let out = ctx.tmp.join("verify.ppm");
+    let out = scratch.join("verify.ppm");
     let _ = std::fs::remove_file(&out);
     let args = vec![
         "render".to_string(),
@@ -752,10 +854,11 @@ fn golden_render_hash(
 /// extraction with no text (an image-only page has no text baseline).
 fn golden_text_hash(
     ctx: &GoldenContext,
+    scratch: &Path,
     file: &Path,
     timeout: std::time::Duration,
 ) -> Result<Option<String>, String> {
-    let out = ctx.tmp.join("verify.txt");
+    let out = scratch.join("verify.txt");
     let _ = std::fs::remove_file(&out);
     let args = vec![
         "extract".to_string(),
