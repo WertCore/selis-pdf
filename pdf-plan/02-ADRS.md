@@ -748,3 +748,54 @@ measures this ABI against native on the benchmark set (the PERF.03 gate);
 browsers reuse the same three exports through the wasm shell (Phase 5).
 Determinism is unaffected: no clock, no threads, no cross-call state —
 guest/native pixmap checksums must agree per page (the harness asserts it).
+
+## ADR-P0042 — The Worker wire protocol: JSON messages, one binary attachment, host-writable control slots
+**Status:** Accepted (SL-4.WASM.01, 2026-09-11)
+**Decision:** The JS shell (Worker) and the engine speak a **versioned JSON
+message protocol** (`{"v":1,"id":N,"op":…}`), with **at most one binary
+attachment** per message (document bytes in on `open`, RGBA8 pixels or UTF-8
+text out on `render`/`text`). `selis-pdf-wasm` grows the raw render ABI of
+ADR-P0041 — which stays, unchanged, as the perf harness's measured surface —
+with four exports: `selis_dispatch` (one call per message; the host copies
+request + payload into guest memory and reads back a response JSON plus an
+out-attachment through a three-word out-block), and three control-slot
+publishers — `selis_cancel_slot` (the address of a leaked `CancelToken` flag
+the host writes `1` into to cancel the in-flight op; dispatch clears it at
+entry, so only writes landing mid-op are observed, at the next budget tick),
+`selis_progress_slot` (request id / stage / fraction, written at every stage
+boundary), and `selis_clock_slot` (the monotonic nanos `GuestClock` reads —
+the shell injects `performance.now`, the guest resolves no clock of its own).
+Every failure is a **typed registry code** (`selis-error/codes.toml`; new
+code 6017 `BINDING_UNSUPPORTED_OP` for capability/version gaps), and the
+whole worker entry sits inside the ERR.03 panic trampoline, so `INTERNAL_PANIC`
+is the worst response any request can produce. The schema is locked for the
+Phase 5 edit surface now: `mutate`/`save` bodies carry a versioned envelope
+(`selis-mutate/1`) that v1 engines validate and answer
+`BINDING_UNSUPPORTED_OP` to. The `cdylib` gains an `rlib` target so the fuzz
+target and future native tooling share the schema; browsers still load only
+the cdylib. Cancellation has two honest channels: **pre-cancel** (a `cancel`
+message recorded for a not-yet-dispatched request id — the only channel a
+single-threaded Worker can deliver mid-flight work through) and **in-flight**
+(the exported cancel slot — requires shared-memory access, exercised by the
+SAB watcher in SL-4.WASM.03). The conformance harness (`xtask wasm-protocol`)
+drives the wire as a black box over wasmtime and asserts guest == native
+render checksums, budget exhaustion, cancellation, and malformed-message
+containment per run.
+**Rationale:** `24-BINDINGS-SPEC.md §2` needs correlation ids, transferable
+buffers, cancellation, and progress without pinning the Rust types to JS. A
+copy-in/copy-out JSON protocol keeps every crossing buffer
+host-validated (`(ptr,len)` pairs the shell checks before reading — the
+shell never receives a pointer it can misuse), keeps the guest
+import-free (ADR-P0011's injection discipline: clock, cancel, and progress
+all arrive through exported slots instead of host imports), and makes the
+wire diffable in review. Reserving the mutation/save envelope now means the
+Phase 5 edit ops are a dispatch-arm addition, not a wire break.
+**Consequences:** The JS shell (UI.01) implements the same schema in
+TypeScript against these exports; Vitest worker conformance (the task's
+original DoD) lands there, with the Rust-side wasmtime harness as the
+CI-enforced guest leg. The wall deadline in the guest is enforced exactly
+as often as the glue pokes the clock slot — an honest, documented
+degradation, never a silent claim. Progress `postMessage`s are a threaded-
+path (WASM.03) shape; single-threaded hosts read the progress slot. The
+schema version `v` on every message makes future breaks a typed
+`BINDING_UNSUPPORTED_OP`, not silent misbehaviour.

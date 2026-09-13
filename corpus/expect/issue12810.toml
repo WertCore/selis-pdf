@@ -1,6 +1,13 @@
 open = "ok"
 pages = 1
 
+[render]
+150 = "affcd255408b3210a25a3d468034d3c81c5d3c91309d976761bd626fb228035a"
+300 = "5d5327e888d66ade6bcd59820436fb7a860df5f3979cfb554124a43b990a86ee"
+72 = "20764ef85609cfb48ab44944d7e1a964d6b86bb5b66acb87fc05fcf9c2528122"
+
+[text]
+hash = "18506c4761e601ac4cca3a021ad086f992740898dddb72ca35169e8dc2a8ab13"
 [annotation]
 triage = "selis_rejects"
 verdict = "OurBug"

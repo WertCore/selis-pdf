@@ -20,4 +20,5 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 COPY driver.mjs ./
 
 # Render oracle interface: `docker run <image> --page 1 --dpi 150 /in.pdf /out.png`
+# Text oracle interface (SL-3.CONF.01): `docker run <image> --page 1 --text /out.txt /in.pdf`
 ENTRYPOINT ["node", "driver.mjs"]

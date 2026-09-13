@@ -171,3 +171,19 @@ trigger is a worry, not a managed risk.
   PDF/UA `Author` from there is incremental.
 - **Note:** this risk is mostly an *opportunity*. Regulation is why the remediation segment
   (`SL-9.COMPL.02`) exists and is underserved.
+
+## R18 — Public-key RSA timing side channel (Marvin) on the decrypt path
+- **Severity:** medium local / high server · **Owner:** HUMAN, security lead
+- **Signed off 2026-09-12** at ENC.03 review: accepted *because* the operation is a *local*
+  decrypt of the user's own file with the user's own key — no remote oracle, same posture as
+  Acrobat, PDFium, PDFBox, qpdf.
+- **Trigger:** Selis ever exposes public-key (PKCS#7) decryption through a **multi-tenant or
+  server-batch surface** (`Surface::Server`, Phase 8 platform, or any "upload to decrypt" API).
+  That converts a local-only concern into a chosen-ciphertext timing oracle against *other
+  people's* documents.
+- **Mitigation:** local use is fine, ship it (ENC.03/07/08). At the surface gate, refuse
+  RSAES-PKCS1-v1_5 transport unless the decrypt runs constant-time or hardware-backed, or add
+  the RSA-OAET-transport-only mode (ENC.08 adds OAEP, which is already being built as a first
+  class `match_key_transport` arm with `rsa`'s constant-time OAEP, which sidesteps Marvin).
+- **Kill criterion:** a public-key decrypt code path is reachable in any server build
+  *without* one of the two mitigations above → block the release, pull the feature.

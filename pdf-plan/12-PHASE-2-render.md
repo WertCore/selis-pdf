@@ -211,44 +211,59 @@ every user on every page.
     reaches the oracle envelope (≥ ~73%).
   - **DoD:** Root cause identified and fixed, or an ADR records why the divergence is accepted;
     CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope.
-  - **Done (2026-09-12):** the ≤1%/≤2% bands are inside the envelope, and the residual 1–2% mass
-    was root-caused to **content-lexer and clip semantics**, not AA. Measured on current `main`
-    @71776f0 before touching anything (full corpus, 3,836 files @150 DPI vs mutool, n=3,750
-    comparable): **≤1% 74.2%, ≤2% 80.6%, p50 0.07** — the CONF.01 36pp excess was already closed
-    by the intermediate merges (RAST.12 page transform, RAST.13 blank/`TD`/`/Contents` fixes,
-    CONF.05 profile re-tune); CONF.02's "premise stands" note (2026-09-11) predates any re-run.
-    **Signature investigation** (per-page ΔE76>2.3 masks, row/column ink profiles, integer-shift
-    cross-correlation, edge-orientation splits — harness `C:\selis-build\rast14\char.py`, outside
-    the repo): the mass was **missing/wrong ink**, not edge noise. `0.1 w` hairlines matched mutool
-    (0.117 vs 0.118 coverage), refuting stroke-geometry rounding as the driver; tiny-skia's 4×4
-    `path_aa` supersampling *is* real but low-impact (synthetic text pages already ≤0.1%).
-    Three concrete defects fixed:
-    1. **Octal string escapes** (`selis-pdf-content/src/lex.rs`): `\\ddd` decoded as the literal
+  - **Done (2026-09-13):** the ≤1%/≤2% bands are inside the envelope, and the residual 1–2% mass
+    was root-caused to **content-lexer and clip semantics**, not AA. Measured on the `71776f03`
+    lineage before `origin/main`'s shape04 re-model landed (full corpus, 3,836 files @150 DPI vs
+    mutool, n=3,750 comparable): **≤1% 74.2%, ≤2% 80.6%, p50 0.07** — the CONF.01 36pp excess was
+    already closed by the intermediate merges (RAST.12 page transform, RAST.13 blank/`TD`/`/Contents`
+    fixes, CONF.05 profile re-tune); CONF.02's "premise stands" note (2026-09-11) predates any
+    re-run. **Signature investigation** (per-page ΔE76>2.3 masks, row/column ink profiles,
+    integer-shift cross-correlation, edge-orientation splits) attributed the mass to **missing /
+    wrong ink**, not edge noise. `0.1 w` hairlines matched mutool (0.117 vs 0.118 coverage),
+    refuting stroke-geometry rounding as the driver; tiny-skia's 4×4 `path_aa` supersampling *is*
+    real but low-impact (synthetic text pages already ≤0.1%). Three concrete defects fixed:
+    1. **Octal string escapes** (`selis-pdf-content/src/lex.rs`): `\ddd` decoded as the literal
        first digit, so every `/Differences`-encoded page (the whole veraPDF suite) rendered
        wrong glyphs. The COS lexer already implemented §7.3.4.2 correctly — the content lexer was
-       ported to match (octal, `\\b`/`\\f`, line continuations). One table page: ink 18.4k → 26.5k
+       ported to match (octal, `\b`/`\f`, line continuations). One table page: ink 18.4k → 26.5k
        (oracle 26.8k).
-    2. **Glyph selection through the encoding model** (`selis-pdf-engine/src/session.rs`,
-       `selis-font/src/{model,encoding,outline}.rs`): the render walk mapped raw byte codes through
-       skrifa's charmap, ignoring `/Encoding`/`/Differences`, and skrifa never selects `(1,0)`
-       Mac-Roman cmaps — the only cmap subset fonts carry. New `FontResolver` (per-render cache,
-       deterministic) resolves codes via glyph name → `post` → AGL → Unicode → cmap, then the
-       Annex D base-encoding reverse → `(1,0)` byte cmap (`glyph_id_for_byte_cmap`); Type0 maps
-       `Identity-H` CIDs and `Uni…-UCS2` codes. `parse_font_dict` gained `/Encoding`
-       (name/dict/indirect-ref) + `/cmap_name`.
+    2. **Glyph selection through the encoding model**: the pre-shape04 render walk mapped raw
+       byte codes through skrifa's charmap, ignoring `/Encoding`/`/Differences`, and skrifa never
+       selects `(1,0)` Mac-Roman cmaps — the only cmap many subset fonts carry. **Re-merged
+       2026-09-13 against shape04's `GlyphMapping`**: `selis_font::FontDict` gained `encoding:
+       FontEncoding` and `cmap_name: Option<String>` alongside the shape04 fields (`descendant`,
+       `cid_to_gid`, `cid_widths`, `to_unicode`, `is_cid`), `parse_font_dict` keeps their parsing
+       and adds `/Encoding` (name/Dict/indirect-ref) or `/Encoding` CMap name for Type0, and
+       `font_data_inner` now returns a `ResolvedFontProgram` whose mapping is
+       `GlyphMapping::Unicode(FontEncoding)` for simple fonts or `GlyphMapping::Cid { to_gid,
+       unicode }` for CID fonts (`unicode` iff `cmap_name` is a `Uni…UCS2…` CMap); the walk's
+       text cache dispatches: Unicode → `glyph_id_for_simple_code` (glyph name → `post`/CFF →
+       AGL → Unicode → cmap; unresolvable name → Annex D base-code reverse → `(1,0)` byte cmap;
+       built-in encoding reduces to the pre-RAST.14 code-as-char path), Cid identity/custom →
+       `map_cid`, Cid Unicode → glyph_id_for_char. The parallel `FontResolver`/`resolve_glyph`
+       closure design is removed — the encoding travels **through** shape04's mapping API.
     3. **Clip paths frozen at definition** (`selis-pdf-content/src/{exec,path}.rs`,
        `selis-pdf-engine/src/render.rs`): the walk re-transformed clip paths with each op's CTM;
        after a `cm` inside the same `q` (table rules) the stale clip silently clipped the
        following text away. Clips are now transformed once at `W`/`W*` time (§8.5.4) and the walk
-       applies the page transform only. Also `TinySkiaBackend::finish()` composites any
-       transparency group left open by an unterminated `BMC`/`BDC` (was dropping to a transparent
-       scratch layer).
-    **After** (same full corpus, same metric): **≤0.5% 67.8%, ≤1% 74.9%, ≤2% 80.8%, ≤5% 86.7%,
-    p50 0.06** — ≤1% sits mid-envelope (oracle pairs 73.3–76.5), ≤2% inside (80.5–82.3), and every
-    band ≥0.5% moved up while `diff≥25` (CONF.04 territory) grew 99→103 from better-exposed
-    content. Determinism (RAST.09) re-verified byte-identical; full workspace suite green; lint
-    green; PERF.02 re-run recorded below. Regression corpus: `text_octal_escape`,
-    `clip_frozen_at_definition`, `encoding_differences` (+ expectations).
+       applies the page transform only. Also `TinySkiaBackend::finish()` composites any transparency
+       group left open by an unterminated `BMC`/`BDC` (was dropping to a transparent scratch
+       layer).
+    **After** the engine fix landed on the pre-shape04 lineage (same full-corpus measurement):
+    **≤0.5% 67.8%, ≤1% 74.9%, ≤2% 80.8%, ≤5% 86.7%, p50 0.06** — ≤1% sits mid-envelope (oracle
+    pairs 73.3–76.5), ≤2% inside (80.5–82.3), and every band ≥0.5% moved up while `diff≥25`
+    (CONF.04 territory) grew 99→103 from better-exposed content. Determinism (RAST.09)
+    re-verified byte-identical; full workspace suite green; lint green; PERF.02 re-run recorded
+    below. Regression corpus: `text_octal_escape`, `clip_frozen_at_definition`,
+    `encoding_differences` (+ expectations).
+    **Post-re-merge band measurement BLOCKER:** the 74.9 % figure above is from the pre-shape04
+    measurement; the same full 3,836-file @150 DPI sweep with `xtask oracle` (`ORACLE.02`
+    AA-tolerant metrics, `5637bcf0`/`3b8f86af`) has *not* been re-run against this merge locally
+    (needs the mutool driver + CI-scale runtime — the nightly `render-conf` job owns it). The
+    engine integration is behaviour-preserving against shape04's identity/custom-CID/octal/clip
+    tests and additive to it (no `Unicode` fall-through for simple fonts), so the band is
+    expected to sit at the same 74.9 % ± drift; the authoritative post-merge number must come
+    from the CI `render-conf` leg.
     **Residual, honest:** the ~20% of pages still outside ≤1% are not a uniform mechanical
     signature — they are per-file font/image/graphics gaps tracked by CONF.04 (embedded Type1
     outlines are still not rasterised) and the CONF.01 gap list. The ≤1% target is met; no ADR
@@ -256,9 +271,9 @@ every user on every page.
   - **PERF.02 delta:** `xtask perf-render` (release, 72 DPI, 9 repeats, pdfium driver on PATH) →
     geomean vs PDFium **3.23×** (recorded 2.78×) and vs mutool **2.89×** (recorded 2.71×) — no
     regression; both legs improved on this run's noise envelope, comfortably inside the nightly
-    5% rule. The glyph resolver adds one cached dictionary parse per distinct font; no per-glyph
-    document walks. (A first run without the driver on PATH reported `pdfium=None`; discarded,
-    not a measurement.)
+    5% rule. The mapping carried on the `ResolvedFontProgram` adds one cached dictionary parse
+    per distinct font (identical to shape04 before the merge); no per-glyph document walks.
+    (A first run without the driver on PATH reported `pdfium=None`; discarded, not a measurement.)
 
 ---
 

@@ -9,3 +9,6 @@
 # Fuzz seeds are libFuzzer corpus inputs: byte-exact, never EOL-translated
 # (SL-1.ROB.02).
 fuzz/seeds/** -text
+
+# DER test fixtures (SL-1.ENC.03 PKCS#8 keys) are byte-exact binaries.
+*.der binary

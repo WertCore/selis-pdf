@@ -1,6 +1,10 @@
 open = "ok"
 pages = 76
-[annotation]
-triage = "blank_selis"
-verdict = "OurBug"
-note = "RAST.13: paints since DCT/1bpp fixes; the missing scan images are JPX (wasm-host, SL-1.FILT.08). Typed."
+
+[render]
+150 = "7591283afa11a1645273f2d0ae528e0eb6adc6cbf7cbe0c478ee34d4615a5c85"
+300 = "03998ac7c3a7261dfdce9c503666bb7a4382a914d34eeaa061bf127dda9e53ef"
+72 = "fff1455b4ab9f111348ea6d46373426eca2d50424dac2d1dd15d0a591f6fd22a"
+
+[text]
+hash = "72828f8dae1482a18f2a6bf31902ecd7639b872a38396024abee5f4967a4e776"

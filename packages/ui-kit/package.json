@@ -1,17 +1,27 @@
 {
 	"name": "@selis/ui-kit",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"private": true,
 	"type": "module",
+	"description": "Selis design system: design tokens, theming, and base styles (SL-4.UI.10). No runtime dependencies — hand-rolled CSS with custom properties per ADR-P0021.",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
 	"exports": {
-		".": "./src/index.ts"
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./css/tokens.css": "./css/tokens.css",
+		"./css/base.css": "./css/base.css"
 	},
+	"files": ["dist", "css"],
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"devDependencies": {
+		"@types/node": "^24.13.4",
 		"typescript": "^5.5.0",
 		"vitest": "^2.0.0"
 	}

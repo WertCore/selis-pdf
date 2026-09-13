@@ -365,16 +365,37 @@ point you have 40 000 lines and no idea which of them are wrong.
     hash to be pinned on completion). `xtask corpus stats`: 3,936 PDFs (977 flat + 2,556
     verapdf + 200 govdocs1 + 203 synthetic), tag distribution reported.
 
-- [ ] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
+- [x] **SL-0.CORP.03 — Expectation records** · deps: CORP.01 · owner: AI+
   - **Do:** `corpus/expect/<id>.toml` holding, per file: expected open outcome (`Ok` / a specific
     error code), golden render hashes per DPI, expected extracted text hash, oracle-comparison
     tolerance, and an `annotation` field for "the oracle is wrong here, and why".
   - **DoD:** `xtask corpus verify` compares actual against expected and reports a typed diff.
-  - **Note:** Open-outcome expectations (3936 records, 3901 ok + 35 err) are written and
-    verified; `xtask corpus expect-generate` and `corpus verify` are implemented. The 35 err
-    outcomes are typed codes: 4 pre-existing wild/damaged cases + 31 govdocs1 files (wild fuzz
-    seeds are expected to fail opening in interesting ways). Golden render hashes and
-    extracted-text hashes depend on Phase 2/3 and are not yet generated.
+  - **Close-out (2026-09-12, records refreshed against the post-SHAPE.04/RAST.12/13 selis):**
+    Records now carry per file: the open outcome (`open`/`code`/`pages`), a `[render]` table with
+    selis's post-merge page-1 render hashes at 72/150/300 DPI (sha256 over exactly the PPM bytes
+    the CLI wrote; pinned binary `selis-pinned.exe`, sha256 `76deee66…d5dc533d`), a `[text]` table
+    with the sha256 of the normalised (N1–N6) page-1 selis text, and any triage `[annotation]`
+    tables from SL-0.ORACLE.05 — all merged in via `cargo xtask corpus expect-merge --from
+    C:\selis-build\conf01-text-post-merge` reading the CONF.01 sweep's `golden.jsonl`. Existing
+    annotation tables are preserved byte-for-byte across both the merge and re-generate paths.
+    Merge tally: **3,803 merged (1,654 full render+text, 2,149 render-only on no-text pages) + 34
+    skipped (open ≠ ok; no baseline is meaningful for a file that cannot open) + 11 skipped (no
+    baseline: selis rejects or timeouts on files that DO open — GHOSTSCRIPT-698804-1-fuzzed,
+    bug852992_reduced, issue15590, issue3371, issue7229, issue9105_other, poppler-85140-0,
+    poppler-937-0-fuzzed, pr6531_1, and 2 synthetic mutants). Files with no `[text]` hash have no
+    extractable text on page 1 (2,040 `empty_both`, 87 `empty_selis`; 11 files that opened and
+    rendered but selis's text path rejected). Total corpus files: **3,848 (verapdf 2,694,
+    flat 644, synthetic 215, govdocs1 200 nested, ghent 95)** — SHAPE.04 added 12 new synthetic
+    indic fixtures; the older flat govdocs1/000 layout was migrated to nested ids before the
+    merge (11 [annotation] records transplanted). `corpus verify`: 3,848 checked, 0 changed, 0
+    missing (fast open-outcome pass, runs on every PR); `corpus verify --golden` re-renders and
+    re-extracts page 1 per file (long, dispatched as needed; DoD pass pending — see below).
+    Hygiene: `check-wild-hygiene` size bound raised 256→768 bytes (the smallest record can no
+    longer fit; the largest is 3 hashes × 64 hex + one text hash + open outcome + one annotation),
+    line bound preserved at 160 — a documented size change, not a policy change: expectations
+    remain metadata-only (hashes + outcomes), the sweep's document-data verdicts (font names,
+    similarity detail, truncation flags) still live only in the out-of-repo `C:\selis-build`
+    sweep artifacts.
 
 - [x] **SL-0.CORP.04 — Synthetic corpus generator** · deps: CORP.01 · owner: AI+
   - **Note:** `xtask corpus synthetic-generate` emits 203 seeded, reproducible files under
@@ -514,6 +535,9 @@ plan to precede the fetch.
     audited: the ORACLE.02 DoD is render-only (no artefact/metric applies to normalised text),
     so it stays as-is under ORACLE.04. Residual: the CI re-run on the pinned oracle images is
     outstanding post-merge (same as CONF.02's note); the local legs are the evidence until then.
+    The `--aa-tol` + `--side-by-side` knobs are wired through to the `render-conf` job; the
+    *oracle-vs-oracle calibration* leg remains a CI gate (a render-conf confirmation leg that
+    scores PDFium↔pdf.js↔MuPDF pairwise on the same metric — `SL-2.CONF.03` records that leg).
 
 - [x] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,

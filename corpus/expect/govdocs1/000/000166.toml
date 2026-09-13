@@ -1,0 +1,10 @@
+open = "ok"
+pages = 7
+
+[render]
+150 = "ef0c92a9ed7bef1e9b0a7ff9a4209b94ec3d80f04fb040b08a707d72a1ed48c7"
+300 = "1c447bd6fab13ed24137f87ffabeac9b1f22406b91a1affeae77297e480eb133"
+72 = "e7bc3f37c110c1cbd879d179fdd5d1b615a6cf48b6df18d79a4de519841b83cb"
+
+[text]
+hash = "a70e45f5d18d5bfea3fc25ab4ebdd57fe278a3acdbcb048a312cffee8ac38068"

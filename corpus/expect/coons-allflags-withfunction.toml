@@ -1,2 +1,7 @@
 open = "ok"
 pages = 1
+
+[render]
+150 = "235d1484ffa3d1bde66c83cae787f86abb2cffa9dc4f5ee1f95db3628372e29d"
+300 = "b2d71d307ae433a9bda37b864ca1a573d5d019c5b9b1de974d798ac682a138b9"
+72 = "e5f284ec983846ea3f2a1fea1f7d7a73c3f847a2e2e8a8ba2f2e96bbd87e5e67"

@@ -1,5 +1,13 @@
 open = "ok"
 pages = 1
+
+[render]
+150 = "b6e666c5456d08cb27ea19f1ef87e0603566dc8c7f876d375815ccdaf20261f5"
+300 = "5fc85d20a66be4020ba6f25e3a7b411b6442ce8281903ee2f97977b007e2cf19"
+72 = "ba519a3eed82e860f7025b857636638e1d6ec8a578c12c68ab6f93b57a898e84"
+
+[text]
+hash = "3e4b4d5947ff30ae4a768b5defc244b4848f22e6491e7a3e6741d57f60f000da"
 [annotation]
 triage = "qpdf_rejects"
 verdict = "SpecAmbiguous"

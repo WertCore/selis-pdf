@@ -231,6 +231,58 @@ pub fn glyph_id_for_byte_cmap(data: &Bytes, code: u8) -> Option<u16> {
     .flatten()
 }
 
+/// Map a simple font's content-stream code to a glyph id through the font's
+/// resolved encoding model (ISO 32000-2 §9.2.4, §9.6.6.4; SL-2.RAST.14).
+///
+/// The chain, per the spec and the corpus's two dominant subset shapes:
+///
+/// 1. the `/Encoding` (base table + `/Differences`) names a glyph — the
+///    name resolves through the font program's `post`/CFF names, then the
+///    Adobe Glyph List → the cmap;
+/// 2. the name is not in the program's `post` (LibreOffice-class subsets ship
+///    `post` format 3.0 with no names and only a Mac Roman `(1,0)` cmap,
+///    which skrifa's charmap does not select) — recover the byte via the
+///    Annex-D predefined tables and read the `(1,0)` format-0 table;
+/// 3. no name (built-in encoding) or every step missed — map the code as a
+///    character through the cmap (the pre-RAST.14 behaviour), then as a raw
+///    byte through the `(1,0)` cmap (symbolic subsets whose codes are already
+///    font bytes).
+///
+/// Determinism (SL-2.RAST.09): a pure function of `data`, `encoding`, `code`.
+///
+/// # Malformed Input
+///
+/// A code over 255 in a simple font, a broken program, or an unmapped byte
+/// is `None` — the glyph is skipped as a deviation, never fatal.
+#[must_use]
+pub fn glyph_id_for_simple_code(
+    data: &Bytes,
+    encoding: &crate::encoding::FontEncoding,
+    code: u16,
+) -> Option<u16> {
+    crate::contain(|| {
+        let code = u8::try_from(code).ok()?;
+        let enc = crate::encoding::resolve(encoding);
+        if let Some(name) = enc.code_to_glyph(code) {
+            if let Some(gid) = glyph_id_for_name(data, name) {
+                return Some(gid);
+            }
+            if let Some(uni) = crate::agl::glyph_to_unicode(name) {
+                if let Some(gid) = glyph_id_for_char(data, uni) {
+                    return Some(gid);
+                }
+            }
+            if let Some(b) = crate::encoding::base_code_for_name(name) {
+                if let Some(gid) = glyph_id_for_byte_cmap(data, b) {
+                    return Some(gid);
+                }
+            }
+        }
+        glyph_id_for_char(data, u32::from(code)).or_else(|| glyph_id_for_byte_cmap(data, code))
+    })
+    .flatten()
+}
+
 /// A [`OutlinePen`] that collects [`OutlineCmd`]s.
 #[derive(Default)]
 pub(crate) struct OutlineSink {
@@ -397,6 +449,49 @@ mod tests {
         assert_eq!(glyph_id_for_name(&mini(), "B"), Some(2));
         assert_eq!(glyph_id_for_name(&mini(), "nope"), None);
         assert_eq!(glyph_name(&mini(), 99), None);
+    }
+
+    /// RAST.14 regression: the encoding-model chain — `/Differences` names
+    /// win over the raw byte, a named base encoding resolves through its
+    /// table, and built-in encoding reduces to the legacy cmap mapping.
+    #[test]
+    fn simple_codes_resolve_through_the_encoding_model() {
+        use crate::encoding::{BaseEncoding, FontEncoding};
+        let bytes = crate::fallback::fallback_bytes("Helvetica").expect("fallback");
+        let font = Bytes::copy_from_slice(bytes);
+        // `/Differences` assigns the code 200 to `/Adieresis`. The raw byte
+        // 200 interpreted as a character is U+00C8 (`Egrave`) — a DIFFERENT
+        // glyph. The encoding model must win, resolving `Adieresis` via the
+        // `post` table or AGL → Unicode → cmap.
+        let diff_encoding = FontEncoding::Dict {
+            base: Some(BaseEncoding::WinAnsi),
+            differences: vec![(200, "Adieresis".to_string())],
+        };
+        let via_name = glyph_id_for_simple_code(&font, &diff_encoding, 200);
+        let adieresis = glyph_id_for_char(&font, 0xC4).expect("'A with diaeresis' exists");
+        assert_eq!(via_name, Some(adieresis));
+        assert_ne!(
+            via_name,
+            glyph_id_for_char(&font, 200),
+            "the /Encoding name must win over the raw byte as a character"
+        );
+        // A named base encoding resolves through its table: WinAnsi code 138
+        // is `Scaron` → U+0160 (the raw byte 138 is a C1 control the cmap
+        // does not map).
+        let winansi = FontEncoding::Named(BaseEncoding::WinAnsi);
+        let scaron = glyph_id_for_char(&font, 0x160).expect("Scaron exists");
+        assert_eq!(glyph_id_for_simple_code(&font, &winansi, 138), Some(scaron));
+        assert_eq!(glyph_id_for_char(&font, 138), None);
+        // No `/Encoding` reduces to the pre-RAST.14 cmap-as-character mapping.
+        assert_eq!(
+            glyph_id_for_simple_code(&font, &FontEncoding::Absent, 65),
+            glyph_id_for_char(&font, 65)
+        );
+        // Simple-font codes are single bytes: beyond 255 is unmapped.
+        assert_eq!(
+            glyph_id_for_simple_code(&font, &FontEncoding::Absent, 0x141),
+            None
+        );
     }
 
     /// Composite glyphs are resolved into a single outline. The fixture

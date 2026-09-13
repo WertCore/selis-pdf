@@ -39,4 +39,5 @@ RUN mkdir -p /opt/pdfium \
  && ldconfig
 
 # Render oracle interface: `docker run <image> --page 1 --dpi 150 /in.pdf /out.png`
+# Text oracle interface (SL-3.CONF.01): `docker run <image> --page 1 --text /out.txt /in.pdf`
 ENTRYPOINT ["/usr/local/bin/pdfium_driver"]

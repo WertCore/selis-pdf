@@ -33,8 +33,11 @@ const WILD_MARKERS: &[&str] = &[
 
 /// No expectation record may exceed this many bytes (records are metadata-only: an
 /// open outcome plus, since SL-0.ORACLE.05, a triage `[annotation]` table —
-/// bounded authored prose, never document content).
-const MAX_EXPECT_FILE_BYTES: u64 = 256;
+/// bounded authored prose, never document content — plus, since SL-0.CORP.03
+/// close-out, the golden `[render]`/`[text]` hash tables: three 64-hex render
+/// hashes and one 64-hex text hash. 768 bytes fits all of that and nothing else;
+/// the sweep verdicts (font names, similarity detail) stay out of the repo.
+const MAX_EXPECT_FILE_BYTES: u64 = 768;
 
 /// No single literal line in an expectation record may exceed this many chars.
 const MAX_EXPECT_LINE_CHARS: usize = 160;

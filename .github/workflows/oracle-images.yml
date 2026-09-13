@@ -70,23 +70,32 @@ jobs:
           IMG=ghcr.io/${{ env.OWNER_LC }}/selis-pdf/oracle-${{ matrix.tool }}:${{ matrix.tag }}
           # qpdf is a structural oracle: --json on the fixture must succeed
           # and print a v2 JSON array. The render oracles must produce a
-          # non-empty PNG of the fixture page.
+          # non-empty PNG of the fixture page. The text oracles (SL-3.CONF.01)
+          # must additionally extract the fixture's text: mupdf via
+          # `mutool draw`, pdfium/pdfjs via their drivers' `--text` modes,
+          # using exactly the argv the CI text legs pass.
           case "${{ matrix.tool }}" in
             qpdf)
               docker run --rm -v "$PWD/fixtures/smoke.pdf:/in.pdf:ro" "$IMG" --json /in.pdf > /dev/null
               echo "smoke structural check ok" ;;
             mupdf)
               docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" draw -r 150 -o /out/smoke.png /fx/smoke.pdf
-              test -s out/smoke.png && echo "smoke render ok" ;;
+              test -s out/smoke.png && echo "smoke render ok"
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" draw -F txt -o /out/smoke.txt /fx/smoke.pdf 1
+              test -s out/smoke.txt && echo "smoke text ok" ;;
             ghostscript)
               docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" -sDEVICE=png16m -r150 -o /out/smoke.png /fx/smoke.pdf
               test -s out/smoke.png && echo "smoke render ok" ;;
             pdfium)
               docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png
-              test -s out/smoke.png && echo "smoke render ok" ;;
+              test -s out/smoke.png && echo "smoke render ok"
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --text /out/smoke.txt /fx/smoke.pdf
+              test -s out/smoke.txt && echo "smoke text ok" ;;
             pdfjs)
               docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --dpi 150 /fx/smoke.pdf /out/smoke.png
-              test -s out/smoke.png && echo "smoke render ok" ;;
+              test -s out/smoke.png && echo "smoke render ok"
+              docker run --rm -v "$PWD/fixtures:/fx:ro" -v "$PWD/out:/out" "$IMG" --page 1 --text /out/smoke.txt /fx/smoke.pdf
+              test -s out/smoke.txt && echo "smoke text ok" ;;
           esac
 
       - name: Push to GHCR (only when vars.ENABLE_ORACLE_PUSH = 1)

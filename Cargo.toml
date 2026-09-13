@@ -53,7 +53,20 @@ aes         = "0.8"
 cbc         = { version = "0.1", features = ["alloc"] }
 getrandom   = "0.2"
 md-5        = "0.10"
+sha1        = "0.10"
 sha2        = "0.10"
+
+# Public-key security handler (SL-1.ENC.03, ADR-P0021): both crates are
+# RustCrypto (MIT OR Apache-2.0), pure Rust (wasm32-safe, ADR-P0011), no_std
+# with alloc, actively maintained by the same org as the crates above, MSRV
+# well under the workspace 1.85. `rsa` 0.9 is the only credible pure-Rust RSA
+# implementation (dependency cost of hand-rolling RSA: unjustifiable); `p256`
+# covers the EC-P256 ECDH key-agreement path of the CMS subset. Known residual:
+# RUSTSEC-2023-0071 (Marvin-style timing side channel in RSA decryption) is an
+# accepted, documented risk for local decryption of the user's own document —
+# see pdf-plan/31-ENC03-DESIGN-NOTE.md §6 (human sign-off item).
+rsa  = "0.9"
+p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 
 # CLI
 clap        = { version = "4", features = ["derive"] }

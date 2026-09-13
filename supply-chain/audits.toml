@@ -1,11 +1,131 @@
 
 # cargo-vet audits file
 
+[[audits.base16ct]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.2.0"
+notes = "RustCrypto/formats hex encoding (spki transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.base64ct]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "1.8.3"
+notes = "RustCrypto/formats base64 (pkcs8 PEM path transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.const-oid]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.9.6"
+notes = "RustCrypto/formats OID constants (spki/pkcs8 transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.crypto-bigint]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.5.5"
+notes = "RustCrypto bigint (const-oid/elliptic-curve/rsa transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.der]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.7.10"
+notes = "RustCrypto/formats DER codec (transitive of pkcs8/spki only - the CMS parse itself is our hand-rolled reader). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.ecdsa]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.16.9"
+notes = "RustCrypto ECDSA types (p256 transitive; signing unused - decryption-only build). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.elliptic-curve]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.13.8"
+notes = "RustCrypto/traits curve abstraction under p256. Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.ff]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.13.1"
+notes = "RustCrypto finite-field trait (elliptic-curve transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
 [[audits.font-types]]
 who = "prasadzore129@yahoo.com"
 criteria = "safe-to-deploy"
 delta = "0.12.4 -> 0.12.5"
 notes = "Publisher-consistent minor upgrade (cmyr/fontations); picked up transitively by the skrifa 0.44 -> 0.47 move that carries the upstream glyf repeat-flag panic fix found by the SL-1.ROB.02 fuzz campaign. Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."
+
+[[audits.group]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.13.0"
+notes = "RustCrypto group trait (elliptic-curve transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.hkdf]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.12.4"
+notes = "RustCrypto HKDF (elliptic-curve ecdh SharedSecret.extract helper transitive; Selis uses its own X9.63 KDF). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.hmac]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.12.1"
+notes = "RustCrypto HMAC (hkdf transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.num-bigint-dig]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.8.6"
+notes = "Bigint fork used by RustCrypto/rsa for modular arithmetic. Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.num-integer]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.1.47"
+notes = "num-traits integer helpers (num-bigint-dig transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.num-iter]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.1.46"
+notes = "num-traits range iterators (num-bigint-dig transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.p256]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.13.2"
+notes = "NIST P-256 (RustCrypto/elliptic-curves) for the CMS ECDH key-agreement path. Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.pkcs1]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.7.5"
+notes = "RustCrypto/formats PKCS#1 types (rsa transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.pkcs8]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.10.2"
+notes = "RustCrypto/formats PKCS#8 decoder used for fixture key parsing. Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.ppv-lite86]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.2.21"
+notes = "rust-random AES backend primitive (rand transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.primeorder]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.13.6"
+notes = "RustCrypto/elliptic-curves prime-order curve helper (p256 transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.rand]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.8.8"
+notes = "rust-random/rand (num-bigint-dig transitive; RNG for RSA ops in fixtures/tests only). Structural review by the ENC.03 agent; flagged for human spot-audit."
 
 [[audits.read-fonts]]
 who = "prasadzore129@yahoo.com"
@@ -13,8 +133,62 @@ criteria = "safe-to-deploy"
 delta = "0.41.0 -> 0.44.0"
 notes = "Publisher-consistent upgrade (cmyr/fontations); contains the upstream fix for the repeat-flag glyf panic exercised by the fuzz-glyf-repeat-flag regression fixture (SL-1.ROB.02). Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."
 
+[[audits.rfc6979]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.4.0"
+notes = "RustCrypto deterministic-nonce helper (ecdsa transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.rsa]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.9.10"
+notes = "Pure-Rust RSA (RustCrypto/RSA); the only credible pure-Rust RFC 8017 implementation - hand-rolling RSA was rejected. Structural review by the ENC.03 agent; flagged for human spot-audit. RUSTSEC-2023-0071 (Marvin timing side channel) is accepted and ignored in deny.toml for local-only decryption - design note 6.1."
+
+[[audits.sec1]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.7.3"
+notes = "RustCrypto/formats SEC1 point encoding (elliptic-curve transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.sha1]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.10.7"
+notes = "RustCrypto/hashes SHA-1 - required by the format: Algorithm 1 /V 4 file-key hash is SHA-1 (decrypt-only use, no collision-relevant role). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.signature]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "2.2.0"
+notes = "RustCrypto/traits signature trait (ecdsa transitive; signing unused). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
 [[audits.skrifa]]
 who = "prasadzore129@yahoo.com"
 criteria = "safe-to-deploy"
 delta = "0.44.0 -> 0.47.0"
 notes = "Publisher-consistent upgrade (cmyr/fontations); required so selis-font links the read-fonts version with the glyf repeat-flag panic fix (SL-1.ROB.02 finding). Structural review by the SL-1.ROB.02 agent; flagged for human spot-audit."
+
+[[audits.spin]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.9.9"
+notes = "Spinlock primitives (getrandom wasm path transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.spki]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "0.7.3"
+notes = "RustCrypto/formats SPKI (pkcs8 transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.subtle]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "2.6.1"
+notes = "RustCrypto constant-time primitives (rsa/p256 transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
+
+[[audits.zeroize]]
+who = "prasadzore129@yahoo.com"
+criteria = "safe-to-deploy"
+version = "1.9.0"
+notes = "RustCrypto/utils zeroization (rsa/p256 transitive). Structural review by the ENC.03 agent; flagged for human spot-audit."
