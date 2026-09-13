@@ -53,13 +53,15 @@ pub use cid::{map_cid, resolve_cid_widths, CidToGid, CidWidthEntry, CidWidths};
 pub use cjk::{chunk_for, is_cjk, CjkChunk, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
 pub use cmapfile::{parse_cmap, BfRange, CMap, CidRange};
-pub use encoding::{resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding};
+pub use encoding::{
+    expand_differences, resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding,
+};
 pub use fallback::{can_render, fallback_order, match_substitute, substitute, FontMatchHints};
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{
-    glyph_count, glyph_id_for_char, glyph_id_for_name, glyph_name, outline_glyph, units_per_em,
-    Outline, OutlineCmd,
+    glyph_count, glyph_id_for_byte_cmap, glyph_id_for_char, glyph_id_for_name,
+    glyph_id_for_simple_code, glyph_name, outline_glyph, units_per_em, Outline, OutlineCmd,
 };
 pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
 pub use recover::{Recovery, RecoveryConfidence, TextRecovery};

@@ -162,6 +162,31 @@ pub fn resolve(fe: &FontEncoding) -> Encoding {
     }
 }
 
+/// The byte code a predefined base encoding assigns to `name`, or `None`
+/// when no predefined table maps it.
+///
+/// This is the reverse of [`Encoding::code_to_glyph`] over the predefined
+/// tables (Annex D). Subset fonts carry no `post` names and often only a
+/// MacRoman `(1, 0)` cmap, so the renderer recovers the glyph by mapping the
+/// name back to its base-encoding byte and the byte through the font's cmap
+/// (ISO 32000-2 §9.6.6.4, Annex D).
+#[must_use]
+pub fn base_code_for_name(name: &str) -> Option<u8> {
+    for table in [
+        &tables::MacRomanEncoding,
+        &tables::StandardEncoding,
+        &tables::WinAnsiEncoding,
+        &tables::MacExpertEncoding,
+    ] {
+        for (code, assigned) in table.iter().enumerate() {
+            if *assigned == name {
+                return u8::try_from(code).ok();
+            }
+        }
+    }
+    None
+}
+
 /// One item of a `/Differences` array.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DifferenceItem {

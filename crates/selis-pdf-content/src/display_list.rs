@@ -40,6 +40,8 @@ pub struct ResolvedState {
     /// The blend mode (from `/ExtGState /BM`).
     pub blend: BlendMode,
     /// The clip paths active at the op, innermost last (from `W`/`W*`).
+    /// Each path is frozen in user space at the time its clip was set
+    /// (ISO 32000-2 §8.5.4) — later `cm` changes do not move it.
     pub clip: Vec<(Path, ClipRule)>,
     /// The soft-mask key (a stable reference to the `/SMask` dict), if one is
     /// active. The engine resolves it to a per-pixel mask at render time.

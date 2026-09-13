@@ -286,14 +286,20 @@ fn execute_inner(
             "W" => {
                 // `W` sets the clip to the current path (which stays current
                 // so a following paint op fills it too). The clip is part of
-                // the graphics state, saved/restored by q/Q.
+                // the graphics state, saved/restored by q/Q. The path is
+                // frozen in user space at clip time (§8.5.4): later `cm`
+                // changes must not move it (RAST.14).
                 if !current_path.is_degenerate() {
-                    gstate.clip.push((current_path.clone(), ClipRule::NonZero));
+                    gstate
+                        .clip
+                        .push((current_path.transformed(gstate.ctm), ClipRule::NonZero));
                 }
             }
             "W*" => {
                 if !current_path.is_degenerate() {
-                    gstate.clip.push((current_path.clone(), ClipRule::EvenOdd));
+                    gstate
+                        .clip
+                        .push((current_path.transformed(gstate.ctm), ClipRule::EvenOdd));
                 }
             }
 

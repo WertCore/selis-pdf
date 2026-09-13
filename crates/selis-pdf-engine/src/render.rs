@@ -1,4 +1,4 @@
-//! The engine's render path (SL-2.RAST.11 â†’ the page renderer).
+﻿//! The engine's render path (SL-2.RAST.11 â†’ the page renderer).
 //!
 //! Walks a [`DisplayList`] and paints each op onto a raster [`Backend`]. This
 //! is the composition point the architecture (Â§8) describes: content streams
@@ -86,15 +86,26 @@ struct FontMaps {
 
 /// How a run's codes map to glyph ids in the font program.
 ///
-/// Simple fonts show Unicode scalars (the font's cmap maps them); CID fonts
-/// (Type0 composites, SL-3.SHAPE.04) show CIDs resolved through
-/// `/CIDToGIDMap` — the cmap must not see them.
+/// Simple fonts resolve their byte codes through the `/Encoding` model
+/// (SL-2.RAST.14): a glyph name → the `post`/CFF names → the Adobe Glyph List
+/// → Unicode → the cmap, with an Annex-D reverse → the Mac Roman `(1,0)` byte
+/// cmap fallback (no `/Encoding` reduces to the code as a character). CID
+/// fonts (Type0 composites, SL-3.SHAPE.04) show CIDs resolved through
+/// `/CIDToGIDMap` — the cmap must not see them — except for a `Uni…UCS2…`
+/// CMap, whose 2-byte codes are Unicode scalars mapped straight to the cmap.
 #[derive(Debug, Clone)]
 pub enum GlyphMapping {
-    /// Simple font: the code is a Unicode scalar.
-    Unicode,
-    /// CID font: the code is a CID.
-    Cid(selis_font::CidToGid),
+    /// Simple font: the code is a byte resolved through its `/Encoding`.
+    Unicode(selis_font::FontEncoding),
+    /// CID font: the code is a CID mapped through `/CIDToGIDMap`, unless the
+    /// Type0 `/Encoding` is a `Uni…UCS2…` CMap (`unicode`), where it is a
+    /// Unicode scalar mapped through the font's cmap.
+    Cid {
+        /// The `/CIDToGIDMap` (identity unless a stream says otherwise).
+        to_gid: selis_font::CidToGid,
+        /// The Type0 CMap is a `Uni…UCS2…` mapping: codes are Unicode.
+        unicode: bool,
+    },
 }
 
 /// A font program resolved for the raster walk: the bytes plus how its
@@ -108,12 +119,13 @@ pub struct ResolvedFontProgram {
 }
 
 impl ResolvedFontProgram {
-    /// A simple (non-CID) font program: codes are Unicode scalars.
+    /// A simple (non-CID) font program with no `/Encoding`: codes are mapped
+    /// as characters through the font's cmap (the pre-RAST.14 behaviour).
     #[must_use]
     pub fn simple(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
-            mapping: GlyphMapping::Unicode,
+            mapping: GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
         }
     }
 }
@@ -275,7 +287,10 @@ impl TextCache {
         })
     }
 
-    /// The glyph id for `code` (`None` = unmapped).
+    /// The glyph id for a code of the font (the walk's mapping, RAST.14).
+    ///
+    /// The walk-level cache dedupes per distinct code; the resolver itself is
+    /// the engine's (encoding-model) mapping.
     fn glyph_id(
         maps: &mut FontMaps,
         bytes: &selis_bytes::Bytes,
@@ -291,10 +306,22 @@ impl TextCache {
             None => {
                 stats.glyph_lookups = stats.glyph_lookups.saturating_add(1);
                 let gid = match mapping {
-                    GlyphMapping::Unicode => selis_font::glyph_id_for_char(bytes, u32::from(code)),
+                    // A simple font's code resolves through its `/Encoding`
+                    // model (glyph names → AGL → cmap, Annex-D reverse → the
+                    // byte cmap); absent encoding reduces to the cmap (RAST.14).
+                    GlyphMapping::Unicode(encoding) => {
+                        selis_font::glyph_id_for_simple_code(bytes, encoding, code)
+                    }
                     // A CID is not a Unicode scalar: resolve through
-                    // /CIDToGIDMap, never the cmap (SL-3.SHAPE.04).
-                    GlyphMapping::Cid(map) => selis_font::map_cid(map, code),
+                    // /CIDToGIDMap, never the cmap (SL-3.SHAPE.04) — except a
+                    // `Uni…UCS2…` Type0 CMap, whose codes are Unicode.
+                    GlyphMapping::Cid { to_gid, unicode } => {
+                        if *unicode {
+                            selis_font::glyph_id_for_char(bytes, u32::from(code))
+                        } else {
+                            selis_font::map_cid(to_gid, code)
+                        }
+                    }
                 };
                 if maps.gids.len() < MAX_CACHED_GIDS {
                     maps.gids.insert(code, gid);
@@ -340,10 +367,10 @@ use crate::page::device_scale;
 /// page `/Rotate` (`crate::page::page_view` builds it). Every op's own CTM â€”
 /// user space â†’ device â€” composes with it.
 ///
-///
 /// `font_data` resolves a font resource name to the font program plus its
-/// code → glyph mapping (the engine's document layer provides this: Unicode
-/// for simple fonts, `/CIDToGIDMap` for CID fonts).
+/// code → glyph mapping (the engine's document layer provides this: the
+/// `/Encoding` model for simple fonts, `/CIDToGIDMap` for CID fonts —
+/// RAST.14, SL-3.SHAPE.04).
 ///
 /// # Malformed Input
 ///
@@ -440,13 +467,14 @@ pub fn render_display_list_with_stats(
         if state.clip != current_clip {
             backend.clear_clip();
             stats.clip_rebuilds = stats.clip_rebuilds.saturating_add(1);
-            // Clip paths are stored in user space; they must reach the
-            // rasteriser through the same total transform as the fills (the
-            // op's CTM composed with the page transform).
-            let clip_m = state.ctm.then(page_ctm);
+            // Clip paths are frozen in user space at clip time (§8.5.4, the
+            // exec pass transforms them once when `W`/`W*` runs) — they reach
+            // the rasteriser through the page transform only. Applying the
+            // op's CTM here would move the clip whenever a `cm` changed the
+            // space between the clip and this op (RAST.14).
             for (path, rule) in &state.clip {
                 if let Some(p) = to_raster_path(path) {
-                    let p = transform_raster_path(&p, clip_m);
+                    let p = transform_raster_path(&p, page_ctm);
                     backend.clip(
                         &p,
                         match rule {
@@ -1608,7 +1636,7 @@ mod tests {
             let gid = TextCache::glyph_id(
                 maps,
                 &fb,
-                &GlyphMapping::Unicode,
+                &GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
                 u16::from(b'A'),
                 &mut stats,
             );
@@ -1616,7 +1644,7 @@ mod tests {
             let gid2 = TextCache::glyph_id(
                 maps,
                 &fb,
-                &GlyphMapping::Unicode,
+                &GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
                 u16::from(b'A'),
                 &mut stats,
             );
@@ -1634,7 +1662,7 @@ mod tests {
             let gid = TextCache::glyph_id(
                 maps,
                 &fb,
-                &GlyphMapping::Unicode,
+                &GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
                 u16::from(b'A'),
                 &mut stats,
             )
@@ -1649,7 +1677,7 @@ mod tests {
             let gid = TextCache::glyph_id(
                 maps,
                 &fb,
-                &GlyphMapping::Unicode,
+                &GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
                 u16::from(b'A'),
                 &mut stats,
             )

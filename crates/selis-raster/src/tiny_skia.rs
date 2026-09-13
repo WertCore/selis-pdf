@@ -84,6 +84,16 @@ impl TinySkiaBackend {
         (self.width, self.height)
     }
 
+    /// Close any transparency groups left open when the walk ended (an
+    /// unterminated `BMC`/`BDC`, RAST.14): each layer is composited back so
+    /// its content lands on the page instead of being dropped with the
+    /// never-composited layer pixmap. Idempotent when no group is open.
+    pub fn finish(&mut self) {
+        while !self.layers.is_empty() {
+            self.pop_layer();
+        }
+    }
+
     /// Run a paint closure, compositing through the active soft mask when one
     /// is set. The closure draws into a temporary layer; the layer is then
     /// composited onto the canvas with the mask modulating its alpha.

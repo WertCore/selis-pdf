@@ -511,6 +511,10 @@ impl Session {
                 g,
             );
         }
+        // An unterminated `BMC`/`BDC` leaves a group open; composite whatever
+        // it holds instead of dropping it with the walk's scratch layer
+        // (RAST.14). No-op when every group is balanced.
+        backend.finish();
         Ok(())
     }
 
@@ -1005,13 +1009,15 @@ fn f64_to_u32(v: f64) -> u32 {
 }
 
 /// The embedded font program bytes for a font resource name.
+/// Resolve the font program (bytes plus a `GlyphMapping` carrying the simple
+/// font's `/Encoding` or the CID font's `/CIDToGIDMap`, RAST.14/SL-3.SHAPE.04).
 fn font_data_inner(
     resolver: &mut Resolver<'_>,
     resources: Option<&Obj>,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
 ) -> Option<crate::render::ResolvedFontProgram> {
-    use crate::render::{GlyphMapping, ResolvedFontProgram};
+    use crate::render::ResolvedFontProgram;
     // Prefer the embedded font program (a Type0 wrapper carries it on the
     // descendant CIDFont — SL-3.SHAPE.04). A `Tf` naming a standard-14 font
     // that /Resources does not declare still renders in every mainstream
@@ -1037,23 +1043,43 @@ fn font_data_inner(
         })
         .map(|font_file| font_file.data().as_slice().to_vec());
     if let Some(bytes) = file {
-        let mapping = if font_dict.is_cid() {
-            GlyphMapping::Cid(
-                font_dict
-                    .descendant
-                    .as_ref()
-                    .map(|d| d.cid_to_gid.clone())
-                    .unwrap_or_else(|| font_dict.cid_to_gid.clone()),
-            )
-        } else {
-            GlyphMapping::Unicode
-        };
-        return Some(ResolvedFontProgram { bytes, mapping });
+        return Some(ResolvedFontProgram {
+            bytes,
+            mapping: mapping_of(&font_dict),
+        });
     }
     // A non-embedded standard-14 font falls back to the bundled Liberation
-    // font (SL-0.LEAD.07), keyed by the /BaseFont name.
-    selis_font::fallback::fallback_bytes(&font_dict.base_font)
-        .map(|bytes| ResolvedFontProgram::simple(bytes.to_vec()))
+    // font (SL-0.LEAD.07), keyed by the /BaseFont name — carrying its
+    // `/Encoding` so a `/Differences` on a non-embedded font still resolves
+    // (RAST.14).
+    let mapping = mapping_of(&font_dict);
+    selis_font::fallback::fallback_bytes(&font_dict.base_font).map(|bytes| ResolvedFontProgram {
+        bytes: bytes.to_vec(),
+        mapping,
+    })
+}
+
+/// The code → glyph mapping shape for a resolved font: a CID font's
+/// `/CIDToGIDMap` (identity unless a stream says otherwise, SL-3.SHAPE.04),
+/// tagged Unicode when the Type0 `/Encoding` is a `Uni…UCS2…` CMap (whose
+/// 2-byte codes are Unicode scalars); else the simple font's `/Encoding`
+/// (`/Differences` glyph names, RAST.14).
+fn mapping_of(font_dict: &selis_font::FontDict) -> crate::render::GlyphMapping {
+    use crate::render::GlyphMapping;
+    if font_dict.is_cid() {
+        let unicode = font_dict
+            .cmap_name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("Uni") && name.contains("UCS2"));
+        let to_gid = font_dict
+            .descendant
+            .as_ref()
+            .map(|d| d.cid_to_gid.clone())
+            .unwrap_or_else(|| font_dict.cid_to_gid.clone());
+        GlyphMapping::Cid { to_gid, unicode }
+    } else {
+        GlyphMapping::Unicode(font_dict.encoding.clone())
+    }
 }
 
 /// Whether a font resource shows 2-byte CID codes (a Type0 composite font).
@@ -1243,6 +1269,48 @@ fn parse_font_dict(
     }
     if let Some(Obj::Name(n)) = dict_get_obj(dict, b"BaseFont") {
         fd.base_font = String::from_utf8_lossy(n.as_slice()).to_string();
+    }
+    // `/Encoding` (ISO 32000-2 §9.2.4): a name, or a dictionary with
+    // `/BaseEncoding` plus `/Differences` — direct or through an indirect
+    // reference. A Type0 font's `/Encoding` names a CMap instead and is
+    // recorded separately.
+    if let Some(enc_obj) = dict_get_obj(dict, b"Encoding") {
+        let enc_obj = match enc_obj {
+            Obj::Ref(r) => resolver.resolve(*r, g).unwrap_or(Obj::Null),
+            other => other.clone(),
+        };
+        match enc_obj {
+            Obj::Name(n) => {
+                let name = String::from_utf8_lossy(n.as_slice()).to_string();
+                if fd.subtype == selis_font::FontSubtype::Type0 {
+                    fd.cmap_name = Some(name);
+                } else if let Some(base) = base_encoding_from_name(&name) {
+                    fd.encoding = selis_font::FontEncoding::Named(base);
+                }
+            }
+            Obj::Dict(d) => {
+                if fd.subtype == selis_font::FontSubtype::Type0 {
+                    if let Some(Obj::Name(n)) = dict_get_obj(&d, b"Encoding") {
+                        fd.cmap_name = Some(String::from_utf8_lossy(n.as_slice()).to_string());
+                    }
+                } else {
+                    let base = dict_get_obj(&d, b"BaseEncoding").and_then(|o| match o {
+                        Obj::Name(n) => {
+                            base_encoding_from_name(&String::from_utf8_lossy(n.as_slice()))
+                        }
+                        _ => None,
+                    });
+                    let differences = dict_get_obj(&d, b"Differences")
+                        .and_then(|o| {
+                            differences_from_obj(&o)
+                                .map(|items| selis_font::expand_differences(&items))
+                        })
+                        .unwrap_or_default();
+                    fd.encoding = selis_font::FontEncoding::Dict { base, differences };
+                }
+            }
+            _ => {}
+        }
     }
     if let Some(Obj::Int(v)) = dict_get_obj(dict, b"FirstChar") {
         fd.first_char = u32::try_from(*v).unwrap_or(0);
@@ -1467,6 +1535,41 @@ fn parse_descendant_font(
     }
     fd.cid_widths = Some(selis_font::resolve_cid_widths(&entries, dw));
     Some(fd)
+}
+
+/// A named predefined encoding (ISO 32000-2 Annex D) by its PDF name.
+/// Unknown names are `None` — the font's built-in encoding applies.
+fn base_encoding_from_name(name: &str) -> Option<selis_font::BaseEncoding> {
+    match name {
+        "StandardEncoding" => Some(selis_font::BaseEncoding::Standard),
+        "WinAnsiEncoding" => Some(selis_font::BaseEncoding::WinAnsi),
+        "MacRomanEncoding" => Some(selis_font::BaseEncoding::MacRoman),
+        "MacExpertEncoding" => Some(selis_font::BaseEncoding::MacExpert),
+        _ => None,
+    }
+}
+
+/// A raw `/Differences` array (ISO 32000-2 §9.2.4.3) as difference items.
+/// Non-integer, non-name operands (e.g. a stray real) are skipped, keeping
+/// the run structure of the rest.
+fn differences_from_obj(obj: &Obj) -> Option<Vec<selis_font::DifferenceItem>> {
+    let Obj::Array(items) = obj else {
+        return None;
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Obj::Int(c) => {
+                let c = u32::try_from(*c).unwrap_or(u32::MAX);
+                out.push(selis_font::DifferenceItem::Code(c));
+            }
+            Obj::Name(n) => out.push(selis_font::DifferenceItem::Name(
+                String::from_utf8_lossy(n.as_slice()).to_string(),
+            )),
+            _ => {}
+        }
+    }
+    Some(out)
 }
 
 /// Unfilter a stream's data through its `/Filter` chain (Name or array) with

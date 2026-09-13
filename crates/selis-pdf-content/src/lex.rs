@@ -231,9 +231,36 @@ impl<'a> Lexer<'a> {
                         b'n' => out.push(b'\n'),
                         b'r' => out.push(b'\r'),
                         b't' => out.push(b'\t'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0c),
                         b'(' => out.push(b'('),
                         b')' => out.push(b')'),
                         b'\\' => out.push(b'\\'),
+                        // Line continuation: the backslash + EOL vanish
+                        // (§7.3.4.2, the COS lexer's semantics).
+                        b'\r' => {
+                            if self.peek() == Some(b'\n') {
+                                self.bump();
+                            }
+                        }
+                        b'\n' => {}
+                        // Octal escapes `\ddd` — one to three octal digits,
+                        // high-order overflow ignored (§7.3.4.2).
+                        b'0'..=b'7' => {
+                            let mut v = i32::from(e.wrapping_sub(b'0'));
+                            for _ in 0..2 {
+                                match self.peek() {
+                                    Some(o @ b'0'..=b'7') => {
+                                        self.bump();
+                                        v = v
+                                            .wrapping_mul(8)
+                                            .wrapping_add(i32::from(o.wrapping_sub(b'0')));
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            out.push(u8::try_from(v & 0xff).unwrap_or(0));
+                        }
                         _ => out.push(e),
                     }
                 }

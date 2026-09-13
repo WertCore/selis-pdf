@@ -5,6 +5,7 @@
 //! these values; this crate never sees a COS object. Composite (Type0) fonts
 //! carry their first descendant CIDFont in [`FontDict::descendant`].
 
+use crate::encoding::FontEncoding;
 use selis_bytes::Bytes;
 
 use crate::cid::{CidToGid, CidWidths};
@@ -115,6 +116,14 @@ pub struct FontDict {
     pub font_file: Option<FontFile>,
     /// `/DescendantFonts[0]` — present on a Type0 composite font.
     pub descendant: Option<Box<FontDict>>,
+    /// `/Encoding` — a simple font's encoding (base table plus
+    /// `/Differences`); absent means the font's built-in encoding
+    /// (ISO 32000-2 §9.2.4). Type0 fonts carry a CMap name in
+    /// [`FontDict::cmap_name`] instead.
+    pub encoding: FontEncoding,
+    /// `/Encoding` of a Type0 composite font — the CMap name (`Identity-H`,
+    /// `UniGB-UCS2-H`, …). `None` for simple fonts and when absent.
+    pub cmap_name: Option<String>,
     /// `/W` + `/DW` of a CIDFont (on the descendant for a Type0 wrapper),
     /// resolved into per-CID widths (SL-3.FONT.07).
     pub cid_widths: Option<CidWidths>,
@@ -138,6 +147,8 @@ impl FontDict {
             descriptor: None,
             font_file: None,
             descendant: None,
+            encoding: FontEncoding::Absent,
+            cmap_name: None,
             cid_widths: None,
             cid_to_gid: CidToGid::default(),
             to_unicode: None,
