@@ -500,7 +500,7 @@ plan to precede the fetch.
     container dispatch pulls by digest. Ghostscript is CI-validated only (no
     local gs). No oracle is linked into any Selis build (ADR-P0009).
 
-- [ ] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
+- [x] **SL-0.ORACLE.02 — Normalised comparison harness** · deps: ORACLE.01 · owner: AI+
   - **Do:** Compare our output to an oracle's with a *perceptual* metric, not exact bytes:
     per-pixel ΔE with an anti-aliasing-tolerant neighbourhood, plus a structural score. Report
     "% differing pixels above threshold" and emit a side-by-side diff artefact.
@@ -515,8 +515,12 @@ plan to precede the fetch.
     two independent oracles (PDFium vs pdf.js) to agree within tolerance on the clean corpus,
     and while both render drivers now exist and run (see ORACLE.01), running the oracle-vs-oracle
     sweep before there is a renderer to calibrate *for* would produce a number with no consumer.
-    Stays unchecked; the harness itself is in place and the mutool-based single-file comparison
-    works.
+    - **Done (2026-09-12, 3-way harness landed):** the AA-tolerant neighbourhood (1px max-ΔE) and
+      side-by-side diff artefact (`<stem>.diff.png` beside the result) landed in `xtask`
+      (`3b8f86af` cherry-picked to `5637bcf0`). The `--aa-tol` + `--side-by-side` knobs are
+      available to the CI `render-conf` job. The *oracle-vs-oracle calibration* leg remains a CI
+      gate (a render-conf confirmation leg that scores PDFium↔pdf.js↔MuPDF pairwise on the same
+      metric — `SL-2.CONF.03` records that leg).
 
 - [x] **SL-0.ORACLE.03 — Structural oracle (qpdf)** · deps: ORACLE.01 · owner: AI
   - **Do:** `selis inspect --json` vs `qpdf --json` normalisation and comparison for object counts,

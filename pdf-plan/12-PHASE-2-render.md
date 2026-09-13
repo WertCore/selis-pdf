@@ -211,6 +211,21 @@ every user on every page.
     reaches the oracle envelope (≥ ~73%).
   - **DoD:** Root cause identified and fixed, or an ADR records why the divergence is accepted;
     CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope.
+  - **Note (2026-09-13, partial — engine encoding fix pending):** `b2b1c098` (content octal-string
+    escape decode + clip-paths frozen at definition) was *already* on `main`; `3b8f86af`
+    (the AA-tolerant render oracle + side-by-side diff artefact, also closes `SL-0.ORACLE.02`)
+    is cherry-picked to `5637bcf0`. This task's *engine* fix (`cc03ed50` — resolve simple-font
+    codes through the `/Encoding` name table + AGL + `(1,0)` byte-cmap fallback, and map Type0
+    `Identity-H`/`Uni…-UCS2` CIDs through the cmap, all in
+    `selis-pdf-engine/src/{session,render}.rs`) **conflicts** with the shape04 `GlyphMapping`
+    model that landed on `main` meanwhile (both redesign the font→glyph resolution path from
+    divergent bases), so it was **not** applied here. Pending: reapply it as an *additive* encoding
+    path under shape04's model — keep `to_unicode`/`CidToGid`/descendant, *add* `encoding` +
+    `cmap_name` to `selis_font::FontDict`, then have `font_data_inner` emit a
+    `ResolvedFontProgram` with the encoding-derived `GlyphMapping` instead of dropping to
+    `Unicode`+cmap for simple fonts, so the ~36pp band excess closes without re-introducing shape04's
+    regressions. The band numbers before/after must be re-measured (CONF.03 matrix) before the
+    check flips to `[x]`; the oracle-vs-oracle leg runs in the CI `render-conf` job.
 
 ---
 
