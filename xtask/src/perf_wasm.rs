@@ -221,9 +221,16 @@ pub(crate) fn build_driver() -> Result<PathBuf, String> {
         .output()
         .map_err(|e| format!("{}: spawn cargo build: {e}", cargo.display()))?;
     if !output.status.success() {
+        // `--message-format=json-render-diagnostics` puts the compiler JSON
+        // (incl. `reason":"compiler-message"` diagnostics) on stdout and only
+        // cargo's own chatter on stderr — so printing stderr alone shows an
+        // empty failure on CI. Surface both, and the exit code.
         return Err(format!(
-            "cargo build selis-pdf-wasm failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
+            "cargo build selis-pdf-wasm failed ({}):\n--- stderr ---\n{}\n--- stdout \
+             (json diagnostics; grep \"level\":\"error\" for the cause) ---\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
         ));
     }
     parse_wasm_artifact(&output.stdout)
