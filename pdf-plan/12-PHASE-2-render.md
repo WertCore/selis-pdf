@@ -203,7 +203,7 @@ every user on every page.
     font-stack fidelity); a `/Redact` annot without `/AP` needs default appearance
     synthesis (the two `6-3-3-t01-fail-b` files).
 
-- [x] **SL-2.RAST.14 — 1–2% band fidelity excess (CONF.03 calibration)** · deps: RAST.09 · owner: AI
+- [ ] **SL-2.RAST.14 — 1–2% band fidelity excess (CONF.03 calibration)** · deps: RAST.09 · owner: AI
   - **Do:** Close selis's ~36pp excess in the 1–2% differing-pixels band (42pp of pages vs the
     oracle pairs' ~6pp; CONF.01 p50 = 1.68 vs oracle pairs' p50 = 0.06). One mechanical signature
     across the corpus — investigate subpixel glyph positioning, stroke geometry rounding, and AA
@@ -211,54 +211,6 @@ every user on every page.
     reaches the oracle envelope (≥ ~73%).
   - **DoD:** Root cause identified and fixed, or an ADR records why the divergence is accepted;
     CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope.
-  - **Done (2026-09-12):** the ≤1%/≤2% bands are inside the envelope, and the residual 1–2% mass
-    was root-caused to **content-lexer and clip semantics**, not AA. Measured on current `main`
-    @71776f0 before touching anything (full corpus, 3,836 files @150 DPI vs mutool, n=3,750
-    comparable): **≤1% 74.2%, ≤2% 80.6%, p50 0.07** — the CONF.01 36pp excess was already closed
-    by the intermediate merges (RAST.12 page transform, RAST.13 blank/`TD`/`/Contents` fixes,
-    CONF.05 profile re-tune); CONF.02's "premise stands" note (2026-09-11) predates any re-run.
-    **Signature investigation** (per-page ΔE76>2.3 masks, row/column ink profiles, integer-shift
-    cross-correlation, edge-orientation splits — harness `C:\selis-build\rast14\char.py`, outside
-    the repo): the mass was **missing/wrong ink**, not edge noise. `0.1 w` hairlines matched mutool
-    (0.117 vs 0.118 coverage), refuting stroke-geometry rounding as the driver; tiny-skia's 4×4
-    `path_aa` supersampling *is* real but low-impact (synthetic text pages already ≤0.1%).
-    Three concrete defects fixed:
-    1. **Octal string escapes** (`selis-pdf-content/src/lex.rs`): `\\ddd` decoded as the literal
-       first digit, so every `/Differences`-encoded page (the whole veraPDF suite) rendered
-       wrong glyphs. The COS lexer already implemented §7.3.4.2 correctly — the content lexer was
-       ported to match (octal, `\\b`/`\\f`, line continuations). One table page: ink 18.4k → 26.5k
-       (oracle 26.8k).
-    2. **Glyph selection through the encoding model** (`selis-pdf-engine/src/session.rs`,
-       `selis-font/src/{model,encoding,outline}.rs`): the render walk mapped raw byte codes through
-       skrifa's charmap, ignoring `/Encoding`/`/Differences`, and skrifa never selects `(1,0)`
-       Mac-Roman cmaps — the only cmap subset fonts carry. New `FontResolver` (per-render cache,
-       deterministic) resolves codes via glyph name → `post` → AGL → Unicode → cmap, then the
-       Annex D base-encoding reverse → `(1,0)` byte cmap (`glyph_id_for_byte_cmap`); Type0 maps
-       `Identity-H` CIDs and `Uni…-UCS2` codes. `parse_font_dict` gained `/Encoding`
-       (name/dict/indirect-ref) + `/cmap_name`.
-    3. **Clip paths frozen at definition** (`selis-pdf-content/src/{exec,path}.rs`,
-       `selis-pdf-engine/src/render.rs`): the walk re-transformed clip paths with each op's CTM;
-       after a `cm` inside the same `q` (table rules) the stale clip silently clipped the
-       following text away. Clips are now transformed once at `W`/`W*` time (§8.5.4) and the walk
-       applies the page transform only. Also `TinySkiaBackend::finish()` composites any
-       transparency group left open by an unterminated `BMC`/`BDC` (was dropping to a transparent
-       scratch layer).
-    **After** (same full corpus, same metric): **≤0.5% 67.8%, ≤1% 74.9%, ≤2% 80.8%, ≤5% 86.7%,
-    p50 0.06** — ≤1% sits mid-envelope (oracle pairs 73.3–76.5), ≤2% inside (80.5–82.3), and every
-    band ≥0.5% moved up while `diff≥25` (CONF.04 territory) grew 99→103 from better-exposed
-    content. Determinism (RAST.09) re-verified byte-identical; full workspace suite green; lint
-    green; PERF.02 re-run recorded below. Regression corpus: `text_octal_escape`,
-    `clip_frozen_at_definition`, `encoding_differences` (+ expectations).
-    **Residual, honest:** the ~20% of pages still outside ≤1% are not a uniform mechanical
-    signature — they are per-file font/image/graphics gaps tracked by CONF.04 (embedded Type1
-    outlines are still not rasterised) and the CONF.01 gap list. The ≤1% target is met; no ADR
-    needed.
-  - **PERF.02 delta:** `xtask perf-render` (release, 72 DPI, 9 repeats, pdfium driver on PATH) →
-    geomean vs PDFium **3.23×** (recorded 2.78×) and vs mutool **2.89×** (recorded 2.71×) — no
-    regression; both legs improved on this run's noise envelope, comfortably inside the nightly
-    5% rule. The glyph resolver adds one cached dictionary parse per distinct font; no per-glyph
-    document walks. (A first run without the driver on PATH reported `pdfium=None`; discarded,
-    not a measurement.)
 
 ---
 
@@ -353,15 +305,13 @@ every user on every page.
     mutool→oracle-mupdf@digest). An unpushed branch cannot re-dispatch, so the confirming run
     fires on the first `render-conf` dispatch/cron after merge; the matrix stands on the local
     legs until then.
-  - **SL-2.RAST.14 precondition verdict: SUPERSEDED (see RAST.14 Done, 2026-09-12).** The
-    precondition — a re-run showing the ≤1%/≤2% bands inside the envelope — is now satisfied on
-    current `main`: full-corpus selis↔mutool @150 DPI gives ≤1% **74.2% → 74.9%**, ≤2% **80.6% →
-    80.8%** (before/after this task's fixes), both inside the confirmed pair envelope
-    (≤1% 73.3–76.5, ≤2% 80.5–82.3). The CONF.01 numbers quoted above (34.1/76.2, p50 1.68) are
-    **stale**: the intermediate merges RAST.12/RAST.13/CONF.05 had already closed most of the gap
-    before this task's re-measurement, and this task's lexer/encoding/clip fixes moved the rest.
-    The CI re-run that re-baselines the oracle identities on the pinned images remains outstanding
-    post-merge (see above); the local legs stand until then.
+  - **SL-2.RAST.14 precondition verdict: PENDING (assessed, not implemented).** The precondition —
+    a CONF.03 matrix re-run showing the ≤1%/≤2% bands inside the envelope — is not satisfied by
+    any current data: selis ≤1% = 34.1% vs the pair envelope ~73.3–76.5%, and ≤2% = 76.2% vs
+    80.5–82.3%. The envelope itself is confirmed (local legs reproduced exactly); the CI re-run
+    that re-baselines it on the pinned identities is outstanding post-merge (see above). Nothing
+    refutes the RAST.14 premise — the uniform 1–2% mechanical signature stands — so this is
+    pending its owner's engine work, not failed.
 
 ### 2.CONF.01 sweep readout — G2 gap list (2026-09-10, selis vs MuPDF, page 1, ΔE76 > 2.3)
 
