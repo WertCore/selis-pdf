@@ -34,8 +34,9 @@ fn preserve_annotation(path: std::path::PathBuf, record: String) -> String {
 
 /// The `[annotation]` table of an expectation record, if any (from the table
 /// header to the next table header or end of file). Module-level so tests
-/// can exercise the preservation contract directly.
-fn extract_annotation_table(text: &str) -> Option<String> {
+/// can exercise the preservation contract directly; shared with
+/// `corpus expect-merge`, which must preserve triage verdicts too.
+pub(crate) fn extract_annotation_table(text: &str) -> Option<String> {
     let mut lines = text.lines().peekable();
     let mut block = String::new();
     let mut inside = false;

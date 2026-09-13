@@ -8,6 +8,14 @@ sections; every entry states what changed and what it means for the user.
 
 ### Added
 
+- The pinned oracle-container images for PDFium and pdf.js additionally
+  accept `--text <out.txt>` — each driver extracts a page's Unicode text
+  as UTF-8 alongside its existing `--dpi`/`<out.png>` render mode. Used by
+  the SL-3.CONF.01 CI text legs of the `render-conf` scheduled job; the
+  MuPDF text leg needs no driver change (`mutool draw -F txt` already
+  extracts). Selis's own behaviour is unaffected — an oracle contract
+  change, not a product change; the images' digests must be re-pinned
+  once the oracle-images job has rebuilt them after this lands.
 - The WASM binding speaks the versioned Worker protocol (ADR-P0042): a JS
   shell drives document open, page metadata, tiled page render, text
   extraction, search, and document close over one message boundary, with

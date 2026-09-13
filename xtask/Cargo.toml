@@ -24,6 +24,9 @@ selis-shape = { workspace = true }
 selis-sandbox = { workspace = true, features = ["instant-clock"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# sha256 for the CORP.03 golden hashes (text + renders). Already vendored via
+# selis-crypto — no new supply-chain surface.
+sha2 = { workspace = true }
 toml = { workspace = true }
 # Native-only tooling. wasmtime has no wasm32 target, and the SL-1.ENC.03
 # fixture generator builds committed PDFs (never needed in a wasm build).

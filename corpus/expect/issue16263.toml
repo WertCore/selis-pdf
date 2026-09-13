@@ -1,5 +1,13 @@
 open = "ok"
 pages = 1
+
+[render]
+150 = "da6e1d11b56ff6bb1c21f405d3d36bb63c152efd6b589316d3eb8f1a8cca7cde"
+300 = "c116c7cc458ea5f1d22d95f930e700899deaf70e95c8c81a56804165187cb276"
+72 = "7f78969227084e227c7b99f07572eaf0b64192087202cf49a17d286f13d41cea"
+
+[text]
+hash = "ecd98eaf6a71de71ce4823b8c522e6db6bc932d3879abf4d5f428c82c0d04996"
 [annotation]
 triage = "obj_delta=47"
 verdict = "SpecAmbiguous"

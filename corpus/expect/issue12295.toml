@@ -1,6 +1,10 @@
 open = "ok"
 pages = 1
 
+[render]
+150 = "5b34e1b1331aa6477aea62c1ff3a9a798d5362f0c75504f1491065cbaab5edff"
+300 = "5452cbe46410a7c0b16063a13d4b0863a2a5d06173e96138e8f9a190340f5e30"
+72 = "88ec6ce323da643f55287da8783e7b0eb6159c73283ea226f92c00580043692e"
 [annotation]
 triage = "selis_rejects"
 verdict = "OurBug"

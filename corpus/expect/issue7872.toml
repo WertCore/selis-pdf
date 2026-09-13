@@ -1,6 +1,8 @@
 open = "ok"
 pages = 1
 
+[text]
+hash = "62c5286144c10ff7b7cb38aba261979f99e493653f5106d3b4f4f5c9d9ee2695"
 [annotation]
 triage = "selis_rejects"
 verdict = "OurBug"

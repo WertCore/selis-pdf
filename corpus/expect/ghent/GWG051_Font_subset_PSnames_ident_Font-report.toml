@@ -1,6 +1,10 @@
 open = "ok"
 pages = 5
-[annotation]
-triage = "blank_selis"
-verdict = "OurBug"
-note = "RAST.13: embedded Type1C subset advances unresolvable; glyphs stack (font-stack fidelity). Typed."
+
+[render]
+150 = "b04e3db5127d037064be8be95c3020909698118acc50f8d027fe5285b078188c"
+300 = "b262cff0d1a049f2baf00f52f29269aacdb0715e85a46832cf9eb19540ccf9bd"
+72 = "bbabf91ec16458daf9d96a036900e20317803e60f2ba987e241ca084899dfc0c"
+
+[text]
+hash = "5e4aa97528457d366959f84d53fe72c8359a0395077d0feafc5361ebf7ada617"

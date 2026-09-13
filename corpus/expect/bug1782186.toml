@@ -1,5 +1,10 @@
 open = "ok"
 pages = 1
+
+[render]
+150 = "035510bac64807a73fa5ce9fbdde4b8dfed3b3672d85a54aaf8e638490e61915"
+300 = "8018c8948e6ffd49e0fdc8af85fd6bafd6298757a801bdbca7b14858924d9bf6"
+72 = "384946f3efcd7f950b7af1b0433b64f3025f84a8df72c2fe7fe45abecdf0f5b1"
 [annotation]
 triage = "qpdf_rejects"
 verdict = "SpecAmbiguous"

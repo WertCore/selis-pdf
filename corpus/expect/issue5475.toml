@@ -1,6 +1,7 @@
 open = "ok"
 pages = 1
-[annotation]
-triage = "blank_selis"
-verdict = "OurBug"
-note = "RAST.13: JPX image; decodes only under the wasm-host Tier-2 codec (SL-1.FILT.08). Typed deviation."
+
+[render]
+150 = "2f78b0486fe9fc065693041f41a03fbbdb89a3dbae9c37047da2ef6c0e82de55"
+300 = "9e3de1d9e8f38857c34fc86f04ef0445d70c19be86340a48d799901aabdb3937"
+72 = "2c05bca66b329e55d5e805142ec45f5f20893fd53d6094c22f1f2152fa1a02ef"

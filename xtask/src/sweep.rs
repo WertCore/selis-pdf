@@ -97,7 +97,7 @@ struct Verdict {
 
 /// Why one side produced no comparable render.
 #[derive(Debug, Clone)]
-enum SideFail {
+pub(crate) enum SideFail {
     /// The tool exited non-zero / produced no image; carries one bounded
     /// stderr line (typed error text, not document content).
     Rejected(String),
@@ -175,7 +175,7 @@ fn classify(
 
 /// Bounded stderr line for a failure (typed error text only; the harness
 /// truncates to keep records metadata-sized).
-fn fail_text(f: &SideFail) -> String {
+pub(crate) fn fail_text(f: &SideFail) -> String {
     match f {
         SideFail::Rejected(stderr) => stderr
             .lines()
@@ -209,7 +209,7 @@ fn size_skewed(selis: Result<&Rgb, &SideFail>, oracle: Result<&Rgb, &SideFail>) 
 /// 03-CONVENTIONS.md §3; the detail line carries `[Ennnn]`. Pairwise
 /// calibration signatures (SL-2.CONF.03) name the failing side only in the
 /// detail, so they aggregate across pairs.
-fn areas_for(signature: &str, detail: Option<&str>) -> Vec<&'static str> {
+pub(crate) fn areas_for(signature: &str, detail: Option<&str>) -> Vec<&'static str> {
     match signature {
         "match" | "both_reject" | "oversized" => vec![],
         // Oracle-side failures are not our conformance claims.
@@ -411,7 +411,11 @@ fn load_oracle(path: &Path, tool: &str) -> Result<Rgb, SideFail> {
 /// Run `program args...` with a wall-clock budget. Returns the captured
 /// stderr (only its first non-empty line survives into the verdict) on a
 /// typed failure.
-fn run_with_timeout(program: &Path, args: &[String], timeout: Duration) -> Result<(), SideFail> {
+pub(crate) fn run_with_timeout(
+    program: &Path,
+    args: &[String],
+    timeout: Duration,
+) -> Result<(), SideFail> {
     let mut child = std::process::Command::new(program)
         .args(args)
         .stdout(std::process::Stdio::null())
@@ -446,7 +450,7 @@ fn run_with_timeout(program: &Path, args: &[String], timeout: Duration) -> Resul
 
 /// Canonicalised absolute path text (spawned executables and container mounts
 /// need it; falls back to the given path when canonicalisation fails).
-fn path_str(p: &Path) -> String {
+pub(crate) fn path_str(p: &Path) -> String {
     p.canonicalize()
         .unwrap_or_else(|_| p.to_path_buf())
         .to_string_lossy()
@@ -768,7 +772,7 @@ fn render_oracle(
 
 /// Resolve the selis binary: explicit flag, then the target dir (release,
 /// debug), then the workspace target dir, then PATH.
-fn resolve_selis(explicit: Option<&Path>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_selis(explicit: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
         let canonical = p
             .canonicalize()
@@ -799,7 +803,7 @@ fn resolve_selis(explicit: Option<&Path>) -> Result<PathBuf, String> {
 
 /// Display form without the Windows verbatim prefix; spawned children keep
 /// the canonical form (long verapdf paths exceed MAX_PATH).
-fn unverbatim(p: &Path) -> PathBuf {
+pub(crate) fn unverbatim(p: &Path) -> PathBuf {
     p.to_string_lossy()
         .strip_prefix(r"\\?\")
         .map_or_else(|| p.to_path_buf(), PathBuf::from)
@@ -807,7 +811,7 @@ fn unverbatim(p: &Path) -> PathBuf {
 
 /// The corpus file list, filtered by include/exclude id substrings, then
 /// deterministically stride-sampled when `sample` is set.
-fn sample_files(
+pub(crate) fn sample_files(
     sample: Option<usize>,
     include: &[String],
     exclude: &[String],
@@ -1102,7 +1106,7 @@ fn source_of(id: &str) -> String {
 }
 
 /// Corpus weight of one file id (SL-0.ORACLE.05 step 3: wild/govdocs x3).
-fn file_weight(id: &str) -> usize {
+pub(crate) fn file_weight(id: &str) -> usize {
     if id.contains("govdocs") || id.contains("wild") {
         3
     } else {

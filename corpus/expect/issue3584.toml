@@ -1,2 +1,10 @@
 open = "ok"
 pages = 1
+
+[render]
+150 = "0df1ee9785009ce9c3ee52a53f1867fec8546ea789bba4a1831ef8b16a30e55b"
+300 = "ec0d13f6af6df512f0e52c611bd3d3dcaf74e9fe10eea6c04106ff1434fbb91b"
+72 = "358d03908fd3ba046600cddb0a05ff98f0c17ce9867132fbd7c82f5a26cfc7e7"
+
+[text]
+hash = "eb81ba5ff779ca24d480493b87b9ad1c6ae8fd62211d6b3e8344c03aa55d495b"
