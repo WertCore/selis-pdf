@@ -8,7 +8,7 @@
 //! 2. **Validate** the schema version; a mismatch answers
 //!    `BINDING_UNSUPPORTED_OP` (a newer shell must degrade into typed
 //!    errors, never silent misbehaviour).
-//! 3. **Route** the op to the engine — every engine call runs under the
+//! 3. **Route** the op to the engine â€” every engine call runs under the
 //!    document's [`Budget`](selis_sandbox::Budget) (ADR-P0006), every long
 //!    op ticks against the injected clock and cancel token (ADR-P0004), and
 //!    the whole route sits inside the ERR.03 panic trampoline, so even a bug
@@ -30,14 +30,14 @@
 //!   single-threaded Worker can actually deliver (a message cannot arrive
 //!   mid-op there).
 //! * **In-flight (out-of-band).** The host writes the exported cancel slot
-//!   (shared memory — a SAB watcher on the web, another thread natively);
+//!   (shared memory â€” a SAB watcher on the web, another thread natively);
 //!   the op observes it at its next budget tick. The harness proves the
-//!   slot→token→tick→`CANCELLED` path both natively (deterministic, via the
+//!   slotâ†’tokenâ†’tickâ†’`CANCELLED` path both natively (deterministic, via the
 //!   injected clock) and over the guest ABI.
 //!
 //! # Progress
 //!
-//! Every stage boundary writes through the injected [`ProgressSink`] — the
+//! Every stage boundary writes through the injected [`ProgressSink`] â€” the
 //! guest binds that to the exported progress slot (pollable out-of-band by
 //! threaded hosts); native tests capture it directly. The wire `progress`
 //! response shape is reserved for the threaded shell path (WASM.03).
@@ -54,7 +54,7 @@
 //! # Budget
 //!
 //! Every op builds a fresh [`BudgetGuard`](selis_sandbox::BudgetGuard) from
-//! the document's budget profile (chosen by the client at `open` — the
+//! the document's budget profile (chosen by the client at `open` â€” the
 //! engine never picks its own limits, ADR-P0006) with the *injected* clock
 //! and cancel token. Exhaustion and cancellation cross the boundary as
 //! typed `BUDGET_*`/`CANCELLED` responses carrying the registry's
@@ -72,7 +72,6 @@ use std::collections::BTreeMap;
 
 use selis_error::{err, Code, Error, Result};
 use selis_geom::Matrix;
-use selis_pdf_content::text::TextGlyph;
 use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
@@ -207,7 +206,7 @@ pub struct Payload {
 /// The payload formats v1 produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadFormat {
-    /// Raw RGBA8 pixels, `width`×`height`×4 bytes, row-major, top-left
+    /// Raw RGBA8 pixels, `width`Ã—`height`Ã—4 bytes, row-major, top-left
     /// origin (the rendered canvas or one tile of it).
     Rgba8,
     /// UTF-8 text (extracted page text in the requested format).
@@ -303,7 +302,7 @@ impl Worker {
         let parsed: Option<RequestMessage> = serde_json::from_slice(raw).ok();
         let id = parsed.as_ref().map_or(0, |m| m.id);
         // SL-0.ERR.03: the whole worker entry sits inside the panic
-        // trampoline — a bug below the boundary is a typed INTERNAL_PANIC
+        // trampoline â€” a bug below the boundary is a typed INTERNAL_PANIC
         // response (code path + panic site, never the payload, ADR-P0017),
         // never a lost worker.
         match selis_sandbox::trampoline::catch("wasm-worker", || {
@@ -514,7 +513,7 @@ impl Worker {
         let budget = opened.budget;
         let mut g = budget.guard_with(env.clock, env.cancel.clone());
         // The canvas is the op's pixel claim: a hostile media box aiming at
-        // a 16k×16k allocation exhausts the pixel budget *before* the
+        // a 16kÃ—16k allocation exhausts the pixel budget *before* the
         // allocation exists (ADR-P0006).
         let canvas_pixels = u64::from(w).saturating_mul(u64::from(h));
         g.charge(Resource::Pixels, canvas_pixels)?;
@@ -601,17 +600,22 @@ impl Worker {
             .mcid_order(&budget, &mut g)
             .ok()
             .filter(|v| !v.is_empty());
-        let assembled = page_text(&dl, mcid.as_deref(), &mut g)?;
+        let assembled = page_text(&opened.session, idx, &budget, &dl, mcid.as_deref(), &mut g)?;
         let (lines, line_texts) = (&assembled.lines, &assembled.line_texts);
         let fmt = format.unwrap_or_default();
         let out = match fmt {
-            TextFormat::Text => selis_pdf_text::to_text(lines, line_texts),
+            TextFormat::Text => {
+                selis_pdf_text::to_text(lines, line_texts, assembled.low_confidence)
+            }
             TextFormat::Json => {
-                let structured =
+                let mut structured =
                     selis_pdf_text::structured(lines, line_texts, &assembled.run_texts);
+                structured.low_confidence = assembled.low_confidence;
                 selis_pdf_text::to_json(&structured)
             }
-            TextFormat::Markdown => selis_pdf_text::to_markdown(lines, line_texts),
+            TextFormat::Markdown => {
+                selis_pdf_text::to_markdown(lines, line_texts, assembled.low_confidence)
+            }
         };
         let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
         let fmt_str = match fmt {
@@ -686,7 +690,7 @@ impl Worker {
                 .mcid_order(&budget, &mut g)
                 .ok()
                 .filter(|v| !v.is_empty());
-            let assembled = page_text(&dl, mcid.as_deref(), &mut g)?;
+            let assembled = page_text(&opened.session, idx, &budget, &dl, mcid.as_deref(), &mut g)?;
             for m in selis_pdf_text::search_lines(&assembled.lines, &assembled.line_texts, &query) {
                 total = total.saturating_add(1);
                 if (matches.len() as u64) < u64::from(max_matches) {
@@ -752,7 +756,7 @@ impl Worker {
     // -- cancellation bookkeeping -------------------------------------------
 
     fn op_cancel(&mut self, id: u64, target: u64) -> Result<Outgoing> {
-        // Record the target unless it is already answered (dispatched) — the
+        // Record the target unless it is already answered (dispatched) â€” the
         // FIFO bound keeps a hostile client from growing this forever.
         if self.pre_cancelled.len() >= MAX_PRECANCELLED {
             let _ = self.pre_cancelled.remove(0);
@@ -780,7 +784,7 @@ fn page_index(page: u32) -> usize {
     usize::try_from(page).unwrap_or(usize::MAX)
 }
 
-/// Resolve the search page range: explicit `{from, to}` (from ≤ to, `to`
+/// Resolve the search page range: explicit `{from, to}` (from â‰¤ to, `to`
 /// clamped to the last page) or the whole document.
 fn search_range(opts: &SearchOpts, page_count: usize) -> Result<(u32, u32)> {
     let last = u32::try_from(page_count.saturating_sub(1)).unwrap_or(u32::MAX);
@@ -864,7 +868,7 @@ fn validate_mutation(mutation: &MutationEnvelope) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `BINDING_BAD_ARGUMENT` when the tile does not fit (defence in depth —
+/// `BINDING_BAD_ARGUMENT` when the tile does not fit (defence in depth â€”
 /// the caller validates first); the copy never indexes out of bounds.
 fn crop_tile(pixels: &[u8], canvas_w: u32, tile: crate::protocol::Tile) -> Result<Vec<u8>> {
     let stride = u64::from(canvas_w).saturating_mul(4);
@@ -895,32 +899,28 @@ struct PageText {
     lines: Vec<TextLine>,
     line_texts: Vec<String>,
     run_texts: Vec<Vec<String>>,
+    /// SL-3.TEXT.10: display-list text drew nothing readable (see the CLI's
+    /// `page_lines` â€” same pipeline, same honesty rule).
+    low_confidence: bool,
 }
 
 /// The assembled text lines, their recovered texts, and their per-run texts
-/// for one page's display list (the same pipeline `selis extract` drives).
+/// for one page's display list (the same pipeline `selis extract` drives:
+/// shared gather + Unicode-recovery helpers, so CLI and WASM cannot drift â€”
+/// SL-3.TEXT.08/09/10).
 fn page_text(
+    session: &Session,
+    page: usize,
+    budget: &Budget,
     dl: &selis_pdf_content::display_list::DisplayList,
     mcid_order: Option<&[u32]>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<PageText> {
-    let mut glyphs: Vec<TextGlyph> = Vec::new();
-    for op in &dl.ops {
-        if let selis_pdf_content::display_list::Op::Text { at, state, runs } = op {
-            let mcid = state.mcid;
-            for run in runs {
-                for &code in &run.glyphs {
-                    glyphs.push(TextGlyph {
-                        code,
-                        at: *at,
-                        font: run.font.clone(),
-                        size: run.size,
-                        mcid,
-                    });
-                }
-            }
-        }
-    }
+    let mut glyphs = selis_pdf_text::gather_glyphs(dl);
+    let drew_text = !glyphs.is_empty();
+    selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
+        session.text_unicode(page, font, code, budget, g)
+    });
     let lines = selis_pdf_text::assemble(glyphs);
     let mcid_lines: Vec<LineWithMcid> = lines
         .into_iter()
@@ -951,14 +951,16 @@ fn page_text(
                 .collect()
         })
         .collect();
+    let recovered = line_texts.iter().any(|t| !t.trim().is_empty());
     Ok(PageText {
         lines: ordered.lines,
         line_texts,
         run_texts,
+        low_confidence: drew_text && !recovered,
     })
 }
 
-/// The recovered text of a line (code → Unicode char), with a space between
+/// The recovered text of a line (code â†’ Unicode char), with a space between
 /// words (the assembler strips space glyphs when splitting runs into words).
 fn line_text(line: &TextLine) -> String {
     let mut out = String::new();

@@ -349,15 +349,21 @@ impl Session {
         Ok(tree.mcid_order())
     }
 
-    /// The Unicode scalar for a shown code in a page's font (SL-3.SHAPE.04).
+    /// The Unicode scalar for a shown code in a page's font.
     ///
-    /// CID fonts (Type0 composites) resolve through the font's `/ToUnicode`
-    /// CMap; anything else (simple fonts, missing maps) returns `None` and
-    /// the caller keeps the legacy code-as-character reading — simple-font
-    /// recovery through encodings and glyph names is the TEXT.02 follow-up,
-    /// deliberately untouched here. Resolution is against the page's own
-    /// `/Resources`: a form XObject shadowing the same font name resolves
-    /// against the page scope instead (documented limitation).
+    /// Resolution follows the SL-3.TEXT.02 recovery chain, in precedence
+    /// order:
+    ///
+    /// 1. the font's `/ToUnicode` CMap — trusted for composite **and**
+    ///    simple fonts (SL-3.TEXT.08: a simple font may carry one too);
+    /// 2. for a simple font without `/ToUnicode`: the encoding's glyph name →
+    ///    the Adobe Glyph List → the `uniXXXX`/`uXXXX` name conventions → the
+    ///    `post` name of the glyph the code selects;
+    ///
+    /// A CID font without `/ToUnicode` returns `None` (a raw CID is no
+    /// character claim). `None` keeps the caller's legacy code-as-character
+    /// reading (byte-identical for simple fonts) — an improvement must never
+    /// regress into mojibake that the byte path got right.
     ///
     /// # Budget
     ///
@@ -380,13 +386,23 @@ impl Session {
         let page = self.document.pages.get(page_num)?;
         let mut resolver = self.new_resolver(budget);
         let font_dict = resolve_font_dict(&mut resolver, page.resources.as_ref(), font_name, g)?;
-        if !font_dict.is_cid() {
-            return None;
-        }
-        font_dict
+        // 1. `/ToUnicode` (§9.10.2) — the producer-declared answer wins for
+        // either font class (SL-3.TEXT.08).
+        if let Some(unicode) = font_dict
             .to_unicode
             .as_ref()
             .and_then(|cmap| cmap.unicode_map(u32::from(code)))
+        {
+            return Some(unicode);
+        }
+        if font_dict.is_cid() {
+            return None;
+        }
+        // 2. Simple font, no `/ToUnicode`: the encoding/glyph-name chain of
+        // SL-3.TEXT.02 (`selis_font::TextRecovery`), wired for extraction by
+        // SL-3.TEXT.08 so non-ASCII codes stop relying on the Latin-1-lucky
+        // byte-as-character reading.
+        simple_text_unicode(&font_dict, code)
     }
 
     /// Evaluate the conformance rules for a profile.
@@ -1204,6 +1220,39 @@ fn font_width_inner(
     };
     let resolved = selis_font::resolve_widths(&font_dict, g).ok()?;
     Some(resolved.width(u32::from(code)))
+}
+
+/// The no-`/ToUnicode` simple-font half of the SL-3.TEXT.02 recovery chain,
+/// wired for extraction by SL-3.TEXT.08: the code's encoding glyph name →
+/// the Adobe Glyph List → the `uniXXXX`/`uXXXX` conventions → the `post` name
+/// of the glyph the code selects.
+///
+/// `None` (confidence `RecoveryConfidence::None`) means nothing was
+/// recovered: the caller keeps the legacy code-as-character byte reading —
+/// byte-identical mappings the chain cannot beat are preserved, never
+/// "improved" into guesses. Symbolic standard-14s (`/Symbol`, `/ZapfDingbats`)
+/// carry their code→name tables in the font PROGRAM (not embedded here), so
+/// unembedded Symbolic codes intentionally fall back to the byte reading
+/// (a documented deviation; they were never octal-escaped either).
+fn simple_text_unicode(font_dict: &selis_font::FontDict, code: u16) -> Option<u32> {
+    let encoding = selis_font::encoding::resolve(&font_dict.encoding);
+    let program: Option<Bytes> = font_dict.font_file.as_ref().map(|f| f.data().clone());
+    let glyph_name = |gid: u16| {
+        program
+            .as_ref()
+            .and_then(|b| selis_font::outline::glyph_name(b, gid))
+    };
+    let gid = match program.as_ref() {
+        Some(b) => selis_font::glyph_id_for_simple_code(b, &font_dict.encoding, code).unwrap_or(0),
+        None => 0,
+    };
+    let recovery = selis_font::TextRecovery {
+        to_unicode: None, // the caller already tried it
+        encoding: Some(&encoding),
+        glyph_name: &glyph_name,
+        cmap_reverse: &|_gid| None,
+    };
+    recovery.unicode(u32::from(code), gid).unicode
 }
 
 fn resolve_font_dict(
@@ -3507,6 +3556,164 @@ mod tests {
             );
             // An unmapped CID has no recovery (deviation, not an error).
             assert_eq!(session.text_unicode(0, &f1, 7, &budget, &mut g), None);
+        }
+    }
+
+    /// SL-3.TEXT.08: `/text_unicode` must recover the *character* for simple
+    /// font codes through the SL-3.TEXT.02 chain (ToUnicode first, then the
+    /// encoding's glyph name → AGL → `uniXXXX`), not just bet on the byte.
+    mod text_recovery_simple {
+        use super::*;
+        use selis_pdf_cos::Ref;
+
+        fn name(v: &[u8]) -> Obj {
+            Obj::Name(Bytes::copy_from_slice(v))
+        }
+
+        /// One page `/Res` dict with the given named font objects written as
+        /// direct dicts (no embeds needed for recovery through `/Encoding`).
+        fn pdf_with_fonts(fonts: Vec<(&'static str, Obj)>) -> Vec<u8> {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut builder = DocumentBuilder::new();
+            let mut pairs: Vec<(Bytes, Obj)> = Vec::new();
+            for (res, obj) in fonts {
+                let num = builder.allocate();
+                builder.add_object(num, obj);
+                pairs.push((
+                    Bytes::copy_from_slice(res.as_bytes()),
+                    Obj::Ref(Ref::new(num, 0)),
+                ));
+            }
+            let resources = builder.allocate();
+            builder.add_object(
+                resources,
+                Obj::Dict(vec![(Bytes::copy_from_slice(b"Font"), Obj::Dict(pairs))]),
+            );
+            let content: &[u8] = b"BT /WA 24 Tf 10 700 Td (x) Tj ET\n";
+            let content_num = builder.allocate();
+            builder.add_object(
+                content_num,
+                Obj::Stream {
+                    dict: vec![(
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                    )],
+                    data: Bytes::copy_from_slice(content),
+                },
+            );
+            builder.add_page_with(
+                612.0,
+                792.0,
+                &[Ref::new(content_num, 0)],
+                Some(Ref::new(resources, 0)),
+            );
+            builder.write(&budget, &mut g).expect("write")
+        }
+
+        fn type1(base: &[u8], encoding: Vec<(Bytes, Obj)>) -> Obj {
+            let mut dict = vec![
+                (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                (Bytes::copy_from_slice(b"Subtype"), name(b"Type1")),
+                (Bytes::copy_from_slice(b"BaseFont"), name(base)),
+            ];
+            dict.extend(encoding);
+            Obj::Dict(dict)
+        }
+
+        #[test]
+        fn simple_font_unicode_recovers_through_the_encoding_chain() {
+            let fonts = vec![
+                // WinAnsi: code 0xE9 is named eacute → U+00E9 (same as the
+                // byte — kept by the chain, not by luck anymore).
+                (
+                    "WA",
+                    type1(
+                        b"Helvetica",
+                        vec![(
+                            Bytes::copy_from_slice(b"Encoding"),
+                            name(b"WinAnsiEncoding"),
+                        )],
+                    ),
+                ),
+                // MacRoman: é lives at 0x8E — the byte reading would yield the
+                // invisible U+008E, the chain yields eacute.
+                (
+                    "MR",
+                    type1(
+                        b"Helvetica",
+                        vec![(
+                            Bytes::copy_from_slice(b"Encoding"),
+                            name(b"MacRomanEncoding"),
+                        )],
+                    ),
+                ),
+                // /Differences: eacute lands on code 25 (the byte is a control
+                // character today).
+                (
+                    "DI",
+                    type1(
+                        b"Helvetica",
+                        vec![(
+                            Bytes::copy_from_slice(b"Encoding"),
+                            Obj::Dict(vec![(
+                                Bytes::copy_from_slice(b"Differences"),
+                                Obj::Array(vec![Obj::Int(25), name(b"eacute"), name(b"uni4E8C")]),
+                            )]),
+                        )],
+                    ),
+                ),
+                // `/uniXXXX` name convention (non-AGL CJK private glyph names
+                // the AGL does not carry).
+                (
+                    "UN",
+                    type1(
+                        b"AAAAAA+Foo",
+                        vec![(
+                            Bytes::copy_from_slice(b"Encoding"),
+                            Obj::Dict(vec![(
+                                Bytes::copy_from_slice(b"Differences"),
+                                Obj::Array(vec![Obj::Int(40), name(b"uni4E8C")]),
+                            )]),
+                        )],
+                    ),
+                ),
+                // Standard-14 Symbol without /Encoding and without a program:
+                // the built-in code table is NOT claimed (documented
+                // deviation) — `None` keeps the byte reading downstream, and
+                // extraction never guesses α for 'A' without evidence.
+                ("SY", type1(b"Symbol", Vec::new())),
+            ];
+            // Note: `UNI` (`uniXXXX`) is covered below; a simple font carrying
+            // `/ToUnicode` still wins over the encoding (§9.10.2) — exercised
+            // end-to-end by the synthetic corpus fixture `text08_tounicode_wins`.
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session =
+                Session::open(pdf_with_fonts(fonts), &budget, &clock).expect("open session");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut code = |res: &str, c: u16| {
+                session.text_unicode(
+                    0,
+                    &Bytes::copy_from_slice(res.as_bytes()),
+                    c,
+                    &budget,
+                    &mut g,
+                )
+            };
+            assert_eq!(code("WA", 0xE9), Some(0x00E9), "WinAnsi eacute");
+            assert_eq!(code("MR", 0x8E), Some(0x00E9), "MacRoman eacute");
+            assert_eq!(code("DI", 25), Some(0x00E9), "Differences eacute");
+            assert_eq!(code("DI", 26), Some(0x4E8C), "uni name via differences");
+            assert_eq!(code("UN", 40), Some(0x4E8C), "uni4E8C name convention");
+            assert_eq!(code("SY", 0x41), None, "Symbol built-ins are not guessed");
+            assert_eq!(code("WA", 0x41), Some(0x41), "ASCII unchanged");
+            assert_eq!(
+                code("WA", 0x20),
+                Some(0x20),
+                "32 stays space for the splitter"
+            );
         }
     }
 

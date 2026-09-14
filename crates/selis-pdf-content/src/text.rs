@@ -64,6 +64,11 @@ impl Default for TextState {
 /// A positioned glyph from a show operation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextGlyph {
+    /// The horizontal pen step this glyph moves in user space (the
+    /// justified advance mapped through the text matrix, SL-3.TEXT.09) —
+    /// the reference the extractor's word-gap inference measures the next
+    /// origin against.
+    pub advance: f64,
     /// The character code.
     pub code: u16,
     /// The glyph origin in user space (the text matrix applied to the rise).
@@ -72,6 +77,10 @@ pub struct TextGlyph {
     pub font: Bytes,
     /// The font size.
     pub size: f64,
+    /// The user-space horizontal width this font's *space* glyph occupies
+    /// under the current text state (SL-3.TEXT.09): the reference distance
+    /// for word-gap inference in the text layer.
+    pub space: f64,
     /// The marked-content id of the enclosing `BDC`/`EMC` span, if any.
     pub mcid: Option<u32>,
 }
@@ -184,6 +193,11 @@ fn newline(state: &mut TextState) {
 }
 
 /// Show a string: decode the codes, position each glyph, advance the matrix.
+///
+/// Each emitted [`TextGlyph`] carries the user-space pen step (`advance`) and
+/// the font's space width under the same text state (`space`) so the text
+/// layer's word-gap inference compares like with like (SL-3.TEXT.09): both are
+/// in the same coordinate space as `at`, never text-space units.
 fn show_string(
     state: &mut TextState,
     text: &[u8],
@@ -194,6 +208,12 @@ fn show_string(
         return Vec::new(); // no font set: nothing can be shown
     };
     let size = state.font_size;
+    // The user-space width of the font's space glyph at this text state
+    // (constant across the string: `Td`-style advances only move the origin,
+    // they never change the matrix's linear part).
+    let space_units = space_width_units(is_cid, width_of);
+    let space_text = justified_advance(space_units, size, 0.0, 0.0, state.h_scale, false, false);
+    let space = pen_x(&state.matrix, space_text);
     let mut out = Vec::new();
     for code in codes(text, is_cid) {
         let width = width_of(code);
@@ -207,16 +227,50 @@ fn show_string(
             code == 0x20,
         );
         let at = state.matrix.apply(Point::new(0.0, state.rise));
+        let advance_x = pen_x(&state.matrix, advance);
         out.push(TextGlyph {
             code,
             at,
+            advance: advance_x,
             font: font.clone(),
             size,
+            space,
             mcid: state.mcid,
         });
         state.matrix = state.matrix.then(Matrix::translate(advance, 0.0));
     }
     out
+}
+
+/// The user-space x the pen moves for a text-space advance of `adv`.
+fn pen_x(matrix: &Matrix, adv: f64) -> f64 {
+    let p0 = matrix.apply(Point::new(0.0, 0.0));
+    let p1 = matrix
+        .then(Matrix::translate(adv, 0.0))
+        .apply(Point::new(0.0, 0.0));
+    p1.x - p0.x
+}
+
+/// The width (in 1000/em glyph space) to use for the font's *space* glyph
+/// when the text layer infers word gaps (SL-3.TEXT.09).
+///
+/// For a simple font the encoding's code 32 is the space character by
+/// convention, so `/Widths` answers directly. For a CID font it does not:
+/// an `Identity-*` subset maps CID 32 to an arbitrary glyph, often with the
+/// default 1000-unit `/DW` width, which is no space advance at all. A width
+/// outside the plausible space range (≈ 0.1–0.6 em) is therefore replaced
+/// with the 0.25 em fallback shared with the common text fonts, keeping the
+/// gap threshold stable regardless of the subset's glyph numbering.
+fn space_width_units(is_cid: bool, width_of: &dyn Fn(u16) -> f64) -> f64 {
+    const FALLBACK: f64 = 250.0;
+    let w = width_of(0x20);
+    if !w.is_finite() || w <= 0.0 {
+        return FALLBACK;
+    }
+    if is_cid && (w < 100.0 || w > 600.0) {
+        return FALLBACK;
+    }
+    w
 }
 
 /// Show a `TJ` array: strings and per-element numeric adjustments.
@@ -455,5 +509,79 @@ mod tests {
         let mut state = TextState::default();
         let glyphs = process(&mut state, "Tj", &[s(b"A")], false, &const_width);
         assert!(glyphs.is_empty());
+    }
+
+    /// SL-3.TEXT.09: every shown glyph carries its user-space pen step and
+    /// the font's space width, so the word-gap inference compares the origin
+    /// gap against the *advance* (same coordinate space) instead of a
+    /// text-space fraction of the font size.
+    #[test]
+    fn glyph_carries_pen_advance_and_space_width() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 12.0;
+        let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
+        assert!((glyphs[0].advance - 6.0).abs() < 1e-9, "A pen step");
+        assert!((glyphs[1].advance - 6.0).abs() < 1e-9, "B pen step");
+        assert!((glyphs[0].space - 6.0).abs() < 1e-9, "500/1000 * 12");
+    }
+
+    /// The invariant word-gap inference (SL-3.TEXT.09) relies on: a glyph's
+    /// recorded `advance` equals the pen step between its origin and the next
+    /// glyph's origin under any text matrix — the two quantities the excess
+    /// compares must always live in the same coordinate space. Note this is
+    /// the interpreter's raw-step composition (`Tm.advance`, not the spec's
+    /// `Translate·Tm`; see the note in SL-3.TEXT.08/2.RAST scope findings):
+    /// rendering positions glyphs by the same number, so extraction and
+    /// display agree whatever the Tm's linear part.
+    #[test]
+    fn advance_tracks_the_observed_pen_step_under_any_matrix() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 2.0;
+        process(
+            &mut state,
+            "Tm",
+            &[n(10.0), n(0.0), n(0.0), n(10.0), n(0.0), n(0.0)],
+            false,
+            &const_width,
+        );
+        let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
+        // One raw justified step (500/1000 * 2) between the origins ...
+        assert!(
+            (glyphs[1].at.x - glyphs[0].at.x - glyphs[0].advance).abs() < 1e-9,
+            "the recorded advance must equal the observed origin delta"
+        );
+        // ... and the space metric rides the same composition, so a real
+        // word jump would still count as exactly one space.
+        assert!((glyphs[0].space - glyphs[0].advance).abs() < 1e-9);
+    }
+
+    /// A CID font's code-32 entry is not a space (an `Identity-H` subset
+    /// numbers glyphs arbitrarily): the width is trusted only in the plausible
+    /// 0.1–0.6 em band, otherwise the 0.25 em fallback applies (SL-3.TEXT.09).
+    #[test]
+    fn cid_space_width_falls_back_outside_the_plausible_band() {
+        assert!((space_width_units(true, &|_code| 1000.0) - 250.0).abs() < 1e-9);
+        assert!((space_width_units(true, &|_code| 300.0) - 300.0).abs() < 1e-9);
+        assert!((space_width_units(false, &|_code| 0.0) - 250.0).abs() < 1e-9);
+        assert!((space_width_units(false, &|_code| 278.0) - 278.0).abs() < 1e-9);
+    }
+
+    /// Word spacing (`Tw`) widens only real spaces; the recorded `space`
+    /// metric is the font's own width so the gap threshold doesn't inflate
+    /// with the justification settings (§9.2.7).
+    #[test]
+    fn space_metric_excludes_word_spacing() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 12.0;
+        state.word_spacing = 5.0;
+        let glyphs = process(&mut state, "Tj", &[s(b"A B")], false, &const_width);
+        // 'A' and 'B' carry the plain 500-unit step (6.0); only the space's
+        // own advance included Tw.
+        assert!((glyphs[0].advance - 6.0).abs() < 1e-9);
+        assert!((glyphs[1].advance - 11.0).abs() < 1e-9, "space: 6 + Tw 5");
+        assert!((glyphs[0].space - 6.0).abs() < 1e-9);
     }
 }

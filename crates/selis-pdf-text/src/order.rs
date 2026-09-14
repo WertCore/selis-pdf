@@ -239,10 +239,12 @@ mod tests {
 
     fn line_at(x0: f64, y0: f64, x1: f64, y1: f64) -> TextLine {
         let g = TextGlyph {
+            advance: 6.0,
             code: 65,
             at: Point::new(x0, y0),
             font: Bytes::copy_from_slice(b"F1"),
             size: 12.0,
+            space: 3.0,
             mcid: None,
         };
         let run = crate::assembly::TextRun {

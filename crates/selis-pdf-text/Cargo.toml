@@ -19,3 +19,6 @@ selis-sandbox = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-font = { workspace = true }
 unicode-normalization = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
