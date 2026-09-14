@@ -7,7 +7,7 @@ pages = 1
 72 = "0d1ae0c2999b714d3844a038b47ede496e4ec8c234cbfa64a5e7c089e48a6fd4"
 
 [text]
-hash = "6ad6a7f2c6db5b7802b8a52e98ee8bdc6b6ee517afe5d919a41db0ccfd7815c8"
+hash = "607474ca475a9724d7360aba71a56d5df77e61350e3f724cfa1f46e857e2d85f"
 [annotation]
 triage = "qpdf_rejects"
 verdict = "SpecAmbiguous"

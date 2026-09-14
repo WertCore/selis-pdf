@@ -162,10 +162,12 @@ mod tests {
 
     fn glyph(code: u16, x: f64, y: f64, size: f64) -> TextGlyph {
         TextGlyph {
+            advance: size * 0.5,
             code,
             at: Point::new(x, y),
             font: Bytes::copy_from_slice(b"F1"),
             size,
+            space: size * 0.25,
             mcid: None,
         }
     }

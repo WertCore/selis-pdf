@@ -1864,6 +1864,7 @@ dependencies = [
 name = "selis-pdf-text"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "selis-bytes",
  "selis-error",
  "selis-font",

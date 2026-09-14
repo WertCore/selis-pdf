@@ -8,7 +8,6 @@
 use crate::render::write_ppm;
 use crate::{read_file, CliError, CliResult};
 use selis_pdf_content::display_list::Op;
-use selis_pdf_content::text::TextGlyph;
 use selis_pdf_engine::Session;
 use selis_pdf_text::TextLine;
 use selis_sandbox::{Budget, Surface};
@@ -60,7 +59,7 @@ pub(crate) fn run(
             .mcid_order(&budget, &mut g)
             .ok()
             .filter(|v| !v.is_empty());
-        let (lines, line_texts) =
+        let (lines, line_texts, low_confidence) =
             page_lines(&session, p, &budget, &dl, mcid_order.as_deref(), &mut g)?;
         let page_out = match format {
             "json" => {
@@ -79,12 +78,13 @@ pub(crate) fn run(
                             .collect()
                     })
                     .collect();
-                let s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
+                let mut s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
+                s.low_confidence = low_confidence;
                 selis_pdf_text::to_json(&s)
             }
-            "md" => selis_pdf_text::to_markdown(&lines, &line_texts),
-            "html" => selis_pdf_text::to_html(&lines, &line_texts),
-            _ => selis_pdf_text::to_text(&lines, &line_texts),
+            "md" => selis_pdf_text::to_markdown(&lines, &line_texts, low_confidence),
+            "html" => selis_pdf_text::to_html(&lines, &line_texts, low_confidence),
+            _ => selis_pdf_text::to_text(&lines, &line_texts, low_confidence),
         };
         if !first_output && page != last {
             println!();
@@ -100,10 +100,17 @@ pub(crate) fn run(
 /// order) enables structure-first ordering for tagged PDFs; `None` falls back
 /// to column-aware geometry.
 ///
-/// Codes from CID fonts (Type0 composites) are replaced by their `/ToUnicode`
-/// recovery before assembly text is read, so `line_text` below sees Unicode
-/// scalars (SL-3.SHAPE.04). Simple-font codes pass through byte-identical —
-/// their encoding/glyph-name recovery is the TEXT.02 follow-up, untouched.
+/// Codes are replaced by their recovered Unicode (SL-3.TEXT.08: `/ToUnicode`
+/// for either font class, the encoding/glyph-name chain for simple fonts;
+/// SL-3.SHAPE.04 kept this order for CIDs) BEFORE assembly text is read, so
+/// `line_text` below and the word splitter see characters, not raw codes —
+/// a raw CID can equal 0x20 without being a space, and a raw WinAnsi byte is
+/// only *luck* away from its character.
+///
+/// The third element of the tuple is the SL-3.TEXT.10 low-confidence flag:
+/// true when the display list drew glyphs (or text ops exist) yet zero
+/// characters were recovered — callers must surface the marker instead of a
+/// silent empty string on such pages.
 ///
 /// # Errors
 ///
@@ -115,28 +122,19 @@ pub(crate) fn page_lines(
     dl: &selis_pdf_content::display_list::DisplayList,
     mcid_order: Option<&[u32]>,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<(Vec<selis_pdf_text::TextLine>, Vec<String>)> {
-    let mut glyphs = Vec::new();
-    for op in &dl.ops {
-        if let Op::Text { at, state, runs } = op {
-            let mcid = state.mcid;
-            for run in runs {
-                for &code in &run.glyphs {
-                    glyphs.push(TextGlyph {
-                        code,
-                        at: *at,
-                        font: run.font.clone(),
-                        size: run.size,
-                        mcid,
-                    });
-                }
-            }
-        }
-    }
-    // CID codes become Unicode scalars BEFORE assembly: the word splitter
-    // strips `0x20` glyphs, and a raw CID can equal 0x20 without being a
-    // space (SL-3.SHAPE.04 — e.g. Devanagari CID 32 is vowel sign I).
-    resolve_cid_unicode(session, page, budget, &mut glyphs, g);
+) -> CliResult<(Vec<selis_pdf_text::TextLine>, Vec<String>, bool)> {
+    // Codes become Unicode scalars BEFORE assembly (SL-3.TEXT.08): the word
+    // splitter strips `0x20` glyphs, and a raw CID can equal 0x20 without
+    // being a space (SL-3.SHAPE.04 — e.g. Devanagari CID 32 is vowel sign I),
+    // while a raw simple-font byte is an encoded code, not a character. The
+    // shared gather helper also carries each glyph's pen advance and the
+    // font's space width so word-gap inference has same-space references
+    // (SL-3.TEXT.09).
+    let mut glyphs = selis_pdf_text::gather_glyphs(dl);
+    let drew_text = !glyphs.is_empty();
+    selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
+        session.text_unicode(page, font, code, budget, g)
+    });
     let lines = selis_pdf_text::assemble(glyphs);
     // Reading order: column detection + XY-cut (no structure-tree MCIDs).
     let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
@@ -153,35 +151,12 @@ pub(crate) fn page_lines(
     let ordered = selis_pdf_text::order_lines(mcid_lines, mcid_order, g)
         .map_err(|e| CliError(format!("cannot order text: {e}")))?;
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
-    Ok((ordered.lines, line_texts))
-}
-
-/// Replace CID codes with their `/ToUnicode` Unicode scalars in place, so
-/// downstream readers (assembly included) see characters, not CIDs
-/// (SL-3.SHAPE.04). Resolution is cached per (font, code); a recovered
-/// scalar above `u16::MAX` cannot be carried in the glyph code and keeps the
-/// raw CID (documented limitation — Indic scripts live in the BMP, so the
-/// corpus is unaffected).
-fn resolve_cid_unicode(
-    session: &Session,
-    page: usize,
-    budget: &selis_sandbox::Budget,
-    glyphs: &mut [TextGlyph],
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) {
-    let mut cache: std::collections::HashMap<(Vec<u8>, u16), Option<u32>> =
-        std::collections::HashMap::new();
-    for glyph in glyphs.iter_mut() {
-        let key = (glyph.font.as_slice().to_vec(), glyph.code);
-        let cached = cache
-            .entry(key)
-            .or_insert_with(|| session.text_unicode(page, &glyph.font, glyph.code, budget, g));
-        if let Some(uni) = cached {
-            if let Ok(narrow) = u16::try_from(*uni) {
-                glyph.code = narrow;
-            }
-        }
-    }
+    let recovered = line_texts.iter().any(|t| !t.trim().is_empty());
+    // SL-3.TEXT.10: text was drawn but nothing is readable. The flag makes
+    // the formatters emit a low-confidence marker instead of a silent empty
+    // page.
+    let low_confidence = drew_text && !recovered;
+    Ok((ordered.lines, line_texts, low_confidence))
 }
 
 /// List the document's embedded files (metadata only, newline-delimited JSON),
@@ -398,8 +373,10 @@ mod tests {
         let glyph = |code: u16, x: f64| selis_pdf_content::text::TextGlyph {
             code,
             at: selis_geom::Point::new(x, 0.0),
+            advance: 10.0,
             font: selis_bytes::Bytes::copy_from_slice(b"F1"),
             size: 12.0,
+            space: 4.0,
             mcid: None,
         };
         let word = |codes: &[u16], x: f64| selis_pdf_text::TextWord {

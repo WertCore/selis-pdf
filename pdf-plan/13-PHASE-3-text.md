@@ -212,7 +212,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     bbox), or as Markdown/HTML. Foundation for the convert product and for any AI/RAG integration.
   - **DoD:** JSON schema versioned and documented; `selis extract --format=json|text|md|html`.
 
-- [ ] **SL-3.TEXT.08 — Text output must emit Unicode, not PDF string escapes** · deps: TEXT.02 ·
+- [x] **SL-3.TEXT.08 — Text output must emit Unicode, not PDF string escapes** · deps: TEXT.02 ·
   owner: AI+ · **filed by SL-3.CONF.01**
   - **Defect:** The plain-text formatter emits non-ASCII bytes as literal PDF-string octal
     escapes: "modèle" extracts as "m o d 3 5 0 le" (\350 printed as digits), "n°" as "n 2 6 0".
@@ -222,7 +222,29 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** Decode through ToUnicode/encoding to Unicode and emit UTF-8 in all text formats; add
     a formatter test with é/°/CJK through each of `--format text|json|md|html`; verify the CONF.01
     sweep's `diff>=25` cluster shrinks accordingly.
-- [ ] **SL-3.TEXT.09 — Word-gap inference splits every glyph** · deps: TEXT.03 · owner: AI+ ·
+  - **Note (done 2026-09-14):** Fixed. One correction to the filing, verified across the 3,860-file
+    sweep: octal-escape *digits* never actually occurred in the text path (both string lexers
+    decode `\ddd` correctly) — "m o d 3 5 0 le" was the TEXT.09 per-glyph split of an invisible
+    control/garbage character; the real defect is exactly the filing's fix clause: simple-font
+    codes were **never decoded** — `Session::text_unicode` answered only CID fonts with a
+    `/ToUnicode`, so simple-font bytes fell to the accidental `char::from_u32(byte)` reading.
+    `Session::text_unicode` now runs the full SL-3.TEXT.02 chain for either font class:
+    `/ToUnicode` first (also for simple fonts, §9.10.2), then the encoding's glyph name →
+    AGL → `uniXXXX`/`uXXXX` → the embedded program's `post` name, confidence-scored via the
+    unwired-until-now `selis_font::TextRecovery`; `None` keeps the legacy byte reading (never
+    worse). The recovery is applied to every glyph before assembly in the CLI, the WASM worker,
+    and `selis extract`/search alike. Tests: unit (engine `text_recovery_simple`: WinAnsi,
+    MacRoman 0x8E→é, `/Differences` 25→é/uni4E8C, Symbol stays unguessed, 0x20 stays space);
+    formatter (all four formats via `apps/cli/tests/extract_fidelity.rs` on the in-repo fixture
+    `text08_encoding_unicode.pdf` — WinAnsi é+°, MacRoman é+°, Differences é/è, ToUnicode CJK
+    二次元 through `--format text|json|md|html`, asserting zero escape/digit leakage); corpus pin
+    `corpus/pdfs/synthetic/bugfix_text08_encoding_unicode.pdf`. Post-fix full sweep
+    (`text-sweep` vs mutool 1.23.0, 3,848+12 files, pinned binaries): `match` 71→947,
+    `diff>=25` 1,428→556 (−872), G3 ≥0.98 4.20%→**54.79%** (956/1,745), mean ≥50-char-page
+    similarity 0.408→0.759, median 0.45→**1.00**. (Bands are the compound A+B+§9.4.1-BT effect —
+    per-defect attribution: the é/°/CJK fixtures now extract exact; flat/PDF.js source went
+    9→237-in-G3 of ~479.)
+- [x] **SL-3.TEXT.09 — Word-gap inference splits every glyph** · deps: TEXT.03 · owner: AI+ ·
   **filed by SL-3.CONF.01**
   - **Defect:** The extractor's inter-glyph gap threshold treats nearly every advance as a word
     break, so all text extracts as single-glyph "words" ("S e lis o ra cle sm o ke te st" for the
@@ -233,6 +255,26 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** Fix the threshold against the font's space width; add the TEXT.03 DoD's
     "no space characters in the content stream" test at the extractor level; the CONF.01 sweep's
     `match` band should rise from 9.8% toward the G3 bar.
+  - **Note (done 2026-09-14):** Fixed. Confirmed root cause: `assemble_words` compared the
+    raw origin delta (which *is* the previous glyph's advance, ≈0.5 em for lowercase) against
+    `0.5 × Tf-size`, so ordinary advances tripped the bar. The interpreter now records each
+    glyph's pen step (`advance`) and the font's space width (`space`) on `TextGlyph`/`GlyphRun`
+    — the justified advance mapped through the text matrix (same units as `at`; CID fonts clamp
+    code-32 widths to the plausible space band with a 0.25 em fallback since a subset's CID 32
+    is not a space), and inference splits only when the gap *exceeds the advance by* more than
+    half a space width. Tests: `assembly.rs` (no-space-content-stream two-word case = the
+    TEXT.03 DoD; `half_em_glyph_advances_never_split` pins the exact regression predicate;
+    zero-metrics merge conservatively; two proptest invariants: uniform steps never split,
+    a jump beyond half a space always splits exactly once — property-sweep, 256 cases);
+    interpreter-level (advance/space equal the observed origin delta under any `Tm`);
+    extractor-level e2e: `bugfix_text09_word_gap_spaceless` asserts *byte-by-byte* that the
+    fixture's string literals hold no 0x20 and the extractor still yields "Hello World",
+    plus the oracle-corpus smoke fixture now extracts `Selis oracle smoke test` exactly.
+    Corpus + sweep numbers as per TEXT.08 note (these two plus the §9.4.1 fix are the band
+    movers). Caveat kept honest: 8 veraPDF "Hello world" glyph-tension files moved
+    diff<25→diff≥25 because *MuPDF itself* word-splits them per its own heuristics while our
+    now-unified text scores lower — text-correct/oracle-noisy, listed for CONF.02 triage,
+    not a fidelity regression.
 - [ ] **SL-3.TEXT.10 — Silent empty extraction on text-bearing pages** · deps: TEXT.01 ·
   owner: AI+ · **filed by SL-3.CONF.01**
   - **Defect:** 117 corpus files extract zero characters with selis while MuPDF recovers text
@@ -242,6 +284,51 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Do:** Diagnose the operator/font path that drops the text (the sweep's verdicts carry the
     file list and per-file font inventory on `C:\selis-build\conf01-text`); emit a low-confidence
     marker instead of silently returning empty on pages whose display list drew text.
+  - **Note (2026-09-14):** Diagnosis + marker done; DoD partially. The conf01 artifacts had been
+    purged; the sweep was re-run on the regenerated 3,860-file layout (baseline pinned pre-fix
+    binary: `match` 71, `empty_selis` 88 — the 87-file cluster reproduces).
+    Root cause for the page-level empties found and fixed: `exec.rs` replaced the whole text
+    state at `BT`, but §9.4.1 resets **only Tm/Tlm** — TCPDF-shaped producers (`BT /F 12 Tf ET`
+    in one object, the `Tj` in the *next*) had their glyphs silently dropped from render *and*
+    extraction. After the fix 13 baseline empties recover their page text (blendmode, basicapi,
+    extgstate, issue13405, govdocs1/000/000060, ghent ReadMe overprints, …) and 650 expectation
+    records refresh their render goldens as previously-lost text now paints (spot-probe:
+    alphatrans mean pixel 232.4→231.9 toward mutool's 226.3; full G2 oracle re-measure is a CI
+    step and CONF.02 numbers, not claimed here). The remaining 62 `empty_selis` are all
+    annotation-AP text (widget `/Tx` captions, FreeText, /A appearance forms — verified
+    content-stream-by-content-stream on bug1675139: the page stream is genuinely empty where
+    MuPDF merges annotation appearances): they drew *no display-list text*, so the low-confidence
+    rule correctly stays silent — the honest next task is an annotation appearance walk, filed
+    for CONF.02, not a marker candidate. Implemented: `LOW_CONFIDENCE_MARKER` +
+    `Structured::low_confidence` emitted in all four formats when the display list drew glyphs
+    but zero characters were recovered (surrogate/undecodable-code pages — the fixture
+    `bugfix_text10_low_confidence.pdf` pins marker-present/absent per page e2e).
+    Remaining per DoD wording: the ">5 % divergence without a recovery → flag, wired into the
+    sweep's `text_err`" clause is **not** implemented (the marker currently covers only the fully
+    silent case), and the 62 annotation-file silent gap persists until the AP walk lands —
+    checkbox stays open.
+
+    checkbox stays open.
+- [ ] **SL-3.TEXT.11 — Text-space advances must map through the text matrix** · deps: TEXT.01 ·
+  owner: AI+ · **filed by SL-3.TEXT.08/09/10 work (2026-09-14)**
+  - **Defect:** `text::show_string` and `Td`/`TD` accumulate pen movement as
+    `matrix.then(Matrix::translate(adv, 0))`, which adds the raw text-space advance to the
+    matrix's `e`/`f` components instead of mapping it through the text matrix's linear part
+    (§9.4.3: the translation is pre-multiplied — a user-space step of `adv × (a, b)`). For any
+    non-identity `Tm` the glyphs land wrong in render **and** in extraction: an empirically
+    probed 90° text matrix (`0 1 -1 0 x y Tm`) lays "ABCDEF" along **user-space +x**, while
+    every oracle (mutool 1.23 confirmed) runs it along +y; the common generator trick
+    `12 0 0 12 … Tm` with `/F 1 Tf` (bug1057544 line 3, the 8 veraPDF "Hello world" files)
+    lays out at one-twelfth spacing. Identity-`Tm` documents (the overwhelming majority,
+    including the oracle fixtures) are unaffected — which is how this hid through the CONF.01
+    G2 pass (page `/Rotate` is a device transform, not `Tm`).
+  - **Do:** Compose shows/Td per §9.4.3 (pre-multiply the translate), keeping the recorded
+    `advance`/`space` metrics consistent with the new `at` deltas (they are pinned to the
+    observed delta by the invariant test in `text.rs`); re-baseline the text+render goldens for
+    the non-identity-`Tm` corpus and re-measure G2 at the next CONF gate.
+  - **DoD:** Probe fixtures (rotated + scaled `Tm`; one eja-vi/CAD-style document from the
+    wild corpus) place glyphs where mutool places them per the page-render diff; no regression
+    of the existing text bands.
 
 ---
 

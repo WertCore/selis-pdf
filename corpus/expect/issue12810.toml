@@ -7,7 +7,7 @@ pages = 1
 72 = "20764ef85609cfb48ab44944d7e1a964d6b86bb5b66acb87fc05fcf9c2528122"
 
 [text]
-hash = "18506c4761e601ac4cca3a021ad086f992740898dddb72ca35169e8dc2a8ab13"
+hash = "d6517a16e406f533f466b6bed9c3fb7a9a7591b5fe87b648685d4a32f375189b"
 [annotation]
 triage = "selis_rejects"
 verdict = "OurBug"

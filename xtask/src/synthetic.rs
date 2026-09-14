@@ -743,7 +743,55 @@ pub fn generate() -> Result<(), String> {
     }
 
     println!("synthetic: {} files generated", count.get());
+    generate_bugfix_text()?;
     generate_indic()?;
+    Ok(())
+}
+
+/// SL-3.TEXT.08/09/10 regression corpus: the three extraction-fidelity
+/// defects pinned in-repo by name. The bytes are the same fixtures the
+/// `selis-cli` `extract_fidelity` integration test drives end-to-end, so the
+/// sweep (with goldens and oracle text) and the CLI test can never drift
+/// apart. Copied (not `include_bytes!`-embedded): the xtask wasm artifact is
+/// what `xtask size-check` budgets, and embedding a 5 KB payload there would
+/// be pure noise in the engine-viewer measurement.
+fn generate_bugfix_text() -> Result<(), String> {
+    let dir = Path::new("corpus/pdfs/synthetic");
+    let exp_dir = Path::new("corpus/expect/synthetic");
+    for (id, src, pages) in [
+        (
+            // é via octal-escaped WinAnsi/MacRoman codes, é/è via
+            // `/Differences`, CJK via `/ToUnicode`: every output format must
+            // emit decoded UTF-8 (never the literal `\350` digits).
+            "bugfix_text08_encoding_unicode",
+            "apps/cli/tests/fixtures/text08_encoding_unicode.pdf",
+            1usize,
+        ),
+        (
+            // A content stream with no space characters at all:
+            // `(Hello)…Td…(World)` must word-split on the advance gap
+            // measured against the font's space width (SL-3.TEXT.09 and the
+            // SL-3.TEXT.03 DoD at extractor level).
+            "bugfix_text09_word_gap_spaceless",
+            "apps/cli/tests/fixtures/text09_word_gap_spaceless.pdf",
+            1,
+        ),
+        (
+            // Page 0 draws codes that recover to nothing (must emit the
+            // low-confidence marker, not silence); page 1 is the TCPDF shape
+            // (§9.4.1 font persists across BT/ET) that used to extract empty;
+            // page 2 stays a legitimately blank silence.
+            "bugfix_text10_low_confidence",
+            "apps/cli/tests/fixtures/text10_low_confidence.pdf",
+            3,
+        ),
+    ] {
+        let bytes = std::fs::read(src).map_err(|e| format!("{id}: read {src}: {e}"))?;
+        std::fs::write(dir.join(format!("{id}.pdf")), &bytes).map_err(|e| format!("{id}: {e}"))?;
+        let expect = format!("open = \"ok\"\npages = {pages}\n");
+        std::fs::write(exp_dir.join(format!("{id}.toml")), &expect)
+            .map_err(|e| format!("{id}: {e}"))?;
+    }
     Ok(())
 }
 

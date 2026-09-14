@@ -2,7 +2,7 @@ open = "ok"
 pages = 1
 
 [text]
-hash = "62c5286144c10ff7b7cb38aba261979f99e493653f5106d3b4f4f5c9d9ee2695"
+hash = "0a67b5da9f3861be8fa85d239330a1e1bb0babf38b45ff8d1cb37c691ca19bbc"
 [annotation]
 triage = "selis_rejects"
 verdict = "OurBug"

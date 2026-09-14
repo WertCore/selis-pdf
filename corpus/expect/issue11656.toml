@@ -7,7 +7,7 @@ pages = 1
 72 = "8a8b7d73373451654d9b53ca57e4abdc8d25c9968b4911baceeeef8e73a90dbf"
 
 [text]
-hash = "c62ed8c28d8de3c2ba3963443dff891467b6ff6e127e98a25a71f482946e5774"
+hash = "970b12ca8160084888a42635bab0acd794ea237888ebf10327251b3612bb185a"
 [annotation]
 triage = "obj_delta=17"
 verdict = "SpecAmbiguous"

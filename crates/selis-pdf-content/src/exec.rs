@@ -304,7 +304,18 @@ fn execute_inner(
             }
 
             // Text.
-            "BT" => text_state = TextState::default(),
+            "BT" => {
+                // §9.4.1: BT begins a text object by setting Tm and Tlm to the
+                // identity matrix. The other text-state parameters (font, size,
+                // spacings, scaling, leading, rise, render mode) are graphics
+                // state and PERSIST across text objects — q/Q owns them, not BT
+                // (SL-3.TEXT.10: TCPDF-style producers set `/F 12 Tf` in one
+                // BT/ET block and show in the next; clearing the whole text
+                // state here silently dropped their text from render *and*
+                // extraction).
+                text_state.matrix = Matrix::IDENTITY;
+                text_state.line_matrix = Matrix::IDENTITY;
+            }
             "ET" => {}
             n if text_op_names().contains(&n) => {
                 let font = text_state.font.clone();
@@ -322,8 +333,10 @@ fn execute_inner(
                         at: glyph.at,
                         state,
                         runs: vec![GlyphRun {
+                            advance: glyph.advance,
                             font: glyph.font,
                             size: glyph.size,
+                            space: glyph.space,
                             glyphs: vec![glyph.code],
                         }],
                     });
@@ -737,6 +750,63 @@ mod tests {
             }
         }
         assert_eq!(codes, vec![0x41, 0x42]);
+    }
+
+    /// SL-3.TEXT.10: `/Tf` in one text object must still be in force when a
+    /// later text object shows (§9.4.1 — BT resets only Tm/Tlm). TCPDF-style
+    /// producers split `BT /F1 12 Tf ET` from the showing `BT … TJ ET`; the
+    /// whole state reset dropped those glyphs from render and extraction.
+    #[test]
+    fn font_persists_across_text_objects() {
+        let mut g = guard();
+        let dl = execute(
+            b"BT /F1 12 Tf ET BT 0 0 Td (Hi) Tj ET",
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 2, "both glyphs show with the earlier Tf");
+        if let Op::Text { runs, .. } = &dl.ops[0] {
+            assert_eq!(runs[0].glyphs, vec![72]);
+            // 'H' carries its pen step and the font's space width (§9.2.7):
+            // 500/1000*12 = 6 user units at the identity text matrix.
+            assert!((runs[0].advance - 6.0).abs() < 1e-9);
+            assert!((runs[0].space - 6.0).abs() < 1e-9);
+        } else {
+            panic!("expected text");
+        }
+    }
+
+    /// What `BT` *does* reset: Tm/Tlm. After a `Td` in one object, the next
+    /// object's first glyph is at the origin again — while the font (not
+    /// named in BT's reset clause) is still in force.
+    #[test]
+    fn bt_resets_the_matrices_but_keeps_the_font() {
+        let mut g = guard();
+        let dl = execute(
+            b"BT /F1 12 Tf 100 50 Td (A) Tj ET BT (B) Tj ET",
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        if let (Op::Text { at: a, .. }, Op::Text { at: b, .. }) =
+            (dl.ops.first().expect("A"), dl.ops.get(1).expect("B"))
+        {
+            assert_eq!((a.x, a.y), (100.0, 50.0), "A at the Td position");
+            assert_eq!(
+                (b.x.round(), b.y.round()),
+                (0.0, 0.0),
+                "B at the reset origin"
+            );
+        } else {
+            panic!("expected two text ops");
+        }
     }
 
     #[test]

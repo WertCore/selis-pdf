@@ -18,6 +18,11 @@ sections; every entry states what changed and what it means for the user.
   (`cjk/core.ttf`, `cjk/<id>.ttf`, size-pinned `cjk/manifest.json`). The
   web-side download and repaint wiring arrives with the WASM shell
   (SL-4.WASM.07); the contract is drafted in ADR-P0043 pending sign-off.
+- A page whose display list drew glyphs but from which no character could be
+  recovered now reports a visible low-confidence marker in every `selis extract`
+  format (text, JSON — via `low_confidence` in the `selis-extract/1` schema —,
+  Markdown, and HTML), instead of a silent empty string indistinguishable from
+  a blank page (SL-3.TEXT.10).
 - The pinned oracle-container images for PDFium and pdf.js additionally
   accept `--text <out.txt>` — each driver extracts a page's Unicode text
   as UTF-8 alongside its existing `--dpi`/`<out.png>` render mode. Used by
@@ -66,7 +71,24 @@ sections; every entry states what changed and what it means for the user.
   log — on local legs the banner was interleaved into the tools' `--text`
   output files (`xtask oracle text-sweep`, `xtask oracle compare-text`; the
   container legs read mounted files and were unaffected).
-
+- Text extraction now decodes characters instead of emitting raw encoded
+  bytes. Simple-font codes are resolved through the SL-3.TEXT.02 recovery chain
+  (`/ToUnicode` first, then the encoding's glyph name, the Adobe Glyph List and
+  the `uniXXXX` convention) before the text layer sees them, so é, °, and CJK
+  reach `text`, `json`, `md`, and `html` output as UTF-8 rather than as control
+  characters or the per-glyph octal-escape garbage the sweep reported across
+  1,428 files (SL-3.TEXT.08).
+- Word-gap inference no longer splits runs into single letters. The extractor
+  previously treated a gap of roughly one half-em as a space, which is the
+  *normal* distance between glyphs, fragmenting text like "Selis oracle smoke
+  test" into "S e lis o ra cle sm o ke te st". Words now split only at real
+  space glyphs or at an advance gap exceeding half the font's actual space width
+  (SL-3.TEXT.09); the full-corpus sweep's exact-match band rises accordingly.
+- Text shown in a `BT` block whose font was set by an earlier text object —
+  the shape TCPDF and many form generators emit (`BT /F1 12 Tf ET` then a
+  separate `BT … Tj ET`) — is no longer silently dropped from **render and**
+  extraction. `BT` resets only the text and line matrices (§9.4.1); the font,
+  size, and text state correctly persist (SL-3.TEXT.10 root cause).
 - Indic and other complex scripts (Devanagari, Tamil, Bengali, …) now shape
   correctly: reordered matras, conjuncts, `reph`, and split vowels render as
   the font intends. Previously every script tag fell back to Latin shaping,
