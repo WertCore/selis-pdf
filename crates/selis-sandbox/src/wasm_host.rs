@@ -689,6 +689,32 @@ mod tests {
           (func (export "output_ptr") (result i32) (i32.const 2130706432))
           (func (export "finish") (result i32) (i32.const 0)))"#;
 
+    /// Regression for the host bug the *real* OpenJPEG module (SL-1.FILT.08)
+    /// exposed: `copy_out` once bounds-checked the module's declared region
+    /// against the linear-memory size captured **before** `decode` ran, so a
+    /// codec that grew its memory during decode — exactly what a JPEG 2000
+    /// decoder does for a large canvas — saw its own legitimate output region
+    /// rejected as a forged pointer. This module grows to nine pages during
+    /// `decode` and writes its output at the very top of the grown region,
+    /// entirely above the initial 64 KiB; a stale-size host would answer
+    /// `SANDBOX_PROTOCOL` where the real one must round-trip the bytes.
+    const OUTPUT_IN_GROWN_MEMORY: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $len (mut i32) (i32.const 0))
+          (func (export "init") (param $n i32) (result i32) (i32.const 1024))
+          (func (export "decode") (param $n i32) (result i32)
+            (drop (memory.grow (i32.const 8)))
+            (i32.store8 (i32.const 589820) (i32.const 74))  ;; 'J'
+            (i32.store8 (i32.const 589821) (i32.const 80))  ;; 'P'
+            (i32.store8 (i32.const 589822) (i32.const 88))  ;; 'X'
+            (i32.store8 (i32.const 589823) (i32.const 33))  ;; '!'
+            (global.set $len (i32.const 4))
+            (i32.const 0))
+          (func (export "output") (param $max i32) (result i32) (global.get $len))
+          (func (export "output_ptr") (result i32) (i32.const 589820))
+          (func (export "finish") (result i32) (i32.const 0)))"#;
+
     /// Protocol violation: `init` refuses with the zero sentinel.
     const REFUSING_INIT: &str = r#"
         (module
@@ -845,6 +871,21 @@ mod tests {
             .run_wat(FORGED_OUTPUT, b"x")
             .expect_err("a pointer outside linear memory must be rejected before the read");
         assert_eq!(e.code(), Code::SandboxProtocol);
+    }
+
+    #[test]
+    fn an_output_region_above_the_initial_memory_is_not_forged() {
+        // The SL-1.FILT.08 regression: a codec that grows its linear memory
+        // during `decode` and reports its output in the grown bytes must
+        // round-trip, not be rejected against the pre-decode memory size.
+        let clock = ManualClock::new();
+        let mut guard = test_budget().guard_with(&clock, CancelToken::new());
+        let mut codec = WasmCodec::new(&mut guard).expect("host builds");
+        let out = codec
+            .run_wat(OUTPUT_IN_GROWN_MEMORY, b"x")
+            .expect("a grown output region is legitimate, not forged");
+        assert_eq!(out.status, Status::Ok);
+        assert_eq!(out.output, b"JPX!");
     }
 
     #[test]

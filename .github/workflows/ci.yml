@@ -70,6 +70,14 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet
       - run: cargo xtask lint
+      # CI lesson: every cfg branch must be lint-clean in BOTH branches, but
+      # `xtask lint` clippies the default feature set only — the Tier-2 codec
+      # path (SL-0.SBX.06 host, SL-1.FILT.08 jpx driver) exists only under
+      # `wasm-host`. Without this leg a deny-level violation in that cfg
+      # branch (`indexing_slicing` on module-payload parsing is the classic)
+      # hides from the gate in dead-feature code. Same policy as `xtask lint`:
+      # the workspace `[lints]` deny list, not `-D warnings`.
+      - run: cargo clippy -p selis-sandbox -p selis-pdf-filter --features wasm-host --all-targets
 
   # ── build matrix (6 targets, 03-CONVENTIONS.md §9) ──────────────────────────
   build:
@@ -130,6 +138,13 @@ jobs:
       # embedding or its hostile-module containment tests. The feature is
       # target-excluded on wasm32, so this job stays native-only.
       - run: cargo test -p selis-sandbox --features wasm-host
+        timeout-minutes: 15
+      # SL-1.FILT.08: the JPXDecode sandbox path (drives the pinned OpenJPEG
+      # module behind Budget/fuel, malformed-JPX corpus contained). Same
+      # feature gate — the browser runs the module on its own engine — and
+      # the suite JIT-compiles the 233 KB module per case, so it gets the
+      # same native-only leg as the host's own containment tests.
+      - run: cargo test -p selis-pdf-filter --features wasm-host
         timeout-minutes: 15
 
   # ── WRITE.07 conformance-posture gate over the fetched smoke corpus ───────
@@ -245,6 +260,7 @@ jobs:
           - cos_lex
           - doc_open
           - filter_chain
+          - jpx_stream
           - pkcs7_cms
           - wasm_dispatch
           - font_ttf

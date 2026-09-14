@@ -144,6 +144,58 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     Never linked natively.
   - **DoD:** A malformed-JPX corpus is contained (no host crash, no unbounded memory); output
     matches Ghostscript within tolerance on the valid set.
+  - **Note (done 2026-09-14, containment leg — NOT yet `x`, see oracle gap below):**
+    JPXDecode runs OpenJPEG 2.5.3 compiled to `wasm32-unknown-unknown` behind the
+    SBX.06 Tier-2 host: vendored pinned sources in `third-party/openjpeg`
+    (BSD-2, `PROVENANCE.md`, sha256 of the built `selis-jpx.wasm` re-verified
+    every decode), zero host imports, linear-memory cap from `Budget.bytes`,
+    fuel from `Budget.wall`, cooperative `CancelToken`. Never linked natively
+    (ADR-P0018/P0020 spirit: untrusted codec runs behind the sandbox). Engine
+    integration: `selis-pdf-engine` `decode_terminal_image_rgba` drives
+    `jpx_decode` → `selis_image::dct_to_rgba` (behind the `wasm-host` cargo
+    feature — the native `wasmtime` embedding is excluded from the wasm32
+    viewer, so the 233 KB module never enters the core bundle; `size-check`
+    unaffected).
+    - **Containment clause — DEMONSTRATED.** `corpus filter-jpx`
+      (`tests/fixtures/filter-jpx/`, README gives the recipe for each file, all
+      derived from the golden lossless codestream): `siz-bomb`, `tile-count-bomb`,
+      `truncated-tile`, `marker-garbage`, `header-only`. Every entry is decoded
+      through the sandbox to a typed sandbox/image error, host-side charge stays
+      under 64 KiB (never the claimed canvas), the budget guard is *unpoisoned*
+      (SBX.06's "containment, not catastrophe"), and the golden fixture still
+      decodes after the barrage (`jpx.rs::filter_jpx_corpus_is_contained`;
+      `a_siz_bomb_charges_the_host_for_input_only`). proptest shape/charge
+      invariants (`jpx_decode_never_escapes_the_sandbox`) + trailing-byte
+      determinism (`trailing_bytes_do_not_change_the_decode`), and the
+      `jpx_stream` cargo-fuzz target (nightly matrix + committed seeds) extend
+      the hunt. The host copy_out-after-grow bug found with the *real* module
+      has a regression test (`selis-sandbox::…_initial_memory_is_not_forged`).
+      CI: the `wasm-host` codec now runs in `test-fast` (was only the sandbox
+      before) and `xtask`-policy clippy runs both cfg branches (`CI-lesson #1`).
+    - **Oracle-match clause — PARTIALLY DONE; NOT `matches Ghostscript`.** The
+      5/3-lossless valid set decodes **bit-exact** to pre-generated known-good
+      pixels: `jpx_gradient_ref.raw` (the MCT/YC path) and the no-MCT fixture is
+      checked against the closed-form `refjpx.c` gradient. **BUT** that oracle is
+      `third-party/refjpx.c` — the *same vendored OpenJPEG 2.5.3 built natively*.
+      A byte-exact wasm==native-OpenJPEG match therefore proves **port fidelity**
+      (the freestanding shim + first-fit allocator + 5/3 integer path are
+      faithful) but NOT cross-implementation **spec conformance**; and the
+      lossy 9/7 path is **not** in the valid fixture at all. Per ADR-P0021/
+      ADR-P0009 Ghostscript is an allowed CI oracle, not a dependency, and it is
+      not runnable on this host — so the **Ghostscript-vs-Selis tolerance leg is
+      UNMEASURED**. It is wired to the `21-TESTING-AND-ORACLES` differential
+      harness and its corpus remains `filter-jpx`/render-corpus valid JPEG 2000.
+    - **What is missing to flip this to `x`:** (a) a Ghostscript (or PDFium)
+      differential over the valid JPEG 2000 set at the documented tolerance, run
+      in the oracle container — closes cross-conformance; (b) a lossy (9/7)
+      valid-set fixture so the common in-the-wild JPX path is oracle-checked, not
+      only the reversible path; (c) CMYK/`+alpha`/`JP2` colour-management
+      shaping deferred to SL-2.FILT.02 (current 4-comp handling is a documented
+      first-three-channels approximation, not a correctness claim). Honesty
+      beats false green: containment is proven, the oracle-match clause is a
+      port-fidelity proof + an unmeasured Ghostscript leg, so the DoD's "both
+      clauses" bar is not yet met.
+
 - [x] **SL-1.FILT.09 — Crypt filter** · deps: FILT.01, ENC.02 · owner: AI+
   - **Note:** The `/Crypt` filter and the identity crypt filter. `EncryptInfo`/`DecryptPolicy`
     carry the resolved `/CF` dict (indirect `/CF` resolved). A stream with `/Filter [/Crypt ...]`

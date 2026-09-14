@@ -1839,6 +1839,7 @@ name = "selis-pdf-filter"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
+ "proptest",
  "selis-bytes",
  "selis-error",
  "selis-sandbox",

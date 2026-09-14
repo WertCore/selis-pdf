@@ -7,7 +7,7 @@ The published claim is never ahead of the measured level.
 |---|---|---|
 | COS object model | **Parse** | Parse: SL-1.COS.* DoDs; CONF.01 3,836-file parse coverage; CONF.05 zero unexplained refusals; round-trip proptests + cos_lex/cos_parse fuzz |
 | Cross-reference tables and streams | **Parse** | Parse: SL-1.COS.* (xref + recovery); CONF.05 typed-refusal adjudication; incremental-save prefix proptests |
-| Stream filters | **Parse** | Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain fuzz; CONF.04 JPX/JBIG2 decode suspects tracked |
+| Stream filters | **Parse** | Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain/jpx_stream fuzz + filter-jpx corpus; CONF.04 JPX/JBIG2 decode suspects tracked |
 | Encryption and permissions | **Parse** | Parse: SL-1.ENCRYPT.* DoDs; engine encrypt_write_roundtrip; RC4/AESV2 read over the corpus |
 | Document model (catalog, pages, outlines) | **Parse** | Parse: SL-1.DOC.* DoDs; CONF.05 MediaBox fallback renders; /Rotate page geometry open in SL-2.RAST.12 (parse unaffected) |
 | Rendering (content, raster) | **Parse** | Parse only: Bar A pass (97.0% <=25% @150, n=3,747 vs MuPDF) but Bar B fails (<=2% 76.2 vs best pair 82.3, 1.1pp past the 5pp allowance; SL-2.RAST.14). Open: size_skew 17 files (RAST.12), blank_selis 25 files (RAST.13), diff>=25 94 files (CONF.04) |
