@@ -255,8 +255,15 @@ enum OracleSub {
         dpi: u32,
         file: std::path::PathBuf,
     },
-    /// Compare text extracted by selis and mutool (SL-0.ORACLE.04).
-    CompareText { file: std::path::PathBuf },
+    /// Compare text extracted by selis and a text oracle under the shared
+    /// normalisation policy (SL-0.ORACLE.04). Page 1, like every oracle leg.
+    CompareText {
+        /// Text oracle: `mutool`, `pdfium`, or `pdfjs` (local-first, pinned
+        /// container fallback).
+        #[arg(long, default_value = "mutool")]
+        tool: String,
+        file: std::path::PathBuf,
+    },
     /// Triage: run structural compare over a corpus sample and group disagreements (SL-0.ORACLE.05).
     Triage {
         #[arg(long, default_value = "100")]
@@ -361,6 +368,12 @@ enum OracleSub {
         /// Skip files whose corpus id contains one of these substrings.
         #[arg(long = "exclude", value_name = "SUBSTRING")]
         exclude: Vec<String>,
+        /// Pair-only text calibration (SL-0.ORACLE.04 baseline mode): run
+        /// exactly these oracle-vs-oracle legs and score only the named
+        /// pairs as `a↔b` verdict rows (`--only-pair pdfium+pdfjs`,
+        /// repeatable). No selis, no golden renders, no font inventories.
+        #[arg(long = "only-pair", value_name = "A+B")]
+        only_pair: Vec<String>,
     },
 }
 
@@ -505,8 +518,8 @@ fn main() -> ExitCode {
             OracleSub::CompareRender { tool, dpi, file } => {
                 oracle::run(oracle::OracleCommand::CompareRender { tool, dpi, file })
             }
-            OracleSub::CompareText { file } => {
-                oracle::run(oracle::OracleCommand::CompareText { file })
+            OracleSub::CompareText { tool, file } => {
+                oracle::run(oracle::OracleCommand::CompareText { tool, file })
             }
             OracleSub::Triage {
                 sample,
@@ -546,6 +559,7 @@ fn main() -> ExitCode {
                 calibrate,
                 include,
                 exclude,
+                only_pairs: Vec::new(),
             }),
             OracleSub::TextSweep {
                 tool,
@@ -559,19 +573,24 @@ fn main() -> ExitCode {
                 calibrate,
                 include,
                 exclude,
-            } => text_sweep::run(sweep::SweepConfig {
-                tools: tool,
-                dpis: dpi,
-                sample,
-                out,
-                timeout: std::time::Duration::from_secs(timeout_secs),
-                jobs: jobs
-                    .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())),
-                selis,
-                resume,
-                calibrate,
-                include,
-                exclude,
+                only_pair,
+            } => parse_pairs(&only_pair).and_then(|only_pairs| {
+                text_sweep::run(sweep::SweepConfig {
+                    tools: tool,
+                    dpis: dpi,
+                    sample,
+                    out,
+                    timeout: std::time::Duration::from_secs(timeout_secs),
+                    jobs: jobs.unwrap_or_else(|| {
+                        std::thread::available_parallelism().map_or(4, |n| n.get())
+                    }),
+                    selis,
+                    resume,
+                    calibrate,
+                    include,
+                    exclude,
+                    only_pairs,
+                })
             }),
         },
         Command::Fuzz => fuzz::check(),
@@ -658,6 +677,23 @@ fn lint() -> Result<(), String> {
     run("cargo", &["vet"])?;
     sbom::sbom()?;
     Ok(())
+}
+
+/// Parse `--only-pair A+B` specs (the text sweep's pair-only calibration
+/// legs). Anything but exactly one `+` separating two non-empty tool ids is
+/// rejected here; tool-name validity is the sweep's job.
+fn parse_pairs(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    raw.iter()
+        .map(|v| {
+            let mut parts = v.split('+');
+            let a = parts.next().unwrap_or_default();
+            let b = parts.next().unwrap_or_default();
+            if a.is_empty() || b.is_empty() || parts.next().is_some() {
+                return Err(format!("--only-pair `{v}` must be `A+B`"));
+            }
+            Ok((a.to_string(), b.to_string()))
+        })
+        .collect()
 }
 
 /// Parse `--verdict signature=Verdict` pairs. The verdict value set is

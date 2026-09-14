@@ -142,6 +142,46 @@ p99 = 68.4 (n = 3,747).
   the pinned-identity confirmation re-runs post-merge. Full record in `12-PHASE-2-render.md`
   SL-2.CONF.02.
 
+### The measured text-extraction calibration (SL-0.ORACLE.04, 2026-09-14)
+
+`xtask oracle text-sweep --only-pair pdfium+pdfjs --only-pair pdfium+mutool --only-pair
+pdfjs+mutool` extracts page 1 with every named text oracle and scores all pairs *before* selis
+is compared against them — the extract analogue of the matrix above, under the one normaliser
+(`xtask/src/text_norm.rs`, N1–N6) and the four-decimal normalised edit-distance similarity the
+CONF.01 verdicts carry. Sample: the 644-file `smoke` corpus (pdf.js test suite + PDF Association
+examples). `n` counts comparable files (both sides produced text; blank-vs-text and rejections
+are signed, not scored). Fraction of comparable files within each similarity band:
+
+| Pair | comparable of 644 | ≥0.99 | ≥0.98 | ≥0.95 | ≥0.75 | mean(1−sim)% | p50 | p75 | p90 |
+|---|---|---|---|---|---|---|---|---|---|
+| mutool↔pdfium | 480 | 72.1% | 72.7% | 74.2% | 78.8% | 19.63 | 0.0 | 7.81 | 100.0 |
+| mutool↔pdfjs | 466 | 71.9% | 72.7% | 74.2% | 79.8% | 19.11 | 0.0 | 5.73 | 100.0 |
+| **pdfium↔pdfjs** | 472 | **78.4%** | **79.0%** | **80.5%** | **85.6%** | **13.07** | 0.0 | 0.0 | 83.11 |
+
+Run identities: PDFium `chromium/7961` (bblanchon win-x64 binary, our driver, same pin as the
+container artifact's revision), pdf.js `pdfjs-dist 6.2.108` (`npm ci` over the committed lockfile
+— the pinned identity), MuPDF local `mutool 1.23.0` (pin is 1.23.9; drift recorded, the headline
+pair is the two that matched their pins). Artifacts: `C:\selis-build\oracle04-text-smoke`.
+**CI re-run pending, honestly:** the container legs need the `oracle-images` rebuild of the new
+`--text` drivers plus the digest re-record in `xtask/oracles.toml`; until then they fail loudly.
+
+**What this calibrates:**
+
+* The independent extractors agree at ≥0.98 (the G3 bar) on at most **79.0%** of text-bearing
+  smoke pages — and the smoke corpus is curated pathology. Demanding ≥95% of a corpus at ≥0.98
+  from selis while PDFium and pdf.js themselves reach ~79% on this file class measures noise
+  first, exactly as G2 did for pixels. The SL-3.CONF.02 promotion must read the G3 criterion
+  against this matrix (and against whatever the *extraction* corpus scores; the smoke corpus is
+  the reference point, not the gate corpus).
+* The distribution is bimodal, not graded: p50 = p75 = 0.0 (three quarters of pairs are
+  byte-identical after normalisation) while the ≥0.75→1.0 tail (68–102 files per pair) is
+  near-total disagreement — Type3/anonymous fonts, CID/RTL reading order, and empty-vs-text
+  cases. Those clusters are triage fodder (§5), not tolerance knobs: per this section's own
+  rule, tolerances move with calibration data, but *never* because a build is red.
+* The 100%-similarity floor of p95/p99 for pairs involving MuPDF (and p90 for pdfium↔pdfjs)
+  says independent extractors can recover *entirely different* text from one page; a lone
+  selis disagreement in this band is not yet an OurBug.
+
 ---
 
 ## 5. Triage workflow
@@ -218,6 +258,11 @@ The remaining obj_delta clusters are genuine tool divergences on broken
 files, each annotated with both readings — not comparator artefacts. If a
 future comparator change dissolves a cluster, `oracle triage --clear
 <signature>` removes its stale annotations.
+
+Text-extraction triage inherits the same rule from its own baseline: the
+oracle-vs-oracle calibration table above (§4, SL-0.ORACLE.04) is the noise
+floor every selis-vs-oracle `diff>=25` cluster is judged against, and it was
+recorded *before* the G3 bar is read anywhere.
 
 ---
 

@@ -40,7 +40,22 @@ sections; every entry states what changed and what it means for the user.
   and what to do (split the file). `selis batch` report.json carries the same
   fields per failed file and the `verification` object per successful one.
 
+- `xtask oracle text-sweep --only-pair A+B` (repeatable) runs a pair-only
+  oracle-vs-oracle text calibration — the SL-0.ORACLE.04 baseline mode: the
+  named oracle legs only, no selis, no golden renders, no font inventories;
+  the rows land in the same pair-verdict JSONL the CONF.01 artifacts use.
+  `xtask oracle compare-text` gained `--tool <mutool|pdfium|pdfjs>` and now
+  runs the exact page-1 leg the sweep runs, scored through the one shared
+  normalisation policy (`xtask/src/text_norm.rs`). Selis's behaviour is
+  unaffected — an oracle-harness change.
+
 ### Fixed
+
+- The PDFium and pdf.js oracle drivers print their page-extraction banners
+  to stderr now, and the harness runs local text legs with stdout to a side
+  log — on local legs the banner was interleaved into the tools' `--text`
+  output files (`xtask oracle text-sweep`, `xtask oracle compare-text`; the
+  container legs read mounted files and were unaffected).
 
 - Indic and other complex scripts (Devanagari, Tamil, Bengali, …) now shape
   correctly: reordered matras, conjuncts, `reph`, and split vowels render as

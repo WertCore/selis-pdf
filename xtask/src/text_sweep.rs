@@ -34,9 +34,9 @@
 //! `--out` — never into the repo: sweep outputs are measurements, not
 //! source. Only `corpus expect-merge` writes records into the repo.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -130,9 +130,9 @@ struct GoldenRecord {
 }
 
 /// Normalised text with its character count.
-struct NormText {
-    text: String,
-    chars: u64,
+pub(crate) struct NormText {
+    pub(crate) text: String,
+    pub(crate) chars: u64,
 }
 
 // ── Signatures (SL-0.ORACLE.05: group by root cause, not by file) ──────────
@@ -354,42 +354,65 @@ fn hex_encode(digest: &[u8]) -> String {
 
 /// Run the text/font sweep: `verdicts.jsonl` + `golden.jsonl` +
 /// `text-report.json` into `cfg.out`. Resume is whole-file: a file counts
-/// as done only when its golden record and every tool/pair verdict exist.
+/// as done only when its golden record and every tool/pair verdict exist
+/// (pair-only runs are one-shot and refuse `--resume`).
 pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
     std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out.display()))?;
+    // Pair-only calibration (`--only-pair A+B`, the SL-0.ORACLE.04 baseline
+    // mode) runs the named oracle legs and nothing else: no selis, no golden
+    // renders, no font inventories. The rows it appends are exactly the
+    // pair-verdict rows `--calibrate` emits — same schema, same metric.
+    let pair_only = !cfg.only_pairs.is_empty();
+    let (leg_tools, pair_labels) = if pair_only {
+        pair_plan(&cfg)?
+    } else {
+        (cfg.tools.clone(), BTreeSet::new())
+    };
+    if pair_only && cfg.resume {
+        return Err(
+            "--only-pair does not support --resume (it is a one-shot calibration run)".to_string(),
+        );
+    }
     // Calibration legs still extract with selis (selis-vs-each-tool verdicts
-    // are always emitted); oracle pairs are added on top.
-    let resolved = resolve_selis(cfg.selis.as_deref())?;
-    // Pin a private copy of the selis binary into the output dir and drive
-    // the whole sweep from the copy: the shared target dir is rebuilt by
-    // other agents mid-sweep, and golden hashes are meaningless unless every
-    // file was rendered/extracted by the identical binary. The copy's sha256
-    // goes into the report as the baseline provenance.
-    let selis_bin = cfg.out.join("selis-pinned.exe");
-    if cfg.resume && selis_bin.exists() {
-        // A resumed run keeps its original binary: re-pinning mid-sweep
-        // would mix baselines inside one artifact set. Refuse a *different*
-        // binary loudly instead of silently mixing.
-        let pinned = sha256_hex_bytes(
+    // are always emitted); oracle pairs are added on top. Pair-only
+    // calibration never touches the engine.
+    let pinned: Option<(PathBuf, String)> = if pair_only {
+        None
+    } else {
+        let resolved = resolve_selis(cfg.selis.as_deref())?;
+        // Pin a private copy of the selis binary into the output dir and drive
+        // the whole sweep from the copy: the shared target dir is rebuilt by
+        // other agents mid-sweep, and golden hashes are meaningless unless every
+        // file was rendered/extracted by the identical binary. The copy's sha256
+        // goes into the report as the baseline provenance.
+        let selis_bin = cfg.out.join("selis-pinned.exe");
+        if cfg.resume && selis_bin.exists() {
+            // A resumed run keeps its original binary: re-pinning mid-sweep
+            // would mix baselines inside one artifact set. Refuse a *different*
+            // binary loudly instead of silently mixing.
+            let pinned = sha256_hex_bytes(
+                &std::fs::read(&selis_bin).map_err(|e| format!("{}: {e}", selis_bin.display()))?,
+            );
+            let fresh = sha256_hex_bytes(
+                &std::fs::read(&resolved).map_err(|e| format!("{}: {e}", resolved.display()))?,
+            );
+            if pinned != fresh {
+                return Err(format!(
+                    "{} pins selis {pinned}, but --selis now resolves to {fresh}: \
+                     delete the out dir for a new baseline",
+                    cfg.out.display()
+                ));
+            }
+        } else {
+            std::fs::copy(&resolved, &selis_bin)
+                .map_err(|e| format!("pin {}: {e}", selis_bin.display()))?;
+        }
+        let selis_digest = sha256_hex_bytes(
             &std::fs::read(&selis_bin).map_err(|e| format!("{}: {e}", selis_bin.display()))?,
         );
-        let fresh = sha256_hex_bytes(
-            &std::fs::read(&resolved).map_err(|e| format!("{}: {e}", resolved.display()))?,
-        );
-        if pinned != fresh {
-            return Err(format!(
-                "{} pins selis {pinned}, but --selis now resolves to {fresh}: \
-                 delete the out dir for a new baseline",
-                cfg.out.display()
-            ));
-        }
-    } else {
-        std::fs::copy(&resolved, &selis_bin)
-            .map_err(|e| format!("pin {}: {e}", selis_bin.display()))?;
-    }
-    let selis_digest = sha256_hex_bytes(
-        &std::fs::read(&selis_bin).map_err(|e| format!("{}: {e}", selis_bin.display()))?,
-    );
+        Some((selis_bin, selis_digest))
+    };
+    let (selis_bin, selis_digest) = pinned.unwrap_or_else(|| (PathBuf::new(), String::new()));
     if cfg.calibrate && cfg.tools.len() < 2 {
         return Err(
             "calibration needs at least two text oracles (e.g. --tool mutool --tool pdfium)"
@@ -428,10 +451,11 @@ pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
     let next = AtomicUsize::new(0);
     let done = Mutex::new(done);
     let dpis = cfg.dpis.clone();
-    let tools = cfg.tools.clone();
+    let tools = leg_tools.clone();
     let timeout = cfg.timeout;
     let out_dir = cfg.out.clone();
     let calibrate = cfg.calibrate;
+    let pair_labels_ref = &pair_labels;
 
     std::thread::scope(|scope| {
         for w in 0..jobs {
@@ -455,6 +479,27 @@ pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
                     if done_ref.lock().is_ok_and(|mut d| !d.insert(id.clone())) {
                         continue;
                     }
+                    let mut oracle_texts: Vec<(String, Result<NormText, SideFail>)> = Vec::new();
+                    for tool in tools_ref {
+                        oracle_texts
+                            .push((tool.clone(), oracle_extract_text(tool, file, &tmp, timeout)));
+                    }
+                    if pair_only {
+                        // Selected pairs only — the rows have the identical
+                        // shape of a `--calibrate` pair verdict.
+                        let verdicts: Vec<TextVerdict> = build_pair_verdicts(&id, &oracle_texts)
+                            .into_iter()
+                            .filter(|v| pair_labels_ref.contains(&v.tool))
+                            .collect();
+                        if let Ok(mut wr) = verdict_ref.lock() {
+                            for v in &verdicts {
+                                let _ = serde_json::to_writer(&mut *wr, v);
+                                let _ = wr.write_all(b"\n");
+                            }
+                            let _ = wr.flush();
+                        }
+                        continue;
+                    }
                     let (golden, selis_text) =
                         sweep_file_golden(selis_ref, dpis_ref, file, &tmp, timeout);
                     if let Ok(mut wr) = golden_ref.lock() {
@@ -463,11 +508,6 @@ pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
                         let _ = wr.flush();
                     }
                     let selis_fonts = selis_span_fonts(selis_ref, file, &tmp, timeout);
-                    let mut oracle_texts: Vec<(String, Result<NormText, SideFail>)> = Vec::new();
-                    for tool in tools_ref {
-                        oracle_texts
-                            .push((tool.clone(), oracle_extract_text(tool, file, &tmp, timeout)));
-                    }
                     let mut verdicts = build_verdicts(
                         &id,
                         selis_text.as_ref(),
@@ -494,21 +534,53 @@ pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
 
     let verdicts = load_verdicts(&verdict_path)?;
     let goldens = load_goldens(&golden_path)?;
+    let report_dpis: Vec<u32> = if pair_only {
+        Vec::new()
+    } else {
+        cfg.dpis.clone()
+    };
     let report = build_report(
         &selis_bin,
         &selis_digest,
         files.len(),
         &verdicts,
         &goldens,
-        &cfg.tools,
-        &cfg.dpis,
+        &leg_tools,
+        &report_dpis,
         cfg.calibrate,
+        pair_only,
     );
     let report_path = cfg.out.join("text-report.json");
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&report_path, json).map_err(|e| format!("{}: {e}", report_path.display()))?;
     print_report(&report);
     Ok(())
+}
+
+/// Validate `--only-pair A+B` specs: the union of tools whose legs run, and
+/// both label spellings of every requested pair (pair labels follow the
+/// leg order, which the user does not control).
+fn pair_plan(cfg: &sweep::SweepConfig) -> Result<(Vec<String>, BTreeSet<String>), String> {
+    let mut legs: BTreeSet<String> = BTreeSet::new();
+    let mut labels: BTreeSet<String> = BTreeSet::new();
+    for (a, b) in &cfg.only_pairs {
+        if a == b {
+            return Err(format!(
+                "--only-pair {a}+{b}: a pair needs two different tools"
+            ));
+        }
+        for t in [a, b] {
+            if !matches!(t.as_str(), "mutool" | "mupdf" | "pdfium" | "pdfjs") {
+                return Err(format!(
+                    "unknown text oracle tool `{t}` (mutool, pdfium, pdfjs)"
+                ));
+            }
+            legs.insert(t.clone());
+        }
+        labels.insert(format!("{a}↔{b}"));
+        labels.insert(format!("{b}↔{a}"));
+    }
+    Ok((legs.into_iter().collect(), labels))
 }
 
 /// The selis side of one file: page-1 renders hashed per DPI (golden) plus
@@ -697,24 +769,39 @@ fn span_font_names(json_bytes: &[u8]) -> Vec<String> {
 /// Page-1 text from a text oracle: extract to a file, normalise, count.
 /// An empty normalisation is a blank page, not a failure (mirrors the selis
 /// side: the verdict records it as `empty_*` via the zero character count).
-fn oracle_extract_text(
+///
+/// The tool's own stdout goes to a side log, never to the text output:
+/// the leg plans write the extraction themselves (mutool `-o`, the pdfium
+/// and pdf.js drivers `--text`), and their progress banners ("… driver:
+/// extracted page 1 …") would otherwise land byte-wise in the middle of
+/// the extracted text. (The render legs use `Stdio::null()` for the same
+/// reason; the selis side of this module legitimately captures stdout,
+/// because `selis extract` writes its text there.)
+pub(crate) fn oracle_extract_text(
     tool: &str,
     file: &Path,
     tmp: &Path,
     timeout: Duration,
 ) -> Result<NormText, SideFail> {
     let out = tmp.join("oracle.txt");
+    let log = tmp.join("oracle-stdout.log");
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&log);
     let (program, args) = oracle::plan_oracle_text(tool, file, &out).map_err(SideFail::Rejected)?;
-    run_to_file(&program, &args, &out, timeout).map_err(|fail| match fail {
+    run_to_file(&program, &args, &log, timeout).map_err(|fail| match fail {
         // mutool narrates progress (`page <file> 1`) to stderr ahead of the
         // real error; the verdict keeps the error, not the narration.
         SideFail::Rejected(stderr) => SideFail::Rejected(strip_oracle_progress(&stderr)),
         SideFail::Timeout => SideFail::Timeout,
     })?;
+    if !out.exists() {
+        let _ = std::fs::remove_file(&log);
+        return Err(SideFail::Rejected("no output produced".to_string()));
+    }
     let bytes =
         std::fs::read(&out).map_err(|e| SideFail::Rejected(format!("{}: {e}", out.display())))?;
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&log);
     Ok(normalise_bytes(&bytes).unwrap_or(NormText {
         text: String::new(),
         chars: 0,
@@ -766,11 +853,12 @@ fn build_verdicts(
     for (tool, otext) in oracle_texts {
         // No similarity when either side is empty: emptiness is its own
         // signature (`empty_*`), and a 1.0 over two blank pages would lie
-        // in the CDF.
+        // in the CDF. Scoring goes through the shared policy
+        // (`text_norm::capped_similarity`) — the same normalised distance
+        // `oracle compare-text` reports.
         let sim = match (&selis, otext) {
             (Ok(s), Ok(o)) if s.chars > 0 && o.chars > 0 => {
-                let (a, b, _) = text_norm::truncate_for_compare(&s.text, &o.text);
-                Some((text_norm::similarity(&a, &b) * 10_000.0).round() / 10_000.0)
+                Some(text_norm::capped_similarity(&s.text, &o.text).0)
             }
             _ => None,
         };
@@ -782,10 +870,7 @@ fn build_verdicts(
             _ => (None, None),
         };
         let truncated = match (&selis, otext) {
-            (Ok(s), Ok(o)) => {
-                s.text.chars().count() > text_norm::MAX_COMPARE_CHARS
-                    || o.text.chars().count() > text_norm::MAX_COMPARE_CHARS
-            }
+            (Ok(s), Ok(o)) => text_norm::would_truncate(&s.text, &o.text),
             _ => false,
         };
         if truncated {
@@ -841,8 +926,7 @@ fn build_pair_verdicts(
             let (bname, btext) = &oracle_texts[y];
             let sim = match (atext, btext) {
                 (Ok(a), Ok(b)) if a.chars > 0 && b.chars > 0 => {
-                    let (ta, tb, _) = text_norm::truncate_for_compare(&a.text, &b.text);
-                    Some((text_norm::similarity(&ta, &tb) * 10_000.0).round() / 10_000.0)
+                    Some(text_norm::capped_similarity(&a.text, &b.text).0)
                 }
                 _ => None,
             };
@@ -955,6 +1039,9 @@ struct TextReport {
     dpis: Vec<u32>,
     files: usize,
     normaliser: &'static str,
+    /// This report tallies `--calibrate`-shaped pair rows only (the
+    /// `--only-pair` calibration mode; the selis rows are absent).
+    pair_only: bool,
     bands_sim: [f64; 3],
     per_tool: BTreeMap<String, TextToolReport>,
     golden: GoldenSummary,
@@ -981,6 +1068,9 @@ struct TextToolReport {
 #[derive(Serialize, Default)]
 struct DiffStatsView {
     n: u64,
+    /// Arithmetic mean of the sample — the single scalar the oracle-vs-oracle
+    /// baseline tables quote (the CDF percentiles stay the shape readout).
+    mean: Option<f64>,
     p50: Option<f64>,
     p75: Option<f64>,
     p90: Option<f64>,
@@ -1003,8 +1093,15 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 fn diff_stats(values: &mut [f64]) -> DiffStatsView {
     values.sort_by(|a, b| a.total_cmp(b));
     let round2 = |v: f64| (v * 100.0).round() / 100.0;
+    let mean = if values.is_empty() {
+        None
+    } else {
+        let sum: f64 = values.iter().sum();
+        Some(round2(sum / values.len() as f64))
+    };
     DiffStatsView {
         n: u64::try_from(values.len()).unwrap_or(u64::MAX),
+        mean,
         p50: percentile(values, 50.0).map(round2),
         p75: percentile(values, 75.0).map(round2),
         p90: percentile(values, 90.0).map(round2),
@@ -1065,6 +1162,7 @@ fn build_report(
     tools: &[String],
     dpis: &[u32],
     calibrate: bool,
+    pair_only: bool,
 ) -> TextReport {
     let mut per_tool: BTreeMap<String, TextToolReport> = BTreeMap::new();
     let mut diffs_by_tool: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -1111,23 +1209,30 @@ fn build_report(
         }
     }
     let mut report = TextReport {
-        task: if calibrate {
+        task: if calibrate || pair_only {
             "SL-3.CONF.01-calibration"
         } else {
             "SL-3.CONF.01"
         },
-        scope: "page 1 text of each corpus file, selis vs oracle extraction \
-                (normaliser N1-N6), plus selis golden renders per DPI",
+        scope: if pair_only {
+            "page 1 text of each corpus file, selected oracle-vs-oracle pairs \
+             only (normaliser N1-N6) — the SL-0.ORACLE.04 text calibration mode"
+        } else {
+            "page 1 text of each corpus file, selis vs oracle extraction \
+             (normaliser N1-N6), plus selis golden renders per DPI"
+        },
         selis: selis_bin.display().to_string(),
         selis_digest: selis_digest.to_string(),
         tools: tools.to_vec(),
         dpis: dpis.to_vec(),
         files,
         normaliser: "N1-N6 (xtask/src/text_norm.rs)",
+        pair_only,
         bands_sim: [TEXT_MATCH_SIM, TEXT_DIFF5_SIM, TEXT_DIFF25_SIM],
         per_tool,
         golden: golden_summary(goldens, dpis),
     };
+    let is_calib = calibrate || pair_only;
     for (tool, tr) in report.per_tool.iter_mut() {
         tr.clusters = ranked_clusters(tool, verdicts);
         let within = tr.bands.get("ge98").copied().unwrap_or(0);
@@ -1136,7 +1241,7 @@ fn build_report(
         } else {
             0.0
         };
-        let criterion = if calibrate && tool.contains('↔') {
+        let criterion = if is_calib && tool.contains('↔') {
             "pairwise oracle agreement under the CONF.01 text metric — the G3 \
              98% bar applies to selis, not to the oracles; read the CDF instead"
                 .to_string()
@@ -1152,7 +1257,7 @@ fn build_report(
             comparable: tr.comparable,
             within_g3: within,
             agreement_pct: (agreement * 100.0).round() / 100.0,
-            met: !calibrate && tr.comparable > 0 && agreement >= 95.0,
+            met: !is_calib && tr.comparable > 0 && agreement >= 95.0,
         };
     }
     report
@@ -1270,18 +1375,26 @@ fn oracle_identity(tool: &str) -> String {
 
 /// The ranked triage view, straight to stdout (the ORACLE.05 cluster list).
 fn print_report(report: &TextReport) {
-    println!(
-        "text sweep: {} corpus files, golden DPIs {:?}, tools {:?}",
-        report.files, report.dpis, report.tools
-    );
-    println!("  selis: {} (sha256:{})", report.selis, report.selis_digest);
-    println!(
-        "  golden: {} full render+text, {} partial, {} none (of {} files)",
-        report.golden.full_render_text,
-        report.golden.partial,
-        report.golden.none,
-        report.golden.files,
-    );
+    if report.pair_only {
+        println!(
+            "text pair sweep: {} corpus files, oracle-vs-oracle pairs \
+             (tools {:?}), no selis/golden legs",
+            report.files, report.tools
+        );
+    } else {
+        println!(
+            "text sweep: {} corpus files, golden DPIs {:?}, tools {:?}",
+            report.files, report.dpis, report.tools
+        );
+        println!("  selis: {} (sha256:{})", report.selis, report.selis_digest);
+        println!(
+            "  golden: {} full render+text, {} partial, {} none (of {} files)",
+            report.golden.full_render_text,
+            report.golden.partial,
+            report.golden.none,
+            report.golden.files,
+        );
+    }
     for (tool, tr) in &report.per_tool {
         println!(
             "  oracle {tool}: comparable={} (G3: {}/{} = {:.2}% >= 0.98 — met: {})",
@@ -1300,8 +1413,9 @@ fn print_report(report: &TextReport) {
         }
         if let Some(stats) = tr.diff_stats.get("all") {
             println!(
-                "    (1-sim)*100 CDF: n={} p50={:?} p75={:?} p90={:?} p95={:?} p99={:?} max={:?}",
-                stats.n, stats.p50, stats.p75, stats.p90, stats.p95, stats.p99, stats.max
+                "    (1-sim)*100 CDF: n={} mean={:?} p50={:?} p75={:?} p90={:?} p95={:?} p99={:?} max={:?}",
+                stats.n, stats.mean, stats.p50, stats.p75, stats.p90, stats.p95, stats.p99,
+                stats.max
             );
         }
         for (class, fa) in &tr.font_classes {

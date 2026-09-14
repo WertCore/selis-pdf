@@ -13,8 +13,8 @@ tools (MuPDF, Ghostscript) exist exclusively inside their containers
 | `qpdf/Dockerfile` | Structural oracle (`qpdf --json`), built from the pinned release tarball |
 | `mupdf/Dockerfile` | `mutool` render/text oracle, built from the pinned source tarball |
 | `ghostscript/Dockerfile` | Codec/colour/shading reference, built from the pinned source tarball |
-| `pdfium/Dockerfile` + `driver/pdfium_driver.c` | PDFium BSD-3 binaries + our ~250-line C render driver |
-| `pdfjs/Dockerfile` + `driver.mjs` | Headless pdf.js render driver over pinned pdfjs-dist + @napi-rs/canvas |
+| `pdfium/Dockerfile` + `driver/pdfium_driver.c` | PDFium BSD-3 binaries + our C driver (`--page/--dpi` render; `--page --text` extraction) |
+| `pdfjs/Dockerfile` + `driver.mjs` | Headless pdf.js render + text driver over pinned pdfjs-dist + @napi-rs/canvas |
 | `fixtures/smoke.pdf` | 5-object, 415-byte single-page PDF used to smoke-test every image |
 
 Every pin is recorded in `xtask/oracles.toml` together with the base-image
@@ -34,6 +34,13 @@ pulled **by digest** from GHCR. pdf.js is container-first by default; when
 `docker/oracles/pdfjs/node_modules/` is present (`npm ci` from the committed lockfile) the same
 pinned `driver.mjs` runs locally under node — the SL-2.CONF.03 calibration legs use this. The
 container (or the pinned tarball for a local `pdfium_driver`) remains the comparable identity.
+
+**Driver contract: banners on stderr.** Both drivers write their page output themselves
+(the pdfium `--text`/PNG target, the pdf.js `--text`/canvas file), and the sweep harnesses
+run local legs with the leg process's *stdout redirected into* a side log. Progress banners
+must therefore print to stderr — a stdout banner was previously interleaved byte-wise into the
+local text legs (fixed 2026-09-14 with SL-0.ORACLE.04; the CI legs, where stdout is the docker
+pipe, were unaffected).
 
 ## Building and re-recording digests
 
@@ -58,9 +65,9 @@ variable `ENABLE_ORACLE_PUSH=1` (currently set), and prints the digests.
 | Oracle | Local verification |
 |---|---|
 | qpdf 12.4.1 | `qpdf --json` exercised on real corpus files (structural comparisons) |
-| mutool 1.23.0 | `mutool draw -r 150` renders PNG/PPM (ORACLE.02 compare path) |
-| PDFium chromium/7961 | driver.c compiled with MSVC against the pinned win-x64 tarball; renders 160F-2019.pdf at 150 dpi to a valid 1240×1754 PNG |
-| pdf.js 6.2.108 | driver.mjs run with node 24 + pinned deps (`npm ci` from the committed lockfile); renders the same page to a valid PNG |
+| mutool 1.23.0 | `mutool draw -r 150` renders PNG/PPM (ORACLE.02 compare path); `mutool draw -F txt … 1` extracts page-1 text (CONF.01 text legs) |
+| PDFium chromium/7961 | driver.c compiled with MSVC against the pinned win-x64 tarball; renders 160F-2019.pdf at 150 dpi to a valid 1240×1754 PNG; `--page 1 --text` extracts text (win-x64 artifact sha256 `88276459349b…6406adf4`, same source revision as the pinned linux artifact; used by the SL-0.ORACLE.04 baseline) |
+| pdf.js 6.2.108 | driver.mjs run with node 24 + pinned deps (`npm ci` from the committed lockfile); renders the same page to a valid PNG and extracts page text via `--page 1 --text` |
 | Ghostscript 9.56.1 | not installed locally; container built + smoke-rendered in CI (run 34319440352) |
 
 Container builds themselves are validated by CI (`oracle-images`); expect

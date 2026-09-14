@@ -44,6 +44,16 @@
 //! [`MAX_COMPARE_CHARS`] are truncated for the *comparison only* — the CORP.03
 //! golden hash is always over the full normalised text — and the truncation is
 //! reported so the sweep can flag it.
+//!
+//! The policy is two entry points from a single home — [`normalize`] (raw
+//! text in, normalised text out) and [`capped_similarity`] (normalised pair
+//! in, rounded similarity + truncation flag out). Every text comparison in
+//! the workspace goes through them: `oracle compare-text` and the
+//! selis-vs-oracle and oracle-pair verdict rows of the text sweep both
+//! normalise at ingestion, score with `capped_similarity`, and the CORP.03
+//! golden hash uses the same `normalize`. A second whitespace or distance
+//! policy in a caller is considered a defect: the unit tests below pin the
+//! composition.
 
 /// Comparison budget: texts longer than this many characters are truncated
 /// before the quadratic similarity step (page 1 of a text-heavy page can
@@ -176,6 +186,32 @@ pub fn truncate_for_compare(a: &str, b: &str) -> (String, String, bool) {
         s.chars().take(MAX_COMPARE_CHARS).collect()
     }
     (head(a), head(b), true)
+}
+
+/// The single normalised edit-distance scoring step (SL-0.ORACLE.04):
+/// truncate the already-normalised pair at [`MAX_COMPARE_CHARS`], score it
+/// with [`similarity`], and round to four decimals — exactly the value a
+/// text-verdict row records. Callers normalise raw tool output with
+/// [`normalize`] first; the combination *is* the policy, and no caller may
+/// re-derive it.
+#[must_use]
+pub fn capped_similarity(a_norm: &str, b_norm: &str) -> (f64, bool) {
+    let (ta, tb, truncated) = truncate_for_compare(a_norm, b_norm);
+    (round4(similarity(&ta, &tb)), truncated)
+}
+
+/// True when [`capped_similarity`] would truncate one of the pair — the
+/// single phrasing of the cap condition, for verdict rows that record
+/// truncation even when the pair scored no similarity (empty-vs-text).
+#[must_use]
+pub fn would_truncate(a_norm: &str, b_norm: &str) -> bool {
+    let a_count = a_norm.chars().count();
+    let b_count = b_norm.chars().count();
+    a_count > MAX_COMPARE_CHARS || b_count > MAX_COMPARE_CHARS
+}
+
+fn round4(v: f64) -> f64 {
+    (v * 10_000.0).round() / 10_000.0
 }
 
 /// The normalised character-level Levenshtein similarity of two
@@ -337,6 +373,32 @@ mod tests {
         let sim = similarity(&a, &b);
         assert!(t.elapsed() < std::time::Duration::from_secs(5));
         assert!((sim - (20_000.0 / 20_003.0)).abs() < 1e-9, "got {sim}");
+    }
+
+    #[test]
+    fn capped_similarity_policy_is_the_documented_composition() {
+        // capped_similarity() == truncate + similarity + four-decimal round
+        // — the exact expression the sweep's verdict rows recorded before
+        // the policy was made explicit (CONF.01 numbers are unchanged by
+        // the refactor), and compare-text pairs its `normalize`d inputs
+        // through the same call.
+        let a = "hy-\nation   \u{00AD}\u{FEFF}test\r\n";
+        let b = "hydration\t\ttest";
+        let expected = {
+            let (na, nb) = (normalize(a), normalize(b));
+            let (ta, tb, _) = truncate_for_compare(&na, &nb);
+            ((similarity(&ta, &tb) * 10_000.0).round() / 10_000.0, false)
+        };
+        assert_eq!(capped_similarity(&normalize(a), &normalize(b)), expected);
+        // The whitespace policy (N6) forgives layout differences before
+        // scoring (normalise, then score — never score raw bytes twice).
+        let (na, nb) = (normalize("hello   world"), normalize("hello\r\n\tworld"));
+        assert_eq!(capped_similarity(&na, &nb), (1.0, false));
+        // would_truncate mirrors the truncation condition of the cap.
+        let long = "y".repeat(MAX_COMPARE_CHARS + 1);
+        assert!(would_truncate(&long, "abc"));
+        assert!(would_truncate("abc", &long));
+        assert!(!would_truncate("abc", "abc"));
     }
 
     #[test]

@@ -79,7 +79,9 @@ try {
       if (item.hasEOL) parts.push('\n');
     }
     writeFileSync(textPath, parts.join(''), 'utf8');
-    console.log(`pdf.js driver: extracted page ${page} of ${inPdf} -> ${textPath}`);
+    // Banner on stderr, never stdout: the text leg's stdout must stay
+    // empty so the harness cannot interleave it into the written file.
+    console.error(`pdf.js driver: extracted page ${page} of ${inPdf} -> ${textPath}`);
   } else {
     const { createCanvas } = loadCanvas();
     const viewport = pdfPage.getViewport({ scale: dpi / 72 });
