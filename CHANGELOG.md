@@ -23,6 +23,27 @@ sections; every entry states what changed and what it means for the user.
   format (text, JSON — via `low_confidence` in the `selis-extract/1` schema —,
   Markdown, and HTML), instead of a silent empty string indistinguishable from
   a blank page (SL-3.TEXT.10).
+- Public-key (PKCS#7) documents now open by **certificate identity**
+  (SL-1.ENC.07): a supplied X.509 chain is matched against each recipient's
+  CMS `RecipientIdentifier` — `issuerAndSerialNumber` or
+  `subjectKeyIdentifier` (RFC 5652 §6) — *before* the unwrap-decrypt, like
+  Acrobat/Foxit/PDFium/qpdf/PDFBox select. A `match_by` knob
+  (`auto | first_valid | certificate`, default `auto`) makes the policy
+  explicit; a bare private key keeps the existing structural behavior, and
+  a chain that matches nothing fails typed `RECIPIENT_NO_MATCH` — never a
+  silently different recipient. (Shipped, pending human line-by-line
+  review; `Session` receipts now carry `matched_by`/`recipient_index` so
+  shells can prove who opened.)
+- The per-recipient PKCS#7 permission bits are **enforced as policy**
+  (SL-1.ENC.09): the active recipient's 4-byte block is intersected with the
+  document `/P`, and every content-touching operation (render-to-print, text
+  copy/extract — which already gates `embedded_file_data` — annotate,
+  redact/edit, form fill) fails typed with the new code 1808
+  `PERMISSION_DENIED_BY_CMS` when the block forbids it. A weaker CMS grant
+  never raises the PDF-level grant, and each recipient is bound to *its own*
+  bits (Bob cannot borrow Alice's); the owner-password / standard-handler
+  path keeps the SL-1.ENC.04 `/P`-only semantics. Viewer-UI greying is
+  Phase 4 — this is the API gate. (Shipped pending review.)
 - The pinned oracle-container images for PDFium and pdf.js additionally
   accept `--text <out.txt>` — each driver extracts a page's Unicode text
   as UTF-8 alongside its existing `--dpi`/`<out.png>` render mode. Used by

@@ -25,6 +25,17 @@
 //! 24-byte payload length give wrong-key detection with a false-accept
 //! probability below 2⁻⁶⁰; there is never a partial decrypt.
 //!
+//! **Recipient selection (SL-1.ENC.07):** when the credential carries an
+//! X.509 certificate chain, recipients are matched by their explicit
+//! `RecipientIdentifier` — `issuerAndSerialNumber` or
+//! `subjectKeyIdentifier` (RFC 5652 §6) — *before* any unwrap, exactly as
+//! Acrobat/PDFium/qpdf/PDFBox select; [`MatchBy`] controls the policy
+//! (`auto` prefers the identifier match with a structural fall-through,
+//! `first_valid` is the draft's try-in-array-order scan, `certificate` is
+//! spec-strict identity-only). A bare private key (no chain) always uses the
+//! structural path — the draft's rationale still holds for it (design
+//! note §4).
+//!
 //! The DER reader is [`crate::der`]; the supported CMS subset is documented
 //! on [`parse_enveloped_data`] and in `pdf-plan/31-ENC03-DESIGN-NOTE.md`.
 
@@ -38,6 +49,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::der::{self, Der, Tag};
+use crate::x509::CertIdentity;
 
 /// The object identifiers of the implemented CMS subset.
 mod oid {
@@ -92,40 +104,71 @@ impl CekAlgorithm {
     }
 }
 
-/// How one recipient's CEK is transported.
+/// How one recipient CEK is transported, together with the
+/// `RecipientIdentifier` that addresses it (SL-1.ENC.07).
+///
+/// A `KeyAgreeRecipientInfo` with several `recipientEncryptedKeys` fans out
+/// into one entry per addressed key — every one carries its own
+/// `RecipientIdentifier` (RFC 5652 §6.2.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyTransport<'a> {
     /// RSAES-PKCS1-v1_5: the CEK, RSA-encrypted to the recipient's public
     /// key (the transport Acrobat writes).
     RsaPkcs1v15 {
+        /// The explicit recipient identifier of the `KeyTransRecipientInfo`.
+        identifier: RecipientIdentifier<'a>,
         /// The RSA-encrypted CEK.
         encrypted_key: &'a [u8],
     },
     /// ECDH key agreement (static-stdDH, SHA-256 X9.63 KDF) with AES key
-    /// wrap (RFC 5753 §2.1.1), one wrapped CEK per `recipientEncryptedKey`.
+    /// wrap (RFC 5753 §2.1.1), one entry per `recipientEncryptedKey`.
     EcdhAesKw {
+        /// The explicit recipient identifier of this `RecipientEncryptedKey`.
+        identifier: RecipientIdentifier<'a>,
         /// The originator's EC point (`OriginatorPublicKey.publicKey`, the
         /// BIT STRING content without the unused-bits octet).
         originator: &'a [u8],
-        /// The wrapped CEKs (one per `recipientEncryptedKey`).
-        wrapped_keys: Vec<&'a [u8]>,
+        /// The wrapped CEK.
+        wrapped_key: &'a [u8],
     },
 }
 
-/// One `RecipientInfo` of the `EnvelopedData`.
+/// The CMS `RecipientIdentifier` of one recipient (RFC 5652 §6.2): the
+/// recipient's certificate addressed by issuer + serial, or by its
+/// `subjectKeyIdentifier`. The bytes are the raw DER contents of the
+/// identifier fields, matched against [`CertIdentity`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CmsRecipient<'a> {
-    /// How this recipient's CEK is transported.
-    pub transport: KeyTransport<'a>,
+pub enum RecipientIdentifier<'a> {
+    /// `IssuerAndSerialNumber ::= SEQUENCE { issuer Name, serialNumber }`.
+    IssuerAndSerialNumber {
+        /// DER content of the issuer `Name` TLV.
+        issuer: &'a [u8],
+        /// DER content of the `serialNumber` INTEGER.
+        serial: &'a [u8],
+    },
+    /// `subjectKeyIdentifier [0] OCTET STRING` (usually the 20-byte SKI of
+    /// RFC 5280 §4.2.1.2).
+    SubjectKeyIdentifier(&'a [u8]),
+}
+
+impl<'a> KeyTransport<'a> {
+    /// The explicit recipient identifier addressing this transport.
+    #[must_use]
+    pub fn identifier(&self) -> &RecipientIdentifier<'a> {
+        match self {
+            KeyTransport::RsaPkcs1v15 { identifier, .. }
+            | KeyTransport::EcdhAesKw { identifier, .. } => identifier,
+        }
+    }
 }
 
 /// The parsed `EnvelopedData` of one `/Recipients` blob — the subset the
 /// public-key security handler needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvelopedData<'a> {
-    /// The recipients, in wire order. [`authenticate_public_key`] tries them
-    /// in this order (first match wins).
-    pub recipients: Vec<CmsRecipient<'a>>,
+    /// The recipient CEK transports, in wire order. [`authenticate_public_key`]
+    /// tries them in this order on the structural pass.
+    pub recipients: Vec<KeyTransport<'a>>,
     /// The content-encryption algorithm and its parameters.
     pub cek_algorithm: CekAlgorithm,
     /// The encrypted content — the wrapped 24-byte seed+permission payload.
@@ -134,23 +177,118 @@ pub struct EnvelopedData<'a> {
     pub encrypted_content: Option<&'a [u8]>,
 }
 
-/// A credential for the public-key security handler: the recipient's private
-/// key in PKCS#8 DER (from a `.der`/`.pem` key file; PKCS#12 keystore
-/// extraction is out of scope for the read-only draft).
-pub enum PubKeyCredential {
+/// The recipient-selection policy of a [`PubKeyCredential`] (SL-1.ENC.07,
+/// design note §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchBy {
+    /// Prefer the certificate-identifier match when the credential carries a
+    /// chain; fall through to the structural decrypt when the exact
+    /// identifier is absent from the blob list (or no chain is supplied).
+    /// This is the Acrobat-compatible default.
+    #[default]
+    Auto,
+    /// The draft policy: try every recipient's transport in `/Recipients`
+    /// array order; the first structural decrypt wins. The right choice for
+    /// a bare private key with no certificate (the unwrap's own integrity
+    /// checks — RSA padding, AES-CBC padding + length, AES-KW's register —
+    /// reject wrong keys with negligible false-accept probability).
+    FirstValid,
+    /// Spec-strict: select only recipients whose `RecipientIdentifier`
+    /// matches the supplied chain; a credential whose chain matches nothing
+    /// yields `RECIPIENT_NO_MATCH` even if its key material would have
+    /// opened a differently-addressed recipient.
+    Certificate,
+}
+
+/// How the successful recipient was selected (SL-1.ENC.07) — surfaced so
+/// callers and tests can prove identity-first selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Matched {
+    /// The `issuerAndSerialNumber` matched a certificate in the chain.
+    ByIssuerAndSerialNumber,
+    /// The `subjectKeyIdentifier` matched a certificate in the chain.
+    BySubjectKeyIdentifier,
+    /// No certificate-identity match was used (bare key, `MatchBy::FirstValid`,
+    /// or the `Auto` fall-through): the private key opened the transport.
+    Structurally,
+}
+
+/// The recipient's private key material: PKCS#8 DER (from a `.der`/`.pem`
+/// key file; PKCS#12 keystore extraction is out of scope for the read-only
+/// draft).
+#[derive(Clone)]
+pub enum KeyMaterial {
     /// An RSA private key (2048-bit or larger; RFC 8017 key transport).
     Rsa(Vec<u8>),
     /// An EC P-256 private key (ECDH key agreement, RFC 5753).
     EcP256(Vec<u8>),
 }
 
+/// A credential for the public-key security handler: the recipient's private
+/// key plus, optionally, the X.509 certificate chain that identifies it
+/// (DER certificates, leaf first — the SL-1.ENC.07 explicit-identifier
+/// match), and the [`MatchBy`] selection policy.
+#[derive(Clone)]
+pub struct PubKeyCredential {
+    /// The recipient's private key.
+    pub key: KeyMaterial,
+    /// Certificate identities, leaf first; empty = a bare private key, and
+    /// the selection falls back to the structural pass.
+    pub certificates: Vec<Vec<u8>>,
+    /// Recipient-selection policy (default [`MatchBy::Auto`]).
+    pub match_by: MatchBy,
+}
+
+impl PubKeyCredential {
+    /// A bare RSA private key (PKCS#8 DER), no chain.
+    #[must_use]
+    pub fn rsa(pkcs8_der: Vec<u8>) -> Self {
+        Self {
+            key: KeyMaterial::Rsa(pkcs8_der),
+            certificates: Vec::new(),
+            match_by: MatchBy::Auto,
+        }
+    }
+
+    /// A bare EC P-256 private key (PKCS#8 DER), no chain.
+    #[must_use]
+    pub fn ec_p256(pkcs8_der: Vec<u8>) -> Self {
+        Self {
+            key: KeyMaterial::EcP256(pkcs8_der),
+            certificates: Vec::new(),
+            match_by: MatchBy::Auto,
+        }
+    }
+
+    /// Append an X.509 certificate (DER) to the identity chain (leaf first).
+    #[must_use]
+    pub fn with_certificate(mut self, der: Vec<u8>) -> Self {
+        self.certificates.push(der);
+        self
+    }
+
+    /// Override the recipient-selection policy.
+    #[must_use]
+    pub fn matching(mut self, match_by: MatchBy) -> Self {
+        self.match_by = match_by;
+        self
+    }
+}
+
 impl core::fmt::Debug for PubKeyCredential {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Key material must never leak through Debug (crash reports, logs).
-        match self {
-            PubKeyCredential::Rsa(_) => f.write_str("PubKeyCredential::Rsa([redacted])"),
-            PubKeyCredential::EcP256(_) => f.write_str("PubKeyCredential::EcP256([redacted])"),
-        }
+        // Certificates are public data but need not echo bytes either.
+        let kind = match self.key {
+            KeyMaterial::Rsa(_) => "Rsa",
+            KeyMaterial::EcP256(_) => "EcP256",
+        };
+        write!(
+            f,
+            "PubKeyCredential::{kind}([redacted], {} certificate(s), match_by: {:?})",
+            self.certificates.len(),
+            self.match_by,
+        )
     }
 }
 
@@ -161,9 +299,13 @@ pub struct PubKeyAuth {
     /// The file encryption key (`/Length`/8 bytes).
     pub key: Vec<u8>,
     /// The recipient's permission bits from the CMS payload (the 4 bytes
-    /// after the seed, little-endian). Surfaced honestly per SL-1.ENC.04;
-    /// wiring them into the policy layer is a sign-off review point.
+    /// after the seed, little-endian). Surfaced honestly per SL-1.ENC.04
+    /// and *enforced* through the policy layer by SL-1.ENC.09.
     pub permissions: u32,
+    /// How this recipient was selected (SL-1.ENC.07).
+    pub matched_by: Matched,
+    /// The index of the winning `/Recipients` blob.
+    pub recipient_index: usize,
 }
 
 /// Parse one `/Recipients` blob as `ContentInfo` → `EnvelopedData`.
@@ -231,12 +373,13 @@ pub fn parse_enveloped_data<'a>(
     while !set.is_empty() {
         let at = set.offset();
         let tlv = set.next(g)?;
-        let recipient = match tlv.tag {
-            Tag::SEQUENCE => parse_key_trans_recipient(tlv.content, g)?,
-            Tag::CTX_1_CONSTRUCTED => parse_key_agree_recipient(tlv.content, g)?,
+        match tlv.tag {
+            Tag::SEQUENCE => recipients.push(parse_key_trans_recipient(tlv.content, g)?),
+            Tag::CTX_1_CONSTRUCTED => {
+                recipients.extend(parse_key_agree_recipient(tlv.content, g)?);
+            }
             _ => return Err(der::malformed(at, "unsupported RecipientInfo CHOICE")),
-        };
-        recipients.push(recipient);
+        }
     }
 
     let eci = ed.next_expect(Tag::SEQUENCE, g)?;
@@ -272,7 +415,7 @@ pub fn parse_enveloped_data<'a>(
 fn parse_key_trans_recipient<'a>(
     data: &'a [u8],
     g: &mut BudgetGuard<'_>,
-) -> Result<CmsRecipient<'a>> {
+) -> Result<KeyTransport<'a>> {
     let mut r = Der::new(data);
     let version = r.next_expect(Tag::INTEGER, g)?;
     if !matches!(integer_u64(version.content), Some(0)) {
@@ -282,14 +425,15 @@ fn parse_key_trans_recipient<'a>(
         ));
     }
     // recipientIdentifier: IssuerAndSerialNumber (SEQUENCE) or
-    // SubjectKeyIdentifier ([0]). Certificate matching is not needed for the
-    // try-all decryption policy — the identifier is validated structurally
-    // and skipped.
+    // SubjectKeyIdentifier ([0] Primitive) — parsed structurally so the
+    // certificate-identity match can use it (SL-1.ENC.07).
+    let at = r.offset();
     let rid = r.next(g)?;
-    match rid.tag {
-        Tag::SEQUENCE | Tag::CTX_0 => {}
-        _ => return Err(der::malformed(r.offset(), "bad RecipientIdentifier")),
-    }
+    let identifier = match rid.tag {
+        Tag::SEQUENCE => parse_issuer_and_serial(rid.content, g)?,
+        Tag::CTX_0 => RecipientIdentifier::SubjectKeyIdentifier(rid.content),
+        _ => return Err(der::malformed(at, "bad RecipientIdentifier")),
+    };
     let alg = r.next_expect(Tag::SEQUENCE, g)?;
     let mut alg_reader = Der::new(alg.content);
     let algorithm = alg_reader.next_expect(Tag::OID, g)?;
@@ -303,20 +447,41 @@ fn parse_key_trans_recipient<'a>(
             "trailing bytes in KeyTransRecipientInfo",
         ));
     }
-    Ok(CmsRecipient {
-        transport: KeyTransport::RsaPkcs1v15 {
-            encrypted_key: encrypted_key.content,
-        },
+    Ok(KeyTransport::RsaPkcs1v15 {
+        identifier,
+        encrypted_key: encrypted_key.content,
+    })
+}
+
+/// `IssuerAndSerialNumber ::= SEQUENCE { issuer RDNSequence, serialNumber
+/// CertificateSerialNumber }` (RFC 5652 §10.2.3, quoting RFC 5280).
+fn parse_issuer_and_serial<'a>(
+    content: &'a [u8],
+    g: &mut BudgetGuard<'_>,
+) -> Result<RecipientIdentifier<'a>> {
+    let mut rid = Der::new(content);
+    let issuer = rid.next_expect(Tag::SEQUENCE, g)?;
+    let serial = rid.next_expect(Tag::INTEGER, g)?;
+    if serial.content.is_empty() || !rid.is_empty() {
+        return Err(der::malformed(
+            rid.offset(),
+            "malformed IssuerAndSerialNumber",
+        ));
+    }
+    Ok(RecipientIdentifier::IssuerAndSerialNumber {
+        issuer: issuer.content,
+        serial: serial.content,
     })
 }
 
 /// `KeyAgreeRecipientInfo ::= [1] EXPLICIT SEQUENCE { version, originator
 /// [0] EXPLICIT, ukm [1] EXPLICIT OPTIONAL, keyEncryptionAlgorithm,
-/// recipientEncryptedKeys }` (RFC 5652 §6.2.2).
+/// recipientEncryptedKeys }` (RFC 5652 §6.2.2) — one
+/// [`KeyTransport::EcdhAesKw`] entry per `RecipientEncryptedKey`.
 fn parse_key_agree_recipient<'a>(
     data: &'a [u8],
     g: &mut BudgetGuard<'_>,
-) -> Result<CmsRecipient<'a>> {
+) -> Result<Vec<KeyTransport<'a>>> {
     let mut outer = Der::new(data);
     let kari = outer.next_expect(Tag::SEQUENCE, g)?;
     if !outer.is_empty() {
@@ -387,12 +552,21 @@ fn parse_key_agree_recipient<'a>(
             "trailing bytes in KeyAgreeRecipientInfo",
         ));
     }
-    let mut wrapped_keys = Vec::new();
+    let mut transports = Vec::new();
     let mut entries = Der::new(keys.content);
     while !entries.is_empty() {
         let entry = entries.next_expect(Tag::SEQUENCE, g)?;
         let mut entry = Der::new(entry.content);
-        let _rid = entry.next(g)?; // IssuerAndSerialNumber or [0]; skipped
+        // RecipientEncryptedKey ::= SEQUENCE { rid RecipientIdentifier,
+        // encryptedContent OCTET STRING } — the rid is parsed for the
+        // certificate-identity match (SL-1.ENC.07).
+        let rid_at = entry.offset();
+        let rid = entry.next(g)?;
+        let identifier = match rid.tag {
+            Tag::SEQUENCE => parse_issuer_and_serial(rid.content, g)?,
+            Tag::CTX_0 => RecipientIdentifier::SubjectKeyIdentifier(rid.content),
+            _ => return Err(der::malformed(rid_at, "bad RecipientIdentifier")),
+        };
         let wrapped = entry.next_expect(Tag::OCTET_STRING, g)?;
         if !entry.is_empty() {
             return Err(der::malformed(
@@ -400,17 +574,16 @@ fn parse_key_agree_recipient<'a>(
                 "trailing bytes in RecipientEncryptedKey",
             ));
         }
-        wrapped_keys.push(wrapped.content);
+        transports.push(KeyTransport::EcdhAesKw {
+            identifier,
+            originator: originator_point,
+            wrapped_key: wrapped.content,
+        });
     }
-    if wrapped_keys.is_empty() {
+    if transports.is_empty() {
         return Err(der::malformed(0, "empty recipientEncryptedKeys"));
     }
-    Ok(CmsRecipient {
-        transport: KeyTransport::EcdhAesKw {
-            originator: originator_point,
-            wrapped_keys,
-        },
-    })
+    Ok(transports)
 }
 
 /// `EncryptedContentInfo ::= SEQUENCE { contentType,
@@ -523,6 +696,102 @@ fn integer_u64(content: &[u8]) -> Option<u64> {
     Some(value)
 }
 
+/// Canonicalise a DER INTEGER content for value equality: strip exactly the
+/// sign-extension octets DER minimality forbids, then compare bytes. Two
+/// well-formed DER encodings compare equal by content already; this also
+/// tolerates a BER-ish writer that padded the serial.
+fn serial_eq(a: &[u8], b: &[u8]) -> bool {
+    /// Strip redundant leading 0x00 (positive) / 0xFF (negative) padding.
+    fn trim(content: &[u8]) -> &[u8] {
+        let mut s = content;
+        while let Some((&first, rest)) = s.split_first() {
+            let redundant = match rest.first() {
+                Some(next) => {
+                    (first == 0x00 && next & 0x80 == 0) || (first == 0xFF && next & 0x80 != 0)
+                }
+                None => false,
+            };
+            if !redundant {
+                break;
+            }
+            s = rest;
+        }
+        s
+    }
+    let (a, b) = (trim(a), trim(b));
+    // An all-padding sequence trims to empty — treat as the zero INTEGER.
+    let a_empty = a.is_empty();
+    let b_empty = b.is_empty();
+    if a_empty || b_empty {
+        return a_empty && b_empty;
+    }
+    a == b
+}
+
+/// Does the certificate `ident` carry the address a recipient is named by?
+/// `pub` so tests and the fuzz targets can re-verify a selection result
+/// against the blob's identifiers independently of the selection loop.
+#[must_use]
+pub fn identifier_matches(
+    ident: &CertIdentity<'_>,
+    rid: &RecipientIdentifier<'_>,
+) -> Option<Matched> {
+    match rid {
+        RecipientIdentifier::IssuerAndSerialNumber { issuer, serial } => {
+            if ident.issuer == *issuer && serial_eq(ident.serial, serial) {
+                Some(Matched::ByIssuerAndSerialNumber)
+            } else {
+                None
+            }
+        }
+        RecipientIdentifier::SubjectKeyIdentifier(key_id) => {
+            if key_id.is_empty() {
+                return None;
+            }
+            if ident.extension_ski.is_some_and(|ski| ski == *key_id)
+                || ident
+                    .computed_ski
+                    .is_some_and(|ski| ski.as_slice() == *key_id)
+            {
+                Some(Matched::BySubjectKeyIdentifier)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// The 24-byte CMS payload format: a 20-byte seed plus this recipient's
+/// 4 permission bytes (little-endian, Table-23 bit semantics — enforced by
+/// the policy layer per SL-1.ENC.09).
+pub const CMS_PAYLOAD_LEN: usize = 24;
+
+/// Decode the 4-byte permission block of a decrypted CMS payload.
+///
+/// The payload must be **exactly** [`CMS_PAYLOAD_LEN`] bytes; anything else
+/// is a failed wrong-key detection or a damaged file, never a silent
+/// zero-grant: `None` is the caller's "this is not a valid payload" signal,
+/// and the selection loop treats it exactly like a failed decrypt (try next
+/// recipient / [`Code::RecipientNoMatch`]) — no bypass, no default grant.
+#[must_use]
+pub fn decode_permission_block(payload: &[u8]) -> Option<u32> {
+    if payload.len() != CMS_PAYLOAD_LEN {
+        return None;
+    }
+    let block: [u8; 4] = payload.get(20..24)?.try_into().ok()?;
+    Some(u32::from_le_bytes(block))
+}
+
+/// The 20-byte seed of a decrypted CMS payload (see
+/// [`decode_permission_block`] for the strictness rationale).
+#[must_use]
+pub fn payload_seed(payload: &[u8]) -> Option<&[u8]> {
+    if payload.len() != CMS_PAYLOAD_LEN {
+        return None;
+    }
+    payload.get(..20)
+}
+
 /// An unimplemented-algorithm error for the CMS subset.
 fn unsupported(detail: &'static str) -> selis_error::Error {
     err!(Code::EncryptUnsupported, during = "pkcs7", detail = detail)
@@ -537,22 +806,27 @@ fn unsupported(detail: &'static str) -> selis_error::Error {
 /// Algorithm-1 hash (SHA-256 for `/V 5`, SHA-1 otherwise); `encrypt_metadata`
 /// is `/EncryptMetadata` (false appends the 4×`0xFF` marker to the hash).
 ///
-/// Recipients are tried in array order with the supplied credential; the
-/// first blob that decrypts to a valid 24-byte payload wins (the
-/// certificate-selection policy of the draft — see the design note §4).
+/// Recipient selection follows the credential's [`MatchBy`] policy
+/// (SL-1.ENC.07): with a certificate chain, recipients are first selected by
+/// explicit `RecipientIdentifier` (issuer/serial or SKI match) and only
+/// those get unwrapped; no identifier match falls through to the structural
+/// first-valid scan (`Auto`) or fails typed (`Certificate`). A bare private
+/// key always uses the structural scan — the key material's own integrity
+/// checks are the selector (design note §4.1).
 ///
 /// # Budget
 ///
-/// The recipient parses charge their wire bytes via the guard; the
-/// seed-hash input is a bounded concatenation (seed + already-resident
-/// recipient blobs) charged through [`alloc::vec_with_capacity`] before any
+/// The recipient parses charge their wire bytes via the guard; the seed-hash
+/// input is a bounded concatenation (seed + already-resident recipient
+/// blobs) charged through [`alloc::vec_with_capacity`] before any
 /// allocation. A hostile blob set terminates within its own byte budget.
 ///
 /// # Malformed Input
 ///
 /// A structurally damaged blob is [`Code::EncryptMalformed`]; a recognised
 /// but unimplemented algorithm is [`Code::EncryptUnsupported`]; a credential
-/// that opens no recipient (wrong key, wrong credential type) is
+/// that opens no recipient (wrong key, wrong credential type, or no
+/// certificate-identity match under [`MatchBy::Certificate`]) is
 /// [`Code::RecipientNoMatch`]. There is no partial result: the key is
 /// returned only when the full derivation succeeded.
 pub fn authenticate_public_key(
@@ -576,8 +850,8 @@ pub fn authenticate_public_key(
     let key_len = length_bits / 8;
 
     // Decode the credential once, outside the recipient loop.
-    let rsa_key = match credential {
-        PubKeyCredential::Rsa(der_bytes) => {
+    let rsa_key = match &credential.key {
+        KeyMaterial::Rsa(der_bytes) => {
             let key = rsa::RsaPrivateKey::from_pkcs8_der(der_bytes).map_err(|_| {
                 err!(
                     Code::EncryptMalformed,
@@ -587,10 +861,10 @@ pub fn authenticate_public_key(
             })?;
             Some(key)
         }
-        PubKeyCredential::EcP256(_) => None,
+        KeyMaterial::EcP256(_) => None,
     };
-    let ec_key = match credential {
-        PubKeyCredential::EcP256(der_bytes) => {
+    let ec_key = match &credential.key {
+        KeyMaterial::EcP256(der_bytes) => {
             let key = p256::SecretKey::from_pkcs8_der(der_bytes).map_err(|_| {
                 err!(
                     Code::EncryptMalformed,
@@ -600,18 +874,119 @@ pub fn authenticate_public_key(
             })?;
             Some(key)
         }
-        PubKeyCredential::Rsa(_) => None,
+        KeyMaterial::Rsa(_) => None,
     };
 
+    // Parse every blob once: the file-key derivation needs all of them, and
+    // the certificate-identity pass needs each transport's identifier.
+    // The vector is bounded by the (already-resident) recipient array.
+    let mut parsed = Vec::new();
     for blob in recipients {
         let enveloped = parse_enveloped_data(blob, g)?;
-        let Some(encrypted_content) = enveloped.encrypted_content else {
+        if enveloped.encrypted_content.is_none() {
             return Err(unsupported("detached CMS content"));
+        }
+        parsed.push(enveloped);
+    }
+
+    // SL-1.ENC.07: certificate identities, leaf first. A damaged chain
+    // certificate is malformed input — never silently dropped.
+    let chain = if credential.match_by == MatchBy::FirstValid {
+        Vec::new()
+    } else {
+        let mut chain = Vec::new();
+        for cert in &credential.certificates {
+            chain.push(crate::x509::parse_identity(cert, g)?);
+        }
+        chain
+    };
+
+    // Identity-first pass (only with a chain): unwrap strictly the
+    // identifier-matched transports; then — under `Auto` — fall through to
+    // the draft's structural first-valid scan. `Certificate` never falls
+    // through; `FirstValid` never looks at identifiers.
+    if !chain.is_empty() && credential.match_by != MatchBy::FirstValid {
+        if let Some(auth) = open_pass(
+            &parsed,
+            recipients,
+            key_len,
+            sha256,
+            encrypt_metadata,
+            Some(&chain),
+            rsa_key.as_ref(),
+            ec_key.as_ref(),
+            g,
+        )? {
+            return Ok(auth);
+        }
+    }
+    if credential.match_by != MatchBy::Certificate {
+        if let Some(auth) = open_pass(
+            &parsed,
+            recipients,
+            key_len,
+            sha256,
+            encrypt_metadata,
+            None,
+            rsa_key.as_ref(),
+            ec_key.as_ref(),
+            g,
+        )? {
+            return Ok(auth);
+        }
+    }
+    let detail = if credential.match_by == MatchBy::Certificate {
+        "the supplied certificate chain addresses no recipient (MatchBy::Certificate)"
+    } else if chain.is_empty() {
+        "no recipient opened with the supplied credential"
+    } else {
+        "no certificate-identity match fell through to a structural opening match"
+    };
+    Err(err!(
+        Code::RecipientNoMatch,
+        during = "pkcs7",
+        detail = detail
+    ))
+}
+
+/// One selection pass over the parsed blobs.
+///
+/// `chain = Some(..)` selects recipients strictly by certificate identity
+/// (SL-1.ENC.07) and reports how each was matched; `None` is the draft's
+/// structural scan — try each transport in array order, the first valid
+/// 24-byte payload wins. `Ok(None)` means no recipient opened (the caller
+/// decides the fall-through); budget/derivation errors on an *opened*
+/// payload propagate.
+#[allow(clippy::too_many_arguments)]
+fn open_pass(
+    parsed: &[EnvelopedData<'_>],
+    recipients: &[&[u8]],
+    key_len: usize,
+    sha256: bool,
+    encrypt_metadata: bool,
+    chain: Option<&[CertIdentity<'_>]>,
+    rsa_key: Option<&rsa::RsaPrivateKey>,
+    ec_key: Option<&p256::SecretKey>,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<PubKeyAuth>> {
+    for (blob_idx, enveloped) in parsed.iter().enumerate() {
+        let Some(encrypted_content) = enveloped.encrypted_content else {
+            continue; // refused by the caller, but the borrow checker is content.
         };
-        for recipient in &enveloped.recipients {
-            let transport = recipient.transport.clone();
-            let Some(cek) = unwrap_cek(transport, credential, rsa_key.as_ref(), ec_key.as_ref())
-            else {
+        for transport in &enveloped.recipients {
+            let matched_by = match chain {
+                Some(chain) => {
+                    let Some(matched) = chain
+                        .iter()
+                        .find_map(|ident| identifier_matches(ident, transport.identifier()))
+                    else {
+                        continue; // no chain certificate addresses this one
+                    };
+                    matched
+                }
+                None => Matched::Structurally,
+            };
+            let Some(cek) = unwrap_cek(transport, rsa_key, ec_key) else {
                 continue; // wrong credential for this transport; try the next
             };
             let Some(payload) =
@@ -619,73 +994,66 @@ pub fn authenticate_public_key(
             else {
                 continue; // padding/payload check failed: wrong key, try the next
             };
-            // The payload is exactly seed(20) + permission bytes(4).
-            if payload.len() != 24 {
-                continue;
-            }
-            let seed = payload.get(..20).unwrap_or(&[]);
-            let permissions = u32::from_le_bytes(
-                payload
-                    .get(20..24)
-                    .and_then(|s| <[u8; 4]>::try_from(s).ok())
-                    .unwrap_or([0; 4]),
-            );
+            // The payload is exactly seed(20) + permission bytes(4); a
+            // structurally invalid payload continues the scan (never a
+            // grant) — the same wrong-key detector the draft relied on,
+            // now behind decode_permission_block (SL-1.ENC.09: never a
+            // silent bypass).
+            let seed = match payload_seed(&payload) {
+                Some(seed) => seed,
+                None => continue,
+            };
+            let permissions = match decode_permission_block(&payload) {
+                Some(permissions) => permissions,
+                None => continue,
+            };
             let key = derive_file_key(seed, recipients, key_len, sha256, encrypt_metadata, g)?;
-            return Ok(PubKeyAuth { key, permissions });
+            return Ok(Some(PubKeyAuth {
+                key,
+                permissions,
+                matched_by,
+                recipient_index: blob_idx,
+            }));
         }
     }
-    Err(err!(
-        Code::RecipientNoMatch,
-        during = "pkcs7",
-        detail = "no recipient opened with the supplied credential"
-    ))
+    Ok(None)
 }
 
-/// Unwrap a CEK from one recipient under the supplied credential.
+/// Unwrap a CEK from one recipient transport under the supplied key material.
 ///
-/// Returns `None` when the credential's type does not match the transport or
-/// the unwrap fails (wrong key) — both are "try the next recipient", not
-/// errors.
+/// Returns `None` when the key's type does not match the transport or the
+/// unwrap fails (wrong key) — both are "try the next recipient", not errors.
 fn unwrap_cek(
-    transport: KeyTransport<'_>,
-    credential: &PubKeyCredential,
+    transport: &KeyTransport<'_>,
     rsa_key: Option<&rsa::RsaPrivateKey>,
     ec_key: Option<&p256::SecretKey>,
 ) -> Option<Vec<u8>> {
-    match (transport, credential) {
-        (KeyTransport::RsaPkcs1v15 { encrypted_key }, PubKeyCredential::Rsa(_)) => {
+    match transport {
+        KeyTransport::RsaPkcs1v15 { encrypted_key, .. } => {
             let key = rsa_key?;
             // RSAES-PKCS1-v1_5 decrypt: a wrong key fails the padding check
             // (RUSTSEC-2023-0071 residual accepted for local decryption —
             // design note §6).
             key.decrypt(rsa::Pkcs1v15Encrypt, encrypted_key).ok()
         }
-        (
-            KeyTransport::EcdhAesKw {
-                originator,
-                wrapped_keys,
-            },
-            PubKeyCredential::EcP256(_),
-        ) => {
+        KeyTransport::EcdhAesKw {
+            originator,
+            wrapped_key,
+            ..
+        } => {
             let secret = ec_key?;
             let public = p256::PublicKey::from_sec1_bytes(originator).ok()?;
             let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
             let shared_bytes = *shared.raw_secret_bytes();
-            for wrapped in wrapped_keys {
-                // The KEK length follows the wrapped key: RFC 3394 output is
-                // key + 8 bytes, so a 24-byte blob wraps a 16-byte CEK
-                // (AES-128) and a 40-byte blob a 32-byte CEK (AES-256).
-                if wrapped.len() != 24 && wrapped.len() != 40 {
-                    continue;
-                }
-                let kek = kdf_x963_sha256(shared_bytes.as_slice(), wrapped.len() - 8);
-                if let Some(cek) = aes_kw_unwrap(&kek, wrapped) {
-                    return Some(cek);
-                }
+            // The KEK length follows the wrapped key: RFC 3394 output is key
+            // + 8 bytes, so a 24-byte blob wraps a 16-byte CEK (AES-128) and
+            // a 40-byte blob a 32-byte CEK (AES-256).
+            if wrapped_key.len() != 24 && wrapped_key.len() != 40 {
+                return None;
             }
-            None
+            let kek = kdf_x963_sha256(shared_bytes.as_slice(), wrapped_key.len() - 8);
+            aes_kw_unwrap(&kek, wrapped_key)
         }
-        _ => None,
     }
 }
 

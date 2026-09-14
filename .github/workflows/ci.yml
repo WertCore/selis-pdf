@@ -262,6 +262,8 @@ jobs:
           - filter_chain
           - jpx_stream
           - pkcs7_cms
+          - pkcs7_perms
+          - x509_identity
           - wasm_dispatch
           - font_ttf
           - font_cff

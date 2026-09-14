@@ -6,7 +6,8 @@
 //! hardened hash of revision 6 (Algorithm 2.B), and the per-object
 //! stream/string decryption (Algorithms 1/1a with the leading-IV rule) —
 //! plus the public-key (PKCS#7/CMS) handler, read side (SL-1.ENC.03,
-//! [`pkcs7`], ISO 32000-2 §7.6.6 with the minimal DER reader of [`der`]).
+//! [`pkcs7`], ISO 32000-2 §7.6.6 with the minimal DER reader of [`der`] and
+//! the X.509 recipient-identity match of [`x509`] (SL-1.ENC.07)).
 //!
 //! No unsafe code; crypto from the `aes`/`md-5`/`sha1`/`sha2`/`rsa`/`p256`
 //! crates (RustCrypto, MIT/Apache-2.0 — cleared by the licence policy,
@@ -22,6 +23,10 @@
 
 pub mod der;
 pub mod pkcs7;
+pub mod x509;
+
+#[cfg(test)]
+mod test_fixtures;
 
 use aes::cipher::generic_array::typenum::U16;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};

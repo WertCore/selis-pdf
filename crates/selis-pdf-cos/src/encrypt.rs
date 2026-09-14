@@ -430,6 +430,15 @@ fn parse_pubkey_encrypt(
     let length = int(b"Length")
         .and_then(|v| usize::try_from(v).ok())
         .unwrap_or(if v >= 5 { 256 } else { 128 });
+    // The public-key dictionary may carry `/P` (real writers do; the spec
+    // defines per-recipient permissions *inside* the CMS payload, so the
+    // table-23 entry is advisory here). SL-1.ENC.09 intersects the two: a
+    // document without `/P` grants the recipient's CMS bits alone, so the
+    // default when the key is absent is "everything the CMS allows".
+    let p = int(b"P")
+        .and_then(|v| i32::try_from(v).ok())
+        .map(|v| u32::from_ne_bytes(v.to_ne_bytes()))
+        .unwrap_or(0xFFFF_FFFF);
     let subfilter = match get(b"SubFilter") {
         Some(Obj::Name(n)) => Some(String::from_utf8_lossy(n.as_slice()).to_string()),
         _ => None,
@@ -473,7 +482,7 @@ fn parse_pubkey_encrypt(
         length,
         o: Vec::new(),
         u: Vec::new(),
-        p: 0,
+        p,
         stmf: stmf_owned,
         strf,
         aes,
@@ -572,12 +581,15 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
 
 /// Authenticate a public-key document with the recipient's private key and
 /// return the derived file encryption key plus the recipient's permission
-/// bits (SL-1.ENC.03, ISO 32000-2 §7.6.6.4 Algorithm 1).
+/// bits (SL-1.ENC.03, ISO 32000-2 §7.6.6.4 Algorithm 1; SL-1.ENC.07
+/// certificate-identity selection).
 ///
-/// Recipients are tried in `/Recipients` array order; the first blob that
-/// decrypts to a valid 24-byte payload under `credential` wins (the draft's
-/// certificate-selection policy — the design note §4 records why no X.509
-/// matching is needed for it).
+/// Selection follows the credential's [`selis_crypto::pkcs7::MatchBy`]
+/// policy: with a certificate chain the recipients are first addressed by
+/// their CMS `RecipientIdentifier` (issuer/serial or
+/// subjectKeyIdentifier) and only those are unwrapped; without a chain (or
+/// with no identifier present in the blob list under `auto`) the draft's
+/// structural first-try-in-array-order scan applies (design note §4).
 ///
 /// # Budget
 ///
@@ -586,11 +598,14 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
 /// terminates within its own byte budget.///
 /// # Malformed Input
 ///
-/// Structural CMS damage is `ENCRYPT_MALFORMED`; a recognised but
-/// unimplemented algorithm (RC4/3DES content, s3-era RC4 documents) is
+/// Structural CMS damage is `ENCRYPT_MALFORMED` (a damaged certificate in
+/// the credential's chain likewise — never silently dropped); a recognised
+/// but unimplemented algorithm (RC4/3DES content, s3-era RC4 documents) is
 /// `ENCRYPT_UNSUPPORTED`; a credential that opens no recipient is
 /// `RECIPIENT_NO_MATCH` (the public-key wrong-key error — typed, never a
-/// partial decrypt).
+/// partial decrypt; under `MatchBy::Certificate` a credential whose chain
+/// matches no recipient fails with it even if the key material would have
+/// opened a differently-addressed recipient).
 pub fn authenticate_public_key(
     info: &EncryptInfo,
     credential: &selis_crypto::pkcs7::PubKeyCredential,
@@ -859,7 +874,7 @@ mod tests {
             .expect("parse")
             .expect("info");
         assert_eq!(info.v, 2);
-        let credential = selis_crypto::pkcs7::PubKeyCredential::Rsa(vec![0u8; 8]);
+        let credential = selis_crypto::pkcs7::PubKeyCredential::rsa([0u8; 8].to_vec());
         let budget = Budget::unlimited();
         let mut g = budget.guard();
         let e = authenticate_public_key(&info, &credential, &mut g).expect_err("s3 refused");
@@ -870,7 +885,7 @@ mod tests {
     #[test]
     fn pubkey_authentication_refuses_standard_infos() {
         let (info, _) = EncryptInfo::new_r6(b"", b"", 0xFFFF_F0C0, &[0u8; 16]);
-        let credential = selis_crypto::pkcs7::PubKeyCredential::Rsa(vec![0u8; 8]);
+        let credential = selis_crypto::pkcs7::PubKeyCredential::rsa([0u8; 8].to_vec());
         let budget = Budget::unlimited();
         let mut g = budget.guard();
         let e = authenticate_public_key(&info, &credential, &mut g).expect_err("wrong handler");

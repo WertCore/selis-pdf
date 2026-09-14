@@ -25,6 +25,8 @@ use selis_sandbox::{BudgetGuard, Resource};
 pub(crate) struct Tag(pub u8);
 
 impl Tag {
+    /// Universal primitive BOOLEAN.
+    pub(crate) const BOOLEAN: Tag = Tag(0x01);
     /// Universal primitive INTEGER.
     pub(crate) const INTEGER: Tag = Tag(0x02);
     /// Universal primitive BIT STRING.
@@ -45,6 +47,8 @@ impl Tag {
     /// Context-specific constructed tag 1 (CMS `[1]`; the `KeyAgreeRecipientInfo`
     /// choice arm and `OriginatorPublicKey`).
     pub(crate) const CTX_1_CONSTRUCTED: Tag = Tag(0xA1);
+    /// Context-specific constructed tag 3 (`TBSCertificate` extensions).
+    pub(crate) const CTX_3_CONSTRUCTED: Tag = Tag(0xA3);
 }
 
 /// One parsed tag-length-value: the tag and the content span it encloses.

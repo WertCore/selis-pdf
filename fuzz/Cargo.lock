@@ -1238,6 +1238,7 @@ dependencies = [
  "libfuzzer-sys",
  "selis-bytes",
  "selis-crypto",
+ "selis-error",
  "selis-font",
  "selis-pdf-cos",
  "selis-pdf-filter",

@@ -19,4 +19,4 @@ pub use render::{
     ResolvedFontProgram,
 };
 pub use selis_raster::TinySkiaBackend;
-pub use session::{CjkRenderOutcome, Session};
+pub use session::{CjkRenderOutcome, PublicKeyReceipt, Session};
