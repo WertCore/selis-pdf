@@ -556,17 +556,64 @@ plan to precede the fetch.
     `21-TESTING-AND-ORACLES.md`. Page-tree-shape and text-metric comparisons land with
     SL-1.DOC/SL-1.REN (nothing to compare yet at Phase 0).
 
-- [ ] **SL-0.ORACLE.04 — Text-extraction oracle** · deps: ORACLE.01 · owner: AI
+- [x] **SL-0.ORACLE.04 — Text-extraction oracle** · deps: ORACLE.01 · owner: AI
   - **Do:** Compare extracted text against PDFium and pdf.js by normalised edit distance, with
     Unicode normalisation and whitespace policy defined once.
   - **DoD:** Baseline agreement between the two oracles measured and recorded first.
-  - **Note:** `xtask oracle compare-text <file>` compares selis text against mutool by normalised
-    edit distance. Baseline on 160F-2019.pdf: 6.4% similarity (text extraction is Phase 3, so the
-    gap is expected and recorded). The DoD's oracle-vs-oracle baseline (PDFium vs pdf.js) is not
-    yet measured: both render drivers exist and run (see ORACLE.01), but a text-extraction entry
-    point would have to be added to the pdfium driver and wired through `oracle compare-text`;
-    that lands with the Phase 3 text work, which is when the comparison becomes meaningful.
-    Stays unchecked until the oracle-oracle baseline number exists.
+  - **Note (done 2026-09-14):** The policy is defined once — `xtask/src/text_norm.rs` (N1–N6 +
+    capped normalised-edit-distance similarity) — and `oracle compare-text`, `oracle text-sweep`
+    (selis rows *and* pair rows) and the CORP.03 golden hash all compose through it. The old
+    second policy is gone: `compare-text` no longer runs its own raw-argv mutool invocation with a
+    byte-level, un-normalised Levenshtein; it takes `--tool <mutool|pdfium|pdfjs>` (default
+    mutool, like before) and executes the exact page-1 leg the sweep runs (`plan_oracle_text`,
+    local-first with the pinned-container fallback), scoring with the shared
+    `normalize` + `capped_similarity`. Unit tests pin the composition on both sides
+    (`capped_similarity_policy_is_the_documented_composition`,
+    `compare_text_scores_via_the_shared_text_norm_policy`, `text_leg_argv_is_shared_by_local_and_container_plans_and_pins_page_one`);
+    the CONF.01 sweep rows are unchanged by the refactor.
+  - **Leg fix found while recording:** the pdfium and pdf.js drivers' `--text` banners went to
+    *stdout*, which the sweep redirected into the very file the tools write — local legs had
+    banners interleaved into the extracted text (invisible in CI: there stdout is the docker pipe,
+    and the old pinned images lack the `--text` mode, so the success path never ran there).
+    Banners now go to stderr like mutool's, and leg stdout lands in a side log;
+    `oracle text-sweep --only-pair A+B` (repeatable) runs a pair-only calibration — no selis, no
+    golden renders — emitting the same pair-verdict schema CONF.02/TEXT.08+ already consume.
+  - **Measured oracle-vs-oracle baseline (the DoD):** page-1 text over the 644-file smoke set
+    (`corpus fetch --tag smoke` = pdf.js test suite + PDF Association examples, extracted as
+    `write07` does), similarity = 1 − Levenshtein/max after N1–N6, truncated at the 32,768-char
+    cap. Fraction of comparable files (both sides produced text) per band; `(1−sim)×100` stats in
+    percent:
+
+    | Pair | comparable | ≥0.99 | ≥0.98 | ≥0.95 | ≥0.75 | mean | p75 | p90 |
+    |---|---|---|---|---|---|---|---|---|
+    | mutool↔pdfium | 480/644 | 72.1% | 72.7% | 74.2% | 78.8% | 19.63 | 7.81 | 100.0 |
+    | mutool↔pdfjs | 466/644 | 71.9% | 72.7% | 74.2% | 79.8% | 19.11 | 5.73 | 100.0 |
+    | **pdfium↔pdfjs** | 472/644 | **78.4%** | **79.0%** | **80.5%** | **85.6%** | **13.07** | 0.0 | 83.11 |
+
+    Run environment: dev host (Windows), `xtask oracle text-sweep --only-pair pdfium+pdfjs
+    --only-pair pdfium+mutool --only-pair pdfjs+mutool` on 2026-09-14; PDFium = bblanchon
+    pdfium-binaries `chromium/7961` win-x64 (source_sha256 of `pdfium-win-x64.tgz`:
+    `88276459349b…6406adf4` — same upstream revision as the pinned linux artifact) with our
+    `docker/oracles/pdfium/driver/pdfium_driver.c` compiled by MSVC; pdf.js = `pdfjs-dist
+    6.2.108` installed by `npm ci` over the committed lockfile (the pinned identity) on node 24;
+    MuPDF = local `mutool 1.23.0` (the pin is 1.23.9 — drift recorded, and the headline pair is
+    the two that matched their pins). Artifacts (pair-schema verdicts + report):
+    `C:\selis-build\oracle04-text-smoke`.
+  - **What it means:** the two extractors we gate against each agree at ≥98% on only **79.0%** of
+    smoke-corpus pages that carry text on both sides (≥99%: 78.4%) — the pdf.js suite is curated
+    pathology, and the `diff≥25` tail (68 files) is Type3/CID/RTL reading-order divergence that is
+    oracle disagreement *by construction*. The SL-3.G3 criterion (≥0.98 similarity) proposed at
+    "≥95% of the extraction corpus" sits above this oracle noise floor on this file class, exactly
+    as the render G2 did before SL-2.CONF.03 recalibrated it — SL-3.CONF.02 must read the G3 bar
+    against this matrix (and the mutool pairs' ~72.7%) before promoting; tolerances move with
+    calibration data only (§5 rule).
+  - **Pending with honesty:** the CI `render-conf` text legs re-run the same pairs on the
+    digest-pinned GHCR images once `oracle-images` rebuilds them (triggered by this change to
+    `docker/**` once merged) and the new digests are recorded in `xtask/oracles.toml`; until that
+    re-pin the two container legs fail loudly by design. The numbers above are the local
+    pinned-source-identity measurement of record — the same mode SL-2.CONF.03 used. The
+    selis-vs-PDFium column (G3's literal readout) stays what CONF.01 recorded: unmet while
+    TEXT.08/09/10 land.
 
 - [x] **SL-0.ORACLE.05 — Triage workflow** · deps: ORACLE.02 · owner: AI+
   - **Do:** `xtask oracle triage` groups disagreements by signature, so 4 000 failures collapse to

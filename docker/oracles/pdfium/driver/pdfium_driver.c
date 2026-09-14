@@ -338,8 +338,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "pdfium_driver: cannot write %s\n", out_txt);
             return 1;
         }
-        printf("pdfium driver: extracted page %d of %s -> %s\n", page_no,
-               in_pdf, out_txt);
+        fprintf(stderr, "pdfium driver: extracted page %d of %s -> %s\n", page_no,
+                in_pdf, out_txt);
         return 0;
     }
     double scale = (double)dpi / 72.0;

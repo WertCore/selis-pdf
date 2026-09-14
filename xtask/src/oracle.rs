@@ -22,6 +22,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+use crate::text_norm;
 
 const ORACLES_TOML: &str = "xtask/oracles.toml";
 
@@ -155,8 +158,8 @@ pub enum OracleCommand {
         dpi: u32,
         file: PathBuf,
     },
-    /// Compare text extracted by selis against an oracle (SL-0.ORACLE.04).
-    CompareText { file: PathBuf },
+    /// Compare text extracted by selis against a text oracle (SL-0.ORACLE.04).
+    CompareText { tool: String, file: PathBuf },
     /// Triage workflow: compare a sample of corpus files against qpdf and
     /// group the disagreements by signature (SL-0.ORACLE.05). `verdicts`
     /// maps a signature to a verdict; `note` is recorded with each. `clear`
@@ -180,7 +183,7 @@ pub fn run(cmd: OracleCommand) -> Result<(), String> {
         OracleCommand::CheckOutputDir { dir } => check_output_dir(&dir),
         OracleCommand::Compare { file } => compare(&file),
         OracleCommand::CompareRender { tool, dpi, file } => compare_render(&tool, dpi, &file),
-        OracleCommand::CompareText { file } => compare_text(&file),
+        OracleCommand::CompareText { tool, file } => compare_text(&tool, &file),
         OracleCommand::Triage {
             sample,
             verdicts,
@@ -1134,84 +1137,65 @@ fn srgb_to_lab(c: &[u8; 3]) -> [f64; 3] {
 
 // ── Text extraction comparison (SL-0.ORACLE.04) ────────────────────────────
 
-/// Compare text extracted by `selis extract` and `mutool draw -F txt`.
-fn compare_text(file: &Path) -> Result<(), String> {
+/// Compare text extracted by selis against a text oracle — `mutool`,
+/// `pdfium`, or `pdfjs` — under the harness's one shared policy
+/// (`text_norm::normalize` on both sides, then `text_norm::capped_similarity`
+/// — the normalised edit-distance similarity). The oracle leg runs through
+/// the exact execution the text sweep uses (`plan_oracle_text`: page 1
+/// pinned, local-first with the pinned-container fallback, stdout side log),
+/// so `compare-text` and `text-sweep` can never disagree on how a tool is
+/// invoked or how its output is scored.
+fn compare_text(tool: &str, file: &Path) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("{}: no such file", file.display()));
     }
-    let selis_bin = find_local("selis")
-        .or_else(|| find_local("selis.exe"))
-        .unwrap_or_else(|| PathBuf::from("target/debug/selis.exe"));
-    let mutool = find_local("mutool").ok_or_else(|| {
-        "mutool not installed locally; install with `winget install ArtifexSoftware.mutool`"
-            .to_string()
-    })?;
+    if !matches!(tool, "mutool" | "mupdf" | "pdfium" | "pdfjs") {
+        return Err(format!(
+            "unknown text oracle tool `{tool}` (mutool, mupdf, pdfium, pdfjs)"
+        ));
+    }
+    let selis_bin = crate::sweep::resolve_selis(None)?;
 
     let selis_out = Command::new(&selis_bin)
         .arg("extract")
-        .arg(file)
         .arg("--format")
         .arg("text")
         .arg("--page")
         .arg("0")
-        .output()
-        .map_err(|e| format!("selis extract: {e}"))?;
-    let our_text = String::from_utf8_lossy(&selis_out.stdout).to_string();
-
-    let mutool_out = Command::new(&mutool)
-        .arg("draw")
-        .arg("-F")
-        .arg("txt")
         .arg(file)
         .output()
-        .map_err(|e| format!("mutool draw: {e}"))?;
-    let their_text = String::from_utf8_lossy(&mutool_out.stdout).to_string();
+        .map_err(|e| format!("selis extract: {e}"))?;
+    let our_raw = String::from_utf8_lossy(&selis_out.stdout).to_string();
 
-    let dist = edit_distance(&our_text, &their_text);
-    let max_len = our_text.len().max(their_text.len());
-    let similarity = if max_len > 0 {
-        (1.0 - dist as f64 / max_len as f64) * 100.0
+    // Identical to a text-sweep file: the same page-1 leg the sweep runs
+    // (local-first plan, wall-clock budget, stdout side log), and the same
+    // capped similarity the sweep records in its verdict rows.
+    let tmp = std::env::temp_dir().join(format!("selis-oracle-text-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let their = crate::text_sweep::oracle_extract_text(tool, file, &tmp, Duration::from_secs(120));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let their = their.map_err(|f| format!("{tool} leg: {}", crate::sweep::fail_text(&f)))?;
+
+    let our_norm = text_norm::normalize(&our_raw);
+    let (similarity, truncated) = text_norm::capped_similarity(&our_norm, &their.text);
+    let pct = similarity * 100.0;
+    let cap_note = if truncated {
+        " (similarity over inputs truncated at the comparison cap)"
     } else {
-        100.0
+        ""
     };
     println!(
-        "text comparison: selis={} chars, mutool={} chars, edit distance={}, similarity={:.1}%",
-        our_text.len(),
-        their_text.len(),
-        dist,
-        similarity
+        "text comparison (N1-N6 normalised, page 1): selis={} normalised chars, \
+         {tool}={} normalised chars, similarity={pct:.1}%{cap_note}",
+        our_norm.chars().count(),
+        their.chars,
     );
-    if similarity > 50.0 {
+    if similarity > 0.5 {
         println!("text PASS (similarity > 50%)");
     } else {
         println!("text FAIL (similarity ≤ 50%, text extraction is Phase 3)");
     }
     Ok(())
-}
-
-/// Simple Levenshtein distance (character-level).
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a = a.as_bytes();
-    let b = b.as_bytes();
-    let m = a.len();
-    let n = b.len();
-    if m == 0 {
-        return n;
-    }
-    if n == 0 {
-        return m;
-    }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (curr[j - 1] + 1).min(prev[j] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
 }
 
 // ── Text-oracle legs (SL-3.CONF.01) ────────────────────────────────────────
@@ -1270,33 +1254,45 @@ pub(crate) fn plan_oracle_text(
             return Ok(plan);
         }
     } else if let Some(binary) = local_binary(tool) {
-        let (file_str, out_str) = (file.display().to_string(), out.display().to_string());
-        let args = match tool {
-            "mupdf" | "mutool" => vec![
-                "draw".to_string(),
-                "-F".to_string(),
-                "txt".to_string(),
-                "-o".to_string(),
-                out_str,
-                file_str,
-                // Page range: page 1 only (see doc comment).
-                "1".to_string(),
-            ],
-            // The pinned driver's `--text` mode (docker/oracles/pdfium);
-            // an older local driver without the flag fails loudly with its
-            // usage line, which the sweep records as a typed oracle failure.
-            "pdfium" => vec![
-                "--page".to_string(),
-                "1".to_string(),
-                "--text".to_string(),
-                out_str,
-                file_str,
-            ],
-            other => return Err(format!("unknown text oracle tool `{other}`")),
-        };
+        let args = text_leg_args(
+            tool,
+            &file.display().to_string(),
+            &out.display().to_string(),
+        )?;
         return Ok((canonical_binary(binary), args));
     }
     container_text_plan(tool, file, out)
+}
+
+/// The text-extraction argv of one oracle tool, pinned to page 1 (like the
+/// render legs), shared by the local-first plan and the pinned-container
+/// plan — `text_path`/`in_path` carry the per-mode path style (host paths
+/// locally, `/out.txt` + `/in.pdf` in the container). `mutool draw` takes
+/// `-F txt -o`; the pdfium and pdf.js drivers take `--page 1 --text`
+/// (docker/oracles/pdfium, docker/oracles/pdfjs). An older local driver
+/// without the `--text` flag fails loudly with its usage line, which the
+/// sweep records as a typed oracle failure.
+fn text_leg_args(tool: &str, in_path: &str, out_path: &str) -> Result<Vec<String>, String> {
+    Ok(match tool {
+        "mupdf" | "mutool" => vec![
+            "draw".to_string(),
+            "-F".to_string(),
+            "txt".to_string(),
+            "-o".to_string(),
+            out_path.to_string(),
+            in_path.to_string(),
+            // Page range: page 1 only (see doc comment).
+            "1".to_string(),
+        ],
+        "pdfium" | "pdfjs" => vec![
+            "--page".to_string(),
+            "1".to_string(),
+            "--text".to_string(),
+            out_path.to_string(),
+            in_path.to_string(),
+        ],
+        other => return Err(format!("unknown text oracle tool `{other}`")),
+    })
 }
 
 /// The local pdf.js text plan when the pinned driver + its `npm ci`ed
@@ -1371,10 +1367,8 @@ pub(crate) fn plan_oracle_fonts(tool: &str, file: &Path) -> Result<(PathBuf, Vec
 }
 
 /// The pinned-container text-extraction plan: the file is mounted read-only
-/// at `/in.pdf`, the text written to `/out.txt`. The argv per tool mirrors
-/// the driver contracts — `mutool draw` takes `-F txt -o`, the pdfium/pdf.js
-/// drivers take `--page 1 --text` (their images' entrypoints are the
-/// drivers, like the render legs).
+/// at `/in.pdf`, the text written to `/out.txt`. The argv comes from
+/// [`text_leg_args`] — the exact shape the local legs use.
 fn container_text_plan(
     tool: &str,
     file: &Path,
@@ -1396,26 +1390,7 @@ fn container_text_plan(
         file.canonicalize().map_err(|e| e.to_string())?.display()
     );
     let mount_out = format!("{}:/out.txt", out.display());
-    let tool_args = match tool {
-        "mupdf" | "mutool" => vec![
-            "draw".to_string(),
-            "-F".to_string(),
-            "txt".to_string(),
-            "-o".to_string(),
-            "/out.txt".to_string(),
-            "/in.pdf".to_string(),
-            // Page range: page 1 only (see `plan_oracle_text`).
-            "1".to_string(),
-        ],
-        "pdfium" | "pdfjs" => vec![
-            "--page".to_string(),
-            "1".to_string(),
-            "--text".to_string(),
-            "/out.txt".to_string(),
-            "/in.pdf".to_string(),
-        ],
-        other => return Err(format!("unknown text oracle tool `{other}`")),
-    };
+    let tool_args = text_leg_args(tool, "/in.pdf", "/out.txt")?;
     let mut args: Vec<String> = vec![
         "run".to_string(),
         "--rm".to_string(),
@@ -1922,6 +1897,45 @@ source_sha256 = "dd"
 dockerfile = "docker/oracles/mupdf/Dockerfile"
 licence = "AGPL-3.0"
 "#;
+
+    #[test]
+    fn text_leg_argv_is_shared_by_local_and_container_plans_and_pins_page_one() {
+        assert_eq!(
+            text_leg_args("mutool", "a.pdf", "o.txt").expect("mutool leg"),
+            ["draw", "-F", "txt", "-o", "o.txt", "a.pdf", "1"]
+        );
+        assert_eq!(
+            text_leg_args("mupdf", "a.pdf", "o.txt").expect("mupdf leg"),
+            ["draw", "-F", "txt", "-o", "o.txt", "a.pdf", "1"]
+        );
+        assert_eq!(
+            text_leg_args("pdfium", "a.pdf", "o.txt").expect("pdfium leg"),
+            ["--page", "1", "--text", "o.txt", "a.pdf"]
+        );
+        assert_eq!(
+            text_leg_args("pdfjs", "/in.pdf", "/out.txt").expect("pdfjs leg"),
+            ["--page", "1", "--text", "/out.txt", "/in.pdf"]
+        );
+        // Tools without a text leg fail loudly instead of silently rendering.
+        assert!(text_leg_args("ghostscript", "a", "b").is_err());
+        assert!(text_leg_args("qpdf", "a", "b").is_err());
+    }
+
+    #[test]
+    fn compare_text_scores_via_the_shared_text_norm_policy() {
+        // The equivalence `oracle compare-text` relies on: its verdict is
+        // `normalize` at ingestion + `capped_similarity`, which is exactly
+        // what the text sweep scores its verdict rows with (cap + similarity
+        // + four-decimal round) and the CORP.03 golden hash normalises with.
+        let raw_a = "Selis oracle smoke\r\ntest\r\n";
+        let raw_b = "Selis  oracle \t \nsmoke test";
+        let norm_a = text_norm::normalize(raw_a);
+        let norm_b = text_norm::normalize(raw_b);
+        let (sim, truncated) = text_norm::capped_similarity(&norm_a, &norm_b);
+        assert_eq!(sim, 1.0, "N6 whitespace policy forgives the layout");
+        assert!(!truncated);
+        assert_eq!(norm_a, norm_b);
+    }
 
     #[test]
     fn pins_parse_into_typed_tables() {

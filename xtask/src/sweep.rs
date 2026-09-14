@@ -76,6 +76,11 @@ pub struct SweepConfig {
     pub include: Vec<String>,
     /// Skip files whose corpus id contains one of these substrings.
     pub exclude: Vec<String>,
+    /// Pair-only text calibration (`--only-pair`, SL-0.ORACLE.04 baseline
+    /// mode): run the named tools' legs and score only the named
+    /// oracle-vs-oracle pairs — no selis, no golden renders, no font legs.
+    /// Honoured by the text sweep; unused by the render sweep.
+    pub only_pairs: Vec<(String, String)>,
 }
 
 /// One (file, tool, dpi) outcome, appended to `verdicts.jsonl`.
