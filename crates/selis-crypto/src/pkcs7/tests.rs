@@ -173,16 +173,23 @@ fn key_trans_recipient(encrypted_key: &[u8]) -> Vec<u8> {
     let mut rid_body = tlv(0x30, &[]); // issuer Name (empty RDNSequence)
     rid_body.extend_from_slice(&integer_bytes(1)); // serialNumber
     let rid = tlv(0x30, &rid_body);
+    key_trans_with_rid(&rid, encrypted_key)
+}
+
+/// The same `KeyTransRecipientInfo` with a caller-supplied (already-encoded)
+/// `RecipientIdentifier` TLV.
+fn key_trans_with_rid(rid: &[u8], encrypted_key: &[u8]) -> Vec<u8> {
     let mut body = integer_bytes(0); // version
-    body.extend_from_slice(&rid);
+    body.extend_from_slice(rid);
     body.extend_from_slice(&algorithm_identifier(RSA_ENCRYPTION, Some(&[0x05, 0x00]))); // NULL
     body.extend_from_slice(&tlv(0x04, encrypted_key));
     tlv(0x30, &body)
 }
 
 /// A `KeyAgreeRecipientInfo` ([1] arm) with one originator point and one
-/// wrapped key.
-fn key_agree_recipient(originator_point: &[u8], wrapped: &[u8]) -> Vec<u8> {
+/// wrapped key, addressed by `rid` (already-encoded `RecipientIdentifier`
+/// TLV bytes — SL-1.ENC.07 parses it).
+fn key_agree_recipient(originator_point: &[u8], wrapped: &[u8], rid: &[u8]) -> Vec<u8> {
     // OriginatorPublicKey ::= SEQUENCE { algorithm, BIT STRING }
     let mut bit_string = vec![0u8]; // no unused bits
     bit_string.extend_from_slice(originator_point);
@@ -195,7 +202,7 @@ fn key_agree_recipient(originator_point: &[u8], wrapped: &[u8]) -> Vec<u8> {
     body.extend_from_slice(&originator_wrapper);
     body.extend_from_slice(&algorithm_identifier(DH_STDDH_SHA256_KDF, None));
     // recipientEncryptedKeys: SEQUENCE OF { SEQUENCE { rid, OCTET STRING } }
-    let mut entry = tlv(0x30, &[]); // empty issuer placeholder
+    let mut entry = rid.to_vec();
     entry.extend_from_slice(&tlv(0x04, wrapped));
     let keys = tlv(0x30, &tlv(0x30, &entry));
     body.extend_from_slice(&keys);
@@ -386,7 +393,7 @@ fn rsa_key_transport_round_trip() {
 
     let auth = authenticate_public_key(
         &[&blob],
-        &PubKeyCredential::Rsa(rsa_to_pkcs8(&key)),
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&key)),
         128,
         false,
         true,
@@ -395,6 +402,8 @@ fn rsa_key_transport_round_trip() {
     .expect("authenticate");
     assert_eq!(auth.key.len(), 16);
     assert_eq!(auth.permissions, 0xFFFF_F0C0);
+    assert_eq!(auth.matched_by, Matched::Structurally);
+    assert_eq!(auth.recipient_index, 0);
     // The key must match an independent derivation of Algorithm 1.
     let mut input = payload[..20].to_vec();
     input.extend_from_slice(&blob);
@@ -419,7 +428,7 @@ fn wrong_rsa_key_is_a_typed_error() {
 
     let e = authenticate_public_key(
         &[&blob],
-        &PubKeyCredential::Rsa(rsa_to_pkcs8(&wrong)),
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&wrong)),
         128,
         false,
         true,
@@ -432,7 +441,7 @@ fn wrong_rsa_key_is_a_typed_error() {
     let (secret, _) = test_ec_pair();
     let e = authenticate_public_key(
         &[&blob],
-        &PubKeyCredential::EcP256(ec_to_pkcs8(&secret)),
+        &PubKeyCredential::ec_p256(ec_to_pkcs8(&secret)),
         128,
         false,
         true,
@@ -462,13 +471,17 @@ fn ecdh_key_agreement_round_trip() {
 
     use p256::elliptic_curve::sec1::ToEncodedPoint;
     let point = public.to_encoded_point(false); // uncompressed
-    let kari = key_agree_recipient(point.as_bytes(), &wrapped);
+    let kari = key_agree_recipient(
+        point.as_bytes(),
+        &wrapped,
+        &tlv(0x80, &[0x33u8; 20]), // SKI-addressed recipient
+    );
     let eci = encrypted_content_info(AES256_CBC, Some(&[0x09; 16]), &content);
     let blob = enveloped_blob(&[kari], &eci);
 
     let auth = authenticate_public_key(
         &[&blob],
-        &PubKeyCredential::EcP256(ec_to_pkcs8(&secret)),
+        &PubKeyCredential::ec_p256(ec_to_pkcs8(&secret)),
         256,
         true,
         true,
@@ -554,7 +567,7 @@ fn empty_recipient_set_terminates() {
 /// The Debug impl of the credential must never print key material.
 #[test]
 fn credential_debug_is_redacted() {
-    let cred = PubKeyCredential::Rsa(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    let cred = PubKeyCredential::rsa(vec![0xDE, 0xAD, 0xBE, 0xEF]);
     let s = format!("{cred:?}");
     assert!(!s.contains("deadbeef"));
     assert!(!s.contains("222"));
@@ -565,4 +578,257 @@ fn credential_debug_is_redacted() {
 fn sha1_test(input: &[u8]) -> Vec<u8> {
     use sha1::Digest as _;
     sha1::Sha1::digest(input).to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// SL-1.ENC.07 — certificate-identity recipient selection
+// ---------------------------------------------------------------------------
+
+use crate::test_fixtures::{certificate, serial_content};
+use crate::x509;
+
+/// An `IssuerAndSerialNumber` `RecipientIdentifier` (with its wrapping TLV)
+/// derived from an already-parsed certificate identity.
+fn rid_from_identity(issuer: &[u8], serial: &[u8]) -> Vec<u8> {
+    let mut body = tlv(0x30, issuer);
+    body.extend_from_slice(&tlv(0x02, serial));
+    tlv(0x30, &body)
+}
+
+/// Build an RSA-key-transport blob addressed to `identifier`.
+fn rsa_blob_for(key: &rsa::RsaPrivateKey, identifier: &[u8]) -> Vec<u8> {
+    let cek = [0x5Au8; 16];
+    let alg = CekAlgorithm::Aes128Cbc { iv: [0x07; 16] };
+    let mut payload = [0x63u8; 24];
+    payload[20..24].copy_from_slice(&0xFFFF_F0C0u32.to_le_bytes());
+    let content = cbc_encrypt_test(alg, &cek, &payload).expect("encrypt");
+    let encrypted_key = rsa_wrap_cek(key, &cek);
+    let ktri = key_trans_with_rid(identifier, &encrypted_key);
+    let eci = encrypted_content_info(AES128_CBC, Some(&[0x07; 16]), &content);
+    enveloped_blob(&[ktri], &eci)
+}
+
+/// A credential's `Auto`/`Certificate` pass selects the recipient whose
+/// `issuerAndSerialNumber` matches the supplied chain before any unwrap.
+#[test]
+fn certificate_identity_selects_the_addressed_recipient() {
+    let mut g = guard();
+    let key = test_rsa_key(2048);
+    let cert = certificate(&[0x00], 0x4D, "selis-recip", false, None);
+    let ident = x509::parse_identity(&cert, &mut g).expect("identity");
+    let rid = rid_from_identity(ident.issuer, ident.serial);
+
+    // A wrong-addressed blob first, then the correctly addressed one: the
+    // identity pass must take the second, and prove it matched by identity.
+    let decoy = rsa_blob_for(&key, &rid_from_identity(&[], &serial_content(9999)));
+    let target = rsa_blob_for(&key, &rid);
+    let cred = PubKeyCredential::rsa(rsa_to_pkcs8(&key)).with_certificate(cert.clone());
+    let auth = authenticate_public_key(&[&decoy, &target], &cred, 128, false, true, &mut g)
+        .expect("matched by identity");
+    assert_eq!(auth.matched_by, Matched::ByIssuerAndSerialNumber);
+    assert_eq!(auth.recipient_index, 1, "the identity-matched blob wins");
+
+    // match_by=Certificate with a chain that matches nothing is a typed
+    // RECIPIENT_NO_MATCH, even though the key could open a blob structurally.
+    let unrelated = certificate(&[0x00], 0x1234, "someone-else", false, None);
+    let strict = PubKeyCredential::rsa(rsa_to_pkcs8(&key))
+        .with_certificate(unrelated)
+        .matching(MatchBy::Certificate);
+    let e = authenticate_public_key(&[&decoy, &target], &strict, 128, false, true, &mut g)
+        .expect_err("Certificate mode must not fall through");
+    assert_eq!(e.code(), Code::RecipientNoMatch);
+
+    // …while the same strict credential that DOES match still opens.
+    let ok = PubKeyCredential::rsa(rsa_to_pkcs8(&key))
+        .with_certificate(cert)
+        .matching(MatchBy::Certificate);
+    let auth = authenticate_public_key(&[&decoy, &target], &ok, 128, false, true, &mut g)
+        .expect("the addressed chain opens");
+    assert_eq!(auth.matched_by, Matched::ByIssuerAndSerialNumber);
+    assert_eq!(auth.recipient_index, 1);
+}
+
+/// A bare private key (no chain) always uses the structural first-valid scan
+/// and reports `Matched::Structurally`.
+#[test]
+fn bare_key_selection_is_structural() {
+    let mut g = guard();
+    let key = test_rsa_key(2048);
+    let pkcs8 = rsa_to_pkcs8(&key);
+    let cert = certificate(&[0x00], 0x4D, "selis-recip", false, None);
+    let ident = x509::parse_identity(&cert, &mut g).expect("identity");
+    let rid = rid_from_identity(ident.issuer, ident.serial);
+    let blob = rsa_blob_for(&key, &rid);
+    let auth = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(pkcs8), // no certificate supplied
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect("structural match");
+    assert_eq!(auth.matched_by, Matched::Structurally);
+}
+
+/// A subject-key-identifier recipient is matched by both the extension form
+/// and the RFC 5280 method-1 (SHA-1 of the public key) fallback.
+#[test]
+fn subject_key_identifier_matches_the_chain() {
+    let mut g = guard();
+    let key = test_rsa_key(2048);
+    let pkcs8 = rsa_to_pkcs8(&key);
+
+    // (a) The recipient carries the certificate's extension SKI.
+    let ski = [0x11u8; 20];
+    let cert_ext = certificate(&[0x00], 5, "ski-ext", false, Some(&ski));
+    // An RSA cert has no method-1 fallback, so the extension is what binds.
+    // Build a blob addressed by that SKI (subjectKeyIdentifier [0]).
+    let blob_ski = rsa_blob_for(&key, &tlv(0x80, &ski));
+    let auth = authenticate_public_key(
+        &[&blob_ski],
+        &PubKeyCredential::rsa(pkcs8.clone()).matching(MatchBy::Certificate),
+        128,
+        false,
+        true,
+        &mut g,
+    );
+    // Certificate mode with no certificate supplied matches nothing.
+    assert_eq!(
+        auth.err().map(|e| e.code()),
+        Some(Code::RecipientNoMatch),
+        "certificate mode requires a chain"
+    );
+    // …with the extension-bearing chain, `Auto` matches by identity.
+    let auth = authenticate_public_key(
+        &[&blob_ski],
+        &PubKeyCredential::rsa(pkcs8.clone()).with_certificate(cert_ext),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect("SKI extension match");
+    assert_eq!(auth.matched_by, Matched::BySubjectKeyIdentifier);
+
+    // (b) An EC cert with no extension: the method-1 SHA-1 of the key.
+    let point = [0x04u8, 9, 8, 7];
+    let ski_bytes = <[u8; 20]>::try_from(sha1_test(&point).as_slice()).expect("20");
+    let cert_ec = certificate(&point, 6, "ski-ec", true, None);
+    let blob_ec_ski = rsa_blob_for(&key, &tlv(0x80, &ski_bytes));
+    let auth = authenticate_public_key(
+        &[&blob_ec_ski],
+        &PubKeyCredential::rsa(pkcs8).with_certificate(cert_ec),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect("method-1 SKI match");
+    assert_eq!(auth.matched_by, Matched::BySubjectKeyIdentifier);
+}
+
+/// Serials that differ only by DER minimality padding compare equal.
+#[test]
+fn serial_equality_is_value_based() {
+    assert!(serial_eq(&[0x4D], serial_content(0x4D).as_slice()));
+    assert!(serial_eq(&[0x00, 0x4D], &[0x4D]));
+    assert!(!serial_eq(&[0x4D], &[0x4E]));
+}
+
+/// A single blob addressed by **duplicate identical** `RecipientIdentifier`s
+/// (two `KeyTransRecipientInfo` entries quoting the same issuer/serial — a
+/// writer bug, seen in the wild): the identity pass keeps trying after the
+/// first transport fails to unwrap and opens the recipient whose key really
+/// matches; it never mistakes the failing twin for "no match", and never
+/// opens on the wrong key pair.
+#[test]
+fn duplicate_identifiers_try_every_matched_transport() {
+    let mut g = guard();
+    let key = test_rsa_key(2048);
+    let other = test_rsa_key(2048);
+    let cert = certificate(&[0x00], 0x4D, "selis-duplicate", false, Some(&[0x77u8; 20]));
+    let ident = x509::parse_identity(&cert, &mut g).expect("identity");
+    let rid = rid_from_identity(ident.issuer, ident.serial);
+
+    let cek = [0x5Au8; 16];
+    let alg = CekAlgorithm::Aes128Cbc { iv: [0x07; 16] };
+    let mut payload = [0x63u8; 24];
+    payload[20..24].copy_from_slice(&0xFFFF_F0C0u32.to_le_bytes());
+    let content = cbc_encrypt_test(alg, &cek, &payload).expect("encrypt");
+    // First twin: CEK wrapped under a key the credential is NOT (fails the
+    // unwrap); second twin: the right key.
+    let wrong = rsa_wrap_cek(&other, &cek);
+    let right = rsa_wrap_cek(&key, &cek);
+    let blob = enveloped_blob(
+        &[
+            key_trans_with_rid(&rid, &wrong),
+            key_trans_with_rid(&rid, &right),
+        ],
+        &encrypted_content_info(AES128_CBC, Some(&[0x07; 16]), &content),
+    );
+
+    // Identity mode (`Certificate`): matches the duplicated rid, keeps
+    // trying, opens on the second transport — still BY identity.
+    let cred = PubKeyCredential::rsa(rsa_to_pkcs8(&key))
+        .with_certificate(cert.clone())
+        .matching(MatchBy::Certificate);
+    let auth = authenticate_public_key(&[&blob], &cred, 128, false, true, &mut g)
+        .expect("a matched-but-failing twin must not abort the pass");
+    assert_eq!(auth.matched_by, Matched::ByIssuerAndSerialNumber);
+    assert_eq!(auth.permissions, 0xFFFF_F0C0);
+
+    // A key matching *neither* twin with the same chain: the identity pass
+    // matches both twins, unwraps fail on both, and `Certificate` mode
+    // still refuses typed — a matched identifier with non-matching key
+    // material is never a silent fall-through.
+    let third = test_rsa_key(1024);
+    let e = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&third))
+            .with_certificate(cert)
+            .matching(MatchBy::Certificate),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect_err("neither twin opens");
+    assert_eq!(e.code(), Code::RecipientNoMatch);
+}
+
+/// A malformed certificate in the chain is a typed error, never silently
+/// dropped (a corrupt chain must not degrade to structural selection).
+#[test]
+fn damaged_chain_certificate_is_malformed() {
+    let mut g = guard();
+    let key = test_rsa_key(2048);
+    let blob = rsa_blob_for(&key, &tlv(0x30, &[])); // no ISN: won't match anyway
+    let e = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&key)).with_certificate(vec![0x30, 0x00]),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect_err("bad cert");
+    assert_eq!(e.code(), Code::EncryptMalformed);
+}
+
+/// The permission decoder never yields a silent grant: only the exact
+/// 24-byte payload decodes; anything else is `None`.
+#[test]
+fn permission_block_decoder_is_strict() {
+    // A structurally valid 24-byte payload decodes the little-endian block.
+    let mut payload = [0u8; 24];
+    payload[20..].copy_from_slice(&0xFFFF_F0C0u32.to_le_bytes());
+    assert_eq!(decode_permission_block(&payload), Some(0xFFFF_F0C0));
+    assert_eq!(payload_seed(&payload).map(<[u8]>::len), Some(20));
+    // Any wrong length is None — never zero, never partial.
+    assert_eq!(decode_permission_block(&payload[..23]), None);
+    assert_eq!(decode_permission_block(&payload[..20]), None);
+    assert_eq!(decode_permission_block(&[0u8; 25][..]), None);
+    assert_eq!(decode_permission_block(&[]), None);
+    assert!(payload_seed(&payload[..23]).is_none());
 }

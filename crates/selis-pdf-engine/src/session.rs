@@ -46,48 +46,117 @@ fn open_doc(
     Doc,
     selis_pdf_doc::Document,
     Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+    Option<PublicKeyReceipt>,
+    Option<u32>,
 )> {
-    let key: Option<selis_pdf_cos::encrypt::DecryptPolicy> = {
+    // (`key`, `receipt`, `pdf_bits`) — `pdf_bits` records the parsed `/P`
+    // whenever the /Encrypt dict carries it, for every handler and every
+    // open path: a credential-less public-key or standard open surfaces the
+    // document-level grant honestly (the SL-1.ENC.04 posture — surface, the
+    // tool's own decision), while `receipt` additionally *binds* it through
+    // the CMS intersection (SL-1.ENC.09).
+    let (key, receipt, pdf_bits): (
+        Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+        Option<PublicKeyReceipt>,
+        Option<u32>,
+    ) = {
         let encrypt_ref = doc.revisions().last().and_then(|v| v.encrypt);
         match encrypt_ref {
-            None => None,
+            None => (None, None, None),
             Some(r) => {
                 match selis_pdf_cos::encrypt::parse_encrypt(src, Some(r), budget, g) {
-                    Ok(Some(info)) => match info.handler {
-                        selis_pdf_cos::encrypt::Handler::Standard => {
-                            let id = doc
-                                .revisions()
-                                .last()
-                                .map(|v| v.trailer.clone())
-                                .map(|t| selis_pdf_cos::encrypt::document_id(&t))
-                                .unwrap_or_default();
-                            selis_pdf_cos::encrypt::authenticate(&info, &id, b"").map(|k| {
-                                selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(&info, k)
-                            })
-                        }
-                        selis_pdf_cos::encrypt::Handler::PubKey => match credential {
-                            Some(c) => {
-                                let auth =
-                                    selis_pdf_cos::encrypt::authenticate_public_key(&info, c, g)?;
-                                Some(selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(
-                                    &info, auth.key,
-                                ))
+                    Ok(Some(info)) => {
+                        let pdf_bits = Some(info.p);
+                        match info.handler {
+                            selis_pdf_cos::encrypt::Handler::Standard => {
+                                let id = doc
+                                    .revisions()
+                                    .last()
+                                    .map(|v| v.trailer.clone())
+                                    .map(|t| selis_pdf_cos::encrypt::document_id(&t))
+                                    .unwrap_or_default();
+                                match selis_pdf_cos::encrypt::authenticate(&info, &id, b"") {
+                                    Some(k) => (
+                                        Some(selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(
+                                            &info, k,
+                                        )),
+                                        None,
+                                        pdf_bits,
+                                    ),
+                                    None => (None, None, pdf_bits),
+                                }
                             }
-                            // No credential: tolerant open without a key
-                            // (the wrong-credential path is
-                            // open_public_key's typed error).
-                            None => None,
-                        },
-                    },
+                            selis_pdf_cos::encrypt::Handler::PubKey => match credential {
+                                // SL-1.ENC.09: the recipient's 4-byte CMS
+                                // permission block is *consumed*, not just
+                                // surfaced — it lands on the session receipt
+                                // the policy layer intersects with `/P`.
+                                Some(c) => {
+                                    let auth = selis_pdf_cos::encrypt::authenticate_public_key(
+                                        &info, c, g,
+                                    )?;
+                                    let receipt = PublicKeyReceipt {
+                                        cms_permissions: auth.permissions,
+                                        pdf_permissions: info.p,
+                                        matched_by: auth.matched_by,
+                                        recipient_index: auth.recipient_index,
+                                    };
+                                    (
+                                        Some(selis_pdf_cos::encrypt::DecryptPolicy::from_encrypt(
+                                            &info, auth.key,
+                                        )),
+                                        Some(receipt),
+                                        pdf_bits,
+                                    )
+                                }
+                                // No credential: tolerant open without a key
+                                // (the wrong-credential path is
+                                // open_public_key's typed error).
+                                None => (None, None, pdf_bits),
+                            },
+                        }
+                    }
                     // Unreadable or non-standard handler: open unencrypted.
-                    Ok(None) => None,
-                    Err(_) => None,
+                    Ok(None) => (None, None, None),
+                    Err(_) => (None, None, None),
                 }
             }
         }
     };
     let document = selis_pdf_doc::Document::resolve(doc, src, budget, g, key.as_ref())?;
-    Ok((doc.clone(), document, key))
+    Ok((doc.clone(), document, key, receipt, pdf_bits))
+}
+
+/// The receipt of an authenticated public-key open (SL-1.ENC.09): the
+/// recipient's cryptographically-attested 4-byte CMS permission block, the
+/// document's `/P` it is intersected with, and how the recipient was
+/// selected (SL-1.ENC.07).
+///
+/// The bits use the standard table-23 layout (ISO 32000-2 §7.6.4.3 /
+/// §7.6.6.4); the effective grant is [`PublicKeyReceipt::effective`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicKeyReceipt {
+    /// The recipient block from the unwrapped 24-byte CMS payload.
+    pub cms_permissions: u32,
+    /// The document's `/P` bits (`0xFFFF_FFFF` when the public-key
+    /// dictionary carries no `/P` — then the recipient block binds alone).
+    pub pdf_permissions: u32,
+    /// Identifier vs structural recipient selection (design note §4).
+    pub matched_by: selis_crypto::pkcs7::Matched,
+    /// The `/Recipients` entry that was opened.
+    pub recipient_index: usize,
+}
+
+impl PublicKeyReceipt {
+    /// The enforced grant: `/P` **and** the recipient block, bit-wise
+    /// intersection — a weaker CMS grant never raises the PDF-level grant
+    /// (SL-1.ENC.09; design note §6.2).
+    #[must_use]
+    pub fn effective(&self) -> selis_policy::Permissions {
+        selis_policy::Permissions::from_bits(self.pdf_permissions).restrict(
+            &selis_policy::Permissions::from_cms_block(self.cms_permissions.to_le_bytes()),
+        )
+    }
 }
 
 /// The engine session: a parsed, resolved document ready to render.
@@ -101,6 +170,14 @@ pub struct Session {
     /// The encryption key (bytes, revision, AES flag), if the document is
     /// password-protected and the (user) password authenticated.
     key: Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+    /// The receipt of a public-key (recipient) open: the CMS permission
+    /// block to enforce, plus how the recipient was matched (SL-1.ENC.09,
+    /// SL-1.ENC.07). `None` for standard-handler and credential-less opens.
+    pubkey: Option<PublicKeyReceipt>,
+    /// The parsed document `/P` bits whenever the `/Encrypt` dictionary
+    /// carries them — surfaced for every open (SL-1.ENC.04 posture);
+    /// enforced only through `pubkey`'s intersection (SL-1.ENC.09).
+    pdf_bits: Option<u32>,
 }
 
 impl Session {
@@ -158,12 +235,14 @@ impl Session {
         // (SL-1.ROB.01).
         if let Some(doc) = &parsed {
             match open_doc(&src, doc, budget, &mut g, None) {
-                Ok((doc, document, key)) => {
+                Ok((doc, document, key, pubkey, pdf_bits)) => {
                     return Ok(Self {
                         doc,
                         src,
                         document,
                         key,
+                        pubkey,
+                        pdf_bits,
                     });
                 }
                 Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
@@ -173,20 +252,28 @@ impl Session {
             }
         }
         let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
-        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, None)?;
+        let (doc, document, key, pubkey, pdf_bits) = open_doc(&src, &rec, budget, &mut g, None)?;
         let _ = g;
         Ok(Self {
             doc,
             src,
             document,
             key,
+            pubkey,
+            pdf_bits,
         })
     }
 
     /// Open an encrypted PDF with a public-key (PKCS#7) credential
     /// (SL-1.ENC.03, ISO 32000-2 §7.6.6): the recipient's private key in
-    /// PKCS#8 DER, matched against the `/Recipients` blobs of the
-    /// `/Adobe.PPKLite` (or `/Adobe.PubSec`) `/Encrypt` dictionary.
+    /// PKCS#8 DER — optionally with its X.509 certificate chain and a
+    /// [`selis_crypto::pkcs7::MatchBy`] policy (SL-1.ENC.07) — matched
+    /// against the `/Recipients` blobs of the `/Adobe.PPKLite` (or
+    /// `/Adobe.PubSec`) `/Encrypt` dictionary.
+    ///
+    /// The opened session carries a [`PublicKeyReceipt`]: the recipient's
+    /// 4-byte CMS permission block consumed by the policy layer
+    /// (SL-1.ENC.09 — see [`Session::check_permissions`]).
     ///
     /// Unlike [`Session::open`], an authentication failure is a **typed
     /// error**, not a tolerant open — the caller supplied a credential, so a
@@ -227,12 +314,14 @@ impl Session {
         };
         if let Some(doc) = &parsed {
             match open_doc(&src, doc, budget, &mut g, Some(credential)) {
-                Ok((doc, document, key)) => {
+                Ok((doc, document, key, pubkey, pdf_bits)) => {
                     return Ok(Self {
                         doc,
                         src,
                         document,
                         key,
+                        pubkey,
+                        pdf_bits,
                     });
                 }
                 Err(e) if e.is_budget() || e.is_cancelled() || e.is_pending() => {
@@ -253,14 +342,92 @@ impl Session {
             }
         }
         let rec = selis_pdf_cos::reconstruct(&src, budget, &mut g)?.0;
-        let (doc, document, key) = open_doc(&src, &rec, budget, &mut g, Some(credential))?;
+        let (doc, document, key, pubkey, pdf_bits) =
+            open_doc(&src, &rec, budget, &mut g, Some(credential))?;
         let _ = g;
         Ok(Self {
             doc,
             src,
             document,
             key,
+            pubkey,
+            pdf_bits,
         })
+    }
+
+    /// Open an encrypted PDF *as an identified recipient* and bind the
+    /// resulting receipt into the policy layer (SL-1.ENC.09, the
+    /// `open_as_recipient` API of the task block).
+    ///
+    /// Identical to [`Session::open_public_key`]; the returned session
+    /// carries the recipient's CMS permission block, which
+    /// [`Session::check_permissions`] intersects with the document `/P` to
+    /// gate every content-touching operation. This entry point exists to make
+    /// the enforcement binding explicit at the call site (the differentiator
+    /// vs Acrobat/Foxit, whose viewer leaves the CMS bits advisory).
+    ///
+    /// # Budget
+    ///
+    /// Charged against `budget` for the whole open exactly as
+    /// [`Session::open_public_key`], including the CMS recipient-blob parses
+    /// and (with a chain) the X.509 identity walk, which charge their wire
+    /// bytes to this guard.
+    ///
+    /// # Malformed Input
+    ///
+    /// Same typed errors as [`Session::open_public_key`], plus a damaged
+    /// certificate in the supplied chain is `ENCRYPT_MALFORMED` (never
+    /// silently dropped — §4.1 of the design note).
+    pub fn open_as_recipient(
+        src: Vec<u8>,
+        credential: &selis_crypto::pkcs7::PubKeyCredential,
+        budget: &Budget,
+        clock: &dyn Clock,
+    ) -> Result<Self> {
+        Self::open_public_key(src, credential, budget, clock)
+    }
+
+    /// The public-key receipt for this open, or `None` when the document was
+    /// opened without a recipient credential (the tolerant or standard
+    /// paths). SL-1.ENC.09.
+    #[must_use]
+    pub fn recipient_receipt(&self) -> Option<&PublicKeyReceipt> {
+        self.pubkey.as_ref()
+    }
+
+    /// The effective permission grant enforcing the public-key recipient's
+    /// CMS block against the document `/P` (SL-1.ENC.09). For a recipient
+    /// open this is the `/P ∧ CMS` intersection; with no receipt it is the
+    /// document's parsed `/P` when known — surfaced only (the SL-1.ENC.04
+    /// posture; the enforcement gate binds per-recipient blocks), and
+    /// all-allow when there is no permission dictionary at all.
+    #[must_use]
+    pub fn effective_permissions(&self) -> selis_policy::Permissions {
+        match self.pubkey {
+            Some(ref receipt) => receipt.effective(),
+            None => self
+                .pdf_bits
+                .map(selis_policy::Permissions::from_bits)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Check a content-touching operation against the effective grant
+    /// (SL-1.ENC.09). A public-key recipient whose CMS block forbids the op
+    /// gets a typed `PERMISSION_DENIED_BY_CMS` even though the document `/P`
+    /// (and another recipient's grant) might allow it — a weaker recipient
+    /// never inherits a stronger one's permission.
+    ///
+    /// This is the API gate; the viewer UI that greys out disallowed actions
+    /// is Phase 4 (SL-5). Ops not present yet on this `Session` (redact,
+    /// annotate) route through this same function so the enforcement point is
+    /// single and auditable.
+    pub fn check_permissions(&self, op: selis_policy::ContentOp) -> Result<()> {
+        // A credential-less / standard (owner) open keeps `/P`-only
+        // semantics (SL-1.ENC.04 logged override). A public-key recipient is
+        // never an owner, so the CMS-intersected grant binds without escape.
+        let perms = self.effective_permissions();
+        selis_policy::check_permissions(&perms, op, self.pubkey.is_none())
     }
 
     /// A resolver for this document, with the encryption key applied.
@@ -330,12 +497,20 @@ impl Session {
     }
 
     /// An embedded file's decoded bytes by name-tree key.
+    ///
+    /// Copying an embedded file's bytes out of the document is an *extract*
+    /// operation: for a public-key recipient the call is gated on the
+    /// recipient's CMS copy bit via [`Session::check_permissions`]
+    /// (SL-1.ENC.09) and fails typed `PERMISSION_DENIED_BY_CMS` when the
+    /// grant forbids it. The metadata-only [`Session::attachments`] inventory
+    /// stays ungated (a viewer must always be able to show *what* is there).
     pub fn embedded_file_data(
         &self,
         key: &str,
         budget: &Budget,
         g: &mut BudgetGuard<'_>,
     ) -> Result<Option<Vec<u8>>> {
+        self.check_permissions(selis_policy::ContentOp::CopyText)?;
         let mut resolver = self.new_resolver(budget);
         selis_pdf_doc::embedded_file_data(&mut resolver, &self.document.catalog, key, budget, g)
     }

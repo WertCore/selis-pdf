@@ -403,6 +403,15 @@ user_msg = "The supplied certificate or private key does not open this PDF."
 retryable = true
 doc_state = "NotLoaded"
 
+[[code]]
+id = 1808
+name = "PERMISSION_DENIED_BY_CMS"
+kind = "Policy"
+meaning = "A content operation was refused because the active PKCS#7 recipient's 4-byte permission block (intersected with the PDF /P bits) forbids it (SL-1.ENC.09)."
+user_msg = "This PDF's per-recipient permissions do not allow that operation."
+retryable = false
+doc_state = "Unchanged"
+
 # ---------------------------------------------------------------------------
 # 2000–2299 — Fonts and text
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+selis-error = { path = "../crates/selis-error" }
 selis-sandbox = { path = "../crates/selis-sandbox" }
 selis-pdf-cos = { path = "../crates/selis-pdf-cos" }
 selis-pdf-filter = { path = "../crates/selis-pdf-filter" }
@@ -94,6 +95,23 @@ bench = false
 [[bin]]
 name = "pkcs7_cms"
 path = "fuzz_targets/pkcs7_cms.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+# The X.509 identity reader (SL-1.ENC.07) — a new parse entry point
+# requires its own target (03-CONVENTIONS.md §6).
+name = "x509_identity"
+path = "fuzz_targets/x509_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+# The CMS permission-block decoder (SL-1.ENC.09) — never a silent bypass.
+name = "pkcs7_perms"
+path = "fuzz_targets/pkcs7_perms.rs"
 test = false
 doc = false
 bench = false

@@ -190,6 +190,15 @@ enum Command {
         #[arg(long, default_value = "crates/selis-pdf-engine/tests/fixtures")]
         outdir: std::path::PathBuf,
     },
+    /// Regenerate the SL-1.ENC.07/09 fuzz seed corpora (CMS blobs addressed by
+    /// certificate identity, X.509 chains and corruptions, permission-block
+    /// edge cases) under `fuzz/seeds/`. Native-only, like `pubkey-fixtures`.
+    #[cfg(not(target_arch = "wasm32"))]
+    PubkeyFuzzSeeds {
+        /// Workspace root under which `fuzz/seeds/` lives.
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
     /// CycloneDX SBOM (SL-0.WS.07).
     Sbom,
     /// Signing (G6).
@@ -593,6 +602,8 @@ fn main() -> ExitCode {
                 pkcs7_fixtures::run(&outdir)
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::PubkeyFuzzSeeds { root } => pkcs7_fixtures::fuzz_seeds(&root),
         #[cfg(not(target_arch = "wasm32"))]
         Command::PerfWasm { set, repeats, out } => perf_wasm::run(&set, repeats, &out),
         #[cfg(not(target_arch = "wasm32"))]
