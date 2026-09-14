@@ -473,6 +473,43 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     upgrade, drop the containment backstops and the printing hook, re-run a full campaign leg, and
     confirm zero contained panics. Until then every new font-parser crash artifact is triaged into
     a fixture and the containment kept.
+  - **Note (2026-09-14, DoD NOT met — containment stays as shipped):** Re-tested whether the
+    stack is now overflow-clean. Pinned versions confirmed in `Cargo.lock`: direct path **skrifa
+    0.47.0 / read-fonts 0.44.0 / font-types 0.12.5** — all three are the *newest* crates.io
+    releases as of this date; shaping path **swash 0.2.10**, also the newest release, internally
+    pulling its own older **skrifa 0.44 / read-fonts 0.41** chain. All seven pinned fixtures pass
+    through the containment in both dev and release builds with overflow checks forced on
+    (7/7 — via `CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS` for the fuzz-equivalent release profile).
+    To attribute what is still *live upstream* rather than masked, the fixtures were then re-run
+    with the shipped backstops deliberately removed (temporary pass-through `contain`,
+    `resume_unwind`, predicate disabled — reverted, never committed): **read-fonts 0.44
+    `ps/type1.rs:1444` still panics** (multiply-with-overflow — containment bypass now would be
+    a live crash), and **swash 0.2.10 still panics** at `xmtx.rs:14` (×2), `metrics.rs:169` and
+    `internal/cmap.rs:99` with the predicate on/off respectively — matching the known-site
+    inventory exactly; no site is covered by a fixed release. Verdict per DoD: keep **all**
+    containment (nothing dropped, nothing broadened, no fixture retired; the skrifa-0.47 outline
+    path proves clean on the pinned glyf input but shares read-fonts 0.44, which is *not*
+    overflow-clean, so the outline/metrics `contain` sites also stay). A confirmation leg was
+    still run: `font_ttf`, `font_cff`, `font_type1`, `font_cmap` and `shaper`, each seeded with
+    its 27 committed campaign seeds **plus the regression fixtures** (fixture bytes and the
+    font-part of each shaper input), 600 s each, libFuzzer: every initial-corpus replay executed,
+    all legs exited 0 with **zero crash/OOM/timeout artifacts**, and the printing hook logged
+    contained panics only at the *known* sites — `type1.rs:1444` ×3 (font_type1 seed replay),
+    swash `cmap.rs:99` ×1 + `parse.rs:39` ×1 (shaper seed replay); font_ttf/font_cff/font_cmap:
+    none. Executions: 427.9M / 375.3M / 362.2M / 354.1M / 651.3M (≈0.6–1.1M exec/s). Leg
+    honesty: cargo-fuzz does not support windows-msvc (its instrumented builds need the ELF-only
+    `__start___sancov_*` section-boundary symbols; lld-link/link provide none, so even `-s none`
+    fails to link),     so this leg was the same targets/hook built *uninstrumented* — seeded replay
+    then random mutation (`new_units_added: 0`): a **containment confirmation**, not a discovery
+    campaign; the 24 h-equivalent instrumented soak stays the Linux fuzz-soak job. Incidental CI
+    finding: nightly **and** dispatch fuzz-soak jobs have been red on every target since ≥ 09-11
+    — pre-existing, unrelated to fonts: `selis-crypto`'s `deprecated` `GenericArray` uses hit the
+    fuzz job's `-D warnings` under newer nightly — fix that before the next instrumented leg is
+    possible. Remaining steps for this task: upstream ships overflow-clean swash **and**
+    read-fonts releases (or our pins acquire the fixes), then upgrade, drop the Type-1 and
+    `contain` backstops, predicate, `catch_unwind` and printing hook, re-run a full instrumented
+    Linux campaign leg seeded with the regression fixtures, and confirm zero contained panics —
+    fixtures stay as deviation-contract pins regardless.
 
 ---
 
