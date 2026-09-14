@@ -26,3 +26,8 @@ default = []
 # enable this; the wasm32 build of the engine never compiles the wasmtime
 # embedding (the browser runs the same module through the browser engine).
 wasm-host = ["selis-sandbox/wasm-host"]
+
+[dev-dependencies]
+# `proptest` drives the JPX sandbox property suite (SL-1.FILT.08), which is
+# only compiled under `wasm-host`; harmless (native-only) otherwise.
+proptest = { workspace = true }

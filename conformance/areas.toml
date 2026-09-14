@@ -38,7 +38,7 @@ notes = "Parse: SL-1.COS.* (xref + recovery); CONF.05 typed-refusal adjudication
 id = "filters"
 name = "Stream filters"
 level = 2
-notes = "Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain fuzz; CONF.04 JPX/JBIG2 decode suspects tracked"
+notes = "Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain/jpx_stream fuzz + filter-jpx corpus; CONF.04 JPX/JBIG2 decode suspects tracked"
 
 [[area]]
 id = "encryption"

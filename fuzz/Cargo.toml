@@ -21,7 +21,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 selis-sandbox = { path = "../crates/selis-sandbox" }
 selis-pdf-cos = { path = "../crates/selis-pdf-cos" }
-selis-pdf-filter = { path = "../crates/selis-pdf-filter" }
+selis-pdf-filter = { path = "../crates/selis-pdf-filter", features = ["wasm-host"] }
 selis-bytes = { path = "../crates/selis-bytes" }
 selis-font = { path = "../crates/selis-font" }
 selis-shape = { path = "../crates/selis-shape" }
@@ -101,6 +101,13 @@ bench = false
 [[bin]]
 name = "wasm_dispatch"
 path = "fuzz_targets/wasm_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpx_stream"
+path = "fuzz_targets/jpx_stream.rs"
 test = false
 doc = false
 bench = false
