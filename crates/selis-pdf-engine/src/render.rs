@@ -1,4 +1,4 @@
-﻿//! The engine's render path (SL-2.RAST.11 â†’ the page renderer).
+//! The engine's render path (SL-2.RAST.11 â†’ the page renderer).
 //!
 //! Walks a [`DisplayList`] and paints each op onto a raster [`Backend`]. This
 //! is the composition point the architecture (Â§8) describes: content streams
@@ -22,11 +22,12 @@ use selis_sandbox::BudgetGuard;
 
 /// Per-walk workload counters (SL-2.PERF.02 instrumentation).
 ///
-/// Counts only â€” no clocks, no allocation â€” so filling one cannot perturb
-/// determinism (SL-2.RAST.09): two walks over the same display list produce
-/// identical counters as well as identical pixels. The `xtask perf-render`
-/// harness records these beside the wall times; that pairing is the top-10
-/// cost report's evidence.
+/// Counts and the lazy-CJK pending set only — no clocks, no wall state — so
+/// filling one cannot perturb determinism (SL-2.RAST.09): two walks over the
+/// same display list (and the same font snapshots) produce identical
+/// counters as well as identical pixels. The `xtask perf-render` harness
+/// records these beside the wall times; that pairing is the top-10 cost
+/// report's evidence.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RenderStats {
     /// Display-list ops visited (including group boundaries).
@@ -64,6 +65,14 @@ pub struct RenderStats {
     pub gid_cache_hits: u64,
     /// Outline cache hits (per glyph served without `outline_glyph`).
     pub outline_cache_hits: u64,
+    /// Glyphs served from the lazy CJK resident set (SL-3.FONT.10) rather
+    /// than the document's own font program.
+    pub cjk_fallbacks: u64,
+    /// Chunk ids the walk needed but did not find resident (bounded by the
+    /// static chunk table; the session merges these into the
+    /// [`selis_font::cjk::CjkFontSet`] queue after the walk). Empty unless a
+    /// lazy CJK snapshot was attached.
+    pub cjk_pending: std::collections::BTreeSet<&'static str>,
 }
 
 /// Bound on distinct font programs cached per walk (hostile-input guard: a
@@ -77,11 +86,18 @@ const MAX_CACHED_OUTLINES: usize = 1024;
 
 /// The writable per-glyph maps for one font.
 struct FontMaps {
-    /// Code â†’ glyph id (`None` = unmapped, cached too: spaces are common
+    /// Code → glyph id (`None` = unmapped, cached too: spaces are common
     /// and must not re-run the cmap per instance).
     gids: HashMap<u16, Option<u16>>,
-    /// Gid â†’ font-unit outline commands (`None` = no outline).
+    /// Gid → font-unit outline commands (`None` = no outline).
     outlines: HashMap<u16, Option<Vec<selis_font::OutlineCmd>>>,
+    /// Lazy-CJK code → resident-set glyph (`None` = not covered, cached).
+    /// Keyed by code (not gid): every chunk file has its own gid space.
+    cjk: HashMap<u32, Option<selis_font::cjk::CjkGlyph>>,
+    /// Lazy-CJK code → outline commands of its resolved glyph.
+    cjk_outlines: HashMap<u32, Option<Vec<selis_font::OutlineCmd>>>,
+    /// Lazy-CJK slot key → units per em (head table of that subset).
+    cjk_upems: HashMap<&'static str, f64>,
 }
 
 /// How a run's codes map to glyph ids in the font program.
@@ -116,6 +132,13 @@ pub struct ResolvedFontProgram {
     pub bytes: Vec<u8>,
     /// The code → glyph mapping.
     pub mapping: GlyphMapping,
+    /// The lazy CJK resident-set view for this walk (SL-3.FONT.10): Some
+    /// only for a `Uni…UCS2…` Type0 font (whose 2-byte codes are Unicode
+    /// scalars) when the session rendered with a [`selis_font::cjk::CjkFontSet`].
+    /// Codes the document's own program cannot serve resolve against it;
+    /// uncovered CJK codes render a `.notdef` box while their chunk is on
+    /// the pending queue. The walk never fetches.
+    pub cjk: Option<selis_font::cjk::CjkSnapshot>,
 }
 
 impl ResolvedFontProgram {
@@ -126,6 +149,20 @@ impl ResolvedFontProgram {
         Self {
             bytes,
             mapping: GlyphMapping::Unicode(selis_font::FontEncoding::Absent),
+            cjk: None,
+        }
+    }
+}
+
+impl FontMaps {
+    /// Fresh empty maps.
+    fn new() -> Self {
+        Self {
+            gids: HashMap::new(),
+            outlines: HashMap::new(),
+            cjk: HashMap::new(),
+            cjk_outlines: HashMap::new(),
+            cjk_upems: HashMap::new(),
         }
     }
 }
@@ -143,6 +180,8 @@ struct CachedFont {
     upem: f64,
     /// How codes map to glyph ids.
     mapping: GlyphMapping,
+    /// The lazy CJK view attached at resolve time, if any (SL-3.FONT.10).
+    cjk: Option<selis_font::cjk::CjkSnapshot>,
     /// The per-glyph maps.
     maps: FontMaps,
 }
@@ -159,6 +198,8 @@ enum FontView<'a> {
         upem: f64,
         /// How codes map to glyph ids.
         mapping: GlyphMapping,
+        /// The lazy CJK view, if this is a `Uni…UCS2…` Type0 font.
+        cjk: Option<selis_font::cjk::CjkSnapshot>,
         /// The shared per-glyph maps.
         maps: &'a mut FontMaps,
     },
@@ -170,6 +211,8 @@ enum FontView<'a> {
         upem: f64,
         /// How codes map to glyph ids.
         mapping: GlyphMapping,
+        /// The lazy CJK view, if attached.
+        cjk: Option<selis_font::cjk::CjkSnapshot>,
         /// The run-local per-glyph maps.
         maps: FontMaps,
     },
@@ -202,6 +245,13 @@ impl FontView<'_> {
     fn mapping(&self) -> &GlyphMapping {
         match self {
             FontView::Cached { mapping, .. } | FontView::Scratch { mapping, .. } => mapping,
+        }
+    }
+
+    /// The lazy CJK resident-set view for this font, if any.
+    fn cjk(&self) -> Option<&selis_font::cjk::CjkSnapshot> {
+        match self {
+            FontView::Cached { cjk, .. } | FontView::Scratch { cjk, .. } => cjk.as_ref(),
         }
     }
 }
@@ -244,6 +294,7 @@ impl TextCache {
                 bytes: font.bytes.clone(),
                 upem: font.upem,
                 mapping: font.mapping.clone(),
+                cjk: font.cjk.clone(),
                 maps: &mut font.maps,
             });
         }
@@ -263,16 +314,15 @@ impl TextCache {
                     bytes: fb.clone(),
                     upem,
                     mapping: program.mapping.clone(),
-                    maps: FontMaps {
-                        gids: HashMap::new(),
-                        outlines: HashMap::new(),
-                    },
+                    cjk: program.cjk.clone(),
+                    maps: FontMaps::new(),
                 },
             );
             return self.fonts.get_mut(name).map(|font| FontView::Cached {
                 bytes: font.bytes.clone(),
                 upem: font.upem,
                 mapping: font.mapping.clone(),
+                cjk: font.cjk.clone(),
                 maps: &mut font.maps,
             });
         }
@@ -280,10 +330,8 @@ impl TextCache {
             bytes: fb,
             upem,
             mapping: program.mapping,
-            maps: FontMaps {
-                gids: HashMap::new(),
-                outlines: HashMap::new(),
-            },
+            cjk: program.cjk,
+            maps: FontMaps::new(),
         })
     }
 
@@ -357,6 +405,142 @@ impl TextCache {
             }
         }
     }
+
+    /// The lazy CJK resolution for a code the document's own program could
+    /// not serve (SL-3.FONT.10): resolve from the walk's resident-set
+    /// snapshot, extract through its own per-code caches (each chunk file
+    /// carries an independent gid space), and — on a first, unresolved
+    /// miss of an addressable code — add the covering chunk to the walk's
+    /// pending set so the session can queue the fetch. This walk never
+    /// fetches: an unresolvable CJK code is [`.notdef`](GlyphPaint::Tofu)
+    /// on this pass and a real glyph on the repaint after the chunk
+    /// arrives.
+    ///
+    /// Per-source `unitsPerEm` comes from the resolved slot's head table:
+    /// a `Uni…UCS2…` font with no program at all reports none and the walk
+    /// must still scale the CJK subset correctly.
+    fn cjk_paint(
+        maps: &mut FontMaps,
+        snap: &selis_font::cjk::CjkSnapshot,
+        size: f64,
+        code: u32,
+        g: &mut BudgetGuard<'_>,
+        stats: &mut RenderStats,
+    ) -> GlyphPaint {
+        let resolved = match maps.cjk.get(&code) {
+            Some(hit) => {
+                stats.gid_cache_hits = stats.gid_cache_hits.saturating_add(1);
+                hit.clone()
+            }
+            None => {
+                stats.glyph_lookups = stats.glyph_lookups.saturating_add(1);
+                let hit = snap.resolve(code);
+                if hit.is_none() {
+                    if let Some(chunk) = selis_font::chunk_for(code) {
+                        if !snap.has_chunk(chunk.id) {
+                            stats.cjk_pending.insert(chunk.id);
+                        }
+                    }
+                }
+                if maps.cjk.len() < MAX_CACHED_GIDS {
+                    maps.cjk.insert(code, hit.clone());
+                }
+                hit
+            }
+        };
+        let Some(glyph) = resolved else {
+            return if selis_font::is_cjk(code) {
+                GlyphPaint::Tofu
+            } else {
+                GlyphPaint::Skip
+            };
+        };
+        stats.cjk_fallbacks = stats.cjk_fallbacks.saturating_add(1);
+        let upem = maps
+            .cjk_upems
+            .entry(glyph.slot.key())
+            .or_insert_with(|| selis_font::units_per_em(&glyph.bytes).map_or(1000.0, f64::from));
+        let upem = *upem;
+        let cmds = match maps.cjk_outlines.get(&code) {
+            Some(cached) => {
+                stats.outline_cache_hits = stats.outline_cache_hits.saturating_add(1);
+                cached.clone()
+            }
+            None => {
+                stats.glyph_outlines = stats.glyph_outlines.saturating_add(1);
+                let outline = selis_font::outline_glyph(&glyph.bytes, glyph.gid, g)
+                    .ok()
+                    .flatten()
+                    .map(|o| o.commands);
+                if maps.cjk_outlines.len() < MAX_CACHED_OUTLINES {
+                    maps.cjk_outlines.insert(code, outline.clone());
+                }
+                outline
+            }
+        };
+        match cmds {
+            Some(cmds) => GlyphPaint::Glyph {
+                cmds,
+                scale: size / upem,
+            },
+            // A genuinely blank glyph (spaces, fillers): covered, draws
+            // nothing — never a `.notdef` box.
+            None => GlyphPaint::Skip,
+        }
+    }
+}
+
+/// How one glyph of a text run paints on this walk.
+enum GlyphPaint {
+    /// A real outline in font units, scaled by size/unitsPerEm.
+    Glyph {
+        /// The outline commands.
+        cmds: Vec<selis_font::OutlineCmd>,
+        /// The font-space → text-space scale for this glyph.
+        scale: f64,
+    },
+    /// A `.notdef` box: the code is CJK-addressable but no resident font
+    /// covers it (SL-3.FONT.10 — repaint once its chunk arrives).
+    Tofu,
+    /// Draw nothing (unmapped code, or a blank glyph).
+    Skip,
+}
+
+/// Paint the `.notdef` box (tofu) for an unresolved CJK glyph: a ring
+/// (outer CCW, inner CW under the nonzero rule) of 0.06 em wall thickness
+/// spanning most of the full-width advance. Built in text space and taken
+/// through the same text-matrix chain as a glyph outline, so it lands
+/// wherever the run was laid out — the position never depends on font
+/// bytes (ADR-P0012 with or without chunks).
+fn fill_notdef_box(
+    backend: &mut TinySkiaBackend,
+    at: Point,
+    size: f64,
+    ctm: Matrix,
+    page_ctm: Matrix,
+    paint: &RasterPaint,
+) {
+    let m = Matrix::translate(at.x, at.y).then(ctm).then(page_ctm);
+    let x0 = size * 0.1;
+    let y0 = size * 0.03;
+    let x1 = size * 0.9;
+    let y1 = size * 0.73;
+    let t = size * 0.06;
+    let p = |x: f64, y: f64| m.apply(Point::new(x, y));
+    let commands = vec![
+        PathCmd::Move(p(x0, y0)),
+        PathCmd::Line(p(x1, y0)),
+        PathCmd::Line(p(x1, y1)),
+        PathCmd::Line(p(x0, y1)),
+        PathCmd::Close,
+        PathCmd::Move(p(x0 + t, y0 + t)),
+        PathCmd::Line(p(x0 + t, y1 - t)),
+        PathCmd::Line(p(x1 - t, y1 - t)),
+        PathCmd::Line(p(x1 - t, y0 + t)),
+        PathCmd::Close,
+    ];
+    let path = RasterPath { commands };
+    let _ = selis_raster::render::fill(backend, &path, FillRule::NonZero, paint);
 }
 use crate::page::device_scale;
 
@@ -546,30 +730,60 @@ pub fn render_display_list_with_stats(
                     let paint = paint(&state.fill, state.alpha_fill);
                     let fb = view.bytes().clone();
                     let mapping = view.mapping().clone();
+                    let cjk = view.cjk().cloned();
                     for &code in &run.glyphs {
-                        let maps = view.maps();
-                        let Some(gid) = TextCache::glyph_id(maps, &fb, &mapping, code, stats)
-                        else {
-                            continue;
+                        let glyph_paint = {
+                            let maps = view.maps();
+                            match TextCache::glyph_id(maps, &fb, &mapping, code, stats) {
+                                Some(gid) => TextCache::outline(maps, &fb, gid, g, stats).map_or(
+                                    GlyphPaint::Skip,
+                                    |cmds| GlyphPaint::Glyph { cmds, scale },
+                                ),
+                                // The document's program cannot serve the code:
+                                // a `Uni…UCS2…` Type0 run consults the lazy
+                                // CJK set (SL-3.FONT.10); everything else
+                                // keeps the legacy silent skip.
+                                None => match &cjk {
+                                    Some(snap) => TextCache::cjk_paint(
+                                        maps,
+                                        snap,
+                                        run.size,
+                                        u32::from(code),
+                                        g,
+                                        stats,
+                                    ),
+                                    None => GlyphPaint::Skip,
+                                },
+                            }
                         };
-                        let Some(cmds) = TextCache::outline(maps, &fb, gid, g, stats) else {
-                            continue;
-                        };
-                        // Glyph outline → text space (size scale) → user
-                        // space (position) → device (CTM) → page view
-                        // (DPI/flip/`/Rotate`).
-                        let m = Matrix::scale(scale, scale)
-                            .then(Matrix::translate(at.x, at.y))
-                            .then(state.ctm)
-                            .then(page_ctm);
-                        let transformed = transform_outline(&cmds, m);
-                        if transformed.is_empty() {
-                            continue;
+                        match glyph_paint {
+                            GlyphPaint::Glyph { cmds, scale } => {
+                                // Glyph outline → text space (size scale) →
+                                // user space (position) → device (CTM) → page
+                                // view (DPI/flip/`/Rotate`).
+                                let m = Matrix::scale(scale, scale)
+                                    .then(Matrix::translate(at.x, at.y))
+                                    .then(state.ctm)
+                                    .then(page_ctm);
+                                let transformed = transform_outline(&cmds, m);
+                                if transformed.is_empty() {
+                                    continue;
+                                }
+                                let p = RasterPath {
+                                    commands: transformed,
+                                };
+                                let _ = selis_raster::render::fill(
+                                    backend,
+                                    &p,
+                                    FillRule::NonZero,
+                                    &paint,
+                                );
+                            }
+                            GlyphPaint::Tofu => {
+                                fill_notdef_box(backend, *at, run.size, state.ctm, page_ctm, &paint)
+                            }
+                            GlyphPaint::Skip => {}
                         }
-                        let p = RasterPath {
-                            commands: transformed,
-                        };
-                        let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &paint);
                     }
                 }
             }
