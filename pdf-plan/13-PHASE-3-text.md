@@ -76,9 +76,38 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     lazy-load additional ranges as separate chunks on demand, and cache them. Native bundles more.
   - **DoD:** A Chinese document renders correctly on the web with a measured incremental download;
     the viewer never blocks on a font fetch (renders notdef, then repaints).
-  - **Status:** Font-side chunk model shipped (`selis_font::cjk` — the Unicode range → chunk table,
-    main Ideographs quartered). The DoD's web verification (incremental download, notdef→repaint)
-    requires the WASM app/shell, which does not exist yet.
+  - **Status:** Engine side landed 2026-09-14 — the web DoD half stays open
+    (no shell yet), so this box stays unchecked. `selis_font::cjk` now owns
+    the real strategy: a 31-range Unicode→chunk table (main Ideographs and
+    Hangul syllables quartered; 11 ranges marked core-static and never
+    emitted as files), `CjkFontSet` (injected resident set — `provide`
+    validates id + SFNT parse, sticky pending queue in table order,
+    `revision` invalidation counter, `drain_requested` over an injected
+    `CjkChunkSource`), and `build::build_set`, which runs the FONT.11
+    subsetter over one source font to emit the subsetted core file plus one
+    range-pure SFNT chunk file per covered range. Engine:
+    `Session::render_page_cjk`/`render_page_cjk_with_stats` resolve
+    `Uni…UCS2…` runs nothing-resident codes against the walk's immutable
+    snapshot; uncovered CJK codes paint a `.notdef` box and queue their
+    chunk; the render itself performs zero I/O. Proven by
+    `cjk_lazy::lazy_cjk_renders_notdef_then_repaints_after_in_memory_fetch`
+    (pass1: `needs=[ideographs-4, hangul-1]`, tofu inked, 0 source fetches;
+    drain→provide bumps revision to 2; repaint: real glyphs, more ink,
+    `needs` empty; next repaint byte-identical) and
+    `arrival_order_does_not_change_pixels` (lazy == pre-provided == reverse
+    arrival, ADR-P0012); `plain_render_path_is_unchanged` pins the legacy
+    path. `xtask cjk-build --source <noto-ttf> --out <dir>` writes
+    `cjk/core.ttf`, `cjk/<id>.ttf`, and a manifest pinning raw/brotli sizes
+    + sha256 per file with budget gates (defaults core ≤ 1 200 000 /
+    chunk ≤ 1 500 000 brotli). Measured sizes so far are the synthetic
+    fixture only (core 484 B raw / 235 B brotli; per-code-point chunk
+    436 B raw / ~220 B brotli); real Noto numbers land at the first
+    release `cjk-build` run. The fetch/caching
+    contract for the shell (chunk URL layout, immutable files,
+    id+sha256 cache key, revision-driven repaint) is ADR-P0043 (DRAFT,
+    pending human sign-off). Still open here: the web-side *measured
+    incremental download* and live notdef→repaint under the WASM shell —
+    SL-4.WASM.07.
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds

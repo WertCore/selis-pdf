@@ -8,6 +8,7 @@
 
 mod bench;
 mod checks;
+mod cjk_assets;
 mod codes;
 mod conformance;
 mod corpus;
@@ -37,6 +38,7 @@ mod wasm_protocol;
 mod wild;
 mod wild_hygiene;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -88,6 +90,27 @@ enum Command {
         /// report loudly but pass).
         #[arg(long)]
         strict: bool,
+    },
+    /// Build the lazy-CJK asset payload from a TrueType CJK source font:
+    /// `cjk/core.ttf`, one `cjk/<id>.ttf` per covered chunk range, and the
+    /// size-pinned `cjk/manifest.json` (SL-3.FONT.10, ADR-P0043).
+    CjkBuild {
+        /// Source font (glyf-flavored, e.g. a pinned Noto Sans CJK static).
+        source: PathBuf,
+        /// Output directory (files land under `<out>/cjk/`).
+        #[arg(long)]
+        out: PathBuf,
+        /// Code-point list forced into the core beyond the static CJK
+        /// ranges (tokens: `U+XXXX` / `0xXXXX` / bare hex / literal chars);
+        /// defaults to the documented `CORE_SAMPLE_HANZI` sample.
+        #[arg(long)]
+        core_list: Option<PathBuf>,
+        /// Brotli budget for the core file, bytes.
+        #[arg(long)]
+        budget_core: Option<u64>,
+        /// Brotli budget for every chunk file, bytes.
+        #[arg(long)]
+        budget_chunk: Option<u64>,
     },
     /// Coverage floors per crate (SL-0.WS.08).
     Coverage,
@@ -454,6 +477,13 @@ fn main() -> ExitCode {
             update_baseline,
             strict,
         } => size_check::run(update_baseline, strict),
+        Command::CjkBuild {
+            source,
+            out,
+            core_list,
+            budget_core,
+            budget_chunk,
+        } => cjk_assets::run(&source, &out, core_list.as_ref(), budget_core, budget_chunk),
         Command::Coverage => coverage::run(),
         Command::Mutate => coverage::mutate(),
         Command::Corpus(args) => match args.sub {

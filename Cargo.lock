@@ -2740,6 +2740,7 @@ dependencies = [
  "rsa",
  "selis-bytes",
  "selis-crypto",
+ "selis-font",
  "selis-pdf-content",
  "selis-pdf-cos",
  "selis-pdf-engine",

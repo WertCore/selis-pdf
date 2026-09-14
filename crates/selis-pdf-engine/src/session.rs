@@ -90,6 +90,26 @@ fn open_doc(
     Ok((doc.clone(), document, key))
 }
 
+/// The result of one lazy-CJK render (SL-3.FONT.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CjkRenderOutcome {
+    /// Chunk ids the render needed but did not find resident, in chunk-
+    /// table order: a sticky mirror of the set's queue (later renders on
+    /// the same unresolved state re-report them; they clear when
+    /// [`provide`](selis_font::cjk::CjkFontSet::provide) adopts the chunk).
+    /// An **empty** list means the page painted everything the resident set
+    /// can serve — no repaint is due until [`revision`](Self::revision)
+    /// changes.
+    pub needs: Vec<&'static str>,
+    /// The set's invalidation revision after this render. Fetch each id in
+    /// [`needs`](Self::needs) with the shell's own loader and call
+    /// [`CjkFontSet::provide`](selis_font::cjk::CjkFontSet::provide); a
+    /// successful adoption bumps the revision — that change is the repaint
+    /// signal (the unblock contract: the render itself never touched the
+    /// network).
+    pub revision: u64,
+}
+
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -441,6 +461,82 @@ impl Session {
         g: &mut BudgetGuard<'_>,
         stats: &mut crate::render::RenderStats,
     ) -> Result<()> {
+        self.render_page_walk(page_num, backend, page_ctm, budget, g, stats, None)
+    }
+
+    /// Render a page with the lazy CJK fallback active (SL-3.FONT.10).
+    ///
+    /// Identical to [`Session::render_page`] except for `Uni…UCS2…` Type0
+    /// runs, whose codes the document's own font program cannot serve are
+    /// resolved from `cjk`'s resident set (the chunk file covering the code
+    /// first, then the subsetted core). A CJK code nothing resident covers
+    /// paints a `.notdef` box **and** the chunk stays on `cjk`'s queue —
+    /// the call never blocks on a fetch, never performs I/O of its own: the
+    /// shell fetches the ids from [`needs`](CjkRenderOutcome::needs) with
+    /// its own loader (or drains them through
+    /// [`drain_requested`](selis_font::cjk::CjkFontSet::drain_requested),
+    /// its synchronous surface),
+    /// [`provide`](selis_font::cjk::CjkFontSet::provide)s the bytes, and
+    /// repaints. Pixels depend only on the resident set at call time
+    /// (ADR-P0012): rendering the same page with the same set twice — from
+    /// any fetch arrival order — produces byte-identical output.
+    pub fn render_page_cjk(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        cjk: &mut selis_font::cjk::CjkFontSet,
+    ) -> Result<CjkRenderOutcome> {
+        let mut stats = crate::render::RenderStats::default();
+        self.render_page_cjk_with_stats(page_num, backend, page_ctm, budget, g, cjk, &mut stats)
+    }
+
+    /// [`Session::render_page_cjk`] plus the walk's workload counters (see
+    /// [`crate::render::RenderStats`] — `cjk_pending` is the raw per-walk
+    /// observation the outcome list is merged from).
+    pub fn render_page_cjk_with_stats(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        cjk: &mut selis_font::cjk::CjkFontSet,
+        stats: &mut crate::render::RenderStats,
+    ) -> Result<CjkRenderOutcome> {
+        let snapshot = cjk.snapshot();
+        self.render_page_walk(
+            page_num,
+            backend,
+            page_ctm,
+            budget,
+            g,
+            stats,
+            Some(&snapshot),
+        )?;
+        for id in stats.cjk_pending.iter().copied() {
+            cjk.request_chunk(id);
+        }
+        Ok(CjkRenderOutcome {
+            needs: cjk.queued(),
+            revision: cjk.revision(),
+        })
+    }
+
+    /// The shared raster walk (page content + annotation appearances) with
+    /// an optional lazy-CJK snapshot for `font_data` to attach.
+    fn render_page_walk(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        stats: &mut crate::render::RenderStats,
+        cjk: Option<&selis_font::cjk::CjkSnapshot>,
+    ) -> Result<()> {
         let dl = self.page_display_list(page_num, budget, g)?;
         let budget_copy = *budget;
         let page = self.document.pages.get(page_num).ok_or_else(|| {
@@ -454,10 +550,17 @@ impl Session {
         // used (SL-0.SBX.07): the caller's deadline advances for resource
         // resolution too, instead of resetting at every closure.
         let clock = g.clock();
+        let cjk_attach = cjk.cloned();
         let font_data = move |font_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
-            font_data_inner(&mut res, page.resources.as_ref(), font_name, &mut bg)
+            font_data_inner(
+                &mut res,
+                page.resources.as_ref(),
+                font_name,
+                &mut bg,
+                cjk_attach.clone(),
+            )
         };
         let resolve_smask = move |key: &Bytes| -> Option<Mask> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
@@ -1011,11 +1114,15 @@ fn f64_to_u32(v: f64) -> u32 {
 /// The embedded font program bytes for a font resource name.
 /// Resolve the font program (bytes plus a `GlyphMapping` carrying the simple
 /// font's `/Encoding` or the CID font's `/CIDToGIDMap`, RAST.14/SL-3.SHAPE.04).
+/// A `Uni…UCS2…` Type0 font additionally carries the lazy-CJK snapshot when
+/// one is active (SL-3.FONT.10) — including the program-less case, where
+/// the CJK set *is* the program.
 fn font_data_inner(
     resolver: &mut Resolver<'_>,
     resources: Option<&Obj>,
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
+    cjk: Option<selis_font::cjk::CjkSnapshot>,
 ) -> Option<crate::render::ResolvedFontProgram> {
     use crate::render::ResolvedFontProgram;
     // Prefer the embedded font program (a Type0 wrapper carries it on the
@@ -1032,6 +1139,14 @@ fn font_data_inner(
                 .map(|bytes| ResolvedFontProgram::simple(bytes.to_vec()));
         }
     };
+    let mapping = mapping_of(&font_dict);
+    // Lazy CJK addresses Unicode-valued codes only (a `Uni…UCS2…` Type0
+    // CMap): under `/CIDToGIDMap` identity the codes are CIDs, not scalars,
+    // and reverse-map data (predefined CMaps' CID→Unicode) is not shipped.
+    let attached = match &mapping {
+        crate::render::GlyphMapping::Cid { unicode: true, .. } => cjk,
+        _ => None,
+    };
     let file = font_dict
         .font_file
         .as_ref()
@@ -1045,17 +1160,30 @@ fn font_data_inner(
     if let Some(bytes) = file {
         return Some(ResolvedFontProgram {
             bytes,
-            mapping: mapping_of(&font_dict),
+            mapping,
+            cjk: attached,
         });
     }
     // A non-embedded standard-14 font falls back to the bundled Liberation
     // font (SL-0.LEAD.07), keyed by the /BaseFont name — carrying its
     // `/Encoding` so a `/Differences` on a non-embedded font still resolves
     // (RAST.14).
-    let mapping = mapping_of(&font_dict);
-    selis_font::fallback::fallback_bytes(&font_dict.base_font).map(|bytes| ResolvedFontProgram {
-        bytes: bytes.to_vec(),
+    if let Some(bytes) = selis_font::fallback::fallback_bytes(&font_dict.base_font) {
+        return Some(ResolvedFontProgram {
+            bytes: bytes.to_vec(),
+            mapping,
+            cjk: attached,
+        });
+    }
+    // An unembedded `Uni…UCS2…` Type0 font (STSong-Light, the classic
+    // Adobe-CJK case) has no program at all: with a lazy-CJK set active it
+    // resolves to the resident CJK set itself — codes it cannot serve paint
+    // `.notdef` and queue a chunk, never blank the run (SL-3.FONT.10).
+    let cjk = attached?;
+    Some(ResolvedFontProgram {
+        bytes: Vec::new(),
         mapping,
+        cjk: Some(cjk),
     })
 }
 

@@ -50,7 +50,9 @@ pub mod width;
 pub use agl::{glyph_to_unicode, AglEntry, AGL};
 
 pub use cid::{map_cid, resolve_cid_widths, CidToGid, CidWidthEntry, CidWidths};
-pub use cjk::{chunk_for, is_cjk, CjkChunk, CHUNKS};
+pub use cjk::build::{build_set, source_codepoints, CjkBuiltChunk, CjkSetBuild, CORE_SAMPLE_HANZI};
+pub use cjk::set::{CjkChunkSource, CjkFontSet, CjkGlyph, CjkSnapshot};
+pub use cjk::{chunk_by_id, chunk_for, is_cjk, CjkChunk, CjkSlot, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
 pub use cmapfile::{parse_cmap, BfRange, CMap, CidRange};
 pub use encoding::{

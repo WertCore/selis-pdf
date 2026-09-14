@@ -799,3 +799,41 @@ degradation, never a silent claim. Progress `postMessage`s are a threaded-
 path (WASM.03) shape; single-threaded hosts read the progress slot. The
 schema version `v` on every message makes future breaks a typed
 `BINDING_UNSUPPORTED_OP`, not silent misbehaviour.
+
+## ADR-P0043 — CJK chunks: subset-SFNT files, engine/shell load boundary, revision-driven repaint
+**Status:** DRAFT — pending human sign-off (drafted 2026-09-14 at SL-3.FONT.10, owner: AI+)
+**Decision:** (1) **Chunk format** is plain subset TrueType (glyf-flavored SFNT) — one file per covered
+range of the static Unicode → chunk table (selis_font::cjk::CHUNKS), published as `cjk/<id>.ttf`,
+alongside the bundled `cjk/core.ttf`. No woff2: the FONT.11 subsetter emits SFNT, brotli (the ADR-P0011
+transport the size budgets already measure) covers the bandwidth, and an immutable per-chunk file is
+content-addressable, cacheable, and independently loadable. (2) **One source:** every file is subset from
+a single pinned glyf CJK source (production: a Noto Sans CJK static TTF), so a glyph present in several
+files (core and its range chunk) carries identical outlines at the source's unitsPerEm — which file
+answers a code cannot change pixels. (3) **Boundary:** the engine never fetches (L0–L3 purity, no
+fs/net/async). Resident bytes are injected: the L2 CjkFontSet holds core + loaded chunks behind an
+id- and parse-validated provide; a render walk consumes an immutable snapshot; a CJK code nothing
+resident covers paints .notdef and the covering chunk id stays on the set's sticky queue, reported in
+the render outcome with the **revision** counter — a revision change is the repaint (invalidation)
+signal. The shell (SL-4.WASM.07) owns transport, HTTP/Cache-API caching, and quota; cache keys pair
+the chunk id with the manifest's SHA-256. (4) **Selection is the static table only** — a pure function
+of the code point, never of installed system fonts (ADR-P0012); the payload is a release artifact, and
+xtask cjk-build fails over-budget files against ADR budgets (defaults: core <= 1 200 000 brotli bytes,
+chunk <= 1 500 000 — to be re-set from the first run against real Noto). (5) Native bundles more: the
+desktop app may ship every chunk as local files, but resolves through the same set API.
+**Rationale:** Full Noto CJK is ~100 MB against a 3 MB brotli WASM budget. A merging model (fold chunk
+glyphs into one growing font) pays O(total) re-serialisation per arrival and poisons cross-document
+cache sharing — rejected. Merging existed as the tempting FONT.11 reuse; separate immutable files keep
+each download incremental (the DoD), keep first paint non-blocking (a single-threaded WASM viewer cannot
+await anything inside ender_page), and keep the resident set — the explicit input pixels depend on —
+small and inspectable. Quartering the two big syllable/ideographic blocks means a typical document
+fetches one quarter, not the block.
+**Consequences:** The chunk table (31 ranges, of which 11 are core-static and never appear as files)
+is a compatibility surface: removing an id breaks caches; adding ranges is free. Codes a resident
+chunk genuinely lacks (a source gap) stay .notdef until a revision change — no fetch storms.
+Predefined-CMap Type0 fonts (codes are CIDs, not Unicode) are out of scope: CID → Unicode reverse
+data is not shipped, they keep the documented non-render deviation. The core is an asset fetched
+beside the wasm binary — the engine binary grows only by the table (kilobytes), and the 3 MB budget
+is measured on code, not font payload. The uni…UCS2… gate means a Chinese document whose producer
+embedded an Identity-CMap subset still replays by CID exactly as before. Accepted, this ADR is the
+contract the WASM shell implements; rejected or revised, only the file/addressing layer changes —
+the set/provide/revision API is already engine-internal.

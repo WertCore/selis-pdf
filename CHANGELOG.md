@@ -8,6 +8,16 @@ sections; every entry states what changed and what it means for the user.
 
 ### Added
 
+- CJK fallback no longer needs the 100 MB payload (SL-3.FONT.10, engine
+  side): the viewer ships a subsetted CJK core, fetches the remaining
+  Unicode ranges as separately-loadable chunk files on demand, and through
+  them turns `.notdef` boxes into real glyphs on the repaint — never
+  blocking a render on a font fetch. `Session::render_page_cjk` reports
+  which chunks the page needs and carries the revision counter the shell
+  repaints on; `xtask cjk-build` produces the payload
+  (`cjk/core.ttf`, `cjk/<id>.ttf`, size-pinned `cjk/manifest.json`). The
+  web-side download and repaint wiring arrives with the WASM shell
+  (SL-4.WASM.07); the contract is drafted in ADR-P0043 pending sign-off.
 - The pinned oracle-container images for PDFium and pdf.js additionally
   accept `--text <out.txt>` — each driver extracts a page's Unicode text
   as UTF-8 alongside its existing `--dpi`/`<out.png>` render mode. Used by

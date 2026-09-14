@@ -298,7 +298,9 @@ fn write_baseline(baseline: &SizeBaseline) -> Result<(), String> {
     std::fs::write(BASELINE, format!("{json}\n")).map_err(|e| format!("{BASELINE}: {e}"))
 }
 
-fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
+/// brotli-compress a file (shared with `cjk-build`: same node toolchain as
+/// the CI size job, same measured quantity as the size budgets).
+pub(crate) fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
     // Use Node.js zlib's brotli from the command line. The compressed bytes
     // go to a temp file, not stdout — writing a large buffer to a pipe-backed
     // stdout can hit EAGAIN on the runner (observed with the ~7 MB wasm
