@@ -105,6 +105,18 @@ sections; every entry states what changed and what it means for the user.
   test" into "S e lis o ra cle sm o ke te st". Words now split only at real
   space glyphs or at an advance gap exceeding half the font's actual space width
   (SL-3.TEXT.09); the full-corpus sweep's exact-match band rises accordingly.
+- Text shown under a **non-identity text matrix** now lays out where every
+  oracle lays it. The interpreter composed `show_string`/`Td`/`TD`/`T*` pen
+  steps as a raw add into the text matrix's `e`/`f` (`Tm × Translate`); PDF
+  §9.4.3 instead **pre-multiplies** the translation (`Translate × Tm`), so a
+  step of `adv` moves the user-space origin by `adv × (a, b)` — through the
+  matrix's linear part. Under a 90° matrix `0 1 -1 0 x y Tm` the run now reads
+  along user-space +y (was +x); the common generator scale-trick
+  `12 0 0 12 … Tm /F 1 Tf` (bug1057544, the veraPDF "Hello world" files) lays
+  glyphs at 12× the text-space advance, not one-twelfth. Extracted glyph
+  positions and the recorded `advance`/`space` (SL-3.TEXT.09 word-gap) metrics
+  move together, so word inference stays scale-invariant. Identity-`Tm`
+  documents are byte-for-byte unchanged (SL-3.TEXT.11).
 - Text shown in a `BT` block whose font was set by an earlier text object —
   the shape TCPDF and many form generators emit (`BT /F1 12 Tf ET` then a
   separate `BT … Tj ET`) — is no longer silently dropped from **render and**

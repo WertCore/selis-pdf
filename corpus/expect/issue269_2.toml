@@ -2,10 +2,10 @@ open = "ok"
 pages = 1
 
 [render]
-72 = "297ef9bbff22b915ba2d37b96d7f9c467345bcde9b58b96f95e05a09df62273d"
+72 = "b7798b6f655041209f76931384fafe0bcb0e7f28b4d85e3dcba0eb8c8a8fa3b7"
 
 [text]
-hash = "bd2262a544c0016e44fde6859ffdc411cb99c3cd66a72e0c16ba90da0f6030a7"
+hash = "91c24641f7b7dd1767197986f06d6ca7f5ee26890788fd1ade379f453a7e719c"
 [annotation]
 triage = "selis_timeout"
 verdict = "OurBug"

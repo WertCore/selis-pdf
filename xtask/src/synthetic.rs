@@ -785,6 +785,26 @@ fn generate_bugfix_text() -> Result<(), String> {
             "apps/cli/tests/fixtures/text10_low_confidence.pdf",
             3,
         ),
+        (
+            // 90° text matrix (`0 1 -1 0 100 100 Tm`) plus an identity
+            // control line: after SL-3.TEXT.11 the run lays along user-space
+            // +y (MuPDF device f stepping 692→609.32 = user-y 100→182.68),
+            // not +x (the raw `e`/`f` add). Pinned in-repo by name for the
+            // issue; the `--golden` diff is the SL-3.TEXT.11 regression gate.
+            "bugfix_text11_tm_rotated",
+            "apps/cli/tests/fixtures/text11_tm_rotated.pdf",
+            1,
+        ),
+        (
+            // The generator scale-trick (`12 0 0 12 … Tm /F 1 Tf`, bug1057544
+            // line 3 + the 8 veraPDF "Hello world" files) against the
+            // equivalent `identity Tm /F 12 Tf` row: after SL-3.TEXT.11 the
+            // first lays at 12× the step (MuPDF x 60→80.664→115.332), not the
+            // raw 1/12 spacing.
+            "bugfix_text11_tm_scaled",
+            "apps/cli/tests/fixtures/text11_tm_scaled.pdf",
+            1,
+        ),
     ] {
         let bytes = std::fs::read(src).map_err(|e| format!("{id}: read {src}: {e}"))?;
         std::fs::write(dir.join(format!("{id}.pdf")), &bytes).map_err(|e| format!("{id}: {e}"))?;

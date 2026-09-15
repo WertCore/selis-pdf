@@ -8,7 +8,12 @@
 //!
 //! The effective advance of a shown glyph is the PDF justification formula
 //! (word/char spacing, horizontal scaling) from `selis-font`; word spacing
-//! does NOT apply to CID codes (§9.2.7).
+//! does NOT apply to CID codes (§9.2.7). Pen movement — the `show_string`
+//! advances, `Td`/`TD`/`T*` line moves and `TJ` numeric adjustments — composes
+//! the text-space translation **pre-multiplied** onto the text matrix
+//! (§9.4.3, SL-3.TEXT.11): a step of `adv` text-space units moves the
+//! user-space origin by `adv × (a, b)`, never by a raw add into the matrix's
+//! `e`/`f`.
 
 use selis_bytes::Bytes;
 use selis_font::justified_advance;
@@ -65,9 +70,10 @@ impl Default for TextState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextGlyph {
     /// The horizontal pen step this glyph moves in user space (the
-    /// justified advance mapped through the text matrix, SL-3.TEXT.09) —
-    /// the reference the extractor's word-gap inference measures the next
-    /// origin against.
+    /// justified advance **pre-multiplied** through the text matrix's linear
+    /// part, §9.4.3 — SL-3.TEXT.09/SL-3.TEXT.11) — the x-component of the
+    /// origin delta, the reference the extractor's word-gap inference
+    /// measures the next origin against.
     pub advance: f64,
     /// The character code.
     pub code: u16,
@@ -78,7 +84,8 @@ pub struct TextGlyph {
     /// The font size.
     pub size: f64,
     /// The user-space horizontal width this font's *space* glyph occupies
-    /// under the current text state (SL-3.TEXT.09): the reference distance
+    /// under the current text state, mapped through the text matrix exactly
+    /// like `advance` (SL-3.TEXT.09/SL-3.TEXT.11): the reference distance
     /// for word-gap inference in the text layer.
     pub space: f64,
     /// The marked-content id of the enclosing `BDC`/`EMC` span, if any.
@@ -107,7 +114,7 @@ pub fn process(
         "ET" => Vec::new(),
         "Td" => {
             let (tx, ty) = (num(operands, 0), num(operands, 1));
-            state.line_matrix = state.line_matrix.then(Matrix::translate(tx, ty));
+            state.line_matrix = pre_translate(state.line_matrix, tx, ty);
             state.matrix = state.line_matrix;
             Vec::new()
         }
@@ -118,7 +125,7 @@ pub fn process(
             // page (SL-2.RAST.13).
             let (tx, ty) = (num(operands, 0), num(operands, 1));
             state.leading = -ty;
-            state.line_matrix = state.line_matrix.then(Matrix::translate(tx, ty));
+            state.line_matrix = pre_translate(state.line_matrix, tx, ty);
             state.matrix = state.line_matrix;
             Vec::new()
         }
@@ -186,18 +193,33 @@ pub fn process(
 
 /// `T*`: move to the next line.
 fn newline(state: &mut TextState) {
-    state.line_matrix = state
-        .line_matrix
-        .then(Matrix::translate(0.0, -state.leading));
+    state.line_matrix = pre_translate(state.line_matrix, 0.0, -state.leading);
     state.matrix = state.line_matrix;
+}
+
+/// Compose a text-space translation onto the text matrix (PDF 32000-2
+/// §9.4.3): `Td`, `TD`, `T*` and every pen step multiply
+/// `[1 0 0 1 tx ty] × Tm` — the translate is **pre**-multiplied, so its effect
+/// on the user-space origin is `(tx, ty)` mapped through `Tm`'s linear part
+/// (`tx·a + ty·c`, `tx·b + ty·d`), never a raw add into `e`/`f`. Adding raw
+/// (`Tm × translate`) made any non-identity `Tm` lay glyphs along the user-x
+/// /user-y axes instead of the rotated/scaled ones (SL-3.TEXT.11: an
+/// empirically probed `0 1 -1 0 x y Tm` ran "ABCDEF" along +x while every
+/// oracle runs it along +y; the `12 0 0 12 … Tm /F 1 Tf` generator trick laid
+/// out at one-twelfth spacing). Identity-`Tm` documents are bit-identical
+/// either way, which is how this hid through the CONF.01 G2 pass.
+#[must_use]
+fn pre_translate(matrix: Matrix, tx: f64, ty: f64) -> Matrix {
+    Matrix::translate(tx, ty).then(matrix)
 }
 
 /// Show a string: decode the codes, position each glyph, advance the matrix.
 ///
 /// Each emitted [`TextGlyph`] carries the user-space pen step (`advance`) and
 /// the font's space width under the same text state (`space`) so the text
-/// layer's word-gap inference compares like with like (SL-3.TEXT.09): both are
-/// in the same coordinate space as `at`, never text-space units.
+/// layer's word-gap inference compares like with like (SL-3.TEXT.09): both map
+/// through the text matrix exactly as the origin does (§9.4.3,
+/// SL-3.TEXT.11), never raw text-space units.
 fn show_string(
     state: &mut TextState,
     text: &[u8],
@@ -237,17 +259,18 @@ fn show_string(
             space,
             mcid: state.mcid,
         });
-        state.matrix = state.matrix.then(Matrix::translate(advance, 0.0));
+        state.matrix = pre_translate(state.matrix, advance, 0.0);
     }
     out
 }
 
-/// The user-space x the pen moves for a text-space advance of `adv`.
+/// The user-space x the pen moves for a text-space advance of `adv`
+/// (SL-3.TEXT.09's metric, computed under SL-3.TEXT.11's §9.4.3
+/// pre-multiplication): `adv` rides the text matrix's linear part, exactly
+/// the x-component of the origin delta the next glyph observes.
 fn pen_x(matrix: &Matrix, adv: f64) -> f64 {
     let p0 = matrix.apply(Point::new(0.0, 0.0));
-    let p1 = matrix
-        .then(Matrix::translate(adv, 0.0))
-        .apply(Point::new(0.0, 0.0));
+    let p1 = pre_translate(*matrix, adv, 0.0).apply(Point::new(0.0, 0.0));
     p1.x - p0.x
 }
 
@@ -291,9 +314,10 @@ fn show_array(
             }
             Operand::Num(n) => {
                 // The adjustment is in thousandths of a text space unit, scaled
-                // by the font size and horizontal scale.
+                // by the font size and horizontal scale; like every pen step it
+                // pre-multiplies onto the text matrix (§9.4.3, SL-3.TEXT.11).
                 let adj = -n * state.font_size / 1000.0 * state.h_scale / 100.0;
-                state.matrix = state.matrix.then(Matrix::translate(adj, 0.0));
+                state.matrix = pre_translate(state.matrix, adj, 0.0);
             }
             _ => {}
         }
@@ -529,11 +553,13 @@ mod tests {
     /// The invariant word-gap inference (SL-3.TEXT.09) relies on: a glyph's
     /// recorded `advance` equals the pen step between its origin and the next
     /// glyph's origin under any text matrix — the two quantities the excess
-    /// compares must always live in the same coordinate space. Note this is
-    /// the interpreter's raw-step composition (`Tm.advance`, not the spec's
-    /// `Translate·Tm`; see the note in SL-3.TEXT.08/2.RAST scope findings):
-    /// rendering positions glyphs by the same number, so extraction and
-    /// display agree whatever the Tm's linear part.
+    /// compares must always live in the same coordinate space. Under
+    /// SL-3.TEXT.11 this holds for the spec's composition (§9.4.3
+    /// `Translate·Tm`): `advance` is now literally that mapped step, so
+    /// rendering positions glyphs by the same number and extraction/display
+    /// agree whatever the Tm's linear part. (The 10×-scale probe below is the
+    /// discriminating case: raw composition would report 1.0, spec
+    /// composition reports the mapped 10.0 delta and records the same.)
     #[test]
     fn advance_tracks_the_observed_pen_step_under_any_matrix() {
         let mut state = TextState::default();
@@ -547,14 +573,118 @@ mod tests {
             &const_width,
         );
         let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
-        // One raw justified step (500/1000 * 2) between the origins ...
+        // One *mapped* justified step (500/1000 * 2 * 10 = 10) between origins.
         assert!(
             (glyphs[1].at.x - glyphs[0].at.x - glyphs[0].advance).abs() < 1e-9,
             "the recorded advance must equal the observed origin delta"
         );
+        assert!(
+            (glyphs[0].advance - 10.0).abs() < 1e-9,
+            "advance must be the Tm-mapped step (10), not the raw text-space 1"
+        );
         // ... and the space metric rides the same composition, so a real
         // word jump would still count as exactly one space.
         assert!((glyphs[0].space - glyphs[0].advance).abs() < 1e-9);
+    }
+
+    /// SL-3.TEXT.11 §9.4.3 rotation probe: a 90° text matrix (`0 1 -1 0 x y Tm`)
+    /// must lay the pen along user-space **+y**, not +x (a raw `e`/`f` add sends
+    /// it along +x while every oracle runs it along +y).
+    #[test]
+    fn rotated_tm_advances_along_mapped_axes() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 10.0;
+        // 0 1 -1 0 100 200 Tm: text +x maps to user +y, text +y to user -x.
+        process(
+            &mut state,
+            "Tm",
+            &[n(0.0), n(1.0), n(-1.0), n(0.0), n(100.0), n(200.0)],
+            false,
+            &const_width,
+        );
+        let glyphs = process(&mut state, "Tj", &[s(b"ABCDEF")], false, &const_width);
+        // 500/1000 * 10 = 5 text units, mapped through (0,1): +5 in y, 0 in x.
+        assert_eq!(glyphs.len(), 6);
+        let mut pen_y = 200.0;
+        for g in &glyphs {
+            assert!(
+                (g.at.x - 100.0).abs() < 1e-9,
+                "rotation keeps x fixed (raw e/f adds would slide the run +x)"
+            );
+            assert!(
+                (g.at.y - pen_y).abs() < 1e-9,
+                "pen advances 5 units along +y each glyph"
+            );
+            pen_y += 5.0;
+        }
+        // The §9.4.3 invariant SL-3.TEXT.09 relies on survives the fix: the
+        // recorded `advance` is the x-component of the mapped step — zero
+        // under a pure 90° rotation, exactly the observed origin x delta.
+        for pair in glyphs.windows(2) {
+            assert!(
+                (pair[1].at.x - pair[0].at.x - pair[0].advance).abs() < 1e-9,
+                "advance equals the observed origin x delta"
+            );
+        }
+    }
+
+    /// SL-3.TEXT.11 §9.4.3 scale-trick probe: the generator form
+    /// `12 0 0 12 e f Tm /F 1 Tf` (the common "small Tf size, scale the matrix"
+    /// trick — bug1057544 line 3, the 8 veraPDF "Hello world" files) must lay
+    /// out at *twelve* user units per 1000/em, not one-twelfth. A 500-unit
+    /// glyph advances 0.5 text units × 12 = 6 user units.
+    #[test]
+    fn scaled_tm_multiplies_the_advance_into_user_space() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 1.0;
+        // 12 0 0 12 50 700 Tm (width 500 → 0.5 text units, ×12 = 6 user units).
+        process(
+            &mut state,
+            "Tm",
+            &[n(12.0), n(0.0), n(0.0), n(12.0), n(50.0), n(700.0)],
+            false,
+            &const_width,
+        );
+        let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
+        assert!((glyphs[0].at.x - 50.0).abs() < 1e-9, "first origin");
+        assert!(
+            (glyphs[1].at.x - 56.0).abs() < 1e-9,
+            "second: +6, not +1/12"
+        );
+        assert!(
+            (glyphs[0].advance - 6.0).abs() < 1e-9,
+            "mapped advance 6, raw would be 0.5"
+        );
+        // The space metric rides the same scale (500 units *1 *12 = 6 user).
+        assert!((glyphs[0].space - 6.0).abs() < 1e-9);
+    }
+
+    /// SL-3.TEXT.11 keeps the identity-`Tm` majority bit-identical: the
+    /// `TD`/`T*`/`Td` and pen-step composition yields the same origin as the
+    /// old raw add when the matrix is the identity (no linear part to map
+    /// through: `Translate·I = I·Translate = Translate`), so the overwhelming
+    /// bulk of the corpus is byte-for-byte unchanged.
+    #[test]
+    fn identity_tm_is_bit_identical_to_raw_composition() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 12.0;
+        // Under identity Tm a `Td` move followed by a show lands A at the move
+        // and steps it by the raw justified advance (6), exactly as before.
+        process(&mut state, "Td", &[n(10.0), n(20.0)], false, &const_width);
+        let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
+        assert!((glyphs[0].at.x - 10.0).abs() < 1e-9, "Td origin");
+        assert!(
+            (glyphs[1].at.x - 16.0).abs() < 1e-9,
+            "advance then identity"
+        );
+        assert!((glyphs[0].at.y - 20.0).abs() < 1e-9, "Td y preserved");
+        assert!(
+            (glyphs[0].advance - 6.0).abs() < 1e-9,
+            "raw 6 under identity"
+        );
     }
 
     /// A CID font's code-32 entry is not a space (an `Identity-H` subset
