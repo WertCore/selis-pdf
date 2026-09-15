@@ -274,7 +274,22 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     movers). Caveat kept honest: 8 veraPDF "Hello world" glyph-tension files moved
     diff<25→diff≥25 because *MuPDF itself* word-splits them per its own heuristics while our
     now-unified text scores lower — text-correct/oracle-noisy, listed for CONF.02 triage,
-    not a fidelity regression.
+    not a fidelity regression. **TEXT.11 re-check (2026-09-15):** measured against the
+    branch's HEAD goldens. Only ONE of the `6-3-8-t01-*` family re-anchors: `pass-a` (its
+    multi-glyph `(test)Tj`/`(  .java)Tj` runs ride a `10.761 0 0 10.761 … Tm /T1_0 1 Tf`
+    scale-trick) drifts its **render** golden and continues to read `match` 1.0 (4/4 chars,
+    MuPDF-exact origins). `fail-a…d`, `pass-b…j` and `helloworld-bad` drift **nothing** —
+    render and text hashes byte-identical with the pre-fix tree and their existing
+    signatures (`diff<25` 0.907/0.909, `diff≥25` 0.0, `match` 1.0, `empty_oracle`) are
+    unchanged. So the caveat's prediction that the corrected matrix math would pull these
+    files toward MuPDF's *text band* score is **false**: whatever MuPDF does on them (its own
+    stext segmentation of glyph-tension CID runs) is orthogonal to the inter-glyph pen step,
+    and TEXT.11 leaves their verdicts exactly as TEXT.09 filed them — oracle-noise, CONF.02
+    triage as listed. Matrix-direction *is* verified where a pen step exists: `pass-a`'s
+    render and the wild `bug1057544` (render drifts, text `..`) plus `issue9972-1/2/3`
+    (render drifts, text `match` 0.9984 unchanged) re-anchor their layouts to MuPDF's
+    columns centipoint-for-centipoint (below).
+
 - [ ] **SL-3.TEXT.10 — Silent empty extraction on text-bearing pages** · deps: TEXT.01 ·
   owner: AI+ · **filed by SL-3.CONF.01**
   - **Defect:** 117 corpus files extract zero characters with selis while MuPDF recovers text
@@ -306,10 +321,11 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     Remaining per DoD wording: the ">5 % divergence without a recovery → flag, wired into the
     sweep's `text_err`" clause is **not** implemented (the marker currently covers only the fully
     silent case), and the 62 annotation-file silent gap persists until the AP walk lands —
-    checkbox stays open; both halves are now the filed tasks **SL-3.TEXT.12** (AP walk) and
-    **SL-3.TEXT.13** (divergence watchdog), so this box tracks only the already-done
-    diagnosis + marker work.
-- [ ] **SL-3.TEXT.11 — Text-space advances must map through the text matrix** · deps: TEXT.01 ·
+    checkbox stays open; its two remaining halves are owned here as **SL-3.TEXT.14**
+    (annotation-appearance walk) and **SL-3.TEXT.15** (divergence watchdog), the ids
+    SL-3.TEXT.12/13 having been taken by SL-3.TEXT.11's own residuals (paint-time `Tm`,
+    vertical-run assembly) — this box now tracks only the shipped diagnosis + marker.
+- [x] **SL-3.TEXT.11 — Text-space advances must map through the text matrix** · deps: TEXT.01 ·
   owner: AI+ · **filed by SL-3.TEXT.08/09/10 work (2026-09-14)**
   - **Defect:** `text::show_string` and `Td`/`TD` accumulate pen movement as
     `matrix.then(Matrix::translate(adv, 0))`, which adds the raw text-space advance to the
@@ -329,6 +345,87 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** Probe fixtures (rotated + scaled `Tm`; one eja-vi/CAD-style document from the
     wild corpus) place glyphs where mutool places them per the page-render diff; no regression
     of the existing text bands.
+  - **Note (done 2026-09-15):** Fixed. `text.rs` composes every text-space step — the
+    `show_string` advances, `Td`/`TD`/`T*` line moves, `TJ`/`'` adjustments — as
+    `Translate × Tm` via `pre_translate` (§9.4.3), and `pen_x` records the **user-space** step
+    while it rides the same mapping as `at`. Under identity `Tm`
+    `Translate·I = I·Translate = Translate`, so the majority of the corpus is bit-identical.
+    The TEXT.09 invariant test needed no re-anchoring: recorded `advance` is still exactly the
+    observed origin x-delta, now the correctly mapped `adv × a` (a 10× probe asserts 10.0, not 1).
+    Probes, MuPDF-paired (`mutool 1.23.0` per-glyph `draw -F svg`): rotated
+    `0 1 -1 0 100 100 Tm /F 24 Tf` → x=100 fixed, y = 100/116.008/132.016/149.344/166.672/182.68
+    = device f 692→609.32 (MuPDF); scale-trick `12 0 0 12 60 700 Tm /F 1 Tf (Hello World)` →
+    origins 60/68.664/75.336/…/115.332 = MuPDF's column and *equal to the equivalent
+    identity-`Tm` `/F 12 Tf` row line-for-line. Pinned as `text.rs` unit tests + `text09`-style
+    e2e in `apps/cli/tests/text_matrix_layout.rs`
+    (`scaled_tm_matches_mu_device_positions_and_splits_words`,
+    `rotated_tm_lands_the_vertical_run_at_fixed_x_on_user_y`), fixtures
+    `apps/cli/tests/fixtures/text11_tm_{rotated,scaled}.pdf`, corpus pins
+    `bugfix_text11_tm_rotated` / `bugfix_text11_tm_scaled` registered in
+    `xtask/src/synthetic.rs`. Wild reproductions: `bug1057544` line 3 carries exactly the
+    filed trick (`12 0 0 12 67.2 735.9961 Tm /TT0 1 Tf (An Annual Report marks the )`), the
+    `issue9972-1/2/3` OmniGraffle "CAD-style" trio `12 0 0 12`/`18 0 0 18 … Tm /F 1 Tf` with
+    scaled `Td` kerning (AES-128 streams; inspected after `mutool clean -D`) — MuPDF pairs with
+    the fixed binary on `bug1057544` centipoint-for-centipoint (`Annual` selis span
+    84.54→117.66 = MuPDF glyph `A` 84.53999 / `l` 117.65999). **Blast radius measured** on the regenerated
+    3,860+2-pins layout against HEAD's committed goldens: **358 records re-anchored** (214
+    render, 207 text) through the pinned pipeline (`xtask oracle text-sweep --tool mutool
+    --dpi 72,150,300` → `xtask corpus expect-merge --from C:\selis-build\text11-prebaseline`;
+    pinned binary sha256 `5e30fffa…74b555`); audit says every drifting id contains a
+    non-identity `Tm` (355 by decompressed stream scan; the 3 AES-256 `issue9972-*` by
+    MuPDF-svg matrix column after `-D` decrypt), and the identity-`Tm` majority (~3,502
+    records incl. spot-checks `issue3879r/TAMReview/vertical/rotation/standard_fonts`) is
+    byte-identical. Bands vs the TEXT.08/09/10 note numbers (the 3,860-file sweep that
+    recorded them): exact `match` **947→969**, `diff≥25` **556→540**, `empty_selis` **62→62**
+    (unchanged — the annotation-AP cluster TEXT.10 named), G3 **54.79 %→56.01 %** (956 of
+    1,745 comparable → 978 of 1,746). The other bands have no pre-fix record, so no claim is
+    made; the identity-`Tm` majority is bit-identical, so every existing-corpus shift is a
+    358-file-cohort shift and it nets positive. The two new pins land `match` (scaled, MuPDF
+    chars 23/23) and `diff≥25` (rotated, 0.444, selis 18 chars / oracle 13 — the per-glyph
+    vertical-run fragmentation counted as extra glyphs, see below). TEXT.08/09 caveat cohort:
+    measured, *not* predicted — of the 14 `6-3-8-t01-*` files only `pass-a` drifts its
+    **render** (multi-glyph runs under scaled `Tm`; MuPDF-exact, `match` 1.0) and every one of
+    their **text** signature files stays byte-identical (`fail-a/b` 0.9079/0.9091, `fail-c/d`
+    0.0, `pass-e…j` `.notdef` runs): the pen-step correction does *not* move MuPDF's own
+    stext word-segmentation noise there. `bug1057544`'s render re-anchors (`12 0 0 12`-×-`/F 1`
+    word origins now centipoint-equal to MuPDF's svg column: `Annual` 84.54→117.66 = MuPDF
+    A 84.53999 / l 117.65999); its *text* band is unchanged (hash identical, 0.6748 both
+    sides — the residual is its CID `ToUnicode`/glyph-name *inventory* delta, an unrelated
+    axis, not layout). `issue9972-1/2/3` (the OmniGraffle CAD-style trio, `12 0 0 12`/
+    `18 0 0 18 … Tm /F 1 Tf` with scaled `Td` kerns) likewise show *render-only* drift with
+    text byte-identical at `match` (0.9984). Honest residual,
+    filed nowhere yet: with §9.4.3 layout correct, the rasterizer still places glyph
+    *outlines* upright and at `/F 1` size (the `Op::Text` path maps only `at`, not `Tm`'s
+    linear part) — so rotated text is positioned like MuPDF but drawn unrotated and
+    scale-trick text is positioned at 12× pitch with 1pt glyphs; the fixture centroid check
+    (post-fix selis 91.4 vs MuPDF 91.9 on the scaled probe) confirms the *placement* is
+    MuPDF's while the *outline extent* still differs.
+    Also vertical runs now fragment 1-glyph-per-line in assembly (horizontal baseline
+    tolerance) — MuPDF keeps them one word; that's the SL-3.TEXT.04 reading-order axis,
+    unblocked-but-unowned by this fix (asserted, with the reason, in
+    `text_matrix_layout.rs`'s doc comment; it is also why the *rotated* pin scores 0.444).
+     **`corpus verify --golden`: 3,862 checked, 0 changed, 0 without expectation**
+     (pinned binary `5e30fffa…`, full pass post-merge).
+- [ ] **SL-3.TEXT.12 — Glyph painting must apply the text matrix, not only the pen origin**
+  · deps: TEXT.11 · owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
+  - **Do:** The `Op::Text` rasterizer path places outlines at `at` with axis-aligned
+    `f` sizing; carry the full `Tm` linear part into glyph placement so rotated text
+    draws rotated and the `12 0 0 12 Tf 1` scale-trick draws at 12 pt. Re-anchor the
+    non-identity-`Tm` render goldens the TEXT.11 blast radius enumerated (358 cohort)
+    and re-measure the render-corpus bands (the G2 claim in `conformance/REPORT.md`
+    reads against them).
+  - **DoD:** The TEXT.11 probe fixtures paint MuPDF-congruent geometry (not merely
+    correct origins); no identity-`Tm` render regression (bit-identical expectation
+    records); sweep bands recorded against the TEXT.11 numbers (969 / 540 / 56.01 %).
+- [ ] **SL-3.TEXT.13 — Line assembly must keep vertical runs one line** · deps: TEXT.04 ·
+  owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
+  - **Do:** Line splitting tolerates horizontal baselines only; glyphs stepping along
+    +y under a 90° `Tm` fragment one-per-line (MuPDF keeps them a word — the rotated
+    pin scores 0.444 purely for this). Generalize the baseline model to the `Tm`
+    writing direction (vertical CJK runs included).
+  - **DoD:** The rotated fixture assembles as one line with reading order along the
+    writing direction; `text_matrix_layout.rs`'s documented assertions flip to the
+    MuPDF-kept-word behaviour; sweep `match` band re-measured.
 
 ---
 
@@ -407,7 +504,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     (54.79%, +1.26pp) — still `met: false`; ≥0.99 969 (55.53%), ≥0.95 997 (57.13%),
     ≥0.75 1,130 (64.76%); mean sim 0.7612, median 1.000 (p25 0.519 — bimodal, mirrors
     the oracle-vs-oracle shape; the notes' 0.759/1.00 reproduce inside the re-measure).
-    Cohorts: `empty_selis` **62** (annotation-AP text; per-cause task SL-3.TEXT.12),
+    Cohorts: `empty_selis` **62** (annotation-AP text; per-cause task SL-3.TEXT.14),
     `empty_oracle` 14, `oracle_rejects` 34, `both_reject` 23, `selis_rejects` 17,
     `oracle_timeout` 4, truncated flag 3, rtl-tagged 15. Per-source ≥0.98 of scored
     (source-comparable / g3-within): flat 237/479, govdocs1 52/180, verapdf 576/799,
@@ -458,9 +555,10 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     render-conf (0 3 */2 * *); the mutool legs (local + container) stay measured
     here. Render-rung/Extract-rung promotions wait on that artifact.
   - **Filed here (the remaining-cause obligations from the TEXT notes):**
-    * **SL-3.TEXT.12** — annotation `/AP` appearance text walk (62 silent-cohort files).
-    * **SL-3.TEXT.13** — the >5 % silent-divergence watchdog into the sweep's
-      `text_err` (TEXT.10's unwired clause).
+    * **SL-3.TEXT.14** — annotation `/AP` appearance text walk (62 silent-cohort files).
+    * **SL-3.TEXT.15** — the >5 % silent-divergence watchdog into the sweep's
+      `text_err` (TEXT.10's unwired clause; the ids TEXT.12/13 went to TEXT.11's own
+      residuals).
     * **SL-3.CONF.03** — re-baseline the Extract bar on the oracle-vs-oracle floor and
       triage the 539-file `diff>=25` cohort into root-cause clusters (expect ≈20,
       `xtask oracle triage` over the sweep verdicts).
@@ -468,8 +566,9 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
       (OracleBug vs OurBug) in the expectation records.
     * **SL-3.CONF.05** — post-SL-3.TEXT.11 text+render golden re-baseline and the G2
       re-measure (TEXT.11's own obligation).
-- [ ] **SL-3.TEXT.12 — Annotation appearances contribute text** · deps: TEXT.01,
-  TEXT.10 · owner: AI+ · **filed by SL-3.CONF.02**
+- [ ] **SL-3.TEXT.14 — Annotation appearances contribute text** · deps: TEXT.01,
+  TEXT.10 · owner: AI+ · **filed by SL-3.CONF.02** (renumbered from the first filing:
+  TEXT.12/13 went to SL-3.TEXT.11's own residuals)
   - **Defect:** 62 corpus files extract zero characters while MuPDF recovers annotation
     text (widget `/Tx` captions, FreeText contents, form-field appearances); MuPDF merges
     `/AP` streams into the page, we do not, and the TEXT.10 low-confidence marker stays
@@ -485,8 +584,9 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** The CONF.02 sweep's `empty_selis` cohort is empty or each file carries a typed
     deviation; per-file deltas published in the next CONF gate; no silent zero on a page
     whose annotations carry text.
-- [ ] **SL-3.TEXT.13 — Flag divergent extractions that recover nothing** · deps: TEXT.10 ·
-  owner: AI+ · **filed by SL-3.CONF.02 (SL-3.TEXT.10's unwired DoD clause)**
+- [ ] **SL-3.TEXT.15 — Flag divergent extractions that recover nothing** · deps: TEXT.10 ·
+  owner: AI+ · **filed by SL-3.CONF.02 (SL-3.TEXT.10's unwired DoD clause; renumbered
+  from the first filing)**
   - **Do:** The sweep must surface ">5 % of characters diverge with zero recovery" as a
     typed signal (`text_err` channel, `xtask oracle text-sweep` + engine low-confidence),
     not only the fully-silent case the `LOW_CONFIDENCE_MARKER` covers today.
