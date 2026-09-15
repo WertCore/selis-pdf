@@ -403,8 +403,28 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     tolerance) — MuPDF keeps them one word; that's the SL-3.TEXT.04 reading-order axis,
     unblocked-but-unowned by this fix (asserted, with the reason, in
     `text_matrix_layout.rs`'s doc comment; it is also why the *rotated* pin scores 0.444).
-    **`corpus verify --golden`: 3,862 checked, 0 changed, 0 without expectation**
-    (pinned binary `5e30fffa…`, full pass post-merge).
+     **`corpus verify --golden`: 3,862 checked, 0 changed, 0 without expectation**
+     (pinned binary `5e30fffa…`, full pass post-merge).
+- [ ] **SL-3.TEXT.12 — Glyph painting must apply the text matrix, not only the pen origin**
+  · deps: TEXT.11 · owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
+  - **Do:** The `Op::Text` rasterizer path places outlines at `at` with axis-aligned
+    `f` sizing; carry the full `Tm` linear part into glyph placement so rotated text
+    draws rotated and the `12 0 0 12 Tf 1` scale-trick draws at 12 pt. Re-anchor the
+    non-identity-`Tm` render goldens the TEXT.11 blast radius enumerated (358 cohort)
+    and re-measure the render-corpus bands (the G2 claim in `conformance/REPORT.md`
+    reads against them).
+  - **DoD:** The TEXT.11 probe fixtures paint MuPDF-congruent geometry (not merely
+    correct origins); no identity-`Tm` render regression (bit-identical expectation
+    records); sweep bands recorded against the TEXT.11 numbers (969 / 540 / 56.01 %).
+- [ ] **SL-3.TEXT.13 — Line assembly must keep vertical runs one line** · deps: TEXT.04 ·
+  owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
+  - **Do:** Line splitting tolerates horizontal baselines only; glyphs stepping along
+    +y under a 90° `Tm` fragment one-per-line (MuPDF keeps them a word — the rotated
+    pin scores 0.444 purely for this). Generalize the baseline model to the `Tm`
+    writing direction (vertical CJK runs included).
+  - **DoD:** The rotated fixture assembles as one line with reading order along the
+    writing direction; `text_matrix_layout.rs`'s documented assertions flip to the
+    MuPDF-kept-word behaviour; sweep `match` band re-measured.
 
 ---
 
