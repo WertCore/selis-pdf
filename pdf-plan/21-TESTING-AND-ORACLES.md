@@ -162,8 +162,14 @@ Run identities: PDFium `chromium/7961` (bblanchon win-x64 binary, our driver, sa
 container artifact's revision), pdf.js `pdfjs-dist 6.2.108` (`npm ci` over the committed lockfile
 — the pinned identity), MuPDF local `mutool 1.23.0` (pin is 1.23.9; drift recorded, the headline
 pair is the two that matched their pins). Artifacts: `C:\selis-build\oracle04-text-smoke`.
-**CI re-run pending, honestly:** the container legs need the `oracle-images` rebuild of the new
-`--text` drivers plus the digest re-record in `xtask/oracles.toml`; until then they fail loudly.
+**CI re-pin status (SL-3.CONF.02, 2026-09-14):** the `oracle-images` job rebuilt and pushed all
+five images carrying the new `--text` drivers (run 34820871908), and the pushed digests are now
+recorded in `xtask/oracles.toml`. The confirmation run is inherently post-merge (dispatch is
+push-scoped), so the first green PDFium/pdf.js text legs arrive with the next scheduled
+`render-conf`. Until then, note the *old* failure mode was louder than "text legs failing": the
+2026-09-09 digests had been garbage-collected from GHCR, so every pinned-container leg in the
+scheduled job died on `Unable to find image` (see run 34806315351 artifacts). The mutool legs —
+local install 1.23.0 and container 1.23.9 (drift recorded above) — stay measured either way.
 
 **What this calibrates:**
 

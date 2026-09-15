@@ -51,7 +51,11 @@ sections; every entry states what changed and what it means for the user.
   MuPDF text leg needs no driver change (`mutool draw -F txt` already
   extracts). Selis's own behaviour is unaffected — an oracle contract
   change, not a product change; the images' digests must be re-pinned
-  once the oracle-images job has rebuilt them after this lands.
+  once the oracle-images job has rebuilt them after this lands — done in
+  SL-3.CONF.02: all five re-recorded from the 2026-09-14 push (run
+  34820871908), which is what unblocks the scheduled PDFium/pdf.js text legs
+  (the superseded 2026-09-09 manifests are gone from the registry, and every
+  pinned container leg was dying on `Unable to find image`).
 - The WASM binding speaks the versioned Worker protocol (ADR-P0042): a JS
   shell drives document open, page metadata, tiled page render, text
   extraction, search, and document close over one message boundary, with
@@ -84,6 +88,22 @@ sections; every entry states what changed and what it means for the user.
   runs the exact page-1 leg the sweep runs, scored through the one shared
   normalisation policy (`xtask/src/text_norm.rs`). Selis's behaviour is
   unaffected — an oracle-harness change.
+
+### Changed
+
+- The published conformance ladder (`conformance/REPORT.md`, SL-3.CONF.02)
+  is re-measured on the merged tree and updated: **Text and fonts** climbs
+  None → Parse — extraction is now measured across the whole 3,860-file
+  corpus against MuPDF (969 files at ≥0.99 similarity, 978 at ≥0.98 of
+  1,745 comparable, median 1.000) — with Render withheld (the text-bearing
+  slice itself still fails the calibrated render bar, and the two-oracle CI
+  legs are unconfirmed on this tree) and Extract withheld (56.05% ≥0.98
+  against a G3 wording SL-0.ORACLE.04 shows sits under the oracle-vs-oracle
+  ceiling), and the **Rendering** row now states the post-fix reality: Bar A
+  passes (97.2% ≤25% @150), Bar B is inside the oracle-pair envelope on the
+  MuPDF leg (≤2% 80.9 vs best pair 82.3), the size_skew/blank_selis clusters
+  are closed (17 → 0, 25 → 2), and the Render rung now waits only on the
+  CI two-independent-oracle confirmation the re-pinned oracle images unblock.
 
 ### Fixed
 

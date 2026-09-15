@@ -306,9 +306,9 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     Remaining per DoD wording: the ">5 % divergence without a recovery → flag, wired into the
     sweep's `text_err`" clause is **not** implemented (the marker currently covers only the fully
     silent case), and the 62 annotation-file silent gap persists until the AP walk lands —
-    checkbox stays open.
-
-    checkbox stays open.
+    checkbox stays open; both halves are now the filed tasks **SL-3.TEXT.12** (AP walk) and
+    **SL-3.TEXT.13** (divergence watchdog), so this box tracks only the already-done
+    diagnosis + marker work.
 - [ ] **SL-3.TEXT.11 — Text-space advances must map through the text matrix** · deps: TEXT.01 ·
   owner: AI+ · **filed by SL-3.TEXT.08/09/10 work (2026-09-14)**
   - **Defect:** `text::show_string` and `Td`/`TD` accumulate pen movement as
@@ -386,4 +386,141 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     disagrees at the highest band. SHAPE.04's `apps/cli/src/extract.rs` change is the top
     suspect; recommend a follow-up `bisect` task. Not filed here (this task's scope is running
     the sweep + filing root-cause tasks, not bisecting main).
-- [ ] **SL-3.CONF.02 — Promote conformance areas; publish the report** · owner: AI
+- [x] **SL-3.CONF.02 — Promote conformance areas; publish the report** · owner: AI
+  - **Do:** Re-run the full text differential sweep on *current main* (the TEXT.08/09/10
+    expectations were only re-anchored in the merge — no numbers copied out of the
+    per-task notes), re-measure the render bands on the post-fix tree, set the honest
+    rung for the affected areas in `conformance/areas.toml`, regenerate `REPORT.md`,
+    re-pin the CI oracle image digests, and file the remaining root-cause tasks.
+  - **Status (2026-09-14):** Done. The CONF.01 artifacts were purged with the build dir,
+    so the corpus was re-extracted from the fetch cache (`corpus/pdfs`, 3,860 files,
+    `corpus verify` clean against the committed expectation tree) and the **full text
+    sweep** was re-run on `03ece8ba` (`xtask oracle text-sweep --tool mutool`,
+    out `C:\selis-build\conf02-text`, pinned selis sha256 `5e30fffa…4b555`, mutool
+    1.23.0 local, golden DPIs 72/150/300). The **full render sweep** was also re-run
+    (same tree, `C:\selis-build\conf02-render`, 3,860 × 3 DPI × MuPDF = 11,580
+    outcomes). Nothing was measured on a pre-merge branch.
+  - **Text readout vs the TEXT.08/09 notes (all deltas are the BT fix + the merged
+    enc/font/JPX waves):** comparable 1,745 (unchanged); `match` **969** (947, +22 —
+    the 13 recovered empties land in comparable/match and the CID/ToUnicode legs
+    tightened); `diff>=25` **539** (556, −17); G3 ≥0.98 **978/1,745 = 56.05%**
+    (54.79%, +1.26pp) — still `met: false`; ≥0.99 969 (55.53%), ≥0.95 997 (57.13%),
+    ≥0.75 1,130 (64.76%); mean sim 0.7612, median 1.000 (p25 0.519 — bimodal, mirrors
+    the oracle-vs-oracle shape; the notes' 0.759/1.00 reproduce inside the re-measure).
+    Cohorts: `empty_selis` **62** (annotation-AP text; per-cause task SL-3.TEXT.12),
+    `empty_oracle` 14, `oracle_rejects` 34, `both_reject` 23, `selis_rejects` 17,
+    `oracle_timeout` 4, truncated flag 3, rtl-tagged 15. Per-source ≥0.98: flat
+    237/479, govdocs1 52/180, verapdf 576/799, synthetic 106/108, indic 7/9, ghent
+    **0/94**. Font cohorts: all_embedded 674/1,096 (61.5%), has_external 184/391
+    (47.1%), has_type3 10/63 (15.9%), unknown-inventory 110/119.
+  - **Render readout:** @150 n=3,773: ≤0.5% **67.9%** (was 27.3% — the 36pp RAST.14
+    excess is closed), ≤1% 74.9 (34.1), ≤2% **80.9**, ≤5% 86.8, ≤10% 92.6, ≤25%
+    **97.2** (97.0); p50 0.07, p95 13.8. On the published G2 calibration: **Bar A
+    passes** and **Bar B now passes on the MuPDF leg** (≤2% 80.9 vs best pair 82.3 =
+    1.4pp inside the 5pp allowance; ≤5% −1.3pp, ≤10% −1.9pp) — the REPORT row's
+    "Bar B fails by 1.1pp" was a stale CONF.01-era claim. Blank/skew clusters the old
+    row blamed: `size_skew` 0 (RAST.12 closed), `blank_selis` 2 (typed /Redact-AP,
+    RAST.13), gross `diff>=25` **106** files @150 (SL-2.CONF.04 open). Prepress ghent:
+    ≤25% 60.0% vs the pair band 73.7–77.9 — selis trails its own envelope class there,
+    tracked not gated.
+  - **Promotions (measurement, SL-0.ORACLE.04 floor applied):**
+    * `text` **None → Parse (2)**. Extraction is built and measured (median 1.000; the
+      TEXT.08/09/10 chain holds across all 3,860), but **Render is withheld**: the
+      text-bearing slice fails the calibrated bars on its own population (≥50 chars:
+      ≤2% 37.8% vs the pair floor ≈77, ≤25% 89.8% vs Bar A ≥95), the two-independent-
+      oracle legs are unmeasured post-merge (below), and SL-3.TEXT.11's `Tm` defect
+      mis-places whole words. **Extract is withheld too**, and not merely because
+      56.05% ≪ the ≥98%-on-95% wording: per ORACLE.04 the G3 gate as published sits
+      *under* the oracle-noise ceiling (pdfium↔pdfjs reach 79.0%, mutool pairs ≈72.7)
+      — reading the Extract rung requires a CONF.03-style recalibration first
+      (SL-3.CONF.03); this wave deliberately does not re-draw the bar to go green.
+    * `render` stays Parse — Bar B passing on one independent oracle is not the rung;
+      the re-pinned CI confirmation run and the SL-2.CONF.04 gross-cluster triage gate it.
+    * `filters` (encoders) stays Parse — SL-1.FILT.08 contained JPX under the wasm
+      host but produced **no oracle tolerance leg** (Ghostscript comparison unmeasured);
+      `encryption`/`document`/`annot`/`forms` unchanged (ENC.07/09 shipped pending human
+      review; no new ladder evidence from this wave).
+    Published via `cargo xtask conformance report` → `conformance/REPORT.md`.
+  - **CI oracle re-pin:** all five images were rebuilt+pushed today by the
+    `oracle-images` job after the ORACLE.04 merge (run `34820871908`), and the
+    GHCR retention then GC'd the 2026-09-09 manifests — which is *why every*
+    pinned render-conf leg (render *and* the new `--text` legs) was failing on
+    `Unable to find image` (see run 34806315351 artifacts, e.g. the verbatim
+    `oracle_rejects` detail). `xtask/oracles.toml` digests are re-pinned to the
+    current pushed manifests. **Honest leftover:** the confirmation run on this
+    branch is impossible from a worktree (dispatch is push-scoped), so the
+    first green PDFium/pdf.js text leg lands with the next post-merge scheduled
+    render-conf (0 3 */2 * *); the mutool legs (local + container) stay measured
+    here. Render-rung/Extract-rung promotions wait on that artifact.
+  - **Filed here (the remaining-cause obligations from the TEXT notes):**
+    * **SL-3.TEXT.12** — annotation `/AP` appearance text walk (62 silent-cohort files).
+    * **SL-3.TEXT.13** — the >5 % silent-divergence watchdog into the sweep's
+      `text_err` (TEXT.10's unwired clause).
+    * **SL-3.CONF.03** — re-baseline the Extract bar on the oracle-vs-oracle floor and
+      triage the 539-file `diff>=25` cohort into root-cause clusters (expect ≈20,
+      `xtask oracle triage` over the sweep verdicts).
+    * **SL-3.CONF.04** — record the MuPDF per-glyph word-split cohort's verdicts
+      (OracleBug vs OurBug) in the expectation records.
+    * **SL-3.CONF.05** — post-SL-3.TEXT.11 text+render golden re-baseline and the G2
+      re-measure (TEXT.11's own obligation).
+- [ ] **SL-3.TEXT.12 — Annotation appearances contribute text** · deps: TEXT.01,
+  TEXT.10 · owner: AI+ · **filed by SL-3.CONF.02**
+  - **Defect:** 62 corpus files extract zero characters while MuPDF recovers annotation
+    text (widget `/Tx` captions, FreeText contents, form-field appearances); MuPDF merges
+    `/AP` streams into the page, we do not, and the TEXT.10 low-confidence marker stays
+    silent because the page stream genuinely drew nothing (`empty_selis`, artifacts
+    `C:\selis-build\conf02-text\verdicts.jsonl`; 33 flat annotation fixtures + 17 govdocs +
+    10 verapdf forms/interactive + 2 synthetic). Reproduce: `mutool draw -F txt` on
+    `annotation-tx2` yields `tx annotation` where selis yields nothing.
+  - **Do:** Walk `/Annots` appearances into the text assembly in
+    order — same encoding chain as page content, same word/space rules — for extraction,
+    search, and the reading-order tree; render-side `/AP` inclusion policy unchanged.
+  - **Files:** `crates/selis-pdf-engine` (text walk), `apps/cli/src/extract.rs`, corpus +
+    sweep expectations.
+  - **DoD:** The CONF.02 sweep's `empty_selis` cohort is empty or each file carries a typed
+    deviation; per-file deltas published in the next CONF gate; no silent zero on a page
+    whose annotations carry text.
+- [ ] **SL-3.TEXT.13 — Flag divergent extractions that recover nothing** · deps: TEXT.10 ·
+  owner: AI+ · **filed by SL-3.CONF.02 (SL-3.TEXT.10's unwired DoD clause)**
+  - **Do:** The sweep must surface ">5 % of characters diverge with zero recovery" as a
+    typed signal (`text_err` channel, `xtask oracle text-sweep` + engine low-confidence),
+    not only the fully-silent case the `LOW_CONFIDENCE_MARKER` covers today.
+  - **DoD:** Sweep verdicts carry the flag; a corpus case pins both the flagged and the
+    exact-match neighbour so the threshold cannot drift silently.
+- [ ] **SL-3.CONF.03 — Recalibrate the Extract gate; triage the diff≥25 long tail** ·
+  deps: CONF.02, ORACLE.04 · owner: AI+
+  - **Do:** ORACLE.04 measured that independent extractors top out at 79.0 % (pdfium↔pdfjs)
+    and ≈72.7 % (mutool pairs) agreement at ≥0.98 on their own curated smoke set — the G3
+    criterion "≥98 % similarity on ≥95 % of the extractor corpus" measures noise at that
+    depth and can never be *met*; write the recalibrated text-gate bars the same way
+    SL-2.CONF.03 re-baselined G2 (envelope + Bar B-style tolerance), *with the calibration
+    data as justification*, then cluster the 539-file `diff>=25` residue from
+    `C:\selis-build\conf02-text` (source/font/similarity/rtl/truncated axes — ghent 0/94
+    and has_type3 10/63 are the standing suspects) into ~20 root-cause clusters and file
+    one task per confirmed cause. This is the gate's recalibration step — it does not
+    promote any area.
+  - **DoD:** Bars published in 21-TESTING/§5 with the measured floor; each cluster has a
+    task or an annotated expectation record; the ladder stays at its CONF.02 levels.
+- [ ] **SL-3.CONF.04 — Verdict the MuPDF per-glyph word-split cohort** · deps: CONF.02 ·
+  owner: AI+
+  - **Do:** TEXT.09 flagged 9 short-text veraPDF fixtures that flipped
+    `diff<25 → diff>=25` because *MuPDF itself* breaks `"Hello world"` into
+    `"H e llo …"` (per-glyph advance space inference) where our unified output is
+    plausibly the spec-correct reading. On the CONF.02 sweep the same fingerprint
+    (`selis` 11–12 chars vs oracle 19–23, sim 0.043/0.579) counts **13** files —
+    `6-3-8-t01-pass-*`, `6-3-5-t03-fail-*`, `6-2-11-7-2-t01-*`, `6-2-11/10-3-3-*`,
+    `7-21.7/7-2-t25-*`, `8-4-5-8-*`. Run them through the §21-TESTING §5 verdict
+    workflow and record the annotation in `corpus/expect` (OracleBug with the §9.4.3
+    citation if MuPDF's spacing is the deviation, OurBug if ours is).
+  - **DoD:** Every cluster file carries a `[annotation]` verdict record; the sweep gap
+    list stops carrying them unlabelled.
+- [ ] **SL-3.CONF.05 — Post-SL-3.TEXT.11 sweep and golden re-baseline** · deps: CONF.02,
+  TEXT.11 · owner: AI+
+  - **Do:** SL-3.TEXT.11 (text-matrix pre-multiply, §9.4.3) will move extraction and
+    layout for the non-identity-`Tm` corpus. When it lands, re-run both CONF gates on
+    the merged tree, refresh the sweep expectations (`corpus expect-merge`,
+    golden/text/positions re-anchor), and publish the readout deltas — the same
+    obligation TEXT.10 recorded against the BT fix.
+  - **DoD:** Sweep + render verdicts re-run; expectation diff reviewed; the next CONF
+    gate's promotion decision reads the fresh numbers, not these.
+

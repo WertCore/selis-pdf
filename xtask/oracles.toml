@@ -10,7 +10,12 @@
 #   - `image`    the container we build from the checked-in Dockerfile.
 #                Published by the CI `oracle-images` job to GHCR.
 #   - `digest`   the image manifest digest, recorded from the CI push of
-#                2026-09-09 (all five built + smoke-rendered + pushed).
+#                2026-09-14 (run 34820871908 — the first rebuild carrying the
+#                SL-0.ORACLE.04 `--text` drivers; image digests change on every
+#                rebuild because base layers refresh). The superseded 2026-09-09
+#                digests are gone from the registry, which is why the scheduled
+#                render-conf render + text legs died on `Unable to find image`
+#                (verdict detail in run 34806315351's artifacts) until this re-pin.
 #   - `base`     the base image, pinned by manifest digest. Every digest in
 #                this file was resolved live from the registry API on
 #                2026-09-08.
@@ -21,13 +26,14 @@
 #
 # Local binaries on the dev host (recorded here for drift visibility; the
 # authoritative comparison identity is the container):
-#   qpdf  12.4.1 (winget)   mutool 1.23.0 (winget)   gs: not installed
+#   qpdf  12.4.1 (winget)   mutool 1.23.0 (winget; the pinned container is
+#                           1.23.9 — the drift is measured, not hidden)   gs: not installed
 
 [tool.qpdf]
 role = "structural (SL-0.ORACLE.03)"
 version = "11.9.0"
 image = "ghcr.io/wertcore/selis-pdf/oracle-qpdf"
-digest = "sha256:19d2540a6142dc2dd746f1b38626a9f951c7bfe0be5d1d3ad4fd82107e12d476"
+digest = "sha256:7ed4a8e25987d3e5b162a373abdb1e33b380635247395a9be9d7f0add2a07cb5"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/qpdf/qpdf/releases/download/v11.9.0/qpdf-11.9.0.tar.gz"
@@ -39,7 +45,7 @@ licence = "Apache-2.0"
 role = "render + text (SL-0.ORACLE.02/04)"
 version = "1.23.9"
 image = "ghcr.io/wertcore/selis-pdf/oracle-mupdf"
-digest = "sha256:89be099d7f2db9bc0ce280e1509f5b4a9a8e2a4dd5a0fa93b7e9b4698c10fbe1"
+digest = "sha256:87d6cbf2d2e293827b39a35d5487e18e5df03f32b84a6d31b0b77cbe05b6b518"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://mupdf.com/downloads/archive/mupdf-1.23.9-source.tar.gz"
@@ -51,7 +57,7 @@ licence = "AGPL-3.0 (external process only, ADR-P0021)"
 role = "codec/colour/shading reference (SL-0.ORACLE.02)"
 version = "9.56.1"
 image = "ghcr.io/wertcore/selis-pdf/oracle-ghostscript"
-digest = "sha256:fcbb6d2fdaa2e36b7f24c62fb0b1b4e69aaed9d1afb54f72efebfdfe7fea0190"
+digest = "sha256:50ccd19854397811816879103580156158875954f96667b1b79c8a79f6d789d6"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs9561/ghostscript-9.56.1.tar.gz"
@@ -63,7 +69,7 @@ licence = "AGPL-3.0 (external process only, ADR-P0021)"
 role = "primary render oracle (SL-0.ORACLE.02)"
 version = "chromium-7961"
 image = "ghcr.io/wertcore/selis-pdf/oracle-pdfium"
-digest = "sha256:162ef39ff75b1cbc82dc443adf2f56e32aab6540268f9c7278d6496dcf8dfc32"
+digest = "sha256:d9c76dfb33826dcb1394e4b7490a780a59d3f74728069d97e53e8d9d34d58b67"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-linux-x64.tgz"
@@ -75,7 +81,7 @@ licence = "BSD-3-Clause"
 role = "independent render + extract oracle (SL-0.ORACLE.02/04)"
 version = "6.2.108"
 image = "ghcr.io/wertcore/selis-pdf/oracle-pdfjs"
-digest = "sha256:910557047625efb319161c267851fcbbbc6a530b32269508960b4370a52b96c6"
+digest = "sha256:8e94a6aa5d2268a9c2660492237a3571d49b780209cf70f02595f618d69db34e"
 base = "node:22-bookworm-slim"
 base_digest = "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
 source_url = "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.2.108.tgz"

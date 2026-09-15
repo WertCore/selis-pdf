@@ -13,6 +13,14 @@
 #   5 Edit       — it can be modified and saved back.
 #   6 Author     — the engine can author new documents using it.
 #
+# Promotion record (SL-3.CONF.02, 2026-09-14): second ladder update, on the post-
+# merge tree (3,860-file regenerated corpus incl. the SL-3.TEXT.10 BT fix). `text`
+# moves None -> Parse (Unicode extraction measured across the corpus; Render and
+# Extract both withheld — see the row). `render` stays Parse with the bar
+# re-measured: it now clears Bar A and Bar B on the MuPDF leg, and only the
+# two-independent-oracle CI legs keep it down. Tolerances were read against
+# SL-0.ORACLE.04's noise floor, not against the red build.
+
 # Promotion record (SL-2.CONF.02, 2026-09-11): first ladder update. Levels are
 # measurements against the SL-2.CONF.03 calibrated bar (Bar A: >=95% of
 # comparable pages <=25% differing pixels @150 DPI; Bar B: selis's <=2%/<=5%/
@@ -38,7 +46,7 @@ notes = "Parse: SL-1.COS.* (xref + recovery); CONF.05 typed-refusal adjudication
 id = "filters"
 name = "Stream filters"
 level = 2
-notes = "Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain/jpx_stream fuzz + filter-jpx corpus; CONF.04 JPX/JBIG2 decode suspects tracked"
+notes = "Parse: SL-1.FILT.* + SL-2.FILT.01/02; encode-decode-identity proptests + filter_chain/jpx_stream fuzz + filter-jpx corpus; CONF.04 JPX/JBIG2 decode suspects tracked. SL-1.FILT.08 JPX decode now runs under the sandboxed wasm host; the Render rung still needs the per-filter oracle tolerance legs (Ghostscript comparison unmeasured)"
 
 [[area]]
 id = "encryption"
@@ -50,25 +58,25 @@ notes = "Parse: SL-1.ENCRYPT.* DoDs; engine encrypt_write_roundtrip; RC4/AESV2 r
 id = "document"
 name = "Document model (catalog, pages, outlines)"
 level = 2
-notes = "Parse: SL-1.DOC.* DoDs; CONF.05 MediaBox fallback renders; /Rotate page geometry open in SL-2.RAST.12 (parse unaffected)"
+notes = "Parse: SL-1.DOC.* DoDs; CONF.05 MediaBox fallback renders; /Rotate page geometry closed by SL-2.RAST.12"
 
 [[area]]
 id = "render"
 name = "Rendering (content, raster)"
 level = 2
-notes = "Parse only: Bar A pass (97.0% <=25% @150, n=3,747 vs MuPDF) but Bar B fails (<=2% 76.2 vs best pair 82.3, 1.1pp past the 5pp allowance; SL-2.RAST.14). Open: size_skew 17 files (RAST.12), blank_selis 25 files (RAST.13), diff>=25 94 files (CONF.04)"
+notes = "Parse: Bar A pass (97.2% <=25% @150, n=3,773 vs MuPDF, post-merge re-run) and Bar B now passes on the MuPDF leg (<=2% 80.9 vs best pair 82.3, 1.4pp inside the 5pp allowance; <=5% 86.8, <=10% 92.6) after SL-2.RAST.14 + the SL-3.TEXT.10 BT fix; size_skew closed by SL-2.RAST.12 (17 -> 0), blank_selis 25 -> 2 (typed /Redact-appearance deviations, SL-2.RAST.13), gross diff>=25 106 files tracked by SL-2.CONF.04. Render rung still unmeasured: the gate needs two independent oracles, and the CI legs against PDFium/pdf.js failed on stale digests (re-pinned in this wave) - confirming run pending"
 
 [[area]]
 id = "text"
 name = "Text and fonts"
-level = 0
-notes = "None at G2: extraction is Phase 3 (SL-3.*), unmeasured; render pixels are not a text-model claim"
+level = 2
+notes = "Parse: text/font models build and decode; extraction measured across the 3,860-file corpus vs pinned mutool 1.23.0 (969 >=0.99, 978 >=0.98 of 1,745 comparable, median similarity 1.000, mean 0.761). Render withheld: the text-bearing slice itself (>=50 chars, n=635) renders 89.8% <=25% @150 vs MuPDF, below Bar A, and two-independent-oracle evidence awaits the CI re-run (SL-3.CONF.03/05). Extract withheld: 56.05% >=0.98 vs the >=98%-of-corpus G3 wording, which SL-0.ORACLE.04 shows sits under the oracle-vs-oracle ceiling (79.0% pdfium<->pdfjs, ~72.7% mutool pairs) - recalibration owed (SL-3.CONF.03) with the open cohorts: 539 deep-tail (SL-3.CONF.03), 62 silent annotation-AP empties (SL-3.TEXT.12), 13-file MuPDF word-split cohort awaiting OracleBug/OurBug verdicts (SL-3.CONF.04)"
 
 [[area]]
 id = "annot"
 name = "Annotations"
 level = 0
-notes = "None at G2 (target Identify): no detection gate run; /AP appearances suspected in blank_selis 25 files (SL-2.RAST.13)"
+notes = "None at G2 (target Identify): no detection gate run; /AP appearances render since SL-2.RAST.13 (blank_selis 25 -> 2, both typed /Redact deviations); extracting text from those appearances is SL-3.TEXT.12 (filed by SL-3.CONF.02: 62 silent empties whose page streams are genuinely empty)"
 
 [[area]]
 id = "forms"
