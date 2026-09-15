@@ -414,16 +414,20 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     synthetic 106/108, indic 7/9, ghent **0/94**. Font cohorts: all_embedded 674/1,096
     (61.5%), has_external 184/391 (47.1%), has_type3 10/63 (15.9%), unknown-inventory
     110/119.
-  - **Render readout:** @150 n=3,773: ≤0.5% **67.9%** (was 27.3% — the 36pp RAST.14
-    excess is closed), ≤1% 74.9 (34.1), ≤2% **80.9**, ≤5% 86.8, ≤10% 92.6, ≤25%
-    **97.2** (97.0); p50 0.07, p95 13.8. On the published G2 calibration: **Bar A
-    passes** and **Bar B now passes on the MuPDF leg** (≤2% 80.9 vs best pair 82.3 =
-    1.4pp inside the 5pp allowance; ≤5% −1.3pp, ≤10% −1.9pp) — the REPORT row's
-    "Bar B fails by 1.1pp" was a stale CONF.01-era claim. Blank/skew clusters the old
-    row blamed: `size_skew` 0 (RAST.12 closed), `blank_selis` 2 (typed /Redact-AP,
-    RAST.13), gross `diff>=25` **106** files @150 (SL-2.CONF.04 open). Prepress ghent:
-    ≤25% 60.0% vs the pair band 73.7–77.9 — selis trails its own envelope class there,
-    tracked not gated.
+  - **Render readout:** @150 n=3,773: ≤0.5% **67.9%** (was 27.3% — +40.6pp, the
+    1–2% band excess RAST.14 was chasing is gone), ≤1% 74.9 (34.1), ≤2% **80.9**,
+    ≤5% 86.8, ≤10% 92.6, ≤25% **97.2** (97.0); p50 0.07, p95 13.8. Full bands:
+    @72 65.6/75.3/79.6/85.2/90.6/96.7 (n=3,776), @300 70.5/77.1/82.7/88.9/94.3/97.5
+    (n=3,768) — monotone across DPIs as the calibration predicts. On the published
+    G2 calibration: **Bar A passes** and **Bar B now passes on the MuPDF leg**
+    (≤2% 80.9 vs best pair 82.3 = 1.4pp inside the 5pp allowance; ≤5% −1.3pp,
+    ≤10% −1.9pp) — the REPORT row's "Bar B fails by 1.1pp" was a stale CONF.01-era
+    claim. Blank/skew clusters the old row blamed: `size_skew` 0 (RAST.12 closed),
+    `blank_selis` 2 (@150: the two /6.3.3-t01-fail-b /Redact-appearance typed
+    deviations, RAST.13; issue14497 only trips at 72 DPI), gross `diff>=25` **106**
+    files @150 (flat 45 + ghent 38 + govdocs1 21 + 2 verapdf, SL-2.CONF.04 open).
+    Prepress ghent: ≤25% 60.0% (57/95) vs the pair band 73.7–77.9 — selis trails its
+    own envelope class there, tracked not gated.
   - **Promotions (measurement, SL-0.ORACLE.04 floor applied):**
     * `text` **None → Parse (2)**. Extraction is built and measured (median 1.000; the
       TEXT.08/09/10 chain holds across all 3,860), but **Render is withheld**: the

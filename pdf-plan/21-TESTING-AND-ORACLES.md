@@ -120,6 +120,17 @@ For reference, selis↔mutool over the full comparable corpus (SL-2.CONF.01, sam
 27.3% / 34.1% / 76.2% / 85.1% / 92.0% / 97.0% at the same bands, p50 = 1.68, p90 = 8.55,
 p99 = 68.4 (n = 3,747).
 
+Re-measured by SL-3.CONF.02 on the merged tree (3,848+12 → 3,860 files, same local
+mutool-1.23.0 + ΔE76>2.3 metric): general ≤0.5% 67.90, ≤1% 74.87, ≤2% 80.90, ≤5% 86.83,
+≤10% 92.55, ≤25% 97.16, p50 0.07, p95 13.83 (n=3,773) — the p50 shift and the whole
+1–2% excess are the RAST.14 + BT-fix effect; the ghent class is unchanged at ≤0.5% 0 /
+≤25% 60.0 (n=95). The bar itself is unchanged — the envelope standards stay the oracle
+pairs above. CI legs vs PDFium/pdf.js were **not** re-run on this tree: their pinned
+manifests are gone from the registry (every container leg, render *and* text, failing
+on `Unable to find image`, e.g. run 34806315351's artifacts), and the SL-0.ORACLE.04
+rebuild landed new digests that this wave re-records into `xtask/oracles.toml` — the
+first post-merge scheduled/dispatch run confirms them.
+
 **What this calibrates:**
 
 * The original G2 criterion (≤0.5% differing pixels on ≥95% of the corpus @150) is **below the
