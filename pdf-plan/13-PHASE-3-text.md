@@ -409,10 +409,11 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     the oracle-vs-oracle shape; the notes' 0.759/1.00 reproduce inside the re-measure).
     Cohorts: `empty_selis` **62** (annotation-AP text; per-cause task SL-3.TEXT.12),
     `empty_oracle` 14, `oracle_rejects` 34, `both_reject` 23, `selis_rejects` 17,
-    `oracle_timeout` 4, truncated flag 3, rtl-tagged 15. Per-source ≥0.98: flat
-    237/479, govdocs1 52/180, verapdf 576/799, synthetic 106/108, indic 7/9, ghent
-    **0/94**. Font cohorts: all_embedded 674/1,096 (61.5%), has_external 184/391
-    (47.1%), has_type3 10/63 (15.9%), unknown-inventory 110/119.
+    `oracle_timeout` 4, truncated flag 3, rtl-tagged 15. Per-source ≥0.98 of scored
+    (source-comparable / g3-within): flat 237/479, govdocs1 52/180, verapdf 576/799,
+    synthetic 106/108, indic 7/9, ghent **0/94**. Font cohorts: all_embedded 674/1,096
+    (61.5%), has_external 184/391 (47.1%), has_type3 10/63 (15.9%), unknown-inventory
+    110/119.
   - **Render readout:** @150 n=3,773: ≤0.5% **67.9%** (was 27.3% — the 36pp RAST.14
     excess is closed), ≤1% 74.9 (34.1), ≤2% **80.9**, ≤5% 86.8, ≤10% 92.6, ≤25%
     **97.2** (97.0); p50 0.07, p95 13.8. On the published G2 calibration: **Bar A
