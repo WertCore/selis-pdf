@@ -103,7 +103,15 @@ subject to revision by that calibration, and the calibration numbers are publish
 under the identical CONF.01 metric (ΔE76 > 2.3, overlap region, page 1 @150 DPI), with a repeated
 tool as the self-agreement sanity leg. Local legs: PDFium chromium/7961, pdf.js 6.2.108, MuPDF
 1.23.0 (mutool ×2 as sanity); the CI `render-conf` job re-runs the same legs on the pinned GHCR
-images. Sample: 300-file stride over the general corpus + the full 95-file Ghent suite. Fraction
+images — which have measured **0 comparable** since 2026-09-14 on two evidenced counts (runs
+34806315351/34946893403): `Unable to find image` for the superseded 2026-09-09 pdfium/pdfjs/
+mupdf digests — re-recorded from the 2026-09-14 push (run 34820871908, drivers with `--text`) —
+and, on legs that pull, the by-file bind turning into a directory (`cannot write /out.img`,
+EISDIR, `Device or resource busy`) plus the text plan's lost `mutool`→`mupdf` alias and relative
+`oracle.txt` volume name. SL-3.CONF.02 re-pins and restores the smoke contract's `/out` bind with
+tests. Any pre-09-14 CI cell is unconfirmed from retained artifacts; CONF.06 asserts the first
+credible run on real comparable counts.
+    Sample: 300-file stride over the general corpus + the full 95-file Ghent suite. Fraction
 of comparable pages within each differing-pixels band:
 
 | Pair | corpus | n | ≤0.5% | ≤1% | ≤2% | ≤5% | ≤10% | ≤25% | p50 | p90 | p99 |
@@ -119,6 +127,23 @@ of comparable pages within each differing-pixels band:
 For reference, selis↔mutool over the full comparable corpus (SL-2.CONF.01, same metric):
 27.3% / 34.1% / 76.2% / 85.1% / 92.0% / 97.0% at the same bands, p50 = 1.68, p90 = 8.55,
 p99 = 68.4 (n = 3,747).
+
+Re-measured by SL-3.CONF.02 on the merged tree (3,848+12 → 3,860 files, same local
+mutool-1.23.0 + ΔE76>2.3 metric; SL-3.CONF.05 re-ran it on the post-TEXT.11 tree and the
+merged numbers quoted here are that re-run — the pre-TEXT.11 pass differed by ≤0.3pp
+everywhere): general ≤0.5% 67.94, ≤1% 74.91, ≤2% 80.90, ≤5% 86.86, ≤10% 92.58,
+≤25% 97.19, p50 0.07, p95 13.79 (n=3,774 @150; @72 65.64/75.28/79.59/85.18/90.55/96.72
+n=3,778; @300 70.52/77.1/82.73/88.86/94.32/97.48 n=3,769) — the p50 shift and the whole
+1–2% excess are the RAST.14 + BT-fix effect; the ghent class is unchanged at ≤0.5% 0 /
+≤10% 12.6 / ≤25% 60.0 (n=95), and TEXT.11 is band-neutral for pixels. The bar itself is
+unchanged — the envelope standards stay the oracle
+pairs above. CI legs vs PDFium/pdf.js remain **unmeasured** on any merged tree: the
+sweeps reach the containers fine but die on our own output bind (docker turns a
+not-yet-written `-v` source into a directory → `cannot write /out.img` on the render
+legs, `Device or resource busy` on the pair legs, `no [tool.mutool] pin` + a relative
+`oracle.txt` volume name on the text legs — runs 34806315351 and 34946893403). SL-3.CONF.02
+fixes the binds/alias and re-records the run-34820871908 digests (the `--text` driver modes
+live there); the first scheduled post-merge run is what finally confirms them.
 
 **What this calibrates:**
 
@@ -140,7 +165,12 @@ p99 = 68.4 (n = 3,747).
   comparable pages (relative docker `-v` output mounts + a `mutool`-vs-`mupdf` pin lookup miss;
   both fixed on the CONF.02 branch with regression tests). The matrix stands on the local legs;
   the pinned-identity confirmation re-runs post-merge. Full record in `12-PHASE-2-render.md`
-  SL-2.CONF.02.
+  SL-2.CONF.02. **Correction (SL-3.CONF.02, 2026-09-16):** the CONF.02 fix was incomplete — it
+  absolutised the *file* bind, and docker turns an absent host *file* into a *directory* inside
+  the container, so the merged post-fix runs (34806315351 on text legs, 34946893403 on render +
+  calibration pairs) still return 0 comparable with `cannot write /out.img` / EBUSY; the text-plan
+  pin alias was missed entirely. Fixed properly this wave (`/out` parent-directory binds +
+  `pin_id`), with tests; the confirmation still needs one post-merge scheduled `render-conf`.
 
 ### The measured text-extraction calibration (SL-0.ORACLE.04, 2026-09-14)
 
@@ -162,8 +192,90 @@ Run identities: PDFium `chromium/7961` (bblanchon win-x64 binary, our driver, sa
 container artifact's revision), pdf.js `pdfjs-dist 6.2.108` (`npm ci` over the committed lockfile
 — the pinned identity), MuPDF local `mutool 1.23.0` (pin is 1.23.9; drift recorded, the headline
 pair is the two that matched their pins). Artifacts: `C:\selis-build\oracle04-text-smoke`.
-**CI re-run pending, honestly:** the container legs need the `oracle-images` rebuild of the new
-`--text` drivers plus the digest re-record in `xtask/oracles.toml`; until then they fail loudly.
+**CI re-pin + bind status (SL-3.CONF.02, 2026-09-14/16):** the `oracle-images` job
+rebuilt and pushed all five images (run 34820871908) — the pdfium/pdfjs manifests now
+carry the `--text` driver modes, and `xtask/oracles.toml` re-pins to them. That fixes the
+half that killed *pulls*: the superseded 2026-09-09 digests no longer resolve
+(`Unable to find image` — pdfium `@162ef39f`, pdfjs `@9105570`, mupdf `@89be099d`). The
+scheduled `render-conf` legs then died a second way, in the harness: the **by-file output
+bind** — docker turns a host file that does not exist yet into a *directory*, so render
+legs report `pdfium_driver: cannot write /out.img` / `node:fs` EISDIR, pair legs
+`cannot remove '/out.img': Device or resource busy`, and the text sweep adds
+`mutool: no [tool.mutool] pin recorded` (the `mutool`→`mupdf` alias was fixed for
+render legs but missed in the text plan) and a relative `sweep-text/tmp-w0/oracle.txt`
+`-v` rejected as a volume name (runs 34806315351, 34746691823, and the 2026-09-15
+schedule on `03ece8ba`, 34946893403 — every leg typed, 0 comparable). Both binds now
+match the smoke contract (`out_dir_bind()`: parent directory, created and absolute;
+`pin_id()` in the text plan) with regression tests in `xtask/src/oracle.rs`.
+Dispatches are push-scoped, so the next scheduled run after that merge prints the first
+credible PDFium/pdf.js cells; *any §4 cell quoted from CI before 2026-09-14 is
+unconfirmed from retained artifacts*, and SL-3.CONF.06 is what asserts on the counts
+instead of green-by-default. The mutool legs stay measured either way (local 1.23.0,
+container 1.23.9, drift recorded).
+
+**What this calibrates:**
+
+* The original G2 criterion (≤0.5% differing pixels on ≥95% of the corpus @150) is **below the
+  independent-renderer noise floor**: the best oracle pair reaches 70.6% at ≤0.5% on general
+  content and 0% on prepress. No renderer pair satisfies it at any band below ≤25%.
+* **Recommended calibrated G2 bar** (recorded in `12-PHASE-2-render.md`, consumed by
+  SL-2.CONF.02): **Bar A** — ≥95% of comparable pages ≤25% differing pixels @150 (every oracle
+  pair passes); **Bar B** — selis's ≤2%/≤5%/≤10% band fractions within 5pp of the best oracle
+  pair (5pp = observed pair spread + n≈300 sampling noise). The ≤0.5%/≤1% strict bands and the
+  Ghent-class CDFs stay published as tracked fidelity metrics, not gates.
+* Selis's current position: inside the oracle envelope from ≤2% upward (76.2/85.1/92.0/97.0 vs
+  the pairs' 80.5–82.3/86.1–88.1/91.9–94.5/96.9–97.9), failing Bar B at ≤2% by 1.1pp, with the
+  deficit concentrated in a uniform 1–2% band excess (SL-2.RAST.14) and a heavy tail that is the
+  filed bug clusters (p99 68.4 vs pairs' 29.3–39.0).
+* Re-baselining used calibration data only; per §5, tolerances are never adjusted because a build
+  is red.
+* **CI confirmation (2026-09-11, SL-2.CONF.02):** run 34567473855 completed green but measured 0
+  comparable pages (relative docker `-v` output mounts + a `mutool`-vs-`mupdf` pin lookup miss;
+  both fixed on the CONF.02 branch with regression tests). The matrix stands on the local legs;
+  the pinned-identity confirmation re-runs post-merge. Full record in `12-PHASE-2-render.md`
+  SL-2.CONF.02. **Correction (SL-3.CONF.02, 2026-09-16):** the CONF.02 fix was incomplete — it
+  absolutised the *file* bind, and docker turns an absent host *file* into a *directory* inside
+  the container, so the merged post-fix runs (34806315351 on text legs, 34946893403 on render +
+  calibration pairs) still return 0 comparable with `cannot write /out.img` / EBUSY; the text-plan
+  pin alias was missed entirely. Fixed properly this wave (`/out` parent-directory binds +
+  `pin_id`), with tests; the confirmation still needs one post-merge scheduled `render-conf`.
+
+### The measured text-extraction calibration (SL-0.ORACLE.04, 2026-09-14)
+
+`xtask oracle text-sweep --only-pair pdfium+pdfjs --only-pair pdfium+mutool --only-pair
+pdfjs+mutool` extracts page 1 with every named text oracle and scores all pairs *before* selis
+is compared against them — the extract analogue of the matrix above, under the one normaliser
+(`xtask/src/text_norm.rs`, N1–N6) and the four-decimal normalised edit-distance similarity the
+CONF.01 verdicts carry. Sample: the 644-file `smoke` corpus (pdf.js test suite + PDF Association
+examples). `n` counts comparable files (both sides produced text; blank-vs-text and rejections
+are signed, not scored). Fraction of comparable files within each similarity band:
+
+| Pair | comparable of 644 | ≥0.99 | ≥0.98 | ≥0.95 | ≥0.75 | mean(1−sim)% | p50 | p75 | p90 |
+|---|---|---|---|---|---|---|---|---|---|
+| mutool↔pdfium | 480 | 72.1% | 72.7% | 74.2% | 78.8% | 19.63 | 0.0 | 7.81 | 100.0 |
+| mutool↔pdfjs | 466 | 71.9% | 72.7% | 74.2% | 79.8% | 19.11 | 0.0 | 5.73 | 100.0 |
+| **pdfium↔pdfjs** | 472 | **78.4%** | **79.0%** | **80.5%** | **85.6%** | **13.07** | 0.0 | 0.0 | 83.11 |
+
+Run identities: PDFium `chromium/7961` (bblanchon win-x64 binary, our driver, same pin as the
+container artifact's revision), pdf.js `pdfjs-dist 6.2.108` (`npm ci` over the committed lockfile
+— the pinned identity), MuPDF local `mutool 1.23.0` (pin is 1.23.9; drift recorded, the headline
+pair is the two that matched their pins). Artifacts: `C:\selis-build\oracle04-text-smoke`.
+**CI re-pin status (SL-3.CONF.02, 2026-09-14/16):** the `oracle-images` job rebuilt and pushed
+all five images (run 34820871908) — the pdfium/pdfjs manifests are now the ones whose drivers
+carry the `--text` modes, and `xtask/oracles.toml` records their digests. The re-pin is *not*
+what had been stopping the scheduled `render-conf` legs, though: the legs failed on the harness's
+own output bind — a `-v` of a host file that does not exist yet becomes a *directory* inside the
+container, so the tools reported `pdfium_driver: cannot write /out.img` / `node:fs` EISDIR and the
+pair/calibration legs reported `cannot remove '/out.img': Device or resource busy` (runs
+34806315351 render sweep, 34946893403 render sweep + calibration, every leg `oracle_rejects`, 0
+comparable) — plus, on the text sweep, a `mutool: no [tool.mutool] pin` alias miss and a relative
+`sweep-text/tmp-w0/oracle.txt` `-v` source rejected as a volume name (run 34946893403). Both bind
+shapes now match the smoke runs (`/out/` directory binds with an absolutised, created parent, plus
+`pin_id` aliasing; regression tests in
+`xtask/src/oracle.rs`), so the first green PDFium/pdf.js text and pair legs arrive with the next
+post-merge scheduled `render-conf`; dispatches are push-scoped and this branch does not push.
+The mutool legs — local install 1.23.0 and container 1.23.9 (drift recorded above) — stay
+measured either way.
 
 **What this calibrates:**
 
