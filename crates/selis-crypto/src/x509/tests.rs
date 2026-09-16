@@ -56,7 +56,7 @@ fn ec_identity_computes_the_method1_ski() {
     let ident = parse_identity(&cert, &mut g).expect("parse");
     assert_eq!(
         ident.computed_ski,
-        Some(<[u8; 20]>::try_from(sha1::Sha1::digest(&point).as_slice()).expect("20"))
+        Some(<[u8; 20]>::try_from(&sha1::Sha1::digest(&point)[..]).expect("20"))
     );
     assert_eq!(ident.extension_ski, None);
 }

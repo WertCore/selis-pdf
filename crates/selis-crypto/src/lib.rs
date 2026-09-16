@@ -20,8 +20,20 @@
     clippy::cast_sign_loss,
     clippy::integer_division
 )]
+// Nightly fuzz builds compile this crate with `-D warnings`, and the fuzz
+// workspace resolved `generic-array` 0.14.9, whose crate root carries a
+// `#[deprecated]` ("upgrade to generic-array 1.x"): every *item* declared in it
+// is then a deprecated use and a hard error. The AES block path therefore
+// builds/breaks `Block` (a `GenericArray` alias) only through *trait* items
+// (`From`/`Into`, `Deref`, and the `cipher` traits' own methods) — never
+// through `GenericArray`'s inherent fns (`clone_from_slice`, `as_slice`).
+// Denied crate-wide so re-introducing a deprecated surface fails *here*
+// instead of reddening the nightly `fuzz-soak` job (SL-1.ENC.08 repair note,
+// design note §9 R20).
+#![deny(deprecated)]
 
 pub mod der;
+pub mod legacy;
 pub mod pkcs7;
 pub mod x509;
 
@@ -468,10 +480,10 @@ fn aes128_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
         for k in 0..16 {
             block[k] = chunk[k] ^ prev[k];
         }
-        let mut gb = Block::clone_from_slice(&block);
+        let mut gb: Block = block.into();
         cipher.encrypt_block(&mut gb);
-        out.extend_from_slice(gb.as_slice());
-        prev.copy_from_slice(gb.as_slice());
+        out.extend_from_slice(&gb);
+        prev.copy_from_slice(&gb);
     }
     out
 }
@@ -516,10 +528,10 @@ fn aes256_cbc_encrypt_raw(cipher: &Aes256, iv: &[u8], data: &[u8]) -> Vec<u8> {
         for k in 0..16 {
             block[k] = chunk[k] ^ prev[k];
         }
-        let mut gb = Block::clone_from_slice(&block);
+        let mut gb: Block = block.into();
         cipher.encrypt_block(&mut gb);
-        out.extend_from_slice(gb.as_slice());
-        prev.copy_from_slice(gb.as_slice());
+        out.extend_from_slice(&gb);
+        prev.copy_from_slice(&gb);
     }
     out
 }
@@ -588,15 +600,15 @@ fn aes256_cbc_decrypt_nopad(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     }
     prev.copy_from_slice(&iv[..16]);
     for chunk in data.chunks(16) {
-        if chunk.len() != 16 {
+        let Ok(chunk) = <[u8; 16]>::try_from(chunk) else {
             break;
-        }
-        let mut block = Block::clone_from_slice(chunk);
+        };
+        let mut block = chunk.into();
         cipher.decrypt_block(&mut block);
         for k in 0..16 {
             out.push(block[k] ^ prev[k]);
         }
-        prev.copy_from_slice(chunk);
+        prev = chunk;
     }
     out
 }
@@ -622,17 +634,17 @@ where
     prev.copy_from_slice(&iv[..16]);
     let mut blocks: Vec<[u8; 16]> = Vec::new();
     for chunk in data.chunks(16) {
-        if chunk.len() != 16 {
+        let Ok(chunk) = <[u8; 16]>::try_from(chunk) else {
             break;
-        }
-        let mut block = Block::clone_from_slice(chunk);
+        };
+        let mut block = chunk.into();
         cipher.decrypt_block(&mut block);
         let mut plain = [0u8; 16];
         for k in 0..16 {
             plain[k] = block[k] ^ prev[k];
         }
         blocks.push(plain);
-        prev.copy_from_slice(chunk);
+        prev = chunk;
     }
     for (i, plain) in blocks.iter().enumerate() {
         if i + 1 == blocks.len() {
@@ -861,7 +873,7 @@ pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8], encrypt_metadata: 
     };
     let mut block = [0u8; 16];
     block.copy_from_slice(&perms[..16]);
-    let mut gb = Block::clone_from_slice(&block);
+    let mut gb: Block = block.into();
     cipher.decrypt_block(&mut gb);
     let mut out = [0u8; 16];
     for k in 0..16 {
@@ -1100,9 +1112,9 @@ mod tests {
         let cipher = Aes256::new_from_slice(&file_key).unwrap();
         let mut block = [0u8; 16];
         block.copy_from_slice(&perms);
-        let mut gb = aes::Block::clone_from_slice(&block);
+        let mut gb: aes::Block = block.into();
         cipher.decrypt_block(&mut gb);
-        assert_eq!(&gb.as_slice()[..12], &expected_plain[..12]);
+        assert_eq!(&gb[..12], &expected_plain[..12]);
     }
 
     #[test]

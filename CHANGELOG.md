@@ -44,6 +44,23 @@ sections; every entry states what changed and what it means for the user.
   bits (Bob cannot borrow Alice's); the owner-password / standard-handler
   path keeps the SL-1.ENC.04 `/P`-only semantics. Viewer-UI greying is
   Phase 4 — this is the API gate. (Shipped pending review.)
+- Public-key documents from the **RC4 era now open on the read side**
+  (SL-1.ENC.08): `adbe.pkcs7.s3` (any `/V ≤ 3`) envelopes whose content is
+  RC4-40/RC4-128, 3DES-CBC (2- or 3-key) or RC2-CBC decrypt with the
+  recipient key, the CMS `[0]` *implicit* content shape that OpenSSL/Adobe
+  actually write is accepted, and RSAES-OAEP key transports (SHA-1 and
+  SHA-256 label/MGF1 pairs) unwrap modern CMS libraries' envelopes. The
+  wrong-key contract is unchanged — `RECIPIENT_NO_MATCH` is typed for every
+  cipher, RC4's no-padding case included, because the key transport unwraps
+  before a file key can be derived (design note §5, risk R19 notes). Writing
+  is untouched (ADR-P0019): Selis still emits AES only. The remaining
+  refusals are the genuinely-broken subset (`aes192`-wrapped ECDH KEKs,
+  OAEP with a non-empty label or a non-SHA mask, detached/PBES2/other
+  recipient infos, PKCS#12 keystores). Fixtures/DoD are in-repo deterministic
+  (`xtask pubkey-fixtures` RC4/TDEA/RC2/OAEP PDFs) — the local corpus holds no
+  public-key PDFs at all, so the "three real 2010-era files" clause of the
+  task stays open as a human/corpus step, not a claim (design note §6.7).
+  (Shipped, pending HUMAN line-by-line review.)
 - The pinned oracle-container images for PDFium and pdf.js additionally
   accept `--text <out.txt>` — each driver extracts a page's Unicode text
   as UTF-8 alongside its existing `--dpi`/`<out.png>` render mode. Used by
@@ -86,6 +103,15 @@ sections; every entry states what changed and what it means for the user.
   unaffected — an oracle-harness change.
 
 ### Fixed
+
+- The nightly `fuzz-soak` CI job (red on every target since 2026-09-11) builds
+  again: `generic-array` 0.14.8+ marks its crate `#[deprecated]`, and under the
+  fuzz job's `RUSTFLAGS='-D warnings'` every `aes::cipher::Block`/digest-`Output`
+  *inherent* call in `selis-crypto` (`clone_from_slice`, `as_slice`) became a hard
+  error. Those call sites now go through non-deprecated coercions (no behavioural
+  change), and `#![deny(deprecated)]` in `selis-crypto` keeps a deprecated call
+  from sneaking back in (SL-1.ENC.08's companion repair; SL-1.ROB.06's CI note
+  and design note §9 R19 carry the regression note).
 
 - The PDFium and pdf.js oracle drivers print their page-extraction banners
   to stderr now, and the harness runs local text legs with stdout to a side

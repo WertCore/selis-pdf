@@ -1,6 +1,6 @@
 //! Tests for the PKCS#7/CMS read path (SL-1.ENC.03).
 //!
-//! The DER *writer* helpers here exist only to build test fixtures — the
+//! The DER *writer* helpers here exist only to build test fixtures Ã¢â‚¬â€ the
 //! shipped code is decrypt-only (ADR-P0019). RSA unit tests use runtime
 //! 512-bit keys (testing our code, not RSA's strength); the committed
 //! engine-level fixtures use fixed 2048-bit keys (see the fixture generator
@@ -80,7 +80,7 @@ fn integer_bytes(v: u64) -> Vec<u8> {
     tlv(0x02, &body)
 }
 
-/// A test-side AES-KW wrap (RFC 3394 §2.2.1) — the mirror of
+/// A test-side AES-KW wrap (RFC 3394 Ã‚Â§2.2.1) Ã¢â‚¬â€ the mirror of
 /// [`aes_kw_unwrap`], needed to build fixtures.
 fn aes_kw_wrap(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
     let cipher = AesCipher::new(kek.len(), kek)?;
@@ -97,7 +97,7 @@ fn aes_kw_wrap(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
             let mut input = [0u8; 16];
             input[..8].copy_from_slice(&a);
             input[8..].copy_from_slice(r.get(i)?);
-            let mut block = Block::clone_from_slice(&input);
+            let mut block: Block = input.into();
             cipher.encrypt_block(&mut block);
             let t_bytes = t.to_be_bytes();
             for k in 0..8 {
@@ -169,7 +169,7 @@ fn enveloped_blob(recipients: &[Vec<u8>], eci: &[u8]) -> Vec<u8> {
 /// A `KeyTransRecipientInfo` (issuer-and-serial variant, rsaEncryption).
 fn key_trans_recipient(encrypted_key: &[u8]) -> Vec<u8> {
     // RecipientIdentifier: IssuerAndSerialNumber ::= SEQUENCE { issuer Name,
-    // serialNumber INTEGER } — one wrapping SEQUENCE.
+    // serialNumber INTEGER } Ã¢â‚¬â€ one wrapping SEQUENCE.
     let mut rid_body = tlv(0x30, &[]); // issuer Name (empty RDNSequence)
     rid_body.extend_from_slice(&integer_bytes(1)); // serialNumber
     let rid = tlv(0x30, &rid_body);
@@ -188,7 +188,7 @@ fn key_trans_with_rid(rid: &[u8], encrypted_key: &[u8]) -> Vec<u8> {
 
 /// A `KeyAgreeRecipientInfo` ([1] arm) with one originator point and one
 /// wrapped key, addressed by `rid` (already-encoded `RecipientIdentifier`
-/// TLV bytes — SL-1.ENC.07 parses it).
+/// TLV bytes Ã¢â‚¬â€ SL-1.ENC.07 parses it).
 fn key_agree_recipient(originator_point: &[u8], wrapped: &[u8], rid: &[u8]) -> Vec<u8> {
     // OriginatorPublicKey ::= SEQUENCE { algorithm, BIT STRING }
     let mut bit_string = vec![0u8]; // no unused bits
@@ -226,7 +226,7 @@ fn cbc_encrypt_test(alg: CekAlgorithm, cek: &[u8], payload: &[u8]) -> Option<Vec
     let mut prev: [u8; 16] = iv;
     for chunk in padded.chunks(16) {
         let block_bytes: [u8; 16] = <[u8; 16]>::try_from(chunk).ok()?;
-        let mut block = Block::clone_from_slice(&block_bytes);
+        let mut block: Block = block_bytes.into();
         for k in 0..16 {
             block[k] ^= prev[k];
         }
@@ -235,8 +235,8 @@ fn cbc_encrypt_test(alg: CekAlgorithm, cek: &[u8], payload: &[u8]) -> Option<Vec
             AesCipher::A192(c) => c.encrypt_block(&mut block),
             AesCipher::A256(c) => c.encrypt_block(&mut block),
         }
-        out.extend_from_slice(block.as_slice());
-        prev.copy_from_slice(block.as_slice());
+        out.extend_from_slice(&block);
+        prev.copy_from_slice(&block);
     }
     Some(out)
 }
@@ -337,22 +337,76 @@ fn trailing_bytes_and_wrong_types_are_malformed() {
 }
 
 #[test]
+fn legacy_content_algorithms_parse_for_read() {
+    // SL-1.ENC.08: RC4 / 3DES-CBC / RC2-CBC are *read* support; they parse
+    // into their CekAlgorithm with the parameters taken from the DER.
+    let mut g = guard();
+    let ktri = key_trans_recipient(&[0xAA; 64]);
+
+    let rc4_oid: &[u64] = &[1, 2, 840, 113_549, 3, 4];
+    let eci = encrypted_content_info(rc4_oid, None, &[0x11; 24]);
+    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let parsed = parse_enveloped_data(&blob, &mut g).expect("rc4 parses");
+    assert_eq!(parsed.cek_algorithm, CekAlgorithm::Rc4);
+
+    let eci = encrypted_content_info(DES_EDE3_CBC, Some(&[0x22; 8]), &[0x11; 32]);
+    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let parsed = parse_enveloped_data(&blob, &mut g).expect("3des parses");
+    assert_eq!(
+        parsed.cek_algorithm,
+        CekAlgorithm::TdeaCbc { iv: [0x22; 8] }
+    );
+
+    // RC2-CBC-Parameter carries the effective key length and the IV.
+    let rc2_oid: &[u64] = &[1, 2, 840, 113_549, 3, 2];
+    let rc2_param = tlv(0x30, &{
+        let mut b = integer_bytes(128);
+        b.extend_from_slice(&tlv(0x04, &[0x33; 8]));
+        b
+    });
+    let mut body = oid_bytes(DATA);
+    body.extend_from_slice(&algorithm_identifier(rc2_oid, Some(&rc2_param)));
+    body.extend_from_slice(&tlv(0xA0, &tlv(0x04, &[0x11; 32])));
+    let eci = tlv(0x30, &body);
+    let blob = enveloped_blob(&[ktri], &eci);
+    let parsed = parse_enveloped_data(&blob, &mut g).expect("rc2 parses");
+    assert_eq!(
+        parsed.cek_algorithm,
+        CekAlgorithm::Rc2Cbc {
+            iv: [0x33; 8],
+            effective_bits: 128
+        }
+    );
+}
+
+#[test]
+fn legacy_content_iv_lengths_are_enforced() {
+    let mut g = guard();
+    let ktri = key_trans_recipient(&[0xAA; 64]);
+    // 3DES with a 16-byte IV (AES's size) is malformed, not a silent read.
+    let eci = encrypted_content_info(DES_EDE3_CBC, Some(&[0x22; 16]), &[0x11; 32]);
+    let blob = enveloped_blob(&[ktri], &eci);
+    let e = parse_enveloped_data(&blob, &mut g).expect_err("wrong IV size");
+    assert_eq!(e.code(), Code::EncryptMalformed);
+}
+
+#[test]
 fn unsupported_content_algorithms_are_typed_errors() {
     let mut g = guard();
     let ktri = key_trans_recipient(&[0xAA; 64]);
-    // 3DES-CBC: recognised, deliberately unimplemented.
-    let eci = encrypted_content_info(DES_EDE3_CBC, Some(&[0x22; 8]), &[0x11; 32]);
-    let blob = enveloped_blob(&[ktri], &eci);
-    let e = parse_enveloped_data(&blob, &mut g).expect_err("3DES must be refused");
+
+    // AES key wrap is a *key-management* algorithm, never a content one.
+    let wrap_oid: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 5];
+    let eci = encrypted_content_info(wrap_oid, Some(&[0x22; 16]), &[0x11; 32]);
+    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let e = parse_enveloped_data(&blob, &mut g).expect_err("wrap-as-content refused");
     assert_eq!(e.code(), Code::EncryptUnsupported);
 
-    // RC4-era s3 files are gated at the /Encrypt layer; a bare RC4 OID here
-    // is refused the same way.
-    let rc4_oid: &[u64] = &[1, 2, 840, 113_549, 3, 4];
-    let ktri = key_trans_recipient(&[0xAA; 64]);
-    let eci = encrypted_content_info(rc4_oid, None, &[0x11; 24]);
+    // Camellia / IDEA / anything else off the subset list.
+    let camellia: &[u64] = &[1, 2, 410, 200004, 4, 4];
+    let eci = encrypted_content_info(camellia, Some(&[0x22; 16]), &[0x11; 32]);
     let blob = enveloped_blob(&[ktri], &eci);
-    let e = parse_enveloped_data(&blob, &mut g).expect_err("RC4 must be refused");
+    let e = parse_enveloped_data(&blob, &mut g).expect_err("camellia refused");
     assert_eq!(e.code(), Code::EncryptUnsupported);
 }
 
@@ -374,7 +428,7 @@ fn negative_version_is_malformed() {
 }
 
 /// RSA key-transport round trip: encrypt a CEK to the recipient, decrypt the
-/// payload, derive the file key — the full Algorithm 1.
+/// payload, derive the file key Ã¢â‚¬â€ the full Algorithm 1.
 #[test]
 fn rsa_key_transport_round_trip() {
     let mut g = guard();
@@ -461,7 +515,7 @@ fn ecdh_key_agreement_round_trip() {
     let shared_bytes = *shared.raw_secret_bytes();
     let kek = kdf_x963_sha256(
         // The shared secret the writer would compute (same fixed keypair).
-        shared_bytes.as_slice(),
+        &shared_bytes,
         32,
     );
     let wrapped = aes_kw_wrap(&kek, &cek).expect("kw wrap");
@@ -510,7 +564,7 @@ fn tampered_kw_blob_does_not_unwrap() {
     assert!(aes_kw_unwrap(&kek, &wrapped[..15]).is_none());
 }
 
-/// RFC 3394 §4.1 test vector: 128-bit KEK wrapping 128-bit key data.
+/// RFC 3394 Ã‚Â§4.1 test vector: 128-bit KEK wrapping 128-bit key data.
 #[test]
 fn aes_kw_matches_rfc3394_vector() {
     let kek = [
@@ -581,7 +635,7 @@ fn sha1_test(input: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// SL-1.ENC.07 — certificate-identity recipient selection
+// SL-1.ENC.07 Ã¢â‚¬â€ certificate-identity recipient selection
 // ---------------------------------------------------------------------------
 
 use crate::test_fixtures::{certificate, serial_content};
@@ -638,7 +692,7 @@ fn certificate_identity_selects_the_addressed_recipient() {
         .expect_err("Certificate mode must not fall through");
     assert_eq!(e.code(), Code::RecipientNoMatch);
 
-    // …while the same strict credential that DOES match still opens.
+    // Ã¢â‚¬Â¦while the same strict credential that DOES match still opens.
     let ok = PubKeyCredential::rsa(rsa_to_pkcs8(&key))
         .with_certificate(cert)
         .matching(MatchBy::Certificate);
@@ -699,7 +753,7 @@ fn subject_key_identifier_matches_the_chain() {
         Some(Code::RecipientNoMatch),
         "certificate mode requires a chain"
     );
-    // …with the extension-bearing chain, `Auto` matches by identity.
+    // Ã¢â‚¬Â¦with the extension-bearing chain, `Auto` matches by identity.
     let auth = authenticate_public_key(
         &[&blob_ski],
         &PubKeyCredential::rsa(pkcs8.clone()).with_certificate(cert_ext),
@@ -737,7 +791,7 @@ fn serial_equality_is_value_based() {
 }
 
 /// A single blob addressed by **duplicate identical** `RecipientIdentifier`s
-/// (two `KeyTransRecipientInfo` entries quoting the same issuer/serial — a
+/// (two `KeyTransRecipientInfo` entries quoting the same issuer/serial Ã¢â‚¬â€ a
 /// writer bug, seen in the wild): the identity pass keeps trying after the
 /// first transport fails to unwrap and opens the recipient whose key really
 /// matches; it never mistakes the failing twin for "no match", and never
@@ -769,7 +823,7 @@ fn duplicate_identifiers_try_every_matched_transport() {
     );
 
     // Identity mode (`Certificate`): matches the duplicated rid, keeps
-    // trying, opens on the second transport — still BY identity.
+    // trying, opens on the second transport Ã¢â‚¬â€ still BY identity.
     let cred = PubKeyCredential::rsa(rsa_to_pkcs8(&key))
         .with_certificate(cert.clone())
         .matching(MatchBy::Certificate);
@@ -780,7 +834,7 @@ fn duplicate_identifiers_try_every_matched_transport() {
 
     // A key matching *neither* twin with the same chain: the identity pass
     // matches both twins, unwraps fail on both, and `Certificate` mode
-    // still refuses typed — a matched identifier with non-matching key
+    // still refuses typed Ã¢â‚¬â€ a matched identifier with non-matching key
     // material is never a silent fall-through.
     let third = test_rsa_key(1024);
     let e = authenticate_public_key(
@@ -825,10 +879,543 @@ fn permission_block_decoder_is_strict() {
     payload[20..].copy_from_slice(&0xFFFF_F0C0u32.to_le_bytes());
     assert_eq!(decode_permission_block(&payload), Some(0xFFFF_F0C0));
     assert_eq!(payload_seed(&payload).map(<[u8]>::len), Some(20));
-    // Any wrong length is None — never zero, never partial.
+    // Any wrong length is None Ã¢â‚¬â€ never zero, never partial.
     assert_eq!(decode_permission_block(&payload[..23]), None);
     assert_eq!(decode_permission_block(&payload[..20]), None);
     assert_eq!(decode_permission_block(&[0u8; 25][..]), None);
     assert_eq!(decode_permission_block(&[]), None);
     assert!(payload_seed(&payload[..23]).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// SL-1.ENC.08: legacy content algorithms (RC4 / 3DES-CBC / RC2-CBC) and the
+// RSAES-OAEP key transport. The test-side "encrypt" helpers exist only to
+// build fixtures; the shipped path is decrypt-only (ADR-P0019).
+// ---------------------------------------------------------------------------
+
+const RSAES_OAEP: &[u64] = &[1, 2, 840, 113_549, 1, 1, 7];
+const RC4_OID: &[u64] = &[1, 2, 840, 113_549, 3, 4];
+const RC2_OID: &[u64] = &[1, 2, 840, 113_549, 3, 2];
+
+/// A `KeyTransRecipientInfo` under an arbitrary `keyEncryptionAlgorithm`
+/// (the caller supplies the already-encoded parameter TLV or `None`).
+fn key_trans_alg(
+    rid: &[u8],
+    encrypted_key: &[u8],
+    alg_oid: &[u64],
+    param: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut body = integer_bytes(0); // version
+    body.extend_from_slice(rid);
+    body.extend_from_slice(&algorithm_identifier(alg_oid, param));
+    body.extend_from_slice(&tlv(0x04, encrypted_key));
+    tlv(0x30, &body)
+}
+
+/// The default `RecipientIdentifier` used by the other fixtures.
+fn default_rid() -> Vec<u8> {
+    let mut rid_body = tlv(0x30, &[]);
+    rid_body.extend_from_slice(&integer_bytes(1));
+    tlv(0x30, &rid_body)
+}
+
+/// Encrypt `payload` (+ PKCS#7 to the mode's block) with the CEK Ã¢â‚¬â€ test-side
+/// only, mirroring what `authenticate_public_key` reads back. RC4 uses no
+/// padding, so the content *is* the payload.
+fn content_encrypt(algorithm: CekAlgorithm, cek: &[u8], payload: &[u8]) -> Vec<u8> {
+    match algorithm {
+        CekAlgorithm::Rc4 => crate::rc4(cek, payload),
+        CekAlgorithm::Aes128Cbc { .. }
+        | CekAlgorithm::Aes192Cbc { .. }
+        | CekAlgorithm::Aes256Cbc { .. } => {
+            cbc_encrypt_test(algorithm, cek, payload).expect("aes encrypt")
+        }
+        CekAlgorithm::TdeaCbc { iv } => {
+            let cipher = crate::legacy::Tdes::new(cek).expect("tdea");
+            let mut padded = payload.to_vec();
+            let pad = 8 - (padded.len() % 8);
+            padded.extend(std::iter::repeat_n(pad as u8, pad));
+            let mut out = Vec::new();
+            let mut prev = iv;
+            for chunk in padded.chunks(8) {
+                let mut block = <[u8; 8]>::try_from(chunk).expect("block");
+                for k in 0..8 {
+                    block[k] ^= prev[k];
+                }
+                cipher.encrypt_block(&mut block);
+                out.extend_from_slice(&block);
+                prev = block;
+            }
+            out
+        }
+        CekAlgorithm::Rc2Cbc { iv, effective_bits } => {
+            let cipher = crate::legacy::Rc2::new(cek, effective_bits).expect("rc2");
+            let mut padded = payload.to_vec();
+            let pad = 8 - (padded.len() % 8);
+            padded.extend(std::iter::repeat_n(pad as u8, pad));
+            let mut out = Vec::new();
+            let mut prev = iv;
+            for chunk in padded.chunks(8) {
+                let mut block = <[u8; 8]>::try_from(chunk).expect("block");
+                for k in 0..8 {
+                    block[k] ^= prev[k];
+                }
+                cipher.encrypt_block(&mut block);
+                out.extend_from_slice(&block);
+                prev = block;
+            }
+            out
+        }
+    }
+}
+
+fn seed_payload(seed_byte: u8, perms: u32) -> [u8; 24] {
+    let mut payload = [seed_byte; 24];
+    payload[20..].copy_from_slice(&perms.to_le_bytes());
+    payload
+}
+
+/// One authenticated pass over a single-recipient blob under `algorithm`.
+fn authenticate_alg(
+    key: &rsa::RsaPrivateKey,
+    cek: &[u8],
+    algorithm: CekAlgorithm,
+    payload: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Result<PubKeyAuth> {
+    let (enc_oid, param) = content_alg_der(algorithm);
+    let blob = enveloped_with(
+        key,
+        cek,
+        &enc_oid,
+        param.as_deref(),
+        &content_encrypt(algorithm, cek, payload),
+    );
+    authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(rsa_to_pkcs8(key)),
+        128,
+        false,
+        true,
+        g,
+    )
+}
+
+/// The DER name + parameters of a `CekAlgorithm` (fixtures rebuild blobs
+/// from what the code reads, never the other way round).
+fn content_alg_der(algorithm: CekAlgorithm) -> (&'static [u64], Option<Vec<u8>>) {
+    match algorithm {
+        CekAlgorithm::Rc4 => (RC4_OID, None),
+        CekAlgorithm::TdeaCbc { iv } => (DES_EDE3_CBC, Some(tlv(0x04, &iv))),
+        CekAlgorithm::Rc2Cbc { iv, effective_bits } => {
+            let mut b = integer_bytes(effective_bits as u64);
+            b.extend_from_slice(&tlv(0x04, &iv));
+            (RC2_OID, Some(tlv(0x30, &b)))
+        }
+        CekAlgorithm::Aes128Cbc { iv } => (AES128_CBC, Some(tlv(0x04, &iv))),
+        CekAlgorithm::Aes192Cbc { iv } => (AES192_CBC_TEST, Some(tlv(0x04, &iv))),
+        CekAlgorithm::Aes256Cbc { iv } => (AES256_CBC, Some(tlv(0x04, &iv))),
+    }
+}
+
+/// A v1.5-transported blob around `content` (the `[0] IMPLICIT` content shape
+/// real CMS writers emit, which is *also* what the legacy tests must read).
+fn enveloped_with(
+    key: &rsa::RsaPrivateKey,
+    cek: &[u8],
+    content_oid: &[u64],
+    content_param: Option<&[u8]>,
+    content: &[u8],
+) -> Vec<u8> {
+    let encrypted_key = rsa_wrap_cek(key, cek);
+    let mut body = oid_bytes(DATA);
+    body.extend_from_slice(&algorithm_identifier(content_oid, content_param));
+    body.extend_from_slice(&tlv(0x80, content));
+    let eci = tlv(0x30, &body);
+    let ktri = key_trans_alg(
+        &default_rid(),
+        &encrypted_key,
+        RSA_ENCRYPTION,
+        Some(&[0x05, 0x00]),
+    );
+    enveloped_blob(&[ktri], &eci)
+}
+
+/// OAEP-wrap a CEK Ã¢â‚¬â€ test-side only; the shipped write path never encrypts.
+fn rsa_oaep_wrap(key: &rsa::RsaPrivateKey, cek: &[u8], hash: OaepHash) -> Vec<u8> {
+    use rsa::Oaep;
+    let pub_key = key.to_public_key();
+    let mut rng = rsa::rand_core::OsRng;
+    match hash {
+        OaepHash::Sha1 => pub_key
+            .encrypt(&mut rng, Oaep::new::<sha1::Sha1>(), cek)
+            .expect("oaep sha1"),
+        OaepHash::Sha256 => pub_key
+            .encrypt(&mut rng, Oaep::new::<sha2::Sha256>(), cek)
+            .expect("oaep sha256"),
+        OaepHash::Sha384 => pub_key
+            .encrypt(&mut rng, Oaep::new::<sha2::Sha384>(), cek)
+            .expect("oaep sha384"),
+        OaepHash::Sha512 => pub_key
+            .encrypt(&mut rng, Oaep::new::<sha2::Sha512>(), cek)
+            .expect("oaep sha512"),
+    }
+}
+
+/// An RSAES-OAEP-transported blob around an AES payload.
+fn oaep_envelope(
+    encrypted_key: &[u8],
+    cek: &[u8],
+    algorithm: CekAlgorithm,
+    payload: &[u8],
+    params: Option<&[u8]>,
+) -> Vec<u8> {
+    let (content_oid, content_param) = content_alg_der(algorithm);
+    let mut body = oid_bytes(DATA);
+    body.extend_from_slice(&algorithm_identifier(content_oid, content_param.as_deref()));
+    body.extend_from_slice(&tlv(0x80, &content_encrypt(algorithm, cek, payload)));
+    let eci = tlv(0x30, &body);
+    let ktri = key_trans_alg(&default_rid(), encrypted_key, RSAES_OAEP, params);
+    enveloped_blob(&[ktri], &eci)
+}
+
+/// A second AES-192 constant the shared helpers do not import by name.
+const AES192_CBC_TEST: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 22];
+
+#[test]
+fn rc4_s3_payload_authenticates() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let cek = [0x5au8; 16]; // RC4-128 content key
+    let payload = seed_payload(0x63, 0xFFFF_F0C0);
+    let auth =
+        authenticate_alg(&key, &cek, CekAlgorithm::Rc4, &payload, &mut g).expect("rc4 opens");
+    assert_eq!(auth.key.len(), 16);
+    assert_eq!(auth.permissions, 0xFFFF_F0C0);
+    assert_eq!(auth.matched_by, Matched::Structurally);
+}
+
+#[test]
+fn rc4_40_payload_authenticates() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let cek = [0x11u8; 5]; // export-era 40-bit RC4 key
+    let payload = seed_payload(0x17, 0xFFFF_FFC0);
+    let auth = authenticate_alg(&key, &cek, CekAlgorithm::Rc4, &payload, &mut g).expect("rc4-40");
+    assert_eq!(auth.permissions, 0xFFFF_FFC0);
+}
+
+#[test]
+fn tdea_and_rc2_payloads_authenticate() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let payload = seed_payload(0x24, 0xFFFF_F0C0);
+    let t = authenticate_alg(
+        &key,
+        &[0x77u8; 24],
+        CekAlgorithm::TdeaCbc { iv: [0x41; 8] },
+        &payload,
+        &mut g,
+    )
+    .expect("3des opens");
+    assert_eq!(t.permissions, 0xFFFF_F0C0);
+    let r = authenticate_alg(
+        &key,
+        &[0x33u8; 16],
+        CekAlgorithm::Rc2Cbc {
+            iv: [0x42; 8],
+            effective_bits: 128,
+        },
+        &payload,
+        &mut g,
+    )
+    .expect("rc2 opens");
+    assert_eq!(r.permissions, 0xFFFF_F0C0);
+    // TDEA two-key (K1,K2,K1) and a 40-bit RC2 run through the same path.
+    let t2 = authenticate_alg(
+        &key,
+        &[0x1eu8; 16],
+        CekAlgorithm::TdeaCbc { iv: [0x9u8; 8] },
+        &payload,
+        &mut g,
+    )
+    .expect("2-key tdea");
+    assert_eq!(t2.permissions, 0xFFFF_F0C0);
+    let r2 = authenticate_alg(
+        &key,
+        &[0x5eu8; 16],
+        CekAlgorithm::Rc2Cbc {
+            iv: [0x3u8; 8],
+            effective_bits: 40,
+        },
+        &payload,
+        &mut g,
+    )
+    .expect("rc2-40");
+    assert_eq!(r2.permissions, 0xFFFF_F0C0);
+}
+
+/// A wrong RSA key under a *legacy* content cipher: the transport unwrap fails
+/// first, so the payload cipher's (weaker) detection never even sees a key.
+#[test]
+fn legacy_wrong_key_is_recipient_no_match() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let wrong = test_rsa_key(512);
+    for algorithm in [
+        CekAlgorithm::Rc4,
+        CekAlgorithm::TdeaCbc { iv: [0x01; 8] },
+        CekAlgorithm::Rc2Cbc {
+            iv: [0x02; 8],
+            effective_bits: 128,
+        },
+    ] {
+        let cek = [0x22u8; 16];
+        let payload = seed_payload(0x63, 0xFFFF_F0C0);
+        let encrypted_key = rsa_wrap_cek(&key, &cek);
+        let enc_oid = match algorithm {
+            CekAlgorithm::Rc4 => RC4_OID,
+            CekAlgorithm::TdeaCbc { .. } => DES_EDE3_CBC,
+            CekAlgorithm::Rc2Cbc { .. } => RC2_OID,
+            _ => AES128_CBC,
+        };
+        let param = match algorithm {
+            CekAlgorithm::Rc4 => None,
+            CekAlgorithm::TdeaCbc { iv } => Some(tlv(0x04, &iv)),
+            CekAlgorithm::Rc2Cbc { iv, effective_bits } => {
+                let mut b = integer_bytes(effective_bits as u64);
+                b.extend_from_slice(&tlv(0x04, &iv));
+                Some(tlv(0x30, &b))
+            }
+            _ => None,
+        };
+        let mut body = oid_bytes(DATA);
+        body.extend_from_slice(&algorithm_identifier(enc_oid, param.as_deref()));
+        body.extend_from_slice(&tlv(0x80, &content_encrypt(algorithm, &cek, &payload)));
+        let eci = tlv(0x30, &body);
+        let blob = enveloped_blob(
+            &[key_trans_alg(
+                &default_rid(),
+                &encrypted_key,
+                RSA_ENCRYPTION,
+                Some(&[0x05, 0x00]),
+            )],
+            &eci,
+        );
+        let e = authenticate_public_key(
+            &[&blob],
+            &PubKeyCredential::rsa(rsa_to_pkcs8(&wrong)),
+            128,
+            false,
+            true,
+            &mut g,
+        )
+        .expect_err("wrong key must not open a legacy envelope");
+        assert_eq!(e.code(), Code::RecipientNoMatch);
+    }
+}
+
+/// An RC2 envelope whose DER parameters disagree with the CEK length is a
+/// wrong-key path (None out of `unwrap_cek`), never a truncated key. Here the
+/// payload is encrypted under a *valid* 24-byte TDEA key while the *transport*
+/// wraps a 20-byte CEK, so `decrypt_payload` sees the oversized key first.
+#[test]
+fn legacy_cek_length_mismatch_is_refused() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let payload = seed_payload(0x0f, 0xFFFF_F0C0);
+    let short_cek = [0xABu8; 20];
+    let good_cek = [0x77u8; 24];
+    let encrypted_key = rsa_wrap_cek(&key, &short_cek);
+    let content = content_encrypt(CekAlgorithm::TdeaCbc { iv: [0x07; 8] }, &good_cek, &payload);
+    let mut body = oid_bytes(DATA);
+    body.extend_from_slice(&algorithm_identifier(
+        DES_EDE3_CBC,
+        Some(&tlv(0x04, &[0x07; 8])),
+    ));
+    body.extend_from_slice(&tlv(0x80, &content));
+    let blob = enveloped_blob(
+        &[key_trans_alg(
+            &default_rid(),
+            &encrypted_key,
+            RSA_ENCRYPTION,
+            Some(&[0x05, 0x00]),
+        )],
+        &tlv(0x30, &body),
+    );
+    let e = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&key)),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect_err("bad tdea cek");
+    assert_eq!(e.code(), Code::RecipientNoMatch);
+}
+
+/// RSAES-OAEP key transport with the DER default parameters (absent), the
+/// only-padded-params form, and MGF1/SHA-1 Ã¢â‚¬â€ a real CMS *write* path's read.
+#[test]
+fn rsa_oaep_transport_round_trip() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let cek = [0x5au8; 16];
+    let payload = seed_payload(0x63, 0xFFFF_F0C0);
+    let encrypted_key = rsa_oaep_wrap(&key, &cek, OaepHash::Sha1);
+    let blob = oaep_envelope(
+        &encrypted_key,
+        &cek,
+        CekAlgorithm::Aes128Cbc { iv: [0x07; 16] },
+        &payload,
+        None,
+    );
+    let auth = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(rsa_to_pkcs8(&key)),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect("oaep opens");
+    assert_eq!(auth.permissions, 0xFFFF_F0C0);
+    assert_eq!(auth.matched_by, Matched::Structurally);
+}
+
+/// DER of an *implicitly tagged* `AlgorithmIdentifier` (the RFC 8017
+/// `RSAES-OAEP-params` members are `[0]/[1]/[2]` on AlgorithmIdentifier, so
+/// the SEQUENCE tag is replaced and the content is the bare OID + NULL).
+fn implicit_algorithm(tag: u8, alg_oid: &[u64], params: Option<&[u8]>) -> Vec<u8> {
+    let mut body = oid_bytes(alg_oid);
+    if let Some(p) = params {
+        body.extend_from_slice(p);
+    } else {
+        body.extend_from_slice(&[0x05, 0x00]);
+    }
+    tlv(tag, &body)
+}
+
+#[test]
+fn rsa_oaep_sha256_and_explicit_params() {
+    let mut g = guard();
+    // OAEP-SHA-256 needs a modulus ≥ 2·32+2 = 66 bytes; 2048-bit keeps the
+    // fixture well inside it (512-bit RSA in the other tests is only for v1.5).
+    let key = test_rsa_key(2048);
+    let cek = [0x5au8; 16];
+    let payload = seed_payload(0x63, 0xFFFF_F0C0);
+    let encrypted_key = rsa_oaep_wrap(&key, &cek, OaepHash::Sha256);
+    // RSAES-OAEP-params ::= SEQUENCE { hashAlgorithm [0] SHA-256,
+    // maskGenAlgorithm [1] MGF1 { [0] SHA-256 } }.
+    let sha256: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 2, 1];
+    let hash = implicit_algorithm(0xA0, sha256, None);
+    let mut mgf_body = oid_bytes(&[1, 2, 840, 113_549, 1, 1, 8]); // id-MGF1
+    mgf_body.extend_from_slice(&implicit_algorithm(0xA0, sha256, None));
+    let mgf = tlv(0xA1, &mgf_body);
+    let mut params_body = Vec::new();
+    params_body.extend_from_slice(&hash);
+    params_body.extend_from_slice(&mgf);
+    let params = tlv(0x30, &params_body);
+    let blob = oaep_envelope(
+        &encrypted_key,
+        &cek,
+        CekAlgorithm::Aes128Cbc { iv: [0x08; 16] },
+        &payload,
+        Some(&params),
+    );
+    let key_pkcs8 = rsa_to_pkcs8(&key);
+    let auth = authenticate_public_key(
+        &[&blob],
+        &PubKeyCredential::rsa(key_pkcs8.as_slice().to_vec()),
+        128,
+        false,
+        true,
+        &mut g,
+    )
+    .expect("oaep sha256 opens");
+    assert_eq!(auth.permissions, 0xFFFF_F0C0);
+}
+
+#[test]
+fn unsupported_oaep_variant_is_typed() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let cek = [0x5au8; 16];
+    let payload = seed_payload(0x63, 0xFFFF_F0C0);
+    // The *wrapped* key uses a SHA-1-able size (a 512-bit modulus cannot hold
+    // an OAEP-SHA-256 block); only the DER parameters matter to this test.
+    let encrypted_key = rsa_oaep_wrap(&key, &cek, OaepHash::Sha1);
+    // An unknown *label* hash is refused at parse time (not scanned away —
+    // §5), even though the transport could otherwise be opened with the SHA-1
+    // arm's `RecipientNoMatch`.
+    let md5: &[u64] = &[1, 3, 6, 1, 4, 1, 2, 1, 14, 2, 5];
+    let hash = implicit_algorithm(0xA0, md5, None);
+    let params = tlv(0x30, &hash);
+    let blob = oaep_envelope(
+        &encrypted_key,
+        &cek,
+        CekAlgorithm::Aes128Cbc { iv: [0x07; 16] },
+        &payload,
+        Some(&params),
+    );
+    let e = parse_enveloped_data(&blob, &mut g).expect_err("md5 label refused");
+    assert_eq!(e.code(), Code::EncryptUnsupported);
+}
+
+/// RFC 8017 A.2.1's OAEP parameter slots in all their shapes: the *absence* of
+/// `pSourceAlgorithm` (the DEFAULT) and a present-but-empty label both
+/// authenticate; a *non-empty* label is refused typed (§5: a labelled unwrap
+/// cannot detect that the label differed), as is a pSource OID that is not
+/// id-PSpecified.
+#[test]
+fn rsa_oaep_psource_param_variants() {
+    let mut g = guard();
+    let key = test_rsa_key(512);
+    let cek = [0x5au8; 16];
+    let payload = seed_payload(0x63, 0xFFFF_F0C0);
+    let encrypted_key = rsa_oaep_wrap(&key, &cek, OaepHash::Sha1);
+    let sha: &[u64] = &[1, 3, 14, 3, 2, 26];
+    let mut digest_body = oid_bytes(sha);
+    digest_body.extend_from_slice(&[0x05, 0x00]);
+    let pspec: &[u64] = &[1, 2, 840, 113_549, 1, 1, 9];
+    let mut empty_body = oid_bytes(pspec);
+    empty_body.extend_from_slice(&tlv(0x04, &[]));
+    let mut other_arcs = oid_bytes(&[1, 2, 840, 113_549, 1, 9, 16, 3, 9]);
+    other_arcs.extend_from_slice(&tlv(0x04, &[]));
+    let mut labelled = oid_bytes(pspec);
+    labelled.extend_from_slice(&tlv(0x04, b"pdf!"));
+    for (what, psource, opens) in [
+        ("absent", Vec::new(), true),
+        ("empty label", tlv(0xA2, &empty_body), true),
+        ("non-empty label", tlv(0xA2, &labelled), false),
+        ("foreign pSource OID", tlv(0xA2, &other_arcs), false),
+    ] {
+        let mut pr = tlv(0xA0, &digest_body);
+        pr.extend_from_slice(&psource);
+        let params = tlv(0x30, &pr);
+        let blob = oaep_envelope(
+            &encrypted_key,
+            &cek,
+            CekAlgorithm::Aes128Cbc { iv: [0x07; 16] },
+            &payload,
+            Some(&params),
+        );
+        if opens {
+            let auth = authenticate_public_key(
+                &[&blob],
+                &PubKeyCredential::rsa(rsa_to_pkcs8(&key)),
+                128,
+                false,
+                true,
+                &mut g,
+            )
+            .unwrap_or_else(|e| panic!("oaep pSource {what} must authenticate: {:?}", e.code()));
+            assert_eq!(auth.permissions, 0xFFFF_F0C0);
+        } else {
+            let e = parse_enveloped_data(&blob, &mut g)
+                .expect_err("oaep pSource must be refused typed");
+            assert_eq!(e.code(), Code::EncryptUnsupported, "oaep pSource {what}");
+        }
+    }
 }

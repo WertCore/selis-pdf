@@ -249,13 +249,13 @@ fn cbc_encrypt(cek: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut prev = AES_IV;
     for chunk in padded.chunks(16) {
         let block_bytes: [u8; 16] = chunk.try_into().expect("block");
-        let mut block = aes::Block::clone_from_slice(&block_bytes);
+        let mut block: aes::Block = block_bytes.into();
         for k in 0..16 {
             block[k] ^= prev[k];
         }
         cipher.encrypt_block(&mut block);
-        out.extend_from_slice(block.as_slice());
-        prev.copy_from_slice(block.as_slice());
+        out.extend_from_slice(&block);
+        prev.copy_from_slice(&block);
     }
     out
 }
@@ -275,7 +275,7 @@ fn aes_kw_wrap(kek: &[u8], key: &[u8]) -> Vec<u8> {
             let mut input = [0u8; 16];
             input[..8].copy_from_slice(&a);
             input[8..].copy_from_slice(&r[i]);
-            let mut block = aes::Block::clone_from_slice(&input);
+            let mut block: aes::Block = input.into();
             cipher.encrypt_block(&mut block);
             let t_bytes = t.to_be_bytes();
             for k in 0..8 {
@@ -303,7 +303,7 @@ fn x963_kdf_sha256(z: &[u8], out_len: usize) -> Vec<u8> {
         let mut h = sha2::Sha256::new();
         h.update(z);
         h.update(counter.to_be_bytes());
-        out.extend_from_slice(h.finalize().as_slice());
+        out.extend_from_slice(&h.finalize());
         counter += 1;
     }
     out.truncate(out_len);
@@ -349,13 +349,13 @@ fn encrypt_stream_fixture(
     let mut prev: [u8; 16] = *iv;
     for chunk in padded.chunks(16) {
         let block_bytes: [u8; 16] = chunk.try_into().expect("block");
-        let mut block = aes::Block::clone_from_slice(&block_bytes);
+        let mut block: aes::Block = block_bytes.into();
         for k in 0..16 {
             block[k] ^= prev[k];
         }
         cipher.encrypt_block(&mut block);
-        out.extend_from_slice(block.as_slice());
-        prev.copy_from_slice(block.as_slice());
+        out.extend_from_slice(&block);
+        prev.copy_from_slice(&block);
     }
     out
 }
@@ -470,7 +470,7 @@ fn cert_for(slot: KeySlot) -> Cert {
                 // sha1 over the BIT STRING key octets (RFC 5280 method 1),
                 // carried as the certificate's subjectKeyIdentifier
                 // extension — the arm the RSA-SKI recipient exercises.
-                sha1::Sha1::digest(pkcs1.as_bytes()).as_slice(),
+                &sha1::Sha1::digest(pkcs1.as_bytes()),
                 true,
                 false,
             )
@@ -639,7 +639,7 @@ fn recipient_blob(v: u32, cek: &[u8], r: &Recipient) -> Vec<u8> {
             let point = public.to_encoded_point(false);
             let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
             let shared_bytes = *shared.raw_secret_bytes();
-            let kek = x963_kdf_sha256(shared_bytes.as_slice(), cek.len());
+            let kek = x963_kdf_sha256(&shared_bytes, cek.len());
             let wrapped = aes_kw_wrap(&kek, cek);
             enveloped_blob(
                 &[key_agree_recipient_with_rid(
@@ -769,10 +769,10 @@ fn assemble_pdf(objects: &[Vec<u8>], stream_body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The fixtures: four deterministic public-key PDFs plus the three
-/// self-signed certificates that address their recipients (the
-/// `enc03-*` stems match the committed key stems). Entries are
-/// `(filename, bytes)`.
+/// The fixtures: the ENC.03/07/09 PDFs, the SL-1.ENC.08 legacy-content /
+/// RSAES-OAEP fixtures, and the three self-signed certificates that address
+/// their recipients (the `enc03-*` stems match the committed key stems).
+/// Entries are `(filename, bytes)`.
 fn build_all() -> Vec<(&'static str, Vec<u8>)> {
     let rsa_alice = Recipient {
         key: KeySlot::Rsa,
@@ -784,7 +784,7 @@ fn build_all() -> Vec<(&'static str, Vec<u8>)> {
         perms: PERMISSIONS,
         id: IdKind::Ski,
     };
-    vec![
+    let mut fixtures = vec![
         ("pubkey-rsa-s4.pdf", build_fixture(4, &[rsa_alice])),
         ("pubkey-ec-s5.pdf", build_fixture(5, &[ec])),
         (
@@ -836,7 +836,11 @@ fn build_all() -> Vec<(&'static str, Vec<u8>)> {
             cert_for(KeySlot::RsaBob).der,
         ),
         ("enc03-recipient-ecp256.x509.der", cert_for(KeySlot::Ec).der),
-    ]
+    ];
+    // SL-1.ENC.08: legacy CMS content (RC4-128/RC4-40/TDEA/RC2 over s3) and
+    // the RSAES-OAEP key transports.
+    fixtures.extend(legacy_fixtures());
+    fixtures
 }
 
 /// Write the fixtures into `dir` (regeneration path).
@@ -864,7 +868,7 @@ pub fn check(dir: &Path) -> Result<(), String> {
             ));
         }
     }
-    println!("pubkey-fixtures: 4 fixtures and 3 certificates match their generator");
+    println!("pubkey-fixtures: 10 fixtures and 3 certificates match their generator");
     Ok(())
 }
 
@@ -952,6 +956,9 @@ pub fn fuzz_seeds(root: &Path) -> Result<(), String> {
             ),
         ));
     }
+    for (name, blob) in legacy_seeds() {
+        cms.push((name, blob));
+    }
     write_seeds(root, "pkcs7_cms", &cms)?;
 
     // --- x509_identity inputs ----------------------------------------------
@@ -1004,4 +1011,462 @@ fn write_seeds(root: &Path, target: &str, seeds: &[(&str, Vec<u8>)]) -> Result<(
         std::fs::write(&dest, bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SL-1.ENC.08: legacy CMS *content* fixtures (RC4 / TDEA-CBC / RC2-CBC) and the
+// RSAES-OAEP key transport. Same doctrine as the AES fixtures above: the DER
+// envelope, the Algorithm-1 file key and the per-object streams are re-derived
+// *here*, independently of the handler, so an engine test that opens one
+// cross-checks `selis-crypto::pkcs7` instead of trusting it. The block ciphers
+// come from `selis_crypto::legacy` (their tables are the FIPS 46-3 / RFC 2268
+// constants already verified there against `openssl enc` output; re-typing 128
+// S-box words into a second file would add transcription risk, not coverage),
+// and RC4 is `selis_crypto::rc4` — the same function the `/V <= 3` per-object
+// path uses. *Nothing here writes a legacy cipher from `selis-pdf-engine`*: the
+// shipped save path stays AES (ADR-P0019); these bytes exist so the *reader*
+// has real Adobe-era-shaped material to read.
+// ---------------------------------------------------------------------------
+
+/// The content-encryption algorithm of a legacy fixture envelope.
+#[derive(Clone, Copy)]
+enum LegacyCipher {
+    /// RC4, 128-bit CEK (`1.2.840.113549.3.4`); no IV parameter.
+    Rc4_128,
+    /// RC4, 40-bit export CEK — the same OID with a 5-byte key.
+    Rc4_40,
+    /// Triple DES (24-byte K1K2K3) in CBC with an 8-byte IV parameter.
+    Tdea,
+    /// RC2 in CBC, `RC2-CBC-Parameter { effectiveKeyLength, iv }`.
+    Rc2 {
+        /// `rc2EffectiveKeyLength` in bits (0 = the DER default, whole key).
+        bits: usize,
+    },
+}
+
+/// The fixture 8-byte CBC IV (deterministic, like [`AES_IV`]).
+const LEGACY_IV: [u8; 8] = [0x5Au8; 8];
+
+fn legacy_oid(alg: LegacyCipher) -> &'static [u64] {
+    match alg {
+        LegacyCipher::Rc4_128 | LegacyCipher::Rc4_40 => &[1, 2, 840, 113_549, 3, 4],
+        LegacyCipher::Tdea => &[1, 2, 840, 113_549, 3, 7],
+        LegacyCipher::Rc2 { .. } => &[1, 2, 840, 113_549, 3, 2],
+    }
+}
+
+fn legacy_content(alg: LegacyCipher, cek: &[u8], payload: &[u8]) -> Vec<u8> {
+    match alg {
+        LegacyCipher::Rc4_128 | LegacyCipher::Rc4_40 => selis_crypto::rc4(cek, payload),
+        LegacyCipher::Tdea => {
+            let c = selis_crypto::legacy::Tdes::new(cek).expect("fixture TDEA key");
+            cbc_encrypt_8(&|b| c.encrypt_block(b), &LEGACY_IV, &pkcs7_pad(payload, 8))
+        }
+        LegacyCipher::Rc2 { bits } => {
+            let c = selis_crypto::legacy::Rc2::new(cek, bits).expect("fixture RC2 key");
+            cbc_encrypt_8(&|b| c.encrypt_block(b), &LEGACY_IV, &pkcs7_pad(payload, 8))
+        }
+    }
+}
+
+fn legacy_param(alg: LegacyCipher) -> Option<Vec<u8>> {
+    match alg {
+        LegacyCipher::Rc4_128 | LegacyCipher::Rc4_40 => None,
+        LegacyCipher::Tdea => Some(tlv(0x04, &LEGACY_IV)),
+        LegacyCipher::Rc2 { bits } => {
+            let mut b = integer_bytes(bits as u64);
+            b.extend_from_slice(&tlv(0x04, &LEGACY_IV));
+            Some(tlv(0x30, &b))
+        }
+    }
+}
+
+/// PKCS#7 to `block` (a full block is padded by a whole pad block).
+fn pkcs7_pad(data: &[u8], block: usize) -> Vec<u8> {
+    let pad = block - (data.len() % block);
+    let mut out = data.to_vec();
+    out.resize(data.len() + pad, pad as u8);
+    out
+}
+
+/// CBC-encrypt an already-padded buffer with an 8-byte-block cipher.
+fn cbc_encrypt_8(op: &dyn Fn(&mut [u8; 8]), iv: &[u8; 8], padded: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut prev = *iv;
+    for chunk in padded.chunks(8) {
+        let mut block: [u8; 8] = chunk.try_into().expect("block");
+        for k in 0..8 {
+            block[k] ^= prev[k];
+        }
+        op(&mut block);
+        out.extend_from_slice(&block);
+        prev = block;
+    }
+    out
+}
+
+/// An `EnvelopedData` with the standard `[0]` IMPLICIT OCTET STRING content
+/// shape (which is also what the `[0]` *explicit* fixtures test is *not*);
+/// the legacy fixtures exercise the implicit arm end to end.
+fn enveloped_blob_legacy(
+    recipients: &[Vec<u8>],
+    alg: LegacyCipher,
+    encrypted_content: &[u8],
+) -> Vec<u8> {
+    let mut set_body = Vec::new();
+    for r in recipients {
+        set_body.extend_from_slice(r);
+    }
+    let mut alg_body = oid_bytes(legacy_oid(alg));
+    if let Some(p) = legacy_param(alg) {
+        alg_body.extend_from_slice(&p);
+    }
+    let mut eci = oid_bytes(&[1, 2, 840, 113_549, 1, 7, 1]); // id-data
+    eci.extend_from_slice(&tlv(0x30, &alg_body));
+    eci.extend_from_slice(&tlv(0x80, encrypted_content));
+    let mut env = integer_bytes(2);
+    env.extend_from_slice(&tlv(0x31, &set_body));
+    env.extend_from_slice(&tlv(0x30, &eci));
+    let mut ci = oid_bytes(&[1, 2, 840, 113_549, 1, 7, 3]); // id-envelopedData
+    ci.extend_from_slice(&tlv(0xA0, &tlv(0x30, &env)));
+    tlv(0x30, &ci)
+}
+
+/// A `KeyTransRecipientInfo` under arbitrary parameters (RSAES-OAEP needs a
+/// `RSAES-OAEP-params` SEQUENCE, not the rsaEncryption NULL).
+fn key_trans_recipient_alg(rid: &[u8], encrypted_key: &[u8], alg: &[u64], param: &[u8]) -> Vec<u8> {
+    let mut body = integer_bytes(0); // version
+    body.extend_from_slice(rid);
+    body.extend_from_slice(&algorithm_identifier(alg, Some(param)));
+    body.extend_from_slice(&tlv(0x04, encrypted_key));
+    tlv(0x30, &body)
+}
+
+/// A legacy fixture recipient blob: `wrapped` key sealed RSAES-PKCS1-v1_5 to
+/// the slot's key, and the seed+perms sealed under `alg` with `content_key`.
+/// The two are independent so the corpus can hold *well-formed CMS whose
+/// recovered key no legal CEK for the algorithm can be* (the wrong-CEK
+/// fixtures below): the envelope parses, the unwrap succeeds, and
+/// `decrypt_payload` then has to refuse — RC4's no-padding path is exactly
+/// why that shape needs a seed.
+fn legacy_recipient_blob_keyed(
+    alg: LegacyCipher,
+    wrapped: &[u8],
+    content_key: &[u8],
+    r: &Recipient,
+) -> Vec<u8> {
+    let cert = cert_for(r.key);
+    let rid = recipient_rid(&cert, r.id);
+    let mut payload = SEED.to_vec();
+    payload.extend_from_slice(&r.perms.to_le_bytes());
+    let mut rng = FixedRng(FIXED_RNG_SEED);
+    let encrypted = {
+        use rsa::pkcs8::DecodePrivateKey;
+        let der = match r.key {
+            KeySlot::RsaBob => RECIPIENT_RSA_BOB,
+            _ => RECIPIENT_RSA,
+        };
+        rsa::RsaPrivateKey::from_pkcs8_der(der)
+            .expect("fixture key")
+            .to_public_key()
+            .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, wrapped)
+            .expect("rsa encrypt")
+    };
+    enveloped_blob_legacy(
+        &[key_trans_recipient_with_rid(&rid, &encrypted)],
+        alg,
+        &legacy_content(alg, content_key, &payload),
+    )
+}
+
+/// The common case: the wrapped CEK is the content key.
+fn legacy_recipient_blob(alg: LegacyCipher, cek: &[u8], r: &Recipient) -> Vec<u8> {
+    legacy_recipient_blob_keyed(alg, cek, cek, r)
+}
+
+/// An envelope whose *ciphertext* is supplied verbatim (a malformed-length
+/// legacy body — see `legacy_seeds`); the RSA transport wraps `cek`.
+fn legacy_recipient_blob_raw(
+    alg: LegacyCipher,
+    cek: &[u8],
+    encrypted_content: &[u8],
+    r: &Recipient,
+) -> Vec<u8> {
+    let cert = cert_for(r.key);
+    let rid = recipient_rid(&cert, r.id);
+    let mut rng = FixedRng(FIXED_RNG_SEED);
+    use rsa::pkcs8::DecodePrivateKey;
+    let encrypted = rsa::RsaPrivateKey::from_pkcs8_der(RECIPIENT_RSA)
+        .expect("fixture key")
+        .to_public_key()
+        .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, cek)
+        .expect("rsa encrypt");
+    enveloped_blob_legacy(
+        &[key_trans_recipient_with_rid(&rid, &encrypted)],
+        alg,
+        encrypted_content,
+    )
+}
+
+/// `/V 3`, salted RC4 per-object: an `adbe.pkcs7.s3`-era document whose
+/// *file* cipher is RC4 and whose *envelope* cipher is one of the legacy CMS
+/// content algorithms — the DoD's "2010-era RC4-CMS case", deterministically.
+/// `/Length` is the *file* key's bit length and is capped by SHA-1 (160) for
+/// the SHA-1 era; a 24-byte TDEA *content* key is unrelated to it (the fixture
+/// therefore keeps `/Length 128` where the CEK is 24 bytes).
+fn build_fixture_s3(cek_len: usize) -> Vec<u8> {
+    let (alg, length_bits) = match cek_len {
+        5 => (LegacyCipher::Rc4_40, 40),
+        16 => (LegacyCipher::Rc4_128, 128),
+        24 => (LegacyCipher::Tdea, 128),
+        _ => unreachable!("fixture CEK lengths are 5/16/24"),
+    };
+    build_fixture_legacy(&alg, cek_len, length_bits)
+}
+
+/// A `/V 3` s3-era fixture: file key = SHA-1(seed‖recipients) truncated to
+/// `/Length` bits, per-object salted RC4, envelopes under `alg`.
+fn build_fixture_legacy(alg: &LegacyCipher, cek_len: usize, length_bits: usize) -> Vec<u8> {
+    let cek: Vec<u8> = (0..cek_len).map(|i| 0x10u8 + i as u8).collect();
+    let alice = Recipient {
+        key: KeySlot::Rsa,
+        perms: PERMISSIONS,
+        id: IdKind::IssuerSerial,
+    };
+    let blobs = vec![legacy_recipient_blob(*alg, &cek, &alice)];
+    let mut input = SEED.to_vec();
+    for blob in &blobs {
+        input.extend_from_slice(blob);
+    }
+    use sha1::Digest as _;
+    let hash = sha1::Sha1::digest(&input).to_vec();
+    let key_len = (length_bits / 8).min(hash.len());
+    let file_key = hash[..key_len].to_vec();
+    let encrypted_stream = rc4_stream_fixture(&file_key, 4, 0, PAGE_CONTENT, 3);
+    let encrypt_dict = format!(
+        "<< /Filter /Adobe.PPKLite /V 3 /R 3 /SubFilter /adbe.pkcs7.s3 /EncryptMetadata true /Length {length_bits} /P -4 /Recipients [{}] >>",
+        hex_array(&blobs)
+    );
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>"
+            .to_vec(),
+        format!("<< /Length {} >>", encrypted_stream.len()).into_bytes(),
+        encrypt_dict.into_bytes(),
+    ];
+    assemble_pdf(&objects, &encrypted_stream)
+}
+
+/// A `/V 5` AESV3 document whose recipient is RSAES-OAEP (AES content): the
+/// "modern CMS envelope" half of the DoD.
+fn build_fixture_oaep(sha256: bool) -> Vec<u8> {
+    let cek: Vec<u8> = (0..32u8).map(|i| 0x10u8 + i).collect();
+    let alice = Recipient {
+        key: KeySlot::Rsa,
+        perms: PERMISSIONS,
+        id: IdKind::IssuerSerial,
+    };
+    let cert = cert_for(alice.key);
+    let rid = recipient_rid(&cert, alice.id);
+    let mut rng = FixedRng(FIXED_RNG_SEED);
+    use rsa::pkcs8::DecodePrivateKey;
+    let encrypted = {
+        let key = rsa::RsaPrivateKey::from_pkcs8_der(RECIPIENT_RSA).expect("fixture key");
+        if sha256 {
+            key.to_public_key()
+                .encrypt(&mut rng, rsa::Oaep::new::<sha2::Sha256>(), &cek)
+                .expect("oaep sha256")
+        } else {
+            key.to_public_key()
+                .encrypt(&mut rng, rsa::Oaep::new::<sha1::Sha1>(), &cek)
+                .expect("oaep sha1")
+        }
+    };
+    let ktri = key_trans_recipient_alg(
+        &rid,
+        &encrypted,
+        &[1, 2, 840, 113_549, 1, 1, 7], // id-RSAES-OAEP
+        &oaep_params(sha256),
+    );
+    let mut payload = SEED.to_vec();
+    payload.extend_from_slice(&alice.perms.to_le_bytes());
+    let blob = enveloped_blob(&[ktri], aes_oid(5), &cbc_encrypt(&cek, &payload));
+    let blobs = vec![blob];
+    let mut input = SEED.to_vec();
+    for b in &blobs {
+        input.extend_from_slice(b);
+    }
+    use sha2::Digest as _;
+    let file_key = sha2::Sha256::digest(&input).to_vec();
+    let encrypted_stream = encrypt_stream_fixture(&file_key, 4, 0, PAGE_CONTENT, 5, &STREAM_IV);
+    let encrypt_dict = format!(
+        "<< /Filter /Adobe.PPKLite /V 5 /R 6 /SubFilter /adbe.pkcs7.s5 /EncryptMetadata true /Length 256 /P -4 /StmF /DefaultCryptFilter /StrF /DefaultCryptFilter /CF << /DefaultCryptFilter << /CFM /AESV3 /Length 256 /AuthEvent /DocOpen /Recipients [{}] >> >> >>",
+        hex_array(&blobs)
+    );
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>"
+            .to_vec(),
+        format!("<< /Length {} >>", encrypted_stream.len()).into_bytes(),
+        encrypt_dict.into_bytes(),
+    ];
+    assemble_pdf(&objects, &encrypted_stream)
+}
+
+/// The `/V <= 3` per-object RC4 cipher of Algorithm 1 (ISO 32000-1 §7.6.3.3:
+/// `MD5(fileKey + objnum_le24 + gen_le16)`, truncated to `fileKey.len() + 2`,
+/// no `sAlT` — that suffix is the AES `/V 4` form).
+fn rc4_stream_fixture(file_key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8) -> Vec<u8> {
+    use md5::{Digest as _, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(file_key);
+    hasher.update(&objnum.to_le_bytes()[..3]);
+    hasher.update(gen.to_le_bytes());
+    let mut obj_key = hasher.finalize().to_vec();
+    let salted = file_key
+        .len()
+        .saturating_add(if r >= 4 { 5 } else { 2 })
+        .min(16);
+    obj_key.truncate(salted);
+    selis_crypto::rc4(&obj_key, data)
+}
+
+/// An RSAES-OAEP `RSAES-OAEP-params` SEQUENCE: `[0] = <sha>`, `[1] = MGF1`
+/// with the same digest embedded (`[0] IMPLICIT` per RFC 8017 A.2.1), and
+/// `[2]` deliberately *absent* (the empty `id-PSpecified` label).
+fn oaep_params(sha256: bool) -> Vec<u8> {
+    let sha: &[u64] = if sha256 {
+        &[2, 16, 840, 1, 101, 3, 4, 2, 1]
+    } else {
+        &[1, 3, 14, 3, 2, 26]
+    };
+    let mut hash = oid_bytes(sha);
+    hash.extend_from_slice(&[0x05, 0x00]);
+    let mut mgf = oid_bytes(&[1, 2, 840, 113_549, 1, 1, 8]); // id-MGF1
+    let mut inner = oid_bytes(sha);
+    inner.extend_from_slice(&[0x05, 0x00]);
+    mgf.extend_from_slice(&tlv(0xA0, &inner));
+    let mut body = tlv(0xA0, &hash);
+    body.extend_from_slice(&tlv(0xA1, &mgf));
+    tlv(0x30, &body)
+}
+
+/// The `pkcs7_cms` seeds for the SL-1.ENC.08 surface (legacy content and the
+/// OAEP transports), deterministic from the same writers as the fixtures. The
+/// *wrong-CEK* blobs (a 9-byte or 20-byte key under a cipher that cannot use
+/// it) are seeded because RC4/TDEA have *no padding* of their own to fail on:
+/// the selection contract is the only thing standing between a mis-unwrapped
+/// transport and a silently-wrong file key.
+pub fn legacy_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    let alice = Recipient {
+        key: KeySlot::Rsa,
+        perms: PERMISSIONS,
+        id: IdKind::IssuerSerial,
+    };
+    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    out.push((
+        "cms-rc4-128",
+        legacy_recipient_blob(LegacyCipher::Rc4_128, &vec![0x10u8; 16], &alice),
+    ));
+    out.push((
+        "cms-rc4-40",
+        legacy_recipient_blob(LegacyCipher::Rc4_40, &vec![0x10u8; 5], &alice),
+    ));
+    out.push((
+        "cms-tdea",
+        legacy_recipient_blob(LegacyCipher::Tdea, &vec![0x10u8; 24], &alice),
+    ));
+    out.push((
+        "cms-rc2-128",
+        legacy_recipient_blob(LegacyCipher::Rc2 { bits: 128 }, &vec![0x10u8; 16], &alice),
+    ));
+    out.push((
+        "cms-rc2-40",
+        legacy_recipient_blob(LegacyCipher::Rc2 { bits: 40 }, &vec![0x10u8; 16], &alice),
+    ));
+    out.push((
+        "cms-rc4-cek-too-long",
+        legacy_recipient_blob_keyed(
+            LegacyCipher::Rc4_128,
+            &vec![0x10u8; 20],
+            &vec![0x10u8; 16],
+            &alice,
+        ),
+    ));
+    out.push((
+        "cms-tdea-cek-wrong-length",
+        legacy_recipient_blob_keyed(
+            LegacyCipher::Tdea,
+            &vec![0x10u8; 20],
+            &vec![0x10u8; 24],
+            &alice,
+        ),
+    ));
+    // A two-key TDEA envelope: 16 bytes is a legitimate TDEA key (K1,K2,K1).
+    out.push((
+        "cms-tdea-two-key",
+        legacy_recipient_blob(LegacyCipher::Tdea, &vec![0x10u8; 16], &alice),
+    ));
+    // An RC4 envelope whose ciphertext is *not* the 24-byte payload: RC4 has
+    // no padding to fail on, so the length rule is the entire wrong-key
+    // story — this seed must end the scan typed, never hand over a key.
+    out.push((
+        "cms-rc4-bad-length",
+        legacy_recipient_blob_raw(LegacyCipher::Rc4_128, &vec![0x10u8; 16], &[7u8; 31], &alice),
+    ));
+    for (tag, sha256) in [("cms-oaep-sha1", false), ("cms-oaep-sha256", true)] {
+        let cek: Vec<u8> = (0..32u8).map(|i| 0x10u8 + i).collect();
+        let cert = cert_for(alice.key);
+        let rid = recipient_rid(&cert, alice.id);
+        let mut rng = FixedRng(FIXED_RNG_SEED);
+        use rsa::pkcs8::DecodePrivateKey;
+        let key = rsa::RsaPrivateKey::from_pkcs8_der(RECIPIENT_RSA).expect("fixture key");
+        let encrypted = if sha256 {
+            key.to_public_key()
+                .encrypt(&mut rng, rsa::Oaep::new::<sha2::Sha256>(), &cek)
+                .expect("oaep")
+        } else {
+            key.to_public_key()
+                .encrypt(&mut rng, rsa::Oaep::new::<sha1::Sha1>(), &cek)
+                .expect("oaep")
+        };
+        let mut payload = SEED.to_vec();
+        payload.extend_from_slice(&alice.perms.to_le_bytes());
+        out.push((
+            tag,
+            enveloped_blob(
+                &[key_trans_recipient_alg(
+                    &rid,
+                    &encrypted,
+                    &[1, 2, 840, 113_549, 1, 1, 7],
+                    &oaep_params(sha256),
+                )],
+                aes_oid(5),
+                &cbc_encrypt(&cek, &payload),
+            ),
+        ));
+    }
+    out
+}
+
+/// The committed legacy/OAEP fixture PDFs (SL-1.ENC.08): `/V 3` RC4-stream
+/// files with RC4-128, RC4-40 and TDEA envelopes + the OAEP-transported s5
+/// pair.
+pub fn legacy_fixtures() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("pubkey-rc4-s3.pdf", build_fixture_s3(16)),
+        (
+            "pubkey-rc4-40-s3.pdf",
+            build_fixture_legacy(&LegacyCipher::Rc4_40, 5, 40),
+        ),
+        ("pubkey-tdea-s3.pdf", build_fixture_s3(24)),
+        (
+            "pubkey-rc2-s3.pdf",
+            build_fixture_legacy(&LegacyCipher::Rc2 { bits: 128 }, 16, 128),
+        ),
+        ("pubkey-oaep-s5.pdf", build_fixture_oaep(false)),
+        ("pubkey-oaep-256-s5.pdf", build_fixture_oaep(true)),
+    ]
 }
