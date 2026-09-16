@@ -55,6 +55,11 @@ use crate::x509::CertIdentity;
 mod oid {
     /// rsaEncryption (PKCS#1 v1.5 key transport).
     pub(crate) const RSA_ENCRYPTION: &[u64] = &[1, 2, 840, 113_549, 1, 1, 1];
+    /// id-RSAES-OAEP (PKCS#1 v2.1 RSAES-OAEP key transport, RFC 8017 §A.2.3
+    /// as RFC 5751 §… uses it in CMS `keyEncryptionAlgorithm`).
+    pub(crate) const RSAES_OAEP: &[u64] = &[1, 2, 840, 113_549, 1, 1, 7];
+    /// id-MGF1 (the mask generation function RSAES-OAEP parameters name).
+    pub(crate) const MGF1: &[u64] = &[1, 2, 840, 113_549, 1, 1, 8];
     /// id-envelopedData (the ContentInfo type PDF uses).
     pub(crate) const ENVELOPED_DATA: &[u64] = &[1, 2, 840, 113_549, 1, 7, 3];
     /// id-data (the EncryptedContentInfo's content type).
@@ -65,14 +70,36 @@ mod oid {
     pub(crate) const AES192_CBC: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 22];
     /// aes256-CBC.
     pub(crate) const AES256_CBC: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 42];
+    /// rc4 (`1.2.840.113549.3.4`, RFC 8635-era PKCS #5 table) — read-only
+    /// legacy content, SL-1.ENC.08.
+    pub(crate) const RC4: &[u64] = &[1, 2, 840, 113_549, 3, 4];
+    /// rc2-cbc (parameters are `SEQUENCE { INTEGER rc2EffectiveKeyLength
+    /// DEFAULT 0, OCTET STRING iv(8) }`).
+    pub(crate) const RC2_CBC: &[u64] = &[1, 2, 840, 113_549, 3, 2];
+    /// des-ede3-cbc (Triple DES in CBC, IV as an OCTET STRING).
+    pub(crate) const DES_EDE3_CBC: &[u64] = &[1, 2, 840, 113_549, 3, 7];
+    /// sha1 (`1.3.14.3.2.26`, the OAEP/MGF1 default digest).
+    pub(crate) const SHA1: &[u64] = &[1, 3, 14, 3, 2, 26];
+    /// sha256.
+    pub(crate) const SHA256: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 2, 1];
+    /// sha384.
+    pub(crate) const SHA384: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 2, 2];
+    /// sha512.
+    pub(crate) const SHA512: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 2, 3];
+    /// id-PSpecified (PKCS#1 `1.2.840.113549.1.1.9`; RFC 8017 §A.2.4 — NOT the
+    /// SMIMEAlgs arc the ENC.08 task sketch floated; that is CMS *signing*
+    /// capability ids). A non-empty label is refused — see
+    /// `parse_rsa_oaep_params`.
+    pub(crate) const P_SPECIFIED: &[u64] = &[1, 2, 840, 113_549, 1, 1, 9];
     /// dhSinglePass-stdDH-sha256kdf-scheme (RFC 5753 §3.1) + AES key wrap.
     pub(crate) const DH_STDDH_SHA256_KDF: &[u64] = &[1, 3, 133, 16, 840, 63, 0, 4];
 }
 
 /// The CMS content-encryption algorithm of an `EncryptedContentInfo`.
 ///
-/// Only AES-CBC is implemented (see the module docs for why RC4 and 3DES are
-/// refused rather than half-supported).
+/// AES-CBC is the modern set (SL-1.ENC.03); RC4, TDEA-CBC and RC2-CBC are the
+/// `adbe.pkcs7.s3`-era *reads* (SL-1.ENC.08 — see [`crate::legacy`] for the
+/// hand-rolled ciphers and the reason they are decrypt-only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CekAlgorithm {
     /// AES-128-CBC with the given IV.
@@ -90,16 +117,60 @@ pub enum CekAlgorithm {
         /// The 16-byte initial value.
         iv: [u8; 16],
     },
+    /// RC4, keyed by the unwrapped CEK (40-bit = 5 bytes, 128-bit = 16;
+    /// `adbe.pkcs7.s3`-era documents). RC4 has no IV parameter.
+    Rc4,
+    /// Triple-DES (TDEA, two- or three-key) in CBC with the 8-byte IV.
+    TdeaCbc {
+        /// The 8-byte initial value.
+        iv: [u8; 8],
+    },
+    /// RC2 in CBC with the 8-byte IV and the parameters'
+    /// `rc2EffectiveKeyLength` in bits (`0` = whole key).
+    Rc2Cbc {
+        /// The 8-byte initial value.
+        iv: [u8; 8],
+        /// `rc2EffectiveKeyLength`, clamped against the CEK by expansion.
+        effective_bits: usize,
+    },
 }
 
 impl CekAlgorithm {
-    /// The CEK length this algorithm needs, in bytes.
+    /// The CEK length this algorithm needs, in bytes (RC2/RC4 have a range:
+    /// the key material is whatever the key transport unwrapped, so
+    /// `None` means "length is checked against the unwrapped CEK").
     #[must_use]
-    pub fn cek_len(self) -> usize {
+    pub fn cek_len(self) -> Option<usize> {
         match self {
-            CekAlgorithm::Aes128Cbc { .. } => 16,
-            CekAlgorithm::Aes192Cbc { .. } => 24,
-            CekAlgorithm::Aes256Cbc { .. } => 32,
+            CekAlgorithm::Aes128Cbc { .. } => Some(16),
+            CekAlgorithm::Aes192Cbc { .. } => Some(24),
+            CekAlgorithm::Aes256Cbc { .. } => Some(32),
+            CekAlgorithm::TdeaCbc { .. } => Some(24),
+            CekAlgorithm::Rc2Cbc { effective_bits, .. } if effective_bits != 0 => {
+                Some(effective_bits.div_ceil(8))
+            }
+            CekAlgorithm::Rc2Cbc { .. } | CekAlgorithm::Rc4 => None,
+        }
+    }
+
+    /// Accept an unwrapped CEK whose length the algorithm permits.
+    #[must_use]
+    pub fn accepts_cek(self, cek: &[u8]) -> bool {
+        let n = cek.len();
+        match self {
+            // RC2 keys run 5..=128 bytes (Adobe-era envelopes used 5 or 16).
+            CekAlgorithm::Rc2Cbc { .. } => (5..=128).contains(&n),
+            CekAlgorithm::Rc4 => (5..=16).contains(&n),
+            CekAlgorithm::TdeaCbc { .. } => matches!(n, 16 | 24),
+            other => {
+                self.cek_len().is_some_and(|want| want == n)
+                    || matches!(
+                        (other, n),
+                        (CekAlgorithm::Aes128Cbc { .. }, 16)
+                            | (CekAlgorithm::Aes192Cbc { .. }, 24)
+                            | (CekAlgorithm::Aes256Cbc { .. }, 32)
+                    )
+            }
         }
     }
 }
@@ -120,6 +191,19 @@ pub enum KeyTransport<'a> {
         /// The RSA-encrypted CEK.
         encrypted_key: &'a [u8],
     },
+    /// RSAES-OAEP (PKCS#1 v2.1, RFC 8017 §7.1.1): the modern CMS
+    /// `keyEncryptionAlgorithm` for RSA transports — the MGF1 unwrap the
+    /// `rsa` crate performs. `oaep` records the (hash, MGF1-hash) pair parsed
+    /// from the algorithm parameters, so an envelope that asks for a digest
+    /// we do not build refuses *typed* at parse time.
+    RsaOaep {
+        /// The explicit recipient identifier of the `KeyTransRecipientInfo`.
+        identifier: RecipientIdentifier<'a>,
+        /// The RSA-OAEP-encrypted CEK.
+        encrypted_key: &'a [u8],
+        /// The parsed parameter selection.
+        oaep: OaepParams,
+    },
     /// ECDH key agreement (static-stdDH, SHA-256 X9.63 KDF) with AES key
     /// wrap (RFC 5753 §2.1.1), one entry per `recipientEncryptedKey`.
     EcdhAesKw {
@@ -131,6 +215,39 @@ pub enum KeyTransport<'a> {
         /// The wrapped CEK.
         wrapped_key: &'a [u8],
     },
+}
+
+/// One OAEP digest choice of `RSAES-OAEP-params`. Exactly the set the `rsa`
+/// crate can instantiate against our `sha1`/`sha2` backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OaepHash {
+    /// SHA-1 (the DER default of both parameters).
+    Sha1,
+    /// SHA-256.
+    Sha256,
+    /// SHA-384.
+    Sha384,
+    /// SHA-512.
+    Sha512,
+}
+
+/// `RSAES-OAEP-params ::= SEQUENCE { hashAlgorithm, maskGenAlgorithm,
+/// pSourceAlgorithm }` with the RFC 8017 defaults: SHA-1 / MGF1-SHA-1 /
+/// id-PSpecified-with-an-empty-label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OaepParams {
+    /// The label-hash digest (`hashAlgorithm`).
+    pub hash: OaepHash,
+    /// The MGF1 hash (`maskGenAlgorithm`'s parameter).
+    pub mgf_hash: OaepHash,
+}
+
+impl OaepParams {
+    /// RFC 8017's OAEP default pair, used when the parameters are absent.
+    pub(crate) const DEFAULT: Self = Self {
+        hash: OaepHash::Sha1,
+        mgf_hash: OaepHash::Sha1,
+    };
 }
 
 /// The CMS `RecipientIdentifier` of one recipient (RFC 5652 §6.2): the
@@ -157,6 +274,7 @@ impl<'a> KeyTransport<'a> {
     pub fn identifier(&self) -> &RecipientIdentifier<'a> {
         match self {
             KeyTransport::RsaPkcs1v15 { identifier, .. }
+            | KeyTransport::RsaOaep { identifier, .. }
             | KeyTransport::EcdhAesKw { identifier, .. } => identifier,
         }
     }
@@ -437,20 +555,181 @@ fn parse_key_trans_recipient<'a>(
     let alg = r.next_expect(Tag::SEQUENCE, g)?;
     let mut alg_reader = Der::new(alg.content);
     let algorithm = alg_reader.next_expect(Tag::OID, g)?;
-    if der::oid_arcs(algorithm.content).as_deref() != Some(oid::RSA_ENCRYPTION) {
-        return Err(unsupported("key transport algorithm is not rsaEncryption"));
-    }
-    let encrypted_key = r.next_expect(Tag::OCTET_STRING, g)?;
+    let transport = match der::oid_arcs(algorithm.content).as_deref() {
+        // rsaEncryption: accept a NULL or an absent parameter octet (a few
+        // writers omit it), then the encrypted key.
+        Some(oid::RSA_ENCRYPTION) => {
+            skip_algorithm_parameters(&mut alg_reader, g)?;
+            KeyTransport::RsaPkcs1v15 {
+                identifier,
+                encrypted_key: r.next_expect(Tag::OCTET_STRING, g)?.content,
+            }
+        }
+        // RSAES-OAEP: the parameters are an RFC 8017 `RSAES-OAEP-params`;
+        // absent (or NULL) means the SHA-1/MGF1-SHA-1/empty-label defaults.
+        Some(oid::RSAES_OAEP) => {
+            let oaep = parse_rsa_oaep_params(&mut alg_reader, g)?;
+            KeyTransport::RsaOaep {
+                identifier,
+                encrypted_key: r.next_expect(Tag::OCTET_STRING, g)?.content,
+                oaep,
+            }
+        }
+        _ => return Err(unsupported("key transport algorithm is not RSA")),
+    };
     if !r.is_empty() {
         return Err(der::malformed(
             r.offset(),
             "trailing bytes in KeyTransRecipientInfo",
         ));
     }
-    Ok(KeyTransport::RsaPkcs1v15 {
-        identifier,
-        encrypted_key: encrypted_key.content,
+    Ok(transport)
+}
+
+/// Tolerate the NULL/absent parameter octet of an `rsaEncryption`
+/// `AlgorithmIdentifier` (and refuse *anything* substantive: a PKCS#5 PRF
+/// parameter under an rsaEncryption OID is not a key transport).
+fn skip_algorithm_parameters(alg_reader: &mut Der<'_>, g: &mut BudgetGuard<'_>) -> Result<()> {
+    if !alg_reader.is_empty() {
+        let at = alg_reader.offset();
+        let params = alg_reader.next(g)?;
+        if params.tag != Tag::NULL || !alg_reader.is_empty() {
+            return Err(der::malformed(at, "unexpected rsaEncryption parameters"));
+        }
+    }
+    Ok(())
+}
+
+/// `RSAES-OAEP-params ::= SEQUENCE { hashAlgorithm [0] HashAlgorithm
+/// DEFAULT sha1, maskGenAlgorithm [1] MaskGenAlgorithm
+/// DEFAULT mgf1SHA1, pSourceAlgorithm [2] PSourceAlgorithm
+/// DEFAULT id-PSpecified("", ...) }` (RFC 8017 A.2.1, RFC 5751 §3). The
+/// digests map onto what `rsa::Oaep` can instantiate; anything else — an
+/// unknown OID, a digest we do not link, a *non-empty* label — is a typed
+/// `Code::EncryptUnsupported` (recognised, refused, never silently dropped:
+/// a labelled OAEP cannot be detected as a wrong key).
+fn parse_rsa_oaep_params(alg_reader: &mut Der<'_>, g: &mut BudgetGuard<'_>) -> Result<OaepParams> {
+    if alg_reader.is_empty() {
+        return Ok(OaepParams::DEFAULT);
+    }
+    let at = alg_reader.offset();
+    let params = alg_reader.next(g)?;
+    if params.tag == Tag::NULL {
+        return Ok(OaepParams::DEFAULT);
+    }
+    if params.tag != Tag::SEQUENCE || !alg_reader.is_empty() {
+        return Err(der::malformed(at, "bad RSAES-OAEP-params"));
+    }
+    let mut p = Der::new(params.content);
+    let mut hash = OaepHash::Sha1;
+    let mut mgf = OaepHash::Sha1;
+    while !p.is_empty() {
+        let at = p.offset();
+        let member = p.next(g)?;
+        match member.tag {
+            // [0] IMPLICIT HashAlgorithm
+            Tag::CTX_0_CONSTRUCTED => {
+                hash = parse_oaep_digest(member.content, g)?;
+            }
+            // [1] IMPLICIT MaskGenAlgorithm id-MGF1 { [0] HashAlgorithm }
+            Tag::CTX_1_CONSTRUCTED => {
+                mgf = parse_mgf1(member.content, g)?;
+            }
+            // [2] IMPLICIT PSourceAlgorithm id-PSpecified { OCTET STRING }
+            Tag::CTX_2_CONSTRUCTED => {
+                parse_psource(member.content, g)?;
+            }
+            _ => return Err(der::malformed(at, "unknown RSAES-OAEP-params member")),
+        }
+    }
+    Ok(OaepParams {
+        hash,
+        mgf_hash: mgf,
     })
+}
+
+/// An `AlgorithmIdentifier { OID (digest), NULL | absent }` in the OAEP
+/// parameter slots, mapped onto our `OaepHash` (only MD2/MD5/RIPEMD-160/SHA3
+/// are refused here — everything we can build the padding with is accepted).
+fn parse_oaep_digest(content: &[u8], g: &mut BudgetGuard<'_>) -> Result<OaepHash> {
+    let mut alg = Der::new(content);
+    let oid = alg.next_expect(Tag::OID, g)?;
+    if !alg.is_empty() {
+        alg.next(g)?;
+        if !alg.is_empty() {
+            return Err(der::malformed(
+                alg.offset(),
+                "trailing bytes in digest AlgorithmIdentifier",
+            ));
+        }
+    }
+    match der::oid_arcs(oid.content).as_deref() {
+        Some(oid::SHA1) => Ok(OaepHash::Sha1),
+        Some(oid::SHA256) => Ok(OaepHash::Sha256),
+        Some(oid::SHA384) => Ok(OaepHash::Sha384),
+        Some(oid::SHA512) => Ok(OaepHash::Sha512),
+        _ => Err(unsupported("OAEP digest is not SHA-1/256/384/512")),
+    }
+}
+
+/// `MaskGenAlgorithm ::= SEQUENCE { id-MGF1, [0] HashAlgorithm }` — a
+/// different mask generator than MGF1 is refused typed.
+fn parse_mgf1(content: &[u8], g: &mut BudgetGuard<'_>) -> Result<OaepHash> {
+    let mut alg = Der::new(content);
+    let oid = alg.next_expect(Tag::OID, g)?;
+    if der::oid_arcs(oid.content).as_deref() != Some(oid::MGF1) {
+        return Err(unsupported("OAEP mask generation function is not MGF1"));
+    }
+    if alg.is_empty() {
+        return Ok(OaepHash::Sha1); // id-MGF1DB, SHA-1, and the DER default
+    }
+    let params = alg.next_expect(Tag::CTX_0_CONSTRUCTED, g)?;
+    if !alg.is_empty() {
+        return Err(der::malformed(
+            alg.offset(),
+            "trailing bytes in MaskGenAlgorithm",
+        ));
+    }
+    parse_oaep_digest(params.content, g)
+}
+
+/// `PSourceAlgorithm ::= SEQUENCE { id-PSpecified, OCTET STRING }`. An
+/// *empty* label (the RFC 8017 default `""`) is the supported case: the
+/// label bytes would otherwise feed the MGF1 digest, and a *non-empty* label
+/// is an OAEP variant no PDF writer emits (refused typed, §5).
+/// `PSourceAlgorithm ::= SEQUENCE { PSourceAlgorithmID
+/// OBJECT IDENTIFIER (id-pSourceAlgorithm), P OCTET STRING (SIZE (1|MAX)) }`
+/// (RFC 8017 A.2.1), DEFAULT `id-PEmptySeq`/`P=""` — *any* other pSource is
+/// refused typed because a non-empty label changes the MGF1/XOR algebra and a
+/// *differently*-labelled-but-same-hash OAEP cannot be told apart from a wrong
+/// key at this layer (§5). The OID itself is checked structurally: an
+/// unrecognised `id-pSourceAlgorithm` is `ENCRYPT_UNSUPPORTED`.
+fn parse_psource(content: &[u8], g: &mut BudgetGuard<'_>) -> Result<()> {
+    let mut alg = Der::new(content);
+    let oid = alg.next_expect(Tag::OID, g)?;
+    if der::oid_arcs(oid.content).is_none_or(|arcs| {
+        // Only id-PSpecified (`1.2.840.113549.1.1.9`, the sole pSource
+        // algorithm PKCS#1 defines; RFC 8017 A.2.4) tolerates the empty-label
+        // check below. Anything else cannot be reasoned about, so refuse it.
+        arcs != oid::P_SPECIFIED
+    }) {
+        return Err(unsupported("OAEP pSourceAlgorithm is not id-PSpecified"));
+    }
+    if alg.is_empty() {
+        return Ok(());
+    }
+    let label = alg.next_expect(Tag::OCTET_STRING, g)?;
+    if !alg.is_empty() {
+        return Err(der::malformed(
+            alg.offset(),
+            "trailing bytes in PSourceAlgorithm",
+        ));
+    }
+    if label.content.is_empty() {
+        Ok(())
+    } else {
+        Err(unsupported("OAEP with a non-empty label"))
+    }
 }
 
 /// `IssuerAndSerialNumber ::= SEQUENCE { issuer RDNSequence, serialNumber
@@ -587,7 +866,8 @@ fn parse_key_agree_recipient<'a>(
 }
 
 /// `EncryptedContentInfo ::= SEQUENCE { contentType,
-/// contentEncryptionAlgorithm, encryptedContent [0] EXPLICIT OPTIONAL }`.
+/// contentEncryptionAlgorithm, encryptedContent [0] IMPLICIT OCTET STRING
+/// OPTIONAL }`.
 fn parse_encrypted_content_info<'a>(
     data: &'a [u8],
     g: &mut BudgetGuard<'_>,
@@ -610,23 +890,145 @@ fn parse_encrypted_content_info<'a>(
         Some(oid::AES256_CBC) => CekAlgorithm::Aes256Cbc {
             iv: cbc_iv(&mut alg_reader, g)?,
         },
-        // RC4/3DES/RC2 and anything else: see the module docs — refusing a
-        // cipher without wrong-key detection is a typed error by design.
-        _ => return Err(unsupported("content-encryption algorithm is not AES-CBC")),
+        // ── SL-1.ENC.08 legacy *read* paths (module docs) ────────────────
+        Some(oid::RC4) => {
+            // PKCS #5's RC4 carries no IV; Acrobat-era envelopes emit `NULL`
+            // or nothing at all — both are accepted, other parameters are not.
+            if !alg_reader.is_empty() {
+                let at = alg_reader.offset();
+                let params = alg_reader.next(g)?;
+                if params.tag != Tag::NULL || !params.content.is_empty() || !alg_reader.is_empty() {
+                    return Err(der::malformed(at, "unexpected RC4 parameters"));
+                }
+            }
+            CekAlgorithm::Rc4
+        }
+        Some(oid::DES_EDE3_CBC) => CekAlgorithm::TdeaCbc {
+            iv: cbc_iv8(&mut alg_reader, g)?,
+        },
+        Some(oid::RC2_CBC) => {
+            // RC2-CBC-Parameter ::= SEQUENCE { rc2EffectiveKeyLength
+            // INTEGER (0..1024) DEFAULT 0, iv OCTET STRING }
+            let (effective_bits, iv) = rc2_params(&mut alg_reader, g)?;
+            CekAlgorithm::Rc2Cbc { iv, effective_bits }
+        }
+        // PasswordBasedRecipientInfo, AES key wrap, …: a typed refusal.
+        _ => return Err(unsupported("unsupported content-encryption algorithm")),
     };
     let encrypted_content = if eci.is_empty() {
         None
     } else {
         let at = eci.offset();
-        let explicit = eci.next_expect(Tag::CTX_0_CONSTRUCTED, g)?;
-        let mut inner = Der::new(explicit.content);
-        let octets = inner.next_expect(Tag::OCTET_STRING, g)?;
-        if !inner.is_empty() || !eci.is_empty() {
+        // RFC 5652 says `[0] IMPLICIT OCTET STRING`, i.e. a *primitive*
+        // `ctx 0`; the CMS writers PDF actually met also emit the explicit
+        // `[0] { OCTET STRING }` form. Accept both — they decode the same
+        // octet string.
+        let tlv = eci.next(g)?;
+        let content = match tlv.tag {
+            Tag::CTX_0 => tlv.content,
+            Tag::CTX_0_CONSTRUCTED => {
+                let mut inner = Der::new(tlv.content);
+                let octets = inner.next_expect(Tag::OCTET_STRING, g)?;
+                if !inner.is_empty() {
+                    return Err(der::malformed(at, "trailing bytes in encryptedContent"));
+                }
+                octets.content
+            }
+            _ => return Err(der::malformed(at, "bad encryptedContent tag")),
+        };
+        if !eci.is_empty() {
             return Err(der::malformed(at, "trailing bytes in encryptedContent"));
         }
-        Some(octets.content)
+        Some(content)
     };
     Ok((cek_algorithm, encrypted_content))
+}
+
+/// Read the 8-byte IV of an RC2/TDEA `AlgorithmIdentifier`.
+fn cbc_iv8(alg_reader: &mut Der<'_>, g: &mut BudgetGuard<'_>) -> Result<[u8; 8]> {
+    let iv = iv_octet(alg_reader, g, 8)?;
+    let bytes = <[u8; 8]>::try_from(iv).unwrap_or([0u8; 8]);
+    Ok(bytes)
+}
+
+/// A fixed-length OCTET STRING parameter of an `AlgorithmIdentifier`, used by
+/// the AES-CBC (16) and RC2/TDEA (8) IV slots.
+fn iv_octet<'a>(
+    alg_reader: &'a mut Der<'_>,
+    g: &mut BudgetGuard<'_>,
+    len: usize,
+) -> Result<&'a [u8]> {
+    if alg_reader.is_empty() {
+        return Err(der::malformed(
+            alg_reader.offset(),
+            "missing CBC IV parameter",
+        ));
+    }
+    let iv = alg_reader.next_expect(Tag::OCTET_STRING, g)?;
+    let iv = iv
+        .content
+        .get(..len)
+        .filter(|_| iv.content.len() == len)
+        .ok_or_else(|| der::malformed(alg_reader.offset(), "CBC IV has the wrong length"))?;
+    if !alg_reader.is_empty() {
+        return Err(der::malformed(
+            alg_reader.offset(),
+            "trailing bytes in AlgorithmIdentifier",
+        ));
+    }
+    Ok(iv)
+}
+
+/// `RC2-CBC-Parameter ::= SEQUENCE { rc2EffectiveKeyLength INTEGER (0..1024)
+/// DEFAULT 0, iv OCTET STRING (SIZE(8)) }`. Both members are optional in
+/// practice; a writer that supplies only the IV gets `effective_bits = 0`
+/// ("the whole key").
+fn rc2_params(alg_reader: &mut Der<'_>, g: &mut BudgetGuard<'_>) -> Result<(usize, [u8; 8])> {
+    let at = alg_reader.offset();
+    if alg_reader.is_empty() {
+        return Err(der::malformed(at, "missing RC2-CBC-Parameter"));
+    }
+    let params = alg_reader.next_expect(Tag::SEQUENCE, g)?;
+    if !alg_reader.is_empty() {
+        return Err(der::malformed(
+            alg_reader.offset(),
+            "trailing bytes in AlgorithmIdentifier",
+        ));
+    }
+    let mut p = Der::new(params.content);
+    let mut effective_bits = 0usize;
+    let mut iv: Option<[u8; 8]> = None;
+    while !p.is_empty() {
+        let at = p.offset();
+        let tlv = p.next(g)?;
+        match tlv.tag {
+            Tag::INTEGER => {
+                if iv.is_some() {
+                    return Err(der::malformed(at, "RC2 parameters out of order"));
+                }
+                let bits = integer_u64(tlv.content)
+                    .and_then(|v| usize::try_from(v).ok())
+                    .filter(|v: &usize| *v <= 1024)
+                    .ok_or_else(|| der::malformed(at, "bad rc2EffectiveKeyLength"))?;
+                effective_bits = bits;
+            }
+            Tag::OCTET_STRING => {
+                let iv_bytes = <[u8; 8]>::try_from(
+                    tlv.content
+                        .get(..8)
+                        .filter(|b| b.len() == 8)
+                        .ok_or_else(|| der::malformed(at, "RC2 IV must be 8 bytes"))?,
+                )
+                .map_err(|_| der::malformed(at, "RC2 IV must be 8 bytes"))?;
+                iv = Some(iv_bytes);
+            }
+            _ => return Err(der::malformed(at, "unexpected RC2-CBC-Parameter member")),
+        }
+    }
+    Ok((
+        effective_bits,
+        iv.ok_or_else(|| der::malformed(at, "RC2 missing IV"))?,
+    ))
 }
 
 /// Validate an `AlgorithmIdentifier`'s structure (any algorithm).
@@ -647,25 +1049,9 @@ fn validate_algorithm_identifier(data: &[u8], g: &mut BudgetGuard<'_>) -> Result
 
 /// Read the 16-byte IV parameter of an AES-CBC `AlgorithmIdentifier`.
 fn cbc_iv(alg_reader: &mut Der<'_>, g: &mut BudgetGuard<'_>) -> Result<[u8; 16]> {
-    if alg_reader.is_empty() {
-        return Err(der::malformed(
-            alg_reader.offset(),
-            "missing AES-CBC IV parameter",
-        ));
-    }
-    let iv = alg_reader.next_expect(Tag::OCTET_STRING, g)?;
-    let iv: [u8; 16] = iv
-        .content
-        .get(..16)
-        .and_then(|s| <[u8; 16]>::try_from(s).ok())
-        .ok_or_else(|| der::malformed(alg_reader.offset(), "AES-CBC IV must be 16 bytes"))?;
-    if !alg_reader.is_empty() {
-        return Err(der::malformed(
-            alg_reader.offset(),
-            "trailing bytes in AlgorithmIdentifier",
-        ));
-    }
-    Ok(iv)
+    let iv = iv_octet(alg_reader, g, 16)?;
+    let bytes = <[u8; 16]>::try_from(iv).unwrap_or([0u8; 16]);
+    Ok(bytes)
 }
 
 /// The bytes of a BIT STRING's content (one unused-bits octet + data).
@@ -679,18 +1065,20 @@ fn bit_string_bytes(content: &[u8]) -> Option<&[u8]> {
 
 /// A non-negative DER INTEGER's value, when it fits a `u64`.
 fn integer_u64(content: &[u8]) -> Option<u64> {
+    // DER positive integers carry a leading 0x00 exactly when the first
+    // content octet would otherwise read as a negative two's-complement
+    // value. So reject a first octet with the sign bit set (that is a
+    // negative integer), then read the remaining octets as an unsigned
+    // magnitude.
+    if content.is_empty() || content.first().is_some_and(|b| b & 0x80 != 0) {
+        return None;
+    }
+    let mut s = content;
+    while s.first() == Some(&0x00) && s.len() > 1 {
+        s = &s[1..];
+    }
     let mut value: u64 = 0;
-    let mut started = false;
-    for &b in content {
-        if !started {
-            if b == 0 && content.len() > 1 {
-                continue; // DER minimality padding
-            }
-            if b & 0x80 != 0 {
-                return None; // negative
-            }
-            started = true;
-        }
+    for &b in s {
         value = value.checked_mul(256)?.checked_add(u64::from(b))?;
     }
     Some(value)
@@ -1036,6 +1424,50 @@ fn unwrap_cek(
             // design note §6).
             key.decrypt(rsa::Pkcs1v15Encrypt, encrypted_key).ok()
         }
+        KeyTransport::RsaOaep {
+            encrypted_key,
+            oaep,
+            ..
+        } => {
+            let key = rsa_key?;
+            // RSAES-OAEP (MGF1) unwrap: the hash/mgf pair came from the
+            // algorithm parameters at parse time. Unlike the v1.5 arm there is
+            // no Marvin-style padding oracle concern here (the whole OAEP
+            // decode is constant-time inside `rsa`), and a wrong key simply
+            // fails the hash check.
+            use rsa::Oaep;
+            match (oaep.hash, oaep.mgf_hash) {
+                (OaepHash::Sha1, OaepHash::Sha1) => {
+                    key.decrypt(Oaep::new::<sha1::Sha1>(), encrypted_key).ok()
+                }
+                (OaepHash::Sha1, OaepHash::Sha256) => key
+                    .decrypt(
+                        Oaep::new_with_mgf_hash::<sha1::Sha1, sha2::Sha256>(),
+                        encrypted_key,
+                    )
+                    .ok(),
+                (OaepHash::Sha256, OaepHash::Sha1) => key
+                    .decrypt(
+                        Oaep::new_with_mgf_hash::<sha2::Sha256, sha1::Sha1>(),
+                        encrypted_key,
+                    )
+                    .ok(),
+                (OaepHash::Sha256, OaepHash::Sha256) => {
+                    key.decrypt(Oaep::new::<sha2::Sha256>(), encrypted_key).ok()
+                }
+                (OaepHash::Sha384, OaepHash::Sha384) => {
+                    key.decrypt(Oaep::new::<sha2::Sha384>(), encrypted_key).ok()
+                }
+                (OaepHash::Sha512, OaepHash::Sha512) => {
+                    key.decrypt(Oaep::new::<sha2::Sha512>(), encrypted_key).ok()
+                }
+                // An MGF hash other than the label hash (MGF1-SHA-384/512
+                // combos) is *not* something PDF writers emit; refuse by
+                // continuing the scan (the transport simply never matches, and
+                // the caller reports `RecipientNoMatch`).
+                _ => None,
+            }
+        }
         KeyTransport::EcdhAesKw {
             originator,
             wrapped_key,
@@ -1051,41 +1483,122 @@ fn unwrap_cek(
             if wrapped_key.len() != 24 && wrapped_key.len() != 40 {
                 return None;
             }
-            let kek = kdf_x963_sha256(shared_bytes.as_slice(), wrapped_key.len() - 8);
+            let kek = kdf_x963_sha256(&shared_bytes, wrapped_key.len() - 8);
             aes_kw_unwrap(&kek, wrapped_key)
         }
     }
 }
 
-/// Decrypt the 24-byte payload with the CEK, strictly validating the AES-CBC
-/// padding (the wrong-key detector).
+/// Decrypt the payload with the CEK, strictly validating the block cipher's
+/// PKCS#7 padding (the wrong-key detector) plus the exact 24-byte payload
+/// rule. The honest "a wrong CEK cannot slip silently" story (SL-1.ENC.08),
+/// per design note §5:
+///
+/// * The AES-TDEA-RC2 arms run in CBC with padding, so a wrong CEK must
+///   survive a PKCS#7 check *and* yield a 24-byte plaintext.
+/// * RC4 has no padding, so its *only* gate is the key-transport unwrap
+///   (`unwrap_cek`) having run before this function: the RC4 key is the bytes
+///   the RSAES-PKCS1-v1_5/RSAES-OAEP padding check authenticated (or the
+///   `rc4_3072`-style export length it recovered), and the AES path above runs
+///   the same check as a *bonus*, which makes the legacy RC4 arm exactly as
+///   strict as the *pre-ENC.08* claim the sign-off already accepted about the
+///   AES arm's unwrap. A wrong RSA key therefore still ends the scan with
+///   [`Code::RecipientNoMatch`], never a garbage file key.
 fn decrypt_payload(cek: &[u8], algorithm: CekAlgorithm, content: &[u8]) -> Option<Vec<u8>> {
-    let (key_len, iv) = match algorithm {
-        CekAlgorithm::Aes128Cbc { iv } => (16usize, iv),
-        CekAlgorithm::Aes192Cbc { iv } => (24usize, iv),
-        CekAlgorithm::Aes256Cbc { iv } => (32usize, iv),
-    };
-    if cek.len() != key_len {
+    if !algorithm.accepts_cek(cek) {
         return None; // CEK size mismatch: wrong recipient path
     }
-    // One IV block plus at least one data block; exact block multiple.
-    if content.len() < 32 || content.len() % 16 != 0 {
+    match algorithm {
+        CekAlgorithm::Rc4 => {
+            // No padding: CMS's RC4 seals *exactly* the payload length, so the
+            // 24-byte rule carries the structural check.
+            if content.len() != CMS_PAYLOAD_LEN {
+                return None;
+            }
+            Some(crate::rc4(cek, content))
+        }
+        CekAlgorithm::Aes128Cbc { iv }
+        | CekAlgorithm::Aes192Cbc { iv }
+        | CekAlgorithm::Aes256Cbc { iv } => {
+            let cipher = AesCipher::new(cek.len(), cek)?;
+            payload_cbc(&cipher, &iv, content)
+        }
+        CekAlgorithm::TdeaCbc { iv } => {
+            let cipher = crate::legacy::Tdes::new(cek)?;
+            payload_cbc(&cipher, &iv, content)
+        }
+        CekAlgorithm::Rc2Cbc { iv, effective_bits } => {
+            let cipher = crate::legacy::Rc2::new(cek, effective_bits)?;
+            payload_cbc(&cipher, &iv, content)
+        }
+    }
+}
+
+/// A payload block cipher: 16-byte AES or the 8-byte legacy modes.
+trait PayloadBlock {
+    const BLOCK: usize;
+    fn transform(&self, block: &mut [u8]);
+}
+
+impl PayloadBlock for AesCipher {
+    const BLOCK: usize = 16;
+    fn transform(&self, block: &mut [u8]) {
+        if let Ok(arr) = <[u8; 16]>::try_from(&*block) {
+            let mut arr: Block = arr.into();
+            self.decrypt_block(&mut arr);
+            block.copy_from_slice(&arr);
+        }
+    }
+}
+
+impl PayloadBlock for crate::legacy::Tdes {
+    const BLOCK: usize = 8;
+    fn transform(&self, block: &mut [u8]) {
+        if let Ok(mut arr) = <[u8; 8]>::try_from(&mut *block) {
+            self.decrypt_block(&mut arr);
+            block.copy_from_slice(&arr);
+        }
+    }
+}
+
+impl PayloadBlock for crate::legacy::Rc2 {
+    const BLOCK: usize = 8;
+    fn transform(&self, block: &mut [u8]) {
+        if let Ok(mut arr) = <[u8; 8]>::try_from(&mut *block) {
+            self.decrypt_block(&mut arr);
+            block.copy_from_slice(&arr);
+        }
+    }
+}
+
+/// One CBC payload decrypt: exact block multiples, IV from the algorithm
+/// parameters, strict PKCS#7 (pad in 1..=block, every pad byte equal), and a
+/// plaintext of exactly [`CMS_PAYLOAD_LEN`] bytes — the *wrong-key detector*
+/// every arm leans on (RC4's is above).
+fn payload_cbc<C: PayloadBlock>(cipher: &C, iv: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    if iv.len() != C::BLOCK || data.is_empty() || data.len() % C::BLOCK != 0 {
         return None;
     }
-    let cipher = AesCipher::new(key_len, cek)?;
-    let plain = cbc_decrypt_strict(&cipher, &iv, content)?;
-    // Strict PKCS#7: the pad value must be 1..=16 and every pad byte equal.
-    let pad = *plain.last()?;
-    if pad == 0 || pad > 16 {
+    let mut out = Vec::new();
+    let mut prev: &[u8] = iv;
+    for chunk in data.chunks(C::BLOCK) {
+        let mut block = chunk.to_vec();
+        cipher.transform(&mut block);
+        for k in 0..C::BLOCK {
+            out.push(block[k] ^ prev[k]);
+        }
+        prev = chunk;
+    }
+    let pad = usize::from(*out.last()?);
+    if pad == 0 || pad > C::BLOCK || out.len() < pad {
         return None;
     }
-    let (body, padding) = plain.split_at_checked(plain.len() - usize::from(pad))?;
-    if padding.iter().any(|&b| b != pad) {
+    let (body, padding) = out.split_at(out.len() - pad);
+    if padding.iter().any(|&b| usize::from(b) != pad) || body.len() != CMS_PAYLOAD_LEN {
         return None;
     }
     Some(body.to_vec())
 }
-
 /// An owned AES block-cipher handle (the three key sizes share the CBC walk).
 enum AesCipher {
     /// AES-128.
@@ -1126,27 +1639,6 @@ impl AesCipher {
     }
 }
 
-/// AES-CBC decrypt with strict structure: exact block multiples, the IV
-/// copied in with a checked length (SL-1.ENC.06 discipline).
-fn cbc_decrypt_strict(cipher: &AesCipher, iv: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
-    if data.is_empty() || data.len() % 16 != 0 {
-        return None;
-    }
-    let mut out = Vec::new();
-    let mut prev = *iv;
-    for chunk in data.chunks(16) {
-        let block_bytes: [u8; 16] = <[u8; 16]>::try_from(chunk).ok()?;
-        let mut block = Block::clone_from_slice(&block_bytes);
-        cipher.decrypt_block(&mut block);
-        for k in 0..16 {
-            let b = block[k] ^ prev[k];
-            out.push(b);
-        }
-        prev = block_bytes;
-    }
-    Some(out)
-}
-
 /// X9.63 KDF with SHA-256 and an empty SharedInfo (RFC 5753 §2.1.1 static
 /// stdDH): `T(i) = SHA256(Z || be32(i))`, concatenated and truncated.
 fn kdf_x963_sha256(z: &[u8], out_len: usize) -> Vec<u8> {
@@ -1156,7 +1648,7 @@ fn kdf_x963_sha256(z: &[u8], out_len: usize) -> Vec<u8> {
         let mut h = Sha256::new();
         h.update(z);
         h.update(counter.to_be_bytes());
-        out.extend_from_slice(h.finalize().as_slice());
+        out.extend_from_slice(&h.finalize());
         counter = counter.saturating_add(1);
     }
     out.truncate(out_len);
@@ -1198,7 +1690,7 @@ fn aes_kw_unwrap(kek: &[u8], wrapped: &[u8]) -> Option<Vec<u8>> {
                 input[k] = a[k] ^ t_bytes[k];
             }
             input[8..].copy_from_slice(r.get(i - 1)?);
-            let mut block = Block::clone_from_slice(&input);
+            let mut block: Block = input.into();
             cipher.decrypt_block(&mut block);
             for k in 0..8 {
                 a[k] = block[k];

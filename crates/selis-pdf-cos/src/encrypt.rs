@@ -423,9 +423,11 @@ fn parse_pubkey_encrypt(
     };
     let v = int(b"V").and_then(|v| u8::try_from(v).ok()).unwrap_or(0);
     // The per-object cipher revision follows /V: 4 → salted AES-128
-    // (Algorithm 1), 5 → direct-key AES-256 (Algorithm 1a). Anything below 4
-    // is the RC4-era s3 shape — parsed for inspection, refused at
-    // authentication.
+    // (Algorithm 1), 5 → direct-key AES-256 (Algorithm 1a); anything below 4
+    // is the RC4-era `s3` shape (per-object RC4 key derivation, ISO 32000-1
+    // §7.6.2) whose *sealed CMS payload* still decrypts through the same
+    // Algorithm-1 seed hash (SL-1.ENC.08: RC4 / TDEA-CBC / RC2-CBC content keys
+    // are accepted read-only; see `selis_crypto::pkcs7::decrypt_payload`).
     let r = v;
     let length = int(b"Length")
         .and_then(|v| usize::try_from(v).ok())
@@ -600,12 +602,14 @@ pub fn authenticate(info: &EncryptInfo, id0: &[u8], password: &[u8]) -> Option<V
 ///
 /// Structural CMS damage is `ENCRYPT_MALFORMED` (a damaged certificate in
 /// the credential's chain likewise — never silently dropped); a recognised
-/// but unimplemented algorithm (RC4/3DES content, s3-era RC4 documents) is
-/// `ENCRYPT_UNSUPPORTED`; a credential that opens no recipient is
-/// `RECIPIENT_NO_MATCH` (the public-key wrong-key error — typed, never a
-/// partial decrypt; under `MatchBy::Certificate` a credential whose chain
-/// matches no recipient fails with it even if the key material would have
-/// opened a differently-addressed recipient).
+/// but unimplemented algorithm (AES-192-wrapped on ECDH, PKCS#12 transports,
+/// detached CMS content) is `ENCRYPT_UNSUPPORTED`; a credential that opens no
+/// recipient is `RECIPIENT_NO_MATCH` (the public-key wrong-key error — typed,
+/// never a partial decrypt; under `MatchBy::Certificate` a credential whose
+/// chain matches no recipient fails with it even if the key material would
+/// have opened a differently-addressed recipient). The `/V ≤ 3` s3-era RC4/TDEA/
+/// RC2 content reads (SL-1.ENC.08) go through the same typed path: the key
+/// transport's unwrap gates them, not the content cipher's padding.
 pub fn authenticate_public_key(
     info: &EncryptInfo,
     credential: &selis_crypto::pkcs7::PubKeyCredential,
@@ -618,16 +622,12 @@ pub fn authenticate_public_key(
             detail = "authenticate_public_key on a non-public-key handler"
         ));
     }
-    // The RC4-era sub-filters (adbe.pkcs7.s3, /V ≤ 3) are refused: RC4
-    // content has no padding, so a wrong key would derive a wrong file key
-    // silently instead of failing typed (design note §5).
-    if info.v < 4 {
-        return Err(err!(
-            Code::EncryptUnsupported,
-            during = "encrypt",
-            detail = "adbe.pkcs7.s3-era public-key encryption is not supported"
-        ));
-    }
+    // The `adbe.pkcs7.s3` shape (/V ≤ 3, RC4-era) *is* accepted (SL-1.ENC.08):
+    // its RC4 content keys have *no padding*, so their gate is the
+    // RSAES-PKCS1-v1_5 (or RSAES-OAEP) key transport having unwrapped before
+    // any content key exists — see `selis_crypto::pkcs7::decrypt_payload` and
+    // design note §5. A wrong key therefore still ends `RECIPIENT_NO_MATCH`,
+    // never a silently-wrong file key.
     let blobs: Vec<&[u8]> = info.recipients.iter().map(|r| r.as_slice()).collect();
     selis_crypto::pkcs7::authenticate_public_key(
         &blobs,
@@ -859,10 +859,12 @@ mod tests {
         assert!(info.stream_encrypted());
     }
 
-    /// The s3-era (RC4, /V ≤ 3) public-key shape parses but is refused at
-    /// authentication with a typed error.
+    /// The s3-era (RC4/TDEA/RC2, /V ≤ 3) public-key shape parses and is no
+    /// longer refused at authentication (SL-1.ENC.08); its RC4 content keys are
+    /// gated by the key transport's unwrap, so a *malformed* blob is a typed
+    /// CMS error from the crypto layer, not a cos-layer `ENCRYPT_UNSUPPORTED`.
     #[test]
-    fn pubkey_s3_is_unsupported_at_authentication() {
+    fn pubkey_s3_is_accepted_and_gated_by_the_cms_parse() {
         let pairs = dict_pairs! {
             "Filter" => Obj::Name(bytes(b"Adobe.PPKLite")),
             "V" => Obj::Int(2),
@@ -877,8 +879,8 @@ mod tests {
         let credential = selis_crypto::pkcs7::PubKeyCredential::rsa([0u8; 8].to_vec());
         let budget = Budget::unlimited();
         let mut g = budget.guard();
-        let e = authenticate_public_key(&info, &credential, &mut g).expect_err("s3 refused");
-        assert_eq!(e.code(), Code::EncryptUnsupported);
+        let e = authenticate_public_key(&info, &credential, &mut g).expect_err("corrupt blob");
+        assert_eq!(e.code(), Code::EncryptMalformed);
     }
 
     /// `authenticate_public_key` refuses standard-handler infos.

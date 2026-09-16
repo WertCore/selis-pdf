@@ -39,6 +39,9 @@ impl Tag {
     pub(crate) const SEQUENCE: Tag = Tag(0x30);
     /// Universal constructed SET (and SET OF).
     pub(crate) const SET: Tag = Tag(0x31);
+    /// Universal primitive NULL (the `AlgorithmIdentifier` parameter of
+    /// `rsaEncryption`).
+    pub(crate) const NULL: Tag = Tag(0x05);
 
     /// Context-specific primitive tag 0 (`SubjectKeyIdentifier`).
     pub(crate) const CTX_0: Tag = Tag(0x80);
@@ -47,6 +50,8 @@ impl Tag {
     /// Context-specific constructed tag 1 (CMS `[1]`; the `KeyAgreeRecipientInfo`
     /// choice arm and `OriginatorPublicKey`).
     pub(crate) const CTX_1_CONSTRUCTED: Tag = Tag(0xA1);
+    /// Context-specific constructed tag 2 (RSAES-OAEP's `pSourceAlgorithm`).
+    pub(crate) const CTX_2_CONSTRUCTED: Tag = Tag(0xA2);
     /// Context-specific constructed tag 3 (`TBSCertificate` extensions).
     pub(crate) const CTX_3_CONSTRUCTED: Tag = Tag(0xA3);
 }

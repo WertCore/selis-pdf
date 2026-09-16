@@ -259,7 +259,7 @@ fn scan_extensions<'a>(data: &'a [u8], g: &mut BudgetGuard<'_>) -> Result<Option
 fn sha1_pubkey(public_key: &[u8]) -> [u8; 20] {
     let digest = sha1::Sha1::digest(public_key);
     let mut out = [0u8; 20];
-    out.copy_from_slice(digest.as_slice());
+    out.copy_from_slice(&digest);
     out
 }
 

@@ -247,11 +247,17 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     conformance promotion for now (per §8.10, no "we fully support PKCS#7" claim yet — only the
      draft's "AES s4/s5 open with the right key" claim). The `match_by` configurability is ENC.07,
      the permission-layer policy is ENC.09, and the     legacy formats are ENC.08.
-    * **Child status (2026-09-14):** SL-1.ENC.07 shipped (cert-identity selection + `match_by`),
+    * **Child status (2026-09-16):** SL-1.ENC.07 shipped (cert-identity selection + `match_by`),
       SL-1.ENC.09 shipped (`/P∧CMS` enforcement, code 1808) — both pending HUMAN line-by-line
-      review, boxes deliberately unchecked; SL-1.ENC.08 (s3/RC4/3DES/OAEP read-path legacy) NOT
-      started. ENC.03 therefore stays `[ ]` (one child incomplete, two unreviewed) — honesty
-      over false green.
+      review, boxes deliberately unchecked; **SL-1.ENC.08 shipped 2026-09-16** (s3/RC4/3DES/RC2
+      read-only content + RSAES-OAEP transport + the nightly fuzz build repair, see its
+      done-note) — also pending HUMAN review, box deliberately unchecked. All three children are
+      now code-complete; ENC.03 therefore stays `[ ]` because **none of the three is reviewed
+      yet** (the flip requires all three `[x]`: honesty over false green). Its own DoD clause
+      that ENC.08 could *not* close is §8.10's caveat: no real 2003–2009 public-key PDF has been
+      recovered from the corpus to open here (corpus is fetch-only; see ENC.08's done-note) — the
+      claim remains "s3/RC4/3DES/RC2/OAEP read paths exist and are DoD-tested on deterministic
+      DER shapes", not "we open Acrobat's files".
 - [x] **SL-1.ENC.04 — Permission semantics as policy, not as a lie** · deps: ENC.01 · owner: AI+
   - **Do:** Surface `/P` bits honestly. We honour them by default and expose an explicit,
     logged override for the owner-password case. Do not pretend the bits are security.
@@ -396,6 +402,89 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     reduced to the actually-broken ones).
   - **Competitor check (2026-09-12):** Acrobat, PDFium, PDFBox, MuPDF, qpdf all decrypt s3-era
     CMS for back-compat; this is not optional.
+  - **Note (done 2026-09-16, pending HUMAN line-by-line review — owner AI+ encryption code; box
+    stays unchecked until reviewed):** Shipped scope:
+    * `selis-crypto::legacy` (new): the CMS *content* ciphers, hand-rolled per §3's DER posture
+      (FIPS 46-3 delta-swap DES + TDEA EDE; RFC 2268 RC2 with `rc2EffectiveKeyLength`; RC4 reuses
+      the crate's existing `rc4`). `des` 0.5 / `rc2` 0.9 were **evaluated and declined**: both are
+      on trait trees incompatible with this workspace's single `cipher` 0.4 (rc2 0.9 = `cipher` 0.5
+      + MSRV 1.85; des 0.5 = `block-cipher` 0.3), and each is an unvetted crate for
+      *museum-format-only* reads. Constants are the published tables in RustCrypto's layout
+      (MIT OR Apache-2.0, licence-clean re-lay) and every entry is pinned against
+      `openssl 1.1.1q enc` output — the tables are checked against an independent implementation,
+      not self-consistency. **Decrypt-only:** `encrypt_block`/`encrypt` exist for the fixture
+      generator + KATs; no `selis-pdf-engine` write path reaches a legacy cipher (ADR-P0019 —
+      saves stay `/V 5` AESV3).
+    * `pkcs7`: `CekAlgorithm` + RC4 / TDEA-CBC / RC2-CBC (their `AlgorithmIdentifier` parameters:
+      absent/NULL for RC4, an 8-byte `OCTET STRING` IV for TDEA,
+      `SEQUENCE { INTEGER rc2EffectiveKeyLength, OCTET STRING iv }` for RC2), the `[0]`
+      **IMPLICIT** OCTET-STRING content form (what OpenSSL/Adobe actually emit — the legacy
+      fixtures use it; the ENC.03 explicit `[0]{OCTET STRING}` stays accepted, both shapes fuzz
+      with a *shape contract* per cipher: exactly-24 RC4 / ≥2-block 8-byte CBC / ≥2-block
+      16-byte CBC). RSAES-OAEP: `KeyTransport::RsaOaep` with real `RSAES-OAEP-params` parsing
+      (`[0]`/`[1]` IMPLICIT digest + `id-MGF1`, RFC 8017 A.2.1 — **not** the task sketch's
+      `1.2.840.113549.1.9.16.3.9`, which is CMS's `id-alg-...` *capability* arc; the key
+      transport is PKCS#1's `1.2.840.113549.1.1.7`, verified against OpenSSL's own object
+      table); SHA-1/SHA-256/SHA-384/SHA-512 label hashes over SHA-1/256/384/512 MGF1, the
+      DER-default (absent) parameters, and typed refusals for anything unverifiable
+      (non-MGF1 mask, non-SHA digest, **non-empty `id-PSpecified` label**). `unwrap_cek`'s
+      OAEP arm maps the parsed (hash, mgf1-hash) pair onto `rsa::Oaep`; unknown pairs end the
+      scan as a wrong-key try. PKCS#12 refusal + `ukm`/`unprotectedAttrs` tolerate-ignored **kept
+      unchanged as directed**.
+    * **Wrong-key posture documented where the DoD asked for it** (`pkcs7::decrypt_payload`
+      module/function docs + design note §5/§6.8): the RSAES-PKCS1-v1_5 / RSAES-OAEP transport
+      unwrap runs *before* a content key exists, so RC4's missing padding is not an open silence
+      channel — a wrong key cannot "slip" into a garbage file key, the scan ends
+      `RECIPIENT_NO_MATCH`; the CBC families additionally run PKCS#7 + exact-24-byte-payload
+      checks. Fuzz assertions back this up (never `Ok` on a shape the cipher's contract forbids).
+    * `selis-pdf-cos`: `authenticate_public_key` no longer refuses `/V ≤ 3`; the RC4-era
+      dictionaries route into the same identity/unwrap pass and the *documented* refusal set
+      shrank to the actually-broken (§5 table): `aes192`-wrap on ECDH, OAEP variants we cannot
+      verify, detached content, PasswordBasedRecipientInfo, PKCS#12. The engine's
+      per-object `/V`→revision path (`decrypt_data`) is unchanged — it already knew RC4 for
+      `/V ≤ 3`; only the envelope layer used to refuse the documents.
+    * **Fixtures (deterministic, in-repo, no new supply-chain surface).** The task said
+      "acquire real 2010–2015 RC4-CMS from the corpus only if licensed, else generate
+      locally": a `corpus` search (all groups incl. the fetched wild sets' records) has **zero
+      `adbe.pkcs7` public-key PDFs** — public-key documents need the recipient's private key, so
+      wild corpora do not carry them — so the DoD's "three real-world cases" clause is honestly
+      *open* and the shipped material is generated: `xtask pubkey-fixtures` emits
+      `pubkey-rc4-s3.pdf` (RC4-128 /V 3), `pubkey-rc4-40-s3.pdf` (/Length 40 export),
+      `pubkey-tdea-s3.pdf` (3DES), `pubkey-rc2-s3.pdf` (RC2), `pubkey-oaep-s5.pdf`,
+      `pubkey-oaep-256-s5.pdf`; `xtask pubkey-fuzz-seeds` emits the matching `pkcs7_cms` seeds
+      incl. the wrong-CEK variants (a 20-byte "TDEA" key, a 9-byte RC4 key, a 20-byte RC4 key)
+      that the *RC4 no-padding* concern is about. All bytes reproduce under
+      `xtask pubkey-fixtures --check`; the existing ENC.03/07/09 fixtures + seeds are unchanged
+      (the 07/09 line-by-line reviews see exactly the code they were handed).
+    * Nightly fuzz build repaired (task-companion, SL-1.ROB.06's flagged red): `generic-array`
+      0.14.9's crate-level `#[deprecated]` turned every `Block::clone_from_slice` /
+      `Output::as_slice` in `selis-crypto` into `-D warnings` errors on nightly ≥ 2026-09-11.
+      Re-expressed the AES/KW/CBC paths through `Into`/deref coercions (no behaviour change) and
+      added `#![deny(deprecated)]` in `selis-crypto` as the regression lock. Verified locally
+      with `cd fuzz && RUSTFLAGS='-D warnings' cargo +nightly check` = clean; every fuzz target
+      builds. Design note §9 records it as **R19**.
+    * **Plumbing changes to the ENC.07/09 code, kept minimal and recorded (review aid):**
+      `KeyTransport` gained the OAEP variant (a new enum arm + one new `unwrap_cek` match arm +
+      the recipient parser's key-algorithm switch), `CekAlgorithm` gained the three legacy arms
+      (+ an `Option<usize>`-valued `cek_len` and a new `accepts_cek` since RC4/RC2 carry ranges,
+      *not* lengths — the call sites changed from `.cek_len()` to `.accepts_cek(cek)` because the
+      check is now "the cipher can use this key" not "the key is this long"), and
+      `unwrap_cek`/`decrypt_payload`/`parse_encrypted_content_info`/`parse_key_trans_recipient`
+      gained the legacy/OAEP branches. Selection order, identifier matching, `MatchBy`
+      semantics, `PubKeyAuth`, the permission-block decode, and the cos/engine receipt gates are
+      byte-for-byte the ENC.07/09 behaviour (their tests pass unmodified).
+    * Tests: `selis-crypto` (+14: DES/TDEA/RC2 vector + round-trip suites, RC4-40/128 &
+      TDEA-3key/tdea/RC2 authenticate end-to-end, OAEP SHA-1 & SHA-256 (incl. the
+      parameter-less DEFAULT DER), MD5-label & non-MGF1 OAEP = typed refusal, the
+      implicit-`[0]` content shape, wrong-key legacy blobs = `RECIPIENT_NO_MATCH` in every
+      `MatchBy`, a wrapped key a cipher cannot use = `RECIPIENT_NO_MATCH`, `der`'s signed-INTEGER
+      length parse fix (a positive ≥128 CEK length — e.g. 128-bit RC4 keys' `INTEGER` DER `00 80`
+      — used to be refused as negative), refuse-list); `selis-pdf-cos` (the s3-era test flips from
+      the blanket `ENCRYPT_UNSUPPORTED` to the legacy accept path, still typed on garbage);
+      `selis-pdf-engine::pubkey_legacy` (6 fixtures: open with identity + `Matched`, typed
+      wrong-key in both modes, tolerant open without a credential).
+    * Gates local: `xtask lint` (contracts/alloc/layers/purity/vet/deny/size-check) green;
+      `cargo test --workspace` green; fuzz workspace + nightly `-D warnings` compile green.
 
 - [ ] **SL-1.ENC.09 — Enforce per-recipient PKCS#7 permission bits on Selis actions** (sign-off
   decision 2026-09-12: enforce = core differentiator; competitors advertise but leak) · deps:
@@ -660,7 +749,14 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     read-fonts releases (or our pins acquire the fixes), then upgrade, drop the Type-1 and
     `contain` backstops, predicate, `catch_unwind` and printing hook, re-run a full instrumented
     Linux campaign leg seeded with the regression fixtures, and confirm zero contained panics —
-    fixtures stay as deviation-contract pins regardless.
+     fixtures stay as deviation-contract pins regardless.
+  - **Note (2026-09-16, nightly fuzz build un-broken):** the "Incidental CI finding" above is
+    fixed on the SL-1.ENC.08 branch — `selis-crypto`'s deprecated-`generic-array` call sites
+    (`Block::clone_from_slice`, `Digest::Output::as_slice`) were re-expressed as `Into`/deref
+    coercions (zero behaviour change) and `#![deny(deprecated)]` now *blocks* reintroducing any,
+    so the nightly `fuzz-soak` `-D warnings` gate has to stay green by construction. Verified:
+    `cd fuzz && RUSTFLAGS='-D warnings' cargo +nightly check` clean. Design note §9 R19 records
+    it; the instrumented Linux campaign leg this was blocking can now run.
 
 ---
 
