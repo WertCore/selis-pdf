@@ -1961,9 +1961,15 @@ licence = "AGPL-3.0"
             .strip_suffix(&format!(":{OUT_DIR}"))
             .unwrap_or_else(|| panic!("mount must end in :{OUT_DIR}: {mount}"));
         let host = host.strip_prefix(r"\\?\").unwrap_or(host);
-        assert!(Path::new(host).is_absolute(), "host dir must be absolute: {host}");
+        assert!(
+            Path::new(host).is_absolute(),
+            "host dir must be absolute: {host}"
+        );
         assert_eq!(Path::new(host), nested.as_path());
-        assert!(nested.exists(), "the bind source directory is created on the host");
+        assert!(
+            nested.exists(),
+            "the bind source directory is created on the host"
+        );
         assert!(!out.exists(), "a leg that does not run must leave no file");
         assert_eq!(container, format!("{OUT_DIR}/oracle.txt"));
 
