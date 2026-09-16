@@ -10,15 +10,19 @@
 #   - `image`     the container we build from the checked-in Dockerfile.
 #                 Published by the CI `oracle-images` job to GHCR.
 #   - `digest`    the image manifest digest, recorded from the CI push of
-#                 2026-09-14 (run 34820871908 — the first rebuild carrying the
-#                 SL-0.ORACLE.04 `--text` modes; smoke-tested through the
-#                 render *and* `--text` legs). The superseded 2026-09-09
-#                 manifests were re-pushed-over and GHCR then dropped them, which
-#                 is why every scheduled render-conf leg — render and `--text`
-#                 alike — was dying on `Unable to find image` (see the
-#                 `oracle_rejects` detail with that literal in run 34806315351);
-#                 the re-pin above is what stops them failing. Re-record after
-#                 every push, not every month.
+#                 2026-09-14 (run 34820871908 — the first rebuild whose
+#                 pdfium/pdfjs drivers carry the SL-0.ORACLE.04 `--text`
+#                 modes, smoke-tested through render *and* text). Re-record
+#                 after every oracle-images push: content-addressed manifests
+#                 re-digest even on identical inputs. The scheduled
+#                 render-conf job was *not* dying on image availability —
+#                 run 34946893403 pulled and ran the pre-re-pin pdfium tag
+#                 fine, then failed on the harness binding its output to a
+#                 path the container turned into a directory
+#                 (`pdfium_driver: cannot write /out.img`, `node:fs` EISDIR)
+#                 and on the missing `mutool` → `[tool.mupdf]` pin alias.
+#                 Both fixed in this wave; the digest re-pin is what gives
+#                 container text legs their `--text` drivers to run against.
 #   - `base`     the base image, pinned by manifest digest inside each
 #                Dockerfile's `FROM`. Every `base_digest` below was resolved
 #                live from the registry API on 2026-09-08.

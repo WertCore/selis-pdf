@@ -527,45 +527,72 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     own envelope class there, tracked not gated.
   - **Promotions (measurement, SL-0.ORACLE.04 floor applied):**
     * `text` **None → Parse (2)**. Extraction is built and measured (median 1.000; the
-      TEXT.08/09/10 chain holds across all 3,860), but **Render is withheld**: the
-      text-bearing slice fails the calibrated bars on its own population (≥50 chars:
-      ≤2% 37.8% vs the pair floor ≈77, ≤25% 89.8% vs Bar A ≥95), the two-independent-
-      oracle legs are unmeasured post-merge (below), and SL-3.TEXT.11's `Tm` defect
-      mis-places whole words. **Extract is withheld too**, and not merely because
-      56.05% ≪ the ≥98%-on-95% wording: per ORACLE.04 the G3 gate as published sits
+      TEXT.08/09/10 chain holds across the whole corpus), but **Render is withheld**: the
+      text-bearing slice fails the calibrated bars on its own population (≥50 chars,
+      n=634/635: ≤2% 37.9% vs the pair floor ≈77, ≤25% 89.9% vs Bar A ≥95 — the
+      CONF.02 pass read 37.8/89.8; the two-independent-
+       oracle legs are unmeasured post-merge (below), and the paint-time `Tm`
+       residual SL-3.TEXT.11 filed as SL-3.TEXT.12 mis-places whole words. **Extract
+       is withheld too**, and not merely because
+      56.05% (CONF.05 re-run: 56.04%) ≪ the ≥98%-on-95% wording: per ORACLE.04 the G3 gate as published sits
       *under* the oracle-noise ceiling (pdfium↔pdfjs reach 79.0%, mutool pairs ≈72.7)
       — reading the Extract rung requires a CONF.03-style recalibration first
       (SL-3.CONF.03); this wave deliberately does not re-draw the bar to go green.
     * `render` stays Parse — Bar B passing on one independent oracle is not the rung;
-      the re-pinned CI confirmation run and the SL-2.CONF.04 gross-cluster triage gate it.
+      the pinned-container two-oracle confirmation (still unmeasured — see the CI
+      re-pin note) and the SL-2.CONF.04 gross-cluster triage gate it.
     * `filters` (encoders) stays Parse — SL-1.FILT.08 contained JPX under the wasm
       host but produced **no oracle tolerance leg** (Ghostscript comparison unmeasured);
       `encryption`/`document`/`annot`/`forms` unchanged (ENC.07/09 shipped pending human
       review; no new ladder evidence from this wave).
     Published via `cargo xtask conformance report` → `conformance/REPORT.md`.
-  - **CI oracle re-pin:** all five images were rebuilt+pushed today by the
-    `oracle-images` job after the ORACLE.04 merge (run `34820871908`), and the
-    GHCR retention then GC'd the 2026-09-09 manifests — which is *why every*
-    pinned render-conf leg (render *and* the new `--text` legs) was failing on
-    `Unable to find image` (see run 34806315351 artifacts, e.g. the verbatim
-    `oracle_rejects` detail). `xtask/oracles.toml` digests are re-pinned to the
-    current pushed manifests. **Honest leftover:** the confirmation run on this
-    branch is impossible from a worktree (dispatch is push-scoped), so the
-    first green PDFium/pdf.js text leg lands with the next post-merge scheduled
-    render-conf (0 3 */2 * *); the mutool legs (local + container) stay measured
-    here. Render-rung/Extract-rung promotions wait on that artifact.
+  - **CI oracle re-pin + what was actually red:** two defects stack up on the
+    pinned-container legs, and the run evidence carries both strings
+    (`34806315351`/`34946893403`: every leg `oracle_rejects`, 0 comparable).
+    *Pulls:* the 2026-09-09 manifests no longer resolve —
+    `Unable to find image 'ghcr.io/wertcore/selis-pdf/oracle-pdfium@sha256:162ef39f...'`
+    (pdfjs's `@9105570...` and mupdf's `@89be099d...` in the pair/cali-
+    bration legs) — so the earlier retraction of "stale digests" was wrong:
+    the *oracle-images* rebuild/push (run `34820871908`, drivers with
+    `--text`) is what `xtask/oracles.toml` now records, which is the fix for
+    this half. *Binds:* on legs that do pull, a `-v` to a not-yet-written
+    host **file** becomes a **directory** inside the container, so the tools
+    fail with `pdfium_driver: cannot write /out.img` / Node `EISDIR` / pair
+    legs' `cannot remove '/out.img': Device or resource busy`; the CONF.02-
+    era `absolutize()` fixed the *relative*-path variant of that error, not
+    the file-vs-directory one, and the text sweep additionally lost the
+    `mutool`→`mupdf` pin alias (`mutool: no [tool.mutool] pin recorded`) and
+    mounts its output relative (`sweep-text/tmp-w0/oracle.txt includes
+    invalid characters for a local volume name`). All three are fixed in
+    4e7f40d4: `/out` parent-directory binds via `out_dir_bind()` (created,
+    absolutised) in both plans, `pin_id()` on the text plan, plus regression
+    tests. With *both* halves addressed the legs can finally measure, so any
+    CI cell quoted here from before 2026-09-14 is treated as unconfirmed
+    (the retained artifacts return zeros) — CONF.06 asserts on real counts.
+    **Honest leftover:** confirmation is a *post-merge* scheduled run (dispatch is
+    push-scoped; this branch does not push), so no PDFium/pdf.js number is claimed
+    here and the mutool legs (local 1.23.0 / container 1.23.9, drift recorded) stay
+    the only two-oracle-independent-ish pair. Render-rung and Extract-rung
+    promotions wait on that artifact. One asymmetry to close with it: both the
+    render and text steps exit 0 even when a pinned leg rejects *every* file —
+    CI has been green while measuring nothing. `render-conf` should fail a leg
+    whose oracle side produces 0 comparable pages with a pin/driver present
+    (that is the "loud failure" SL-0.ORACLE.04 asked for, filed as SL-3.CONF.06 so
+    this wave stays non-blocking).
   - **Filed here (the remaining-cause obligations from the TEXT notes):**
     * **SL-3.TEXT.14** — annotation `/AP` appearance text walk (62 silent-cohort files).
     * **SL-3.TEXT.15** — the >5 % silent-divergence watchdog into the sweep's
       `text_err` (TEXT.10's unwired clause; the ids TEXT.12/13 went to TEXT.11's own
       residuals).
     * **SL-3.CONF.03** — re-baseline the Extract bar on the oracle-vs-oracle floor and
-      triage the 539-file `diff>=25` cohort into root-cause clusters (expect ≈20,
+      triage the 540-file `diff>=25` cohort into root-cause clusters (expect ≈20,
       `xtask oracle triage` over the sweep verdicts).
     * **SL-3.CONF.04** — record the MuPDF per-glyph word-split cohort's verdicts
       (OracleBug vs OurBug) in the expectation records.
     * **SL-3.CONF.05** — post-SL-3.TEXT.11 text+render golden re-baseline and the G2
-      re-measure (TEXT.11's own obligation).
+      re-measure (TEXT.11's own obligation; landed in this wave).
+    * **SL-3.CONF.06** — make a 0-comparable pinned-container leg fail its
+      `render-conf` job and record the first two-oracle confirmations.
 - [ ] **SL-3.TEXT.14 — Annotation appearances contribute text** · deps: TEXT.01,
   TEXT.10 · owner: AI+ · **filed by SL-3.CONF.02** (renumbered from the first filing:
   TEXT.12/13 went to SL-3.TEXT.11's own residuals)
@@ -599,33 +626,78 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     criterion "≥98 % similarity on ≥95 % of the extractor corpus" measures noise at that
     depth and can never be *met*; write the recalibrated text-gate bars the same way
     SL-2.CONF.03 re-baselined G2 (envelope + Bar B-style tolerance), *with the calibration
-    data as justification*, then cluster the 539-file `diff>=25` residue from
-    `C:\selis-build\conf02-text` (source/font/similarity/rtl/truncated axes — ghent 0/94
-    and has_type3 10/63 are the standing suspects) into ~20 root-cause clusters and file
-    one task per confirmed cause. This is the gate's recalibration step — it does not
+    data as justification*, then cluster the 540-file `diff>=25` residue from the
+    post-TEXT.11 sweep `C:\selis-build\conf05-text` (source/font/similarity/rtl/truncated
+    axes — flat 191 / verapdf 196 / govdocs1 90 / ghent 61 / synthetic 2, ghent 0/94 in
+    G3 and has_type3 10/63 the standing suspects, 15 rtl-flagged, 3 truncated) into ~20
+    root-cause clusters and file one task per confirmed cause. This is the gate's recalibration step — it does not
     promote any area.
   - **DoD:** Bars published in 21-TESTING/§5 with the measured floor; each cluster has a
     task or an annotated expectation record; the ladder stays at its CONF.02 levels.
 - [ ] **SL-3.CONF.04 — Verdict the MuPDF per-glyph word-split cohort** · deps: CONF.02 ·
   owner: AI+
-  - **Do:** TEXT.09 flagged 9 short-text veraPDF fixtures that flipped
+  - **Do:** TEXT.09 flagged the short-text veraPDF fixtures that flipped
     `diff<25 → diff>=25` because *MuPDF itself* breaks `"Hello world"` into
     `"H e llo …"` (per-glyph advance space inference) where our unified output is
-    plausibly the spec-correct reading. On the CONF.02 sweep the same fingerprint
-    (`selis` 11–12 chars vs oracle 19–23, sim 0.043/0.579) counts **13** files —
-    `6-3-8-t01-pass-*`, `6-3-5-t03-fail-*`, `6-2-11-7-2-t01-*`, `6-2-11/10-3-3-*`,
-    `7-21.7/7-2-t25-*`, `8-4-5-8-*`. Run them through the §21-TESTING §5 verdict
-    workflow and record the annotation in `corpus/expect` (OracleBug with the §9.4.3
-    citation if MuPDF's spacing is the deviation, OurBug if ours is).
+    plausibly the spec-correct reading. Measured on both CONF sweeps the family is
+    **27** files, identical before and after SL-3.TEXT.11: 13 at `selis` 12 / oracle 11
+    chars with `sim 0.0` (the `6-3-8-t01-pass-*` and `6-2-11-3-x-t01/t02-*` composites),
+    and 14 short-text mid-band rows at `sim 0.043–0.58` (`6-3-5-t03-fail-*`,
+    `6-2-11-7-2-t01-*`, `7.21.3.3-t01..03-fail-a`, `8.4.5.4-t01..03-fail-a`,
+    `7.2-t25-*`) — TEXT.09's eight plus the CMap families and re-anchor growth
+    (SL-3.CONF.02 first logged "13" by an over-narrow filter; the counts here are the
+    reproducible ones: see the char columns in `C:\selis-build\conf05-text\verdicts.jsonl`).
+    Run them through the §21-TESTING §5 verdict workflow and record the annotation in
+    `corpus/expect` (OracleBug with the §9.4.3 citation if MuPDF's spacing is the
+    deviation, OurBug if ours is).
   - **DoD:** Every cluster file carries a `[annotation]` verdict record; the sweep gap
     list stops carrying them unlabelled.
-- [ ] **SL-3.CONF.05 — Post-SL-3.TEXT.11 sweep and golden re-baseline** · deps: CONF.02,
+- [x] **SL-3.CONF.05 — Post-SL-3.TEXT.11 sweep and golden re-baseline** · deps: CONF.02,
   TEXT.11 · owner: AI+
-  - **Do:** SL-3.TEXT.11 (text-matrix pre-multiply, §9.4.3) will move extraction and
-    layout for the non-identity-`Tm` corpus. When it lands, re-run both CONF gates on
-    the merged tree, refresh the sweep expectations (`corpus expect-merge`,
-    golden/text/positions re-anchor), and publish the readout deltas — the same
-    obligation TEXT.10 recorded against the BT fix.
-  - **DoD:** Sweep + render verdicts re-run; expectation diff reviewed; the next CONF
-    gate's promotion decision reads the fresh numbers, not these.
+  - **Do:** SL-3.TEXT.11 (text-matrix pre-multiply, §9.4.3) moves extraction and layout for
+    the non-identity-`Tm` corpus. Once it landed, re-run both CONF gates on the merged tree,
+    refresh the sweep expectations (`corpus expect-merge`, golden/text/positions re-anchor),
+    and publish the readout deltas — the same obligation TEXT.10 recorded against the BT fix.
+  - **Status (2026-09-16):** Done on the merge tree (base `c8cbd904` ⊇ the TEXT.11 advance
+    mapping + the CONF.02/05 gate work; `corpus verify` clean: 3,862 checked, 0 changed).
+    Both gates re-measured, text vs the pinned release binary (sha256
+    `0374f3f1…b6fa3099`) and local `mutool 1.23.0` (drift 1.23.9 recorded); artifacts
+    `C:\selis-build\conf05-text` + `C:\selis-build\conf05-render`:
+    * text: 1,747 comparable, **979 ≥0.98 (56.04%**) / 970 ≥0.99 / 540 `diff>=25` / 62
+      `empty_selis` / 14 `empty_oracle` / 34 `oracle_rejects` / 4 timeouts / 23 both_reject /
+      17 selis_rejects — the 03ece8ba pass reproduced **within one file per count**: the +1
+      match is `/synthetic/bugfix_text11_tm_scaled` (swept identical, renders at 0.09%), the
+      +1 tail file is `…_tm_rotated` (`sim 0.444`, the vertical-run word split SL-3.TEXT.13
+      owns). Mean 0.7612 / median 1.000; cohorts flat 191 + verapdf 196 + govdocs1 90 +
+      ghent 61 + synthetic 2.
+    * render: @150 n=3,774 ≤0.5 67.9 / ≤1 74.9 / ≤2 **80.9** / ≤5 86.9 / ≤10 92.6 / ≤25
+      **97.2**, p50 0.07 — Bar A and Bar B still pass on the MuPDF leg; gross `diff>=25` 105
+      (flat 45 / ghent 38 / govdocs1 20 / verapdf 2), `blank_selis` 2 (both typed
+      /Redact-appearance `6.3.3-t01-fail-b`, RAST.13), `blank_oracle` 1, `issue14497` blank
+      at 72 only; ghent ≤25% 60.0 (vs 73.7–77.9 pairs) and the ≥50-char text cohort ≤25%
+      89.9 / ≤2% 37.9 — i.e. TEXT.11 is band-neutral for pixels *and* for the withhold
+      reasoning: extraction still cannot say Render.
+    * `conformance/areas.toml` re-quotes these merged-tree numbers (rows + promotion record);
+      no rung moves; no `corpus expect-merge` re-anchor was needed — TEXT.11's own merge
+      anchored them, which is what the clean `corpus verify` above demonstrates.
+    * the pinned-container two-oracle legs stay unmeasured: SL-3.CONF.02's bind/pin fixes +
+      the run-34820871908 digests make them *producible* now, and a 0-comparable leg should
+      fail its job (SL-3.CONF.06), but until a post-merge `render-conf` run exists
+      the ladder still reads one oracle for render and one for extract.
 
+- [ ] **SL-3.CONF.06 — Make a 0-comparable pinned-container leg red; record the
+  first two-oracle confirmations** · deps: CONF.02, CONF.05 · owner: AI
+  - **Do:** The `render-conf` render/text steps exit 0 when a whole leg is typed
+    `oracle_rejects`: correct taxonomy, and while the container binds were broken it
+    hid a *green job measuring nothing* (runs 34806315351/34946893403). With the
+    bind/alias fixes + run-34820871908 digests this wave carries, a leg with
+    a resolved pin should *fail* its step if 0 of its outcomes are comparable, quoting
+    the first few typed details, and the first green post-merge run must then supply the
+    PDFium and pdf.js cells the §4 calibration table still lacks.
+  - **Files:** `xtask/src/sweep.rs` / `xtask/src/text_sweep.rs` exit path,
+    `.github/workflows/ci.yml` (`render-conf`), the §4/§5 cells in
+    `21-TESTING-AND-ORACLES.md`, `conformance/areas.toml` rows + regenerated report.
+  - **DoD:** a synthetic all-`oracle_rejects` leg turns the job red; the post-merge
+    scheduled run is green *with* non-zero comparable pages for pdfium and pdf.js; the
+    Render-withhold is re-argued against those actual two-oracle cells (promotion is a
+    separate decision, not this task's).

@@ -368,6 +368,19 @@ every user on every page.
     mutool→oracle-mupdf@digest). An unpushed branch cannot re-dispatch, so the confirming run
     fires on the first `render-conf` dispatch/cron after merge; the matrix stands on the local
     legs until then.
+    **Correction (SL-3.CONF.02, 2026-09-16):** the confirming runs (dispatch
+    [34806315351](https://github.com/WertCore/selis-pdf/actions/runs/34806315351), scheduled
+    [34946893403](https://github.com/WertCore/selis-pdf/actions/runs/34946893403)) were **still
+    0 comparable on every pinned-container leg** — `absolutize()` fixed the relative-mount error
+    but a `-v` of an *absent host file* makes the daemon create a *directory* at the container
+    target, so the tools die writing `/out.img` (`pdfium_driver: cannot write /out.img`, Node's
+    `EISDIR`, and `cannot remove '/out.img': Device or resource busy` on the pair legs), and the
+    later text plan missed the `mutool`→`mupdf` alias *and* the absolutise both. Fixed properly
+    in SL-3.CONF.02: the container output now flows through an `out_dir_bind()` *directory* mount
+    (`<parent>:/out`) exactly like the smoke contract, the text plan shares `pin_id()`/the bind,
+    with regression tests (`container_output_binds_the_parent_directory_and_stays_unwritten`,
+    `relative_output_paths_are_absolutized_for_the_bind`). The matrix still stands on local legs
+    until one green container run is recorded.
   - **SL-2.RAST.14 precondition verdict: SUPERSEDED (see RAST.14 Done, 2026-09-12).** The
     precondition — a re-run showing the ≤1%/≤2% bands inside the envelope — is now satisfied on
     current `main`: full-corpus selis↔mutool @150 DPI gives ≤1% **74.2% → 74.9%**, ≤2% **80.6% →

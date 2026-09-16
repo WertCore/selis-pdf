@@ -53,9 +53,11 @@ sections; every entry states what changed and what it means for the user.
   change, not a product change; the images' digests must be re-pinned
   once the oracle-images job has rebuilt them after this lands — done in
   SL-3.CONF.02: all five re-recorded from the 2026-09-14 push (run
-  34820871908), which is what unblocks the scheduled PDFium/pdf.js text legs
-  (the superseded 2026-09-09 manifests are gone from the registry, and every
-  pinned container leg was dying on `Unable to find image`).
+  34820871908), and the CI legs themselves turned out to be blocked by our
+  own harness — the container output bind (`-v` of an unwritten host file
+  becomes a directory → `cannot write /out.img`) and the text plan's missing
+  `mutool`→`mupdf` pin alias — both fixed in this wave with regression tests,
+  so the first post-merge scheduled run is the confirmation.
 - The WASM binding speaks the versioned Worker protocol (ADR-P0042): a JS
   shell drives document open, page metadata, tiled page render, text
   extraction, search, and document close over one message boundary, with
@@ -91,21 +93,40 @@ sections; every entry states what changed and what it means for the user.
 
 ### Changed
 
-- The published conformance ladder (`conformance/REPORT.md`, SL-3.CONF.02)
-  is re-measured on the merged tree and updated: **Text and fonts** climbs
-  None → Parse — extraction is now measured across the whole 3,860-file
-  corpus against MuPDF (969 files at ≥0.99 similarity, 978 at ≥0.98 of
-  1,745 comparable, median 1.000) — with Render withheld (the text-bearing
-  slice itself still fails the calibrated render bar, and the two-oracle CI
-  legs are unconfirmed on this tree) and Extract withheld (56.05% ≥0.98
-  against a G3 wording SL-0.ORACLE.04 shows sits under the oracle-vs-oracle
-  ceiling), and the **Rendering** row now states the post-fix reality: Bar A
-  passes (97.2% ≤25% @150), Bar B is inside the oracle-pair envelope on the
-  MuPDF leg (≤2% 80.9 vs best pair 82.3), the size_skew/blank_selis clusters
-  are closed (17 → 0, 25 → 2), and the Render rung now waits only on the
-  CI two-independent-oracle confirmation the re-pinned oracle images unblock.
+- The published conformance ladder (`conformance/REPORT.md`, SL-3.CONF.02,
+  re-measured post-SL-3.TEXT.11 by SL-3.CONF.05) is updated: **Text and
+  fonts** climbs None → Parse — extraction is now measured across the whole
+  3,862-file corpus against MuPDF (970 files at ≥0.99 similarity, 979 at
+  ≥0.98 of 1,747 comparable = 56.04%, median 1.000; every pre-merge count
+  reproduced within one file) — with Render withheld (the text-bearing slice
+  itself still fails the calibrated render bar, 89.9% ≤25% / 37.9% ≤2% at
+  150 DPI on the ≥50-char-cohort, and the two-oracle CI legs stay confined to a
+  pre-re-pin merge tree that never finished) and Extract withheld (56.04%
+  ≥0.98 against a G3 wording SL-0.ORACLE.04 shows sits under the
+  oracle-vs-oracle ceiling), and the **Rendering** row now states the post-fix
+  reality: Bar A passes (97.2% ≤25% @150), Bar B is inside the oracle-pair
+  envelope on the MuPDF leg (≤2% 80.9 vs best pair 82.3), the
+  size_skew/blank_selis clusters are closed (17 → 0, 25 → 2, both the typed
+  /Redact deviations), and the Render rung waits only on the CI
+  two-independent-oracle confirmation — which the fixed output bind and the
+  re-pinned oracle images make achievable from the next scheduled run.
 
 ### Fixed
+
+- The pinned-container oracle legs (`xtask oracle sweep` / `text-sweep`) finally
+  bind their output the way the smoke contract does: an absolute *directory*
+  mount (`<parent>:/out`) with the tool writing `/out/<name>`, not a `-v` of a
+  host file that does not exist yet — docker turns such a bind into a
+  *directory* and the tools died with `cannot write /out.img` / `EISDIR` /
+  `Device or resource busy`, which is why every CI `render-conf` leg (runs
+  34806315351, 34946893403) reported zero comparable pages after the earlier
+  absolutise fix. The text-sweep plan also routed `mutool` through the missing
+  `[tool.mutool]` pin instead of `[tool.mupdf]` and mounted its output
+  relative; both are resolved through the same `pin_id()`/bind path the render
+  legs already use. `oracle check` was already correct; the *sweep* legs were
+  not. Tests pin both behaviours, so a leg that silently stops producing
+  comparable pages is a diff, not a green row.
+
 
 - The PDFium and pdf.js oracle drivers print their page-extraction banners
   to stderr now, and the harness runs local text legs with stdout to a side

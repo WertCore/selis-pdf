@@ -356,22 +356,54 @@ fn absolutize(path: &Path) -> Result<PathBuf, String> {
     Ok(cwd.join(path))
 }
 
-/// The two `-v` bind mounts of the pinned-container render plan: the input
-/// (must exist — canonicalized) read-only at `/in.pdf`, and the output
-/// (created by the container — absolutized, never relative) at `/out.img`.
-fn container_mounts(file: &Path, out: &Path) -> Result<(String, String), String> {
+/// The container-side directory a pinned-container output is written into.
+const OUT_DIR: &str = "/out";
+
+/// Bind-mount the container's output through its **parent directory** instead
+/// of the output file itself. Docker resolves a `-v` source that does not
+/// exist by creating a *directory*, so a file bind to a not-yet-written path
+/// silently makes `/out.img` a directory and the tool inside the container
+/// fails with `cannot write /out.img` (or Node's `EISDIR` on `writeFileSync`)
+/// — exactly the `pdfium`/`pdfjs` failure recorded every pinned-container leg
+/// of CI runs 34806315351 and 34946893403. Mounting the parent (created on
+/// the host, like the smoke runs in `oracle-images.yml`, which already write
+/// `/out/smoke.png`) keeps the "file appeared?" test intact: a failed tool
+/// still leaves nothing behind, so the sweep's typed `oracle_rejects` verdict
+/// cannot decay into a misleading empty output.
+///
+/// Returns the `-v` argument and the container-side path to pass as the
+/// tool's output, given the host-side `out`.
+fn out_dir_bind(out: &Path) -> Result<(String, String), String> {
+    let abs = absolutize(out)?;
+    let dir = abs
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = abs
+        .file_name()
+        .ok_or_else(|| format!("{}: no file name to mount in the container", out.display()))?;
+    let container = format!("{}/{}", OUT_DIR, name.to_string_lossy());
+    Ok((format!("{}:{}", dir.display(), OUT_DIR), container))
+}
+
+/// The `-v` mounts of a pinned-container leg: the input (must exist —
+/// canonicalized) read-only at `/in.pdf`, and the output written into the
+/// `/out` directory bind (see [`out_dir_bind`]).
+fn container_mounts(file: &Path, out: &Path) -> Result<(String, String, String), String> {
     let mount_in = format!(
         "{}:/in.pdf:ro",
         file.canonicalize().map_err(|e| e.to_string())?.display()
     );
-    let mount_out = format!("{}:/out.img", absolutize(out)?.display());
-    Ok((mount_in, mount_out))
+    let (mount_out, container_out) = out_dir_bind(out)?;
+    Ok((mount_in, mount_out, container_out))
 }
 
 /// The pinned-container render plan (see `xtask/oracles.toml`): the file is
-/// mounted read-only at `/in.pdf`, the output written to `/out.img`. The argv
-/// per tool mirrors the smoke-tested contracts in `oracle-images.yml` --
-/// `mutool draw` takes `-r`, not `--dpi`, and writes via `-o`.
+/// mounted read-only at `/in.pdf`, the output written into the `/out` bind.
+/// The argv per tool mirrors the smoke-tested contracts in
+/// `oracle-images.yml` -- `mutool draw` takes `-r`, not `--dpi`, and writes
+/// via `-o`.
 fn container_plan(
     tool: &str,
     dpi: &str,
@@ -392,14 +424,14 @@ fn container_plan(
         )
     })?;
     let image = image_ref(pin, tool)?;
-    let (mount_in, mount_out) = container_mounts(file, out)?;
+    let (mount_in, mount_out, container_out) = container_mounts(file, out)?;
     let tool_args = match tool {
         "mupdf" | "mutool" => vec![
             "draw".to_string(),
             "-r".to_string(),
             dpi.to_string(),
             "-o".to_string(),
-            "/out.img".to_string(),
+            container_out,
             "/in.pdf".to_string(),
             // Page range: page 1 only (see `plan_oracle_render`).
             "1".to_string(),
@@ -411,7 +443,7 @@ fn container_plan(
             "-r".to_string(),
             dpi.to_string(),
             "-o".to_string(),
-            "/out.img".to_string(),
+            container_out,
             "/in.pdf".to_string(),
         ],
         "pdfium" | "pdfjs" => vec![
@@ -420,7 +452,7 @@ fn container_plan(
             "--dpi".to_string(),
             dpi.to_string(),
             "/in.pdf".to_string(),
-            "/out.img".to_string(),
+            container_out,
         ],
         other => return Err(format!("unknown oracle tool `{other}`")),
     };
@@ -1267,7 +1299,8 @@ pub(crate) fn plan_oracle_text(
 /// The text-extraction argv of one oracle tool, pinned to page 1 (like the
 /// render legs), shared by the local-first plan and the pinned-container
 /// plan — `text_path`/`in_path` carry the per-mode path style (host paths
-/// locally, `/out.txt` + `/in.pdf` in the container). `mutool draw` takes
+/// locally, `/out/<name>` + `/in.pdf` in the container, the latter through
+/// [`out_dir_bind`]). `mutool draw` takes
 /// `-F txt -o`; the pdfium and pdf.js drivers take `--page 1 --text`
 /// (docker/oracles/pdfium, docker/oracles/pdfjs). An older local driver
 /// without the `--text` flag fails loudly with its usage line, which the
@@ -1367,7 +1400,8 @@ pub(crate) fn plan_oracle_fonts(tool: &str, file: &Path) -> Result<(PathBuf, Vec
 }
 
 /// The pinned-container text-extraction plan: the file is mounted read-only
-/// at `/in.pdf`, the text written to `/out.txt`. The argv comes from
+/// at `/in.pdf`, the text written into the `/out` directory bind (same
+/// shape as the render plan — see [`out_dir_bind`]). The argv comes from
 /// [`text_leg_args`] — the exact shape the local legs use.
 fn container_text_plan(
     tool: &str,
@@ -1381,16 +1415,23 @@ fn container_text_plan(
         ));
     }
     let pins = load_pins()?;
-    let pin = pins
-        .get(tool)
-        .ok_or_else(|| format!("{tool}: no [tool.{tool}] pin recorded in {ORACLES_TOML}"))?;
+    let pin = pins.get(pin_id(tool)).ok_or_else(|| {
+        format!(
+            "{tool}: no [tool.{}] pin recorded in {ORACLES_TOML}",
+            pin_id(tool)
+        )
+    })?;
     let image = image_ref(pin, tool)?;
     let mount_in = format!(
         "{}:/in.pdf:ro",
         file.canonicalize().map_err(|e| e.to_string())?.display()
     );
-    let mount_out = format!("{}:/out.txt", out.display());
-    let tool_args = text_leg_args(tool, "/in.pdf", "/out.txt")?;
+    // Same relative-mount + pin-alias bugs as the render plan: the CI
+    // text-sweep step (run 34946893403) failed with `no [tool.mutool] pin`
+    // on the mutool leg and `sweep-text/tmp-w0/oracle.txt includes invalid
+    // characters for a local volume name` on the relative output bind.
+    let (mount_out, container_out) = out_dir_bind(out)?;
+    let tool_args = text_leg_args(tool, "/in.pdf", &container_out)?;
     let mut args: Vec<String> = vec![
         "run".to_string(),
         "--rm".to_string(),
@@ -1897,6 +1938,51 @@ source_sha256 = "dd"
 dockerfile = "docker/oracles/mupdf/Dockerfile"
 licence = "AGPL-3.0"
 "#;
+
+    /// The CI text-sweep step failed on `mutool: no [tool.mutool] pin`
+    /// (run 34946893403) because the mutool *container* fallback looked its
+    /// name up literally. `pin_id` is the one alias both plans share.
+    #[test]
+    fn mutool_dispatches_to_the_mupdf_pin() {
+        assert_eq!(pin_id("mutool"), "mupdf");
+        assert_eq!(pin_id("mupdf"), "mupdf");
+        assert_eq!(pin_id("pdfium"), "pdfium");
+    }
+
+    #[test]
+    fn container_output_binds_the_parent_directory_and_stays_unwritten() {
+        let root = std::env::temp_dir().join(format!("selis-out-binding-{}", std::process::id()));
+        let nested = root.join("sweep-text").join("tmp-w0");
+        let out = nested.join("oracle.txt");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (mount, container) = out_dir_bind(&out).expect("bind");
+        let host = mount
+            .strip_suffix(&format!(":{OUT_DIR}"))
+            .unwrap_or_else(|| panic!("mount must end in :{OUT_DIR}: {mount}"));
+        let host = host.strip_prefix(r"\\?\").unwrap_or(host);
+        assert!(Path::new(host).is_absolute(), "host dir must be absolute: {host}");
+        assert_eq!(Path::new(host), nested.as_path());
+        assert!(nested.exists(), "the bind source directory is created on the host");
+        assert!(!out.exists(), "a leg that does not run must leave no file");
+        assert_eq!(container, format!("{OUT_DIR}/oracle.txt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A *relative* output (the CI `--out sweep-text` shape) must still be
+    /// absolutized: docker rejects relative `-v` sources with
+    /// `includes invalid characters for a local volume name`.
+    #[test]
+    fn relative_output_paths_are_absolutized_for_the_bind() {
+        let p = absolutize(Path::new("sweep-text/tmp-w1/oracle.txt")).expect("absolutize");
+        let flat = p.to_string_lossy().replace('\\', "/");
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(
+            flat.ends_with("sweep-text/tmp-w1/oracle.txt"),
+            "relative out must keep its shape under the cwd: {flat}"
+        );
+    }
 
     #[test]
     fn text_leg_argv_is_shared_by_local_and_container_plans_and_pins_page_one() {

@@ -13,6 +13,16 @@
 #   5 Edit       — it can be modified and saved back.
 #   6 Author     — the engine can author new documents using it.
 #
+# Promotion record (SL-3.CONF.05, 2026-09-16): TEXT.11 re-measure. Both full sweeps (text
+# 3,862 files @ C:\selis-build\conf05-text, render 11,321 outcomes @
+# C:\selis-build\conf05-render) reproduce the CONF.02 readout within one file per band;
+# levels unchanged, the row numbers now quote the merged tree. CI oracle pins re-recorded
+# (run 34820871908) — the pinned-container legs return 0 comparable on two counts
+# (superseded 2026-09-09 digests no longer resolve; the by-file output bind + the text
+# plan's mutool alias), the first of which re-pinning fixes and the second now fixed in
+# SL-3.CONF.02 with tests — so the next scheduled run is the first credible post-bind
+# evidence (SL-3.CONF.06 asserts it and the §4 cells).
+#
 # Promotion record (SL-3.CONF.02, 2026-09-14): second ladder update, on the post-
 # merge tree (3,860-file regenerated corpus incl. the SL-3.TEXT.10 BT fix). `text`
 # moves None -> Parse (Unicode extraction measured across the corpus; Render and
@@ -64,19 +74,19 @@ notes = "Parse: SL-1.DOC.* DoDs; CONF.05 MediaBox fallback renders; /Rotate page
 id = "render"
 name = "Rendering (content, raster)"
 level = 2
-notes = "Parse: Bar A pass (97.2% <=25% @150, n=3,773 vs MuPDF, post-merge re-run) and Bar B now passes on the MuPDF leg (<=2% 80.9 vs best pair 82.3, 1.4pp inside the 5pp allowance; <=5% 86.8, <=10% 92.6) after SL-2.RAST.14 + the SL-3.TEXT.10 BT fix; size_skew closed by SL-2.RAST.12 (17 -> 0), blank_selis 25 -> 2 (typed /Redact-appearance deviations, SL-2.RAST.13), gross diff>=25 106 files tracked by SL-2.CONF.04. Render rung still unmeasured: the gate needs two independent oracles, and the CI legs against PDFium/pdf.js failed on stale digests (re-pinned in this wave) - confirming run pending"
+notes = "Parse: Bar A pass (97.2% <=25% @150, n=3,774 vs MuPDF, re-measured on the post-SL-3.TEXT.11 tree; @72 96.7% n=3,778, @300 97.5% n=3,769) and Bar B passes on the MuPDF leg (<=2% 80.9 vs best pair 82.3, 1.4pp inside the 5pp allowance; <=5% 86.9, <=10% 92.6) after SL-2.RAST.14 + SL-3.TEXT.10; size_skew closed by SL-2.RAST.12 (17 -> 0), blank_selis 25 -> 2 (@150, both the /Redact-appearance /6.3.3-t01-fail-b typed deviations, SL-2.RAST.13; issue14497 still trips at 72 DPI), gross diff>=25 105 files @150 tracked by SL-2.CONF.04 (ghent 38 of them; the Prepress class stays at 60.0% <=25% vs the pair band 73.7-77.9). Render rung still unmeasured: the gate needs two *independent* oracles and the CI legs vs PDFium/pdf.js measure 0 comparable (runs 34806315351/34946893403: `Unable to find image` on the superseded 2026-09-09 pdfium/pdfjs/mupdf digests - re-pinned to the run-34820871908 push, whose drivers carry the `--text` modes - and, on legs that run, the by-file output bind docker-becomes-directory (`cannot write /out.img`, EISDIR, `Device or resource busy` on pair legs) plus the text plan's lost mutool-to-mupdf pin alias; both fixed with tests in SL-3.CONF.02; any CI cell quoted from before 2026-09-14 is unconfirmed from retained artifacts). First confirming scheduled run lands post-merge."
 
 [[area]]
 id = "text"
 name = "Text and fonts"
 level = 2
-notes = "Parse: the text/font model builds and round-trips; extraction measured across the 3,860-file corpus vs pinned mutool 1.23.0 (969 >=0.99, 978 >=0.98 of 1,745 comparable, median 1.000, mean 0.761). Render withheld: the text-bearing slice fails the calibrated bars on its own population (page-1 >=50 chars, n=635, @150 vs MuPDF: 89.8% <=25%, 37.8% <=2% - the 1-2% pixel band lives here), and the two-independent-oracle CI legs await the re-pinned images. Extract withheld (the G3 rung): 56.05% >=0.98 vs the >=98%-on-95% wording, which SL-0.ORACLE.04 shows is *under* the oracle-vs-oracle ceiling (pdfium<->pdfjs 79.0%, mutool pairs ~72.7%) - recalibration owed first (SL-3.CONF.03). Open cohorts filed at CONF.02: 539 deep-tail (SL-3.CONF.03), 62 silent annotation-AP (SL-3.TEXT.12), a 25-file verapdf per-glyph word-split cohort (13 files at 12-vs-11 chars sim 0.0 + 12 files at 5-11-vs-19-27 chars sim 0.5-0.58; TEXT.09's 8, grown by the re-anchor - awaiting OracleBug/OurBug verdicts, SL-3.CONF.04), TEXT.11 Tm pre-multiply, >5%-divergence watchdog (SL-3.TEXT.13)"
+notes = "Parse: the text/font model builds and round-trips; extraction measured across the corpus vs local mutool 1.23.0 (970 >=0.99, 979 >=0.98 of 1,747 comparable = 56.04%, ge95 998, ge75 1131, median similarity 1.000, mean 0.761; 3,862 files on the post-SL-3.TEXT.11 tree - the two /bugfix_text11 fixtures add one match and one diff>=25, and everything else reproduces the 03ece8ba pass within one file). Render withheld: the text-bearing slice fails the calibrated bars on its own population (page-1 >=50 chars, n=634, @150 vs MuPDF: 89.9% <=25%, 37.9% <=2%, p50 4.08 - the 1-2% pixel band lives here), and the two-independent-oracle CI legs are unmeasured. Extract withheld (the G3 rung): 56.04% >=0.98 against the >=98%-on-95% wording, which SL-0.ORACLE.04 shows is *under* the oracle-vs-oracle ceiling (pdfium<->pdfjs 79.0%, mutool pairs ~72.7%) - recalibration owed first (SL-3.CONF.03). Open cohorts filed at CONF.02: 540 deep-tail (SL-3.CONF.03: flat 191, verapdf 196, govdocs1 90, ghent 61, synthetic 2), 62 silent annotation-AP empties (SL-3.TEXT.14), the 27-file verapdf per-glyph word-split family (13 at 12-vs-11 chars sim 0.0 + 14 short-text mid-band sim 0.043-0.58; TEXT.09's 8, grown by the re-anchor, stable across the TEXT.11 merge), the 15 rtl-flagged and 3 truncated files in the tail, the >5%-divergence watchdog (SL-3.TEXT.15), and the paint-time-Tm residual SL-3.TEXT.12 that keeps extraction honest at Parse, not Render."
 
 [[area]]
 id = "annot"
 name = "Annotations"
 level = 0
-notes = "None at G2 (target Identify): no detection gate run; /AP appearances render since SL-2.RAST.13 (blank_selis 25 -> 2, both typed /Redact deviations); extracting text from those appearances is SL-3.TEXT.12 (filed by SL-3.CONF.02: 62 silent empties whose page streams are genuinely empty)"
+notes = "None at G2 (target Identify): no detection gate run; /AP appearances render since SL-2.RAST.13 (blank_selis 25 -> 2, both typed /Redact deviations); extracting text *from* those appearances is SL-3.TEXT.14 (filed by SL-3.CONF.02: 62 silent empties whose page streams are genuinely empty)"
 
 [[area]]
 id = "forms"
