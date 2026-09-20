@@ -448,6 +448,10 @@ jobs:
       - name: Build selis (release)
         run: cargo build --release -p selis-cli
       - name: Sweep selis vs PDFium + pdf.js at 72/150/300 DPI
+        # SL-3.CONF.06: the sweep fails its step when a leg measures 0
+        # comparable pages (a green job measuring nothing is the bug runs
+        # 34806315351/34946893403 demonstrated). The report is still written
+        # first, so the uploads below (if: always) preserve the evidence.
         run: |
           cargo xtask oracle sweep \
             --tool pdfium --tool pdfjs \
@@ -484,11 +488,9 @@ jobs:
         # as the render legs above. Calibration pairs included: the G3 bar is
         # read off selis-vs-oracle agreement, the oracle pairs calibrate it.
         #
-        # Re-pin note: the pdfium/pdfjs `--text` driver modes land in the
-        # images when the oracle-images job rebuilds them after this merges;
-        # until their digests are re-recorded in xtask/oracles.toml, those two
-        # legs fail LOUDLY (typed oracle_rejects in the artifacts) against the
-        # old images. The mutool text leg runs against the current pin now.
+        # SL-3.CONF.06: like the render legs, a 0-comparable text leg fails
+        # its step (xtask/src/text_sweep.rs) instead of staying green while
+        # measuring nothing.
         run: |
           cargo xtask oracle text-sweep \
             --tool mutool --tool pdfium --tool pdfjs \
@@ -497,6 +499,10 @@ jobs:
             --selis target/release/selis \
             --out sweep-text
       - name: Upload the sweep artifacts
+        # SL-3.CONF.06: a 0-comparable leg fails its sweep step above, but
+        # the report is written before the failure so the evidence still
+        # uploads for triage.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: render-conf-sweep
@@ -505,6 +511,7 @@ jobs:
             sweep/verdicts.jsonl
           if-no-files-found: error
       - name: Upload the calibration artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: render-conf-calibration
@@ -515,6 +522,7 @@ jobs:
             sweep-calibration-ghent/verdicts.jsonl
           if-no-files-found: error
       - name: Upload the text-sweep artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: render-conf-text

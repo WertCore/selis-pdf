@@ -586,7 +586,53 @@ pub fn run(cfg: SweepConfig) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&report_path, json).map_err(|e| format!("{}: {e}", report_path.display()))?;
     print_report(&report);
+    // SL-3.CONF.06: the report is written first so the artifacts survive,
+    // then a 0-comparable leg fails the step instead of reporting green on
+    // an unmeasured leg (runs 34806315351/34946893403 measured 0 comparable
+    // on every pinned-container leg while the job stayed green).
+    check_comparable_or_fail(&report, &verdicts)?;
     Ok(())
+}
+
+/// SL-3.CONF.06 — fail a sweep that measured nothing.
+///
+/// A leg with 0 comparable pages (every outcome `oracle_rejects`/`reject`,
+/// `selis_rejects`, `both_reject`, timeouts, …) must fail its
+/// `render-conf` step, quoting the first few typed details, instead of
+/// exiting 0 with a green job that measured nothing. The report is already
+/// written when this runs, so the artifacts stay uploadable for triage.
+fn check_comparable_or_fail(report: &Report, verdicts: &[Verdict]) -> Result<(), String> {
+    let mut failures: Vec<String> = Vec::new();
+    for (tool, tr) in &report.per_tool {
+        if tr.comparable == 0 {
+            let total = verdicts.iter().filter(|v| &v.tool == tool).count();
+            let mut examples: Vec<String> = verdicts
+                .iter()
+                .filter(|v| &v.tool == tool)
+                .filter_map(|v| v.detail.clone())
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(3)
+                .collect();
+            if examples.is_empty() {
+                examples.push("(no typed detail recorded)".to_string());
+            }
+            let quoted = examples
+                .iter()
+                .map(|e| format!("`{e}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            failures.push(format!(
+                "oracle leg `{tool}` produced 0 comparable pages of {total} outcome(s) — \
+                 refusing green on an unmeasured leg (SL-3.CONF.06). e.g. {quoted}"
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 /// All unordered label pairs of the tool list, in stable order. Repeating a
@@ -1386,6 +1432,76 @@ mod tests {
         assert_eq!(stats.n, 5);
         assert_eq!(stats.p50, Some(3.0));
         assert_eq!(stats.max, Some(100.0));
+    }
+
+    /// SL-3.CONF.06 DoD: a synthetic all-`oracle_rejects` leg turns the job
+    /// red instead of reporting green on an unmeasured leg.
+    #[test]
+    fn zero_comparable_leg_fails_with_typed_details() {
+        let verdicts = vec![
+            Verdict {
+                id: "a".to_string(),
+                tool: "pdfium".to_string(),
+                dpi: 150,
+                signature: "oracle_rejects".to_string(),
+                diff_pct: None,
+                ours: None,
+                theirs: None,
+                detail: Some("pdfium_driver: cannot write /out.img".to_string()),
+            },
+            Verdict {
+                id: "b".to_string(),
+                tool: "pdfium".to_string(),
+                dpi: 150,
+                signature: "oracle_rejects".to_string(),
+                diff_pct: None,
+                ours: None,
+                theirs: None,
+                detail: Some("pdfium_driver: cannot write /out.img".to_string()),
+            },
+        ];
+        let report = build_report(
+            Path::new("selis"),
+            2,
+            &verdicts,
+            &["pdfium".to_string()],
+            &[150],
+            false,
+        )
+        .expect("report builds");
+        assert_eq!(report.per_tool["pdfium"].comparable, 0);
+        let err = check_comparable_or_fail(&report, &verdicts).expect_err("0 comparable must fail");
+        assert!(err.contains("pdfium"), "names the leg: {err}");
+        assert!(err.contains("0 comparable"), "states the count: {err}");
+        assert!(
+            err.contains("cannot write /out.img"),
+            "quotes the typed detail: {err}"
+        );
+    }
+
+    #[test]
+    fn nonzero_comparable_leg_stays_green() {
+        let verdicts = vec![Verdict {
+            id: "a".to_string(),
+            tool: "pdfium".to_string(),
+            dpi: 150,
+            signature: "match".to_string(),
+            diff_pct: Some(0.1),
+            ours: Some([100, 100]),
+            theirs: Some([100, 100]),
+            detail: None,
+        }];
+        let report = build_report(
+            Path::new("selis"),
+            1,
+            &verdicts,
+            &["pdfium".to_string()],
+            &[150],
+            false,
+        )
+        .expect("report builds");
+        assert_eq!(report.per_tool["pdfium"].comparable, 1);
+        check_comparable_or_fail(&report, &verdicts).expect("measured leg stays green");
     }
 
     // ── helpers ──

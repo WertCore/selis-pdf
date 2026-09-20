@@ -111,9 +111,21 @@ EISDIR, `Device or resource busy`) plus the text plan's lost `mutool`→`mupdf` 
 `oracle.txt` volume name. SL-3.CONF.02 re-pins and restores the smoke contract's `/out` bind with
 tests. Any pre-09-14 CI cell is unconfirmed from retained artifacts; CONF.06 asserts the first
 credible run on real comparable counts.
+
+**CONF.06 status (2026-09-20):** the detection half is now code, not prose —
+`xtask/src/sweep.rs::check_comparable_or_fail` and its mirror in
+`xtask/src/text_sweep.rs` run after the report is written and fail the step when a
+leg's comparable count is 0, quoting the first three typed details, so `render-conf`
+can no longer stay green while measuring nothing (and the failing step's report still
+uploads — the artifact steps carry `if: always()`). The measurement half is still
+outstanding: the last scheduled run is 34946893403 (2026-09-15, `03ece8ba`), which
+predates the SL-3.CONF.02 bind fix, so no post-fix scheduled `render-conf` exists and
+every PDFium/pdf.js cell in this table stays unmeasured. Cron is `0 3 */2 * *` (the
+next window after the 2026-09-20 implementation is 2026-09-22 03:00 UTC); dispatch is
+push-scoped and the branch does not push, so the first credible run lands post-merge.
+Until then the only measured cells here are the local legs.
     Sample: 300-file stride over the general corpus + the full 95-file Ghent suite. Fraction
 of comparable pages within each differing-pixels band:
-
 | Pair | corpus | n | ≤0.5% | ≤1% | ≤2% | ≤5% | ≤10% | ≤25% | p50 | p90 | p99 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | mutool↔mutool | mixed | 388 | 100% | 100% | 100% | 100% | 100% | 100% | 0.0 | 0.0 | 0.0 |
