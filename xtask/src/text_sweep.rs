@@ -554,7 +554,52 @@ pub fn run(cfg: sweep::SweepConfig) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&report_path, json).map_err(|e| format!("{}: {e}", report_path.display()))?;
     print_report(&report);
+    // SL-3.CONF.06: same fail-loud rule as the render sweep — the report is
+    // written first so the artifacts survive, then a 0-comparable leg fails
+    // the step instead of reporting green on an unmeasured leg.
+    check_comparable_or_fail(&report, &verdicts)?;
     Ok(())
+}
+
+/// SL-3.CONF.06 — fail a text sweep that measured nothing.
+///
+/// Mirrors `sweep::check_comparable_or_fail`: any tool (or `a↔b` pair label)
+/// with 0 comparable outcomes fails the `render-conf` text step, quoting the
+/// first few typed details. `empty_both` pages are agreement on blank pages,
+/// not failures, but they are not comparable either — a sample that is 100%
+/// blank still measures nothing at the G3 bar, so it fails the same way.
+fn check_comparable_or_fail(report: &TextReport, verdicts: &[TextVerdict]) -> Result<(), String> {
+    let mut failures: Vec<String> = Vec::new();
+    for (tool, tr) in &report.per_tool {
+        if tr.comparable == 0 {
+            let total = verdicts.iter().filter(|v| &v.tool == tool).count();
+            let mut examples: Vec<String> = verdicts
+                .iter()
+                .filter(|v| &v.tool == tool)
+                .filter_map(|v| v.detail.clone())
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(3)
+                .collect();
+            if examples.is_empty() {
+                examples.push("(no typed detail recorded)".to_string());
+            }
+            let quoted = examples
+                .iter()
+                .map(|e| format!("`{e}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            failures.push(format!(
+                "text leg `{tool}` produced 0 comparable pages of {total} outcome(s) — \
+                 refusing green on an unmeasured leg (SL-3.CONF.06). e.g. {quoted}"
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 /// Validate `--only-pair A+B` specs: the union of tools whose legs run, and
@@ -1579,5 +1624,73 @@ mod tests {
             strip_oracle_progress("page tree is broken"),
             "page tree is broken"
         );
+    }
+
+    /// SL-3.CONF.06 DoD: a synthetic all-`oracle_rejects` text leg turns the
+    /// job red instead of reporting green on an unmeasured leg.
+    #[test]
+    fn zero_comparable_text_leg_fails_with_typed_details() {
+        let verdict = |id: &str| TextVerdict {
+            id: id.to_string(),
+            tool: "pdfium".to_string(),
+            sig: "oracle_rejects".to_string(),
+            sim: None,
+            selis_chars: Some(10),
+            oracle_chars: None,
+            truncated: false,
+            rtl: false,
+            selis_fonts: Vec::new(),
+            oracle_fonts: Vec::new(),
+            subst_candidate: false,
+            detail: Some("pdfium: no [tool.pdfium] pin recorded".to_string()),
+        };
+        let verdicts = vec![verdict("a"), verdict("b")];
+        let report = build_report(
+            Path::new("selis"),
+            "deadbeef",
+            2,
+            &verdicts,
+            &[],
+            &["pdfium".to_string()],
+            &[72, 150, 300],
+            false,
+            false,
+        );
+        assert_eq!(report.per_tool["pdfium"].comparable, 0);
+        let err = check_comparable_or_fail(&report, &verdicts).expect_err("0 comparable must fail");
+        assert!(err.contains("pdfium"), "names the leg: {err}");
+        assert!(err.contains("0 comparable"), "states the count: {err}");
+        assert!(err.contains("no [tool.pdfium] pin"), "quotes detail: {err}");
+    }
+
+    #[test]
+    fn nonzero_comparable_text_leg_stays_green() {
+        let verdicts = vec![TextVerdict {
+            id: "a".to_string(),
+            tool: "pdfium".to_string(),
+            sig: "match".to_string(),
+            sim: Some(1.0),
+            selis_chars: Some(10),
+            oracle_chars: Some(10),
+            truncated: false,
+            rtl: false,
+            selis_fonts: Vec::new(),
+            oracle_fonts: Vec::new(),
+            subst_candidate: false,
+            detail: None,
+        }];
+        let report = build_report(
+            Path::new("selis"),
+            "deadbeef",
+            1,
+            &verdicts,
+            &[],
+            &["pdfium".to_string()],
+            &[72, 150, 300],
+            false,
+            false,
+        );
+        assert_eq!(report.per_tool["pdfium"].comparable, 1);
+        check_comparable_or_fail(&report, &verdicts).expect("measured leg stays green");
     }
 }

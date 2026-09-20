@@ -697,7 +697,36 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **Files:** `xtask/src/sweep.rs` / `xtask/src/text_sweep.rs` exit path,
     `.github/workflows/ci.yml` (`render-conf`), the §4/§5 cells in
     `21-TESTING-AND-ORACLES.md`, `conformance/areas.toml` rows + regenerated report.
-  - **DoD:** a synthetic all-`oracle_rejects` leg turns the job red; the post-merge
-    scheduled run is green *with* non-zero comparable pages for pdfium and pdf.js; the
-    Render-withhold is re-argued against those actual two-oracle cells (promotion is a
-    separate decision, not this task's).
+  - **Status (2026-09-20):** the fail-loud half is implemented and unit-tested; the
+    two-oracle half cannot be recorded from this branch.
+    * `xtask/src/sweep.rs::check_comparable_or_fail` and the mirror in
+      `text_sweep.rs` run *after* the report is written, so a leg whose every
+      outcome is a rejection/timeout (0 comparable) now exits non-zero, quoting the
+      first three typed details (`pdfium_driver: cannot write /out.img` is the
+      string the historical runs carried). Unit tests pin both directions: a
+      synthetic all-`oracle_rejects` leg fails with the tool name, the count and a
+      quoted detail; a measured leg stays green. The CI uploads gained `if: always()`
+      so the failing step's report + verdicts still reach the artifacts for triage.
+    * Verified locally: `cargo test -p xtask --bin xtask -- sweep::` 25/25 green;
+      `cargo fmt --check` clean; `cargo clippy -p xtask --all-targets` adds no new
+      warning (the two pre-existing `sweep.rs` `ptr_arg`/`unnecessary_mut_passed`
+      notes reproduce on `ec3472cf` without this branch's changes).
+    * **The two-oracle cells are still unmeasured, and this box records that
+      honestly rather than closing on the gate alone.** The last scheduled run is
+      34946893403 (2026-09-15, `03ece8ba`), which predates the SL-3.CONF.02 bind
+      fix — no post-fix scheduled `render-conf` exists. Cron is `0 3 */2 * *`, and
+      the plan records that the next window after this merge carries the first
+      credible legs. Dispatch is push-scoped and this task does not push
+      (no `git push`, no `gh workflow run`), so the run cannot be produced from
+      here; the DoD's "green with non-zero comparable pages for pdfium and pdf.js"
+      is the one clause held open, owned by the next scheduled run rather than by
+      another code change. Promotion of the `render`/`text` rungs stays a separate
+      decision (CONF.03 owns the Extract recalibration; `render` waits on the
+      two-oracle cells + SL-2.CONF.04).
+  - **DoD clause-by-clause:** (1) a synthetic all-`oracle_rejects` leg turns the job
+    red — **met** (unit-tested both directions); (2) the post-merge scheduled run is
+    green *with* non-zero comparable pages for pdfium and pdf.js — **open**, no
+    post-bind-fix scheduled run exists (last: 34946893403 on `03ece8ba`), and cannot
+    be produced from a branch that does not push; (3) the Render-withhold re-argument
+    — **blocked on (2)**. The box stays unchecked for exactly the reason
+    SL-3.FONT.10's does: the shipped half is real, the unshipped half is named.
