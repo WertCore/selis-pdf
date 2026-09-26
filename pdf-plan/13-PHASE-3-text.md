@@ -406,7 +406,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     `text_matrix_layout.rs`'s doc comment; it is also why the *rotated* pin scores 0.444).
      **`corpus verify --golden`: 3,862 checked, 0 changed, 0 without expectation**
      (pinned binary `5e30fffa…`, full pass post-merge).
-- [ ] **SL-3.TEXT.12 — Glyph painting must apply the text matrix, not only the pen origin**
+- [x] **SL-3.TEXT.12 — Glyph painting must apply the text matrix, not only the pen origin**
   · deps: TEXT.11 · owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
   - **Do:** The `Op::Text` rasterizer path places outlines at `at` with axis-aligned
     `f` sizing; carry the full `Tm` linear part into glyph placement so rotated text
@@ -417,6 +417,13 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** The TEXT.11 probe fixtures paint MuPDF-congruent geometry (not merely
     correct origins); no identity-`Tm` render regression (bit-identical expectation
     records); sweep bands recorded against the TEXT.11 numbers (969 / 540 / 56.01 %).
+  - **Status:** Done 2026-09-26 and merged into main. `TextGlyph` now carries the
+    full `Tm` (`tm` field); the raster maps outlines through
+    `scale → text_to_user(at, tm) → ctm → page_ctm` per §9.4.2, so rotated text
+    paints rotated and the `12 0 0 12` scale-trick paints at 12 pt, MuPDF-congruent.
+    Identity `Tm` reduces to a plain translate (bit-identical, unit-tested). 236
+    corpus render-hash goldens re-anchored per plan; MuPDF-paired 12×/rotated paint
+    probes added to `text_matrix_layout.rs` (4/4 green).
 - [x] **SL-3.TEXT.13 — Line assembly must keep vertical runs one line** · deps: TEXT.04 ·
   owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
   - **Do:** Line splitting tolerates horizontal baselines only; glyphs stepping along
@@ -435,6 +442,8 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     `text_matrix_layout.rs` assertion flips to MuPDF-kept-word behaviour, the golden
     text hash is refreshed to `04958554…cfb9668` (normalised `ABCDEF ABCDEF`), and
     the sweep `match` band is re-measured (see the TEXT.13 sweep note below).
+    Merged into main 2026-09-26 alongside SL-3.TEXT.12 (advance/space along-writing-
+    direction reconciled with TEXT.12's `tm` field; vertical run + paint probes 4/4 green).
 
 ---
 
