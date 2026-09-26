@@ -1,0 +1,20 @@
+[package]
+name = "selis-pdf-wasm-ocr"
+description = "WASM lazy chunk: OCR / Tesseract (SL-4.WASM.02). Lazily loaded, never in the viewer core."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }

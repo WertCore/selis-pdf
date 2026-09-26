@@ -28,7 +28,7 @@ proves the engine in the harshest environment, and it costs nothing to distribut
     prove deterministic mid-render cancellation at a budget tick). The Vitest/real-worker leg
     lands with the JS shell (UI.01); the wire schema and export contract it must implement are
     pinned by ADR-P0042.)*
-- [ ] **SL-4.WASM.02 — Code splitting and lazy chunks** · deps: WASM.01 · owner: AI+
+- [x] **SL-4.WASM.02 — Code splitting and lazy chunks** · deps: WASM.01 · owner: AI+
   - **Do:** Split the WASM into: core (COS + render + text), and lazily-loaded chunks for OCR,
     convert, JPX, CJK fonts, and (later) the editor. Chunks are separate modules, not one binary
     with dead code.

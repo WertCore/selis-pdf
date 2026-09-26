@@ -1,0 +1,21 @@
+[package]
+name = "selis-pdf-wasm-jpx"
+description = "WASM lazy chunk: JPXDecode codec (SL-4.WASM.02). Loaded on demand, never in the core viewer bundle."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-pdf-filter = { workspace = true }
