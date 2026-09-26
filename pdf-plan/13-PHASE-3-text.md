@@ -417,7 +417,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** The TEXT.11 probe fixtures paint MuPDF-congruent geometry (not merely
     correct origins); no identity-`Tm` render regression (bit-identical expectation
     records); sweep bands recorded against the TEXT.11 numbers (969 / 540 / 56.01 %).
-- [ ] **SL-3.TEXT.13 — Line assembly must keep vertical runs one line** · deps: TEXT.04 ·
+- [x] **SL-3.TEXT.13 — Line assembly must keep vertical runs one line** · deps: TEXT.04 ·
   owner: AI+ · **filed by SL-3.TEXT.11 (2026-09-15, operator)**
   - **Do:** Line splitting tolerates horizontal baselines only; glyphs stepping along
     +y under a 90° `Tm` fragment one-per-line (MuPDF keeps them a word — the rotated
@@ -426,6 +426,15 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** The rotated fixture assembles as one line with reading order along the
     writing direction; `text_matrix_layout.rs`'s documented assertions flip to the
     MuPDF-kept-word behaviour; sweep `match` band re-measured.
+  - **Status:** Done 2026-09-26. `advance`/`space` are now lengths along the writing
+    direction and `dir_x`/`dir_y` carry the normalised `Tm` +x axis; continuity is
+    perpendicular distance `|dir × (p−origin)|`, word gaps are the along-direction
+    projection `dir · (p−origin)`. Identity `Tm` reduces exactly to the old `|Δy|`/`Δx`
+    model, so the horizontal majority is bit-identical. The rotated fixture assembles
+    as one line bbox `[100.00, 100.00, 100.00, 182.68]` with text `"ABCDEF"`, the
+    `text_matrix_layout.rs` assertion flips to MuPDF-kept-word behaviour, the golden
+    text hash is refreshed to `04958554…cfb9668` (normalised `ABCDEF ABCDEF`), and
+    the sweep `match` band is re-measured (see the TEXT.13 sweep note below).
 
 ---
 
@@ -667,9 +676,22 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
       `empty_selis` / 14 `empty_oracle` / 34 `oracle_rejects` / 4 timeouts / 23 both_reject /
       17 selis_rejects — the 03ece8ba pass reproduced **within one file per count**: the +1
       match is `/synthetic/bugfix_text11_tm_scaled` (swept identical, renders at 0.09%), the
-      +1 tail file is `…_tm_rotated` (`sim 0.444`, the vertical-run word split SL-3.TEXT.13
-      owns). Mean 0.7612 / median 1.000; cohorts flat 191 + verapdf 196 + govdocs1 90 +
-      ghent 61 + synthetic 2.
++1 tail file is `…_tm_rotated` (`sim 0.444`, the vertical-run word split SL-3.TEXT.13
+       owns). Mean 0.7612 / median 1.000; cohorts flat 191 + verapdf 196 + govdocs1 90 +
+       ghent 61 + synthetic 2.
+     * **SL-3.TEXT.13 re-measurement (2026-09-26, post-fix, release binary sha256
+       `ee00f350…8f6a21`, local `mutool 1.23.0`):** the rotated fixture's `diff>=25`
+       row is gone — the sweep now records a single `match` row, `sim 1.0`,
+       `selis_chars 13 / oracle_chars 13`, against the same `mutool` leg. The
+       residual `diff>=25` row in `C:\selis-build\text13-sweep\verdicts.jsonl` is the
+       pre-fix baseline kept for the before/after record; the golden text hash moved
+       from `ffef4ad7…` (18 chars, the fragmented `ABCDEF\nABCDEF\n…`) to
+       `04958554…cfb9668` (13 chars, normalised `ABCDEF ABCDEF`), matching mutool's
+       own `ABCDEF\n\nABCDEF\n` after N1–N6. Render goldens are unchanged
+       (`195172f9…` @150, `f926ec44…` @300, `479dd8a8…` @72) — the fix is
+       text-layout only, pixels untouched. The synthetic cohort is now 1 match + 0
+       diff for this file; the `has_external` flag on it is the Type1-substitution
+       artefact of the probe font (TEXT.11's note), not a regression.
     * render: @150 n=3,774 ≤0.5 67.9 / ≤1 74.9 / ≤2 **80.9** / ≤5 86.9 / ≤10 92.6 / ≤25
       **97.2**, p50 0.07 — Bar A and Bar B still pass on the MuPDF leg; gross `diff>=25` 105
       (flat 45 / ghent 38 / govdocs1 20 / verapdf 2), `blank_selis` 2 (both typed

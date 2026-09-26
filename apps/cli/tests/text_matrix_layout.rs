@@ -25,6 +25,13 @@
 //! extent, which is the geometry an oracle pixel-diffs, not just the origins
 //! the extractor reports.
 //!
+//! SL-3.TEXT.13 (vertical-run line assembly) is pinned here too: the rotated
+//! fixture assembles as **one line** whose bbox is [100, 100, 100, 182.68],
+//! with the glyphs in reading order along the writing direction. The old
+//! horizontal baseline model (|Δy| continuity, Δx gap) fragmented the vertical
+//! run into six per-glyph lines, which is the 0.444 the sweep pinned this task
+//! to; MuPDF keeps it one word.
+//!
 //! ```text
 //! cargo test -p selis-cli --test text_matrix_layout
 //! ```
@@ -91,22 +98,25 @@ fn scaled_tm_matches_mu_device_positions_and_splits_words() {
 
 /// MuPDF lays the 90° run's glyphs along +y at fixed x=100, ending at y=182.68
 /// (last glyph 'F'). A raw add spread them along +x to 182.68 at fixed y=100.
-/// The vertical run lands at x=100 exactly (each per-glyph line's bbox is the
-/// point [100, y, 100, y] with y stepping up to MuPDF's 182.68; per-glyph
-/// column grouping is the reading-order axis concern SL-3.TEXT.11 does not own),
-/// while the identity control remains at y=500.
+/// SL-3.TEXT.13 keeps the vertical run as **one line** (MuPDF keeps it one
+/// word — the rotated pin scores 0.444 purely for the per-glyph line
+/// fragmentation the old horizontal baseline model caused), so the rotated
+/// span is the single bbox [100, 100, 100, 182.68] rather than six
+/// per-glyph points. The identity control remains at y=500.
 #[test]
 fn rotated_tm_lays_vertical_run_at_fixed_x_on_user_y() {
     let json = extract_json(&write_fixture("rotated.pdf", ROTATED));
-    // Every vertical glyph shares x = 100; MuPDF's last 'F' origin is user-y
-    // 182.68 (device f 609.32 on a 792 page).
+    // The rotated run is one line: x=100 throughout, y from 100 to 182.68
+    // (MuPDF's last 'F' origin is user-y 182.68 — device f 609.32 on a 792
+    // page). The old horizontal baseline model fragmented it into six
+    // per-glyph lines, which is the 0.444 the sweep pinned this task to.
     assert!(
-        json.contains("[100.00, 182.68, 100.00, 182.68]"),
-        "MuPDF 'F' at x=100, y=182.68: {json}"
+        json.contains("[100.00, 100.00, 100.00, 182.68]"),
+        "rotated run as one vertical line: {json}"
     );
     assert!(
-        json.contains("[100.00, 116.01, 100.00, 116.01]"),
-        "MuPDF 'B' at x=100, y=116.008: {json}"
+        json.contains("\"text\": \"ABCDEF\""),
+        "the vertical run reads ABCDEF in order: {json}"
     );
     // Identity control unaffected by the rotation, still at its own baseline.
     assert!(

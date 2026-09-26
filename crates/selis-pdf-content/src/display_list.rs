@@ -163,18 +163,27 @@ pub enum Op {
 /// A resolved glyph run (font, size, and the glyph codes).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphRun {
-    /// The run's horizontal pen step in user space — the justified advance
-    /// of its (single) glyph mapped through the text matrix (SL-3.TEXT.09).
-    /// The raster ignores it; the text layer needs it to infer word gaps
-    /// against the font's own advance instead of a text-space estimate.
+    /// The run's pen step in user space, measured along the writing
+    /// direction — the justified advance of its (single) glyph mapped through
+    /// the text matrix (SL-3.TEXT.09/SL-3.TEXT.11/SL-3.TEXT.13). The raster
+    /// ignores it; the text layer needs it to infer word gaps against the
+    /// font's own advance instead of a text-space estimate.
     pub advance: f64,
     /// The font resource name.
     pub font: selis_bytes::Bytes,
     /// The font size.
     pub size: f64,
-    /// This font's space width in user space at the run's text state
-    /// (SL-3.TEXT.09) — the word-gap inference threshold's reference.
+    /// This font's space width in user space at the run's text state,
+    /// measured along the writing direction exactly like `advance`
+    /// (SL-3.TEXT.09/SL-3.TEXT.13) — the word-gap inference threshold's
+    /// reference.
     pub space: f64,
+    /// The writing direction in user space (`Tm`'s +x axis, normalised —
+    /// SL-3.TEXT.13). `(1, 0)` is horizontal; `(0, 1)` is a 90° `Tm`
+    /// vertical run (and the direction CJK vertical runs step along).
+    pub dir_x: f64,
+    /// The y-component of the writing direction (see `dir_x`).
+    pub dir_y: f64,
     /// The glyph codes.
     pub glyphs: Vec<u16>,
 }

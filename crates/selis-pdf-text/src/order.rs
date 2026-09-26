@@ -246,6 +246,8 @@ mod tests {
             font: Bytes::copy_from_slice(b"F1"),
             size: 12.0,
             space: 3.0,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         };
         let run = crate::assembly::TextRun {

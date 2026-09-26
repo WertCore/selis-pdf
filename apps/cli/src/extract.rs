@@ -378,6 +378,8 @@ mod tests {
             font: selis_bytes::Bytes::copy_from_slice(b"F1"),
             size: 12.0,
             space: 4.0,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         };
         let word = |codes: &[u16], x: f64| selis_pdf_text::TextWord {
