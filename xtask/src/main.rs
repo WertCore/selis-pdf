@@ -15,6 +15,8 @@ mod corpus;
 mod coverage;
 mod fixtures;
 mod fuzz;
+#[cfg(all(feature = "wasm-host", not(target_arch = "wasm32")))]
+mod jpx_gs;
 mod layers;
 mod oracle;
 mod perf_check;
@@ -296,6 +298,23 @@ enum OracleSub {
         tool: String,
         file: std::path::PathBuf,
     },
+    /// SL-1.FILT.08 Ghostscript differential over the valid JPEG 2000 set:
+    /// decode each codestream with the wasm sandbox and with Ghostscript's
+    /// JPXDecode (via a minimal PDF wrapper), and compare under the
+    /// documented tolerance. `path` is a `.j2k`/`.jp2` file or a directory.
+    #[cfg(all(feature = "wasm-host", not(target_arch = "wasm32")))]
+    CompareJpx {
+        path: std::path::PathBuf,
+        /// Fraction of pixels whose max per-channel diff must be <= 12.
+        #[arg(long, default_value_t = 0.99)]
+        fraction: f64,
+        /// Maximum allowed mean per-channel |diff|.
+        #[arg(long, default_value_t = 2.0)]
+        mean: f64,
+        /// Calibration report only — print measured numbers, never fail.
+        #[arg(long, default_value_t = false)]
+        report_only: bool,
+    },
     /// Triage: run structural compare over a corpus sample and group disagreements (SL-0.ORACLE.05).
     Triage {
         #[arg(long, default_value = "100")]
@@ -560,6 +579,13 @@ fn main() -> ExitCode {
             OracleSub::CompareText { tool, file } => {
                 oracle::run(oracle::OracleCommand::CompareText { tool, file })
             }
+            #[cfg(all(feature = "wasm-host", not(target_arch = "wasm32")))]
+            OracleSub::CompareJpx {
+                path,
+                fraction,
+                mean,
+                report_only,
+            } => jpx_gs::run(&path, fraction, mean, report_only),
             OracleSub::Triage {
                 sample,
                 verdict,

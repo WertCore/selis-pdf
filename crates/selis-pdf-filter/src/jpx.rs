@@ -439,6 +439,38 @@ mod tests {
         }
     }
 
+    /// The lossy valid-set fixture (SL-1.FILT.08 oracle-match clause, b): a
+    /// 9/7 irreversible-DWT codestream (`REFJPX_IRREVERSIBLE=1`, Q=40 dB)
+    /// committed as `jpx_gradient_lossy.j2k`, with its native decode captured
+    /// as `jpx_gradient_lossy_ref.raw`. The wasm port of the same OpenJPEG
+    /// library must reproduce the reference *exactly* (the 9/7 float DWT is
+    /// deterministic within one build), and that decode must genuinely differ
+    /// from the lossless gradient — the fixture exercises the common in-the-wild
+    /// lossy path, not a hidden reversible re-encode.
+    #[test]
+    fn a_valid_lossy_codestream_decodes_to_its_reference_and_is_lossy() {
+        const CODESTREAM: &[u8] = include_bytes!("../tests/fixtures/jpx_gradient_lossy.j2k");
+        const REFERENCE: &[u8] = include_bytes!("../tests/fixtures/jpx_gradient_lossy_ref.raw");
+        const LOSSLESS: &[u8] = include_bytes!("../tests/fixtures/jpx_gradient_ref.raw");
+        let clock = ManualClock::new();
+        let mut guard = test_budget().guard_with(&clock, CancelToken::new());
+        let img = jpx_decode(CODESTREAM, &mut guard).expect("the valid lossy fixture must decode");
+        assert_eq!((img.width, img.height, img.channels), (64, 48, 3));
+        assert_eq!(img.data.len(), 64 * 48 * 3);
+
+        // Byte-exact vs the native OpenJPEG ref: same library, deterministic.
+        let payload = &REFERENCE[10..10 + 64 * 48 * 3];
+        assert_eq!(img.data, payload, "lossy wasm decode must match the native ref");
+
+        // It is genuinely lossy: at least one sample differs from the
+        // lossless gradient (Q=40 dB measured max diff 28, mean 2.0).
+        let lossless = &LOSSLESS[10..10 + 64 * 48 * 3];
+        assert_ne!(
+            img.data, lossless,
+            "the 9/7 fixture must not be a hidden reversible re-encode"
+        );
+    }
+
     /// The malformed-JPX corpus (`tests/fixtures/filter-jpx`, see its
     /// README): every corrupted codestream must be *contained* — a typed
     /// error from the sandbox/image family, no host crash, no unbounded host
