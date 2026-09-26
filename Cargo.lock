@@ -1891,6 +1891,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-cjk"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-font",
+ "selis-sandbox",
+]
+
+[[package]]
+name = "selis-pdf-wasm-convert"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-pdf-convert",
+ "selis-sandbox",
+]
+
+[[package]]
+name = "selis-pdf-wasm-editor"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-pdf-cos",
+ "selis-pdf-doc",
+ "selis-pdf-edit",
+ "selis-pdf-optimize",
+ "selis-sandbox",
+]
+
+[[package]]
+name = "selis-pdf-wasm-jpx"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-pdf-filter",
+ "selis-sandbox",
+]
+
+[[package]]
+name = "selis-pdf-wasm-ocr"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-policy"
 version = "0.1.0"
 dependencies = [

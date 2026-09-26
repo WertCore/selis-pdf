@@ -63,6 +63,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_sandbox::{CancelToken, Clock, Nanos};
 
+pub mod chunks;
 pub mod memory;
 pub mod protocol;
 pub mod worker;

@@ -1,0 +1,24 @@
+[package]
+name = "selis-pdf-wasm-editor"
+description = "WASM lazy chunk: editor (Phase 5) — mutation journal, page ops, incremental save (SL-4.WASM.02). Separate module, never in viewer."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-pdf-edit = { workspace = true }
+selis-pdf-optimize = { workspace = true }
+selis-pdf-cos = { workspace = true }
+selis-pdf-doc = { workspace = true }

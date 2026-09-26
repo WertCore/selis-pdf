@@ -1,0 +1,21 @@
+[package]
+name = "selis-pdf-wasm-cjk"
+description = "WASM lazy chunk: CJK font payload + FONT.10/11 subsetting (SL-4.WASM.02 + SL-4.WASM.07). Lazily fetched per Unicode range."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-font = { workspace = true }

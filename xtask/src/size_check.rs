@@ -211,22 +211,35 @@ pub fn run(update_baseline: bool, strict: bool) -> Result<(), String> {
 
 /// Build every wasm-producing target and measure the brotli size of the
 /// optimised module of each resulting artifact. Returns artifact name →
-/// brotli bytes. Today exactly one linked binary exists (`xtask`); when the
-/// wasm shell lands (Phase 4), its chunk artifacts appear here automatically.
+/// brotli bytes. SL-4.WASM.02: the 6-chunk split (core + jpx/cjk/ocr/convert/editor)
+/// plus the `xtask` canary are each built explicitly so the gate never
+/// silently passes a missing chunk (every budget row must be measured).
 fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
-    let status = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "xtask",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--release",
-        ])
-        .status()
-        .map_err(|e| format!("cargo build --target wasm32: {e}"))?;
-    if !status.success() {
-        return Err("wasm build failed".to_string());
+    // SL-4.WASM.02 chunks — each is a separate `cdylib` (separate `.wasm`).
+    const WASM_PACKAGES: &[&str] = &[
+        "selis-pdf-wasm",
+        "selis-pdf-wasm-jpx",
+        "selis-pdf-wasm-cjk",
+        "selis-pdf-wasm-ocr",
+        "selis-pdf-wasm-convert",
+        "selis-pdf-wasm-editor",
+        "xtask",
+    ];
+    for pkg in WASM_PACKAGES {
+        let status = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                pkg,
+                "--target",
+                "wasm32-unknown-unknown",
+                "--release",
+            ])
+            .status()
+            .map_err(|e| format!("cargo build -p {pkg} --target wasm32: {e}"))?;
+        if !status.success() {
+            return Err(format!("wasm build failed for package {pkg}"));
+        }
     }
 
     // Optimise with wasm-opt. On Windows the npm-installed binary is a `.cmd`

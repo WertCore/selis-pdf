@@ -1,42 +1,46 @@
-# WASM size budgets — SL-0.WS.09 (ADR-P0011). Brotli-compressed bytes of the
-# wasm-opt -O3 output.
+# WASM size budgets — SL-0.WS.09 (ADR-P0011) + SL-4.WASM.02 code splitting.
+# Brotli-compressed bytes of the wasm-opt -O3 output.
 #
-# `artifact` names the linked wasm artefact a budget is evaluated against. A
-# budget whose artifact is not measured yet is reported as "not measured" —
-# never as passing (same principle as `xtask perf-check`). Today two linked
-# artifacts exist: the xtask automation binary (which pulls in the whole
-# engine) and the `selis-pdf-wasm` render driver (SL-2.PERF.03 — measured but
-# unmatched by any budget row, so ignored by the gate); the dedicated chunk
-# artifacts arrive with the wasm shell. NOTE: the `engine-render-cdylib`
-# budget below anticipates the shell's chunk name — no cargo crate can emit
-# that dashed stem (cargo normalises `-` to `_`), so the name needs revisiting
-# when the shell lands; until then the row stays "not measured".
+# `artifact` names the linked wasm artefact a budget is evaluated against
+# (file stem, cargo normalises `-` to `_`). A budget whose artifact is not
+# measured yet is reported as "not measured" — never as passing. The 6-chunk
+# split lands here: core (viewer, ≤3 MB) + 5 lazy chunks (jpx, cjk, ocr,
+# convert, editor). Viewer never downloads editor — proven by the
+# `Manifest::validate_viewer_isolation` unit test and the `wasm-loader`
+# vitest suite.
 
 [[budget]]
-chunk = "core-parser"
-artifact = "core-parser-cdylib"
-budget = 120000
+chunk = "core"
+artifact = "selis_pdf_wasm"
+budget = 3000000
 
 [[budget]]
-chunk = "core-plus-filters"
-artifact = "core-plus-filters-cdylib"
-budget = 180000
+chunk = "jpx"
+artifact = "selis_pdf_wasm_jpx"
+budget = 400000
 
+[[budget]]
+chunk = "cjk"
+artifact = "selis_pdf_wasm_cjk"
+budget = 500000
+
+[[budget]]
+chunk = "ocr"
+artifact = "selis_pdf_wasm_ocr"
+budget = 800000
+
+[[budget]]
+chunk = "convert"
+artifact = "selis_pdf_wasm_convert"
+budget = 600000
+
+[[budget]]
+chunk = "editor"
+artifact = "selis_pdf_wasm_editor"
+budget = 900000
+
+# Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]
 chunk = "engine-viewer"
 artifact = "xtask"
 budget = 400000
-
-[[budget]]
-chunk = "engine-render"
-artifact = "engine-render-cdylib"
-budget = 600000
-
-# The SL-2.PERF.03 render driver cdylib (whole render+text engine, one call
-# per page). Measured 1098790 brotli bytes at introduction; the budget leaves
-# ~35% headroom for the Phase 3 text-extraction and Phase 5 OCR increments
-# that land in the same binary until the shell splits it into chunks.
-[[budget]]
-chunk = "engine-render-driver"
-artifact = "selis_pdf_wasm"
-budget = 1500000

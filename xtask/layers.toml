@@ -45,6 +45,11 @@ selis-pdf-convert = 3
 
 # L4 — Bindings
 selis-pdf-wasm = 4
+selis-pdf-wasm-jpx = 4
+selis-pdf-wasm-ocr = 4
+selis-pdf-wasm-convert = 4
+selis-pdf-wasm-editor = 4
+selis-pdf-wasm-cjk = 4
 selis-pdf-ffi  = 4 # planned — Phase 7
 
 # L5 — Apps

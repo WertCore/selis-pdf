@@ -1,0 +1,17 @@
+{
+  "name": "@selis/wasm-loader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WASM code-splitting loader (SL-4.WASM.02) — core ≤3 MB brotli, lazy chunks for JPX/CJK/OCR/convert/editor. Viewer never downloads editor.",
+  "type": "module",
+  "main": "src/loader.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,21 @@
+[package]
+name = "selis-pdf-wasm-convert"
+description = "WASM lazy chunk: PDF→Office/HTML conversion (SL-4.WASM.02). Separate module, lazy."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-pdf-convert = { workspace = true }
