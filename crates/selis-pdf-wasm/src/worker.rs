@@ -594,7 +594,9 @@ impl Worker {
         let budget = opened.budget;
         let mut g = budget.guard_with(env.clock, env.cancel.clone());
         env.progress.progress(id, Stage::Text, 0);
-        let dl = opened.session.page_display_list(idx, &budget, &mut g)?;
+        let dl = opened
+            .session
+            .page_text_display_list(idx, &budget, &mut g)?;
         let mcid = opened
             .session
             .mcid_order(&budget, &mut g)
@@ -684,7 +686,9 @@ impl Worker {
             // the engine, at its own ticks).
             g.tick()?;
             let idx = page_index(p);
-            let dl = opened.session.page_display_list(idx, &budget, &mut g)?;
+            let dl = opened
+                .session
+                .page_text_display_list(idx, &budget, &mut g)?;
             let mcid = opened
                 .session
                 .mcid_order(&budget, &mut g)

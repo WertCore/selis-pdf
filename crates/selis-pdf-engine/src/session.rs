@@ -560,6 +560,11 @@ impl Session {
     /// reading (byte-identical for simple fonts) — an improvement must never
     /// regress into mojibake that the byte path got right.
     ///
+    /// For annotation appearance text (SL-3.TEXT.14) the font may be declared
+    /// on the appearance stream's `/Resources` rather than the page's, so
+    /// when the page resource lookup fails the annotation appearances are
+    /// tried in `/Annots` order before returning `None`.
+    ///
     /// # Budget
     ///
     /// Resolution runs under the caller's guard; the font dict parse charges
@@ -580,24 +585,62 @@ impl Session {
     ) -> Option<u32> {
         let page = self.document.pages.get(page_num)?;
         let mut resolver = self.new_resolver(budget);
-        let font_dict = resolve_font_dict(&mut resolver, page.resources.as_ref(), font_name, g)?;
-        // 1. `/ToUnicode` (§9.10.2) — the producer-declared answer wins for
-        // either font class (SL-3.TEXT.08).
-        if let Some(unicode) = font_dict
-            .to_unicode
-            .as_ref()
-            .and_then(|cmap| cmap.unicode_map(u32::from(code)))
-        {
-            return Some(unicode);
+        if let Some(fd) = resolve_font_dict(&mut resolver, page.resources.as_ref(), font_name, g) {
+            if let Some(unicode) = fd
+                .to_unicode
+                .as_ref()
+                .and_then(|cmap| cmap.unicode_map(u32::from(code)))
+            {
+                return Some(unicode);
+            }
+            if fd.is_cid() {
+                return None;
+            }
+            if let Some(u) = simple_text_unicode(&fd, code) {
+                return Some(u);
+            }
+        } else if is_standard14_fallback(font_name) {
+            // Undeclared standard-14 font: no dict to recover beyond the
+            // byte reading — but still try annotations (they may carry a real
+            // dict overriding the fallback).
         }
-        if font_dict.is_cid() {
-            return None;
+        // SL-3.TEXT.14: font declared only on an annotation appearance.
+        for annot_res in self.annotation_resources_for_page(page, budget, g) {
+            let mut r2 = self.new_resolver(budget);
+            if let Some(fd) = resolve_font_dict(&mut r2, annot_res.as_ref(), font_name, g) {
+                if let Some(unicode) = fd
+                    .to_unicode
+                    .as_ref()
+                    .and_then(|cmap| cmap.unicode_map(u32::from(code)))
+                {
+                    return Some(unicode);
+                }
+                if fd.is_cid() {
+                    return None;
+                }
+                if let Some(u) = simple_text_unicode(&fd, code) {
+                    return Some(u);
+                }
+            }
         }
-        // 2. Simple font, no `/ToUnicode`: the encoding/glyph-name chain of
-        // SL-3.TEXT.02 (`selis_font::TextRecovery`), wired for extraction by
-        // SL-3.TEXT.08 so non-ASCII codes stop relying on the Latin-1-lucky
-        // byte-as-character reading.
-        simple_text_unicode(&font_dict, code)
+        None
+    }
+
+    /// The `/Resources` objects of every drawable annotation appearance on a
+    /// page, in `/Annots` order (SL-3.TEXT.14 fallback for `text_unicode`).
+    /// The set matches the render walk's inclusion policy exactly (hidden and
+    /// degenerate appearances contribute nothing to either path).
+    fn annotation_resources_for_page(
+        &self,
+        page: &selis_pdf_doc::Page,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Vec<Option<Obj>> {
+        let mut resolver = self.new_resolver(budget);
+        collect_drawable_appearances(&mut resolver, page, g)
+            .into_iter()
+            .map(|a| a.resources)
+            .collect()
     }
 
     /// Evaluate the conformance rules for a profile.
@@ -833,33 +876,86 @@ impl Session {
         }
         build_display_list(self, content, page.resources.as_ref(), budget, g)
     }
+
+    /// The display list of a page's annotation appearance streams (SL-3.TEXT.14):
+    /// each visible `/Annots` entry's `/AP` `/N` appearance, mapped onto its
+    /// `/Rect` exactly as the render walk does. An empty list means the page
+    /// has no drawable annotation appearances.
+    pub fn page_annotation_display_list(
+        &self,
+        page_num: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<selis_pdf_content::display_list::DisplayList> {
+        let Some(page) = self.document.pages.get(page_num) else {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "session-page",
+                detail = "page index"
+            ));
+        };
+        annotation_appearance_display_list(self, page, budget, g)
+    }
+
+    /// The display list of a page **plus** its annotation appearances, in
+    /// order (page content first, then `/Annots` appearances in dict order).
+    /// This is the text-extraction view of a page (SL-3.TEXT.14): extraction,
+    /// search, and reading order walk both, while the render path
+    /// (`render_page_walk`) composites them as separate layers.
+    pub fn page_text_display_list(
+        &self,
+        page_num: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<selis_pdf_content::display_list::DisplayList> {
+        let mut dl = self.page_display_list(page_num, budget, g)?;
+        let annot_dl = self.page_annotation_display_list(page_num, budget, g)?;
+        dl.ops.extend(annot_dl.ops);
+        Ok(dl)
+    }
 }
 
-/// The display list of every drawable annotation appearance on a page
-/// (SL-2.RAST.13): each `/Annots` entry with a `/AP` `/N` normal appearance
-/// renders as a form XObject mapped onto its `/Rect` (ISO 32000-2 §12.5.5).
-/// Annotations without an appearance (or hidden ones) contribute nothing.
-fn annotation_appearance_display_list(
-    session: &Session,
+/// One drawable annotation appearance (SL-2.RAST.13 / SL-3.TEXT.14): the
+/// normal appearance (`/AP` `/N`) mapped onto its `/Rect` (ISO 32000-2
+/// §12.5.5). The render walk and the text walk share this list so their
+/// inclusion policies cannot drift (TEXT.14 DoD: "render-side `/AP`
+/// inclusion policy unchanged").
+struct ResolvedAppearance {
+    /// The appearance form's own `/Resources` (annotations carry them on
+    /// the appearance stream, not the page).
+    resources: Option<Obj>,
+    /// The appearance stream dictionary.
+    dict: Vec<(Bytes, Obj)>,
+    /// The appearance stream raw data.
+    data: Vec<u8>,
+    /// Form `/Matrix` (form space → appearance user space; identity default).
+    form_matrix: Matrix,
+    /// Placement mapping the `/BBox` onto the `/Rect`.
+    place: Matrix,
+}
+
+/// Collect every drawable annotation appearance on a page, in `/Annots`
+/// order, with the render walk's inclusion policy (hidden and degenerate
+/// appearances contribute nothing to either path).
+fn collect_drawable_appearances(
+    resolver: &mut Resolver<'_>,
     page: &selis_pdf_doc::Page,
-    budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<selis_pdf_content::display_list::DisplayList> {
-    let mut dl = selis_pdf_content::display_list::DisplayList::new();
-    let mut resolver = session.new_resolver(budget);
+) -> Vec<ResolvedAppearance> {
+    let mut out = Vec::new();
     // The page dict: /Annots lives there, not in the doc model's Page.
     let Some(page_obj) = resolver
         .resolve(selis_pdf_cos::Ref::new(page.num, 0), g)
         .ok()
     else {
-        return Ok(dl);
+        return out;
     };
     let pairs: &[(Bytes, Obj)] = match &page_obj {
         Obj::Dict(pairs) => pairs,
-        _ => return Ok(dl),
+        _ => return out,
     };
     let Some(annots_obj) = dict_get_obj(pairs, b"Annots") else {
-        return Ok(dl);
+        return out;
     };
     let annots: Vec<Obj> = match annots_obj {
         Obj::Array(items) => items
@@ -870,7 +966,9 @@ fn annotation_appearance_display_list(
                 _ => None,
             })
             .collect(),
-        _ => return Ok(dl),
+        // A single direct annotation dict (non-standard but seen): walk it.
+        Obj::Dict(_) => vec![annots_obj.clone()],
+        _ => return out,
     };
     for annot in &annots {
         let annot_pairs: &[(Bytes, Obj)] = match annot {
@@ -887,36 +985,50 @@ fn annotation_appearance_display_list(
         {
             continue;
         }
-        // /AP /N: the normal appearance. /N may be a stream ref, an array
-        // (take the first), or a state-name dict (take the first entry).
+        // /AP /N: the normal appearance. /N may be a stream ref, a direct
+        // stream, an array (take the first), or a state-name dict (take the
+        // first entry). Refs resolve one level; anything else is a deviation.
         let Some(ap) = dict_get_obj(annot_pairs, b"AP") else {
             continue;
         };
         let ap_resolved: Obj = match ap {
             Obj::Dict(_) => ap.clone(),
+            Obj::Stream { .. } => ap.clone(),
             Obj::Ref(r) => match resolver.resolve(*r, g) {
                 Ok(d) => d,
                 Err(_) => continue,
             },
             _ => continue,
         };
+        // A bare appearance stream as /AP (no /N wrapper): treat as /N.
+        if let Obj::Stream { dict, data } = &ap_resolved {
+            let appearance_resources = dict_get_obj(dict, b"Resources").map(|o| match o {
+                Obj::Ref(r) => resolver.resolve(*r, g).unwrap_or(Obj::Null),
+                other => other.clone(),
+            });
+            let form_matrix = dict_get_obj(dict, b"Matrix")
+                .and_then(matrix_from_obj)
+                .unwrap_or(Matrix::IDENTITY);
+            let Some(place) = appearance_place(annot_pairs, dict) else {
+                continue;
+            };
+            out.push(ResolvedAppearance {
+                resources: appearance_resources,
+                dict: dict.clone(),
+                data: data.as_slice().to_vec(),
+                form_matrix,
+                place,
+            });
+            continue;
+        }
         let ap_pairs: &[(Bytes, Obj)] = match &ap_resolved {
             Obj::Dict(ap_pairs) => ap_pairs,
             _ => continue,
         };
-        let n_resolved: Option<Obj> = match dict_get_obj(ap_pairs, b"N") {
-            Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
-            Some(Obj::Array(items)) => items.first().and_then(|o| match o {
-                Obj::Ref(r) => resolver.resolve(*r, g).ok(),
-                _ => None,
-            }),
-            Some(Obj::Dict(state_pairs)) => match dict_first_value(state_pairs) {
-                Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
-                _ => None,
-            },
-            _ => None,
+        let Some(n_obj) = dict_get_obj(ap_pairs, b"N") else {
+            continue;
         };
-        let Some(Obj::Stream { dict, data }) = n_resolved else {
+        let Some((dict, data)) = resolve_appearance_stream(resolver, n_obj, g) else {
             continue;
         };
         // The appearance form's own /Resources (annotations carry them on
@@ -925,61 +1037,158 @@ fn annotation_appearance_display_list(
             Obj::Ref(r) => resolver.resolve(*r, g).unwrap_or(Obj::Null),
             other => other.clone(),
         });
-        let content = unfilter_stream_data(&dict, &data, g);
         // Form /Matrix (form space → appearance user space; default identity).
         let form_matrix = dict_get_obj(&dict, b"Matrix")
             .and_then(matrix_from_obj)
             .unwrap_or(Matrix::IDENTITY);
-        // /Rect maps the appearance /BBox onto the page. Rect values may be
-        // swapped (lower-left > upper-right is legal); normalise.
-        let Some(Obj::Array(rect_arr)) = dict_get_obj(annot_pairs, b"Rect") else {
+        let Some(place) = appearance_place(annot_pairs, &dict) else {
             continue;
         };
-        let num = |v: Option<&Obj>| -> Option<f64> {
-            match v? {
-                Obj::Int(n) => Some(*n as f64),
-                Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+        out.push(ResolvedAppearance {
+            resources: appearance_resources,
+            dict,
+            data,
+            form_matrix,
+            place,
+        });
+    }
+    out
+}
+
+/// Resolve an `/AP` `/N` value to its appearance stream dict + raw data.
+/// Handles a stream ref, a direct stream, an array (first element), and a
+/// state-name dict (first value), resolving one reference level.
+fn resolve_appearance_stream(
+    resolver: &mut Resolver<'_>,
+    n_obj: &Obj,
+    g: &mut BudgetGuard<'_>,
+) -> Option<(Vec<(Bytes, Obj)>, Vec<u8>)> {
+    let as_stream = |o: &Obj| -> Option<(Vec<(Bytes, Obj)>, Vec<u8>)> {
+        match o {
+            Obj::Stream { dict, data } => Some((dict.clone(), data.as_slice().to_vec())),
+            _ => None,
+        }
+    };
+    match n_obj {
+        Obj::Ref(r) => {
+            let resolved = resolver.resolve(*r, g).ok()?;
+            // A ref may point at a stream, an array of states, or a
+            // state-name dict — recurse one level without re-resolving.
+            match &resolved {
+                Obj::Stream { .. } => as_stream(&resolved),
+                Obj::Array(items) => {
+                    let first = items.first()?;
+                    match first {
+                        Obj::Ref(r2) => as_stream(&resolver.resolve(*r2, g).ok()?),
+                        other => as_stream(other),
+                    }
+                }
+                Obj::Dict(pairs) => {
+                    let first = dict_first_value(pairs)?;
+                    match first {
+                        Obj::Ref(r2) => as_stream(&resolver.resolve(*r2, g).ok()?),
+                        other => as_stream(other),
+                    }
+                }
                 _ => None,
             }
-        };
-        let (Some(rx0), Some(ry0), Some(rx1), Some(ry1)) = (
-            num(rect_arr.first()),
-            num(rect_arr.get(1)),
-            num(rect_arr.get(2)),
-            num(rect_arr.get(3)),
-        ) else {
-            continue;
-        };
-        let (rx0, rx1) = (rx0.min(rx1), rx1.max(rx0));
-        let (ry0, ry1) = (ry0.min(ry1), ry1.max(ry0));
-        let (rw, rh) = (rx1 - rx0, ry1 - ry0);
-        if !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
-            continue; // degenerate /Rect: nothing drawable
         }
-        // BBox (form space); default the full unit square-ish box if absent.
-        let bbox = dict_get_obj(&dict, b"BBox")
-            .and_then(|o| match o {
-                Obj::Array(arr) => Some((
-                    num(arr.first()),
-                    num(arr.get(1)),
-                    num(arr.get(2)),
-                    num(arr.get(3)),
-                )),
-                _ => None,
-            })
-            .and_then(|(a, b, c, d)| Some((a?, b?, c?, d?)))
-            .unwrap_or((0.0, 0.0, rw, rh));
-        let (bw, bh) = (bbox.2 - bbox.0, bbox.3 - bbox.1);
-        if !bw.is_finite() || !bh.is_finite() || bw <= 0.0 || bh <= 0.0 {
-            continue;
+        Obj::Stream { .. } => as_stream(n_obj),
+        Obj::Array(items) => {
+            let first = items.first()?;
+            match first {
+                Obj::Ref(r) => as_stream(&resolver.resolve(*r, g).ok()?),
+                other => as_stream(other),
+            }
         }
-        // Placement: scale the BBox onto the /Rect and translate.
-        let sx = rw / bw;
-        let sy = rh / bh;
-        let place = Matrix::new(sx, 0.0, 0.0, sy, rx0 - bbox.0 * sx, ry0 - bbox.1 * sy);
-        if !place.is_finite() {
-            continue;
+        Obj::Dict(state_pairs) => {
+            let first = dict_first_value(state_pairs)?;
+            match first {
+                Obj::Ref(r) => as_stream(&resolver.resolve(*r, g).ok()?),
+                other => as_stream(other),
+            }
         }
+        _ => None,
+    }
+}
+
+/// The placement matrix mapping an appearance `/BBox` onto its annotation
+/// `/Rect` (ISO 32000-2 §12.5.5). `None` when the rect is missing or
+/// degenerate, the bbox is degenerate, or the matrix is non-finite —
+/// nothing drawable.
+fn appearance_place(annot_pairs: &[(Bytes, Obj)], dict: &[(Bytes, Obj)]) -> Option<Matrix> {
+    let num = |v: Option<&Obj>| -> Option<f64> {
+        match v? {
+            Obj::Int(n) => Some(*n as f64),
+            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    };
+    // /Rect maps the appearance /BBox onto the page. Rect values may be
+    // swapped (lower-left > upper-right is legal); normalise.
+    let Obj::Array(rect_arr) = dict_get_obj(annot_pairs, b"Rect")? else {
+        return None;
+    };
+    let (Some(rx0), Some(ry0), Some(rx1), Some(ry1)) = (
+        num(rect_arr.first()),
+        num(rect_arr.get(1)),
+        num(rect_arr.get(2)),
+        num(rect_arr.get(3)),
+    ) else {
+        return None;
+    };
+    let (rx0, rx1) = (rx0.min(rx1), rx1.max(rx0));
+    let (ry0, ry1) = (ry0.min(ry1), ry1.max(ry0));
+    let (rw, rh) = (rx1 - rx0, ry1 - ry0);
+    if !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
+        return None; // degenerate /Rect: nothing drawable
+    }
+    // BBox (form space); default the full unit square-ish box if absent.
+    let bbox = dict_get_obj(dict, b"BBox")
+        .and_then(|o| match o {
+            Obj::Array(arr) => Some((
+                num(arr.first()),
+                num(arr.get(1)),
+                num(arr.get(2)),
+                num(arr.get(3)),
+            )),
+            _ => None,
+        })
+        .and_then(|(a, b, c, d)| Some((a?, b?, c?, d?)))
+        .unwrap_or((0.0, 0.0, rw, rh));
+    let (bw, bh) = (bbox.2 - bbox.0, bbox.3 - bbox.1);
+    if !bw.is_finite() || !bh.is_finite() || bw <= 0.0 || bh <= 0.0 {
+        return None;
+    }
+    // Placement: scale the BBox onto the /Rect and translate.
+    let sx = rw / bw;
+    let sy = rh / bh;
+    let place = Matrix::new(sx, 0.0, 0.0, sy, rx0 - bbox.0 * sx, ry0 - bbox.1 * sy);
+    if !place.is_finite() {
+        return None;
+    }
+    Some(place)
+}
+
+/// The display list of every drawable annotation appearance on a page
+/// (SL-2.RAST.13): each `/Annots` entry with a `/AP` `/N` normal appearance
+/// renders as a form XObject mapped onto its `/Rect` (ISO 32000-2 §12.5.5).
+/// Annotations without an appearance (or hidden ones) contribute nothing.
+fn annotation_appearance_display_list(
+    session: &Session,
+    page: &selis_pdf_doc::Page,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<selis_pdf_content::display_list::DisplayList> {
+    let mut dl = selis_pdf_content::display_list::DisplayList::new();
+    let mut resolver = session.new_resolver(budget);
+    for appearance in collect_drawable_appearances(&mut resolver, page, g) {
+        let appearance_resources = appearance.resources;
+        let dict = appearance.dict;
+        let data = appearance.data;
+        let form_matrix = appearance.form_matrix;
+        let place = appearance.place;
+        let content = unfilter_stream_data(&dict, &data, g);
         // Content transform: /Matrix first, then the placement. The content
         // interpreter starts from an identity CTM, so both are prepended as
         // `cm` operators in application order.
@@ -3294,6 +3503,14 @@ fn dict_get_obj<'a>(pairs: &'a [(selis_bytes::Bytes, Obj)], key: &[u8]) -> Optio
         .map(|(_, v)| v)
 }
 
+fn is_standard14_fallback(name: &Bytes) -> bool {
+    let s = match std::str::from_utf8(name.as_slice()) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    selis_font::fallback::fallback_bytes(s).is_some()
+}
+
 /// A 6-element `/Matrix` array as a `Matrix`.
 fn matrix_from_obj(obj: &Obj) -> Option<selis_geom::Matrix> {
     let Obj::Array(items) = obj else {
@@ -4087,6 +4304,302 @@ mod tests {
             assert!((sp.point.x - 0.5).abs() < 1e-9, "x preserved");
             assert!((sp.point.y - 0.5).abs() < 1e-9, "y preserved");
             assert!((sp.components[0] - 1.0).abs() < 1e-9, "red preserved");
+        }
+    }
+
+    /// SL-3.TEXT.14: annotation `/AP` appearance text joins the extraction
+    /// view. A page whose content stream is empty but whose Square annotation
+    /// carries `(Annotation appearance)` in `/AP /N` must extract that text
+    /// through `page_text_display_list` (page content first, appearances in
+    /// `/Annots` order), while `page_display_list` stays empty and the
+    /// render-side inclusion policy (hidden/degenerate skipped) holds for
+    /// both paths.
+    mod text14_annotation_appearances {
+        use super::*;
+        use selis_pdf_cos::Ref;
+
+        fn bytes(v: &[u8]) -> Bytes {
+            Bytes::copy_from_slice(v)
+        }
+
+        fn name(v: &[u8]) -> Obj {
+            Obj::Name(bytes(v))
+        }
+
+        fn int(n: i64) -> Obj {
+            Obj::Int(n)
+        }
+
+        fn real(v: f64) -> Obj {
+            #[allow(clippy::cast_possible_truncation)]
+            let scaled = (v * 1000.0).round() as i64;
+            Obj::Real { scaled, scale: 3 }
+        }
+
+        /// One page with empty content and one Square annotation whose `/AP`
+        /// `/N` form shows `text` with `/Helvetica` (undeclared, as the
+        /// synthetic corpus fixture does). `flags` sets `/F` (4 = print, 2 =
+        /// hidden).
+        fn pdf_with_appearance(text_show: &[u8], flags: i64) -> Vec<u8> {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut builder = DocumentBuilder::new();
+            let content_num = builder.allocate();
+            builder.add_object(
+                content_num,
+                Obj::Stream {
+                    dict: vec![(bytes(b"Length"), int(0))],
+                    data: selis_bytes::Bytes::new(),
+                },
+            );
+            let mut form_content = b"0 0 0 rg BT /Helvetica 24 Tf 20 90 Td (".to_vec();
+            form_content.extend_from_slice(text_show);
+            form_content.extend_from_slice(b") Tj ET");
+            let form_num = builder.allocate();
+            builder.add_object(
+                form_num,
+                Obj::Stream {
+                    dict: vec![
+                        (bytes(b"Type"), name(b"XObject")),
+                        (bytes(b"Subtype"), name(b"Form")),
+                        (
+                            bytes(b"BBox"),
+                            Obj::Array(vec![int(0), int(0), int(400), int(200)]),
+                        ),
+                        (
+                            bytes(b"Length"),
+                            int(i64::try_from(form_content.len()).unwrap_or(i64::MAX)),
+                        ),
+                    ],
+                    data: Bytes::copy_from_slice(&form_content),
+                },
+            );
+            let ap_num = builder.allocate();
+            builder.add_object(
+                ap_num,
+                Obj::Dict(vec![(bytes(b"N"), Obj::Ref(Ref::new(form_num, 0)))]),
+            );
+            let annot_num = builder.allocate();
+            builder.add_object(
+                annot_num,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), name(b"Annot")),
+                    (bytes(b"Subtype"), name(b"Square")),
+                    (
+                        bytes(b"Rect"),
+                        Obj::Array(vec![real(100.0), real(100.0), real(500.0), real(300.0)]),
+                    ),
+                    (bytes(b"F"), int(flags)),
+                    (bytes(b"AP"), Obj::Ref(Ref::new(ap_num, 0))),
+                ]),
+            );
+            builder.add_page_with_extra(
+                612.0,
+                792.0,
+                &[Ref::new(content_num, 0)],
+                None,
+                vec![(
+                    b"Annots".to_vec(),
+                    Obj::Array(vec![Obj::Ref(Ref::new(annot_num, 0))]),
+                )],
+            );
+            builder.write(&budget, &mut g).expect("write")
+        }
+
+        fn text_ops(dl: &selis_pdf_content::display_list::DisplayList) -> usize {
+            dl.ops
+                .iter()
+                .filter(|op| matches!(op, selis_pdf_content::display_list::Op::Text { .. }))
+                .count()
+        }
+
+        fn text_codes(dl: &selis_pdf_content::display_list::DisplayList) -> Vec<u16> {
+            let mut out = Vec::new();
+            for op in &dl.ops {
+                if let selis_pdf_content::display_list::Op::Text { runs, .. } = op {
+                    for run in runs {
+                        out.extend(run.glyphs.iter().copied());
+                    }
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn empty_page_with_appearance_text_extracts() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(
+                pdf_with_appearance(b"Annotation appearance", 4),
+                &budget,
+                &clock,
+            )
+            .expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let page_dl = session
+                .page_display_list(0, &budget, &mut g)
+                .expect("page dl");
+            assert_eq!(text_ops(&page_dl), 0, "page stream is empty");
+            let annot_dl = session
+                .page_annotation_display_list(0, &budget, &mut g)
+                .expect("annot dl");
+            assert!(text_ops(&annot_dl) > 0, "appearance carries text");
+            let text_dl = session
+                .page_text_display_list(0, &budget, &mut g)
+                .expect("text dl");
+            assert_eq!(
+                text_ops(&text_dl),
+                text_ops(&annot_dl),
+                "text view is page + appearances in order"
+            );
+            // The appearance bytes survive the walk untouched (the extractor
+            // layer recovers them through the same TEXT.02 chain — pinned
+            // end-to-end by the CLI `extract_text14` test).
+            let codes = text_codes(&text_dl);
+            let expected: Vec<u16> = b"Annotation appearance"
+                .iter()
+                .map(|b| u16::from(*b))
+                .collect();
+            assert_eq!(codes, expected);
+            // Undeclared Helvetica still recovers ASCII through the fallback.
+            for code in &codes {
+                if *code == 0x20 {
+                    continue;
+                }
+                let font = Bytes::copy_from_slice(b"Helvetica");
+                let recovered = session.text_unicode(0, &font, *code, &budget, &mut g);
+                // ASCII recovers to itself (or keeps the byte reading via None).
+                assert!(
+                    recovered.is_none_or(|u| u == u32::from(*code)),
+                    "code {code} recovers"
+                );
+            }
+        }
+
+        #[test]
+        fn hidden_appearance_contributes_no_text() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let session = Session::open(pdf_with_appearance(b"Hidden text", 2), &budget, &clock)
+                .expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let text_dl = session
+                .page_text_display_list(0, &budget, &mut g)
+                .expect("text dl");
+            assert_eq!(
+                text_ops(&text_dl),
+                0,
+                "hidden (/F bit 2) appearances stay out of text, as in render"
+            );
+        }
+
+        /// The appearance font may live only on the appearance stream's
+        /// `/Resources`: a `/Differences` mapping code 25 → `eacute` must
+        /// recover through the annotation fallback in `text_unicode`.
+        #[test]
+        fn appearance_resources_drive_unicode_recovery() {
+            let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+            let clock = FixedClock(0);
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let mut builder = DocumentBuilder::new();
+            let content_num = builder.allocate();
+            builder.add_object(
+                content_num,
+                Obj::Stream {
+                    dict: vec![(bytes(b"Length"), int(0))],
+                    data: selis_bytes::Bytes::new(),
+                },
+            );
+            // Appearance font F1 with /Differences: code 25 → eacute.
+            let font_num = builder.allocate();
+            builder.add_object(
+                font_num,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), name(b"Font")),
+                    (bytes(b"Subtype"), name(b"Type1")),
+                    (bytes(b"BaseFont"), name(b"Helvetica")),
+                    (
+                        bytes(b"Encoding"),
+                        Obj::Dict(vec![(
+                            bytes(b"Differences"),
+                            Obj::Array(vec![int(25), name(b"eacute")]),
+                        )]),
+                    ),
+                ]),
+            );
+            let res_num = builder.allocate();
+            builder.add_object(
+                res_num,
+                Obj::Dict(vec![(
+                    bytes(b"Font"),
+                    Obj::Dict(vec![(bytes(b"F1"), Obj::Ref(Ref::new(font_num, 0)))]),
+                )]),
+            );
+            // Show code 25 as hex <19> (no literal space, no 0x20).
+            let form_content = b"BT /F1 24 Tf 20 90 Td <19> Tj ET".to_vec();
+            let form_num = builder.allocate();
+            builder.add_object(
+                form_num,
+                Obj::Stream {
+                    dict: vec![
+                        (bytes(b"Type"), name(b"XObject")),
+                        (bytes(b"Subtype"), name(b"Form")),
+                        (
+                            bytes(b"BBox"),
+                            Obj::Array(vec![int(0), int(0), int(400), int(200)]),
+                        ),
+                        (bytes(b"Resources"), Obj::Ref(Ref::new(res_num, 0))),
+                        (
+                            bytes(b"Length"),
+                            int(i64::try_from(form_content.len()).unwrap_or(i64::MAX)),
+                        ),
+                    ],
+                    data: Bytes::copy_from_slice(&form_content),
+                },
+            );
+            let ap_num = builder.allocate();
+            builder.add_object(
+                ap_num,
+                Obj::Dict(vec![(bytes(b"N"), Obj::Ref(Ref::new(form_num, 0)))]),
+            );
+            let annot_num = builder.allocate();
+            builder.add_object(
+                annot_num,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), name(b"Annot")),
+                    (bytes(b"Subtype"), name(b"Widget")),
+                    (
+                        bytes(b"Rect"),
+                        Obj::Array(vec![real(100.0), real(100.0), real(500.0), real(300.0)]),
+                    ),
+                    (bytes(b"F"), int(4)),
+                    (bytes(b"AP"), Obj::Ref(Ref::new(ap_num, 0))),
+                ]),
+            );
+            builder.add_page_with_extra(
+                612.0,
+                792.0,
+                &[Ref::new(content_num, 0)],
+                None,
+                vec![(
+                    b"Annots".to_vec(),
+                    Obj::Array(vec![Obj::Ref(Ref::new(annot_num, 0))]),
+                )],
+            );
+            let bytes_out = builder.write(&budget, &mut g).expect("write");
+            let session = Session::open(bytes_out, &budget, &clock).expect("open");
+            let mut g = budget.guard_with(&clock, CancelToken::new());
+            let f1 = Bytes::copy_from_slice(b"F1");
+            assert_eq!(
+                session.text_unicode(0, &f1, 25, &budget, &mut g),
+                Some(0x00E9),
+                "appearance /Differences recovers eacute"
+            );
+            let text_dl = session
+                .page_text_display_list(0, &budget, &mut g)
+                .expect("text dl");
+            assert_eq!(text_codes(&text_dl), vec![25u16]);
         }
     }
 }
