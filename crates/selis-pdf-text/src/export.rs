@@ -281,6 +281,8 @@ mod tests {
             font: Bytes::copy_from_slice(font.as_bytes()),
             size,
             space: size * 0.25,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         }
     }

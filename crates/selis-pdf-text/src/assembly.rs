@@ -1,11 +1,19 @@
-//! Run, word, and line assembly (SL-3.TEXT.03).
+//! Run, word, and line assembly (SL-3.TEXT.03, SL-3.TEXT.13).
 //!
 //! Groups the positioned glyphs from the content interpreter into:
 //!
 //! * **runs** — consecutive glyphs sharing a font and size;
 //! * **words** — runs split at space characters (code 0x20) and at advance
 //!   gaps exceeding half of the font's own space width (SL-3.TEXT.09);
-//! * **lines** — words grouped by y-position within a tolerance.
+//! * **lines** — words grouped by baseline position within a tolerance.
+//!
+//! The baseline model is direction-aware (SL-3.TEXT.13): continuity is the
+//! perpendicular distance to the `Tm` writing direction, and word gaps are
+//! the along-direction projection minus the pen step — not raw x/y. For
+//! identity `Tm` this is exactly the old horizontal model (`|Δy|`, `Δx`),
+//! so the horizontal majority is bit-identical; a 90° `Tm` vertical run
+//! (and CJK vertical runs stepping along the same axis) stays one run, one
+//! word, one line.
 //!
 //! The output feeds reading-order inference (SL-3.TEXT.04), selection
 //! (SL-3.TEXT.05), and search (SL-3.TEXT.06).
@@ -81,6 +89,8 @@ pub fn gather_glyphs(dl: &selis_pdf_content::display_list::DisplayList) -> Vec<T
                         font: run.font.clone(),
                         size: run.size,
                         space: run.space,
+                        dir_x: run.dir_x,
+                        dir_y: run.dir_y,
                         mcid,
                     });
                 }
@@ -124,6 +134,12 @@ pub fn apply_unicode_recovery(
 }
 
 /// Group consecutive glyphs with the same font and size into runs.
+///
+/// Continuity is direction-aware (SL-3.TEXT.13): the next glyph joins the
+/// run when it lies within the perpendicular tolerance of the run's writing
+/// direction — the glyph `g`'s own direction, taken as the continuation
+/// axis. Identity `Tm` (`(1, 0)`) reduces the perpendicular check to
+/// `|Δy|`, exactly the old horizontal model.
 #[must_use]
 pub fn assemble_runs(glyphs: Vec<TextGlyph>) -> Vec<TextRun> {
     let mut out: Vec<TextRun> = Vec::new();
@@ -138,7 +154,7 @@ pub fn assemble_runs(glyphs: Vec<TextGlyph>) -> Vec<TextRun> {
                     && first.size == g_size
                     && r.glyphs
                         .last()
-                        .is_some_and(|last| (last.at.y - g.at.y).abs() <= tol)
+                        .is_some_and(|last| perp_distance(&g, last.at) <= tol)
             })
         });
         if same_style {
@@ -158,6 +174,16 @@ pub fn assemble_runs(glyphs: Vec<TextGlyph>) -> Vec<TextRun> {
     out
 }
 
+/// The perpendicular distance of a point from the line through `origin`
+/// running along `g`'s writing direction (SL-3.TEXT.13): the cross-product
+/// magnitude `|dir × (p − origin)|`. For `dir = (1, 0)` this is `|Δy|`, the
+/// horizontal baseline model; for a vertical `dir = (0, 1)` it is `|Δx|`.
+fn perp_distance(g: &TextGlyph, origin: selis_geom::Point) -> f64 {
+    let (dx, dy) = (g.dir_x, g.dir_y);
+    let (px, py) = (g.at.x - origin.x, g.at.y - origin.y);
+    (dx * py - dy * px).abs()
+}
+
 /// Split runs at space characters (code 0x20) into words.
 #[must_use]
 pub fn assemble_words(runs: Vec<TextRun>) -> Vec<TextWord> {
@@ -168,7 +194,7 @@ pub fn assemble_words(runs: Vec<TextRun>) -> Vec<TextWord> {
         let size = word_glyphs.last().map(|g| g.size).unwrap_or(12.0);
         let same_baseline = match (run.glyphs.first(), word_glyphs.last()) {
             (Some(first), Some(last)) => {
-                (first.at.y - last.at.y).abs() <= size * LINE_TOLERANCE_FRACTION
+                perp_distance(first, last.at) <= size * LINE_TOLERANCE_FRACTION
             }
             _ => true,
         };
@@ -186,8 +212,11 @@ pub fn assemble_words(runs: Vec<TextRun>) -> Vec<TextWord> {
                 // of more than half an *extra* space beyond that step — in the
                 // same (user-space) units as both positions — indicates a space
                 // even without a space glyph, common in generated PDFs whose
-                // content stream has no space characters at all.
-                let gap = g.at.x - last.at.x;
+                // content stream has no space characters at all. The gap is
+                // the advance along the writing direction (SL-3.TEXT.13): the
+                // projection of `g − last` onto the direction. Identity `Tm`
+                // reduces to `Δx`, the old model.
+                let gap = along_distance(&g, last.at);
                 let over_space = gap - last.advance;
                 if last.space > 0.0 && over_space > last.space * WORD_GAP_SPACE_FRACTION {
                     out.push(word_from_glyphs(std::mem::take(&mut word_glyphs)));
@@ -206,7 +235,21 @@ pub fn assemble_words(runs: Vec<TextRun>) -> Vec<TextWord> {
     out
 }
 
-/// Group words into lines by y-position.
+/// The signed advance of `p` from `origin` along `g`'s writing direction
+/// (SL-3.TEXT.13): the projection `dir · (p − origin)`. Identity `Tm`
+/// (`(1, 0)`) reduces to `Δx`.
+fn along_distance(g: &TextGlyph, origin: selis_geom::Point) -> f64 {
+    let (dx, dy) = (g.dir_x, g.dir_y);
+    let (px, py) = (g.at.x - origin.x, g.at.y - origin.y);
+    dx * px + dy * py
+}
+
+/// Group words into lines by baseline clustering.
+///
+/// Baseline clustering is direction-aware (SL-3.TEXT.13): continuity is the
+/// perpendicular distance to the `Tm` writing direction of the line's first
+/// glyph, rather than raw y-position. Identity `Tm` (`(1, 0)`) reduces the
+/// perpendicular distance to `|Δy|`, exactly the old horizontal model.
 #[must_use]
 pub fn assemble_lines(words: Vec<TextWord>) -> Vec<TextLine> {
     let mut out: Vec<TextLine> = Vec::new();
@@ -219,11 +262,25 @@ pub fn assemble_lines(words: Vec<TextWord>) -> Vec<TextLine> {
             .unwrap_or(12.0);
         let tol = size * LINE_TOLERANCE_FRACTION;
         let w_bbox = w.bbox;
+        let w_centre =
+            selis_geom::Point::new((w_bbox.x0 + w_bbox.x1) / 2.0, (w_bbox.y0 + w_bbox.y1) / 2.0);
+
         let same_line = out.last().is_some_and(|l| {
-            let ly = (l.bbox.y0 + l.bbox.y1) / 2.0;
-            let wy = (w_bbox.y0 + w_bbox.y1) / 2.0;
-            (ly - wy).abs() <= tol
+            let first_glyph = l
+                .words
+                .first()
+                .and_then(|w| w.runs.first())
+                .and_then(|r| r.glyphs.first());
+            match first_glyph {
+                Some(g) => perp_distance_pt(g, w_centre) <= tol,
+                // A line always has at least one word with at least one run
+                // with at least one glyph (the invariant `assemble_words`
+                // preserves), so this branch is unreachable in practice; the
+                // match keeps the lint set total without a panic primitive.
+                None => true,
+            }
         });
+
         if same_line {
             if let Some(line) = out.last_mut() {
                 line.words.push(w);
@@ -237,6 +294,14 @@ pub fn assemble_lines(words: Vec<TextWord>) -> Vec<TextLine> {
         }
     }
     out
+}
+
+/// The perpendicular distance of a point `p` from the line through `origin`
+/// running along `g`'s writing direction.
+fn perp_distance_pt(g: &TextGlyph, p: selis_geom::Point) -> f64 {
+    let (dx, dy) = (g.dir_x, g.dir_y);
+    let (px, py) = (p.x - g.at.x, p.y - g.at.y);
+    (dx * py - dy * px).abs()
 }
 
 /// Build a word from its glyphs (grouping into runs by font/size).
@@ -285,6 +350,8 @@ mod tests {
             font: Bytes::copy_from_slice(font.as_bytes()),
             size,
             space: size * 0.25,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         }
     }
@@ -298,6 +365,8 @@ mod tests {
             font: Bytes::copy_from_slice(b"F1"),
             size,
             space,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         }
     }
@@ -459,6 +528,8 @@ mod gap_properties {
             font: Bytes::copy_from_slice(b"F1"),
             size: 24.0,
             space,
+            dir_x: 1.0,
+            dir_y: 0.0,
             mcid: None,
         }
     }

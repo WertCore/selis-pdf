@@ -69,11 +69,12 @@ impl Default for TextState {
 /// A positioned glyph from a show operation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextGlyph {
-    /// The horizontal pen step this glyph moves in user space (the
-    /// justified advance **pre-multiplied** through the text matrix's linear
-    /// part, §9.4.3 — SL-3.TEXT.09/SL-3.TEXT.11) — the x-component of the
-    /// origin delta, the reference the extractor's word-gap inference
-    /// measures the next origin against.
+    /// The pen step this glyph moves in user space, measured **along the
+    /// writing direction** (the justified advance **pre-multiplied** through
+    /// the text matrix's linear part, §9.4.3 — SL-3.TEXT.09/SL-3.TEXT.11,
+    /// generalised to the `Tm` writing direction in SL-3.TEXT.13): the
+    /// length `|adv × (a, b)|`, the reference the extractor's word-gap
+    /// inference measures the next origin's projection against.
     pub advance: f64,
     /// The character code.
     pub code: u16,
@@ -83,11 +84,20 @@ pub struct TextGlyph {
     pub font: Bytes,
     /// The font size.
     pub size: f64,
-    /// The user-space horizontal width this font's *space* glyph occupies
-    /// under the current text state, mapped through the text matrix exactly
-    /// like `advance` (SL-3.TEXT.09/SL-3.TEXT.11): the reference distance
-    /// for word-gap inference in the text layer.
+    /// The user-space width this font's *space* glyph occupies under the
+    /// current text state, measured along the writing direction exactly like
+    /// `advance` (SL-3.TEXT.09/SL-3.TEXT.11/SL-3.TEXT.13): the reference
+    /// distance for word-gap inference in the text layer.
     pub space: f64,
+    /// The writing direction in user space: the text-space +x axis mapped
+    /// through the text matrix's linear part, normalised
+    /// (`(a, b) / |(a, b)|`, PDF 32000-2 §9.4.3 — SL-3.TEXT.13). Identity
+    /// `Tm` gives `(1, 0)`; a 90° `0 1 -1 0 Tm` gives `(0, 1)`. A singular
+    /// or non-finite linear part falls back to `(1, 0)` so assembly stays
+    /// total over hostile input.
+    pub dir_x: f64,
+    /// The y-component of the writing direction (see `dir_x`).
+    pub dir_y: f64,
     /// The marked-content id of the enclosing `BDC`/`EMC` span, if any.
     pub mcid: Option<u32>,
 }
@@ -216,10 +226,12 @@ fn pre_translate(matrix: Matrix, tx: f64, ty: f64) -> Matrix {
 /// Show a string: decode the codes, position each glyph, advance the matrix.
 ///
 /// Each emitted [`TextGlyph`] carries the user-space pen step (`advance`) and
-/// the font's space width under the same text state (`space`) so the text
-/// layer's word-gap inference compares like with like (SL-3.TEXT.09): both map
-/// through the text matrix exactly as the origin does (§9.4.3,
-/// SL-3.TEXT.11), never raw text-space units.
+/// the font's space width under the same text state (`space`) — both measured
+/// **along the writing direction** — so the text layer's word-gap inference
+/// compares like with like (SL-3.TEXT.09): both map through the text matrix
+/// exactly as the origin does (§9.4.3, SL-3.TEXT.11), never raw text-space
+/// units. The writing direction itself rides along (`dir_x`/`dir_y`,
+/// SL-3.TEXT.13) so the baseline model tolerates vertical runs.
 fn show_string(
     state: &mut TextState,
     text: &[u8],
@@ -230,12 +242,14 @@ fn show_string(
         return Vec::new(); // no font set: nothing can be shown
     };
     let size = state.font_size;
-    // The user-space width of the font's space glyph at this text state
-    // (constant across the string: `Td`-style advances only move the origin,
-    // they never change the matrix's linear part).
+    // The writing direction and its scale are constant across the string:
+    // `Td`-style advances only move the origin, they never change the
+    // matrix's linear part.
+    let (dir_x, dir_y, scale) = writing_dir(&state.matrix);
+    // The user-space length of the font's space glyph at this text state.
     let space_units = space_width_units(is_cid, width_of);
     let space_text = justified_advance(space_units, size, 0.0, 0.0, state.h_scale, false, false);
-    let space = pen_x(&state.matrix, space_text);
+    let space = space_text * scale;
     let mut out = Vec::new();
     for code in codes(text, is_cid) {
         let width = width_of(code);
@@ -249,14 +263,15 @@ fn show_string(
             code == 0x20,
         );
         let at = state.matrix.apply(Point::new(0.0, state.rise));
-        let advance_x = pen_x(&state.matrix, advance);
         out.push(TextGlyph {
             code,
             at,
-            advance: advance_x,
+            advance: advance * scale,
             font: font.clone(),
             size,
             space,
+            dir_x,
+            dir_y,
             mcid: state.mcid,
         });
         state.matrix = pre_translate(state.matrix, advance, 0.0);
@@ -264,14 +279,26 @@ fn show_string(
     out
 }
 
-/// The user-space x the pen moves for a text-space advance of `adv`
-/// (SL-3.TEXT.09's metric, computed under SL-3.TEXT.11's §9.4.3
-/// pre-multiplication): `adv` rides the text matrix's linear part, exactly
-/// the x-component of the origin delta the next glyph observes.
-fn pen_x(matrix: &Matrix, adv: f64) -> f64 {
-    let p0 = matrix.apply(Point::new(0.0, 0.0));
-    let p1 = pre_translate(*matrix, adv, 0.0).apply(Point::new(0.0, 0.0));
-    p1.x - p0.x
+/// The writing direction of a text matrix (SL-3.TEXT.13): the text-space +x
+/// axis `(a, b)` normalised, plus its length `|(a, b)|` — the factor a
+/// text-space advance scales by into user space.
+///
+/// A singular or non-finite linear part falls back to `(1, 0)` with a zero
+/// scale (zero-length advances, never a NaN direction), so assembly stays
+/// total over hostile input. Vertical CJK (`/WMode 1`) advances along the
+/// same axis once positioned: the direction is a property of `Tm`, not of
+/// the font, so CJK vertical runs that step along +y share the `(0, 1)`
+/// direction with a rotated 90° `Tm`.
+fn writing_dir(matrix: &Matrix) -> (f64, f64, f64) {
+    let (a, b) = (matrix.a, matrix.b);
+    if !a.is_finite() || !b.is_finite() {
+        return (1.0, 0.0, 0.0);
+    }
+    let scale = a.hypot(b);
+    if !scale.is_finite() || scale <= 1e-12 {
+        return (1.0, 0.0, 0.0);
+    }
+    (a / scale, b / scale, scale)
 }
 
 /// The width (in 1000/em glyph space) to use for the font's *space* glyph
@@ -618,13 +645,18 @@ mod tests {
             );
             pen_y += 5.0;
         }
-        // The §9.4.3 invariant SL-3.TEXT.09 relies on survives the fix: the
-        // recorded `advance` is the x-component of the mapped step — zero
-        // under a pure 90° rotation, exactly the observed origin x delta.
+        // The §9.4.3 invariant SL-3.TEXT.09/SL-3.TEXT.13 relies on survives
+        // the fix: the recorded `advance` is the along-writing-direction
+        // component of the mapped step — zero under a pure 90° rotation
+        // (the origin x delta is zero, the y delta is 5), exactly the
+        // observed origin delta projected onto the writing direction.
         for pair in glyphs.windows(2) {
+            let dx = pair[1].at.x - pair[0].at.x;
+            let dy = pair[1].at.y - pair[0].at.y;
+            let along = pair[0].dir_x * dx + pair[0].dir_y * dy;
             assert!(
-                (pair[1].at.x - pair[0].at.x - pair[0].advance).abs() < 1e-9,
-                "advance equals the observed origin x delta"
+                (along - pair[0].advance).abs() < 1e-9,
+                "advance equals the observed origin delta projected onto the writing direction"
             );
         }
     }

@@ -337,6 +337,8 @@ fn execute_inner(
                             font: glyph.font,
                             size: glyph.size,
                             space: glyph.space,
+                            dir_x: glyph.dir_x,
+                            dir_y: glyph.dir_y,
                             glyphs: vec![glyph.code],
                         }],
                     });
