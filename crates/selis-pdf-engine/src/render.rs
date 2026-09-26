@@ -511,16 +511,19 @@ enum GlyphPaint {
 /// spanning most of the full-width advance. Built in text space and taken
 /// through the same text-matrix chain as a glyph outline, so it lands
 /// wherever the run was laid out — the position never depends on font
-/// bytes (ADR-P0012 with or without chunks).
+/// bytes (ADR-P0012 with or without chunks). Like outlines, the box rides
+/// `Tm`'s linear part (SL-3.TEXT.12); under identity `Tm` this is a plain
+/// translate, bit-identical to the pre-TEXT.12 path.
 fn fill_notdef_box(
     backend: &mut TinySkiaBackend,
     at: Point,
+    tm: Matrix,
     size: f64,
     ctm: Matrix,
     page_ctm: Matrix,
     paint: &RasterPaint,
 ) {
-    let m = Matrix::translate(at.x, at.y).then(ctm).then(page_ctm);
+    let m = text_to_user(at, tm).then(ctm).then(page_ctm);
     let x0 = size * 0.1;
     let y0 = size * 0.03;
     let x1 = size * 0.9;
@@ -718,7 +721,17 @@ pub fn render_display_list_with_stats(
                 let spec = stroke_spec(state, state.ctm.then(page_ctm));
                 let _ = selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
             }
-            Op::Text { at, state, runs } => {
+            Op::Text {
+                at,
+                tm,
+                state,
+                runs,
+            } => {
+                // A non-finite `Tm` comes from document numbers (NaN/Inf):
+                // skip the glyphs (a deviation), never produce NaN pixels.
+                if !tm.is_finite() || !at.x.is_finite() || !at.y.is_finite() {
+                    continue;
+                }
                 for run in runs {
                     let Some(mut view) = text_cache.font(font_data, &run.font, stats) else {
                         continue;
@@ -759,10 +772,18 @@ pub fn render_display_list_with_stats(
                         match glyph_paint {
                             GlyphPaint::Glyph { cmds, scale } => {
                                 // Glyph outline → text space (size scale) →
-                                // user space (position) → device (CTM) → page
-                                // view (DPI/flip/`/Rotate`).
+                                // user space (`Tm` linear part + `at`) → device
+                                // (CTM) → page view (DPI/flip/`/Rotate`)
+                                // (PDF 32000-2:2020 §9.4.2, SL-3.TEXT.12): the
+                                // font-unit outline scales by size/unitsPerEm
+                                // into text space, rides `Tm`'s linear part
+                                // into user space at `at` (which already holds
+                                // the rise-mapped translation), then the CTM
+                                // chain. Under identity `Tm` the middle matrix
+                                // is a plain translate, bit-identical to the
+                                // pre-TEXT.12 path.
                                 let m = Matrix::scale(scale, scale)
-                                    .then(Matrix::translate(at.x, at.y))
+                                    .then(text_to_user(*at, *tm))
                                     .then(state.ctm)
                                     .then(page_ctm);
                                 let transformed = transform_outline(&cmds, m);
@@ -779,9 +800,9 @@ pub fn render_display_list_with_stats(
                                     &paint,
                                 );
                             }
-                            GlyphPaint::Tofu => {
-                                fill_notdef_box(backend, *at, run.size, state.ctm, page_ctm, &paint)
-                            }
+                            GlyphPaint::Tofu => fill_notdef_box(
+                                backend, *at, *tm, run.size, state.ctm, page_ctm, &paint,
+                            ),
                             GlyphPaint::Skip => {}
                         }
                     }
@@ -972,6 +993,15 @@ fn transform_raster_path(path: &RasterPath, m: Matrix) -> RasterPath {
         })
         .collect();
     RasterPath { commands }
+}
+
+/// The text→user matrix for one glyph (PDF 32000-2:2020 §9.4.2, SL-3.TEXT.12):
+/// the `Tm` linear part with the glyph origin as the translation. The
+/// font-unit outline is pre-scaled by size/unitsPerEm into text space, so the
+/// full chain is `scale → text_to_user → ctm → page_ctm`. Under identity `Tm`
+/// this is a plain translate, bit-identical to the pre-TEXT.12 path.
+fn text_to_user(at: Point, tm: Matrix) -> Matrix {
+    Matrix::new(tm.a, tm.b, tm.c, tm.d, at.x, at.y)
 }
 
 /// The resolved state of any paint op (the caller handles group boundaries
@@ -2012,5 +2042,41 @@ mod tests {
             diffs > 0,
             "expected the rasteriser to distinguish merged vs sequential shared-pixel coverage"
         );
+    }
+
+    /// SL-3.TEXT.12: the glyph paint chain maps outlines through `Tm`'s linear
+    /// part (PDF 32000-2 §9.4.2), not just the pen origin.
+    #[test]
+    fn tm_linear_part_drives_glyph_geometry() {
+        // Identity `Tm` is a plain translate (bit-identical to pre-TEXT.12).
+        let at = Point::new(50.0, 700.0);
+        let m = text_to_user(at, Matrix::IDENTITY);
+        assert_eq!(m, Matrix::translate(50.0, 700.0));
+        // The `12 0 0 12` scale-trick scales the outline 12× at the origin.
+        let m = text_to_user(at, Matrix::new(12.0, 0.0, 0.0, 12.0, 50.0, 700.0));
+        let p = m.apply(Point::new(1.0, 0.0));
+        assert!((p.x - 62.0).abs() < 1e-9, "12× in x, got {}", p.x);
+        assert!((p.y - 700.0).abs() < 1e-9, "y unchanged, got {}", p.y);
+        // A 90° `Tm` rotates the outline: text +x lands on user +y.
+        let m = text_to_user(
+            Point::new(100.0, 200.0),
+            Matrix::new(0.0, 1.0, -1.0, 0.0, 100.0, 200.0),
+        );
+        let p = m.apply(Point::new(1.0, 0.0));
+        assert!((p.x - 100.0).abs() < 1e-9, "x fixed, got {}", p.x);
+        assert!((p.y - 201.0).abs() < 1e-9, "unit x steps +y, got {}", p.y);
+        // The full paint chain (font-unit → device with identity CTMs) keeps
+        // the scale-trick at 12 pt: a 1000-unit em at `/F 1` with `12× Tm`
+        // spans 12 user units, exactly the identity-`Tm` `/F 12` row.
+        let scale_trick = Matrix::scale(1.0 / 1000.0, 1.0 / 1000.0).then(text_to_user(
+            at,
+            Matrix::new(12.0, 0.0, 0.0, 12.0, 50.0, 700.0),
+        ));
+        let plain =
+            Matrix::scale(12.0 / 1000.0, 12.0 / 1000.0).then(text_to_user(at, Matrix::IDENTITY));
+        let p_trick = scale_trick.apply(Point::new(1000.0, 0.0));
+        let p_plain = plain.apply(Point::new(1000.0, 0.0));
+        assert!((p_trick.x - p_plain.x).abs() < 1e-9, "12 pt spans agree");
+        assert!((p_trick.x - 62.0).abs() < 1e-9, "an em spans 12 units");
     }
 }

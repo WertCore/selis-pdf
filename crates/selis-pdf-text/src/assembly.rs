@@ -70,13 +70,20 @@ pub fn gather_glyphs(dl: &selis_pdf_content::display_list::DisplayList) -> Vec<T
     use selis_pdf_content::display_list::Op;
     let mut out = Vec::new();
     for op in &dl.ops {
-        if let Op::Text { at, state, runs } = op {
+        if let Op::Text {
+            at,
+            tm,
+            state,
+            runs,
+        } = op
+        {
             let mcid = state.mcid;
             for run in runs {
                 for &code in &run.glyphs {
                     out.push(TextGlyph {
                         code,
                         at: *at,
+                        tm: *tm,
                         advance: run.advance,
                         font: run.font.clone(),
                         size: run.size,
@@ -281,6 +288,7 @@ mod tests {
         TextGlyph {
             code,
             at: Point::new(x, y),
+            tm: selis_geom::Matrix::IDENTITY,
             advance: size * 0.5,
             font: Bytes::copy_from_slice(font.as_bytes()),
             size,
@@ -294,6 +302,7 @@ mod tests {
         TextGlyph {
             code,
             at: Point::new(x, y),
+            tm: selis_geom::Matrix::IDENTITY,
             advance,
             font: Bytes::copy_from_slice(b"F1"),
             size,
@@ -455,6 +464,7 @@ mod gap_properties {
         TextGlyph {
             code,
             at: Point::new(x, 0.0),
+            tm: selis_geom::Matrix::IDENTITY,
             advance,
             font: Bytes::copy_from_slice(b"F1"),
             size: 24.0,

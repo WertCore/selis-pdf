@@ -373,6 +373,7 @@ mod tests {
         let glyph = |code: u16, x: f64| selis_pdf_content::text::TextGlyph {
             code,
             at: selis_geom::Point::new(x, 0.0),
+            tm: selis_geom::Matrix::IDENTITY,
             advance: 10.0,
             font: selis_bytes::Bytes::copy_from_slice(b"F1"),
             size: 12.0,

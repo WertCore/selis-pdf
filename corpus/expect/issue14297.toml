@@ -1,8 +1,5 @@
 open = "ok"
 pages = 1
 
-[render]
-72 = "53a3cf7768e147886efcbfe989d4e56515e8683199424bf8c43494ce14e0521a"
-
 [text]
 hash = "b4247f68c4eb1281e3821fa33e72deb89ace8637376023006aea9834278fd9e0"

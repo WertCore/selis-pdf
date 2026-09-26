@@ -19,6 +19,12 @@
 //! gap (`advance`/`space` ride it too, so a scaled line still splits at a
 //! single space — no word-break regression in the identity-Tm majority).
 //!
+//! SL-3.TEXT.12 adds the *paint* half of the same probes (§9.4.2): the glyph
+//! outlines must ride `Tm`'s linear part too, so the rotated run draws rotated
+//! and the scale-trick draws at 12 pt — verified against the rendered ink
+//! extent, which is the geometry an oracle pixel-diffs, not just the origins
+//! the extractor reports.
+//!
 //! ```text
 //! cargo test -p selis-cli --test text_matrix_layout
 //! ```
@@ -106,5 +112,132 @@ fn rotated_tm_lays_vertical_run_at_fixed_x_on_user_y() {
     assert!(
         json.contains("[100.00, 500.00, 182.68, 500.00]"),
         "identity control ABCDEF along +x at y=500: {json}"
+    );
+}
+
+// --- SL-3.TEXT.12: paint-time `Tm` (the outline geometry, not the origins) ---
+
+/// The axis-aligned ink extent of a rendered page (non-white pixels), in device
+/// pixels. `None` when the page painted no ink.
+fn ink_extent(bytes: &[u8]) -> Option<(usize, usize, usize, usize)> {
+    // Parse the P6 header: magic, width, height, max sample, then one byte of
+    // whitespace and the raw samples.
+    let mut it = 0usize;
+    let mut nums = Vec::new();
+    while nums.len() < 4 {
+        while bytes[it].is_ascii_whitespace() {
+            it += 1;
+        }
+        if bytes[it..].starts_with(b"#") {
+            while !bytes[it..].starts_with(b"\n") {
+                it += 1;
+            }
+            continue;
+        }
+        let start = it;
+        while !bytes[it].is_ascii_whitespace() {
+            it += 1;
+        }
+        nums.push(std::str::from_utf8(&bytes[start..it]).ok()?.to_string());
+    }
+    it += 1; // the single separator before the binary block
+    let width = nums[1].parse::<usize>().ok()?;
+    let height = nums[2].parse::<usize>().ok()?;
+    let px = &bytes[it..];
+    let mut min_x = usize::MAX;
+    let mut min_y = usize::MAX;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut ink = false;
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) * 3;
+            let (r, g, b) = (px[i], px[i + 1], px[i + 2]);
+            if r < 250 || g < 250 || b < 250 {
+                ink = true;
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    ink.then_some((min_x, min_y, max_x, max_y))
+}
+
+fn render_ppm(path: &PathBuf, tag: &str) -> Vec<u8> {
+    let mut out = std::env::temp_dir();
+    out.push(format!("selis-cli-text-matrix-paint-{tag}.ppm"));
+    let res = Command::new(selis_bin())
+        .args(["render", "--page", "0", "--dpi", "72"])
+        .arg(path)
+        .arg(&out)
+        .output()
+        .expect("run selis render");
+    assert_eq!(res.status.code().unwrap_or(-1), 0, "render failed");
+    std::fs::read(&out).expect("read ppm")
+}
+
+/// SL-3.TEXT.12 paint probe: the `12 0 0 12 … Tm /F 1 Tf` row must paint at
+/// **12 pt**, not 1 pt. Both rows of the fixture are "Hello World" at baselines
+/// 700 (scale-trick) and 650 (identity `/F 12`); at 12 pt the caps reach
+/// 700 + 8.6 = 708.6 user units → device y ≈ 83, and the two rows' ink spans
+/// ≈ 83..151. A 1 pt scaled row would only reach device y ≈ 91, and the whole
+/// extent would collapse toward the identity row. MuPDF's own extent on this
+/// fixture is x[61,121] y[83,142] (mutool 1.23.0, `-r 72`).
+#[test]
+fn scaled_tm_paints_outlines_at_12pt_like_mupdf() {
+    let ppm = render_ppm(&write_fixture("scaled-paint.pdf", SCALED), "scaled");
+    let (x0, y0, x1, y1) = ink_extent(&ppm).expect("the fixture paints ink");
+    assert!(
+        x0 >= 58 && x0 <= 64,
+        "ink starts at the text origin: x0={x0}"
+    );
+    assert!(
+        y0 >= 80 && y0 <= 88,
+        "the scaled row reaches 12 pt above baseline 700 (MuPDF y0=83): y0={y0}"
+    );
+    // The two 12 pt rows are 50 pt apart: the extent must span both baselines.
+    assert!(
+        y1 >= 135 && y1 <= 160,
+        "both rows paint at 12 pt (MuPDF y1=142): y1={y1}"
+    );
+    assert!(
+        x1 >= 115 && x1 <= 125,
+        "the 12 pt advance spans 'World' (MuPDF x1=121): x1={x1}"
+    );
+}
+
+/// SL-3.TEXT.12 paint probe: the 90° `Tm` must paint **rotated** outlines. The
+/// rotated run sits at fixed x=100 with 24 pt glyphs whose cap height (0.717 em
+/// = 17.2 pt) now runs along user-x, so the ink reaches ≈ 100 − 17.2 = 82.8
+/// → device x0 ≈ 83. Upright glyphs (the pre-TEXT.12 path) would leave x0 at
+/// the side bearing, ≈ 98. MuPDF's extent is x[82,196] y[274,691].
+#[test]
+fn rotated_tm_paints_outlines_rotated_like_mupdf() {
+    let ppm = render_ppm(&write_fixture("rotated-paint.pdf", ROTATED), "rotated");
+    let (x0, y0, x1, y1) = ink_extent(&ppm).expect("the fixture paints ink");
+    assert!(
+        x0 <= 86,
+        "rotated glyphs reach cap-height left of x=100 (MuPDF x0=82): x0={x0}"
+    );
+    assert!(
+        x0 >= 78,
+        "the rotation extent is bounded by the cap height: x0={x0}"
+    );
+    // The identity control 'ABCDEF' at 24 pt from x=100 ends at ≈ 196.
+    assert!(
+        x1 >= 190 && x1 <= 200,
+        "identity control sets the right edge (MuPDF x1=196): x1={x1}"
+    );
+    // The rotated run steps along +y from 100 to 182.68, the control sits at
+    // y=500: the vertical extent must cover both.
+    assert!(
+        y1 >= 685 && y1 <= 695,
+        "rotated run reaches device y≈691 (user 101): y1={y1}"
+    );
+    assert!(
+        y0 >= 268 && y0 <= 282,
+        "identity control caps reach device y≈274 (user 517): y0={y0}"
     );
 }
