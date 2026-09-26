@@ -13,6 +13,15 @@
 //!   publish the out-of-band host→guest channels (cancel flag, progress
 //!   telemetry, injected clock). This is the surface the JS shell (UI.01)
 //!   and the threaded path (WASM.03) consume.
+//! * **The memory strategy** (SL-4.WASM.04, `memory`): growth policy, the
+//!   4 GiB `wasm32` ceiling, explicit release on `close`, and the
+//!   memory-pressure hook — [`selis_memory_pressure`] (out-of-band, threaded
+//!   hosts) twinning the `memoryPressure` message (single-threaded shells),
+//!   with `memoryStats` reporting the live/peak tallies the shell evicts
+//!   against. `Budget.bytes`/`wall` are the JS-cap channels
+//!   (`overrides.bytes` ← tab heap cap, `overrides.wall_ms` ← UX deadline,
+//!   clock slot ← `performance.now`); every exhaustion is a typed
+//!   `BUDGET_*`/`SOURCE_TOO_LARGE` response, never a trap.
 //!
 //! # Ownership discipline
 //!
@@ -54,6 +63,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_sandbox::{CancelToken, Clock, Nanos};
 
+pub mod memory;
 pub mod protocol;
 pub mod worker;
 
@@ -362,6 +372,29 @@ pub extern "C" fn selis_progress_slot() -> u32 {
 #[no_mangle]
 pub extern "C" fn selis_clock_slot() -> u32 {
     u32::try_from(std::ptr::addr_of!(CLOCK_NANOS) as usize).unwrap_or(0)
+}
+
+/// Out-of-band memory-pressure signal (SL-4.WASM.04).
+///
+/// The threaded twin of the `memoryPressure` protocol message: `level` is
+/// `0` low, `1` moderate, `2` critical (clamped — higher levels evict at
+/// least as much). Drops what the guest can (the pre-cancel queue today;
+/// tile/display-list caches when they land) and returns the evicted count.
+/// Returns `u32::MAX` when the worker lock is poisoned (a bug below the
+/// boundary escaped the trampoline — the dispatch twin answers null in the
+/// same state).
+///
+/// Single-threaded shells send the `memoryPressure` message between ops
+/// instead — a message cannot arrive mid-op there, exactly like
+/// cancellation's two channels.
+#[no_mangle]
+pub extern "C" fn selis_memory_pressure(level: u32) -> u32 {
+    let Ok(mut worker) = worker().lock() else {
+        return u32::MAX;
+    };
+    let evicted = worker.on_memory_pressure(level);
+    drop(worker);
+    u32::try_from(evicted).unwrap_or(u32::MAX)
 }
 
 /// Dispatch one protocol message (SL-4.WASM.01).
@@ -1179,6 +1212,194 @@ mod tests {
         assert_eq!(resp.doc_state.as_deref(), Some("Unchanged"));
         assert_eq!(resp.id, 42);
         assert!(resp.validate().is_ok());
+    }
+
+    /// SL-4.WASM.04 DoD: opening 20 documents sequentially shows no live
+    /// growth after close — each close releases exactly what its open added.
+    #[test]
+    fn twenty_sequential_opens_show_no_live_growth() {
+        let mut w = Worker::new();
+        let e = env();
+        for i in 1..=20u64 {
+            let out = w.handle(&request(i, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+            assert!(out.response.ok.unwrap_or(false), "open {i} must succeed");
+            let doc = out.response.value.as_ref().unwrap()["doc"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(w.live_bytes(), MINIMAL.len() as u64);
+            let out = w.handle(
+                &request(
+                    1000 + i,
+                    protocol::RequestOp::Close {
+                        doc: protocol::DocHandle { raw: doc },
+                    },
+                ),
+                &[],
+                &e,
+            );
+            assert_eq!(out.response.value.unwrap()["closed"], true);
+            assert_eq!(w.open_docs(), 0, "registry must drain on close");
+            assert_eq!(
+                w.live_bytes(),
+                0,
+                "live must return to zero after close {i}"
+            );
+        }
+        assert_eq!(w.peak_bytes(), MINIMAL.len() as u64);
+    }
+
+    /// SL-4.WASM.04 DoD: a 1.5 GiB claim fails with `BUDGET_BYTES`, not a
+    /// tab crash — validated before the payload is touched, so no 1.5 GiB
+    /// copy ever exists.
+    #[test]
+    fn one_point_five_gigabyte_claim_fails_typed() {
+        let mut w = Worker::new();
+        let e = env();
+        let big: u64 = 1_610_612_736;
+        let open = protocol::RequestOp::Open {
+            src: SourceDescriptor::Bytes { len: big },
+            budget: None,
+        };
+        let out = w.handle(&request(1, open), &[], &e);
+        assert_eq!(out.response.ok, Some(false));
+        assert_eq!(out.response.code, Some(Code::BudgetBytes.id()));
+        assert_eq!(w.open_docs(), 0);
+        assert_eq!(w.live_bytes(), 0);
+    }
+
+    /// A byte override past the 4 GiB ceiling is hostile input, not a silent
+    /// clamp.
+    #[test]
+    fn bytes_override_past_ceiling_is_bad_argument() {
+        let mut w = Worker::new();
+        let e = env();
+        let open = protocol::RequestOp::Open {
+            src: SourceDescriptor::Bytes {
+                len: MINIMAL.len() as u64,
+            },
+            budget: Some(BudgetProfile {
+                surface: protocol::SurfaceName::Viewer,
+                overrides: Some(BudgetOverrides {
+                    bytes: Some(5_000_000_000),
+                    ..BudgetOverrides::default()
+                }),
+            }),
+        };
+        let out = w.handle(&request(1, open), MINIMAL, &e);
+        assert_eq!(out.response.code, Some(Code::BindingBadArgument.id()));
+        assert_eq!(w.open_docs(), 0);
+    }
+
+    /// `memoryStats` reports the live/peak tallies the shell evicts against.
+    #[test]
+    fn memory_stats_reports_live_and_peak() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let out = w.handle(&request(2, protocol::RequestOp::MemoryStats), &[], &e);
+        assert_eq!(out.response.ok, Some(true));
+        let v = out.response.value.unwrap();
+        assert_eq!(v["liveDocs"], 1);
+        assert_eq!(v["liveBytes"], MINIMAL.len() as u64);
+        assert_eq!(v["peakBytes"], MINIMAL.len() as u64);
+        assert_eq!(v["wasmMaxBytes"], 4_294_967_296u64);
+        assert_eq!(v["jsCapBytes"], 536_870_912u64);
+        assert_eq!(v["maxInputBytes"], 67_108_864u64);
+        // Close releases.
+        let out = w.handle(
+            &request(
+                3,
+                protocol::RequestOp::Close {
+                    doc: protocol::DocHandle { raw: doc },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.value.unwrap()["closed"], true);
+        let out = w.handle(&request(4, protocol::RequestOp::MemoryStats), &[], &e);
+        let v = out.response.value.unwrap();
+        assert_eq!(v["liveDocs"], 0);
+        assert_eq!(v["liveBytes"], 0);
+        assert_eq!(v["peakBytes"], MINIMAL.len() as u64);
+    }
+
+    /// `memoryPressure` drops the pre-cancel queue and reports what remains;
+    /// levels clamp to `0..=2`.
+    #[test]
+    fn memory_pressure_evicts_precancelled() {
+        let mut w = Worker::new();
+        let e = env();
+        // Record two pre-cancels.
+        for target in [901u64, 902u64] {
+            let out = w.handle(
+                &request(target, protocol::RequestOp::Cancel { target }),
+                &[],
+                &e,
+            );
+            assert_eq!(out.response.value.unwrap()["cancelled"], true);
+        }
+        let out = w.handle(
+            &request(10, protocol::RequestOp::MemoryPressure { level: 1 }),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.ok, Some(true));
+        let v = out.response.value.unwrap();
+        assert_eq!(v["evicted"], 2);
+        assert_eq!(v["level"], 1);
+        // Drained: the next pressure evicts nothing.
+        let out = w.handle(
+            &request(11, protocol::RequestOp::MemoryPressure { level: 99 }),
+            &[],
+            &e,
+        );
+        let v = out.response.value.unwrap();
+        assert_eq!(v["evicted"], 0);
+        assert_eq!(v["level"], 2, "levels clamp to critical");
+    }
+
+    /// A canvas that fits the pixel budget but not a tiny byte budget fails
+    /// typed `BUDGET_BYTES` (the pixmap is live bytes too).
+    #[test]
+    fn render_with_tiny_byte_budget_fails_typed() {
+        let mut w = Worker::new();
+        let e = env();
+        let tight = protocol::RequestOp::Open {
+            src: SourceDescriptor::Bytes {
+                len: MINIMAL.len() as u64,
+            },
+            budget: Some(BudgetProfile {
+                surface: protocol::SurfaceName::Viewer,
+                overrides: Some(BudgetOverrides {
+                    bytes: Some(10_000),
+                    ..BudgetOverrides::default()
+                }),
+            }),
+        };
+        let out = w.handle(&request(1, tight), MINIMAL, &e);
+        assert_eq!(out.response.ok, Some(true));
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let render = protocol::RequestOp::Render {
+            doc: protocol::DocHandle { raw: doc },
+            page: 0,
+            params: protocol::RenderParams::default(),
+        };
+        let out = w.handle(&request(2, render), &[], &e);
+        assert_eq!(out.response.code, Some(Code::BudgetBytes.id()));
+    }
+
+    /// The out-of-band pressure export answers without trapping; on a fresh
+    /// global worker there is nothing to evict.
+    #[test]
+    fn memory_pressure_export_answers() {
+        let evicted = selis_memory_pressure(1);
+        assert_ne!(evicted, u32::MAX, "the worker lock must be healthy");
     }
 
     /// The exported slots exist and are self-consistent: the progress slot

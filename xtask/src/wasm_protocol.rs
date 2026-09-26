@@ -32,6 +32,10 @@
 //!    `BINDING_UNSUPPORTED_OP` (schema locked, capability deferred).
 //! 8. **Progress slot** — the exported telemetry slot reflects the last
 //!    stage boundary (request id, stage, fraction).
+//! 9. **Memory strategy (SL-4.WASM.04)** — a 1.5 GiB claim answers a typed
+//!    `BUDGET_BYTES` (never a trap), `memoryStats` reports the live/peak
+//!    tallies and the 4 GiB ceiling, `close` releases live bytes, and
+//!    `memoryPressure` answers with clamped levels.
 
 use serde_json::{json, Value};
 
@@ -457,6 +461,53 @@ pub fn run() -> Result<(), String> {
     )?;
     expect_code(&resp, CODE_UNSUPPORTED_OP, "save")?;
     println!("wasm-protocol: phase-5 surfaces ok (typed BINDING_UNSUPPORTED_OP)");
+
+    // ── 9. memory strategy (SL-4.WASM.04) ─────────────────────────────────
+    // The text fixture's document is still open: close it so the live tally
+    // is exactly the reopened minimal.pdf (423 bytes).
+    let (resp, _) = s.rpc(json!({"op":"close", "doc": text_doc}), None)?;
+    expect(resp, "memory-close-text")?;
+
+    // A 1.5 GiB claim is a typed BUDGET_BYTES response, not a trap/crash; the
+    // guest validates before touching the payload, so no 1.5 GiB copy exists.
+    let big: u64 = 1_610_612_736;
+    let (resp, _) = s.rpc(
+        json!({"op":"open", "src": {"kind":"bytes", "len": big}}),
+        None,
+    )?;
+    expect_code(&resp, CODE_BUDGET_BYTES, "memory-1.5gb")?;
+
+    // memoryStats reports the live/peak tallies (minimal.pdf = 423 bytes).
+    let (resp, _) = s.rpc(json!({"op":"memoryStats"}), None)?;
+    let resp = expect(resp, "memory-stats")?;
+    if resp["value"]["wasmMaxBytes"] != json!(4_294_967_296u64) {
+        return Err(format!("memory-stats: wasmMaxBytes wrong: {resp}"));
+    }
+    if resp["value"]["liveBytes"] != json!(423u64) {
+        return Err(format!("memory-stats: liveBytes must be 423: {resp}"));
+    }
+
+    // Close releases: live returns to zero, peak is retained.
+    let (resp, _) = s.rpc(json!({"op":"close", "doc": handle2}), None)?;
+    expect(resp, "memory-close")?;
+    let (resp, _) = s.rpc(json!({"op":"memoryStats"}), None)?;
+    let resp = expect(resp, "memory-stats-after-close")?;
+    if resp["value"]["liveBytes"] != json!(0u64) || resp["value"]["liveDocs"] != json!(0u64) {
+        return Err(format!("memory-stats: close must release: {resp}"));
+    }
+    // Peak retains the high-water mark (minimal.pdf 423 + text.pdf 1243 were
+    // open together earlier in the run).
+    if resp["value"]["peakBytes"] != json!(1666u64) {
+        return Err(format!("memory-stats: peak must be retained: {resp}"));
+    }
+
+    // memoryPressure answers and clamps.
+    let (resp, _) = s.rpc(json!({"op":"memoryPressure", "level": 99}), None)?;
+    let resp = expect(resp, "memory-pressure")?;
+    if resp["value"]["level"] != json!(2) {
+        return Err(format!("memory-pressure: level must clamp to 2: {resp}"));
+    }
+    println!("wasm-protocol: memory ok (typed 1.5 GiB, stats, release, pressure)");
 
     println!("wasm-protocol: all legs passed");
     Ok(())
