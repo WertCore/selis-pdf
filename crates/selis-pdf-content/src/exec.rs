@@ -329,8 +329,10 @@ fn execute_inner(
                     let state = ResolvedState::from(&*gstate);
                     // gstate.ctm is the CTM in user space; the text glyph's
                     // `at` is in user space (the text matrix maps text → user).
+                    // The outline itself rides `Tm`'s linear part (SL-3.TEXT.12).
                     dl.push(Op::Text {
                         at: glyph.at,
+                        tm: glyph.tm,
                         state,
                         runs: vec![GlyphRun {
                             advance: glyph.advance,
@@ -696,6 +698,47 @@ mod tests {
             assert_eq!(runs.len(), 1);
             assert_eq!(runs[0].glyphs, vec![65]);
             assert_eq!(&runs[0].font.as_slice()[..], b"F1");
+        } else {
+            panic!("expected text");
+        }
+    }
+
+    /// SL-3.TEXT.12: the display-list text op carries the `Tm` linear part
+    /// into the rasterizer, so the `12 0 0 12 … Tm /F 1 Tf` scale-trick and
+    /// rotated matrices paint scaled/rotated outlines, not upright 1 pt ones.
+    #[test]
+    fn text_op_carries_the_tm_linear_part() {
+        let mut g = guard();
+        let dl = execute(
+            b"BT /F1 1 Tf 12 0 0 12 50 700 Tm (A) Tj ET",
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        assert_eq!(dl.ops.len(), 1);
+        if let Op::Text { at, tm, .. } = &dl.ops[0] {
+            assert!((tm.a - 12.0).abs() < 1e-9, "Tm a carried");
+            assert!((tm.d - 12.0).abs() < 1e-9, "Tm d carried");
+            assert!((at.x - 50.0).abs() < 1e-9, "origin at Tm translation");
+            assert!((at.y - 700.0).abs() < 1e-9, "origin at Tm translation");
+        } else {
+            panic!("expected text");
+        }
+        // Identity Tm stays identity (the raster's bit-identical fast path).
+        let dl = execute(
+            b"BT /F1 12 Tf 0 0 Td (A) Tj ET",
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        if let Op::Text { tm, .. } = &dl.ops[0] {
+            assert_eq!(*tm, selis_geom::Matrix::IDENTITY);
         } else {
             panic!("expected text");
         }

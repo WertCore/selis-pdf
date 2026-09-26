@@ -165,6 +165,7 @@ mod tests {
             advance: size * 0.5,
             code,
             at: Point::new(x, y),
+            tm: selis_geom::Matrix::IDENTITY,
             font: Bytes::copy_from_slice(b"F1"),
             size,
             space: size * 0.25,

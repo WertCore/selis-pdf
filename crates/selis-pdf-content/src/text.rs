@@ -79,6 +79,11 @@ pub struct TextGlyph {
     pub code: u16,
     /// The glyph origin in user space (the text matrix applied to the rise).
     pub at: Point,
+    /// The text matrix (`Tm`) that positioned this glyph (PDF 32000-2:2020
+    /// §9.4.3, SL-3.TEXT.12): the raster maps the outline through its linear
+    /// part with `at` as the translation, so rotation/scale in `Tm` paints
+    /// the glyph rotated/scaled rather than upright/at `/Tf` size.
+    pub tm: Matrix,
     /// The font resource name.
     pub font: Bytes,
     /// The font size.
@@ -248,11 +253,13 @@ fn show_string(
             is_cid,
             code == 0x20,
         );
-        let at = state.matrix.apply(Point::new(0.0, state.rise));
-        let advance_x = pen_x(&state.matrix, advance);
+        let tm = state.matrix;
+        let at = tm.apply(Point::new(0.0, state.rise));
+        let advance_x = pen_x(&tm, advance);
         out.push(TextGlyph {
             code,
             at,
+            tm,
             advance: advance_x,
             font: font.clone(),
             size,
@@ -659,6 +666,38 @@ mod tests {
         );
         // The space metric rides the same scale (500 units *1 *12 = 6 user).
         assert!((glyphs[0].space - 6.0).abs() < 1e-9);
+    }
+
+    /// SL-3.TEXT.12: each shown glyph records the `Tm` that positioned it, so
+    /// the raster can map the outline through the linear part (§9.4.2). The
+    /// recorded matrix is the pre-advance matrix of that glyph.
+    #[test]
+    fn glyph_records_its_positioning_tm() {
+        let mut state = TextState::default();
+        state.font = Some(Bytes::copy_from_slice(b"F1"));
+        state.font_size = 1.0;
+        process(
+            &mut state,
+            "Tm",
+            &[n(12.0), n(0.0), n(0.0), n(12.0), n(50.0), n(700.0)],
+            false,
+            &const_width,
+        );
+        let glyphs = process(&mut state, "Tj", &[s(b"AB")], false, &const_width);
+        assert!((glyphs[0].tm.a - 12.0).abs() < 1e-9, "linear part carried");
+        assert!((glyphs[0].tm.d - 12.0).abs() < 1e-9, "linear part carried");
+        assert!((glyphs[0].tm.e - 50.0).abs() < 1e-9, "translation carried");
+        // The second glyph's matrix already stepped one mapped advance.
+        assert!(
+            (glyphs[1].tm.e - 56.0).abs() < 1e-9,
+            "per-glyph matrix steps"
+        );
+        // Identity shows record identity (the raster's bit-identical path).
+        let mut plain = TextState::default();
+        plain.font = Some(Bytes::copy_from_slice(b"F1"));
+        plain.font_size = 12.0;
+        let glyphs = process(&mut plain, "Tj", &[s(b"A")], false, &const_width);
+        assert_eq!(glyphs[0].tm, Matrix::IDENTITY);
     }
 
     /// SL-3.TEXT.11 keeps the identity-`Tm` majority bit-identical: the

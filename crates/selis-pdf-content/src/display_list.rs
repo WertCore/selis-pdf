@@ -102,8 +102,15 @@ pub enum Op {
     },
     /// Draw text (the text model lands in SL-2.TEXT.*; this is the IR slot).
     Text {
-        /// The text position.
+        /// The text position (user space: the text matrix applied to the rise).
         at: Point,
+        /// The text matrix (`Tm`) at show time (PDF 32000-2:2020 §9.4.3).
+        /// The raster maps glyph outlines through its linear part (`a`, `b`,
+        /// `c`, `d`) with `at` as the translation, so rotated text draws
+        /// rotated and the `12 0 0 12 … Tm /F 1 Tf` scale-trick draws at 12 pt
+        /// (SL-3.TEXT.12). Under identity `Tm` this reduces to a plain
+        /// translate, bit-identical to the pre-TEXT.12 path.
+        tm: Matrix,
         /// The resolved state at paint time.
         state: ResolvedState,
         /// The glyph runs (resolved in SL-2.TEXT).

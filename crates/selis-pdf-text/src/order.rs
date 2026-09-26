@@ -242,6 +242,7 @@ mod tests {
             advance: 6.0,
             code: 65,
             at: Point::new(x0, y0),
+            tm: selis_geom::Matrix::IDENTITY,
             font: Bytes::copy_from_slice(b"F1"),
             size: 12.0,
             space: 3.0,
