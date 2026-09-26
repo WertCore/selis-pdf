@@ -1173,7 +1173,8 @@ mod tests {
         let out = w.handle(&request(8, save), &[], &e);
         assert_eq!(out.response.code, Some(Code::BindingUnsupportedOp.id()));
 
-        // Source adapters other than inline bytes: typed "not yet".
+        // Source adapters name a handle the shell registered. Unregistered is
+        // a typed IO error; registered goes through the DocSource path.
         let out = w.handle(
             &request(
                 9,
@@ -1187,7 +1188,98 @@ mod tests {
             &[],
             &e,
         );
-        assert_eq!(out.response.code, Some(Code::BindingUnsupportedOp.id()));
+        assert_eq!(out.response.code, Some(Code::IoReadFailed.id()));
+        // Register the OPFS bytes and open.
+        w.register_opfs("/doc.pdf", MINIMAL.to_vec());
+        let out = w.handle(
+            &request(
+                11,
+                protocol::RequestOp::Open {
+                    src: SourceDescriptor::Opfs {
+                        path: "/doc.pdf".to_owned(),
+                    },
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.ok, Some(true));
+        let doc2 = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let out = w.handle(
+            &request(
+                12,
+                protocol::RequestOp::Close {
+                    doc: protocol::DocHandle { raw: doc2 },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.ok, Some(true));
+
+        // Blob and FSA behave the same: unregistered → IO error, registered → open.
+        let out = w.handle(
+            &request(
+                13,
+                protocol::RequestOp::Open {
+                    src: SourceDescriptor::Blob {
+                        source_id: "b1".to_owned(),
+                    },
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(Code::IoReadFailed.id()));
+        w.register_blob("b1", MINIMAL.to_vec());
+        let out = w.handle(
+            &request(
+                14,
+                protocol::RequestOp::Open {
+                    src: SourceDescriptor::Blob {
+                        source_id: "b1".to_owned(),
+                    },
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.ok, Some(true));
+
+        let out = w.handle(
+            &request(
+                15,
+                protocol::RequestOp::Open {
+                    src: SourceDescriptor::Fsa {
+                        handle_id: "h1".to_owned(),
+                    },
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(Code::IoReadFailed.id()));
+        w.register_fsa("h1", MINIMAL.to_vec());
+        let out = w.handle(
+            &request(
+                16,
+                protocol::RequestOp::Open {
+                    src: SourceDescriptor::Fsa {
+                        handle_id: "h1".to_owned(),
+                    },
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.ok, Some(true));
 
         // Containment, finally: the next well-formed message succeeds.
         let out = w.handle(&request(10, open_op(MINIMAL.len() as u64)), MINIMAL, &e);

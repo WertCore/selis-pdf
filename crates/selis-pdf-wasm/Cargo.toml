@@ -22,6 +22,7 @@ workspace = true
 selis-bytes = { workspace = true }
 selis-error = { workspace = true }
 selis-geom = { workspace = true }
+selis-io = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-pdf-engine = { workspace = true }
 selis-pdf-text = { workspace = true }

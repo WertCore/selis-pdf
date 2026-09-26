@@ -26,23 +26,31 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod append_sink;
+mod blob;
 mod cancel_host;
+pub mod conformance;
 mod fault;
 mod file;
 mod file_sink;
+mod fsa;
 mod http;
 mod mem;
+mod opfs;
 mod range_set;
 pub mod replace;
 mod sink;
 
 pub use append_sink::AppendFileSink;
+pub use blob::BlobSource;
 pub use cancel_host::install_ctrl_c_flag;
+pub use conformance::assert_fully_resident_conformance;
 pub use fault::{FaultConfig, FaultSource};
 pub use file::FileSource;
 pub use file_sink::FileSink;
+pub use fsa::FsaSource;
 pub use http::{FetchFn, HttpRangeSource};
 pub use mem::MemSource;
+pub use opfs::OpfsSource;
 pub use range_set::RangeSet;
 pub use replace::atomic_replace;
 pub use sink::AppendSink;

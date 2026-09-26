@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "lint": "biome check apps/ui packages/ui-kit",
+    "lint": "biome check apps/ui apps/web/host packages/ui-kit",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
