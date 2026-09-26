@@ -28,6 +28,18 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@24.13.4)
 
+  apps/web/host:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.4
+        version: 24.13.4
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@24.13.4)
+
   packages/ui-kit:
     devDependencies:
       '@types/node':

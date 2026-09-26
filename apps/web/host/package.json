@@ -1,0 +1,17 @@
+{
+	"name": "@selis/web-host",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Web deployment shell: local-only document handoff (SL-4.WEB.03) over the WASM.01 Worker protocol.",
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"devDependencies": {
+		"@types/node": "^24.13.4",
+		"typescript": "^5.5.0",
+		"vitest": "^2.0.0"
+	}
+}

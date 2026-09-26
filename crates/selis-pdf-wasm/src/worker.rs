@@ -72,6 +72,7 @@ use std::collections::BTreeMap;
 
 use selis_error::{err, Code, Error, Result};
 use selis_geom::Matrix;
+use selis_io::Availability;
 use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
@@ -248,6 +249,13 @@ pub struct Worker {
     docs: BTreeMap<u64, OpenDoc>,
     next_handle: u64,
     pre_cancelled: Vec<u64>,
+    // SL-4.WASM.05 registries: the shell registers a Blob/OPFS/FSA payload
+    // before `open` names it. The Worker copies the bytes through the
+    // corresponding `DocSource` so the conformance suite (including the fault
+    // legs) runs over the real adapter.
+    blobs: BTreeMap<String, Vec<u8>>,
+    opfs: BTreeMap<String, Vec<u8>>,
+    fsa: BTreeMap<String, Vec<u8>>,
 }
 
 impl Default for Worker {
@@ -259,12 +267,34 @@ impl Default for Worker {
 impl Worker {
     /// A fresh, empty worker.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             docs: BTreeMap::new(),
             next_handle: 1,
             pre_cancelled: Vec::new(),
+            blobs: BTreeMap::new(),
+            opfs: BTreeMap::new(),
+            fsa: BTreeMap::new(),
         }
+    }
+
+    /// Register a `Blob` payload the next `open` with `kind: "blob"` may name.
+    ///
+    /// The shell calls this before dispatching the `open` (the JS glue copies
+    /// the `Blob` into the Worker's memory via `FileReaderSync` or an
+    /// `ArrayBuffer` transfer; the native harness calls it directly).
+    pub fn register_blob(&mut self, source_id: impl Into<String>, bytes: Vec<u8>) {
+        self.blobs.insert(source_id.into(), bytes);
+    }
+
+    /// Register an OPFS file's bytes keyed by its OPFS path.
+    pub fn register_opfs(&mut self, path: impl Into<String>, bytes: Vec<u8>) {
+        self.opfs.insert(path.into(), bytes);
+    }
+
+    /// Register a File System Access handle's file keyed by `handle_id`.
+    pub fn register_fsa(&mut self, handle_id: impl Into<String>, bytes: Vec<u8>) {
+        self.fsa.insert(handle_id.into(), bytes);
     }
 
     /// The number of currently open documents.
@@ -376,6 +406,38 @@ impl Worker {
 
     // -- open / close ------------------------------------------------------
 
+    fn open_with_bytes(
+        &mut self,
+        id: u64,
+        bytes: Vec<u8>,
+        budget: Budget,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        if bytes.len() as u64 > MAX_INPUT_BYTES {
+            return Err(err!(
+                Code::SourceTooLarge,
+                during = "wasm-worker",
+                detail = "source exceeds the 64 MiB protocol bound"
+            ));
+        }
+        if self.docs.len() as u64 >= MAX_OPEN_DOCS {
+            return Err(err!(
+                Code::BudgetBytes,
+                during = "wasm-worker",
+                detail = "document registry full; close a document first"
+            ));
+        }
+        env.progress.progress(id, Stage::Open, 0);
+        let session = Session::open(bytes, &budget, env.clock)?;
+        let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
+        let handle = self.mint_handle()?;
+        self.docs.insert(handle.raw, OpenDoc { session, budget });
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({ "doc": handle.raw, "pages": pages }),
+        ))
+    }
+
     fn op_open(
         &mut self,
         id: u64,
@@ -396,40 +458,103 @@ impl Worker {
                         detail = "payload length does not match the bytes descriptor"
                     ));
                 }
-                if len > MAX_INPUT_BYTES {
-                    return Err(err!(
-                        Code::SourceTooLarge,
-                        during = "wasm-worker",
-                        detail = "inline source exceeds the 64 MiB protocol bound"
-                    ));
-                }
-                if self.docs.len() as u64 >= MAX_OPEN_DOCS {
-                    return Err(err!(
-                        Code::BudgetBytes,
-                        during = "wasm-worker",
-                        detail = "document registry full; close a document first"
-                    ));
-                }
-                env.progress.progress(id, Stage::Open, 0);
-                let session = Session::open(payload.to_vec(), &budget, env.clock)?;
-                let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
-                let handle = self.mint_handle()?;
-                self.docs.insert(handle.raw, OpenDoc { session, budget });
-                Ok(Outgoing::ok(
-                    id,
-                    serde_json::json!({ "doc": handle.raw, "pages": pages }),
-                ))
+                return self.open_with_bytes(id, payload.to_vec(), budget, env);
             }
-            SourceDescriptor::Blob { .. }
-            | SourceDescriptor::Opfs { .. }
-            | SourceDescriptor::Fsa { .. }
-            | SourceDescriptor::HttpRange { .. } => Err(err!(
+            SourceDescriptor::Blob { source_id } => {
+                let stored = self.blobs.get(&source_id).ok_or_else(|| {
+                    err!(
+                        Code::IoReadFailed,
+                        during = "wasm-worker",
+                        detail = "blob handle not registered"
+                    )
+                })?;
+                // Drive through BlobSource so the DocSource contract (including
+                // the fault legs) is the path every open takes.
+                let source = selis_io::BlobSource::new(stored.clone(), source_id.clone());
+                let bytes = Self::drain_source(&source)?;
+                return self.open_with_bytes(id, bytes, budget, env);
+            }
+            SourceDescriptor::Opfs { path } => {
+                let stored = self.opfs.get(&path).ok_or_else(|| {
+                    err!(
+                        Code::IoReadFailed,
+                        during = "wasm-worker",
+                        detail = "OPFS path not registered"
+                    )
+                })?;
+                let source = selis_io::OpfsSource::new(path.clone(), stored.clone());
+                let bytes = Self::drain_source(&source)?;
+                return self.open_with_bytes(id, bytes, budget, env);
+            }
+            SourceDescriptor::Fsa { handle_id } => {
+                let stored = self.fsa.get(&handle_id).ok_or_else(|| {
+                    err!(
+                        Code::IoReadFailed,
+                        during = "wasm-worker",
+                        detail = "FSA handle not registered"
+                    )
+                })?;
+                let source = selis_io::FsaSource::new(handle_id.clone(), handle_id.clone(), stored.clone());
+                let bytes = Self::drain_source(&source)?;
+                return self.open_with_bytes(id, bytes, budget, env);
+            }
+            SourceDescriptor::HttpRange { .. } => Err(err!(
                 Code::BindingUnsupportedOp,
                 during = "wasm-worker",
-                detail =
-                    "source adapter lands with SL-4.WASM.05/06; only inline bytes are accepted"
+                detail = "HttpRange adapter lands with SL-4.WASM.06"
             )),
         }
+    }
+
+    /// Drain a fully-resident [`DocSource`] into a `Vec<u8>` via `read_at`.
+    ///
+    /// Proves the adapter's `DocSource` contract (Eof, Filled, available) is
+    /// the path the engine takes — a direct `stored.clone()` would bypass the
+    /// conformance surface. Fault injection (truncation, Pending) is exercised
+    /// by the adapter's own tests; here we just drain the resident range.
+    fn drain_source<S: selis_io::DocSource>(source: &S) -> Result<Vec<u8>> {
+        let len = source.len().unwrap_or(0);
+        if len > MAX_INPUT_BYTES {
+            return Err(err!(
+                Code::SourceTooLarge,
+                during = "wasm-worker",
+                detail = "source exceeds the 64 MiB protocol bound"
+            ));
+        }
+        let n = usize::try_from(len).map_err(|_| {
+            err!(
+                Code::SourceTooLarge,
+                during = "wasm-worker",
+                detail = "source length does not fit in memory"
+            )
+        })?;
+        let mut out = vec![0u8; n];
+        let mut off: u64 = 0;
+        while off < len {
+            let buf = &mut out[usize::try_from(off).unwrap_or(usize::MAX)..];
+            match source.read_at(off, buf)? {
+                Availability::Filled(k) => {
+                    if k == 0 {
+                        return Err(err!(
+                            Code::IoReadFailed,
+                            during = "wasm-worker",
+                            detail = "source returned empty fill"
+                        ));
+                    }
+                    off = off.saturating_add(k as u64);
+                }
+                Availability::Eof => break,
+                Availability::Pending { .. } => {
+                    return Err(err!(
+                        Code::IoReadFailed,
+                        during = "wasm-worker",
+                        detail = "web source unexpectedly pending"
+                    ))
+                }
+            }
+        }
+        out.truncate(usize::try_from(off).unwrap_or(n));
+        Ok(out)
     }
 
     fn mint_handle(&mut self) -> Result<DocHandle> {
