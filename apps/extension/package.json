@@ -1,0 +1,17 @@
+{
+	"name": "@selis/extension",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"description": "Selis MV3 browser extension skeleton: minimal-permission manifest + justification record (SL-4.EXT.01, ADR-P0028). No remote code, no broad host permissions.",
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"devDependencies": {
+		"@types/node": "^24.13.4",
+		"typescript": "^5.5.0",
+		"vitest": "^2.0.0"
+	}
+}

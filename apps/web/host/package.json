@@ -1,10 +1,9 @@
 {
 	"name": "@selis/web-host",
-	"version": "0.0.0",
+	"version": "0.0.1",
 	"private": true,
 	"type": "module",
-	"description": "Web deployment shell: local-only document handoff (SL-4.WEB.03) over the WASM.01 Worker protocol.",
-	"scripts": {
+	"description": "Selis web deployment shell: static hosting headers (COOP/COEP/CSP) + SRI helpers and cross-origin-isolation fallback (SL-4.WEB.01), plus local-only document handoff over the WASM Worker protocol (SL-4.WEB.03). No document bytes leave the origin; no third-party scripts on the document path (ADR-P0016).",	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"

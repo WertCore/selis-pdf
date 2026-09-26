@@ -1,7 +1,7 @@
 {
 	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
 	"files": {
-		"include": ["apps/ui", "apps/web/host", "packages/ui-kit", "packages/wasm-loader"],
+		"include": ["apps/ui", "apps/web/host", "apps/extension", "packages/ui-kit", "packages/wasm-loader"],
 		"ignore": ["dist", "node_modules", "packages/ui-kit/css"]
 	},
 	"formatter": {

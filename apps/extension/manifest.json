@@ -1,0 +1,21 @@
+{
+	"manifest_version": 3,
+	"name": "Selis PDF Viewer",
+	"version": "0.0.1",
+	"description": "Local-first PDF viewer (read-only). Documents never leave your device.",
+	"minimum_chrome_version": "114",
+	"action": {
+		"default_title": "Open Selis PDF Viewer",
+		"default_popup": "viewer.html"
+	},
+	"background": {
+		"service_worker": "service-worker.js",
+		"type": "module"
+	},
+	"permissions": ["declarativeNetRequest", "offscreen"],
+	"host_permissions": [],
+	"content_security_policy": {
+		"extension_pages": "script-src 'self'; object-src 'self';"
+	},
+	"web_accessible_resources": []
+}

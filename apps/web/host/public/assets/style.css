@@ -1,0 +1,4 @@
+/* Selis web shell placeholder style (SL-4.WEB.01). Real theming ships via @selis/ui-kit in SL-4.UI.02+. */
+:root {
+	color-scheme: light dark;
+}

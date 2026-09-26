@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Selis PDF Viewer</title>
+		<!--
+			SL-4.WEB.01 static shell. The full UI bundle lands in SL-4.UI.02+;
+			this skeleton proves the security contract end-to-end:
+			- CSP is delivered via response headers (see public/_headers and
+			  vercel.json, generated from src/headers.ts) — no <meta
+			  http-equiv> fallback that could drift from the canonical policy.
+			- Every asset below carries integrity (sha384) + crossorigin, and
+			  every src/href is same-origin (ADR-P0016: no third-party scripts
+			  on the document-handling path). sri.test.ts fails the build
+			  otherwise. Recompute digests when an asset changes:
+			  node -e "…createHash('sha384')…".
+			- Threads need COOP/COEP (see src/isolation.ts); without them the
+			  engine uses the identical single-threaded path (DoD test in
+			  src/isolation.test.ts).
+		-->
+		<link
+			rel="stylesheet"
+			href="/assets/style.css"
+			integrity="sha384-ZrAz00MlwR6asINowOHiRfBapuRN4AXh9PybWKMQVSgh3nRMarIJYcUQZYL4gD2F"
+			crossorigin="anonymous"
+		/>
+	</head>
+	<body>
+		<main id="selis-app" aria-busy="true">
+			<p>Loading Selis PDF Viewer…</p>
+			<noscript><p>Selis PDF Viewer needs JavaScript (local document processing, no upload).</p></noscript>
+		</main>
+		<script
+			src="/assets/boot.js"
+			integrity="sha384-vGC0e2ySUbbjIUwf+8+TKZqfKcLFhlFAbEOKcrz/H/AFzlJGbrGnCfhVqJA5NqF9"
+			crossorigin="anonymous"
+			defer
+		></script>
+	</body>
+</html>
