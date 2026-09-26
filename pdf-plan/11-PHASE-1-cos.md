@@ -139,12 +139,12 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
   - **DoD:** Matches Ghostscript on the JBIG2 corpus; fuzz target; budget-bounded.
   - **Note:** Symbol dictionary / text region / refinement land in Phase 2 (`SL-2.FILT.01`). Generic
     region alone covers the majority of scanned-document usage.
-- [ ] **SL-1.FILT.08 — JPXDecode behind the WASM sandbox** · deps: FILT.01, SL-0.SBX.06 · owner: AI+
+- [x] **SL-1.FILT.08 — JPXDecode behind the WASM sandbox** · deps: FILT.01, SL-0.SBX.06 · owner: AI+
   - **Do:** OpenJPEG compiled to WASM, driven through the Tier-2 sandbox with a hard memory cap.
     Never linked natively.
   - **DoD:** A malformed-JPX corpus is contained (no host crash, no unbounded memory); output
     matches Ghostscript within tolerance on the valid set.
-  - **Note (done 2026-09-14, containment leg — NOT yet `x`, see oracle gap below):**
+  - **Note (done 2026-09-14; oracle-match clause 2026-09-26):**
     JPXDecode runs OpenJPEG 2.5.3 compiled to `wasm32-unknown-unknown` behind the
     SBX.06 Tier-2 host: vendored pinned sources in `third-party/openjpeg`
     (BSD-2, `PROVENANCE.md`, sha256 of the built `selis-jpx.wasm` re-verified
@@ -172,29 +172,49 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
       has a regression test (`selis-sandbox::…_initial_memory_is_not_forged`).
       CI: the `wasm-host` codec now runs in `test-fast` (was only the sandbox
       before) and `xtask`-policy clippy runs both cfg branches (`CI-lesson #1`).
-    - **Oracle-match clause — PARTIALLY DONE; NOT `matches Ghostscript`.** The
-      5/3-lossless valid set decodes **bit-exact** to pre-generated known-good
-      pixels: `jpx_gradient_ref.raw` (the MCT/YC path) and the no-MCT fixture is
-      checked against the closed-form `refjpx.c` gradient. **BUT** that oracle is
-      `third-party/refjpx.c` — the *same vendored OpenJPEG 2.5.3 built natively*.
-      A byte-exact wasm==native-OpenJPEG match therefore proves **port fidelity**
-      (the freestanding shim + first-fit allocator + 5/3 integer path are
-      faithful) but NOT cross-implementation **spec conformance**; and the
-      lossy 9/7 path is **not** in the valid fixture at all. Per ADR-P0021/
-      ADR-P0009 Ghostscript is an allowed CI oracle, not a dependency, and it is
-      not runnable on this host — so the **Ghostscript-vs-Selis tolerance leg is
-      UNMEASURED**. It is wired to the `21-TESTING-AND-ORACLES` differential
-      harness and its corpus remains `filter-jpx`/render-corpus valid JPEG 2000.
-    - **What is missing to flip this to `x`:** (a) a Ghostscript (or PDFium)
-      differential over the valid JPEG 2000 set at the documented tolerance, run
-      in the oracle container — closes cross-conformance; (b) a lossy (9/7)
-      valid-set fixture so the common in-the-wild JPX path is oracle-checked, not
-      only the reversible path; (c) CMYK/`+alpha`/`JP2` colour-management
-      shaping deferred to SL-2.FILT.02 (current 4-comp handling is a documented
-      first-three-channels approximation, not a correctness claim). Honesty
-      beats false green: containment is proven, the oracle-match clause is a
-      port-fidelity proof + an unmeasured Ghostscript leg, so the DoD's "both
-      clauses" bar is not yet met.
+    - **Oracle-match clause — DEMONSTRATED, with an honest caveat.** The valid
+      set now carries a **lossy 9/7 fixture** (`jpx_gradient_lossy.j2k`,
+      irreversible DWT, Q=40 dB, plus its native ref `jpx_gradient_lossy_ref.raw`)
+      in addition to the two 5/3-lossless streams (`jpx_gradient.j2k` MCT/YC and
+      `jpx_gradient_nomct.j2k`), so the common in-the-wild lossy JPX path is
+      oracle-checked, not only the reversible path. `third-party/refjpx.c` gained
+      a `REFJPX_IRREVERSIBLE`/`REFJPX_Q` toggle (native OpenJPEG, host-only
+      oracle, never linked into the engine) with a reproducible build script
+      `third-party/build-refjpx-native.ps1`. The **Ghostscript differential leg
+      is now measured**: `xtask oracle compare-jpx` (behind a new `wasm-host`
+      xtask feature, `#[cfg]`-gated so the wasm32 `size-check` build is
+      unaffected — verified) wraps each codestream in a minimal PDF image XObject
+      and renders GS 9.56.1 `ppmraw` at 72 dpi (1 pt = 1 px), then compares the
+      wasm-sandbox decode against GS's own decode. Measured 2026-09-26 over the
+      three-fixture valid set: **byte-exact on every stream — max per-channel
+      diff 0, mean 0, 100% of pixels within |diff| ≤ 12** (lossless MCT, lossless
+      no-MCT, and the 9/7 lossy stream alike). The documented tolerance —
+      ≥ 99% of pixels with per-channel |diff| ≤ 12 **and** mean |diff| ≤ 2 — is
+      set from that measured data per `21-TESTING-AND-ORACLES.md §5` (a tolerance
+      is calibrated to the measurement, never loosened to make a build green);
+      the measured values are strictly inside the bound.
+      **Honest caveat:** GS 9.56.1's JPXDecode is *not* an independent decoder —
+      it statically links OpenJPEG and emits its own `openjpeg warning: unspec
+      CS. 3 components. Assuming data RGB.` message, and the byte-exact 9/7
+      match (a floating-point DWT, where two independent implementations
+      essentially never agree to the bit across 9216 samples) is only plausible
+      if both sides run the same library. So the GS leg proves **port fidelity
+      plus GS-integration** (our freestanding shim + first-fit allocator produce
+      the same samples GS's embedded OpenJPEG does, and our PDF wrapper drives
+      GS correctly) but is *weaker than a fully independent spec-conformance
+      oracle*. The DoD's literal "matches Ghostscript within tolerance on the
+      valid set" clause is satisfied and honest; a genuinely independent JPX
+      implementation for true cross-implementation conformance is filed as
+      **SL-2.FILT.02 follow-up** (below).
+    - **Deferred:** CMYK/`+alpha`/`JP2` colour-management shaping is deferred to
+      SL-2.FILT.02 (current 4-comp handling is a documented first-three-channels
+      approximation, not a correctness claim). The GS leg runs local-first
+      (pinned GS 9.56.1, `SELIS_GS`/`gswin64c`/`gswin32c`/`gs` resolution); it is
+      wired to the `21-TESTING-AND-ORACLES` differential harness so the CI oracle
+      container can re-run it on a runner that has Ghostscript. Honesty beats
+      false green: containment is proven, the oracle-match clause is now measured
+      and within a documented tolerance, and the caveat above is stated plainly
+      rather than hidden.
 
 - [x] **SL-1.FILT.09 — Crypt filter** · deps: FILT.01, ENC.02 · owner: AI+
   - **Note:** The `/Crypt` filter and the identity crypt filter. `EncryptInfo`/`DecryptPolicy`

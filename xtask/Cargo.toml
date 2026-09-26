@@ -31,6 +31,15 @@ serde_json = { workspace = true }
 # selis-crypto — no new supply-chain surface.
 sha2 = { workspace = true }
 toml = { workspace = true }
+[features]
+# The Tier-2 wasm codec shell (SL-1.FILT.08 Ghostscript differential). Enabled
+# only by the native oracle/tooling legs. `selis-pdf-filter/wasm-host` pulls
+# `selis-sandbox/wasm-host` -> wasmtime, which has no wasm32 target, so the
+# feature must not be enabled in the wasm32 size-check build of `xtask`; the
+# `jpx_gs` module that uses it is `#[cfg(all(feature = "wasm-host",
+# not(target_arch = "wasm32")))]`-gated accordingly.
+wasm-host = ["selis-pdf-filter/wasm-host"]
+
 # Native-only tooling. wasmtime has no wasm32 target, and the SL-1.ENC.03
 # fixture generator builds committed PDFs (never needed in a wasm build).
 # The size-check job builds `-p xtask --target wasm32-unknown-unknown`, so

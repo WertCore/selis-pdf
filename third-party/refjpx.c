@@ -79,6 +79,18 @@ static int getenv_fixture_mct(void) {
     return (m && m[0] == '0') ? 0 : 1;
 }
 
+static int getenv_fixture_irreversible(void) {
+    const char *m = getenv("REFJPX_IRREVERSIBLE");
+    return (m && m[0] == '1') ? 1 : 0;
+}
+
+/* Lossy 9/7 needs a finite quality target: OpenJPEG refuses a zero rate with
+ * the irreversible DWT. REFJPX_Q picks the layer quality (default 40 dB). */
+static double getenv_fixture_q(void) {
+    const char *m = getenv("REFJPX_Q");
+    return m ? atof(m) : 40.0;
+}
+
 static int encode_fixture(const char *out_path) {
     enum { W = 64, H = 48, C = 3 };
     opj_cparameters_t p;
@@ -86,8 +98,14 @@ static int encode_fixture(const char *out_path) {
     p.tcp_numlayers = 1;
     p.cp_disto_alloc = 0;
     p.cp_fixed_alloc = 0;
-    p.tcp_rates[0] = 0;               /* lossless */
-    p.irreversible = 0;               /* 5/3 reversible DWT */
+    if (getenv_fixture_irreversible()) {
+        /* 9/7 lossy: fixed-quality allocation with a real quality target. */
+        p.cp_fixed_quality = 1;
+        p.tcp_distoratio[0] = (OPJ_FLOAT32)getenv_fixture_q();
+    } else {
+        p.tcp_rates[0] = 0;           /* lossless 5/3 */
+    }
+    p.irreversible = getenv_fixture_irreversible(); /* 5/3 reversible or 9/7 irreversible DWT */
     p.numresolution = 5;
     p.tcp_mct = getenv_fixture_mct();
     p.cod_format = 0;                 /* J2K codestream */
