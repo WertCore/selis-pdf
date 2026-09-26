@@ -11,7 +11,7 @@
 //!
 //! A request is `{"v":1,"id":N,"op":...}` where `op` selects one of the
 //! request bodies below (`open`, `close`, `page`, `render`, `text`, `search`,
-//! `mutate`, `save`, `cancel`). A response is `{"v":1,"id":N,...}` with
+//! `mutate`, `save`, `cancel`, `memoryStats`, `memoryPressure`). A response is `{"v":1,"id":N,...}` with
 //! exactly one of: `ok:true` + `value` (the op's result object), `ok:false` +
 //! `code` + `message` + `docState` (+ optional engine-owned `detail`), or
 //! `progress` (`{fraction, stage}`, reserved for the threaded shell path —
@@ -165,6 +165,23 @@ pub enum RequestOp {
     Cancel {
         /// The request id to cancel.
         target: u64,
+    },
+    /// Report guest memory accounting (SL-4.WASM.04): live/peak bytes, the
+    /// 4 GiB wasm ceiling, and the tab cap the guest enforces against. The
+    /// shell polls this to evict its own caches before the browser kills
+    /// the tab.
+    #[serde(rename_all = "camelCase")]
+    MemoryStats,
+    /// Memory-pressure signal from the shell (SL-4.WASM.04): the guest drops
+    /// what it can (the pre-cancel queue today, tile/display-list caches when
+    /// they land) and reports what remains. `level` is `0` low, `1`
+    /// moderate, `2` critical (clamped — higher levels evict at least as
+    /// much). The out-of-band twin is the `selis_memory_pressure` export for
+    /// threaded hosts; single-threaded shells send this message between ops.
+    #[serde(rename_all = "camelCase")]
+    MemoryPressure {
+        /// Pressure level (`0` low, `1` moderate, `2` critical).
+        level: u32,
     },
 }
 
@@ -550,6 +567,8 @@ mod tests {
             r#"{"v":1,"id":19,"op":"save","doc":3,"mode":"incremental"}"#,
             r#"{"v":1,"id":20,"op":"save","doc":3,"mode":"rewrite"}"#,
             r#"{"v":1,"id":21,"op":"cancel","target":17}"#,
+            r#"{"v":1,"id":22,"op":"memoryStats"}"#,
+            r#"{"v":1,"id":23,"op":"memoryPressure","level":1}"#,
         ];
         for s in msgs {
             let msg: RequestMessage =

@@ -54,11 +54,23 @@
 //! # Budget
 //!
 //! Every op builds a fresh [`BudgetGuard`](selis_sandbox::BudgetGuard) from
-//! the document's budget profile (chosen by the client at `open` â€” the
+//! the document's budget profile (chosen by the client at `open` — the
 //! engine never picks its own limits, ADR-P0006) with the *injected* clock
 //! and cancel token. Exhaustion and cancellation cross the boundary as
 //! typed `BUDGET_*`/`CANCELLED` responses carrying the registry's
 //! `doc_state`.
+//!
+//! # Memory (SL-4.WASM.04)
+//!
+//! The worker is the guest side of the memory strategy (`crate::memory`):
+//! the claimed inline length is validated against the 4 GiB wasm ceiling,
+//! the document byte budget, the tab heap cap, and the inline bound
+//! *before* the payload is touched; `close` releases the `Session` and
+//! subtracts its length from the live tally; `memoryStats` reports the
+//! live/peak tallies so the JS shell can evict its caches; `memoryPressure`
+//! drops the pre-cancel queue (the only guest-side queue that grows without
+//! a document). See `crate::memory` for the growth policy and the
+//! `Budget.bytes`/`wall` ↔ JS-cap mapping.
 //!
 //! # Malformed Input
 //!
@@ -76,6 +88,7 @@ use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
 
+use crate::memory::{MemoryStats, JS_DEFAULT_CAP_BYTES, WASM_MAX_BYTES};
 use crate::protocol::{
     BudgetOverrides, BudgetProfile, DocHandle, MutationEnvelope, PageRange, RenderParams,
     RequestMessage, RequestOp, ResponseMessage, SaveMode, SearchOpts, SourceDescriptor,
@@ -84,10 +97,13 @@ use crate::protocol::{
 
 /// Hard ceiling on one inline document (the same hostile-input bound the
 /// raw render ABI applies; larger sources arrive as streaming adapters).
+/// Mirrored in `crate::memory::PROTOCOL_MAX_INPUT_BYTES` — the memory
+/// strategy is the normative owner, this stays for wire-compatible callers.
 pub const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Hard ceiling on any canvas dimension in device pixels (a hostile media
 /// box is rejected before the pixel buffer exists).
+/// Mirrored in `crate::memory::PROTOCOL_MAX_CANVAS_DIM`.
 pub const MAX_CANVAS_DIM: u32 = 16_384;
 
 /// Maximum simultaneously open documents (the guest registry bound; further
@@ -192,6 +208,8 @@ impl core::fmt::Debug for WorkerEnv<'_> {
 struct OpenDoc {
     session: Session,
     budget: Budget,
+    /// Source length, in bytes — the live-tally contribution released on `close`.
+    src_len: u64,
 }
 
 /// The binary attachment that leaves with a response.
@@ -244,10 +262,17 @@ impl Outgoing {
 /// The engine-side state of one Worker: the document registry and the
 /// pre-cancellation records. The guest holds exactly one; the harness and
 /// tests hold their own.
+///
+/// Memory accounting (SL-4.WASM.04): `live_bytes` is the sum of open source
+/// lengths, `peak_bytes` its maximum — the `memoryStats` payload and the
+/// tab-cap enforcement input. `close` subtracts exactly what `open` added,
+/// so sequential open/close shows no live growth.
 pub struct Worker {
     docs: BTreeMap<u64, OpenDoc>,
     next_handle: u64,
     pre_cancelled: Vec<u64>,
+    live_bytes: u64,
+    peak_bytes: u64,
 }
 
 impl Default for Worker {
@@ -264,6 +289,8 @@ impl Worker {
             docs: BTreeMap::new(),
             next_handle: 1,
             pre_cancelled: Vec::new(),
+            live_bytes: 0,
+            peak_bytes: 0,
         }
     }
 
@@ -271,6 +298,44 @@ impl Worker {
     #[must_use]
     pub fn open_docs(&self) -> usize {
         self.docs.len()
+    }
+
+    /// Live guest bytes attributable to open documents (the sum of source
+    /// lengths — the tab-cap enforcement input).
+    #[must_use]
+    pub const fn live_bytes(&self) -> u64 {
+        self.live_bytes
+    }
+
+    /// Maximum `live_bytes` observed since creation.
+    #[must_use]
+    pub const fn peak_bytes(&self) -> u64 {
+        self.peak_bytes
+    }
+
+    /// A snapshot of guest memory accounting for `memoryStats`.
+    #[must_use]
+    pub fn memory_stats(&self) -> MemoryStats {
+        let live_docs = u64::try_from(self.docs.len()).unwrap_or(u64::MAX);
+        MemoryStats::new(
+            live_docs,
+            self.live_bytes,
+            self.peak_bytes,
+            JS_DEFAULT_CAP_BYTES,
+        )
+    }
+
+    /// Drop what the guest can on memory pressure (SL-4.WASM.04).
+    ///
+    /// Today that is the pre-cancel queue — the only guest-side queue that
+    /// grows without a document. Tile/display-list caches, when they land,
+    /// evict here first, more aggressively at higher levels. Returns the
+    /// number of records dropped.
+    pub fn on_memory_pressure(&mut self, level: u32) -> u64 {
+        let _ = crate::memory::clamp_pressure_level(level);
+        let dropped = u64::try_from(self.pre_cancelled.len()).unwrap_or(u64::MAX);
+        self.pre_cancelled.clear();
+        dropped
     }
 
     /// Handle one request (see the module docs for the pipeline).
@@ -371,6 +436,8 @@ impl Worker {
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
             RequestOp::Cancel { target } => self.op_cancel(id, target),
+            RequestOp::MemoryStats => self.op_memory_stats(id),
+            RequestOp::MemoryPressure { level } => self.op_memory_pressure(id, level),
         }
     }
 
@@ -388,19 +455,21 @@ impl Worker {
         let budget = budget_from_profile(&profile)?;
         match src {
             SourceDescriptor::Bytes { len } => {
+                // SL-4.WASM.04: the claim is validated before the payload is
+                // touched — a 1.5 GiB descriptor fails typed without a 1.5 GiB
+                // copy, and the tab cap is enforced across open documents.
+                crate::memory::check_inline_len(
+                    len,
+                    budget.bytes,
+                    self.live_bytes,
+                    JS_DEFAULT_CAP_BYTES,
+                )?;
                 let arrived = u64::try_from(payload.len()).unwrap_or(u64::MAX);
                 if arrived != len {
                     return Err(err!(
                         Code::BindingBadArgument,
                         during = "wasm-worker",
                         detail = "payload length does not match the bytes descriptor"
-                    ));
-                }
-                if len > MAX_INPUT_BYTES {
-                    return Err(err!(
-                        Code::SourceTooLarge,
-                        during = "wasm-worker",
-                        detail = "inline source exceeds the 64 MiB protocol bound"
                     ));
                 }
                 if self.docs.len() as u64 >= MAX_OPEN_DOCS {
@@ -411,10 +480,28 @@ impl Worker {
                     ));
                 }
                 env.progress.progress(id, Stage::Open, 0);
-                let session = Session::open(payload.to_vec(), &budget, env.clock)?;
+                // Budgeted copy: charge before allocating so a hostile length
+                // yields BUDGET_BYTES in constant memory, never an OOM abort.
+                // Uses a frozen clock so the wall deadline keeps its original
+                // start inside `Session::open` (the copy itself does no ticks;
+                // the deadline fires there, deterministically).
+                let frozen = selis_sandbox::FixedClock(0);
+                let mut copy_guard = budget.guard_with(&frozen, env.cancel.clone());
+                let owned: Vec<u8> = selis_sandbox::alloc::copy_slice(&mut copy_guard, payload)?;
+                drop(copy_guard);
+                let session = Session::open(owned, &budget, env.clock)?;
                 let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
                 let handle = self.mint_handle()?;
-                self.docs.insert(handle.raw, OpenDoc { session, budget });
+                self.live_bytes = self.live_bytes.saturating_add(len);
+                self.peak_bytes = self.peak_bytes.max(self.live_bytes);
+                self.docs.insert(
+                    handle.raw,
+                    OpenDoc {
+                        session,
+                        budget,
+                        src_len: len,
+                    },
+                );
                 Ok(Outgoing::ok(
                     id,
                     serde_json::json!({ "doc": handle.raw, "pages": pages }),
@@ -445,8 +532,43 @@ impl Worker {
     }
 
     fn op_close(&mut self, id: u64, doc: DocHandle) -> Result<Outgoing> {
-        self.docs.remove(&doc.raw).ok_or_else(bad_handle)?;
+        // SL-4.WASM.04 explicit release: dropping the Session frees the
+        // source bytes and the resolved model; the live tally shrinks by
+        // exactly what `open` added.
+        let removed = self.docs.remove(&doc.raw).ok_or_else(bad_handle)?;
+        self.live_bytes = self.live_bytes.saturating_sub(removed.src_len);
         Ok(Outgoing::ok(id, serde_json::json!({ "closed": true })))
+    }
+
+    fn op_memory_stats(&self, id: u64) -> Result<Outgoing> {
+        let stats = self.memory_stats();
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "liveDocs": stats.live_docs,
+                "liveBytes": stats.live_bytes,
+                "peakBytes": stats.peak_bytes,
+                "wasmMaxBytes": stats.wasm_max_bytes,
+                "jsCapBytes": stats.js_cap_bytes,
+                "maxInputBytes": stats.max_input_bytes,
+                "maxCanvasDim": stats.max_canvas_dim,
+            }),
+        ))
+    }
+
+    fn op_memory_pressure(&mut self, id: u64, level: u32) -> Result<Outgoing> {
+        let clamped = crate::memory::clamp_pressure_level(level);
+        let evicted = self.on_memory_pressure(clamped);
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "level": clamped,
+                "evicted": evicted,
+                "liveDocs": u64::try_from(self.docs.len()).unwrap_or(u64::MAX),
+                "liveBytes": self.live_bytes,
+                "peakBytes": self.peak_bytes,
+            }),
+        ))
     }
 
     // -- page metadata -----------------------------------------------------
@@ -487,13 +609,9 @@ impl Worker {
             .page_view(idx, params.dpi)
             .ok_or_else(|| err!(Code::PageOutOfRange, during = "wasm-worker"))?;
         let (w, h) = (view.width, view.height);
-        if w == 0 || h == 0 || w > MAX_CANVAS_DIM || h > MAX_CANVAS_DIM {
-            return Err(err!(
-                Code::BudgetPixels,
-                during = "wasm-worker",
-                detail = "canvas exceeds the protocol dimension cap"
-            ));
-        }
+        // SL-4.WASM.04: the canvas is validated against the dimension cap,
+        // the pixel budget, and the 4 GiB ceiling before the backend exists.
+        crate::memory::check_canvas(w, h, opened.budget.pixels)?;
         let tile = match params.tile {
             Some(t) => {
                 let x_end = u64::from(t.x).saturating_add(u64::from(t.w));
@@ -513,10 +631,13 @@ impl Worker {
         let budget = opened.budget;
         let mut g = budget.guard_with(env.clock, env.cancel.clone());
         // The canvas is the op's pixel claim: a hostile media box aiming at
-        // a 16kÃ—16k allocation exhausts the pixel budget *before* the
-        // allocation exists (ADR-P0006).
-        let canvas_pixels = u64::from(w).saturating_mul(u64::from(h));
+        // a 16k×16k allocation exhausts the pixel budget *before* the
+        // allocation exists (ADR-P0006). Bytes are charged too — the pixmap
+        // is `w × h × 4` live bytes the tab cap accounts for.
+        let canvas_pixels = crate::memory::canvas_pixels(w, h);
         g.charge(Resource::Pixels, canvas_pixels)?;
+        let canvas_byte_claim = crate::memory::canvas_bytes(w, h);
+        g.charge(Resource::Bytes, canvas_byte_claim)?;
         let ctm = match params.matrix {
             // serde enforces exactly six elements for `[f64; 6]`; a
             // wrong-length array fails the parse as `BINDING_BAD_ARGUMENT`.
@@ -806,10 +927,17 @@ fn search_range(opts: &SearchOpts, page_count: usize) -> Result<(u32, u32)> {
 /// The [`Budget`] a client profile names: the surface profile, with the
 /// client's per-resource overrides applied on top.
 ///
+/// The `bytes` override is the JS heap-cap channel (SL-4.WASM.04): the
+/// shell derives it from `performance.memory.jsHeapSizeLimit` or its
+/// configured tab budget. A claim past the 4 GiB wasm ceiling is hostile
+/// input (`BINDING_BAD_ARGUMENT`, never a silent clamp); anything else is
+/// enforced per-operation as `BUDGET_BYTES`.
+///
 /// # Errors
 ///
-/// `BINDING_BAD_ARGUMENT` for a wall override that cannot be expressed in
-/// nanoseconds (overflow is treated as hostile input, not clamped).
+/// * `BINDING_BAD_ARGUMENT` for a wall override that cannot be expressed in
+///   nanoseconds (overflow is treated as hostile input, not clamped).
+/// * `BINDING_BAD_ARGUMENT` for a byte override past the wasm ceiling.
 fn budget_from_profile(profile: &BudgetProfile) -> Result<Budget> {
     let surface = match profile.surface {
         SurfaceName::Thumbnail => Surface::Thumbnail,
@@ -821,6 +949,13 @@ fn budget_from_profile(profile: &BudgetProfile) -> Result<Budget> {
     let mut budget = Budget::profile(surface);
     if let Some(o) = &profile.overrides {
         apply_overrides(&mut budget, o)?;
+    }
+    if budget.bytes > WASM_MAX_BYTES {
+        return Err(err!(
+            Code::BindingBadArgument,
+            during = "wasm-worker",
+            detail = "bytes override exceeds the 4 GiB wasm32 ceiling"
+        ));
     }
     Ok(budget)
 }
