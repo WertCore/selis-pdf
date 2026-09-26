@@ -47,7 +47,7 @@ pub(crate) fn run(
     let mut first_output = true;
     for p in page..=last {
         let dl = session
-            .page_display_list(p, &budget, &mut g)
+            .page_text_display_list(p, &budget, &mut g)
             .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
 
         if format == "image" {

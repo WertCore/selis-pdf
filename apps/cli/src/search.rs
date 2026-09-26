@@ -27,7 +27,7 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
     }
     let mut g = budget.guard_with(&clock, crate::runtime::token());
     let dl = session
-        .page_display_list(page, &budget, &mut g)
+        .page_text_display_list(page, &budget, &mut g)
         .map_err(|e| CliError(format!("cannot interpret page: {e}")))?;
 
     let mcid_order = session
