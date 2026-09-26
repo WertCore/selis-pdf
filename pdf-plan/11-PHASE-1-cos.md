@@ -209,12 +209,15 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     - **Deferred:** CMYK/`+alpha`/`JP2` colour-management shaping is deferred to
       SL-2.FILT.02 (current 4-comp handling is a documented first-three-channels
       approximation, not a correctness claim). The GS leg runs local-first
-      (pinned GS 9.56.1, `SELIS_GS`/`gswin64c`/`gswin32c`/`gs` resolution); it is
-      wired to the `21-TESTING-AND-ORACLES` differential harness so the CI oracle
-      container can re-run it on a runner that has Ghostscript. Honesty beats
-      false green: containment is proven, the oracle-match clause is now measured
-      and within a documented tolerance, and the caveat above is stated plainly
-      rather than hidden.
+      (pinned GS 9.56.1, `SELIS_GS`/`gswin64c`/`gswin32c`/`gs` resolution). The
+      harness is a local-first manual tool today; the `21-TESTING-AND-ORACLES` CI
+      wiring (a `.github` job on a runner that has Ghostscript) is a documented
+      follow-up, NOT yet implemented — there is no CI reference to `compare-jpx`,
+      `jpx_gs`, or Ghostscript yet, so the leg is re-run by hand until that lands.
+      Honesty beats false green: containment is proven, the oracle-match clause
+      is now measured and within a documented tolerance, the GS-links-OpenJPEG
+      caveat is stated plainly, and the missing CI leg is tracked rather than
+      implied.
 
 - [x] **SL-1.FILT.09 — Crypt filter** · deps: FILT.01, ENC.02 · owner: AI+
   - **Note:** The `/Crypt` filter and the identity crypt filter. `EncryptInfo`/`DecryptPolicy`
