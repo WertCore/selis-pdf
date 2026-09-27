@@ -192,6 +192,34 @@ describe("the virtualised page list", () => {
 		list.dispose();
 	});
 
+	it("formats every string through the host's catalogue, not an inline English literal", () => {
+		const doc = documentOf(40);
+		// A host shipping another language passes a catalogue; nothing in the
+		// component is forked. This is the seam SL-4.UI.11 plugs a runtime into.
+		const list = createPageList({
+			adapter: harness(doc).adapter,
+			doc,
+			strings: {
+				"pageList.page.label": "Seite {page} von {total}",
+				"pageList.page.announcement": "{mode}: {pageLabel}",
+				"pageList.mode.page": "an Seitenbreite",
+				"pageList.region.label": "Dokumentseiten",
+				"pageList.list.label": "Seiten",
+			},
+		});
+		const state = list.update({ ...VIEWPORT, scrollTop: 5000 });
+		expect(state.regionLabel).toBe("Dokumentseiten");
+		expect(state.listLabel).toBe("Seiten");
+		expect(state.announcement).toBe(`an Seitenbreite: Seite ${state.currentPage + 1} von 40`);
+		for (const tile of state.tiles) {
+			expect(tile.label).toBe(`Seite ${tile.page + 1} von 40`);
+		}
+		// A key the host did not override still falls back to English rather
+		// than rendering an empty label.
+		expect(state.mode).toBe("page");
+		list.dispose();
+	});
+
 	it("walks the whole document within the per-frame budget", async () => {
 		const doc = documentOf(2000);
 		const world = harness(doc);

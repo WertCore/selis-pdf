@@ -20,6 +20,7 @@ ADR-P0021's zero-dependency rule.
 | `anchoring.ts` | Keeping the reader on the same page and the same place in it across a relayout. Pure. |
 | `tile-ladder.ts` | The placeholder → low-res → full-res ladder, the render scheduler (bounded concurrency, cancellation, LRU cache). |
 | `keyboard.ts` | The key map and the labels assistive tech reads. Pure. |
+| `strings.ts` | The message keys and the English catalogue — every user-facing string. |
 | `page-list.ts` | The controller: owns mode, zoom, scroll offset, window, current page, and the scheduler. |
 | `page-list.css` | Presentation, entirely token-driven. |
 
@@ -82,6 +83,35 @@ Arrow keys move one page (one spread in two-up mode), PageUp/PageDown move a
 screen, Home/End jump to the ends, and `handleKey` returns `null` for keys that
 are not the list's so the shell can keep them. The full axe/screen-reader pass is
 SL-4.UI.07; this is UI.02's share of it.
+
+## Strings and i18n
+
+Every user-facing string the page list owns — the tile `aria-label`, the live
+region, the two region labels and the three fit-mode names — is a **key** in
+`strings.ts`, with English in a catalogue. The ADRs require this from day 1 so
+a rename is a resource change rather than a code change, and a translator can
+reach the text without touching the geometry layer.
+
+Pass a catalogue to `createPageList` to localise; overrides merge over English,
+so a host overrides what it has and inherits the rest:
+
+```ts
+const list = createPageList({
+	adapter,
+	doc,
+	strings: { "pageList.page.label": "Seite {page} von {total}" },
+});
+```
+
+Placeholders are substituted **by name**, so a catalogue can reorder the
+sentence — which most languages need to do. `SL-4.UI.11` owns the real runtime
+(English shipping, pseudo-locale in CI) and replaces the body of
+`createPageListStrings` with a catalogue lookup; nothing else moves.
+
+`strings.test.ts` is the gate: it fails the build if a user-facing English
+literal reappears beside the catalogue, or if an aria label is assigned from a
+literal. It is a lint-style unit test, following the idiom
+`platform-globals.test.ts` set for the host seam.
 
 ## The two DoD clauses, and where they are proved
 

@@ -39,6 +39,8 @@ import type { PageNavigationCommand } from "./keyboard.js";
 import { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
 import type { PageFitMode, PageLayout, PlacedPage } from "./layout.js";
 import { layoutPages, pageAtScrollTop } from "./layout.js";
+import type { PageListCatalogue } from "./strings.js";
+import { createPageListStrings } from "./strings.js";
 import type { TileEntry, TileStage } from "./tile-ladder.js";
 import { TileScheduler, planLadder } from "./tile-ladder.js";
 import type { PageWindow } from "./windowing.js";
@@ -136,6 +138,13 @@ export interface PageListOptions {
 	readonly prefetchRows?: number;
 	/** Engine tasks submitted per frame. */
 	readonly frameBudget?: number;
+	/**
+	 * Message catalogue override, merged over English. Every user-facing string
+	 * is a key (ADR: a rename is a resource change, not a code change), so a
+	 * host that ships another language passes its catalogue here rather than
+	 * forking the component. SL-4.UI.11 supplies the real runtime.
+	 */
+	readonly strings?: Partial<PageListCatalogue>;
 	/** Called on every state change (including tile resolutions). */
 	readonly onState?: (state: PageListState) => void;
 	/** Called for a tile that failed for a reason other than cancellation. */
@@ -182,6 +191,9 @@ export function createPageList(options: PageListOptions): PageList {
 	};
 	let mode: PageFitMode = options.mode ?? "page";
 	let zoom: number = options.zoom ?? 1;
+	// Resolved once: a catalogue is fixed for the controller's lifetime, so
+	// every published state formats against the same strings.
+	const strings = createPageListStrings(options.strings);
 	let viewport: PageListViewport = { width: 0, height: 0, scrollTop: 0, devicePixelRatio: 1 };
 	let currentPage = 0;
 	let lastState: PageListState | null = null;
@@ -282,7 +294,7 @@ export function createPageList(options: PageListOptions): PageList {
 			scale: entry.scale,
 			deviceScale,
 			className: classes,
-			label: pageLabel(entry.page, doc.pageCount),
+			label: pageLabel(entry.page, doc.pageCount, strings),
 			// Roving tabindex: exactly one page is in the tab order at a time.
 			tabIndex: isCurrent ? 0 : -1,
 			current: isCurrent,
@@ -318,9 +330,9 @@ export function createPageList(options: PageListOptions): PageList {
 			scrollTop: viewport.scrollTop,
 			viewportHeight: viewport.height,
 			tiles,
-			announcement: announcement(currentPage, doc.pageCount, mode),
-			regionLabel: "Document pages",
-			listLabel: "Pages",
+			announcement: announcement(currentPage, doc.pageCount, mode, strings),
+			regionLabel: strings.regionLabel,
+			listLabel: strings.listLabel,
 			windowClamped: win.clamped,
 		};
 	}

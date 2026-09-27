@@ -66,6 +66,21 @@ export type { KeyboardContext, PageListKey, PageNavigationCommand } from "./keyb
 export { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
 
 export type {
+	PageListCatalogue,
+	PageListMessageKey,
+	PageListMessageValues,
+	PageListStrings,
+} from "./strings.js";
+export {
+	DEFAULT_STRINGS,
+	EN_PAGE_LIST_CATALOGUE,
+	PAGE_LIST_MESSAGE_KEYS,
+	createPageListStrings,
+	formatMessage,
+	modeKey,
+} from "./strings.js";
+
+export type {
 	PageList,
 	PageListMetrics,
 	PageListOptions,

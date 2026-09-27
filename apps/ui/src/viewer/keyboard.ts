@@ -16,6 +16,7 @@
  */
 
 import type { PageFitMode } from "./layout.js";
+import { DEFAULT_STRINGS, type PageListStrings } from "./strings.js";
 
 /** Keys the page list claims. Anything else belongs to the shell. */
 export type PageListKey =
@@ -107,13 +108,27 @@ function clamp(value: number, low: number, high: number): number {
 	return Math.min(high, Math.max(low, value));
 }
 
-/** Human label for a page, used by the tile `aria-label` and the live region. */
-export function pageLabel(page: number, pageCount: number): string {
-	return `Page ${page + 1} of ${pageCount}`;
+/**
+ * Human label for a page, used by the tile `aria-label` and the live region.
+ *
+ * The text comes from `strings.ts` (every user-visible string is a key), so
+ * this is a thin binding rather than a template — see {@link PageListStrings}.
+ * `strings` defaults to English; the controller passes the host's catalogue.
+ */
+export function pageLabel(
+	page: number,
+	pageCount: number,
+	strings: PageListStrings = DEFAULT_STRINGS,
+): string {
+	return strings.pageLabel(page, pageCount);
 }
 
 /** The polite live-region text: which page the reader is on, and the mode. */
-export function announcement(page: number, pageCount: number, mode: PageFitMode): string {
-	const modeText = mode === "page" ? "fit page" : mode === "width" ? "fit width" : "two-up";
-	return `${pageLabel(page, pageCount)} — ${modeText}`;
+export function announcement(
+	page: number,
+	pageCount: number,
+	mode: PageFitMode,
+	strings: PageListStrings = DEFAULT_STRINGS,
+): string {
+	return strings.announcement(page, pageCount, mode);
 }
