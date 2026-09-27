@@ -21,17 +21,58 @@ Reference custom properties only. Never hard-code a value a token defines:
 .my-widget {
 	padding: var(--selis-space-4);              /* 8px on the 2px grid */
 	border-radius: var(--selis-radius-md);
-	background: var(--selis-color-surface);
-	color: var(--selis-color-text-secondary);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg-muted);
 	box-shadow: var(--selis-shadow-1);
 	transition: opacity var(--selis-duration-fast) var(--selis-ease-standard);
 }
 ```
 
-Roles, not raw colours: `--selis-color-text` not `#171b1f`. If a role you need
+Roles, not raw colours: `--selis-color-fg` not `#171b1f`. If a role you need
 is missing, add it to `src/tokens/colour.ts` (it then exists in all four
 themes and passes the contrast gate) rather than reaching for a sibling role
 with different semantics.
+
+## Role vocabulary (SL-4.UI.14)
+
+Role *names* follow wertkit's contract
+([`spec/naming.md`](https://github.com/WertCore/wertkit/blob/main/spec/naming.md))
+so Selis and wertkit speak one vocabulary:
+
+| Role | Meaning |
+|---|---|
+| `bg` / `bg-raised` / `bg-inset` | page / lifted surface (panels, toolbars, dialogs) / wells and fields |
+| `fg` / `fg-muted` / `fg-subtle` | primary / secondary / tertiary text |
+| `border` / `border-strong` | hairline / emphasised |
+| `accent` / `accent-hover` / `accent-fg` / `accent-subtle` | brand; `-fg` is text **on** `accent` |
+| `danger` / `warn` / `success` (+ `-fg`, `-subtle`) | status; `-fg` is text on the subtle fill |
+| `focus-ring` | keyboard focus indicator |
+
+Roles wertkit does not define are **Selis extensions**, kept in the same shape
+so a future wertkit role drops in without a rename: `fg-disabled` (the only
+role exempt from the contrast gate), `link`, `selection-bg`/`selection-fg`,
+`highlight-bg`/`highlight-active-bg`/`highlight-fg`, `page-placeholder`/
+`page-placeholder-fg`, and `scrollbar-thumb`.
+
+We keep Selis's own token files rather than depending on `@wertkit/tokens`:
+wertkit has no `data-contrast` high-contrast theme and the tests below assert
+7:1 in one. Stage 1 is names only — no values changed.
+
+## Identity vs structure
+
+Per the same contract, the tokens split into two tiers, and the difference is
+a rule, not a preference:
+
+- **Identity** — an app MAY re-skin these by overriding the role variable
+  (`--selis-color-*`, `--selis-radius-*`, `--selis-shadow-*`, `--selis-font-*`).
+  This is the sanctioned way to give an app its own look.
+- **Structure** — do NOT override: the spacing scale (`--selis-space-*`), the
+  type scale (`--selis-text-*`, `--selis-leading-*`), control heights
+  (`--selis-density-*`), motion (`--selis-duration-*`, `--selis-ease-*`), and
+  the focus treatment. Cross-app family resemblance lives here.
+
+So: re-skin by overriding *role variables*; never by overriding a structural
+token, and never by hard-coding a raw value in app CSS.
 
 ## Theming
 
@@ -67,7 +108,7 @@ Persist the four preferences through the platform adapter's storage port, not
   distinct roles stay distinct.
 - **Contrast gate** — every declared fg/bg pair is checked with WCAG 2.x math
   in all four effective themes (4.5:1 body text, 3:1 non-text, 7:1 text in
-  high contrast). `textDisabled` is the only exempt role. If your change
+  high contrast). `fgDisabled` is the only exempt role. If your change
   trips the gate, pick a different value — do not lower the threshold.
 - **CSS sync** — `css/tokens.css` must match the generator byte-for-byte.
   After editing token TS: `UPDATE_TOKENS_CSS=1 pnpm --filter @selis/ui-kit
