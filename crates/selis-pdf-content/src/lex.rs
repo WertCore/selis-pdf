@@ -38,6 +38,14 @@ pub enum Tok {
     EI,
 }
 
+/// Maximum bytes in a decoded PDF string (the ISO 32000-1 §7.3.4.2
+/// implementation limit; PDF 2.0 raises it to 65 535).
+///
+/// Enforced in the lexer rather than in the text assembler, because the
+/// explosion SL-3.TEXT.16 tracks starts here: a string past the limit must
+/// never become an operand that a show-text can turn into characters.
+pub const MAX_STRING_BYTES: usize = 32_767;
+
 /// The content lexer over a byte buffer.
 #[derive(Debug)]
 pub struct Lexer<'a> {
@@ -135,7 +143,12 @@ impl<'a> Lexer<'a> {
                         self.bump();
                         return Ok(Some(Tok::DictStart));
                     }
-                    return self.lex_hex_string();
+                    // An over-limit hex string is consumed and emits nothing;
+                    // keep lexing rather than reporting end-of-stream.
+                    if let Some(tok) = self.lex_hex_string()? {
+                        return Ok(Some(tok));
+                    }
+                    continue;
                 }
                 b'>' => {
                     if self.src.get(self.pos.saturating_add(1)) == Some(&b'>') {
@@ -155,7 +168,15 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     continue;
                 }
-                b'(' => return self.lex_string(),
+                b'(' => {
+                    // An over-limit string is consumed and emits nothing; keep
+                    // lexing rather than reporting end-of-stream, which would
+                    // silently truncate the rest of the page.
+                    if let Some(tok) = self.lex_string()? {
+                        return Ok(Some(tok));
+                    }
+                    continue;
+                }
                 b'/' => return self.lex_name(),
                 _ if b.is_ascii_digit() || b == b'+' || b == b'-' || b == b'.' => {
                     return self.lex_number();
@@ -266,13 +287,54 @@ impl<'a> Lexer<'a> {
                 }
                 other => out.push(other),
             }
+            if out.len() > MAX_STRING_BYTES {
+                self.skip_over_limit_string();
+                return Ok(None);
+            }
         }
         Ok(Some(Tok::Str(selis_bytes::Bytes::copy_from_slice(&out))))
+    }
+
+    /// An out-of-envelope string: consume the rest of the literal and emit
+    /// **no** string token.
+    ///
+    /// A truncated string would be worse than none. ISO 32000-1 §7.3.4.2 caps a
+    /// string at [`MAX_STRING_BYTES`]; past that the object is a defect, and the
+    /// corpus files that probe it (`6.1.12-t03-fail-c` carries 65 538 bytes,
+    /// `6.1.13-t03-fail-a` 32 770) are named `fail` for exactly that reason.
+    /// Handing a 32 767-byte prefix downstream still fabricates tens of
+    /// thousands of characters the page never shows, which is the char-count
+    /// explosion SL-3.TEXT.16 exists to stop. Dropping the operand leaves the
+    /// token stream well-formed — the enclosing show-text simply has no string
+    /// to draw — and costs the reader nothing but the defect.
+    fn skip_over_limit_string(&mut self) {
+        let mut depth = 0u32;
+        while let Some(b) = self.peek() {
+            self.bump();
+            match b {
+                b'\\' => {
+                    // Skip the escaped byte too, so an escaped `)` cannot end
+                    // the scan early.
+                    if self.peek().is_some() {
+                        self.bump();
+                    }
+                }
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn lex_hex_string(&mut self) -> Result<Option<Tok>> {
         self.bump(); // consume `<`
         let mut out = Vec::new();
+
         let mut hi: Option<u8> = None;
         loop {
             let Some(b) = self.peek() else {
@@ -296,6 +358,12 @@ impl<'a> Lexer<'a> {
         }
         if let Some(h) = hi {
             out.push(h << 4);
+        }
+        // Same envelope as a literal string: a hex string over the limit is a
+        // defect, and emitting a truncated prefix would fabricate characters
+        // the page never shows (SL-3.TEXT.16).
+        if out.len() > MAX_STRING_BYTES {
+            return Ok(None);
         }
         Ok(Some(Tok::Str(selis_bytes::Bytes::copy_from_slice(&out))))
     }
@@ -425,6 +493,116 @@ mod tests {
             assert_eq!(s.as_slice(), b"hello world");
         } else {
             panic!("expected a truncated string token");
+        }
+    }
+
+    // ── SL-3.TEXT.16: the /Length-impl-limit string explosion ─────────────
+    //
+    // The three veraPDF "Implementation limits" files carry a show-text string
+    // of 65 538 / 32 770 bytes. Before the envelope was enforced, each H was
+    // emitted as a character, so extraction reported 65 538 characters where
+    // MuPDF reads 63. The counts below are the regression pin.
+
+    /// The largest string that is still a legal operand, byte for byte.
+    #[test]
+    fn a_string_at_the_limit_is_kept_whole() {
+        let mut body = vec![b'H'; MAX_STRING_BYTES];
+        let mut src = vec![b'('];
+        src.append(&mut body);
+        src.extend_from_slice(b") Tj ET");
+        let mut g = guard();
+        let toks = tokenise(&src, &mut g).expect("limit-sized string");
+        let strs: Vec<_> = toks.iter().filter(|t| matches!(t, Tok::Str(_))).collect();
+        assert_eq!(strs.len(), 1, "the limit-sized string must survive");
+        match strs[0] {
+            Tok::Str(s) => assert_eq!(s.as_slice().len(), MAX_STRING_BYTES),
+            _ => unreachable!("filtered to Tok::Str"),
+        }
+    }
+
+    /// One byte over the limit: the operand is dropped, not truncated.
+    ///
+    /// This is the pin for the char-count explosion. A truncated 32 767-byte
+    /// prefix would still have been 32 767 characters, so the assertion is on
+    /// the *absence* of a string token, not on a length.
+    #[test]
+    fn a_string_past_the_limit_yields_no_operand() {
+        let before = MAX_STRING_BYTES + 1;
+        let mut body = vec![b'H'; before];
+        let mut src = vec![b'('];
+        src.append(&mut body);
+        src.extend_from_slice(b") Tj ET");
+        let mut g = guard();
+        let toks = tokenise(&src, &mut g).expect("over-limit string");
+        let emitted: usize = toks
+            .iter()
+            .filter_map(|t| match t {
+                Tok::Str(s) => Some(s.as_slice().len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(emitted, 0, "no string token may escape the limit");
+    }
+
+    /// The over-limit literal must be consumed, not merely abandoned: the
+    /// operator and any following operands still have to lex, or the rest of
+    /// the page is lost.
+    #[test]
+    fn lexing_continues_after_an_over_limit_string() {
+        let mut body = vec![b'H'; MAX_STRING_BYTES + 10];
+        let mut src = vec![b'('];
+        src.append(&mut body);
+        src.extend_from_slice(b") Tj (next) Tj ET");
+        let mut g = guard();
+        let toks = tokenise(&src, &mut g).expect("over-limit then a good string");
+        let strs: Vec<_> = toks
+            .iter()
+            .filter_map(|t| match t {
+                Tok::Str(s) => Some(s.as_slice().to_vec()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            strs,
+            vec![b"next".to_vec()],
+            "the following string still lexes"
+        );
+        assert!(
+            toks.iter()
+                .any(|t| t == &Tok::Name(selis_bytes::Bytes::copy_from_slice(b"Tj"))),
+            "the show-text operators survive"
+        );
+    }
+
+    /// The hex-string path has the same envelope as the literal path.
+    #[test]
+    fn a_hex_string_past_the_limit_yields_no_operand() {
+        // Two hex digits decode to one byte, so the encoded form needs
+        // 2 x (limit + 1) digits to exceed it.
+        let mut src = vec![b'<'];
+        src.extend(std::iter::repeat_n(b'4', (MAX_STRING_BYTES + 1) * 2).collect::<Vec<u8>>());
+        src.extend_from_slice(b"> Tj ET");
+        let mut g = guard();
+        let toks = tokenise(&src, &mut g).expect("over-limit hex string");
+        let emitted: usize = toks
+            .iter()
+            .filter_map(|t| match t {
+                Tok::Str(s) => Some(s.as_slice().len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(emitted, 0, "a hex string over the limit is a defect too");
+    }
+
+    /// Escape decoding still runs while under the limit — the limit must not
+    /// have broken the normal string semantics it sits next to.
+    #[test]
+    fn escapes_still_decode_under_the_limit() {
+        let mut g = guard();
+        let toks = tokenise(br"(a\(b\)c\101\n) Tj ET", &mut g).expect("escapes");
+        match toks.first() {
+            Some(Tok::Str(s)) => assert_eq!(s.as_slice(), b"a(b)cA\n"),
+            other => panic!("expected a decoded string, got {other:?}"),
         }
     }
 }
