@@ -619,7 +619,7 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     not only the fully-silent case the `LOW_CONFIDENCE_MARKER` covers today.
   - **DoD:** Sweep verdicts carry the flag; a corpus case pins both the flagged and the
     exact-match neighbour so the threshold cannot drift silently.
-- [ ] **SL-3.CONF.03 — Recalibrate the Extract gate; triage the diff≥25 long tail** ·
+- [x] **SL-3.CONF.03 — Recalibrate the Extract gate; triage the diff≥25 long tail** ·
   deps: CONF.02, ORACLE.04 · owner: AI+
   - **Do:** ORACLE.04 measured that independent extractors top out at 79.0 % (pdfium↔pdfjs)
     and ≈72.7 % (mutool pairs) agreement at ≥0.98 on their own curated smoke set — the G3
@@ -634,6 +634,58 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     promote any area.
   - **DoD:** Bars published in 21-TESTING/§5 with the measured floor; each cluster has a
     task or an annotated expectation record; the ladder stays at its CONF.02 levels.
+  - **Done (2026-09-16):** Both halves shipped.
+    * **Recalibrated bars (published 21-TESTING-AND-ORACLES.md §5, this section's
+      numbering):** the ≥0.98-on-≥95% wording is retired as a gate and re-baselined from
+      the ORACLE.04 floor — **Extract Bar A** (selis's ≥0.98 fraction within 5pp of the
+      best independent pair) and **Extract Bar B** (selis's ≥0.99/≥0.95/≥0.75 band
+      fractions within 10pp of the best pair), with the measured floor as the
+      justification. On the CONF.05 tree selis scores ≥0.98 **56.04 %** (978/1,746) vs the
+      ≈72.7 % mutool-pair floor and ≥0.99 55.5 % / ≥0.95 57.1 % / ≥0.75 64.7 % vs the
+      pairs' 71.9–78.4 % / 74.2–80.5 % / 78.8–85.6 % — **both bars unmet by ≥12pp**.
+      Extract stays honest at Parse; the bars are measurements, not a promotion.
+    * **Triage of the 540-file `diff>=25` tail** (re-swept on the reconstructed corpus:
+      3,862 files, `C:\selis-build\conf03-triage-text`, pinned selis sha256
+      `49e4fde3…cbeb`, mutool 1.23.0; reproduces the CONF.05 readout within one file —
+      comparable 1,746, `match` 969, `diff>=25` 540, `empty_selis` 62, G3 56.01 %;
+      sources flat 191 / verapdf 196 / govdocs1 90 / ghent 61 / synthetic 2 all match).
+      The tail collapses into ~17 root-cause clusters (source/font/sim/rtl/truncated
+      axes):
+      1. **char-explosion (4)** — selis emits 32,770–65,538 chars where MuPDF reads 63
+         (`verapdf/…/6-1-12-t03-fail-c`, `6-1-13-t03-fail-a`, `TWG/A005-pdfa1-fail-c`,
+         `issue7454`); a runaway/repeat decode. **OurBug** → **SL-3.TEXT.16**.
+      2. **verapdf-ua-reading-order (98)** — PDF/UA tagged-structure pages where MuPDF
+         recovers a different (tagged) reading order. → **SL-3.TEXT.17**.
+      3. **govdocs-multifont (90)** — large real-world multi-font docs, sim 0.2–0.44,
+         word/line-assembly divergence on subsetted embedded fonts. → **SL-3.TEXT.18**.
+      4. **ghent-preflight (61)** — prepress text, 0/94 in G3, the known hard class;
+         tracked not gated (same as the G2 Prepress class). → annotated, no new task.
+      5. **verapdf-cmap-composite (47)** — Type0/CMap composite-font extraction
+         (`6-2-11-*`/`6-2-10-*`). → **SL-3.TEXT.19**.
+      6. **verapdf-other (35)** — short-text word-split + misc (overlaps the CONF.04
+         per-glyph family). → CONF.04/verdict records.
+      7. **flat-cjk (20)** — CJK/Asian fonts (KozMin, Ryumin, GBKp, WenQuanYi, …).
+         → **SL-3.TEXT.20**.
+      8. **latex-cm-fonts (16)** — LaTeX Computer-Modern family (CMR/CMSY/NimbusRom,
+         tracemonkey + 15). → **SL-3.TEXT.21**.
+      9. **rtl (15)** — RTL reading order (the 15 rtl-flagged). → **SL-3.TEXT.22**.
+      10. **flat-cid-identity (10)** — Identity-H/V CID font encoding. → **SL-3.TEXT.23**.
+      11. **annotation-appearance (9)** — annotation `/AP` text; already owned by
+          **SL-3.TEXT.14**.
+      12. **verapdf-638-wordsplit (8)** — the `6-3-8-t01-*` family; owned by
+          **SL-3.CONF.04** (27-file word-split family).
+      13. **type3 (8)** — Type3 font text (has_type3 10/63 in G3). → **SL-3.TEXT.24**.
+      14. **truncated (3)** — the `text_norm` truncation cap (3 truncated). → annotated.
+      15. **noembed-cjk-external (3)** — unembedded CJK substitution. → folded into
+          SL-3.TEXT.20.
+      16. **flat-misc (116)** — the individual pdf.js-corpus long tail (sim=0 and
+          partial), no single shared cause. → **SL-3.TEXT.25** (long-tail triage sweep).
+      `flat-misc` is deliberately a sweep-verdict task, not a bug claim: its 116 rows
+      need per-file verdicts against the ORACLE.04 noise floor before any become tasks.
+      Clusters 2–3/5–10/13/16 each carry a freshly-filed SL-3.TEXT task; the rest are
+      annotated or owned by existing tasks, so every cluster now has a task or an
+      annotated record (DoD met). Ladder unchanged — no rung moves, Extract still unmet
+      on the recalibrated bars.
 - [ ] **SL-3.CONF.04 — Verdict the MuPDF per-glyph word-split cohort** · deps: CONF.02 ·
   owner: AI+
   - **Do:** TEXT.09 flagged the short-text veraPDF fixtures that flipped
@@ -701,3 +753,96 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     scheduled run is green *with* non-zero comparable pages for pdfium and pdf.js; the
     Render-withhold is re-argued against those actual two-oracle cells (promotion is a
     separate decision, not this task's).
+
+- [ ] **SL-3.TEXT.16 — Extraction char-count explosion on /Length-impl-limit pages** ·
+  deps: TEXT.02 · owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 4 files extract with selis emitting 32,770–65,538 characters where MuPDF
+    reads 63: `verapdf/PDF_A-1b/…/6-1-12-t03-fail-c`, `verapdf/PDF_A-2b/…/6-1-13-t03-fail-a`,
+    `verapdf/TWG test files/TWG test suite A005-pdfa1-fail-c` (all sc=65538/32770 vs oc=63,
+    sim 0.0) and `issue7454` (sc=4091 vs oc=283, sim 0.053). A runaway/repeat decode —
+    plausibly a `/ToUnicode`/encoding table with a repeating range, or a bad advance loop in
+    assembly. On the CONF.03 re-sweep (pinned selis `49e4fde3…cbeb`).
+  - **Do:** reproduce with `selis extract --format text` on the 4 files, diagnose the
+    decoder/assembly path that multiplies the character count, fix, and pin a synthetic
+    corpus entry.
+  - **DoD:** all 4 files extract ≤ their MuPDF character count; a regression test pins the
+    before/after char counts; the CONF.03 `char-explosion` cluster is empty in the next
+    sweep.
+- [ ] **SL-3.TEXT.17 — Tagged (PDF/UA) reading-order extraction divergence** · deps: TEXT.04 ·
+  owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 98 PDF/UA files in the `diff>=25` tail (`verapdf/PDF_UA-1/*`,
+    `verapdf/PDF_UA-2/*`) where MuPDF recovers a different (structure-tree-tagged) reading
+    order than selis's geometry fallback. Reading order is the SL-3.TEXT.04 axis; the
+    tagged-corpus DoD ("100 % match against tagged order") is unmeasured here.
+  - **Do:** run the tagged files through the structure-first reading-order path (ADR-P0031),
+    verdict each against the ORACLE.04 noise floor, and fix the geometry-vs-structure
+    fallback where selis is the deviation.
+  - **DoD:** the CONF.03 `verapdf-ua-reading-order` cluster shrinks toward the oracle-pair
+    noise floor; tagged reading order matches the structure tree on the tagged subset.
+- [ ] **SL-3.TEXT.18 — Large multi-font word/line assembly on real documents** ·
+  deps: TEXT.03 · owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 90 `govdocs1/*` files in the `diff>=25` tail: large real-world documents
+    with many subsetted embedded fonts (5–10+ per page), selis-vs-MuPDF sim in the
+    0.2–0.44 band with both `sc<oc` and `sc>oc` — word/line assembly diverging on mixed
+    font/metric runs.
+  - **Do:** sample the worst (e.g. `000586` sim 0.284, `000878` sim 0.284, `000365`/
+    `000009` sim 0.44) and diagnose the assembly axis (run-merging across font changes,
+    inter-font space-width inference, line breaks).
+  - **DoD:** the representative sample moves into `diff<25` or `match`; a corpus pin covers
+    the multi-font-assembly case.
+- [ ] **SL-3.TEXT.19 — Type0/CMap composite-font extraction** · deps: TEXT.02, FONT.07 ·
+  owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 47 verapdf `6-2-11-*`/`6-2-10-*` files in the `diff>=25` tail — composite
+    fonts with CMaps and `/W` metrics; several `sc=oc` but sim 0.0–0.5 (wrong glyph
+    mapping, not wrong counts) and `sc=11 oc=19/23` (missing chars) on `6-2-11-3-*`.
+  - **Do:** diagnose the CMap/`/ToUnicode` mapping and `/W`-width path for these composite
+    fixtures; verdict vs the noise floor; fix the mapping/writing-mode causes.
+  - **DoD:** the `verapdf-cmap-composite` cluster shrinks; composite-font fixtures extract
+    at `match` where MuPDF's mapping is the spec-correct reading.
+- [ ] **SL-3.TEXT.20 — CJK/Asian font extraction** · deps: TEXT.02, FONT.07 · owner: AI+ ·
+  **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 20 flat CJK/Asian-font files in the `diff>=25` tail (KozMin, Ryumin,
+    YuMincho, WenQuanYi, GBKp, MSTT, …) plus the 3 `noembed-{jis7,sjis,eucjp,identity}`
+    unembedded-CJK files — CJK text diverging in sim 0.0–0.5, mostly at low char counts.
+  - **Do:** diagnose the CJK encoding/cmap path (JIS7/SJIS/EUC-JP predefined CMaps,
+    CID-keyed Japanese fonts) and the noembed substitution fallback.
+  - **DoD:** the `flat-cjk` + `noembed-cjk-external` clusters shrink; CJK fixtures extract
+    at `match` or an annotated OracleBug verdict.
+- [ ] **SL-3.TEXT.21 — LaTeX/Computer-Modern font family extraction** · deps: TEXT.02 ·
+  owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Defect:** 16 files using the LaTeX CM family (CMR/CMSY/CMTT/CMEX + NimbusRom,
+  - tracemonkey) in the `diff>=25` tail, sim 0.70–0.72 with identical output across
+    `tracemonkey`/`tracemonkey_a11y`/`issue12337`/`issue16316`/`issue15012` — a shared
+    extraction signature (glyph-name/AGL mapping for the math-symbol fonts, likely).
+  - **Do:** extract one representative (tracemonkey) and diagnose the shared signature;
+    the identical sc=5024 across files makes the root cause a single code path.
+  - **DoD:** the `latex-cm-fonts` cluster shrinks; the shared signature is pinned as a
+    corpus case.
+- [ ] **SL-3.TEXT.22 — RTL reading order in the tail** · deps: TEXT.04, SHAPE.02 ·
+  owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Do:** the 15 rtl-flagged `diff>=25` files (Arabic/Hebrew visual-vs-logical order risk,
+    per the normaliser docs) — verdict each against the noise floor and fix the reading
+    order where selis is the deviation.
+  - **DoD:** every rtl-flagged tail file carries a verdict; the `rtl` cluster shrinks.
+- [ ] **SL-3.TEXT.23 — Identity-H/V CID font encoding** · deps: TEXT.02, FONT.07 ·
+  owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Do:** 10 flat files using Identity-H/V CID fonts in the tail (arial_unicode_ab_cidfont,
+    issue7696, issue8795_reduced, PDFJS-9279-reduced, issue3061, …) with sim 0.0 — the
+    identity-CID mapping to glyph ids is producing wrong text.
+  - **DoD:** the `flat-cid-identity` cluster shrinks; identity-CID fixtures extract at
+    `match` or an annotated verdict.
+- [ ] **SL-3.TEXT.24 — Type3 font text extraction** · deps: TEXT.02, FONT.06 · owner: AI+ ·
+  **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Do:** the `type3` cluster (8 flat + the has_type3 10/63 G3 cohort): Type3 fonts'
+    glyph-procedure text and `/Encoding` recovery diverge from MuPDF. Verdict the 8 tail
+    files; fix the Type3 text path where selis is the deviation.
+  - **DoD:** the `type3` cluster shrinks toward the noise floor; Type3 fixtures pinned.
+- [ ] **SL-3.TEXT.25 — pdf.js long-tail diff≥25 verdict sweep** · deps: TEXT.02, ORACLE.04 ·
+  owner: AI · **filed by SL-3.CONF.03 (2026-09-16)**
+  - **Do:** the 116 `flat-misc` files (individual pdf.js-corpus cases, sim 0 and partial,
+    no single shared cause) run through the §21-TESTING §5 verdict workflow against the
+    ORACLE.04 noise floor: each file becomes an `[annotation]` record (OurBug → filed task;
+    OracleBug → spec citation; SpecAmbiguous → both readings) rather than an unlabelled
+    tail row. This is a triage sweep, not a bug claim.
+  - **DoD:** every `flat-misc` file carries a verdict record; the sweep gap list stops
+    carrying them unlabelled; confirmed OurBug causes each file a task.
