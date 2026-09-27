@@ -1,0 +1,100 @@
+/* The virtualised page list (SL-4.UI.02) — app-level component styles.
+ *
+ * Per `@selis/ui-kit`'s rules for UI.02+: new components live in the app and are
+ * styled with ui-kit tokens; only genuinely shared primitives go in
+ * `packages/ui-kit/css/base.css`. Everything here is therefore token-driven —
+ * no colour, space, radius, duration or font is hard-coded — and every class
+ * stays under the `selis-` namespace, which `page-list.css.test.ts` asserts
+ * against the *generated* token set (the same discipline ui-kit applies to its
+ * own base.css).
+ *
+ * The only literal numbers are `0` and `1` (unitless) and the two
+ * `translate`-free absolute-positioning keywords. Page geometry — width,
+ * height, x, y — is *document data* computed in `layout.ts`, not a design
+ * value, so the shell sets it as inline custom properties rather than as an
+ * inline `style` string, which keeps all presentation in this file and lets a
+ * density or theme change re-style a page without recomputing the layout.
+ *
+ * Those carriers are deliberately **outside** the `--selis-*` namespace
+ * (`--tile-x`, not `--selis-tile-x`): `--selis-*` is reserved for design
+ * tokens, and `page-list.css.test.ts` fails the build if this file references a
+ * `--selis-*` name the generator does not define. Geometry is data, and mixing
+ * the two namespaces is how a "temporary" pixel value becomes a token by
+ * accident.
+ *
+ * The critical property here is the *placed* tile: `position: absolute` with
+ * its box fully determined before any tile exists, so the placeholder, the
+ * low-res bitmap and the full-res bitmap all occupy the same box and resolving
+ * one cannot move anything (the DoD's "no layout shift when a tile resolves").
+ * `contain` keeps each tile's layout and paint inside its own box, which is
+ * what makes a 2 000-page window cheap to scroll.
+ */
+
+/* The scroll container's child: a positioned plane the size of the document.
+ * Height/width come from the shell as `--page-list-height/-width`. */
+.selis-page-list--virtual {
+	position: relative;
+	width: var(--page-list-width, 100%);
+	height: var(--page-list-height, 0px);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	/* The list is sized entirely by the plane above; nothing in it can affect
+	 * the scroll height, so a tile resolving cannot reflow the document. */
+	contain: layout style;
+}
+
+.selis-page-tile--placed {
+	position: absolute;
+	inset-block-start: var(--tile-y, 0px);
+	inset-inline-start: var(--tile-x, 0px);
+	width: var(--tile-w, 0px);
+	height: var(--tile-h, 0px);
+	/* Isolate each tile's layout and paint. `content-visibility` is
+	 * deliberately not used: the window already decides what exists, and
+	 * skipping rendering for tiles the compositor (UI.03) is mid-upload to
+	 * would be a second, conflicting source of truth. */
+	contain: layout paint;
+}
+
+/* Low-res rung: stretched pixels read as "not yet sharp", which is the honest
+ * signal. The compositor (UI.03) swaps `image-rendering` when the full-res
+ * tile lands; no filter is applied here, because a filter radius is a value
+ * the tokens do not define and inventing one in a component is exactly what
+ * the token layer exists to prevent. */
+.selis-page-tile--lowres {
+	background: var(--selis-color-page-placeholder);
+}
+
+/* The current page. `outline` rather than `border` or `box-shadow` so the
+ * indicator never changes the tile's box — the same no-shift rule. */
+.selis-page-tile--current {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+}
+
+/* A page tile is focusable (roving tabindex) but only the current one is in
+ * the tab order; the ring is the ui-kit focus token, not a local colour. */
+.selis-page-tile--current:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+}
+
+/* The bitmap itself, sized by the compositor (UI.03) to the tile's device
+ * pixels. `max-width: 100%` keeps a stale bitmap from ever widening a box. */
+.selis-page-tile__image {
+	display: block;
+	width: 100%;
+	height: 100%;
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: fill;
+	background: var(--selis-color-surface);
+}
+
+/* Keyboard focus on the page *list* (not a tile) when the list itself is the
+ * tab stop before any page is current. */
+.selis-page-list--virtual:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: calc(-1 * var(--selis-border-thick));
+}
