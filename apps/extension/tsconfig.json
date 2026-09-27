@@ -1,7 +1,7 @@
 {
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
-		"outDir": "dist",
+		"outDir": "dist/pkg",
 		"rootDir": "src",
 		"lib": ["ES2022", "DOM"],
 		"types": ["node"]

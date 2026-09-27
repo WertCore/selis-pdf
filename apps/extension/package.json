@@ -3,10 +3,11 @@
 	"version": "0.0.1",
 	"private": true,
 	"type": "module",
-	"description": "Selis MV3 browser extension skeleton: minimal-permission manifest + justification record (SL-4.EXT.01, ADR-P0028). No remote code, no broad host permissions.",
+	"description": "Selis MV3 browser extension: minimal-permission manifest, bundled-only build (SL-4.EXT.04, ADR-P0028). No remote code, no CDN, no eval, no broad host permissions.",
 	"scripts": {
-		"build": "tsc -p tsconfig.json",
-		"test": "vitest run",
+		"build": "tsc -p tsconfig.json && node tools/pack.mjs && node dist/pkg/bundle-check.js",
+		"check:bundle": "pnpm run build",
+		"test": "pnpm run build && vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"devDependencies": {
