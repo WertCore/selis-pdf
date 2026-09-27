@@ -5,10 +5,17 @@
 		<title>Selis PDF Viewer</title>
 		<!--
 			Extension viewer skeleton (SL-4.EXT.01). The bundled UI (apps/web/ui
-			behind the extension adapter) lands in SL-4.EXT.06; DNR redirection
-			into this page lands in SL-4.EXT.02. No remote scripts (ADR-P0028):
-			every script below must stay same-extension-origin.
+			behind the extension adapter) lands in SL-4.EXT.06. No remote scripts
+			(ADR-P0028): every script below must stay same-extension-origin.
 		-->
+		<!--
+			SL-4.EXT.02: this page is the redirect target for intercepted PDF
+			navigations. The DNR rule rewrites the browser's address bar, so the
+			document URL arrives as the ?src= parameter. The engine and UI land
+			with EXT.06; what EXT.02 owns is that the URL reaches the viewer
+			intact and is displayed, never uploaded.
+		-->
+		<script type="module" src="./src/viewer-boot.js"></script>
 	</head>
 	<body>
 		<main id="selis-viewer"><p>Loading Selis PDF Viewer…</p></main>
