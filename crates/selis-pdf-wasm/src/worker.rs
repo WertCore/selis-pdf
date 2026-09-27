@@ -491,12 +491,7 @@ impl Worker {
         // an over-cap claim fails typed (BudgetBytes), never as an abort. The
         // adapters already hold the bytes; this is the aggregate tab-cap gate.
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        crate::memory::check_inline_len(
-            len,
-            budget.bytes,
-            self.live_bytes,
-            JS_DEFAULT_CAP_BYTES,
-        )?;
+        crate::memory::check_inline_len(len, budget.bytes, self.live_bytes, JS_DEFAULT_CAP_BYTES)?;
         if self.docs.len() as u64 >= MAX_OPEN_DOCS {
             return Err(err!(
                 Code::BudgetBytes,
@@ -600,7 +595,7 @@ impl Worker {
                 // the fault legs) is the path every open takes.
                 let source = selis_io::BlobSource::new(stored.clone(), source_id.clone());
                 let bytes = Self::drain_source(&source)?;
-                return self.open_with_bytes(id, bytes, budget, env);
+                self.open_with_bytes(id, bytes, budget, env)
             }
             SourceDescriptor::Opfs { path } => {
                 let stored = self.opfs.get(&path).ok_or_else(|| {
@@ -612,7 +607,7 @@ impl Worker {
                 })?;
                 let source = selis_io::OpfsSource::new(path.clone(), stored.clone());
                 let bytes = Self::drain_source(&source)?;
-                return self.open_with_bytes(id, bytes, budget, env);
+                self.open_with_bytes(id, bytes, budget, env)
             }
             SourceDescriptor::Fsa { handle_id } => {
                 let stored = self.fsa.get(&handle_id).ok_or_else(|| {
@@ -622,9 +617,10 @@ impl Worker {
                         detail = "FSA handle not registered"
                     )
                 })?;
-                let source = selis_io::FsaSource::new(handle_id.clone(), handle_id.clone(), stored.clone());
+                let source =
+                    selis_io::FsaSource::new(handle_id.clone(), handle_id.clone(), stored.clone());
                 let bytes = Self::drain_source(&source)?;
-                return self.open_with_bytes(id, bytes, budget, env);
+                self.open_with_bytes(id, bytes, budget, env)
             }
             SourceDescriptor::HttpRange { .. } => Err(err!(
                 Code::BindingUnsupportedOp,
@@ -659,7 +655,19 @@ impl Worker {
         let mut out = vec![0u8; n];
         let mut off: u64 = 0;
         while off < len {
-            let buf = &mut out[usize::try_from(off).unwrap_or(usize::MAX)..];
+            // `usize::try_from` can only fail for a u64 offset past usize::MAX
+            // (unreachable for a drained buffer), but a slice index that far out
+            // would panic the guest and take the tab with it. A typed
+            // IoReadFailed keeps the drain loop total, which is the same
+            // discipline the budget checks above follow.
+            let start = usize::try_from(off).unwrap_or(usize::MAX);
+            let buf = out.get_mut(start..).ok_or_else(|| {
+                err!(
+                    Code::IoReadFailed,
+                    during = "wasm-worker",
+                    detail = "read offset outside the drained buffer"
+                )
+            })?;
             match source.read_at(off, buf)? {
                 Availability::Filled(k) => {
                     if k == 0 {
