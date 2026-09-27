@@ -110,8 +110,11 @@ proves the engine in the harshest environment, and it costs nothing to distribut
   - **Do:** The JS side of range fetching, with CORS handling, an abort signal wired to
     `CancelToken`, and a documented fallback when the origin refuses ranges or omits CORS headers.
 - [ ] **SL-4.WASM.07 — Lazy font chunk loading** · deps: SL-3.FONT.10, WASM.02 · owner: AI+
-- [ ] **SL-4.WASM.08 — Deterministic-render CI on WASM** · deps: WASM.03 · owner: AI
+- [x] **SL-4.WASM.08 — Deterministic-render CI on WASM** · deps: WASM.03 · owner: AI
   - **DoD:** Headless-browser render of the corpus hash-matches the native render.
+  - `cargo xtask wasm-browser` renders the corpus in a real V8 (headless Microsoft Edge, a
+    Chromium fork; Chrome/chromium accepted as alternates) and hash-matches it against the native
+    render — 16/16 pages identical. Fails loudly on zero comparable pages rather than skipping.
 
 ---
 
@@ -155,6 +158,10 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
        selis's own token files, the generated-`css/tokens.css` byte-sync test, and the WCAG
        gates. **Keep `ui-kit` as the token source** — do not adopt `@wertkit/tokens`; it has
        no `data-contrast` high-contrast theme, and UI.10's tests assert 7:1 on one.
+       **— Stage 1 DONE and merged:** roles renamed (`surface`→`bgRaised`, `text`→`fg`,
+       `textMuted`→`fgMuted`, …), generated CSS byte-syncs, all four themes + the high-contrast
+       7:1 gate + density + reduced-motion intact. Still zero React/`@wertkit/*` dependencies.
+       This box stays `[ ]` because stages 2 and 3 are still open.
     2. *Security record.* Note the npm dependency and the pin policy in SECURITY.md; amend
        ADR-P0021 (see the proposed revision there) — this is the first non-Rust dependency of
        this kind and the policy change must be explicit, not implied.
@@ -187,6 +194,13 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     anchoring on zoom, and page-fit/width/spread modes.
   - **DoD:** 60 fps sustained scroll on a 2 000-page document on a mid-range laptop; no layout
     shift when a tile resolves.
+  - **Code merged (3279 lines, `apps/ui/src/viewer/`), but the box stays open on the DoD.** Windowing
+    (≤12 tiles over 2 000 pages), the tile ladder, zoom anchoring, fit/width/spread and zero-layout-
+    shift are all implemented and tested. The **60 fps** half is only a headless proxy (~1.4 ms/frame
+    against a 16 ms budget): ADR-P0021 ships no jsdom, so real fps needs a browser and is
+    unreachable in-repo. It should be measured for real under **UI.03**, which owns the compositor.
+    Strings route through i18n keys; the plan's L227 cites ADR-P0034 for that, but the i18n rule
+    actually sits under ADR-P0036.
 - [ ] **SL-4.UI.03 — Canvas compositor + tile presentation** · deps: UI.02, WASM.01 · owner: AI+
   - **Do:** `OffscreenCanvas` in the worker, transferred bitmaps, device-pixel-ratio correctness,
     and a zoom path that scales the existing tile immediately and re-renders behind it.
@@ -264,10 +278,13 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
   - **Do:** Cache the app shell and WASM chunks; the app opens local files with no network at all.
   - **DoD:** Airplane-mode test: open a local PDF, view, search, print.
-- [ ] **SL-4.WEB.03 — Document handoff without upload** · deps: SL-4.WASM.05 · owner: AI+
+- [x] **SL-4.WEB.03 — Document handoff without upload** · deps: SL-4.WASM.05 · owner: AI+
   - **Do:** Drag-drop, file picker, paste, and `?src=` URL opening — all local. The one thing this
     app must never do is upload a document, and a CI test asserts no request body ever contains
     document bytes.
+  - All four paths resolve to a local blob handle; the `?src=` path is a bodyless `GET`. The gate
+    wraps the live `fetch` **and** `XMLHttpRequest.prototype.send`, so it cannot be routed around,
+    and is proven non-vacuous by negative controls (a planted `POST`/multipart/XHR is rejected).
 - [ ] **SL-4.WEB.04 — Marketing site + honest conformance page** · owner: HUMAN
   - **Do:** Publish the conformance ladder (SL-0.OPS.04). "Here is exactly what we support" is a
     trust asset in a category built on overclaiming.
@@ -326,9 +343,13 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Do:** MV3 service workers are killed aggressively; the engine runs in an offscreen document
     or a dedicated worker with a documented lifecycle and state recovery.
   - **DoD:** A test that the viewer survives service-worker termination mid-session.
-- [ ] **SL-4.EXT.04 — Bundled-only build** · deps: EXT.01 · owner: AI+
+- [x] **SL-4.EXT.04 — Bundled-only build** · deps: EXT.01 · owner: AI+
   - **Do:** No remote code, no CDN, no `eval` (ADR-P0028). A build check fails on any remote URL
     in the bundle.
+  - The gate scans the **built package**, not the source, and runs inside `pnpm build`. Verified
+    falsifiable: a remote `<script src>` planted in the real built `viewer.html` fails the gate with
+    file/line/URL. 98 tests, ~45 of them planted-violation cases. Lexical-scan limits (template
+    literals, the regex-vs-division heuristic) are stated honestly in `apps/extension/BUNDLING.md`.
 - [ ] **SL-4.EXT.05 — Extension size budget** · deps: EXT.04, WASM.02 · owner: AI+
   - **Do:** The package carries the WASM. Tighter budget than the web app; CJK fonts are an
     optional post-install download into extension storage, not a bundled asset.
