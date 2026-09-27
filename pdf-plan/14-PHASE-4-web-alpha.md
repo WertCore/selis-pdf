@@ -172,10 +172,16 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     wertkit chrome, with selis's own tokens; the high-contrast theme still passes its 7:1
     gate; no `@wertkit/*` version is range-pinned; ADR-P0021 amended and SECURITY.md updated;
     the UI.02 60 fps budget is unchanged by the introduction of a reconciler.
-  - **Open questions for the human:** (a) wertkit carries `"license": "UNLICENSED"` on npm
-    and has no LICENSE file — fine for WertCore-internal use, but the ownership should be
-    written down before selis ships; (b) wertkit is 29 commits / 0 stars / no releases, so
-    its maintenance cadence is unknown — worth knowing before it becomes load-bearing.
+  - **Dependency rule (00-INDEX §0):** `@wertkit/ui`, React and `@radix-ui/*` are **not** in
+    `[workspace.dependencies]` for npm, so per the agent-prompt rule ("do not add a dependency
+    that is not in workspace dependencies; if you need one, stop and propose it with a licence
+    + maintenance justification") stage 2 is where they get proposed and justified, not
+    slipped in.
+  - **Deferred, not open:** wertkit is first-party — the repo's own author maintains it — so its
+    licence and provenance are settled and need no gate here. The remaining pre-release item is
+    a dependency **audit** (npm licence allow-list, `unmaintained` check, a `cargo vet`
+    equivalent for the JS tree, which Rust gets and npm does not). That belongs to a
+    pre-release hardening pass, not to this task; ADR-P0021 records it.
 - [ ] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
   - **Do:** Windowed rendering with a placeholder→low-res→full-res tile ladder, correct scroll
     anchoring on zoom, and page-fit/width/spread modes.

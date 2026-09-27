@@ -15,7 +15,8 @@ oversight.** The web/extension packages install from npm via pnpm; `pnpm-lock.ya
 integrity record and is committed, but there is no licence allow-list, no `unmaintained` check,
 and no equivalent of `cargo vet` for the JS tree.
 
-The first deliberate first-party npm dependency is `@wertkit/ui` (WertCore's design system,
-alongside React and `@radix-ui/*`), introduced by SL-4.UI.14. Policy for it — allow-listing,
-exact pinning, and the `"license": "UNLICENSED"` gap — is proposed in ADR-P0021 and is **not
-yet accepted**. Until that amendment lands, treat the npm tree as ungated.
+The first deliberate first-party npm dependency is `@wertkit/ui` (this organisation's own design
+system, alongside React and `@radix-ui/*`), introduced by SL-4.UI.14. It is pre-approved —
+first-party, so no licence gate. The gap above is nonetheless **real and still open**: it is a
+property of the npm ecosystem, not of any one dependency, and is owned by a pre-release
+hardening pass. ADR-P0021 records it.

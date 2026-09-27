@@ -256,16 +256,17 @@ the current gate can see an npm tree at all. Proposed:
   in anything shipped, on the same iOS-static-link grounds.
 - The **gate extends to npm**, mirroring `deny.toml`: an allow-list (MIT/Apache-2.0/BSD/ISC/
   Zlib), `unmaintained` denied, and transitive licences checked, not just the direct dependency.
-- **`@wertkit/*` is permitted as WertCore-internal** — it is first-party, published to npm
-  rather than vendored, and carries `"license": "UNLICENSED"` with no LICENSE file. That is
-  acceptable *only* while ownership is recorded in writing; the field is a gap, not a grant.
+- **`@wertkit/*` is first-party and pre-approved** — it is maintained in this organisation and
+  published to npm rather than vendored, so it needs no licence gate. It is still version-pinned
+  (see below), because provenance and reproducibility are separate questions from ownership.
 - **Exact pins, never ranges** (`0.1.8`, not `^`): a 0.x package with no published changelog
   will drift across breaking minors under a caret.
 - `pnpm-lock.yaml` is the npm integrity record and must be committed, exactly as
   `Cargo.lock` is for Rust.
-- Reproducibility gap to close alongside: the Rust side gets `cargo vet` + `cargo deny` in CI;
-  the npm side currently gets neither. That is a **known hole, recorded here rather than
-  papered over** — UI.14's stage 2 is where it gets closed.
+- **Deferred to a pre-release audit (not a launch blocker):** the npm tree has no licence
+  allow-list, no `unmaintained` check, and no equivalent of `cargo vet`. Rust gets all three;
+  JavaScript gets none. Recorded here rather than papered over, and owned by the pre-release
+  hardening pass — UI.14 does not wait on it.
 
 ## ADR-P0022 — Shell strategy: one TypeScript UI for web, desktop, and iOS; Android native
 **Status:** Accepted (revised — supersedes the original "mobile is native" position)
