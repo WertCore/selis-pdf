@@ -141,6 +141,41 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     ships yet; the WASM.01 Worker protocol exists in `selis-pdf-wasm` (Rust) and maps onto
     `DocumentSourceDescriptor` inside a future transport, not in the UI. `apps/web/host` still owns
     that wiring.
+- [ ] **SL-4.UI.14 — Adopt the WertKit contract; consume `@wertkit/ui` for chrome** ·
+  deps: UI.10 · owner: AI+ · **filed 2026-09-27**
+  - **Context:** `WertCore/wertkit` is the org's design system — a token core plus a React
+    component layer (Radix behaviour, CSS Modules, zero styling runtime), published on npm as
+    `@wertkit/ui` + `@wertkit/tokens`. Its `spec/naming.md` is explicitly "the actual product":
+    components are implementations of the contract, and any future runtime (Tauri, iOS PWA)
+    implements *that*, not the React code. Rewriting that from scratch for selis was the
+    alternative; this task takes the reuse path instead.
+  - **Do, in three stages — do not do stage 3 before UI.02 exists:**
+    1. *Contract.* Converge `packages/ui-kit`'s role vocabulary onto wertkit's
+       (`bg`/`bg-subtle`/`fg`/`fg-muted`/`border`/`accent`/`danger`/`focus-ring`/…), keeping
+       selis's own token files, the generated-`css/tokens.css` byte-sync test, and the WCAG
+       gates. **Keep `ui-kit` as the token source** — do not adopt `@wertkit/tokens`; it has
+       no `data-contrast` high-contrast theme, and UI.10's tests assert 7:1 on one.
+    2. *Security record.* Note the npm dependency and the pin policy in SECURITY.md; amend
+       ADR-P0021 (see the proposed revision there) — this is the first non-Rust dependency of
+       this kind and the policy change must be explicit, not implied.
+    3. *Chrome only, at the start of UI.02.* Add `react`/`react-dom` to `apps/ui` (it has no
+       React today) and consume `@wertkit/ui` for AppShell, Button, Dialog, DropdownMenu,
+       Tooltip, Tabs, Select, Checkbox, Switch, Toast. Pin an **exact** version
+       (`0.1.8`, not `^`): it is a 0.x package with no published changelog, so a caret will
+       drift across breaking minors.
+  - **Explicitly out of scope:** everything performance- or PDF-specific stays selis's own —
+    UI.02 virtualisation, UI.03 `OffscreenCanvas` compositor, UI.04 text layer + glyph-quad
+    selection, UI.05 search, UI.06 navigation. A component library does not help there, and
+    the 60 fps budget is the thing to protect. wertkit's spec also forbids forking a
+    component into an app: **extend upstream, consume here.**
+  - **DoD:** `apps/ui` builds with React and renders a real screen (UI.02's page list) using
+    wertkit chrome, with selis's own tokens; the high-contrast theme still passes its 7:1
+    gate; no `@wertkit/*` version is range-pinned; ADR-P0021 amended and SECURITY.md updated;
+    the UI.02 60 fps budget is unchanged by the introduction of a reconciler.
+  - **Open questions for the human:** (a) wertkit carries `"license": "UNLICENSED"` on npm
+    and has no LICENSE file — fine for WertCore-internal use, but the ownership should be
+    written down before selis ships; (b) wertkit is 29 commits / 0 stars / no releases, so
+    its maintenance cadence is unknown — worth knowing before it becomes load-bearing.
 - [ ] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
   - **Do:** Windowed rendering with a placeholder→low-res→full-res tile ladder, correct scroll
     anchoring on zoom, and page-fit/width/spread modes.

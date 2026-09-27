@@ -246,6 +246,27 @@ dynamic-linking arguments do not survive an iOS static-link requirement.
 **Consequences:** Rules out `jbig2dec`, MuPDF, Ghostscript, veraPDF as libraries. All remain usable
 as CI oracles (ADR-P0009).
 
+**Proposed revision (2026-09-27, SL-4.UI.14) — NOT YET ACCEPTED, awaiting sign-off.**
+The `deny.toml` / `cargo deny` gate governs **Rust** dependencies only, and `crates.io only` +
+`wildcards = "deny"` describe the registry, not every ecosystem. SL-4.UI.14 introduces the first
+non-Rust shipped dependency: `@wertkit/ui` from npm, plus React 18/19 and nine `@radix-ui/*`
+packages. Without an amendment this is a policy hole rather than a decision, because nothing in
+the current gate can see an npm tree at all. Proposed:
+- The **licence rationale is unchanged and still binding** — GPL/LGPL/AGPL/SSPL/CDDL stay denied
+  in anything shipped, on the same iOS-static-link grounds.
+- The **gate extends to npm**, mirroring `deny.toml`: an allow-list (MIT/Apache-2.0/BSD/ISC/
+  Zlib), `unmaintained` denied, and transitive licences checked, not just the direct dependency.
+- **`@wertkit/*` is permitted as WertCore-internal** — it is first-party, published to npm
+  rather than vendored, and carries `"license": "UNLICENSED"` with no LICENSE file. That is
+  acceptable *only* while ownership is recorded in writing; the field is a gap, not a grant.
+- **Exact pins, never ranges** (`0.1.8`, not `^`): a 0.x package with no published changelog
+  will drift across breaking minors under a caret.
+- `pnpm-lock.yaml` is the npm integrity record and must be committed, exactly as
+  `Cargo.lock` is for Rust.
+- Reproducibility gap to close alongside: the Rust side gets `cargo vet` + `cargo deny` in CI;
+  the npm side currently gets neither. That is a **known hole, recorded here rather than
+  papered over** — UI.14's stage 2 is where it gets closed.
+
 ## ADR-P0022 — Shell strategy: one TypeScript UI for web, desktop, and iOS; Android native
 **Status:** Accepted (revised — supersedes the original "mobile is native" position)
 **Decision:** `apps/web/ui` is the single React/TypeScript application. The desktop shell (Tauri v2)

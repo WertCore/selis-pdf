@@ -669,9 +669,11 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
       sources flat 191 / verapdf 196 / govdocs1 90 / ghent 61 / synthetic 2 all match).
       The tail collapses into ~17 root-cause clusters (source/font/sim/rtl/truncated
       axes):
-      1. **char-explosion (4)** — selis emits 32,770–65,538 chars where MuPDF reads 63
-         (`verapdf/…/6-1-12-t03-fail-c`, `6-1-13-t03-fail-a`, `TWG/A005-pdfa1-fail-c`,
-         `issue7454`); a runaway/repeat decode. **OurBug** → **SL-3.TEXT.16**.
+      1. **char-explosion (3)** — selis emits 32,770–65,538 chars where MuPDF reads 63
+         (`verapdf/…/6-1-12-t03-fail-c`, `6-1-13-t03-fail-a`, `TWG/A005-pdfa1-fail-c`); a
+         runaway/repeat decode. **OurBug** → **SL-3.TEXT.16**. `issue7454` was filed here and
+         is **reclassified out** on 2026-09-27 — it is not an explosion at all; see
+         **SL-3.TEXT.26** and the four-engine cross-check in TEXT.16's status note.
       2. **verapdf-ua-reading-order (98)** — PDF/UA tagged-structure pages where MuPDF
          recovers a different (tagged) reading order. → **SL-3.TEXT.17**.
       3. **govdocs-multifont (90)** — large real-world multi-font docs, sim 0.2–0.44,
@@ -856,6 +858,27 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     end-of-stream - a real bug the test caught); the hex path is enclosed; escape decoding still
     works under the limit. `cargo test -p selis-pdf-content` 74 passed, `-p selis-pdf-text` 35.
   - Merged to main 2026-09-27 with the code; the box is flipped by the next sweep owner.
+  - **Four-engine cross-check on `issue7454` (2026-09-27), non-whitespace characters:**
+    selis **3 448** · pypdf 6.19.0 **3 448** · pdfminer.six **3 448** · MuPDF 1.23.0 **217** ·
+    pdf.js 4.2.67 **217**. The file splits 3–2, and the two that return 217 (MuPDF, pdf.js)
+    return the *same* text.
+  - **What that means, and why the diagnosis above was sloppy:** `issue7454` is a PDFium
+    *annotation-appearance fragment*. Its page content stream is 67 bytes —
+    `10 0 0 10 -19.0089 -623.9184 cm / 0.1 0 0 0.1 0 0 cm /QQAPXO2a2908c2 Do` — which draws a
+    full **A4 Form XObject** (`/BBox [0 0 595.28 841.89]`) with a net transform of scale 1.0
+    and translate `(-19.01, -623.92)`. Only a thin band of that A4 sheet lands inside the
+    page's 384×111 box. **Renderers (MuPDF, pdf.js) clip to the page; content-stream walkers
+    (pypdf, pdfminer, selis) emit all of it.** The y values quoted above (213–828) are
+    *Form-space, untransformed* — selis does not apply the Form's placement CTM to reported
+    positions. So "the text is outside the page box" was the wrong mechanism: the visible
+    band genuinely is on-page, and the 94% that is not is being offered for search, selection
+    and copy.
+  - **So selis is not over-extracting by accident — it shares a blind spot with two naive
+    walkers, and disagrees with the only two engines that render.** For a *viewer* the
+    renderers are the relevant oracle, which is why the DoD's "≤ MuPDF" still stands. But the
+    fix is **page-visibility/Form-XObject geometry** (SL-3.TEXT.26), not a string-length cap,
+    and this file is a synthetic corpus edge case — so it is reclassified rather than chased
+    here. Agreed against pypdf/pdfminer: agreement with a non-renderer is not validation.
 - [ ] **SL-3.TEXT.17 — Tagged (PDF/UA) reading-order extraction divergence** · deps: TEXT.04 ·
   owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Defect:** 98 PDF/UA files in the `diff>=25` tail (`verapdf/PDF_UA-1/*`,
@@ -934,3 +957,27 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     tail row. This is a triage sweep, not a bug claim.
   - **DoD:** every `flat-misc` file carries a verdict record; the sweep gap list stops
     carrying them unlabelled; confirmed OurBug causes each file a task.
+- [ ] **SL-3.TEXT.26 — Text extraction ignores the page's visible region (Form XObject
+  placement)** · deps: TEXT.04, CONT.04 · owner: AI+ · **filed 2026-09-27 (reclassified
+  out of the CONF.03 `char-explosion` cluster, which was `issue7454`)**
+  - **Defect:** selis emits text a renderer would clip away, so invisible text is offered for
+    search, selection and copy. The evidence file is `issue7454` (pdf.js corpus), where
+    selis = pypdf = pdfminer.six = 3 448 chars and MuPDF = pdf.js = 217. Its page content
+    stream is 67 bytes and draws a full **A4 Form XObject** through
+    `10 0 0 10 -19.0089 -623.9184 cm / 0.1 0 0 0.1 0 0 cm` — net scale 1.0, translate
+    (-19.01, -623.92) — so only a thin band of the A4 sheet lands inside the page's
+    384×111 box. Renderers clip; content-stream walkers do not.
+  - **Do:** apply the Form XObject's placement CTM to text geometry (selis currently reports
+    Form-space, untransformed positions), and define the visibility rule: a glyph whose
+    placed box falls outside the page's MediaBox∩CropBox is not extracted, selected, or
+    searchable. Decide deliberately whether a *partially* overlapping glyph is kept, and pin
+    the answer in a test.
+  - **DoD:** a synthetic fixture reproducing the placement (A4 Form, scaled+translated onto a
+    small page) extracts only the on-page band and matches what MuPDF and pdf.js return;
+    search and selection never surface an off-page span; the existing selection/copy behaviour
+    is unchanged for ordinary pages. Verdict `issue7454` itself as a corpus edge case — it is
+    a PDFium annotation-appearance fragment, so it is evidence, not a target.
+  - **Note:** this is a *fidelity* fix with a wider blast radius than the char count suggests
+    (it touches selection quads and search), which is why it is a separate task and not a
+    follow-up to TEXT.16. Agreement with pypdf/pdfminer is **not** evidence of correctness —
+    neither renders.

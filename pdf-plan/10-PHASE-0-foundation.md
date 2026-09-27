@@ -151,6 +151,37 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Note:** `pnpm-workspace.yaml` (apps/*, packages/*), `@selis/ui-kit` + `@selis/ui`
     (TS-strict via tsconfig.base.json), Vitest, **Biome** (recorded; `pnpm lint` green),
     `pnpm -r build`/`-r test`/`lint` all green.
+- [ ] **SL-0.WS.11 — Clear the hostile-input clippy debt (per-crate, not a sweep)** ·
+  deps: WS.07 · owner: AI+ · **filed 2026-09-27**
+  - **Defect:** the workspace lint gate has been red and *invisible*. CI runs
+    `cargo clippy --workspace --all-targets` (xtask lint; the workspace `[lints]` deny list,
+    deliberately **not** `-D warnings`), and the hostile-input set — `unwrap_used`,
+    `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`, `missing_panics_doc`
+    — is violated at roughly **180 sites across 50+ files**, concentrated in
+    `selis-pdf-engine/src/session.rs` (28), `apps/cli/src/tools.rs` (11), `render.rs` (8),
+    `selis-pdf-content/src/exec.rs` (6), plus `xref.rs`, `selis-crypto`, and the filter crates.
+    **These are production paths**: `selis-pdf-engine`'s `#[cfg(test)]` starts at line 3539 and
+    the session.rs findings sit at 2986–3347.
+  - **Why it was hidden:** the build stops at the first failing crate, so each fix reveals the
+    next layer — `selis-bytes` masked everything behind it, and `selis-io` masked the rest.
+    Counting the debt requires working until the build completes.
+  - **Do:** work crate by crate, and for **each** site decide whether the index/length is
+    *document-derived* — in which case it is `get()`/`checked_*`, per 03-CONVENTIONS §1, and a
+    panic there is the difference between "malformed length field" and a CVE — or provably
+    safe, in which case restructure it to be provably safe rather than allowing it. Sites that
+    turn out to be genuine crash primitives get fixed, not annotated. **A blanket
+    module-level `#[allow]` in a production module is not an acceptable outcome**; the one
+    existing exception (`selis-io/src/conformance.rs`, a test-only assertion helper whose own
+    contract is "panics are the failure shape") is documented in place and is not a precedent
+    to copy.
+  - **DoD:** `cargo clippy --workspace --all-targets` exits 0, and the CI lint job runs the
+    full workspace so a failure in a late crate cannot be masked by an early one again; every
+    suppressed site names its justification; the 03-CONVENTIONS §1 escape-hatch rule still
+    reads true for production data paths.
+  - **Note:** deliberately *not* done as a mechanical pass on 2026-09-27. The fmt and biome
+    debt was cleared (both now green), but this class needs per-site judgement and a careless
+    rewrite risks introducing panics into the parsers the policy exists to protect.
+
 
 ---
 
