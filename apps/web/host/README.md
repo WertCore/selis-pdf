@@ -12,6 +12,19 @@ this app must never do is upload a document.
 | Paste | `filesFromPaste` | Same filter over `clipboardData.files`. |
 | `?src=` URL | `parseSrcParam` | `http:`/`https:` only, resolved to `{ kind: "http-range" }` — the Worker's range fetcher streams bytes into the *local* engine (WASM.06 driver). `javascript:`/`data:`/`file:`/`blob:`/`opfs:` rejected. Same-origin preferred, CORS gated at fetch time. |
 
+`handoff-flow.ts` is the other half: `planIntake`/`runIntake` take an
+`Intake` (`drop` / `picker` / `paste` / `url`) and carry it to a Worker open.
+
+- drop, pick, and paste resolve to `{ kind: "blob", sourceId }`. The bytes
+  never move: the Worker reads the `Blob` with `FileReaderSync` (WASM.05
+  `BlobSource`), so `downloaded` is 0 and the path issues no request at all.
+- `?src=` pulls the document in with `GET <url>` + a `Range` header and **no
+  body**, into a `RangeSink` (local memory by default, `collectingSink()`).
+  An origin that ignores `Range` and sends the whole document is handled; one
+  past `maxRangeBytes` (default the same 64 MiB) is refused rather than
+  silently truncated; a dead or refusing origin is reported, never retried
+  against a server-side renderer (ADR-P0016).
+
 Accepted files map to `{ kind: "blob" }` via `sourceForFile` — the Worker
 glue (`worker-glue.ts`) registers the `Blob` with the Worker
 (`FileReaderSync` in the Worker, never the main thread) and dispatches the
@@ -26,19 +39,35 @@ engine takes.
 
 ## The no-upload guarantee
 
-`no-upload.ts` `assertNoUpload(requests, documents)` throws when any
-non-GET/HEAD request body contains a document's 64-byte prefix. The Vitest
-suite (`no-upload.test.ts`) is the CI gate: range GETs (downloads into the
-local engine) and opt-in telemetry pings (no document fields by type,
-ADR-P0017) pass; any POST/PUT carrying PDF bytes — whole or sliced — fails.
+`no-upload.ts` is the gate, and it works on requests the app really issued:
+`installRequestRecorder()` wraps the live `fetch` **and**
+`XMLHttpRequest.prototype.send`, so no request can route around it.
+`assertNoUpload(requests, documents)` then throws when a request carries a
+window of an opened document's bytes — in the body *or* in the URL, on any
+method (`fetch` refuses a body on GET/HEAD, `send` does not), and it fails
+closed on a body it cannot read as bytes (a `ReadableStream`).
 
-The shell entry point wires `createFetchRecorder()` around `fetch` in tests
-and asserts the recording after every handoff flow. Telemetry stays opt-in;
-`http-range` is local processing (ADR-P0016), never an upload.
+The Vitest suite is the CI gate:
+
+- `handoff-flow.test.ts` drives all four paths through the recorder and
+  asserts that every request they issue is a bodyless `GET`, that the run
+  really did reach the network (so "no upload" is an observation, not an
+  absence of evidence), and that `assertNoUpload` passes.
+- The same file's negative controls upload the same bytes on purpose — a
+  `POST` of the raw document and a `FormData` multipart of it — and require
+  the gate to reject them. Without those legs a recorder that recorded
+  nothing would pass everything else.
+- `no-upload.test.ts` covers the matcher itself: prefix and mid-document
+  slices, base64 in the query string, a `GET` with a body, every body shape
+  `inspectBody` can and cannot read, and both intercepted transports.
+
+Range GETs (downloads into the local engine) and opt-in telemetry pings
+(no document fields by type, ADR-P0017) pass; any request carrying PDF bytes —
+whole, sliced, or multipart — fails.
 
 ## For transport authors
 
-1. Implement the DOM adapters (event listeners) thinly over `handoff.ts` —
-   no filtering logic in the listeners.
+1. Implement the DOM adapters (event listeners) thinly over `handoff-flow.ts`
+   — no filtering logic in the listeners.
 2. Map to the wire with `worker-glue.ts`; never hand raw bytes the UI parsed.
 3. Run `assertNoUpload` over the recorded requests in every handoff test.
