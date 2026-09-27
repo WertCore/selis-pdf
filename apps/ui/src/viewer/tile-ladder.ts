@@ -20,9 +20,15 @@
  *   (the WASM.01 `cancel` message, a native `CancelToken`). It surfaces as
  *   `AdapterError` 4020 `CANCELLED` / `docState: "Unchanged"` and is swallowed
  *   here because an abort is the expected outcome, not a failure.
- * - **A bounded cache.** Tiles are keyed by page and evicted least-recently
- *   past {@link MAX_CACHED_TILES}, so peak memory on a 2 000-page document is
- *   a function of the cache bound, not of the document length.
+ * - **A bounded, scale-keyed cache.** Tiles are keyed by page, rung *and*
+ *   rasterisation scale, and evicted least-recently-used past
+ *   {@link MAX_CACHED_TILES}, so peak memory on a 2 000-page document is
+ *   a function of the cache bound, not of the document length. The scale is
+ *   in the key for UI.03's zoom path: a zoom leaves the previous scale's tiles
+ *   cached, so the compositor can present them scaled up immediately instead
+ *   of showing a blank page, while the ladder's `satisfied` set no longer
+ *   matches them and re-renders the new scale behind that. See
+ *   {@link tileKey}.
  *
  * All engine work goes through `PlatformAdapter.engine` (SL-4.UI.01) — this
  * module names no platform globals, which the `platform-globals` lint gate in
@@ -87,11 +93,34 @@ export interface LadderInput {
 	readonly budget?: number;
 }
 
-/** `page:stage` cache key. Exported so the controller can build `satisfied`. */
-export function tileKey(page: number, stage: TileStage): string {
-	return `${page}:${stage}`;
+/**
+ * The cache key: `page:stage@deviceScale`, where the scale is **device pixels
+ * per PDF point**.
+ *
+ * The scale is in the key because a tile is only usable at the resolution it
+ * was rasterised at, and because UI.03's zoom path needs the old resolution to
+ * survive a zoom. Before UI.03, `page:stage` was the whole key, which made a
+ * cached tile at the wrong scale indistinguishable from one at the right
+ * scale — so `PageList`'s zoom path had no choice but to drop the entire cache
+ * and show blank pages until the engine caught up. Keying by scale makes the
+ * two separable: a zoom leaves the old tiles cached (they are what the
+ * compositor scales up while the ladder re-renders) and the ladder's
+ * `satisfied` set no longer matches them, so the new scale is requested. The
+ * cache stays bounded either way; stale-scale tiles age out through the same
+ * LRU as everything else.
+ *
+ * The scale is quantised to six decimals so a float wobble in the last bit
+ * cannot produce a second cache entry for a tile that is already there — at
+ * 1e-6 device pixels per point that is a millionth of a pixel.
+ */
+export function tileKey(page: number, stage: TileStage, deviceScale = 0): string {
+	return `${page}:${stage}@${deviceScale.toFixed(6)}`;
 }
 
+/** The `satisfied` key a planned task will be cached under. */
+export function taskKey(task: TileTask): string {
+	return tileKey(task.page, task.stage, task.request.scale);
+}
 /**
  * Order the engine work for one frame.
  *
@@ -129,7 +158,12 @@ export function planLadder(input: LadderInput): readonly TileTask[] {
 		deviceScale: number,
 		hint: "thumbnail" | "view",
 	) => {
-		const key = tileKey(page, stage);
+		// The engine works in device pixels per point; zoom × DPR is the UI's
+		// job (RenderTileRequest documents exactly this). The clamped value is
+		// the one that goes in the request *and* in the key, so a scale the
+		// clamp rewrites cannot produce a key the scheduler will not find.
+		const scale = Math.max(0.01, deviceScale * ratio);
+		const key = tileKey(page, stage, scale);
 		if (satisfied.has(key) || queued.has(key)) {
 			return;
 		}
@@ -140,9 +174,7 @@ export function planLadder(input: LadderInput): readonly TileTask[] {
 			request: {
 				doc,
 				page,
-				// The engine works in device pixels per point; zoom × DPR is the
-				// UI's job (RenderTileRequest documents exactly this).
-				scale: Math.max(0.01, deviceScale * ratio),
+				scale,
 				hint,
 			},
 		});
@@ -220,21 +252,49 @@ export class TileScheduler {
 		return this.#doc;
 	}
 
-	/** `page:stage` keys that need no engine work: cached, in flight, or failed. */
+	/** `page:stage@scale` keys that need no engine work: cached, in flight, or failed. */
 	satisfiedKeys(): ReadonlySet<string> {
 		return new Set<string>([...this.#cache.keys(), ...this.#inFlight.keys(), ...this.#failed]);
 	}
 
-	/** The best cached rung for a page — full-res preferred over low-res. */
-	bestFor(page: number): TileEntry | null {
-		return (
-			this.#cache.get(tileKey(page, "full")) ?? this.#cache.get(tileKey(page, "lowres")) ?? null
-		);
+	/**
+	 * Every cached bitmap for a page, whatever scale it was rasterised at.
+	 *
+	 * This is UI.03's entry point, and the reason the cache is scale-keyed: the
+	 * compositor asks for "the best thing I can show for this page right now",
+	 * which after a zoom is a tile at the *old* scale that it presents scaled
+	 * up while the ladder re-renders. Ordered `full` before `lowres` within a
+	 * scale, and newest-use first across scales, so a caller that takes the
+	 * first entry gets the most recently drawn one.
+	 */
+	entriesFor(page: number): readonly TileEntry[] {
+		const found: TileEntry[] = [];
+		for (const entry of this.#cache.values()) {
+			if (entry.page === page) {
+				found.push(entry);
+			}
+		}
+		found.sort((a, b) => {
+			if (a.stage !== b.stage) {
+				return a.stage === "full" ? -1 : 1;
+			}
+			return b.deviceScale - a.deviceScale;
+		});
+		return found;
 	}
 
-	/** The exact cached rung, or `null`. */
-	get(page: number, stage: RenderedStage): TileEntry | null {
-		const key = tileKey(page, stage);
+	/**
+	 * The best cached rung for a page, whatever scale: full-res preferred over
+	 * low-res, then the highest resolution. The compositor uses
+	 * {@link entriesFor} instead, because it weighs the scale error too.
+	 */
+	bestFor(page: number): TileEntry | null {
+		return this.entriesFor(page)[0] ?? null;
+	}
+
+	/** The exact cached rung at a scale, or `null`. */
+	get(page: number, stage: RenderedStage, deviceScale = 0): TileEntry | null {
+		const key = tileKey(page, stage, deviceScale);
 		const hit = this.#cache.get(key);
 		if (hit === undefined) {
 			return null;
@@ -259,7 +319,7 @@ export class TileScheduler {
 		if (this.#disposed) {
 			return;
 		}
-		const wanted = new Set(tasks.map((task) => tileKey(task.page, task.stage)));
+		const wanted = new Set(tasks.map((task) => taskKey(task)));
 		this.#generation += 1;
 		for (const [key, flight] of [...this.#inFlight]) {
 			if (!wanted.has(key)) {
@@ -267,7 +327,7 @@ export class TileScheduler {
 				this.#inFlight.delete(key);
 			}
 		}
-		this.#queue = tasks.filter((task) => wanted.has(tileKey(task.page, task.stage)));
+		this.#queue = tasks.filter((task) => wanted.has(taskKey(task)));
 		this.#pump();
 	}
 
@@ -299,7 +359,7 @@ export class TileScheduler {
 	}
 
 	#start(task: TileTask): void {
-		const key = tileKey(task.page, task.stage);
+		const key = taskKey(task);
 		const controller = new AbortController();
 		const generation = this.#generation;
 		const deviceScale = task.request.scale;

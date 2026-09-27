@@ -59,8 +59,31 @@ export {
 	MAX_CONCURRENT_TILES,
 	TileScheduler,
 	planLadder,
+	taskKey,
 	tileKey,
 } from "./tile-ladder.js";
+
+export type {
+	CompositorFrame,
+	DrawOp,
+	FrameClock,
+	FrameHandle,
+	SurfaceSize,
+	TileSurface,
+} from "./surface.js";
+
+export type {
+	PresentedFrame,
+	TileCompositor,
+	TileCompositorOptions,
+} from "./compositor.js";
+export {
+	createTileCompositor,
+	effectiveDeviceScale,
+	isAtScale,
+	pickTile,
+	surfaceSizeFor,
+} from "./compositor.js";
 
 export type { KeyboardContext, PageListKey, PageNavigationCommand } from "./keyboard.js";
 export { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
