@@ -388,6 +388,41 @@ oracle-vs-oracle calibration table above (§4, SL-0.ORACLE.04) is the noise
 floor every selis-vs-oracle `diff>=25` cluster is judged against, and it was
 recorded *before* the G3 bar is read anywhere.
 
+### The recalibrated Extract gate (SL-3.CONF.03, 2026-09-16)
+
+The G3 criterion "≥98 % normalised-edit-distance agreement on ≥95 % of the
+extraction corpus" measures oracle noise at that depth, exactly as the old G2
+criterion did for pixels. The measured floor (SL-0.ORACLE.04, §4 above): on
+the curated 644-file smoke corpus, **independent extractors agree at ≥0.98 on
+at most 79.0 %** (pdfium↔pdfjs) and ≈72.7 % (mutool pairs) of comparable
+text-bearing pages. The criterion as written can never be *met* by any
+engine, selis included — it is below the independent-extractor noise floor.
+It is therefore re-baselined here, from calibration data only (per this
+section's own rule; never because a build is red), in the same Bar A / Bar B
+shape SL-2.CONF.03 used for G2:
+
+- **Extract Bar A (envelope, per-file ≥0.98):** selis's ≥0.98 normalised-
+  similarity fraction on the comparable extraction corpus must land **within
+  5pp of the best independent oracle pair's ≥0.98 fraction on the same file
+  class** (5pp = the observed pair spread + sampling noise, mirroring Bar B's
+  allowance for G2). Selis vs mutool today (CONF.05 tree, post-SL-3.TEXT.11):
+  978/1,746 = **56.04 %** vs the mutool-pair floor ≈72.7 % — **12.7pp below
+  the envelope, so Extract is NOT met** (honest, unchanged).
+- **Extract Bar B (fidelity envelope, distribution shape):** selis's
+  ≥0.99/≥0.95/≥0.75 band fractions must each land within **10pp** of the best
+  oracle pair's corresponding fraction (10pp = the wider text-pair spread:
+  ≥0.95 spans 74.2–80.5 % and ≥0.75 spans 78.8–85.6 % across the pairs).
+  Selis today: ≥0.99 969/1,746 (55.5 %) vs pair 71.9–78.4 %; ≥0.95 997/1,746
+  (57.1 %) vs 74.2–80.5 %; ≥0.75 1,130/1,746 (64.7 %) vs 78.8–85.6 % — all
+  three ≥15pp short, **Bar B also NOT met**.
+- **The ≥0.98-on-≥95% strict wording is retired as a gate** and re-labelled a
+  tracked fidelity metric (like the ≤0.5%/≤1% pixel bands for G2); the p50=1.000
+  bimodal shape and the near-total-disagreement tail stay published.
+- The recalibration is a *measurement of the gate*, not a promotion: the
+  ladder stays at its CONF.02 levels (text = Parse) and the Extract rung
+  remains unmet on the recalibrated bars until the 540-file `diff>=25` tail
+  is shrunk (SL-3.CONF.03 triage) and the cluster tasks land.
+
 ---
 
 ## 6. Property tests that matter most
