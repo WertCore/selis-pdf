@@ -274,6 +274,16 @@ the current gate can see an npm tree at all. Proposed:
 and the **iOS PWA** both render it behind a different `PlatformAdapter`. Android is **native**
 (Compose) over the C ABI. A native iOS app (SwiftUI) is deferred until revenue justifies it, and is
 tracked as a funding-gated track in `17-PHASE-7-mobile.md §7.IOS-NATIVE`.
+
+**Electron is ruled out — owner decision, 2026-09-27.** The desktop shell is Tauri v2 and only
+Tauri. Reasons, in the order they actually matter: a PDF tool's *engine* is a large Rust/WASM
+payload, and Electron ships a full second browser engine beside it, so every user downloads two
+renderers to open one document; Tauri uses the OS WebView2/WebKitGTK/WKWebView, so the shell is a
+few MB and the cold-start and idle-RSS budgets in `16-PHASE-6-desktop.md` (`SL-6.PERF.02`) stay
+reachable. Electron would also break ADR-P0009's "no vendored runtime" posture. If a Tauri gap
+becomes genuinely blocking — a required native surface, or a WebView version floor that WebAssembly
+threads need — that is a **new ADR superseding this one**, not a quiet swap. No Electron dependency
+appears anywhere in this repository, and none is to be added.
 **Rationale:** The original position — native on both mobile platforms — was correct on capability
 and wrong on sequencing. Native iOS requires paid Apple Developer enrolment, Mac hardware, App
 Store review, and a third implementation of the app logic, all before a single iOS user has been
