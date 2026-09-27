@@ -26,8 +26,39 @@ export type {
 	HandoffSource,
 	SrcOpening,
 } from "./handoff.js";
-export { assertNoUpload, containsBytes, createFetchRecorder } from "./no-upload.js";
-export type { DocumentBytes, RecordedRequest } from "./no-upload.js";
+export {
+	collectingSink,
+	planIntake,
+	runIntake,
+	DEFAULT_RANGE_CHUNK,
+} from "./handoff-flow.js";
+export type {
+	CollectingSink,
+	Intake,
+	IntakeDeps,
+	IntakeOptions,
+	IntakePath,
+	OpenedDocument,
+	PlanResult,
+	PlannedOpen,
+	RangeSink,
+	RunResult,
+} from "./handoff-flow.js";
+export {
+	assertNoUpload,
+	containsBytes,
+	createFetchRecorder,
+	fingerprintsFor,
+	inspectBody,
+	installRequestRecorder,
+} from "./no-upload.js";
+export type {
+	DocumentBytes,
+	InspectedBody,
+	RecordedRequest,
+	RequestBody,
+	RequestRecorder,
+} from "./no-upload.js";
 export {
 	buildOpenRequest,
 	deliveryFor,
