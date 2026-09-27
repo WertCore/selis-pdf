@@ -29,6 +29,15 @@ toml        = "0.8"
 miniz_oxide = "0.8"
 zune-jpeg   = "0.4"
 
+# Rasterisation threads (ADR-P0004, SL-4.WASM.03) — the tile executor only.
+# rayon's *global* pool is used, never a locally built one: `ThreadPoolBuilder`
+# reports `Unsupported` on `wasm32-unknown-unknown` (no OS thread to spawn), and
+# with no pool installed rayon-core's documented "Global fallback when
+# threading is unsupported" runs `par_iter` sequentially — the same bytes, no
+# threads. That is what makes one artifact serve the COOP/COEP path and the
+# extension path (see `selis-raster::tile::Parallelism`).
+rayon       = "1"
+
 # Fonts (Phase 3) — skrifa (MIT OR Apache-2.0, Google Fonts, actively
 # maintained) is the font table/metadata parser for embedded TrueType/OpenType.
 # The plan's original choice, ttf-parser, was declared unmaintained

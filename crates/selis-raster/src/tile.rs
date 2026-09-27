@@ -1,13 +1,25 @@
-//! Tile decomposition and parallel rasterisation (SL-2.RAST.10).
+//! Tile decomposition and parallel rasterisation (SL-2.RAST.10, SL-4.WASM.03).
 //!
 //! Splits a page into tiles, renders each into its own raster, then stitches
 //! them. The **determinism guarantee** is the DoD: threaded and unthreaded
-//! renders are hash-equal, because each tile is independent and the tiles are
-//! stitched in a fixed order — the thread pool never changes the bytes.
+//! renders are hash-equal, because each tile is independent, the executor
+//! preserves decomposition order, and the tiles are stitched in that fixed
+//! order — the thread pool never changes the bytes.
 //!
-//! This module owns the decomposition and the render-to-tile contract; the
-//! actual rasterisation per tile is the caller's (via the [`Backend`] or a
-//! direct buffer write). The parallel (rayon) path lands with SL-2.RAST.10.
+//! This module owns the decomposition, the render-to-tile contract, and the
+//! two executors ([`Parallelism`], [`render_tiles`]); the actual
+//! rasterisation per tile is the caller's (via the [`Backend`] or a direct
+//! buffer write), and the page-level driver over it is
+//! `selis-pdf-engine::render_page_tiled`.
+//!
+//! A tile rendered with a *translated* `ctm` equals the matching
+//! sub-rectangle of the full-canvas render: the decomposition is pixel-exact
+//! (`u32` pixel offsets, integer device translation), and the renderer's
+//! coverage depends on geometry relative to the pixel grid, which an integer
+//! translation does not change. `selis-pdf-engine::tiled` proves that over the
+//! in-repo corpus; `xtask wasm-threads` proves it over the same corpus for
+//! both executors. That property is what lets the tiled driver stand in for
+//! the untiled one without a byte moving.
 
 use selis_error::Result;
 use selis_geom::Rect;
@@ -120,12 +132,150 @@ pub fn stitch(
     Ok(out)
 }
 
-/// Render tiles sequentially (single-threaded WASM path).
-pub fn render_sequential<F>(tiles: &[Tile], mut render: F) -> Vec<(Tile, Vec<u8>)>
+/// Render tiles sequentially (the single-threaded executor's body).
+pub fn render_sequential<F, T>(tiles: &[Tile], mut render: F) -> Vec<(Tile, T)>
 where
-    F: FnMut(&Tile) -> Vec<u8>,
+    F: FnMut(&Tile) -> T,
 {
     tiles.iter().map(|t| (*t, render(t))).collect()
+}
+
+/// Which executor renders the tiles (SL-4.WASM.03, ADR-P0004).
+///
+/// The tile path has exactly two executors and **both are compiled into every
+/// artifact**: the plan's rule is that the engine degrades by *policy*, never
+/// by `#[cfg]`, so there is no "threads build" that lacks the single-threaded
+/// path and no artifact where the fallback could fail to exist. The choice
+/// arrives at run time from the host, because only the host can observe the
+/// condition that permits threads: a page needs `SharedArrayBuffer` for the
+/// pool's memory, and `SharedArrayBuffer` needs COOP/COEP — which the
+/// extension host can never set (`apps/web/host/src/isolation.ts` makes the
+/// same decision on the JS side; the two must agree).
+///
+/// # The pool contract
+///
+/// [`Parallelism::Threads`] **never builds a pool**. `rayon`'s
+/// `ThreadPoolBuilder` reports `Unsupported` on `wasm32-unknown-unknown`
+/// (there is no OS thread to spawn), so a pool built here could only ever be
+/// a lie — and a pool built without `SharedArrayBuffer` is precisely the
+/// failure this task exists to prevent. The threaded executor runs on the
+/// *ambient* pool, which the host installs:
+///
+/// * **web, COOP/COEP present**: `wasm_bindgen_rayon::init_thread_pool(lanes)`
+///   on the main thread after instantiation. It is called only when
+///   `SharedArrayBuffer` is present, so "a pool without SAB" is
+///   unrepresentable; the tiles then render on the shared-memory workers.
+/// * **native** (CLI, tests, the CI harness): rayon's own global pool.
+///
+/// With no pool installed, rayon-core's documented behaviour is the *global
+/// fallback*: `par_iter` runs sequentially on the calling thread. Same bytes,
+/// no threads. A missing pool is therefore a performance bug, never a
+/// correctness or crash bug — and the single-threaded path is the same code,
+/// so the two cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Parallelism {
+    /// One executor: tiles render in decomposition order on the calling
+    /// thread. Never touches rayon (no pool is initialised, no
+    /// `SharedArrayBuffer` is needed).
+    Single,
+    /// The host-installed pool. `lanes` records what the host claimed
+    /// (`navigator.hardwareConcurrency`, capped); it is telemetry plus the
+    /// thread report's evidence — the pool's real width is the host's.
+    Threads {
+        /// The host-reported lane count (never zero: zero is `Single`).
+        lanes: u32,
+    },
+}
+
+impl Parallelism {
+    /// The single-threaded executor (the extension / no-COOP-COEP selection).
+    pub const SINGLE: Parallelism = Parallelism::Single;
+
+    /// Select the executor from the host's reported lane count.
+    ///
+    /// `0` lanes means the host has no usable pool — no COOP/COEP, no
+    /// `SharedArrayBuffer`, or a document-embedded context that stripped the
+    /// headers — and selects [`Parallelism::Single`]. Any non-zero count
+    /// selects [`Parallelism::Threads`]. The mapping is total and total is the
+    /// point: there is no lane count this can fail on.
+    #[must_use]
+    pub const fn from_host_lanes(lanes: u32) -> Self {
+        if lanes == 0 {
+            Parallelism::Single
+        } else {
+            Parallelism::Threads { lanes }
+        }
+    }
+
+    /// The lane count: `0` for [`Parallelism::Single`].
+    #[must_use]
+    pub const fn lanes(self) -> u32 {
+        match self {
+            Parallelism::Single => 0,
+            Parallelism::Threads { lanes } => lanes,
+        }
+    }
+
+    /// Whether this selects the threaded executor.
+    #[must_use]
+    pub const fn is_threaded(self) -> bool {
+        matches!(self, Parallelism::Threads { .. })
+    }
+
+    /// The stable label the guest's thread report publishes (`"single"` /
+    /// `"threads"`) — the string the CI harness asserts on.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        if self.is_threaded() {
+            "threads"
+        } else {
+            "single"
+        }
+    }
+}
+
+/// Render every tile with the selected executor, in decomposition order.
+///
+/// The result parallels `tiles` element for element (same [`Tile`], same
+/// position), so [`stitch`] composes the identical raster whichever executor
+/// ran: order-preserving `collect` over rayon's indexed iterator, then a fixed
+/// stitch order. Hash-equality between the two paths is a structural property
+/// here, not a coincidence of scheduling — which is what the DoD asks for.
+///
+/// `T` is the per-tile result (the rasteriser's `Vec<u8>`, or a `Result` when
+/// the caller's per-tile work can fail and must propagate).
+///
+/// `render` must be `Send + Sync` because the threaded executor may call it
+/// from several worker threads at once; it is passed by shared reference, so
+/// per-tile scratch state has to live inside the closure's own interior
+/// mutability, and the closure itself must be deterministic per tile (the same
+/// tile must produce the same bytes on any thread).
+///
+/// # The pool, and cancellation
+///
+/// See [`Parallelism`]: the threaded executor uses the ambient pool and never
+/// builds one. Cancellation is the caller's, observed at each tile's budget
+/// tick through the guard the closure's render builds — a cancelled render
+/// errors, and the executor propagates that result rather than stitching a
+/// partial raster.
+///
+/// # Malformed Input
+///
+/// An empty `tiles` slice renders nothing (a zero-size page), never panics.
+#[must_use]
+pub fn render_tiles<F, T>(tiles: &[Tile], parallelism: Parallelism, render: F) -> Vec<(Tile, T)>
+where
+    F: Fn(&Tile) -> T + Sync + Send,
+    T: Send,
+{
+    match parallelism {
+        Parallelism::Single => render_sequential(tiles, render),
+        Parallelism::Threads { .. } => {
+            use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+            tiles.par_iter().map(|t| (*t, render(t))).collect()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +371,104 @@ mod tests {
 
         assert!(renders_match(&full_seq, &full_seq2));
         assert_eq!(stable_hash(&full_seq), stable_hash(&full_seq2));
+    }
+
+    /// The lane-count mapping is total: zero lanes is the single-threaded
+    /// path (what the extension host reports), any other count is threaded.
+    #[test]
+    fn host_lanes_select_the_executor() {
+        assert_eq!(Parallelism::from_host_lanes(0), Parallelism::Single);
+        assert_eq!(
+            Parallelism::from_host_lanes(1),
+            Parallelism::Threads { lanes: 1 }
+        );
+        assert_eq!(
+            Parallelism::from_host_lanes(8),
+            Parallelism::Threads { lanes: 8 }
+        );
+        assert!(!Parallelism::from_host_lanes(0).is_threaded());
+        assert!(Parallelism::from_host_lanes(8).is_threaded());
+        assert_eq!(Parallelism::from_host_lanes(0).lanes(), 0);
+        assert_eq!(Parallelism::from_host_lanes(3).lanes(), 3);
+        assert_eq!(Parallelism::Single.label(), "single");
+        assert_eq!(Parallelism::from_host_lanes(3).label(), "threads");
+        assert_eq!(Parallelism::from_host_lanes(u32::MAX).lanes(), u32::MAX);
+    }
+
+    /// Deterministic per-tile content that depends on the tile's *place* in
+    /// the page, so a mis-stitched or re-ordered tile cannot pass by accident.
+    fn probe_tile(t: &Tile) -> Vec<u8> {
+        let mut g = selis_sandbox::Budget::unlimited().guard();
+        let bytes = t.pixel_w as usize * t.pixel_h as usize * 4;
+        let mut buf =
+            selis_sandbox::alloc::vec_filled(&mut g, bytes, 0u8).expect("unlimited budget");
+        for (i, chunk) in buf.chunks_mut(4).enumerate() {
+            let x = t.pixel_x as usize + i % t.pixel_w as usize;
+            let y = t.pixel_y as usize + i / t.pixel_w as usize;
+            chunk[0] = x as u8;
+            chunk[1] = y as u8;
+            chunk[2] = (x as u8) ^ (y as u8);
+            chunk[3] = 255;
+            // Enough arithmetic per pixel that work-stealing has a chance to
+            // spread the tiles (the lane-coverage assertion below is not
+            // vacuous on a fast machine).
+            let mut acc = 0u32;
+            for k in 0..200u32 {
+                acc = acc.wrapping_mul(31).wrapping_add(k);
+            }
+            chunk[2] = chunk[2].wrapping_add(acc as u8);
+        }
+        buf
+    }
+
+    /// DoD (SL-4.WASM.03): the threaded and single-threaded executors render
+    /// hash-equal tiles in the same order — and the threaded one really does
+    /// use several lanes.
+    #[test]
+    fn threaded_and_single_executors_hash_equal() {
+        let tiles = tile_decompose(160, 96, 32, 32); // 5 x 3 = 15 tiles
+        let single = render_tiles(&tiles, Parallelism::Single, probe_tile);
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("a 4-lane pool builds natively");
+        let lanes_seen = std::sync::Mutex::new(Vec::new());
+        let threaded = pool.install(|| {
+            render_tiles(&tiles, Parallelism::Threads { lanes: 4 }, |t| {
+                if let Some(lane) = rayon::current_thread_index() {
+                    lanes_seen.lock().expect("lock").push(lane);
+                }
+                probe_tile(t)
+            })
+        });
+
+        assert_eq!(single.len(), threaded.len(), "one entry per tile");
+        for (a, b) in single.iter().zip(threaded.iter()) {
+            assert_eq!(a.0, b.0, "same tile at the same position");
+            assert_eq!(a.1, b.1, "same bytes for that tile");
+        }
+        let full_single = stitch(160, 96, &single, &mut budget_guard()).expect("budget");
+        let full_threaded = stitch(160, 96, &threaded, &mut budget_guard()).expect("budget");
+        assert_eq!(stable_hash(&full_single), stable_hash(&full_threaded));
+
+        let mut seen = lanes_seen.lock().expect("lock").clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert!(
+            seen.len() > 1,
+            "the threaded executor must spread the tiles over the pool, saw {seen:?}"
+        );
+    }
+
+    /// The single-threaded executor is byte-identical to `render_sequential`
+    /// (it *is* that call), so the fallback path is never a second
+    /// implementation that could drift.
+    #[test]
+    fn single_executor_is_the_sequential_reference() {
+        let tiles = tile_decompose(64, 64, 16, 16);
+        let via_policy = render_tiles(&tiles, Parallelism::SINGLE, probe_tile);
+        let reference = render_sequential(&tiles, probe_tile);
+        assert_eq!(via_policy, reference);
     }
 }

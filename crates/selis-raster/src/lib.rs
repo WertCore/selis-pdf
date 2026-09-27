@@ -38,7 +38,7 @@ pub use shading::{
     LatticeShading, RadialShading, Shading, ShadingPoint,
 };
 pub use soft_mask::{build_mask, Mask, MaskGroup, SoftMask, SoftMaskType};
-pub use tile::{render_sequential, stitch, tile_decompose, Tile};
+pub use tile::{render_sequential, render_tiles, stitch, tile_decompose, Parallelism, Tile};
 #[cfg(feature = "tiny-skia")]
 pub use tiny_skia::TinySkiaBackend;
 

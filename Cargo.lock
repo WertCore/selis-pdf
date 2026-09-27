@@ -1813,6 +1813,7 @@ name = "selis-pdf-engine"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
+ "rayon",
  "selis-bytes",
  "selis-color",
  "selis-crypto",
@@ -1955,6 +1956,7 @@ name = "selis-raster"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "rayon",
  "selis-color",
  "selis-error",
  "selis-geom",
