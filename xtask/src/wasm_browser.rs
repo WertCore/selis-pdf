@@ -51,11 +51,11 @@
 //!
 //! What that buys and what it costs, stated plainly:
 //!
-//! * Licence: Chromium/Chrome is BSD-3-Clause (the engine); the Google Chrome
+//! * Licence: Chromium is BSD-3-Clause (the engine); the Microsoft Edge
 //!   *branded* build adds proprietary media codecs, which this leg never
-//!   touches -- it decodes no media, it hashes RGBA8 pixmaps. Microsoft Edge is
-//!   a Chromium fork under the same terms. A distro `chromium` package is the
-//!   licence-cleanest choice and is first on the Linux candidate list.
+//!   touches -- it decodes no media, it hashes RGBA8 pixmaps. Edge is a
+//!   Chromium fork under the same terms. A distro `chromium` package is the
+//!   licence-cleanest choice and is a fallback on the Linux candidate list.
 //! * Maintenance: the engine is an external binary by design. The property
 //!   under test is *our* module's output being engine-independent, so a
 //!   browser upgrade that *did* move a byte is exactly the signal this gate
@@ -385,9 +385,14 @@ fn native_page(doc: &[u8]) -> Native {
 ///
 /// A deliberately short, explicit list -- never a bare `PATH` lookup of an
 /// unversioned `chrome`, because a determinism gate whose engine it cannot
-/// name is not a gate. Linux lists the licence-clean distro `chromium` first,
-/// then the Google builds; macOS and Windows list the branded builds a
-/// developer machine actually has.
+/// name is not a gate.
+///
+/// **Microsoft Edge is the default engine.** It is a Chromium fork, so it
+/// exercises the same V8 the web app ships on, and it is preinstalled on the
+/// Windows and macOS machines this project is developed on, so the gate needs
+/// no download step. Chrome and distro `chromium` remain accepted as
+/// alternates: this leg's claim is *V8-determinism vs the native engine*, and
+/// that holds on any Chromium build, so pinning Edge does not weaken it.
 fn browser_candidates() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(env) = std::env::var_os("SELIS_BROWSER") {
@@ -395,14 +400,16 @@ fn browser_candidates() -> Vec<PathBuf> {
     }
     match std::env::consts::OS {
         "windows" => {
+            // Edge first: the default engine. Chrome follows as an alternate.
             for (key, tail) in [
-                ("ProgramFiles", r"Google\Chrome\Application\chrome.exe"),
-                ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
                 ("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe"),
                 (
                     "ProgramFiles(x86)",
                     r"Microsoft\Edge\Application\msedge.exe",
                 ),
+                ("LocalAppData", r"Microsoft\Edge\Application\msedge.exe"),
+                ("ProgramFiles", r"Google\Chrome\Application\chrome.exe"),
+                ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
                 ("LocalAppData", r"Google\Chrome\Application\chrome.exe"),
             ] {
                 if let Some(base) = std::env::var_os(key) {
@@ -416,15 +423,19 @@ fn browser_candidates() -> Vec<PathBuf> {
         }
         "macos" => {
             for app in [
+                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
                 "Chromium.app/Contents/MacOS/Chromium",
                 "Google Chrome.app/Contents/MacOS/Google Chrome",
-                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             ] {
                 out.push(PathBuf::from("/Applications").join(app));
             }
         }
         _ => {
+            // Linux runners ship Edge too; distro `chromium` stays the
+            // licence-cleanest fallback.
             for bin in [
+                "/usr/bin/microsoft-edge",
+                "/usr/bin/microsoft-edge-stable",
                 "/usr/bin/chromium",
                 "/usr/bin/chromium-browser",
                 "/usr/bin/google-chrome",

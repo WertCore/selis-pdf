@@ -240,12 +240,17 @@ jobs:
   #
   # The browser is an EXTERNAL TOOL, exactly as `qpdf` is in `write05-oracle`
   # below: nothing is added to Cargo.toml, package.json, or pnpm-lock.yaml, and
-  # the ubuntu-24.04 image already ships Google Chrome, so this job downloads
+  # the ubuntu-24.04 image already ships Microsoft Edge, so this job downloads
   # nothing. The leg resolves the binary at runtime and FAILS if there is no
   # browser — it never skips, because a determinism gate that rendered nothing
   # would be green (SL-3.CONF.06).
   #
-  # Licence: Chromium is BSD-3-Clause; the branded Chrome build adds
+  # Engine: **Microsoft Edge**, a Chromium fork that runs the same V8 the web
+  # app ships on. Chrome and distro `chromium` remain accepted alternates; the
+  # claim under test is V8-determinism against the native engine, which holds
+  # on any Chromium build.
+  #
+  # Licence: Chromium is BSD-3-Clause; the branded Edge build adds
   # proprietary media codecs, which this leg never touches (it decodes no
   # media — it hashes pixmaps). Pinning a browser *download* (a puppeteer /
   # playwright package, or a vendored Chrome-for-Testing tarball) would be a
@@ -261,7 +266,7 @@ jobs:
           cache: true
       - name: Name the engine under test
         run: |
-          browser="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          browser="$(command -v microsoft-edge || command -v microsoft-edge-stable || command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
           if [ -z "$browser" ]; then
             echo "no chromium-family browser on this runner — this gate cannot be skipped"
             exit 1
