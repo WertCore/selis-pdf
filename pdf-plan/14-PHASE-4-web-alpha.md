@@ -1,4 +1,4 @@
-# Phase 4 — Web app + Chrome extension (Weeks 24–30 · month 7) — FIRST SHIP
+﻿# Phase 4 — Web app + Chrome extension (Weeks 24–30 · month 7) — FIRST SHIP
 
 **Gate G4 exit criteria:** web viewer + MV3 extension published · core WASM ≤ 3 MB brotli ·
 first page painted < 1.2 s p75 on a 5 MB linearised PDF over Fast 3G · 1 000 external users ·
@@ -40,13 +40,13 @@ proves the engine in the harshest environment, and it costs nothing to distribut
     *before* any fetch when a viewer session names the editor chunk. `xtask size-check` measures
     per chunk: 7/7 artifacts within budget (core 1,313,250 / 3,000,000; chunks ~4.5 KB each vs
     400-900 KB budgets), 0% baseline regression.
-  - **Gaps (review, non-blocking):** (1) the chunk bodies are capability/probe stubs — their
+  - **Gaps (review, non-blocking):** (1) the chunk bodies are capability/probe stubs - their
     declared engine deps are unreferenced, so the ~4.5 KB sizes reflect stubs and the 400-900 KB
     budgets stay aspirational until real OCR (Phase 5) / convert (Phase 8) / editor code lands;
     (2) budget numbers are duplicated across `xtask/size-budgets.toml`, `Manifest::canonical()`,
-    and the TS `MANIFEST` (documented mirrors — a maintenance seam);
+    and the TS `MANIFEST` (documented mirrors - a maintenance seam);
     (3) `selis-pdf-engine`'s unused `selis-pdf-edit` edge is pre-existing: if the engine ever
-    references it, edit code lands in the core — worth gating as optional.
+    references it, edit code lands in the core - worth gating as optional.
 - [ ] **SL-4.WASM.03 — Threads with graceful single-threaded fallback** · deps: WASM.01 · owner: AI+
   - **Do:** `wasm-bindgen-rayon` under `SharedArrayBuffer` when COOP/COEP are present; identical
     output single-threaded when they are not (ADR-P0004, SL-2.RAST.10).
@@ -156,24 +156,25 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Do:** Cross-origin isolation for threads; a strict CSP with `wasm-unsafe-eval` only; SRI on
     every asset; no third-party scripts on the document-handling path (ADR-P0016).
   - **DoD:** securityheaders.sh A+; a test asserting the app still works with isolation disabled.
-  - **Status:** Done 2026-09-26 and merged into main. One canonical builder (pps/web/host/src/headers.ts)
-    emits COOP same-origin + COEP equire-corp + CORP + HSTS + a strict CSP allowing wasm-unsafe-eval
-    only, and mirrors it drift-free into both static hosts (public/_headers for Netlify/CF Pages and
-    ercel.json) with a test that fails on any divergence between the three. isolation.ts selects the
-    threaded path only when crossOriginIsolated and SharedArrayBuffer are both present, else falls back
+  - **Status:** Done 2026-09-26 and merged into main. One canonical builder (`apps/web/host/src/headers.ts`)
+    emits COOP `same-origin` + COEP `require-corp` + CORP + HSTS + a strict CSP allowing `wasm-unsafe-eval`
+    only, and mirrors it drift-free into both static hosts (`public/_headers` for Netlify/CF Pages and
+    `vercel.json`) with a test that fails on any divergence between the three. `isolation.ts` selects the
+    threaded path only when `crossOriginIsolated` and `SharedArrayBuffer` are both present, else falls back
     to byte-identical single-threaded (ADR-P0004). Gates: vitest 15 (host) + 6 (extension), tsc + biome
-    clean. .cargo/config.toml's 	arget-dir = "C:/selis-build" redirect was explicitly excluded from the
-    commit — it is a machine-specific env hack not referenced by CI (verified: no .github reference to
-    selis-build or CARGO_TARGET_DIR) and would break non-Windows runners.
-  - **Gaps (review, non-blocking):** (1) no dev-server header config — COOP/COEP ship only via
-    _headers/ercel.json at deploy, so local dev cannot exercise the threaded path (not a DoD item;
+    clean. `.cargo/config.toml`'s `target-dir = "C:/selis-build"` redirect was explicitly excluded from the
+    commit - it is a machine-specific env hack not referenced by CI (verified: no `.github` reference to
+    `selis-build` or `CARGO_TARGET_DIR`) and would break non-Windows runners.
+  - **Gaps (review, non-blocking):** (1) no dev-server header config - COOP/COEP ship only via
+    `_headers`/`vercel.json` at deploy, so local dev cannot exercise the threaded path (not a DoD item;
     the DoD targets static hosting, and the isolation-disabled path *is* tested);
     (2) the securityheaders.sh A+ is asserted by a proxy test that verifies every header the scanner
-    grades actually emits, not by the live scanner — real A+ is confirmed at deploy;
-    (3) SRI digests are hand-computed rather than build-injected; sri.test.ts enforces presence and
+    grades actually emits, not by the live scanner - real A+ is confirmed at deploy;
+    (3) SRI digests are hand-computed rather than build-injected; `sri.test.ts` enforces presence and
     format, and a stale digest fails loudly in the browser rather than silently;
-    (4) the manifest has no icons — fine for the unpacked skeleton load; store submission (SL-4.EXT.11)
-    will need them.- [ ] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
+    (4) the manifest has no icons - fine for the unpacked skeleton load; store submission (SL-4.EXT.11)
+    will need them.
+- [ ] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
   - **Do:** Cache the app shell and WASM chunks; the app opens local files with no network at all.
   - **DoD:** Airplane-mode test: open a local PDF, view, search, print.
 - [ ] **SL-4.WEB.03 — Document handoff without upload** · deps: SL-4.WASM.05 · owner: AI+
@@ -195,13 +196,14 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Do:** Request the minimum: `declarativeNetRequest`, `offscreen`, and host permissions only
     where required. Every permission needs a written justification for review and for the store
     listing, because reviewers reject unexplained breadth.
-  - **Status:** Done 2026-09-26, delivered by the same web01-coop branch. The MV3 manifest.json
-    requests only declarativeNetRequest + offscreen with an empty host_permissions array (no
-    <all_urls>, 	abs, or scripting); src/permissions.ts pins the approved/denied sets and
-    manifest.test.ts asserts the manifest stays inside them; PERMISSIONS.md justifies each permission.
+  - **Status:** Done 2026-09-26, delivered by the same web01-coop branch. The MV3 `manifest.json`
+    requests only `declarativeNetRequest` + `offscreen` with an empty `host_permissions` array (no
+    `<all_urls>`, `tabs`, or `scripting`); `src/permissions.ts` pins the approved/denied sets and
+    `manifest.test.ts` asserts the manifest stays inside them; `PERMISSIONS.md` justifies each permission.
   - **Gaps (review, non-blocking):** no icons yet (needed for the store listing; that lands with
-    SL-4.EXT.11), and offscreen.js is a minimal placeholder that the DNR redirect (SL-4.EXT.02) will
-    wire up.- [ ] **SL-4.EXT.02 — PDF navigation interception** · deps: EXT.01 · owner: AI+
+    SL-4.EXT.11), and `offscreen.js` is a minimal placeholder that the DNR redirect (SL-4.EXT.02) will
+    wire up.
+- [ ] **SL-4.EXT.02 — PDF navigation interception** · deps: EXT.01 · owner: AI+
   - **Do:** DNR rules redirecting `application/pdf` main-frame navigations to the bundled viewer,
     preserving the original URL, referrer policy, and any auth context the browser would send.
   - **DoD:** Works for: direct `.pdf` URLs, `Content-Type`-only responses, `Content-Disposition:
