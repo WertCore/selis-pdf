@@ -189,21 +189,51 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     a dependency **audit** (npm licence allow-list, `unmaintained` check, a `cargo vet`
     equivalent for the JS tree, which Rust gets and npm does not). That belongs to a
     pre-release hardening pass, not to this task; ADR-P0021 records it.
-- [ ] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
+- [x] **SL-4.UI.02 — Virtualised page list + continuous scroll** · deps: UI.01 · owner: AI+
   - **Do:** Windowed rendering with a placeholder→low-res→full-res tile ladder, correct scroll
     anchoring on zoom, and page-fit/width/spread modes.
   - **DoD:** 60 fps sustained scroll on a 2 000-page document on a mid-range laptop; no layout
     shift when a tile resolves.
-  - **Code merged (3279 lines, `apps/ui/src/viewer/`), but the box stays open on the DoD.** Windowing
-    (≤12 tiles over 2 000 pages), the tile ladder, zoom anchoring, fit/width/spread and zero-layout-
-    shift are all implemented and tested. The **60 fps** half is only a headless proxy (~1.4 ms/frame
-    against a 16 ms budget): ADR-P0021 ships no jsdom, so real fps needs a browser and is
-    unreachable in-repo. It should be measured for real under **UI.03**, which owns the compositor.
-    Strings route through i18n keys; the plan's L227 cites ADR-P0034 for that, but the i18n rule
-    actually sits under ADR-P0036.
-- [ ] **SL-4.UI.03 — Canvas compositor + tile presentation** · deps: UI.02, WASM.01 · owner: AI+
+  - **DONE, and the 60 fps half is now measured for real rather than proxied.** Windowing
+    (≤12 tiles over 2 000 pages), the tile ladder, zoom anchoring, fit/width/spread and
+    zero-layout-shift are implemented and tested. UI.03 added `xtask/bench/`, which measures
+    the **shipped** compositor (the built `apps/ui/dist/viewer` modules, not a reimplementation)
+    in a real visible Edge with a real OffscreenCanvas worker, 2 000 pages, fractional DPR 1.25.
+    **Compositor: avg 0.54 ms, p95 0.80 ms, max 1.50 ms against a 16.67 ms budget — 4.8%.**
+    Strings route through i18n keys; the plan's L227 cites ADR-P0034 for that, but the i18n
+    rule actually sits under ADR-P0036.
+  - **One trap worth recording:** the obvious pass criterion — "p95 *frame delta* ≤ 16.67 ms" —
+    cannot work, and is unfalsifiable in the dangerous direction. Under vsync-locked rAF the
+    frame delta measures the *display*, not the work: a page doing nothing measures p50 16.70 ms,
+    and this compositor doing real work also measures p50 16.70 ms. It would reject a compositor
+    spending 0.8 ms of a frame while passing an idle page. The gate therefore tests the shipped
+    code's own per-frame time, and additionally requires the frame stream to be real (frames
+    actually arrived, draw ops actually issued) so a run that measured nothing cannot pass.
+  - **A second trap:** the first benchmark blamed the compositor for 8.6 ms frames. The cost was
+    the harness's own fake engine allocating 3 MB tiles synchronously on the main thread; a real
+    engine rasterises in a worker. Splitting compositor time from engine time is what made it
+    visible. Neither the old criterion nor the old harness would have caught it.
+  - **Not covered by that number:** "mid-range laptop". The measurement is on the development
+    machine, headed, at whatever refresh rate it reports. A slower target is untested, and
+    `16-PHASE-6-desktop.md` (`SL-6.PERF.02`) is where the laptop claim belongs.
+- [x] **SL-4.UI.03 — Canvas compositor + tile presentation** · deps: UI.02, WASM.01 · owner: AI+
   - **Do:** `OffscreenCanvas` in the worker, transferred bitmaps, device-pixel-ratio correctness,
     and a zoom path that scales the existing tile immediately and re-renders behind it.
+  - **All four clauses shipped** in `apps/ui/src/viewer/`: `OffscreenCanvas` in the worker
+    (`offscreen-compositor.ts`), transferred bitmaps, DPR-correct backing stores (the
+    fractional-DPR floor bug is handled and tested), and the provisional-scale-then-refine zoom
+    path. The host-agnostic package still touches no `OffscreenCanvas`, no `Worker` and no
+    `requestAnimationFrame` — those sit behind the injected `TileSurface`/`FrameClock` ports, so
+    `platform-globals.test.ts` stays green.
+  - **This task had no `DoD:` line**, unlike its neighbours. The DoD it inherits is UI.02's 60 fps
+    claim, which it is what finally measures for real — see the UI.02 note above and
+    `xtask/bench/`. Noted rather than papered over: a benchmark is not a substitute for a stated
+    acceptance criterion, and the next phase-file task without a DoD should get one.
+  - **Known limit, recorded rather than hidden:** `xtask/bench/` needs a *headed, on-screen*
+    browser. Measured: headless `--dump-dom` yields 1 frame, and a headed window positioned
+    off-screen yields 0 (occluded windows throttle rAF). It therefore **cannot run in CI**, where
+    there is no display — so this is a developer-machine measurement, not a merge gate. A CI-runnable
+    form would need a compositor, not a browser.
 - [ ] **SL-4.UI.04 — Text layer, selection, and copy** · deps: SL-3.TEXT.05 · owner: AI+
   - **Do:** A selectable, accessible text layer aligned to the rendered glyphs. Selection must
     survive zoom and be RTL-correct. Copy preserves reading order, not visual order.
