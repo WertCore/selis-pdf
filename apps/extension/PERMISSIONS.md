@@ -18,10 +18,40 @@ manifest entry.
 
 | Permission / pattern | Status | Reason |
 |---|---|---|
-| `host_permissions` (`<all_urls>`, `*://*/*`, per-origin) | **Empty in EXT.01** | Interception targets (SL-4.EXT.02 DNR rules) are not settled yet. Host access is added there with one rule-set entry + one justification row per origin pattern — never a pre-emptive `<all_urls>`. Review history shows broad hosts without a wired rule are the top rejection cause. |
+| `host_permissions` (`<all_urls>`, `*://*/*`, per-origin) | **Still empty after EXT.02** | The EXT.02 ruleset matches by **URL shape** (a `.pdf` path, or a `.pdf` carried in the query) precisely because no host permission is held. This is a deliberate, documented limit, not an oversight: `responseHeaders` conditions need host access, so `Content-Type: application/pdf` and `Content-Disposition: inline` are invisible to the rules. Those serving patterns are enumerated as `cannot-work` in `PATTERN_MATRIX` (`src/permissions.ts`) with the exact permission each would need. Widening to per-origin hosts is a reviewable follow-up that would convert a documented subset of those rows — it is not taken here, because EXT.01's review established that host access without a settled rule is the top store-rejection cause, and the reverse (settled rules, no hosts) is not. |
 | `webRequest` / `webRequestBlocking` | Not requested | Superseded by `declarativeNetRequest` for this use (see above). Firefox port (SL-4.EXT.10) may need `webRequest` under its MV3 — that port carries its own justification row when it lands. |
 | `tabs`, `activeTab`, `scripting`, `cookies`, `storage` (unlimited), `file://` pseudo-host | Not requested | No tab inspection, no script injection, no cookie access, no bulk storage in EXT.01. `file://` support (SL-4.EXT.09) is an explicit user-toggled flow with its own onboarding copy — not a silent manifest entry. `storage` (unlimited) arrives only if the CJK post-install payload (SL-4.EXT.05) proves it needs more than the default quota. |
 | Remote code (`content_security_policy` relaxations, CDN `src`, `eval`) | Forbidden (ADR-P0028, SL-4.EXT.04) | All code ships in the package. `extension_pages` CSP stays `script-src 'self'; object-src 'self';` — no `unsafe-eval`, no remote hosts. A build check (EXT.04) fails on any remote URL in the bundle. |
+
+## Interception coverage (SL-4.EXT.02)
+
+`src/permissions.ts` holds `PATTERN_MATRIX`: 38 real-world PDF-serving patterns,
+each with a verdict and a reason. `src/manifest.test.ts` re-derives every
+verdict from the shipped ruleset, so the table cannot drift into fiction.
+
+| Verdict | Count | Meaning |
+|---|---|---|
+| `intercepted` | 22 | Redirected to `viewer.html?src=<url>` by URL shape. |
+| `not-matched` | 9 | Not redirected. Mostly deliberate: `main_frame`-only, so an app's own `fetch()` and an `<embed>` are untouched. |
+| `cannot-work` | 7 | No permission this extension holds could redirect them. Each names the capability required (host permissions for the origin, or a non-`http(s)` scheme). |
+
+The `cannot-work` set, by class:
+
+- **Content-Type only** (`application/pdf` at an extensionless URL; a numeric
+  id path; a REST endpoint; `Content-Disposition: attachment; filename=…`) —
+  the response headers are the only signal and `responseHeaders` conditions
+  need host access.
+- **POST-produced PDF at an extensionless URL** — the browser does not
+  re-navigate a POST response, so there is no navigation to intercept.
+- **`blob:`, `data:`, `wss:` and `file://`** — not main-frame navigations, or
+  outside the `^https?://` rule. `file://` additionally needs the user's
+  "Allow access to file URLs" toggle, which is SL-4.EXT.09's scope.
+
+Two classes are intercepted but worth naming in review: a `.pdf`-path URL that
+actually serves `text/html` (a soft 404) now shows a parse error in the viewer
+rather than the browser's page, and a `Content-Disposition: attachment` PDF is
+shown rather than downloaded. Both follow from matching on URL shape, and both
+are recorded in the matrix.
 
 ## Notes for review
 
