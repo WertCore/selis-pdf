@@ -3,6 +3,17 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
+	"description": "The Selis application UI, shared verbatim by every host: the PlatformAdapter seam (SL-4.UI.01) and the virtualised page list (SL-4.UI.02).",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./css/page-list.css": "./src/viewer/page-list.css"
+	},
+	"files": ["dist", "src/viewer/page-list.css"],
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",
