@@ -36,6 +36,8 @@ mod text_norm;
 mod text_sweep;
 mod unsafe_check;
 #[cfg(not(target_arch = "wasm32"))]
+mod wasm_browser;
+#[cfg(not(target_arch = "wasm32"))]
 mod wasm_protocol;
 mod wild;
 mod wild_hygiene;
@@ -185,6 +187,31 @@ enum Command {
     /// Native-only (the guest is built for wasm32 first).
     #[cfg(not(target_arch = "wasm32"))]
     WasmProtocol,
+    /// SL-4.WASM.08: render the corpus in a real headless browser and prove
+    /// the pixmaps hash-match the native render (SL-2.RAST.09's WASM leg).
+    ///
+    /// Builds the `wasm32` guest exactly as `perf-wasm` does (`+simd128`),
+    /// hands it to a Chrome/Chromium/Edge binary found on the machine (or
+    /// `--browser` / `$SELIS_BROWSER`), and compares per-page RGBA8 hashes.
+    /// Adds no dependency: the browser is an external tool, like `qpdf`.
+    /// Fails if the browser renders nothing, or if any page diverges.
+    /// Native-only (the guest is built for wasm32 first).
+    #[cfg(not(target_arch = "wasm32"))]
+    WasmBrowser {
+        /// Headless browser binary (else `$SELIS_BROWSER`, else the
+        /// well-known Chrome/Chromium/Edge install locations).
+        #[arg(long)]
+        browser: Option<std::path::PathBuf>,
+        /// Render only this directory instead of the in-repo corpus.
+        #[arg(long)]
+        corpus: Option<std::path::PathBuf>,
+        /// Report JSON output (also the CI artifact).
+        #[arg(long, default_value = "target/wasm-browser/report.json")]
+        out: std::path::PathBuf,
+        /// Keep the generated harness directory for inspection.
+        #[arg(long)]
+        keep: bool,
+    },
     /// Generate the deterministic render benchmark set (SL-2.PERF.02).
     RenderSet {
         /// Verify the committed fixtures against their generator instead of
@@ -683,6 +710,18 @@ fn main() -> ExitCode {
         Command::PerfWasm { set, repeats, out } => perf_wasm::run(&set, repeats, &out),
         #[cfg(not(target_arch = "wasm32"))]
         Command::WasmProtocol => wasm_protocol::run(),
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::WasmBrowser {
+            browser,
+            corpus,
+            out,
+            keep,
+        } => wasm_browser::run(&wasm_browser::Config {
+            browser,
+            corpus,
+            out,
+            keep,
+        }),
         Command::PerfRender {
             set,
             dpi,

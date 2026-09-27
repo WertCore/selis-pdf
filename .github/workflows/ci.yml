@@ -8,6 +8,8 @@
 # size-check     | every PR  | required
 # wasm-protocol  | every PR  | required (SL-4.WASM.01 conformance on wasmtime)
 # wasm-threads   | every PR  | required (SL-4.WASM.03: the no-COOP/COEP extension path)
+# wasm-browser   | every PR  | required (SL-4.WASM.08: the corpus rendered in a real
+#                |          | headless browser, hash-matched against the native render)
 # determinism    | every PR  | required (job pending)
 # write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
 # write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
@@ -228,6 +230,52 @@ jobs:
       # no-threads target compiles the same source.
       - run: cargo test -p selis-pdf-engine -p selis-raster tiled
         timeout-minutes: 20
+
+  # ── SL-4.WASM.08 (DoD): headless-browser render hash-matches native ──────
+  # The corpus is rendered by a *real browser's* WebAssembly engine (V8 — an
+  # independent code generator with its own Liftoff baseline and TurboFan
+  # tiers, not wasmtime/Cranelift as in `perf-wasm` and `wasm-protocol`), over
+  # the raw render ABI, and every page's RGBA8 pixmap must hash-match the
+  # native render of the same document.
+  #
+  # The browser is an EXTERNAL TOOL, exactly as `qpdf` is in `write05-oracle`
+  # below: nothing is added to Cargo.toml, package.json, or pnpm-lock.yaml, and
+  # the ubuntu-24.04 image already ships Google Chrome, so this job downloads
+  # nothing. The leg resolves the binary at runtime and FAILS if there is no
+  # browser — it never skips, because a determinism gate that rendered nothing
+  # would be green (SL-3.CONF.06).
+  #
+  # Licence: Chromium is BSD-3-Clause; the branded Chrome build adds
+  # proprietary media codecs, which this leg never touches (it decodes no
+  # media — it hashes pixmaps). Pinning a browser *download* (a puppeteer /
+  # playwright package, or a vendored Chrome-for-Testing tarball) would be a
+  # supply-chain addition and is deliberately NOT done here; that proposal, and
+  # its maintenance story, belongs to SL-0.SEC.02, not to this gate.
+  wasm-browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          cache: true
+      - name: Name the engine under test
+        run: |
+          browser="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "no chromium-family browser on this runner — this gate cannot be skipped"
+            exit 1
+          fi
+          echo "engine under test: $browser ($("$browser" --version))"
+      - run: cargo xtask wasm-browser --out target/wasm-browser/report.json
+        timeout-minutes: 25
+      - name: Upload the per-page comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-browser-report
+          path: target/wasm-browser/report.json
+          if-no-files-found: error
 
   # ── WRITE.05: qpdf --check over 100% of tool outputs (structural oracle) ───
   # Local qpdf on the runner (apt); the xtask oracle command falls back to the
