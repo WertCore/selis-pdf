@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>selis raf probe</title>
+  </head>
+  <body style="margin: 0">
+    <pre id="selis-bench-result">PENDING</pre>
+    <canvas id="selis-bench-canvas" width="600" height="400"></canvas>
+    <script>
+      // A minimal probe, kept deliberately: it is the EVIDENCE for the claims
+      // in run.mjs's header. If a future browser or flag combination changes how
+      // rAF behaves, this is how you find out. Measured on this machine:
+      //
+      //   headless --dump-dom ............ 1 frame
+      //   headed, window-position=-3000 .. 0 frames (occluded => throttled)
+      //   headed, window-position=0,0 ... 60 frames, p50 16.7 ms (vsync)
+      //
+      // `__PORT__` is substituted by run.mjs when it serves the page.
+      var frames = 0, last = 0, deltas = [];
+      function report(payload) {
+        document.getElementById("selis-bench-result").textContent =
+          "@@SELIS-RESULT@@" + JSON.stringify(payload) + "@@SELIS-END@@";
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "http://127.0.0.1:__PORT__/", true);
+        xhr.send(JSON.stringify(payload));
+      }
+      function step(t) {
+        if (last) deltas.push(t - last);
+        last = t;
+        frames += 1;
+        if (frames < 60) {
+          requestAnimationFrame(step);
+        } else {
+          var s = deltas.slice().sort(function (a, b) { return a - b; });
+          report({
+            ok: true,
+            frames: frames,
+            p50: s[Math.floor(s.length / 2)],
+            p95: s[Math.floor(s.length * 0.95)],
+          });
+        }
+      }
+      requestAnimationFrame(step);
+      setTimeout(function () {
+        if (frames < 60) report({ ok: false, frames: frames, why: "timeout" });
+      }, 5000);
+    </script>
+  </body>
+</html>

@@ -1,6 +1,6 @@
 /**
  * Tile-ladder tests (SL-4.UI.02): the ordering of engine work, and the
- * scheduler's three load-bearing behaviours — bounded concurrency, cancellation
+ * scheduler's three load-bearing behaviours â€” bounded concurrency, cancellation
  * of work the reader scrolled away from, and a bounded LRU cache.
  *
  * The engine here is a hand-rolled fake rather than the UI.01 mock adapter:
@@ -23,6 +23,7 @@ import {
 	MAX_CONCURRENT_TILES,
 	TileScheduler,
 	planLadder,
+	taskKey,
 	tileKey,
 } from "./tile-ladder.js";
 
@@ -127,7 +128,7 @@ function tileFor(page: number, size = 8): RenderedTile {
 }
 
 /**
- * Drain the scheduler's promise chain deterministically: `.then → .catch →
+ * Drain the scheduler's promise chain deterministically: `.then â†’ .catch â†’
  * .finally` is three microtask hops, and the tests must not depend on timers.
  */
 async function flush(hops = 8): Promise<void> {
@@ -139,7 +140,7 @@ async function flush(hops = 8): Promise<void> {
 /**
  * Settle everything the engine has started, repeatedly, until no new renders
  * appear. Resolving one render queues the next, so a single pass is not enough
- * to drain a queue — and a bounded loop keeps the test deterministic.
+ * to drain a queue â€” and a bounded loop keeps the test deterministic.
  */
 async function settleAll(engine: FakeEngine, rounds = 12): Promise<void> {
 	for (let round = 0; round < rounds; round += 1) {
@@ -164,28 +165,48 @@ function input(overrides: Partial<LadderInput> = {}): LadderInput {
 	};
 }
 
-const keys = (tasks: readonly TileTask[]): string[] =>
-	tasks.map((task) => tileKey(task.page, task.stage));
+/**
+ * The `satisfied`/cache key of a planned task, as the scheduler will compute it.
+ *
+ * UI.03 put the rasterisation scale in the key (see `tileKey`), so these
+ * expectations carry it: `input()` asks for full-res at `cssScale Ã— DPR` =
+ * 1.5 and low-res at the fixed `LOW_RES_DEVICE_SCALE Ã— DPR` = 0.25.
+ */
+const keys = (tasks: readonly TileTask[]): string[] => tasks.map((task) => taskKey(task));
+
+const FULL_KEY = "2:full@1.500000";
+const LOW_KEY = "0:lowres@0.250000";
+/** The key `input()`'s page 1 low-res task carries. */
+const LOW_RES_KEY = "1:lowres@0.250000";
 
 describe("planLadder", () => {
 	it("asks for full-res on what the reader can see, nearest the middle first", () => {
 		const tasks = planLadder(input());
 		// Page 2 is the middle of the window: it goes first, then 1 and 3.
-		expect(keys(tasks).slice(0, 3)).toEqual(["2:full", "1:full", "3:full"]);
+		expect(keys(tasks).slice(0, 3)).toEqual([FULL_KEY, "1:full@1.500000", "3:full@1.500000"]);
 	});
 
 	it("fills in low-res for the whole window, then prefetches beyond it", () => {
 		const tasks = planLadder(input({ prefetchPages: [{ page: 5 }, { page: 6 }] }));
 		const ordered = keys(tasks);
-		// Full-res for the viewport…
-		expect(ordered.slice(0, 3)).toEqual(["2:full", "1:full", "3:full"]);
-		// …low-res for the rest of the window, in reading order…
-		expect(ordered.slice(3, 7)).toEqual(["0:lowres", "1:lowres", "2:lowres", "3:lowres"]);
-		// …and only then the prefetch rows.
-		expect(ordered.slice(7)).toEqual(["4:lowres", "5:lowres", "6:lowres"]);
+		// Full-res for the viewportâ€¦
+		expect(ordered.slice(0, 3)).toEqual([FULL_KEY, "1:full@1.500000", "3:full@1.500000"]);
+		// â€¦low-res for the rest of the window, in reading orderâ€¦
+		expect(ordered.slice(3, 7)).toEqual([
+			LOW_KEY,
+			"1:lowres@0.250000",
+			"2:lowres@0.250000",
+			"3:lowres@0.250000",
+		]);
+		// â€¦and only then the prefetch rows.
+		expect(ordered.slice(7)).toEqual([
+			"4:lowres@0.250000",
+			"5:lowres@0.250000",
+			"6:lowres@0.250000",
+		]);
 	});
 
-	it("scales full-res by zoom × DPR and low-res by the fixed cheap scale", () => {
+	it("scales full-res by zoom Ã— DPR and low-res by the fixed cheap scale", () => {
 		const tasks = planLadder(input({ devicePixelRatio: 2, cssScale: 1.5 }));
 		const full = tasks.find((task) => task.stage === "full");
 		const low = tasks.find((task) => task.stage === "lowres");
@@ -206,11 +227,25 @@ describe("planLadder", () => {
 
 	it("never asks twice for the same rung", () => {
 		const tasks = planLadder(
-			input({ prefetchPages: [{ page: 0 }, { page: 0 }], satisfied: new Set(["1:lowres"]) }),
+			input({
+				prefetchPages: [{ page: 0 }, { page: 0 }],
+				satisfied: new Set([LOW_RES_KEY]),
+			}),
 		);
 		const ordered = keys(tasks);
 		expect(new Set(ordered).size).toBe(ordered.length);
-		expect(ordered).not.toContain("1:lowres");
+		expect(ordered).not.toContain(LOW_RES_KEY);
+	});
+
+	it("asks again when only the scale changed, which is the zoom path", () => {
+		// The heart of UI.03's zoom: a cached tile at the *old* scale does not
+		// satisfy a request at the new one, so the ladder re-renders behind the
+		// blit instead of treating the stale tile as done. 0.75 is half of
+		// `input()`'s 1.5, i.e. the same page one zoom step out.
+		const stale = tileKey(2, "full", 0.75);
+		const tasks = planLadder(input({ satisfied: new Set([stale]) }));
+		expect(keys(tasks)).toContain(FULL_KEY);
+		expect(keys(tasks)).not.toContain(stale);
 	});
 
 	it("respects a per-frame budget, and a zero budget asks for nothing", () => {
@@ -230,6 +265,11 @@ describe("TileScheduler", () => {
 			stage,
 			request: { doc, page, scale: 1, hint: stage === "full" ? "view" : "thumbnail" },
 		};
+	}
+
+	/** The cache key the scheduler will file `task(page, stage)` under. */
+	function cachedAt(page: number, stage: "lowres" | "full" = "full", scale = 1): string {
+		return tileKey(page, stage, scale);
 	}
 
 	it("never exceeds its concurrency ceiling", async () => {
@@ -270,7 +310,7 @@ describe("TileScheduler", () => {
 		// The next frame wants page 1 and 2 only.
 		scheduler.submit([task(1), task(2)]);
 		expect(abandoned?.aborted()).toBe(true);
-		expect(scheduler.satisfiedKeys().has("0:full")).toBe(false);
+		expect(scheduler.satisfiedKeys().has(cachedAt(0))).toBe(false);
 		// The abandoned render rejects as a cancellation, which is not a failure.
 		abandoned?.fail(AdapterError.cancelled());
 		await flush();
@@ -288,9 +328,9 @@ describe("TileScheduler", () => {
 		}
 		await flush();
 		await flush();
-		expect(scheduler.get(3, "lowres")?.stage).toBe("lowres");
+		expect(scheduler.get(3, "lowres", 1)?.stage).toBe("lowres");
 		expect(scheduler.bestFor(3)?.stage).toBe("full");
-		expect(scheduler.get(4, "full")).toBeNull();
+		expect(scheduler.get(4, "full", 1)).toBeNull();
 		scheduler.dispose();
 	});
 
@@ -303,13 +343,13 @@ describe("TileScheduler", () => {
 		engine.started[1]?.settle(tileFor(1));
 		await flush();
 		// Read 1 then 0, so 0 is the most recently used and 1 the least.
-		expect(scheduler.get(1, "full")).not.toBeNull();
-		expect(scheduler.get(0, "full")).not.toBeNull();
+		expect(scheduler.get(1, "full", 1)).not.toBeNull();
+		expect(scheduler.get(0, "full", 1)).not.toBeNull();
 		// The third tile lands and evicts the least recently used, which is 1.
 		await settleAll(engine);
-		expect(scheduler.get(2, "full")).not.toBeNull();
-		expect(scheduler.get(1, "full")).toBeNull();
-		expect(scheduler.get(0, "full")).not.toBeNull();
+		expect(scheduler.get(2, "full", 1)).not.toBeNull();
+		expect(scheduler.get(1, "full", 1)).toBeNull();
+		expect(scheduler.get(0, "full", 1)).not.toBeNull();
 		scheduler.dispose();
 	});
 
@@ -329,7 +369,7 @@ describe("TileScheduler", () => {
 		expect(errors).toHaveLength(1);
 		expect(errors[0]?.code).toBe(ErrorCode.BindingBadArgument);
 		expect(errors[0]?.docState).toBe("Loaded");
-		expect(scheduler.satisfiedKeys().has("0:full")).toBe(true);
+		expect(scheduler.satisfiedKeys().has(cachedAt(0))).toBe(true);
 		scheduler.dispose();
 	});
 
@@ -370,7 +410,7 @@ describe("TileScheduler", () => {
 		await flush();
 		await flush();
 		expect(landed).toEqual([]);
-		expect(scheduler.get(1, "full")).toBeNull();
+		expect(scheduler.get(1, "full", 1)).toBeNull();
 	});
 
 	it("exposes the document it renders and clears its cache on demand", () => {

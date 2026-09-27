@@ -92,6 +92,32 @@
 	background: var(--selis-color-bg-raised);
 }
 
+/* The compositor's surface (SL-4.UI.03).
+ *
+ * The canvas is a *viewport-sized* painting of the list, not a replacement for
+ * it: the DOM tiles above keep their labels, their roles and their tab stops,
+ * and the canvas is transparent to input so every click, drag and key still
+ * lands on the element that handles it. `aria-hidden` belongs on the element in
+ * the shell's markup, not here — a canvas has no accessible content to hide, and
+ * announcing an empty drawing would be noise in a screen reader.
+ *
+ * Its backing store is sized in *device* pixels by the compositor
+ * (`surface.ts`), and CSS sizes only the element box: a canvas stretched by CSS
+ * without a matching backing store is the blurry-canvas bug, and the compositor
+ * is what prevents it. Nothing here may set a pixel size, which is why there is
+ * no width/height in this rule. */
+.selis-page-list__surface {
+	position: absolute;
+	inset-block-start: 0;
+	inset-inline-start: 0;
+	width: 100%;
+	height: 100%;
+	/* The list underneath is the interactive thing; the canvas is a picture of
+	 * it. Without this the canvas would swallow every pointer event over the
+	 * document area, which is the one place the reader clicks. */
+	pointer-events: none;
+}
+
 /* Keyboard focus on the page *list* (not a tile) when the list itself is the
  * tab stop before any page is current. */
 .selis-page-list--virtual:focus-visible {

@@ -172,6 +172,26 @@ export interface PageList {
 	handleKey(key: string): PageListState | null;
 	/** The cached tile for a page, for the compositor (UI.03). */
 	tileAt(page: number): TileEntry | null;
+	/**
+	 * Every cached tile for a page, at every rasterisation scale (UI.03).
+	 *
+	 * The compositor's zoom path needs all of them: after a zoom change the
+	 * cache still holds the *previous* scale's bitmaps, and the best thing it
+	 * can show for the next frame is one of those, scaled up. `tileAt` cannot
+	 * express that, because "best" there means "full-res if any", which is the
+	 * rung and not the resolution.
+	 */
+	tilesFor(page: number): readonly TileEntry[];
+	/**
+	 * Observe every published state. Returns an unsubscribe.
+	 *
+	 * This is what the compositor subscribes to rather than being handed an
+	 * `onState` by the shell: a tile landing republishes the state, and a shell
+	 * that forgot to forward that to the compositor would show a page that
+	 * never sharpens. Owning the subscription here makes that mistake
+	 * impossible rather than merely discouraged.
+	 */
+	subscribe(listener: (state: PageListState) => void): () => void;
 	/** The layout the current state was built from (UI.06 navigation). */
 	layout(): PageLayout;
 	/** Abort in-flight renders and release the cache. */
@@ -197,6 +217,13 @@ export function createPageList(options: PageListOptions): PageList {
 	let viewport: PageListViewport = { width: 0, height: 0, scrollTop: 0, devicePixelRatio: 1 };
 	let currentPage = 0;
 	let lastState: PageListState | null = null;
+	/**
+	 * Observers of every published state. UI.03's compositor is one; a shell
+	 * that wants to mirror state into `selis-viewmodel` (ADR-P0035) can be
+	 * another. `options.onState` stays the single-listener convenience the
+	 * shells already use.
+	 */
+	const subscribers = new Set<(state: PageListState) => void>();
 	let cachedLayout: PageLayout | null = null;
 	let layoutKey = "";
 	let disposed = false;
@@ -267,9 +294,15 @@ export function createPageList(options: PageListOptions): PageList {
 		});
 	}
 
-	function tileView(entry: PlacedPage, current: number): PageTileView {
-		const full = scheduler.get(entry.page, "full");
-		const low = full === null ? scheduler.get(entry.page, "lowres") : null;
+	function tileView(entry: PlacedPage, current: number, target: number): PageTileView {
+		// The rung reported here is the one available *at the scale being drawn
+		// now*. A tile left over from the previous zoom is a different
+		// resolution, so calling it "full" would be a lie the CSS would act on;
+		// the compositor presents that leftover as a scaled blit instead, and
+		// this box keeps saying "placeholder" until the engine catches up. Both
+		// statements are true at once, which is the point.
+		const full = scheduler.get(entry.page, "full", target);
+		const low = full === null ? scheduler.get(entry.page, "lowres", target) : null;
 		const stage: TileStage = full !== null ? "full" : low !== null ? "lowres" : "placeholder";
 		const deviceScale = full?.deviceScale ?? low?.deviceScale ?? 0;
 		const isCurrent = entry.page === current;
@@ -317,7 +350,13 @@ export function createPageList(options: PageListOptions): PageList {
 			currentPage = layout.pages.length - 1;
 		}
 		const win = windowFor();
-		const tiles = win.pages.map((entry) => tileView(entry, currentPage));
+		// The device pixels per point a tile needs to be crisp on this viewport:
+		// the layout's CSS-pixels-per-point times the viewport's device scale.
+		// UI.03's compositor supplies a device-pixel-ratio corrected for the
+		// backing store's rounding, so this is the number the surface will
+		// actually draw at, and a tile rendered at it presents 1:1.
+		const target = layout.scale * Math.max(1e-6, viewport.devicePixelRatio);
+		const tiles = win.pages.map((entry) => tileView(entry, currentPage, target));
 		return {
 			docId: doc.id,
 			pageCount: doc.pageCount,
@@ -349,6 +388,9 @@ export function createPageList(options: PageListOptions): PageList {
 		}
 		lastState = state;
 		options.onState?.(state);
+		for (const listener of subscribers) {
+			listener(state);
+		}
 		if (withLadder) {
 			scheduleLadder();
 		}
@@ -411,10 +453,14 @@ export function createPageList(options: PageListOptions): PageList {
 		const target =
 			anchorScrollTop(anchor, layout, viewport.height) ??
 			proportionalScrollTop(previous, layout, viewport.scrollTop, viewport.height);
-		// Every cached tile was rasterised at the old scale and every in-flight
-		// one is being asked for the old geometry: both are now waste.
+		// In-flight work was asked for the old geometry, so it is now waste and
+		// is aborted. The *cache* is deliberately kept: a tile rasterised at
+		// the old scale is exactly what UI.03's compositor presents scaled to
+		// the new geometry on the very next frame, which is what makes a zoom
+		// show the page immediately instead of a blank box waiting for the
+		// engine. `tileKey` includes the scale, so the ladder still requests
+		// the new one and the stale tiles age out through the same LRU bound.
 		scheduler.cancelAll();
-		scheduler.clearCache();
 		viewport = { ...viewport, scrollTop: target };
 		publish(true);
 		return target;
@@ -469,6 +515,17 @@ export function createPageList(options: PageListOptions): PageList {
 
 		tileAt(page: number) {
 			return scheduler.bestFor(page);
+		},
+
+		tilesFor(page: number) {
+			return scheduler.entriesFor(page);
+		},
+
+		subscribe(listener: (state: PageListState) => void) {
+			subscribers.add(listener);
+			return () => {
+				subscribers.delete(listener);
+			};
 		},
 
 		layout() {

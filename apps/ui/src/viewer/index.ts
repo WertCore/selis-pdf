@@ -59,8 +59,59 @@ export {
 	MAX_CONCURRENT_TILES,
 	TileScheduler,
 	planLadder,
+	taskKey,
 	tileKey,
 } from "./tile-ladder.js";
+
+export type {
+	CompositorFrame,
+	DrawOp,
+	FrameClock,
+	FrameHandle,
+	SurfaceSize,
+	TileSurface,
+} from "./surface.js";
+
+export type {
+	PresentedFrame,
+	TileCompositor,
+	TileCompositorOptions,
+} from "./compositor.js";
+export {
+	createTileCompositor,
+	effectiveDeviceScale,
+	isAtScale,
+	pickTile,
+	surfaceSizeFor,
+} from "./compositor.js";
+
+export type {
+	CompositorContext,
+	FrameOutcome,
+	OffscreenCompositor,
+	OffscreenCompositorOptions,
+	OffscreenTarget,
+	RecordedDraw,
+} from "./offscreen-compositor.js";
+export { createOffscreenCompositor } from "./offscreen-compositor.js";
+
+export type {
+	FrameRequester,
+	SurfaceCommand,
+	SurfaceDrawOp,
+	SurfaceFrame,
+	SurfaceFrameEvent,
+	WorkerSurface,
+	WorkerSurfaceOptions,
+} from "./worker-surface.js";
+export {
+	SURFACE_PROTOCOL,
+	commandTransfer,
+	createAnimationFrameClock,
+	createWorkerSurface,
+	serialiseFrame,
+	surfaceOpKey,
+} from "./worker-surface.js";
 
 export type { KeyboardContext, PageListKey, PageNavigationCommand } from "./keyboard.js";
 export { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
