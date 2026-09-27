@@ -39,3 +39,6 @@ selis-color = { workspace = true }
 
 [dev-dependencies]
 miniz_oxide = { workspace = true }
+# The tiled-render tests install a 4-lane pool to prove the threaded executor
+# really runs on several lanes (SL-4.WASM.03).
+rayon = { workspace = true }

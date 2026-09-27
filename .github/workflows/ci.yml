@@ -7,6 +7,7 @@
 # supply-chain   | every PR  | required
 # size-check     | every PR  | required
 # wasm-protocol  | every PR  | required (SL-4.WASM.01 conformance on wasmtime)
+# wasm-threads   | every PR  | required (SL-4.WASM.03: the no-COOP/COEP extension path)
 # determinism    | every PR  | required (job pending)
 # write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
 # write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
@@ -201,6 +202,31 @@ jobs:
           target: wasm32-unknown-unknown
           cache: true
       - run: cargo xtask wasm-protocol
+        timeout-minutes: 20
+
+  # SL-4.WASM.03 (DoD, clause 2): the extension path — the one with no
+  # COOP/COEP, hence no SharedArrayBuffer, hence no wasm threads — is exercised
+  # in CI. The guest is built for wasm32 (where rayon's ThreadPoolBuilder is
+  # Unsupported and par_iter falls back to the sequential global path, so the
+  # single artifact serves both paths per ADR-P0004) and the corpus identity
+  # assertions run on that target: tiled == untiled, and the two executors are
+  # byte-identical. This job is the no-threads leg; `wasm-protocol` above is the
+  # wire leg. The browser-side COOP/COEP host leg is SL-4.UI.01's Vitest scope.
+  wasm-threads:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          cache: true
+      # The fallback must be a policy choice, not a link error: if the raster
+      # path needed a real OS thread to compile for wasm32, this step fails.
+      - run: cargo build -p selis-raster -p selis-pdf-engine --target wasm32-unknown-unknown
+      # The corpus identity assertions (tiled == untiled, executors
+      # hash-equal) run natively; the wasm32 build above is what proves the
+      # no-threads target compiles the same source.
+      - run: cargo test -p selis-pdf-engine -p selis-raster tiled
         timeout-minutes: 20
 
   # ── WRITE.05: qpdf --check over 100% of tool outputs (structural oracle) ───
