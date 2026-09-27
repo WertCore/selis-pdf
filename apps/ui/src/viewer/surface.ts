@@ -99,6 +99,37 @@ export interface SurfaceSize {
 	readonly devicePixelRatio: number;
 }
 
+/**
+ * Why a surface call was refused.
+ *
+ * A code, not a sentence, and deliberately so. Two reasons: a code is what a
+ * host maps to a *localised* message (the i18n rule applies to these as much as
+ * to a page label), and a code is what a test asserts on. A prose message here
+ * would be an English literal in the geometry layer that a translator cannot
+ * reach and a rename would turn into a code change — the exact thing the
+ * `strings.test.ts` gate exists to prevent.
+ */
+export type SurfaceFault =
+	/** `attach` was called twice: a canvas's control transfers exactly once. */
+	| "already-attached"
+	/** `configure` before `attach`: the worker has no surface to size. */
+	| "not-attached"
+	/** `draw` before any `configure`: the worker has no backing store. */
+	| "not-configured"
+	/** The transferred canvas would not give a 2D context. */
+	| "no-2d-context";
+
+/** A surface call that breaks the protocol. Carries a {@link SurfaceFault} code. */
+export class SurfaceFaultError extends Error {
+	readonly fault: SurfaceFault;
+
+	constructor(fault: SurfaceFault) {
+		super(fault);
+		this.name = "SurfaceFaultError";
+		this.fault = fault;
+	}
+}
+
 /** One tile to draw, in surface device pixels. */
 export interface DrawOp {
 	/** Document page this op paints. */

@@ -101,4 +101,23 @@ describe("page-list.css", () => {
 		}
 		expect(rulesOnly(appCss)).not.toContain("--selis-tile-");
 	});
+
+	it("gives the compositor's canvas no pixel size and no pointer events", () => {
+		// SL-4.UI.03. Two properties, both load-bearing:
+		//
+		// * **No pixel size.** The backing store is sized in device pixels by the
+		//   compositor, and a CSS width/height in device terms here would stretch
+		//   it — the blurry-canvas bug. The element box is the viewport, nothing
+		//   more.
+		// * **No pointer events.** The canvas is a painting of the list; the DOM
+		//   tiles underneath are what the reader clicks, selects and tabs to. A
+		//   canvas that swallowed input would be an accessibility regression
+		//   wearing a performance hat.
+		const css = rulesOnly(appCss);
+		const surface = /\.selis-page-list__surface\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(surface).not.toBe("");
+		expect(surface).toContain("pointer-events: none");
+		expect(surface).not.toMatch(/\d+(?:\.\d+)?(?:px|rem|em)\b/);
+		expect(surface).toContain("height: 100%");
+	});
 });
