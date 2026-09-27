@@ -45,7 +45,10 @@ pub fn assert_fully_resident_conformance<S: DocSource>(source: &S, expected: &[u
     if !expected.is_empty() {
         let n = expected.len().min(8);
         let mut buf = vec![0u8; n];
-        match source.read_at(0, &mut buf).expect("read_at(0) must succeed") {
+        match source
+            .read_at(0, &mut buf)
+            .expect("read_at(0) must succeed")
+        {
             Availability::Filled(k) => {
                 assert_eq!(k, n, "read_at(0) must fill the whole buffer");
                 assert_eq!(&buf, &expected[..n], "bytes must match");
@@ -239,6 +242,7 @@ pub fn assert_fault_matrix_conformance(data: &[u8]) {
 mod tests {
     use super::*;
     use crate::{BlobSource, FsaSource, MemSource, OpfsSource};
+    use selis_error::Code;
 
     fn sample() -> Vec<u8> {
         b"%PDF-1.4 conformance sample bytes 0123456789".to_vec()
@@ -286,6 +290,109 @@ mod tests {
         assert_fault_matrix_conformance(&sample());
         assert_fault_matrix_conformance(b"");
         assert_fault_matrix_conformance(&vec![0xABu8; 1024]);
+    }
+
+    // ── Per-adapter fault legs (the DoD's "including the fault cases") ──────
+    //
+    // `assert_fault_matrix_conformance` proves the fault *contract* once,
+    // through `FaultSource`. That is necessary but not sufficient for the DoD,
+    // which asks for each adapter: a contract proven only for the injector
+    // leaves each real adapter's own fault path unexercised. These legs drive
+    // the three web adapters through the faults they can actually hit, so a
+    // regression in an adapter's mutation/EOF handling fails *here*, naming the
+    // adapter, instead of surfacing as a support ticket.
+
+    /// Assert a source replaced under us answers `SOURCE_CHANGED`, never a
+    /// silent re-read of someone else's bytes. `mutate` performs the external
+    /// replacement in place (the adapters model the out-of-band writer as
+    /// `mutate_external`).
+    fn assert_replacement_is_typed<S, M>(source: &S, mutate: M, what: &str)
+    where
+        S: DocSource,
+        M: FnOnce(),
+    {
+        let mut buf = [0u8; 4];
+        assert!(
+            source.read_at(0, &mut buf).is_ok(),
+            "{what}: the pre-replacement read must succeed"
+        );
+        mutate();
+        match source.read_at(0, &mut buf) {
+            Err(e) => assert_eq!(
+                e.code(),
+                Code::SourceChanged,
+                "{what}: replacement must answer SourceChanged, got {e:?}"
+            ),
+            Ok(other) => panic!("{what}: a replaced source must not read silently ({other:?})"),
+        }
+    }
+
+    #[test]
+    fn opfs_fault_cases() {
+        let data = sample();
+        // Replacement (another tab writing, or main-thread createSyncAccessHandle).
+        let live = OpfsSource::new("/selis/f.pdf", data.clone());
+        let longer = vec![0x5Au8; data.len() + 8];
+        assert_replacement_is_typed(&live, || live.mutate_external(longer), "opfs replacement");
+        // Empty file: never claims bytes, never panics.
+        let empty = OpfsSource::new("/selis/empty.pdf", Vec::new());
+        assert_fully_resident_conformance(&empty, &[]);
+        // A zero-length read at offset 0 on an empty file is Eof, not a lie.
+        let mut buf = [0u8; 4];
+        assert_eq!(
+            empty.read_at(0, &mut buf).expect("empty opfs read"),
+            Availability::Eof
+        );
+        // A single-byte file: the partial-tail path with one byte.
+        let one = OpfsSource::new("/selis/one.pdf", vec![0x25]);
+        let mut b1 = [0u8; 8];
+        assert_eq!(
+            one.read_at(0, &mut b1).expect("1-byte opfs read"),
+            Availability::Filled(1)
+        );
+        assert_eq!(&b1[..1], b"%");
+    }
+
+    #[test]
+    fn fsa_fault_cases() {
+        let data = sample();
+        // Replacement under an open handle (the save-in-place hazard).
+        let live = FsaSource::new("h1", "f.pdf", data.clone());
+        let longer = vec![0x5Au8; data.len() + 8];
+        assert_replacement_is_typed(&live, || live.mutate_external(longer), "fsa replacement");
+        let empty = FsaSource::new("h2", "empty.pdf", Vec::new());
+        assert_fully_resident_conformance(&empty, &[]);
+        // `update` is the sanctioned write: it must read as the new file, not
+        // as a mutation — this is the leg the Phase-5 save-in-place path needs.
+        let live2 = FsaSource::new("h3", "live.pdf", b"old".to_vec());
+        live2.update(b"new contents".to_vec());
+        let mut buf = [0u8; 16];
+        let k = match live2.read_at(0, &mut buf).expect("read after update") {
+            Availability::Filled(k) => k,
+            other => panic!("read after update must be Filled, got {other:?}"),
+        };
+        assert_eq!(&buf[..k], b"new contents");
+    }
+
+    #[test]
+    fn blob_fault_cases() {
+        // A blob is immutable once handed over, so its fault surface is the
+        // boundary conditions: empty, single byte, and an offset far past the
+        // end must all be typed, not panics.
+        let empty = BlobSource::new(Vec::new(), "empty.pdf");
+        assert_fully_resident_conformance(&empty, &[]);
+        let one = BlobSource::new(vec![0x25], "one.pdf");
+        assert_fully_resident_conformance(&one, b"%");
+        let data = sample();
+        let src = BlobSource::new(data.clone(), "far.pdf");
+        // An offset beyond u32 on a 40-byte blob: the `usize::try_from` path
+        // must yield Eof rather than an out-of-range slice.
+        let mut buf = [0u8; 4];
+        assert_eq!(
+            src.read_at(u64::from(u32::MAX) + 7, &mut buf)
+                .expect("far read"),
+            Availability::Eof
+        );
     }
 
     #[test]
