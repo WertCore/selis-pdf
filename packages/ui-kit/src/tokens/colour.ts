@@ -1,13 +1,20 @@
 /**
  * Colour tokens — the single source of truth for every colour the UI uses
- * (SL-4.UI.10). Values are sRGB hex so WCAG contrast is computable in tests;
- * `css/tokens.css` is generated from this data and a unit test keeps the two
- * in sync (run `pnpm --filter @selis/ui-kit test -u` after editing here).
+ * (SL-4.UI.10, vocabulary per SL-4.UI.14). Values are sRGB hex so WCAG contrast
+ * is computable in tests; `css/tokens.css` is generated from this data and a
+ * unit test keeps the two in sync (run `pnpm --filter @selis/ui-kit test -u`
+ * after editing here).
+ *
+ * The role *names* follow wertkit's naming contract
+ * (https://github.com/WertCore/wertkit/blob/main/spec/naming.md) so Selis and
+ * wertkit speak one vocabulary. We keep our own token files rather than
+ * depending on `@wertkit/tokens`: wertkit has no `data-contrast` high-contrast
+ * theme and UI.10's tests assert 7:1 in one.
  *
  * Rules:
- * - Every value is bound to a *role*, never used raw. Components reference
- *   `var(--selis-color-<role>)` only.
- * - `textDisabled` is the only role exempt from the 4.5:1 contrast gate
+ * - Every value is bound to a *role*, never used raw. App code references
+ *   `var(--selis-color-<role>)` only; raw palette values never leave this file.
+ * - `fg-disabled` is the only role exempt from the 4.5:1 contrast gate
  *   (WCAG 1.4.1 disabled-control carve-out); do not use it for anything
  *   the user must read.
  * - High-contrast themes override roles; they must keep every pair that the
@@ -16,71 +23,78 @@
 
 export type Hex = string;
 
-/** Every colour role the design system defines. All are required per theme. */
+/**
+ * Every colour role the design system defines. All are required per theme.
+ *
+ * Names follow wertkit's contract. Roles wertkit does not define are marked
+ * "Selis extension" — they keep the same shape (`<role>` / `<role>-fg` /
+ * `<role>-subtle`) so a future wertkit role drops in without a rename, but they
+ * are not part of the shared vocabulary.
+ */
 export interface RoleColours {
 	/** App background behind everything (the area around pages). */
 	bg: Hex;
-	/** Panels, toolbars, dialogs, cards. */
-	surface: Hex;
-	/** Wells and recessed areas inside surfaces. */
-	surfaceSunken: Hex;
-	/** Primary text on `bg`, `surface`, `surfaceSunken`. */
-	text: Hex;
+	/** Panels, toolbars, dialogs, cards — surfaces lifted off `bg`. */
+	bgRaised: Hex;
+	/** Wells and recessed areas inside raised surfaces. */
+	bgInset: Hex;
+	/** Primary text on `bg`, `bgRaised`, `bgInset`. */
+	fg: Hex;
 	/** Secondary text: labels, metadata, inactive list items. */
-	textSecondary: Hex;
-	/** Muted text: hints, captions, page labels. Still ≥ 4.5:1. */
-	textMuted: Hex;
-	/** Disabled text. Exempt from the contrast gate (WCAG 1.4.1). */
-	textDisabled: Hex;
+	fgMuted: Hex;
+	/** Tertiary text: hints, captions, page labels. Still ≥ 4.5:1. */
+	fgSubtle: Hex;
+	/** Disabled text. Selis extension. Exempt from the contrast gate (WCAG 1.4.1). */
+	fgDisabled: Hex;
 	/** Hairline borders, dividers. Non-text usage. */
-	borderSubtle: Hex;
+	border: Hex;
 	/** Emphasised borders: input focus frames, dividers on busy art. */
 	borderStrong: Hex;
-	/** Keyboard focus indicator. Must clear 3:1 (HC: 4.5:1) on `surface`. */
+	/** Keyboard focus indicator. Must clear 3:1 (HC: 4.5:1) on `bgRaised`. */
 	focusRing: Hex;
-	/** Primary action background; `onAccent` text sits on it. */
+	/** Primary action background; `accentFg` text sits on it. */
 	accent: Hex;
 	/** Hover/pressed state for `accent`. */
 	accentHover: Hex;
 	/** Quiet accent tint (selected nav items, toggles off-state). */
-	accentSoft: Hex;
-	/** Text/icons on `accent`, `accentHover`, `selectionBg`. */
-	onAccent: Hex;
-	/** Link text. ≥ 4.5:1 on `surface`. */
+	accentSubtle: Hex;
+	/** Text/icons on `accent`, `accentHover`, and solid status fills. */
+	accentFg: Hex;
+	/** Link text. Selis extension. ≥ 4.5:1 on `bgRaised`. */
 	link: Hex;
-	/** Text-selection background (also used by the text layer). */
+	/** Text-selection background (also used by the text layer). Selis extension. */
 	selectionBg: Hex;
-	/** Text colour over `selectionBg`. */
-	selectionText: Hex;
-	/** Search-match highlight background under the text layer. */
+	/** Text colour over `selectionBg`. Selis extension. */
+	selectionFg: Hex;
+	/** Search-match highlight background under the text layer. Selis extension. */
 	highlightBg: Hex;
-	/** Current-match highlight background. */
+	/** Current-match highlight background. Selis extension. */
 	highlightActiveBg: Hex;
-	/** Text colour over both highlight backgrounds. */
-	highlightText: Hex;
+	/** Text colour over both highlight backgrounds. Selis extension. */
+	highlightFg: Hex;
 	/** Solid success accent (progress, badges use the soft pair). */
 	success: Hex;
-	/** Success badge background; pair with `successText`. */
-	successSoft: Hex;
-	/** Success text on `successSoft`. */
-	successText: Hex;
-	/** Solid warning accent. */
-	warning: Hex;
-	/** Warning badge background; pair with `warningText`. */
-	warningSoft: Hex;
-	/** Warning text on `warningSoft`. */
-	warningText: Hex;
-	/** Solid danger accent (destructive buttons; `onAccent` text on it). */
+	/** Success badge background; pair with `successFg`. */
+	successSubtle: Hex;
+	/** Success text on `successSubtle`. */
+	successFg: Hex;
+	/** Solid warning accent. wertkit spells this role `warn`. */
+	warn: Hex;
+	/** Warning badge background; pair with `warnFg`. */
+	warnSubtle: Hex;
+	/** Warning text on `warnSubtle`. */
+	warnFg: Hex;
+	/** Solid danger accent (destructive buttons; `accentFg` text on it). */
 	danger: Hex;
-	/** Danger badge background; pair with `dangerText`. */
-	dangerSoft: Hex;
-	/** Danger text on `dangerSoft`. */
-	dangerText: Hex;
-	/** Page-tile placeholder while a render resolves. */
+	/** Danger badge background; pair with `dangerFg`. */
+	dangerSubtle: Hex;
+	/** Danger text on `dangerSubtle`. */
+	dangerFg: Hex;
+	/** Page-tile placeholder while a render resolves. Selis extension. */
 	pagePlaceholder: Hex;
-	/** Page label text on `pagePlaceholder`. */
-	pagePlaceholderText: Hex;
-	/** Scrollbar thumb (track uses `surfaceSunken`). */
+	/** Page label text on `pagePlaceholder`. Selis extension. */
+	pagePlaceholderFg: Hex;
+	/** Scrollbar thumb (track uses `bgInset`). Selis extension. */
 	scrollbarThumb: Hex;
 	/** Elevation shadow colour for `shadow-1`/`shadow-2` compositions. */
 	shadow: Hex;
@@ -98,72 +112,72 @@ export interface Theme {
 
 const light: RoleColours = {
 	bg: "#f2f4f7",
-	surface: "#ffffff",
-	surfaceSunken: "#e4e8ec",
-	text: "#171b1f",
-	textSecondary: "#47525c",
-	textMuted: "#5d6975",
-	textDisabled: "#9aa4ad",
-	borderSubtle: "#d3d9df",
+	bgRaised: "#ffffff",
+	bgInset: "#e4e8ec",
+	fg: "#171b1f",
+	fgMuted: "#47525c",
+	fgSubtle: "#5d6975",
+	fgDisabled: "#9aa4ad",
+	border: "#d3d9df",
 	borderStrong: "#8a949e",
 	focusRing: "#2557d0",
 	accent: "#2b5bc4",
 	accentHover: "#234aa8",
-	accentSoft: "#dbe5fb",
-	onAccent: "#ffffff",
+	accentSubtle: "#dbe5fb",
+	accentFg: "#ffffff",
 	link: "#1d4fc0",
 	selectionBg: "#2b5bc4",
-	selectionText: "#ffffff",
+	selectionFg: "#ffffff",
 	highlightBg: "#ffe066",
 	highlightActiveBg: "#ffab40",
-	highlightText: "#171b1f",
+	highlightFg: "#171b1f",
 	success: "#1e7d43",
-	successSoft: "#dcf2e3",
-	successText: "#1a6b38",
-	warning: "#7a4d00",
-	warningSoft: "#fdeec8",
-	warningText: "#7a4d00",
+	successSubtle: "#dcf2e3",
+	successFg: "#1a6b38",
+	warn: "#7a4d00",
+	warnSubtle: "#fdeec8",
+	warnFg: "#7a4d00",
 	danger: "#b3261e",
-	dangerSoft: "#fbe2e0",
-	dangerText: "#a12118",
+	dangerSubtle: "#fbe2e0",
+	dangerFg: "#a12118",
 	pagePlaceholder: "#dfe3e8",
-	pagePlaceholderText: "#47525c",
+	pagePlaceholderFg: "#47525c",
 	scrollbarThumb: "#b8bfc7",
 	shadow: "#0f1720",
 };
 
 const dark: RoleColours = {
 	bg: "#121519",
-	surface: "#1d2229",
-	surfaceSunken: "#0d1014",
-	text: "#e9edf1",
-	textSecondary: "#b6c0c9",
-	textMuted: "#8f9aa4",
-	textDisabled: "#5c6670",
-	borderSubtle: "#333b44",
+	bgRaised: "#1d2229",
+	bgInset: "#0d1014",
+	fg: "#e9edf1",
+	fgMuted: "#b6c0c9",
+	fgSubtle: "#8f9aa4",
+	fgDisabled: "#5c6670",
+	border: "#333b44",
 	borderStrong: "#7d8892",
 	focusRing: "#8fb4f5",
 	accent: "#3667dc",
 	accentHover: "#4a78ea",
-	accentSoft: "#223252",
-	onAccent: "#ffffff",
+	accentSubtle: "#223252",
+	accentFg: "#ffffff",
 	link: "#9cbdf3",
 	selectionBg: "#3667dc",
-	selectionText: "#ffffff",
+	selectionFg: "#ffffff",
 	highlightBg: "#7a5c00",
 	highlightActiveBg: "#965700",
-	highlightText: "#e9edf1",
+	highlightFg: "#e9edf1",
 	success: "#35a05f",
-	successSoft: "#1d3a28",
-	successText: "#63c788",
-	warning: "#ecc069",
-	warningSoft: "#413410",
-	warningText: "#ecc069",
+	successSubtle: "#1d3a28",
+	successFg: "#63c788",
+	warn: "#ecc069",
+	warnSubtle: "#413410",
+	warnFg: "#ecc069",
 	danger: "#c33c30",
-	dangerSoft: "#44201d",
-	dangerText: "#f28f85",
+	dangerSubtle: "#44201d",
+	dangerFg: "#f28f85",
 	pagePlaceholder: "#232a32",
-	pagePlaceholderText: "#b6c0c9",
+	pagePlaceholderFg: "#b6c0c9",
 	scrollbarThumb: "#454f59",
 	shadow: "#000000",
 };
@@ -171,66 +185,66 @@ const dark: RoleColours = {
 /** High-contrast overrides on top of the light theme. */
 export const lightHighContrast: Partial<RoleColours> = {
 	bg: "#fafafa",
-	surface: "#ffffff",
-	surfaceSunken: "#f0f0f0",
-	text: "#000000",
-	textSecondary: "#1a1d21",
-	textMuted: "#333a41",
-	borderSubtle: "#6d7780",
+	bgRaised: "#ffffff",
+	bgInset: "#f0f0f0",
+	fg: "#000000",
+	fgMuted: "#1a1d21",
+	fgSubtle: "#333a41",
+	border: "#6d7780",
 	borderStrong: "#000000",
 	focusRing: "#00339e",
 	accent: "#123a9e",
 	accentHover: "#0e2f82",
-	accentSoft: "#dce6ff",
+	accentSubtle: "#dce6ff",
 	link: "#00339e",
 	selectionBg: "#00339e",
 	highlightBg: "#ffd23f",
 	highlightActiveBg: "#ff9e1f",
 	success: "#0d5c2e",
-	successSoft: "#d6f0dd",
-	successText: "#0d5c2e",
-	warning: "#5f3d00",
-	warningSoft: "#ffefc2",
-	warningText: "#5f3d00",
+	successSubtle: "#d6f0dd",
+	successFg: "#0d5c2e",
+	warn: "#5f3d00",
+	warnSubtle: "#ffefc2",
+	warnFg: "#5f3d00",
 	danger: "#a81b12",
-	dangerSoft: "#ffd9d5",
-	dangerText: "#8f1d15",
+	dangerSubtle: "#ffd9d5",
+	dangerFg: "#8f1d15",
 	pagePlaceholder: "#eceef1",
-	pagePlaceholderText: "#1a1d21",
+	pagePlaceholderFg: "#1a1d21",
 	scrollbarThumb: "#6d7780",
 };
 
 /** High-contrast overrides on top of the dark theme. */
 export const darkHighContrast: Partial<RoleColours> = {
 	bg: "#000000",
-	surface: "#0d1014",
-	surfaceSunken: "#000000",
-	text: "#ffffff",
-	textSecondary: "#dbe3ea",
-	textMuted: "#c3ccd4",
-	textDisabled: "#6d7780",
-	borderSubtle: "#8a949e",
+	bgRaised: "#0d1014",
+	bgInset: "#000000",
+	fg: "#ffffff",
+	fgMuted: "#dbe3ea",
+	fgSubtle: "#c3ccd4",
+	fgDisabled: "#6d7780",
+	border: "#8a949e",
 	borderStrong: "#ffffff",
 	focusRing: "#bfe3ff",
 	accent: "#2451c8",
 	accentHover: "#3763dd",
-	accentSoft: "#12233f",
+	accentSubtle: "#12233f",
 	link: "#cfe2ff",
 	selectionBg: "#2451c8",
 	highlightBg: "#6e5200",
 	highlightActiveBg: "#7a4300",
-	highlightText: "#ffffff",
+	highlightFg: "#ffffff",
 	success: "#4cc27a",
-	successSoft: "#14301f",
-	successText: "#7fe0a2",
-	warning: "#ffd07a",
-	warningSoft: "#3a2c08",
-	warningText: "#ffd07a",
+	successSubtle: "#14301f",
+	successFg: "#7fe0a2",
+	warn: "#ffd07a",
+	warnSubtle: "#3a2c08",
+	warnFg: "#ffd07a",
 	danger: "#c9372b",
-	dangerSoft: "#431815",
-	dangerText: "#ffb0a6",
+	dangerSubtle: "#431815",
+	dangerFg: "#ffb0a6",
 	pagePlaceholder: "#1d2229",
-	pagePlaceholderText: "#ffffff",
+	pagePlaceholderFg: "#ffffff",
 	scrollbarThumb: "#6d7780",
 };
 
@@ -277,7 +291,7 @@ export function resolveTheme(base: "light" | "dark", highContrast: boolean): The
 /**
  * Contrast pairs the CI gate asserts, per effective theme. Thresholds are
  * WCAG 2.x ratios: 4.5 for body text, 3 for large text / non-text UI,
- * 7 for high-contrast themes. `textDisabled` is deliberately absent.
+ * 7 for high-contrast themes. `fgDisabled` is deliberately absent.
  */
 export interface ContrastPair {
 	/** Role used as foreground. */
@@ -291,26 +305,26 @@ export interface ContrastPair {
 }
 
 export const contrastPairs: readonly ContrastPair[] = [
-	{ fg: "text", bg: "bg", min: 4.5, minHighContrast: 7 },
-	{ fg: "text", bg: "surface", min: 4.5, minHighContrast: 7 },
-	{ fg: "text", bg: "surfaceSunken", min: 4.5, minHighContrast: 7 },
-	{ fg: "text", bg: "pagePlaceholder", min: 4.5, minHighContrast: 7 },
-	{ fg: "text", bg: "highlightBg", min: 4.5, minHighContrast: 7 },
-	{ fg: "text", bg: "highlightActiveBg", min: 4.5, minHighContrast: 7 },
-	{ fg: "textSecondary", bg: "bg", min: 4.5, minHighContrast: 7 },
-	{ fg: "textSecondary", bg: "surface", min: 4.5, minHighContrast: 7 },
-	{ fg: "textMuted", bg: "surface", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "textMuted", bg: "bg", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "onAccent", bg: "accent", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "onAccent", bg: "danger", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "link", bg: "surface", min: 4.5, minHighContrast: 7 },
-	{ fg: "selectionText", bg: "selectionBg", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "highlightText", bg: "highlightBg", min: 4.5, minHighContrast: 7 },
-	{ fg: "highlightText", bg: "highlightActiveBg", min: 4.5, minHighContrast: 7 },
-	{ fg: "successText", bg: "successSoft", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "warningText", bg: "warningSoft", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "dangerText", bg: "dangerSoft", min: 4.5, minHighContrast: 4.5 },
-	{ fg: "pagePlaceholderText", bg: "pagePlaceholder", min: 4.5, minHighContrast: 7 },
-	{ fg: "borderStrong", bg: "surface", min: 3, minHighContrast: 4.5 },
-	{ fg: "focusRing", bg: "surface", min: 3, minHighContrast: 4.5 },
+	{ fg: "fg", bg: "bg", min: 4.5, minHighContrast: 7 },
+	{ fg: "fg", bg: "bgRaised", min: 4.5, minHighContrast: 7 },
+	{ fg: "fg", bg: "bgInset", min: 4.5, minHighContrast: 7 },
+	{ fg: "fg", bg: "pagePlaceholder", min: 4.5, minHighContrast: 7 },
+	{ fg: "fg", bg: "highlightBg", min: 4.5, minHighContrast: 7 },
+	{ fg: "fg", bg: "highlightActiveBg", min: 4.5, minHighContrast: 7 },
+	{ fg: "fgMuted", bg: "bg", min: 4.5, minHighContrast: 7 },
+	{ fg: "fgMuted", bg: "bgRaised", min: 4.5, minHighContrast: 7 },
+	{ fg: "fgSubtle", bg: "bgRaised", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "fgSubtle", bg: "bg", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "accentFg", bg: "accent", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "accentFg", bg: "danger", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "link", bg: "bgRaised", min: 4.5, minHighContrast: 7 },
+	{ fg: "selectionFg", bg: "selectionBg", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "highlightFg", bg: "highlightBg", min: 4.5, minHighContrast: 7 },
+	{ fg: "highlightFg", bg: "highlightActiveBg", min: 4.5, minHighContrast: 7 },
+	{ fg: "successFg", bg: "successSubtle", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "warnFg", bg: "warnSubtle", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "dangerFg", bg: "dangerSubtle", min: 4.5, minHighContrast: 4.5 },
+	{ fg: "pagePlaceholderFg", bg: "pagePlaceholder", min: 4.5, minHighContrast: 7 },
+	{ fg: "borderStrong", bg: "bgRaised", min: 3, minHighContrast: 4.5 },
+	{ fg: "focusRing", bg: "bgRaised", min: 3, minHighContrast: 4.5 },
 ];
