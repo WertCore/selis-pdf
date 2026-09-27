@@ -47,19 +47,65 @@ proves the engine in the harshest environment, and it costs nothing to distribut
     and the TS `MANIFEST` (documented mirrors - a maintenance seam);
     (3) `selis-pdf-engine`'s unused `selis-pdf-edit` edge is pre-existing: if the engine ever
     references it, edit code lands in the core - worth gating as optional.
-- [ ] **SL-4.WASM.03 — Threads with graceful single-threaded fallback** · deps: WASM.01 · owner: AI+
+- [x] **SL-4.WASM.03 — Threads with graceful single-threaded fallback** · deps: WASM.01 · owner: AI+
   - **Do:** `wasm-bindgen-rayon` under `SharedArrayBuffer` when COOP/COEP are present; identical
     output single-threaded when they are not (ADR-P0004, SL-2.RAST.10).
   - **DoD:** Both paths hash-equal on the corpus; the extension path (no COOP/COEP) is exercised in CI.
-- [ ] **SL-4.WASM.04 — Memory strategy** · deps: WASM.01 · owner: AI+
+  - **Status:** Done 2026-09-27, merged into main. The executor is a *policy*, not a build
+    (ADR-P0004): `selis-raster` gained `Parallelism` + `render_tiles`; `selis-pdf-engine`
+    gained `TiledRender`, whose decomposition / per-tile render / stitch are identical on
+    both paths, so threaded and single-threaded cannot diverge by construction. `rayon` is
+    used through the workspace pool only, because `ThreadPoolBuilder` is Unsupported on
+    `wasm32-unknown-unknown` and `par_iter` then falls back to the sequential global path
+    - so one artifact serves both the COOP/COEP and the extension path.
+  - **DoD clause 1 (hash-equal on the corpus):** met. `tiled_equals_untiled_over_the_corpus`
+    and `executors_hash_equal_over_the_corpus` pass over the in-repo corpus. Fixing the
+    first also corrected a false claim in the new module docs: a 2-pixel overlap margin is
+    **not** sufficient (`protect_unencrypted_source.pdf` still differs, because the boundary
+    pixel's coverage is graded across three sub-rectangles). Four is the smallest margin that
+    holds over the corpus and is the shipped `DEFAULT_OVERLAP`; the test now exercises the
+    shipped margin rather than asserting the 2-pixel one.
+  - **DoD clause 2 (no-COOP/COEP path in CI):** met. New required job `wasm-threads` builds
+    `selis-raster` + `selis-pdf-engine` for `wasm32-unknown-unknown` - the target where
+    threading is genuinely unavailable, so the fallback is *proven* rather than asserted -
+    and runs the corpus identity tests. The browser-side COOP/COEP host leg remains
+    SL-4.UI.01 Vitest scope.
+  - **Gates:** `cargo test -p selis-pdf-engine -p selis-raster` green (incl. the wasm32
+    build); `cargo fmt` / `clippy` clean for every file this change touches.
+- [x] **SL-4.WASM.04 — Memory strategy** · deps: WASM.01 · owner: AI+
   - **Do:** Growth policy, the 4 GB wasm32 ceiling, explicit release on document close, and a
     memory-pressure callback that evicts caches before the browser kills the tab.
   - **DoD:** Opening 20 documents sequentially shows no growth after close; a 1.5 GB document
     fails with `BudgetExceeded`, not a tab crash.
-- [ ] **SL-4.WASM.05 — `OpfsSource`, `FsaSource`, `BlobSource`** · deps: WASM.01, SL-0.IO.01 · owner: AI+
+  - **Status:** Done 2026-09-27. **Note the split:** the memory strategy itself landed on main
+    in `63a6898d` (`memory.rs` with the growth policy, the 4 GB wasm32 ceiling, release-on-close,
+    the memory-pressure callback, and the `xtask wasm-protocol` leg "9. Memory strategy
+
+    (SL-4.WASM.04)"). This box was still open, so the follow-up commit is only the remaining
+    hardening: `drain_source` indexed `out[usize::try_from(off).unwrap_or(usize::MAX)..]`, and
+    an index that far out would panic the wasm guest - exactly the "tab crash" the DoD forbids
+    in place of a typed failure. It now returns a typed `IoReadFailed`.
+  - **DoD re-verified, not re-implemented:** `twenty_sequential_opens_show_no_live_growth` and
+    `memory_stats_reports_live_and_peak` pass; `cargo xtask wasm-protocol` leg 9 is green
+    ("memory ok (typed 1.5 GiB, stats, release, pressure)") - the guest validates the claimed
+    length before touching a payload, so no 1.5 GiB copy is ever made.
+- [x] **SL-4.WASM.05 — `OpfsSource`, `FsaSource`, `BlobSource`** · deps: WASM.01, SL-0.IO.01 · owner: AI+
   - **Do:** The three web `DocSource` adapters. OPFS sync access handles in the Worker; File System
     Access handles for save-in-place (Phase 5 needs this, build it now).
   - **DoD:** Each adapter passes the `DocSource` conformance suite including the fault cases.
+  - **Status:** Done 2026-09-27. **Note the split:** the three adapters landed on main in
+    `834c11f8`, and this DoD was *not* actually met by it. `conformance.rs` proved the fault
+    **contract** once, through `FaultSource`, while each adapter only ever ran
+    `assert_fully_resident_conformance`, which never sees a fault. So resident behaviour was
+    covered for all three and fault behaviour for none: a regression in an adapter's own
+    mutation or boundary handling would have failed nothing.
+  - The follow-up adds the missing per-adapter legs through the existing generic suite, not a
+    parallel test style: replacement under us must answer `SourceChanged` (OPFS and FSA), the
+    empty and single-byte boundaries (all three), and `FsaSource::update` - the sanctioned
+    save-in-place write Phase 5 depends on - must read as the new file, not as a mutation.
+    Nothing tested that, which is why it was added.
+  - **Gates:** `cargo test -p selis-io` 68 passed (was 65, +3). The pre-existing `selis-bytes`
+    clippy failure is unrelated and left alone (see 14 file header note on the fmt/clippy debt).
 - [ ] **SL-4.WASM.06 — `HttpRangeSource` fetch driver** · deps: WASM.01, SL-0.IO.04 · owner: AI
   - **Do:** The JS side of range fetching, with CORS handling, an abort signal wired to
     `CancelToken`, and a documented fallback when the origin refuses ranges or omits CORS headers.
@@ -203,13 +249,38 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Gaps (review, non-blocking):** no icons yet (needed for the store listing; that lands with
     SL-4.EXT.11), and `offscreen.js` is a minimal placeholder that the DNR redirect (SL-4.EXT.02) will
     wire up.
-- [ ] **SL-4.EXT.02 — PDF navigation interception** · deps: EXT.01 · owner: AI+
+- [x] **SL-4.EXT.02 — PDF navigation interception** · deps: EXT.01 · owner: AI+
   - **Do:** DNR rules redirecting `application/pdf` main-frame navigations to the bundled viewer,
     preserving the original URL, referrer policy, and any auth context the browser would send.
   - **DoD:** Works for: direct `.pdf` URLs, `Content-Type`-only responses, `Content-Disposition:
     inline`, redirects, and POST-produced PDFs (document the cases that cannot work).
   - **Risk:** This is the fiddliest part of the extension and the part users notice when it breaks.
     Build a matrix of ~30 real-world PDF-serving patterns and test against all of them.
+  - **Status:** Done 2026-09-27, merged into main. DNR rules plus a 38-pattern matrix.
+  - **The constraint that shapes it:** EXT.01 ships `declarativeNetRequest` with an **empty**
+    `host_permissions`, and that stays. DNR only matches requests the extension already has
+    access to, so `responseHeaders` conditions are unreachable; the rules therefore match on
+    **URL shape** (a `.pdf` path, or a `.pdf` carried in the query). Every pattern that would
+    need a response signal is recorded as `cannot-work` with the exact capability required,
+    rather than left for a user to discover. No permission was widened.
+  - **DoD coverage:** direct `.pdf` URLs, `Content-Disposition: inline` and redirects all work
+    where the URL is visible. **The `Content-Type`-only class cannot work** - the response
+    headers are the only signal there, and matching them needs host permissions for the origin.
+    POST-produced PDFs at an extensionless URL cannot work either: the browser does not
+    re-navigate a POST response. `blob:`, `data:`, `wss:` and `file://` are outside the rule;
+    `file://` additionally needs the user toggle that is SL-4.EXT.09's scope.
+  - **The Risk note's matrix is executable, not documentation.** `PATTERN_MATRIX` (38 rows:
+    22 intercepted / 9 not-matched / 7 cannot-work) is re-derived from the shipped ruleset by
+    the test suite, so a rule change that regresses a pattern fails naming that pattern. The
+    `cannot-work` rows are asserted to STAY un-intercepted, so a future permission grant that
+    starts serving one must update the matrix deliberately. Two rows were wrong when first
+    written and the suite caught both - which is the point of making it executable.
+  - **Auth preservation:** the document URL travels as an encoded `src` parameter (a URL
+    carrying its own `&src=` cannot forge a second one), and the viewer re-fetches with
+    `credentials: "include"`, which is what preserves basic-auth / SSO cookies / presigned
+    signatures across the redirect.
+  - **Gates:** `tsc -p apps/extension --noEmit` clean; `vitest` 25 passed (was 6); biome at
+    main's exact baseline (pre-existing CRLF format drift, zero findings in new code).
 - [ ] **SL-4.EXT.03 — Offscreen document hosting the engine** · deps: EXT.01, WASM.01 · owner: AI+
   - **Do:** MV3 service workers are killed aggressively; the engine runs in an offscreen document
     or a dedicated worker with a documented lifecycle and state recovery.

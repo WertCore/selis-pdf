@@ -828,6 +828,34 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
   - **DoD:** all 4 files extract ≤ their MuPDF character count; a regression test pins the
     before/after char counts; the CONF.03 `char-explosion` cluster is empty in the next
     sweep.
+  - **Status (2026-09-27, PARTIAL - box deliberately left unchecked):** 3 of the 4 files are
+    fixed; `issue7454` is not, and is a *different* defect. Root cause found by reproducing,
+    not guessed: these are the veraPDF "Implementation limits" files, and each carries ONE
+    show-text string of 65 538 / 32 770 / 65 538 bytes. selis decoded the literal in full and
+    emitted every byte as a character. It was never a repeat-decode loop. ISO 32000-1 7.3.4.2
+    caps a String at 32 767 bytes (PDF 2.0: 65 535), and these files are named `fail` precisely
+    because they probe that limit, so the content lexer now enforces the envelope and emits
+    **no** string token past it - a truncated 32 767-byte prefix would still have been 32 767
+    fabricated characters. The hex-string path had the same unbounded growth and is now
+    enclosed too.
+  - **Measured** (mutool 1.23.0, this plan's own baseline; non-whitespace characters):
+    `6-1-12-t03-fail-c` 65 538 -> 0 (oc 63) - `6-1-13-t03-fail-a` 32 770 -> 0 (oc 63) -
+    `TWG A005-pdfa1-fail-c` 65 538 -> 0 (oc 63) - `issue7454` 4 175 -> 3 448 (oc 217), still
+    over, and **not** an explosion.
+  - **Why the box stays open:** `issue7454` is a 1-page file (`mutool info` reports Pages 1;
+    the "Page 2 sur 2" in the output is French text *inside* the PDF, not our header) whose page
+    box is 384x111 pt, where selis recovers real body text and MuPDF recovers 217 characters.
+    The likely cause is text MuPDF clips outside the page box. Forcing selis to 217 would mean
+    discarding real text, so it is reported rather than papered over; it belongs with the
+    reading-order/clipping triage (TEXT.17/TEXT.18 territory), not here. The DoD's "the CONF.03
+    `char-explosion` cluster is empty in the next sweep" also cannot be claimed until a sweep
+    runs on the merged tree.
+  - **Regression pin** (synthetic, no corpus dependency): a string at the limit survives whole;
+    one byte over emits no operand; lexing *continues* after the dropped operand (the first cut
+    silently truncated the rest of the page, because "no token" was indistinguishable from
+    end-of-stream - a real bug the test caught); the hex path is enclosed; escape decoding still
+    works under the limit. `cargo test -p selis-pdf-content` 74 passed, `-p selis-pdf-text` 35.
+  - Merged to main 2026-09-27 with the code; the box is flipped by the next sweep owner.
 - [ ] **SL-3.TEXT.17 — Tagged (PDF/UA) reading-order extraction divergence** · deps: TEXT.04 ·
   owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Defect:** 98 PDF/UA files in the `diff>=25` tail (`verapdf/PDF_UA-1/*`,

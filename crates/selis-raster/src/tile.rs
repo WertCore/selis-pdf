@@ -455,9 +455,29 @@ mod tests {
         let mut seen = lanes_seen.lock().expect("lock").clone();
         seen.sort_unstable();
         seen.dedup();
+        // What is assertable deterministically is that the work ran *inside a
+        // pool*: `current_thread_index()` is `Some` only on a pool worker, and
+        // it must be recorded for every tile. How many distinct lanes actually
+        // get work is NOT assertable — rayon's work-stealing makes no
+        // guarantee, and `probe_tile` is trivial enough that one worker can
+        // drain every tile before another wakes. An earlier version asserted
+        // `seen.len() > 1` (spread) and failed under the parallel test
+        // binaries CI runs; asserting an exact count fails the other way, since
+        // a loaded run may legitimately use one lane. Both were measuring
+        // scheduling, not correctness. The property the DoD requires — and the
+        // one that matters — is byte-equality regardless of which lane ran it,
+        // asserted above.
         assert!(
-            seen.len() > 1,
-            "the threaded executor must spread the tiles over the pool, saw {seen:?}"
+            !seen.is_empty(),
+            "at least one tile must have recorded a pool lane"
+        );
+        assert!(
+            lanes_seen.lock().expect("lock").len() == tiles.len(),
+            "every tile must have run on a pool worker, never the caller thread \
+             (recorded {} of {} lanes across {} tiles)",
+            seen.len(),
+            tiles.len(),
+            tiles.len()
         );
     }
 
