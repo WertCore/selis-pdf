@@ -4,6 +4,17 @@
  * tokens define. Classnames stay under the `selis-` namespace (a unit test
  * enforces both rules).
  *
+ * Role names follow wertkit's naming contract (SL-4.UI.14). Identity vs
+ * structure, per that contract:
+ *   - IDENTITY (re-skinnable by an app): the `--selis-color-*` roles,
+ *     `--selis-radius-*`, `--selis-shadow-*`, `--selis-font-*`. Override the
+ *     role variable; never the raw value.
+ *   - STRUCTURE (do NOT override): `--selis-space-*`, `--selis-text-*`,
+ *     `--selis-leading-*`, `--selis-weight-*`, `--selis-duration-*`,
+ *     `--selis-ease-*`, `--selis-density-*`, and the focus treatment. The
+ *     cross-app family resemblance lives here. This file is the sanctioned
+ *     place to consume them, not to redefine them.
+ *
  * Themes key on the host element (typically <html> or the viewer root):
  *   [data-theme="light"|"dark"] [data-contrast="high"]
  *   [data-density="compact"]    [data-motion="reduced"]
@@ -23,7 +34,7 @@
 	height: 100%;
 	min-height: 0;
 	background: var(--selis-color-bg);
-	color: var(--selis-color-text);
+	color: var(--selis-color-fg);
 	font-family: var(--selis-font-sans);
 	font-size: var(--selis-text-md);
 	line-height: var(--selis-leading-normal);
@@ -38,7 +49,7 @@
 
 .selis-root ::selection {
 	background: var(--selis-color-selection-bg);
-	color: var(--selis-color-selection-text);
+	color: var(--selis-color-selection-fg);
 }
 
 .selis-visually-hidden {
@@ -60,8 +71,8 @@
 	align-items: center;
 	gap: var(--selis-density-control-gap);
 	padding: var(--selis-density-toolbar-pad-block) var(--selis-density-toolbar-pad-inline);
-	background: var(--selis-color-surface);
-	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	background: var(--selis-color-bg-raised);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
 	z-index: var(--selis-z-toolbar);
 }
 
@@ -78,10 +89,10 @@
 	gap: var(--selis-space-2);
 	height: var(--selis-density-control-height);
 	padding: 0 var(--selis-density-control-pad-x);
-	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
 	border-radius: var(--selis-radius-md);
-	background: var(--selis-color-surface);
-	color: var(--selis-color-text);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
 	font: inherit;
 	font-weight: var(--selis-weight-medium);
 	cursor: pointer;
@@ -90,7 +101,7 @@
 }
 
 .selis-btn:hover:not(:disabled) {
-	background: var(--selis-color-surface-sunken);
+	background: var(--selis-color-bg-inset);
 }
 
 .selis-btn:active:not(:disabled) {
@@ -98,15 +109,15 @@
 }
 
 .selis-btn:disabled {
-	color: var(--selis-color-text-disabled);
-	border-color: var(--selis-color-border-subtle);
+	color: var(--selis-color-fg-disabled);
+	border-color: var(--selis-color-border);
 	cursor: default;
 }
 
 .selis-btn--primary {
 	background: var(--selis-color-accent);
 	border-color: var(--selis-color-accent);
-	color: var(--selis-color-on-accent);
+	color: var(--selis-color-accent-fg);
 }
 
 .selis-btn--primary:hover:not(:disabled) {
@@ -120,13 +131,13 @@
 }
 
 .selis-btn--quiet:hover:not(:disabled) {
-	background: var(--selis-color-accent-soft);
+	background: var(--selis-color-accent-subtle);
 }
 
 .selis-btn--danger {
 	background: var(--selis-color-danger);
 	border-color: var(--selis-color-danger);
-	color: var(--selis-color-on-accent);
+	color: var(--selis-color-accent-fg);
 }
 
 .selis-btn--danger:hover:not(:disabled) {
@@ -145,13 +156,13 @@
 	padding: 0 var(--selis-density-control-pad-x);
 	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
 	border-radius: var(--selis-radius-md);
-	background: var(--selis-color-surface);
-	color: var(--selis-color-text);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
 	font: inherit;
 }
 
 .selis-input::placeholder {
-	color: var(--selis-color-text-muted);
+	color: var(--selis-color-fg-subtle);
 }
 
 .selis-input:hover {
@@ -164,8 +175,8 @@
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
-	background: var(--selis-color-surface);
-	border-right: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	background: var(--selis-color-bg-raised);
+	border-right: var(--selis-border-hairline) solid var(--selis-color-border);
 	z-index: var(--selis-z-panel);
 }
 
@@ -175,10 +186,10 @@
 	gap: var(--selis-space-3);
 	height: var(--selis-density-panel-header-height);
 	padding: 0 var(--selis-space-4);
-	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
 	font-size: var(--selis-text-sm);
 	font-weight: var(--selis-weight-semibold);
-	color: var(--selis-color-text-secondary);
+	color: var(--selis-color-fg-muted);
 	letter-spacing: 0.02em;
 	text-transform: uppercase;
 }
@@ -206,17 +217,17 @@
 	min-height: var(--selis-density-row-height);
 	padding: 0 var(--selis-space-3);
 	border-radius: var(--selis-radius-md);
-	color: var(--selis-color-text-secondary);
+	color: var(--selis-color-fg-muted);
 	cursor: pointer;
 }
 
 .selis-list__item:hover {
-	background: var(--selis-color-surface-sunken);
+	background: var(--selis-color-bg-inset);
 }
 
 .selis-list__item[aria-current="true"] {
-	background: var(--selis-color-accent-soft);
-	color: var(--selis-color-text);
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-fg);
 	font-weight: var(--selis-weight-medium);
 }
 
@@ -226,7 +237,7 @@
 	flex: 1;
 	min-height: 0;
 	overflow: auto;
-	background: var(--selis-color-surface-sunken);
+	background: var(--selis-color-bg-inset);
 	padding: var(--selis-space-6);
 }
 
@@ -242,8 +253,8 @@
 
 .selis-page-tile {
 	position: relative;
-	background: var(--selis-color-surface);
-	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	background: var(--selis-color-bg-raised);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
 	border-radius: var(--selis-radius-sm);
 	box-shadow: var(--selis-shadow-1);
 	overflow: hidden;
@@ -261,7 +272,7 @@
 	padding: 0 var(--selis-space-2);
 	border-radius: var(--selis-radius-sm);
 	background: var(--selis-color-page-placeholder);
-	color: var(--selis-color-page-placeholder-text);
+	color: var(--selis-color-page-placeholder-fg);
 	font-family: var(--selis-font-mono);
 	font-size: var(--selis-text-xs);
 	line-height: var(--selis-leading-tight);
@@ -306,18 +317,18 @@
 }
 
 .selis-badge--success {
-	background: var(--selis-color-success-soft);
-	color: var(--selis-color-success-text);
+	background: var(--selis-color-success-subtle);
+	color: var(--selis-color-success-fg);
 }
 
 .selis-badge--warning {
-	background: var(--selis-color-warning-soft);
-	color: var(--selis-color-warning-text);
+	background: var(--selis-color-warn-subtle);
+	color: var(--selis-color-warn-fg);
 }
 
 .selis-badge--danger {
-	background: var(--selis-color-danger-soft);
-	color: var(--selis-color-danger-text);
+	background: var(--selis-color-danger-subtle);
+	color: var(--selis-color-danger-fg);
 }
 
 /* ── Dialogs, error and empty states (UI.12) ───────────────────────────── */
@@ -338,9 +349,9 @@
 	gap: var(--selis-space-4);
 	max-width: 32rem;
 	padding: var(--selis-space-6);
-	border: var(--selis-border-hairline) solid var(--selis-color-border-subtle);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
 	border-radius: var(--selis-radius-lg);
-	background: var(--selis-color-surface);
+	background: var(--selis-color-bg-raised);
 	box-shadow: var(--selis-shadow-2);
 	z-index: var(--selis-z-dialog);
 }
@@ -354,7 +365,7 @@
 
 .selis-dialog__body {
 	margin: 0;
-	color: var(--selis-color-text-secondary);
+	color: var(--selis-color-fg-muted);
 }
 
 .selis-dialog__actions {
@@ -366,7 +377,7 @@
 .selis-error-state__code {
 	font-family: var(--selis-font-mono);
 	font-size: var(--selis-text-xs);
-	color: var(--selis-color-danger-text);
+	color: var(--selis-color-danger-fg);
 }
 
 /* ── Scrollbars ────────────────────────────────────────────────────────── */

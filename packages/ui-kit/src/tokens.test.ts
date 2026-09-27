@@ -51,11 +51,11 @@ describe("token integrity", () => {
 			for (const highContrast of [false, true]) {
 				const c = resolveTheme(base, highContrast).colours;
 				const id = resolveTheme(base, highContrast).id;
-				expect(new Set([c.text, c.textSecondary, c.textMuted]).size, `${id}: text ramp`).toBe(3);
-				expect(c.borderSubtle === c.borderStrong, `${id}: borders`).toBe(false);
-				expect(c.bg === c.surface, `${id}: bg vs surface`).toBe(false);
+				expect(new Set([c.fg, c.fgMuted, c.fgSubtle]).size, `${id}: fg ramp`).toBe(3);
+				expect(c.border === c.borderStrong, `${id}: borders`).toBe(false);
+				expect(c.bg === c.bgRaised, `${id}: bg vs bgRaised`).toBe(false);
 				expect(c.pagePlaceholder === c.bg, `${id}: placeholder must be visible on bg`).toBe(false);
-				expect(c.highlightBg === c.surface, `${id}: highlight must be visible on surface`).toBe(
+				expect(c.highlightBg === c.bgRaised, `${id}: highlight must be visible on bgRaised`).toBe(
 					false,
 				);
 			}
