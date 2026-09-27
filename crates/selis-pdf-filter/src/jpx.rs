@@ -460,7 +460,10 @@ mod tests {
 
         // Byte-exact vs the native OpenJPEG ref: same library, deterministic.
         let payload = &REFERENCE[10..10 + 64 * 48 * 3];
-        assert_eq!(img.data, payload, "lossy wasm decode must match the native ref");
+        assert_eq!(
+            img.data, payload,
+            "lossy wasm decode must match the native ref"
+        );
 
         // It is genuinely lossy: at least one sample differs from the
         // lossless gradient (Q=40 dB measured max diff 28, mean 2.0).

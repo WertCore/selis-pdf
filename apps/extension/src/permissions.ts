@@ -102,8 +102,7 @@ export interface PatternVerdict {
 	/**
 	 * What DNR interception can do here, given the permissions EXT.01 approved.
 	 */
-	readonly outcome:
-		/** Redirected to the viewer by URL shape. */
+	readonly outcome: /** Redirected to the viewer by URL shape. */
 		| "intercepted"
 		/** Not intercepted, and no permission we hold could change that. */
 		| "cannot-work"

@@ -248,12 +248,22 @@ impl BytesMut {
     /// *document-derived* length must go through `selis_sandbox::alloc`, which
     /// charges the budget first and returns `Result` (ADR-P0006).
     #[must_use]
+    #[allow(clippy::reserve_after_initialization)]
     pub fn with_capacity(cap: usize) -> Self {
         // Engine-chosen reservation only: the caller owns the budget
         // obligation for `cap`, exactly as with `Vec::reserve` (ENC.05's
         // check-alloc shape — the final allocation is identical, the scan
         // just never sees a capacity-length expression in a `with_capacity`
         // call from outside the sandbox).
+        //
+        // The `allow` above is load-bearing, not cosmetic: clippy would rewrite
+        // this to `Vec::with_capacity(cap)`, and that is exactly the shape the
+        // ENC.05 check-alloc scan is looking for — a capacity-length expression
+        // reaching a `with_capacity` call from outside the sandbox. Taking the
+        // lint's suggestion would defeat the invariant this function exists to
+        // preserve, so the pattern is pinned deliberately. It sits on the fn
+        // rather than the `let` because a statement-level `allow` does not
+        // suppress this lint.
         let mut v = Vec::new();
         v.reserve(cap);
         Self { v }

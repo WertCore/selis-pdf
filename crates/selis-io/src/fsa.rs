@@ -199,7 +199,10 @@ mod tests {
     fn fsa_mutation_is_detected() {
         let src = FsaSource::new("h1", "mut.pdf", b"original".to_vec());
         let mut buf = [0u8; 8];
-        assert_eq!(src.read_at(0, &mut buf).expect("read"), Availability::Filled(8));
+        assert_eq!(
+            src.read_at(0, &mut buf).expect("read"),
+            Availability::Filled(8)
+        );
         src.mutate_external(b"tampered-longer".to_vec());
         let e = src.read_at(0, &mut buf).expect_err("changed");
         assert_eq!(e.code(), Code::SourceChanged);

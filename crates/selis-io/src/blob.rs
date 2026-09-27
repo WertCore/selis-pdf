@@ -169,7 +169,10 @@ mod tests {
         let src = BlobSource::new(data(), "a.pdf");
         src.request(&RangeSet::one(0, 100));
         let mut buf = [0u8; 4];
-        assert_eq!(src.read_at(0, &mut buf).expect("read"), Availability::Filled(4));
+        assert_eq!(
+            src.read_at(0, &mut buf).expect("read"),
+            Availability::Filled(4)
+        );
     }
 
     #[test]

@@ -181,7 +181,10 @@ mod tests {
     fn opfs_mutation_is_detected() {
         let src = OpfsSource::new("/mut.pdf", b"original".to_vec());
         let mut buf = [0u8; 8];
-        assert_eq!(src.read_at(0, &mut buf).expect("read"), Availability::Filled(8));
+        assert_eq!(
+            src.read_at(0, &mut buf).expect("read"),
+            Availability::Filled(8)
+        );
         // Simulate the file being replaced under us (another tab, or the
         // main thread's `createSyncAccessHandle` writing).
         src.mutate_external(b"tampered-longer-contents".to_vec());

@@ -175,11 +175,7 @@ describe("EXT.02 permission minimisation is preserved", () => {
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	ALLOWED_PERMISSIONS,
-	DENIED_HOST_PATTERNS,
-	validateManifest,
-} from "./permissions.js";
+import { ALLOWED_PERMISSIONS, DENIED_HOST_PATTERNS, validateManifest } from "./permissions.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 

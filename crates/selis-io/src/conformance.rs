@@ -14,6 +14,25 @@
 //! the per-adapter `SOURCE_CHANGED` tests — a file replaced under us is an
 //! error, never silent corruption.
 
+// The hostile-input lint set (03-CONVENTIONS.md §1) is `deny` workspace-wide
+// because `indexing_slicing` / `arithmetic_side_effects` on *document-derived*
+// indices are the difference between "malformed length field" and a CVE. This
+// module is the one place that rule does not bite: every index here walks a
+// caller-supplied test vector, never a parsed length, and these functions are
+// assertion helpers whose contract is written above — "this is a test-only
+// helper, so panics are the failure shape". Rewriting them to return Result
+// would turn a legible assertion into a worse one.
+//
+// The alternative — moving the suite behind `#[cfg(test)]` or a test-support
+// feature — is the structurally cleaner answer and is worth doing if a
+// consumer ever needs it; it is not a lint fix, so it is not done here.
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
+
 use crate::{Availability, DocSource, RangeSet};
 
 /// Assert a fully-resident source behaves identically for `expected`.
@@ -121,6 +140,13 @@ pub fn assert_fully_resident_conformance<S: DocSource>(source: &S, expected: &[u
 /// the deterministic injector): truncation, corruption, latency, refusal,
 /// and lying. This proves the *fault contract* once; per-adapter
 /// `SOURCE_CHANGED` legs prove each adapter detects replacement.
+///
+/// # Panics
+///
+/// Panics when a `FaultSource` leg deviates from the contract — a read past
+/// the truncation cut, a non-deterministic corruption, or a source that
+/// claims bytes it does not hold. Test-only helper: a panic here is the
+/// failure signal, not a production crash path.
 pub fn assert_fault_matrix_conformance(data: &[u8]) {
     use crate::{FaultConfig, FaultSource};
 
