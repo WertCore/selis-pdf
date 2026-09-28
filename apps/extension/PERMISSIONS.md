@@ -13,7 +13,7 @@ manifest entry.
 |---|---|---|---|---|
 | `declarativeNetRequest` | `permissions` | Redirect `application/pdf` main-frame navigations to the bundled viewer page (SL-4.EXT.02, ADR-P0028). Declarative rules are evaluated by the browser — the extension never sees document bytes in the service worker (24-BINDINGS-SPEC §5). | This _is_ the narrow API: it replaces the broad `webRequest`/`webRequestBlocking` interception path. No rule evaluation happens in extension JS. | "Intercepts PDF navigations so they open in the bundled viewer." |
 | `offscreen` | `permissions` | Host the WASM engine in an offscreen document (SL-4.EXT.03). MV3 service workers are killed aggressively; parsing/rendering needs a document-scoped lifetime with state recovery. | A service worker cannot hold engine state reliably and a content script must never see document bytes. The offscreen document is the only MV3 surface with a DOM-capable, long-lived context that is still same-extension-origin. | "Runs the local PDF engine in a hidden extension page." |
-| `storage` | `permissions` | Hold the optional CJK font payload in extension storage after install (SL-4.EXT.05). `storage.local` stores bytes, which the settings store (`localStorage`, EXT.06) cannot. | The payload is deliberately *not* a bundled asset, so it has to live somewhere; extension storage is the only per-extension, persistent, permission-scoped place to put it. `unlimitedStorage` is **not** requested: the store is budgeted at 8 MiB against `storage.local`'s 10 MB default quota, so the wider permission has not been earned. | "Stores optional downloadable fonts on your device, and your settings." |
+| `storage` | `permissions` | Hold the optional CJK font payload in extension storage after install (SL-4.EXT.05), and the first-run flag the service worker has to read (SL-4.EXT.07). `storage.local` stores bytes, which the settings store (`localStorage`, EXT.06) cannot, and an MV3 service worker has no `localStorage` at all — so the one piece of state that gates the welcome guide cannot live there. | The payload is deliberately *not* a bundled asset, so it has to live somewhere; extension storage is the only per-extension, persistent, permission-scoped place to put it. `unlimitedStorage` is **not** requested: the store is budgeted at 8 MiB against `storage.local`'s 10 MB default quota, so the wider permission has not been earned. | "Stores optional downloadable fonts on your device, and your settings." |
 
 ## Deliberately NOT requested
 
@@ -23,6 +23,21 @@ manifest entry.
 | `webRequest` / `webRequestBlocking` | Not requested | Superseded by `declarativeNetRequest` for this use (see above). Firefox port (SL-4.EXT.10) may need `webRequest` under its MV3 — that port carries its own justification row when it lands. |
 | `tabs`, `activeTab`, `scripting`, `cookies`, `unlimitedStorage`, `file://` pseudo-host | Not requested | No tab inspection, no script injection, no cookie access, no bulk storage. `file://` support (SL-4.EXT.09) is an explicit user-toggled flow with its own onboarding copy — not a silent manifest entry. `unlimitedStorage` stays refused while the CJK payload store (SL-4.EXT.05) is budgeted at 8 MiB; it is the escalation if a future payload proves it needs more than `storage.local`'s 10 MB default. |
 | Remote code (`content_security_policy` relaxations, CDN `src`, `eval`) | Forbidden (ADR-P0028, SL-4.EXT.04) | All code ships in the package. `extension_pages` CSP is `script-src 'self' 'wasm-unsafe-eval'; object-src 'self';`. The bare `'unsafe-eval'` is still forbidden and is not what `'wasm-unsafe-eval'` means: the latter permits compiling WebAssembly and nothing else — no string-to-code, no `Function`, no remote host. SL-4.EXT.03 needs it to run the engine, MV3 provides it for exactly that case, and `manifest.test.ts` bans the bare source while requiring this one so neither can drift. A build check (EXT.04) fails on any remote URL in the bundle. |
+
+## What the options page needed, and what it did not (SL-4.EXT.07)
+
+An options page needs no permission of its own. `options_page` is a manifest
+key; the page is reached with `chrome.runtime.openOptionsPage()`, which needs
+no permission and cannot be pointed anywhere; and the page reads and writes the
+two stores already described above — `localStorage` for the telemetry opt-in
+(the key `ext/adapter.ts` reads, now imported from `src/options-state.ts` rather
+than repeated) and `chrome.storage.local` for the first-run flag.
+
+**The permission set is unchanged by SL-4.EXT.07.** `manifest.test.ts` asserts
+that, and `options-page.test.ts` adds the second half: the shipped page and the
+service worker name no `chrome.tabs`, no `chrome.permissions` and no network
+API, so "just add a link to our website" fails the suite rather than the
+review. `OPTIONS.md` records what the page does and does not say.
 
 ## Interception coverage (SL-4.EXT.02)
 

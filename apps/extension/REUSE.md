@@ -30,6 +30,30 @@ SL-4.EXT.05 has to fit a size budget.
 gate fails on any file in the package that is not on that list, and on any
 declared file that is missing, so the list cannot drift from reality quietly.
 
+## What the options page reuses, and what it deliberately does not (SL-4.EXT.07)
+
+The options page links the same two stylesheets as the viewer and **imports no
+`apps/ui` module at all**. That is a decision, not an oversight: there is no
+settings component in `apps/ui` to reuse, and the page's one interactive
+element is a checkbox the ui-kit does not yet style. Shipping the viewer
+catalogue to reach a private `formatMessage` would have put the page-list and
+search string sets into a package that has no page list, which is the same
+trade `REUSE.md` already refused when it declined to ship `page-list.css`.
+
+So the options page has its own small i18n seam (`src/options-strings.ts`) in
+the same shape `apps/ui/src/viewer/strings.ts` uses — closed key union, one
+English catalogue, `{name}` placeholders, a `Partial` override merged over
+English. SL-4.UI.11 owns the real runtime; adopting it is a change to the body
+of `createOptionsCatalogue` and nothing else, and until then this page is the
+second implementation of a thing the plan says should have one. It is recorded
+here rather than hidden, because "we wrote it again" is exactly the kind of
+decision the next reader of this file needs to see.
+
+The one thing the page *does* share with the viewer is the settings key:
+`ext/adapter.ts` imports `SETTINGS_KEYS` from `src/options-state.ts` rather
+than repeating the string, so the switch on the page and the port in the
+adapter cannot drift into two different keys.
+
 ## The worker arrangement, and why it is not the web build's
 
 The web build gives the engine a `Worker` the page spawns: the engine's
