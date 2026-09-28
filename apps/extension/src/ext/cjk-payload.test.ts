@@ -10,18 +10,23 @@
  * one.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	CHROME_STORAGE_LOCAL_QUOTA_BYTES,
 	CJK_BROTLI_BUDGETS,
 	CJK_KEY_PREFIX,
 	CJK_MANIFEST_SCHEMA,
+	CJK_PAYLOAD_RESIDENT_BYTES,
 	CJK_PAYLOAD_SOURCE,
 	CJK_STORAGE_BUDGET_BYTES,
 	type CjkManifest,
 	CjkPayloadError,
 	type CjkSource,
 	type CjkStorage,
+	cjkAvailability,
 	createChromeStorageLocal,
 	installCjkChunk,
 	installedCjkIds,
@@ -29,6 +34,9 @@ import {
 	readCjkChunk,
 	removeCjkChunk,
 } from "./cjk-payload.js";
+
+/** The repository root, for the payload manifest FONT.10 produced. */
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 /** An in-memory {@link CjkStorage}, so the store is testable with no `chrome`. */
 function memoryStorage(seed: Record<string, Uint8Array> = {}): CjkStorage & {
@@ -356,5 +364,38 @@ describe("EXT.05 the chrome.storage.local binding", () => {
 			// reader of `globalThis.chrome` (it is an optional chain).
 			globals.chrome = previous;
 		}
+	});
+});
+
+describe("CJK availability (SL-4.EXT.07)", () => {
+	it("reports the measured payload as not fitting, with the overage", () => {
+		// FONT.10-F1. The options page shows this arithmetic rather than a
+		// "coming soon", so it has to be true and it has to be computed.
+		const availability = cjkAvailability();
+		expect(availability.budgetBytes).toBe(CJK_STORAGE_BUDGET_BYTES);
+		expect(availability.fitsBudget).toBe(false);
+		expect(availability.overBudgetBy).toBe(CJK_PAYLOAD_RESIDENT_BYTES - CJK_STORAGE_BUDGET_BYTES);
+		expect(availability.overBudgetBy).toBeGreaterThan(0);
+	});
+
+	it("still fits if a future payload is small enough", () => {
+		// The parameter is the point: a payload that shrinks under the budget
+		// reports `fitsBudget` without a sentence in the UI being edited first.
+		const fits = cjkAvailability(CJK_STORAGE_BUDGET_BYTES);
+		expect(fits.fitsBudget).toBe(true);
+		expect(fits.overBudgetBy).toBe(0);
+	});
+
+	it("agrees with the payload manifest FONT.10 produced", () => {
+		// The one number the page shows, checked against the artefact it claims
+		// to describe. When `xtask cjk-build` re-measures, this fails and the
+		// constant, this test and the page's copy have to move together.
+		const manifestPath = join(repoRoot, "assets", "cjk", "manifest.json");
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+			core: { raw_bytes: number };
+			chunks: { raw_bytes: number }[];
+		};
+		const resident = manifest.chunks.reduce((sum, chunk) => sum + chunk.raw_bytes, 0);
+		expect(resident + manifest.core.raw_bytes).toBe(CJK_PAYLOAD_RESIDENT_BYTES);
 	});
 });

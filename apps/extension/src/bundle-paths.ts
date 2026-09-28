@@ -188,11 +188,28 @@ export interface PackageEntry {
 export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "manifest.json", from: "root" },
 	{ out: "viewer.html", from: "root" },
+	// SL-4.EXT.07: the options page `manifest.json` names in `options_page`.
+	// Named in the manifest as well as here on purpose — `options_page` is in
+	// `PACKAGE_PATH_FIELDS` (EXT.04), so a manifest pointing at a page this
+	// list forgot fails the bundled-only gate rather than 404ing in the
+	// browser with every gate green, which is the EXT.03 failure mode.
+	{ out: "options.html", from: "root" },
+	// The page's own layout. `root`, not `shared-asset`, because it is this
+	// package's: it may not hard-code a value the ui-kit tokens define, and
+	// `options-page.test.ts` reads it to check exactly that.
+	{ out: "options.css", from: "root" },
 	{ out: "offscreen.html", from: "root" },
 	{ out: "service-worker.js", from: "root" },
 	{ out: "offscreen.js", from: "root" },
 	{ out: "extension/src/permissions.js", from: "build" },
 	{ out: "extension/src/viewer-boot.js", from: "build" },
+	// SL-4.EXT.07: the options page's entry, its state, and its strings. The
+	// state module is also the service worker's half of the first-run trigger,
+	// so one row serves two contexts; it holds no `chrome` access at module
+	// scope, which is what lets the worker import it.
+	{ out: "extension/src/options-boot.js", from: "build" },
+	{ out: "extension/src/options-state.js", from: "build" },
+	{ out: "extension/src/options-strings.js", from: "build" },
 	{ out: "extension/src/ext/adapter.js", from: "build" },
 	{ out: "extension/src/ext/engine-host.js", from: "build" },
 	{ out: "extension/src/ext/wasm-engine.js", from: "build" },

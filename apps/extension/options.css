@@ -1,0 +1,146 @@
+/* Selis options page (SL-4.EXT.07) — layout only.
+ *
+ * `ui-kit/css/base.css` is the sanctioned consumer of the token file and this
+ * sheet consumes the same tokens; it may not define a value the tokens define,
+ * and it may not hard-code a colour at all. `src/options-page.test.ts` reads
+ * this file and checks exactly that: no hex, no `rgb(`, no `hsl(`, and every
+ * `--selis-*` name used here is one `tokens.css` actually defines — which is
+ * also what stops a renamed role (`--selis-color-surface` and friends) from
+ * being written here and silently resolving to nothing.
+ *
+ * Class names stay under the `selis-` namespace, as UI.10 requires of the kit.
+ */
+
+.selis-options {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-7);
+	/* The page measure. A rem, because no token covers a column width; the same
+	 * choice `base.css` makes for `.selis-dialog`. */
+	max-width: 44rem;
+	margin: 0 auto;
+	padding: var(--selis-space-9) var(--selis-space-7);
+}
+
+.selis-options__title {
+	margin: 0;
+	font-size: var(--selis-text-2xl);
+	font-weight: var(--selis-weight-semibold);
+	line-height: var(--selis-leading-tight);
+}
+
+.selis-options__footer {
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-sm);
+}
+
+.selis-options__version {
+	margin: 0;
+	font-family: var(--selis-font-mono);
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+
+.selis-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	padding: var(--selis-space-6);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-lg);
+	background: var(--selis-color-bg-raised);
+}
+
+/*
+ * `hidden` has to beat this sheet's own `display`.
+ *
+ * The user-agent rule for `[hidden]` is `display: none`, and `.selis-section` is
+ * one class — so without this line the welcome guide would be *visible* on a
+ * page whose markup says `hidden`, and the first-run flag would control nothing
+ * at all. The most important rule in the file, and the reason it is written
+ * here rather than left to the UA sheet.
+ */
+.selis-section[hidden] {
+	display: none;
+}
+
+.selis-section__heading {
+	margin: 0;
+	font-size: var(--selis-text-lg);
+	font-weight: var(--selis-weight-semibold);
+}
+
+.selis-section__body {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-section__body--quiet {
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-sm);
+}
+
+/* The welcome guide is the one thing on the page that is new to the user, so it
+ * is the one thing that wears the accent. */
+.selis-welcome {
+	border-color: var(--selis-color-accent);
+}
+
+/* ── Lists of facts ───────────────────────────────────────────────────── */
+
+/*
+ * Not `.selis-list`. That class is the outline's: it sets `cursor: pointer` and
+ * a hover highlight, which would tell a reader that a sentence about a
+ * permission is something to click.
+ */
+.selis-facts {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-3);
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-fact {
+	padding-inline-start: var(--selis-space-4);
+	border-inline-start: var(--selis-border-thick) solid var(--selis-color-border);
+}
+
+/* ── One switch, with its explanation ─────────────────────────────────── */
+
+.selis-setting {
+	display: grid;
+	/* Control, then label; the help text starts at the label's column so it
+	 * reads as an explanation of the label rather than of the page. */
+	grid-template-columns: auto 1fr;
+	gap: var(--selis-space-2) var(--selis-space-4);
+	align-items: center;
+}
+
+.selis-checkbox {
+	width: var(--selis-density-control-height);
+	height: var(--selis-density-control-height);
+	margin: 0;
+	accent-color: var(--selis-color-accent);
+}
+
+.selis-setting__label {
+	font-weight: var(--selis-weight-medium);
+}
+
+.selis-setting__help {
+	grid-column: 2;
+	margin: 0;
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-sm);
+}
+
+/* ── Actions ──────────────────────────────────────────────────────────── */
+
+.selis-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--selis-density-control-gap);
+}

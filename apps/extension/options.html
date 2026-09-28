@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Selis PDF Viewer</title>
+		<!--
+			The options page (SL-4.EXT.07), declared by `options_page` in
+			manifest.json. Three rules govern every line below, and
+			`src/options-page.test.ts` is what keeps them true:
+
+			1. **No text.** Not one visible character is written here. Every
+			   string is a `data-i18n` key resolved from `src/options-strings.ts`
+			   at boot, so a rename of anything on this page is a catalogue change
+			   rather than an edit to a shipped file, and a translator never has to
+			   open markup to reach it.
+			2. **Same-origin references only**, exactly as `viewer.html`: the
+			   stylesheets are @selis/ui-kit's own, copied in rather than linked
+			   from a CDN (ADR-P0028 — a CDN would be remote code), and
+			   `options.css` is this package's own layout, which may not
+			   hard-code a value the tokens define.
+			3. **No inline script.** MV3 extension pages may not carry one, and the
+			   bundled-only gate fails the build on it.
+		-->
+		<link rel="stylesheet" href="./ui-kit/css/tokens.css" />
+		<link rel="stylesheet" href="./ui-kit/css/base.css" />
+		<link rel="stylesheet" href="./options.css" />
+		<script type="module" src="./extension/src/options-boot.js"></script>
+	</head>
+	<body class="selis-root">
+		<main id="selis-options" class="selis-options">
+			<h1 class="selis-options__title" data-i18n="options.page.heading"></h1>
+
+			<!--
+				The welcome guide. `hidden` in the markup and removed by the boot
+				only when the first-run flag says it has not been seen, so a user
+				who has read it is never shown it again (see
+				`src/options-state.ts`). The heading takes focus when the panel
+				opens: a screen reader then announces where the user has arrived
+				rather than a button's label.
+			-->
+			<section
+				id="selis-welcome"
+				class="selis-section selis-welcome"
+				aria-labelledby="selis-welcome-heading"
+				hidden
+			>
+				<h2 id="selis-welcome-heading" class="selis-section__heading" tabindex="-1" data-i18n="options.welcome.heading"></h2>
+				<p class="selis-section__body" data-i18n="options.welcome.lede"></p>
+				<ul class="selis-facts">
+					<li class="selis-fact" data-i18n="options.welcome.point.opens"></li>
+					<li class="selis-fact" data-i18n="options.welcome.point.local"></li>
+					<li class="selis-fact" data-i18n="options.welcome.point.readonly"></li>
+				</ul>
+				<p class="selis-section__body selis-section__body--quiet" data-i18n="options.welcome.localFiles"></p>
+				<div class="selis-actions">
+					<button id="selis-welcome-done" class="selis-btn selis-btn--primary" type="button" data-i18n="options.welcome.done"></button>
+				</div>
+			</section>
+
+			<section class="selis-section" aria-labelledby="selis-privacy-heading">
+				<h2 id="selis-privacy-heading" class="selis-section__heading" data-i18n="options.privacy.heading"></h2>
+				<p class="selis-section__body" data-i18n="options.privacy.summary"></p>
+				<!--
+					The one switch on the page. The label is bound by `for` and the
+					help text by `aria-describedby`, so the switch is announced with
+					its explanation rather than as a bare "checkbox" — which matters
+					here, because the explanation is where the page says that turning
+					it on records nothing.
+				-->
+				<div class="selis-setting">
+					<input
+						id="selis-telemetry"
+						class="selis-checkbox"
+						type="checkbox"
+						aria-describedby="selis-telemetry-help"
+					/>
+					<label class="selis-setting__label" for="selis-telemetry" data-i18n="options.telemetry.label"></label>
+					<p id="selis-telemetry-help" class="selis-setting__help" data-i18n="options.telemetry.help"></p>
+				</div>
+			</section>
+
+			<section class="selis-section" aria-labelledby="selis-capabilities-heading">
+				<h2 id="selis-capabilities-heading" class="selis-section__heading" data-i18n="options.permissions.heading"></h2>
+				<p class="selis-section__body" data-i18n="options.permissions.intro"></p>
+				<!--
+					Both lists are built at boot from the approved permission set
+					(`src/permissions.ts`), not written out here. A hand-written copy
+					would be the one a store reviewer reads and the one that goes
+					stale.
+				-->
+				<ul id="selis-capabilities" class="selis-facts"></ul>
+				<ul id="selis-hosts" class="selis-facts"></ul>
+			</section>
+
+			<!--
+				The CJK row carries no control. The payload exists and does not fit
+				(FONT.10-F1), so a switch here would be a control that refuses, and a
+				"coming soon" label would be a promise the extension cannot keep. The
+				sentence is filled from `ext/cjk-payload.ts`'s measured size and this
+				package's storage budget.
+			-->
+			<section class="selis-section" aria-labelledby="selis-cjk-heading">
+				<h2 id="selis-cjk-heading" class="selis-section__heading" data-i18n="options.cjk.heading"></h2>
+				<p id="selis-cjk-status" class="selis-section__body"></p>
+			</section>
+
+			<section class="selis-section" aria-labelledby="selis-actions-heading">
+				<h2 id="selis-actions-heading" class="selis-section__heading" data-i18n="options.actions.heading"></h2>
+				<div class="selis-actions">
+					<button id="selis-replay" class="selis-btn" type="button" data-i18n="options.actions.replay"></button>
+					<button id="selis-reset" class="selis-btn selis-btn--danger" type="button" aria-describedby="selis-reset-help" data-i18n="options.actions.reset"></button>
+				</div>
+				<p id="selis-reset-help" class="selis-setting__help" data-i18n="options.actions.reset.help"></p>
+			</section>
+
+			<!--
+				One polite live region for every outcome on the page. `role="status"`
+				is in the markup rather than added at boot, so that the boot setting
+				it is not itself announced as a change to the page.
+			-->
+			<p id="selis-status" class="selis-visually-hidden" role="status" aria-live="polite"></p>
+
+			<footer class="selis-options__footer">
+				<p class="selis-options__version" data-i18n="options.version"></p>
+			</footer>
+		</main>
+	</body>
+</html>
