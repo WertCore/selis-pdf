@@ -381,6 +381,9 @@ pub fn run() -> Result<(), String> {
     if resp["value"]["total"].as_u64().unwrap_or(0) < 1 {
         return Err(format!("search: no matches for {word:?}"));
     }
+    // Captured here because the text layer below rebinds `resp`, and a report
+    // that prints the wrong leg's number is worse than no report.
+    let search_matches = resp["value"]["total"].as_u64().unwrap_or(0);
     // The progress slot reflects the last stage boundary of the search.
     let search_id = resp["id"].as_u64().unwrap_or(0);
     let (slot_request, slot_stage, slot_fraction) = s.progress()?;
@@ -440,7 +443,7 @@ pub fn run() -> Result<(), String> {
     println!(
         "wasm-protocol: text/search ok ({} bytes of text, {} matches for {word:?}); progress slot ok",
         text.len(),
-        resp["value"]["total"].as_u64().unwrap_or(0),
+        search_matches,
     );
 
     // ── 5. budget exhaustion over the boundary ────────────────────────────
