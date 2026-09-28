@@ -67,11 +67,11 @@ licence claim belongs.
 
 ## Measured payload
 
-Source 17 772 300 B → **16 files, 10 167 248 B raw / 4 698 914 B brotli.**
+Source 17 772 300 B → **16 files, 11 162 268 B raw / 5 204 258 B brotli.**
 
 | file | raw | brotli | codes |
 |---|---:|---:|---:|
-| `cjk/core.ttf` | 295 080 | 135 699 | 1 552 |
+| `cjk/core.ttf` | 1 290 100 | 641 043 | 5 013 |
 | `cjk/ext-a.ttf` | 2 449 132 | 1 093 755 | 6 582 |
 | `cjk/ideographs-1.ttf` | 263 840 | 150 235 | 1 024 |
 | `cjk/ideographs-2.ttf` | 411 712 | 231 249 | 1 536 |
@@ -88,15 +88,55 @@ Source 17 772 300 B → **16 files, 10 167 248 B raw / 4 698 914 B brotli.**
 | `cjk/ext-f.ttf` | 728 | 429 | 1 |
 | `cjk/ext-sup.ttf` | 1 280 | 861 | 2 |
 
+These are `manifest.json`'s own `raw_bytes` / `brotli_bytes` / `codes`, row by
+row; the manifest is the authority and this table is a reading of it.
+
 Budgets (ADR-P0043): core ≤ 1 200 000 brotli, chunk ≤ 1 500 000 brotli. The
-build **fails** over budget, and the largest file here has 46 % headroom.
+build **fails** over budget, and the largest file here has 27 % headroom.
 
 This is the "no 100 MB payload" claim, measured: the 100 MB is the whole Noto
 CJK family (five languages, nine weights, CFF). One weight of one language,
-split by Unicode range, is 4.7 MB on the wire if a reader somehow needed every
+split by Unicode range, is 5.2 MB on the wire if a reader somehow needed every
 range — and `cargo xtask cjk-measure <payload> <text>` prints what one
 document actually costs, which is the core plus the one or two chunks its
 characters fall in.
+
+## FONT.10-F1 — the full payload does not fit the extension store
+
+**This is a real finding about the payload, not a test that was made to pass.**
+
+The extension's store (`apps/extension/src/ext/cjk-payload.ts`) keeps the
+**raw, decompressed** TTF in `chrome.storage.local` and charges it against
+`CJK_STORAGE_BUDGET_BYTES` = 8 388 608 B, deliberately under Chrome's
+10 485 760 B quota. This payload is 11 162 268 B raw. So:
+
+| | bytes | vs 8 MiB store budget | vs 10 MiB Chrome quota |
+|---|---:|---|---|
+| whole payload, brotli (wire) | 5 204 258 | fits, 38 % headroom | fits |
+| whole payload, raw (resident) | 11 162 268 | **over by 2 773 660** | **over by 676 508** |
+| core + largest chunk (`ext-a`) | 3 739 232 | fits | fits |
+| core + the seven `ideographs-*` blocks | 8 594 072 | **over by 205 464** | fits |
+| core + `ext-a` + the seven `ideographs-*` blocks | 11 043 204 | **over** | **over** |
+
+`installCjkChunk` refuses with `cjk-over-budget` rather than throwing a quota
+error, which is the right behaviour — but it means **"install every CJK range"
+is not a legal operation**, for a user who wants it, in the browser that
+shipped it. Walking the manifest in order (core, then each chunk), the store
+accepts through `ideographs-5` (7 896 860 B resident) and refuses
+`ideographs-6` at 9 326 320 B.
+
+What this does *not* mean: it does not mean the payload is too big to use.
+The design is per-range and on demand, `cjk-measure` shows that an ordinary
+Chinese document costs the core plus one or two chunks, and core + any single
+chunk is comfortably inside the budget. What it means is that the ceiling is
+real and the payload is above it, so the *store* must grow an eviction policy
+(or store brotli and inflate on use) before "everything" is a thing a user can
+ask for. Until then the honest statement is the one in the gate: `cjk-verify`
+prints `FINDING FONT.10-F1` on every run, and
+`the_committed_record_respects_the_published_budgets` in `xtask` asserts the
+per-file budgets, the wire total and the per-install total, reproduces the
+store's refusal point, and **fails loudly if the payload ever does fit** — so
+the finding cannot be quietly forgotten when someone re-chunks it.
 
 ## Reproducing and checking
 
@@ -105,7 +145,7 @@ cargo xtask cjk-fetch noto-sans-sc target/cjk-src
 cargo xtask cjk-build target/cjk-src/NotoSansSC-wght.ttf \
     --out target/cjk --source-id noto-sans-sc
 cargo xtask cjk-verify target/cjk --scope full
-cargo xtask cjk-verify assets/cjk --scope manifest   # the record in this repo
+cargo xtask cjk-verify assets --scope manifest   # the record in this repo
 ```
 
 The build is deterministic: the same source bytes produce the same payload
@@ -122,7 +162,8 @@ this pipeline produces).
 * **Extension (SL-4.EXT.05)**: `parseCjkManifest` reads `schema`, `core` and
   `chunks[]` — every field this build adds (`served_by`, `unserved`, `totals`,
   `name`, `source`) is additive, so an EXT.05 consumer keeps working. The
-  store's own budget check re-reads `brotli_bytes`, and every row in this
-  manifest is inside the budgets it mirrors.
+  store's own per-file budget check re-reads `brotli_bytes`, and every row in
+  this manifest is inside the budgets it mirrors. Its *aggregate* budget does
+  not hold for the whole set: see FONT.10-F1 above.
 * **Desktop (native)**: may ship every chunk as local files; it resolves
   through the same `CjkFontSet` API.
