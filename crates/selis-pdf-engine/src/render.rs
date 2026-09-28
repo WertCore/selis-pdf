@@ -189,6 +189,13 @@ struct CachedFont {
 /// The font a run renders with: the cached entry, or â€” past the
 /// hostile-input cap â€” a run-local scratch with the same behaviour (the run
 /// still renders; only cross-run sharing is lost).
+// `large_enum_variant` fires because `Cached` carries an inline
+// `CjkSnapshot` and `Scratch` an inline `FontMaps` (SL-0.WS.11). A `FontView`
+// is built once per *text run* and read through the accessors below, so the
+// ~360-byte variant is copied a few times per run, not per glyph; boxing
+// `cjk`/`maps` would add a pointer hop to `cjk()` and `maps()`, which are
+// called for every glyph of every run. The size is deliberate, not drift.
+#[allow(clippy::large_enum_variant)]
 enum FontView<'a> {
     /// The shared per-walk entry.
     Cached {
@@ -547,6 +554,24 @@ fn fill_notdef_box(
 }
 use crate::page::device_scale;
 
+// The render walk's resource resolvers (SL-0.WS.11). Named because the
+// spelled-out `&dyn Fn(..) -> ..` form is what `type_complexity` measures and
+// because each of these appears in two signatures. The `'a` is load-bearing:
+// a bare `dyn Fn(..)` in a type alias means `+ 'static`, while the same type
+// written inline in an argument position gets the anonymous lifetime — these
+// resolvers borrow the walk, not the process.
+type FontDataFn<'a> = dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram> + 'a;
+type SmaskFn<'a> = dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask> + 'a;
+type InlineImageFn<'a> = dyn Fn(&[(selis_bytes::Bytes, selis_bytes::Bytes)], &[u8]) -> Option<(u32, u32, selis_bytes::Bytes)>
+    + 'a;
+type ShadingFn<'a> = dyn Fn(
+        &selis_bytes::Bytes,
+        &ResolvedState,
+    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)>
+    + 'a;
+type PatternFn<'a> =
+    dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern> + 'a;
+
 /// Render a display list onto a backend.
 ///
 /// `page_ctm` is the page-to-device transform (RAST.12): the matrix that maps
@@ -567,17 +592,11 @@ pub fn render_display_list(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
     page_ctm: Matrix,
-    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram>,
-    resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
-    resolve_inline_image: &dyn Fn(
-        &[(selis_bytes::Bytes, selis_bytes::Bytes)],
-        &[u8],
-    ) -> Option<(u32, u32, selis_bytes::Bytes)>,
-    resolve_shading: &dyn Fn(
-        &selis_bytes::Bytes,
-        &ResolvedState,
-    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)>,
-    resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
+    font_data: &FontDataFn<'_>,
+    resolve_smask: &SmaskFn<'_>,
+    resolve_inline_image: &InlineImageFn<'_>,
+    resolve_shading: &ShadingFn<'_>,
+    resolve_pattern: &PatternFn<'_>,
     g: &mut BudgetGuard<'_>,
 ) {
     let mut stats = RenderStats::default();
@@ -606,17 +625,11 @@ pub fn render_display_list_with_stats(
     dl: &DisplayList,
     backend: &mut TinySkiaBackend,
     page_ctm: Matrix,
-    font_data: &dyn Fn(&selis_bytes::Bytes) -> Option<ResolvedFontProgram>,
-    resolve_smask: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::Mask>,
-    resolve_inline_image: &dyn Fn(
-        &[(selis_bytes::Bytes, selis_bytes::Bytes)],
-        &[u8],
-    ) -> Option<(u32, u32, selis_bytes::Bytes)>,
-    resolve_shading: &dyn Fn(
-        &selis_bytes::Bytes,
-        &ResolvedState,
-    ) -> Option<(u32, u32, selis_bytes::Bytes, selis_geom::Rect)>,
-    resolve_pattern: &dyn Fn(&selis_bytes::Bytes) -> Option<selis_raster::pattern::TilingPattern>,
+    font_data: &FontDataFn<'_>,
+    resolve_smask: &SmaskFn<'_>,
+    resolve_inline_image: &InlineImageFn<'_>,
+    resolve_shading: &ShadingFn<'_>,
+    resolve_pattern: &PatternFn<'_>,
     g: &mut BudgetGuard<'_>,
     stats: &mut RenderStats,
 ) {
@@ -708,7 +721,9 @@ pub fn render_display_list_with_stats(
                 let p = transform_raster_path(&p, state.ctm.then(page_ctm));
                 let paint = paint(&state.stroke, state.alpha_stroke);
                 let spec = stroke_spec(state, state.ctm.then(page_ctm));
-                let _ = selis_raster::render::stroke(backend, &p, &spec, &paint);
+                // `render::stroke` returns `()`, so the `let _ =` this used to
+                // carry bound nothing (SL-0.WS.11). Same call, same pixels.
+                selis_raster::render::stroke(backend, &p, &spec, &paint);
             }
             Op::FillStroke { path, state } => {
                 let Some(p) = to_raster_path(path) else {
@@ -719,7 +734,7 @@ pub fn render_display_list_with_stats(
                 let _ = selis_raster::render::fill(backend, &p, FillRule::NonZero, &fill_paint);
                 let stroke_paint = paint(&state.stroke, state.alpha_stroke);
                 let spec = stroke_spec(state, state.ctm.then(page_ctm));
-                let _ = selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
+                selis_raster::render::stroke(backend, &p, &spec, &stroke_paint);
             }
             Op::Text {
                 at,
@@ -925,8 +940,7 @@ fn to_raster_path(content: &ContentPath) -> Option<RasterPath> {
 #[must_use]
 fn transform_outline(cmds: &[selis_font::OutlineCmd], m: Matrix) -> Vec<PathCmd> {
     // Quadâ†’cubic conversion is 1:1, so the output is exactly as long.
-    let mut out = Vec::new();
-    out.reserve(cmds.len());
+    let mut out = Vec::with_capacity(cmds.len());
     let mut current: Option<Point> = None;
     for cmd in cmds {
         match cmd {

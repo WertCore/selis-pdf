@@ -138,6 +138,10 @@ impl TiledRender {
     /// A zero-sized canvas returns an empty raster and renders nothing; the
     /// tile geometry is clamped to at least 1 pixel so the decomposition always
     /// makes progress.
+    // A tiled render is a page render plus the page view, the CTM, and the
+    // per-tile slice of the canvas; the rationale is
+    // `session::Session::render_page_cjk_with_stats`' (SL-0.WS.11).
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         session: &Session,
@@ -166,6 +170,8 @@ impl TiledRender {
     }
 
     /// Render one tile's inner region (its neighbours' overlap is discarded).
+    // See `render`: one more parameter (the tile itself), same reason.
+    #[allow(clippy::too_many_arguments)]
     fn render_tile(
         &self,
         session: &Session,
