@@ -35,6 +35,31 @@ export const BUILD_WORKSPACE = "pkg";
  */
 export const OWN_BUILD_TREE = "extension";
 
+/**
+ * The prefix this package's own compiled modules carry **in the shipped
+ * package**, not only in the build workspace.
+ *
+ * This is not cosmetic and it is not a preference. `rootDir` is `apps/`, so
+ * `tsc` emits `dist/pkg/extension/src/ext/adapter.js` and
+ * `dist/pkg/ui/src/platform/errors.js` - it preserves the monorepo's shape
+ * because the sources' relative specifiers are written against that shape and
+ * `tsc` never rewrites them. For those specifiers to still resolve *inside the
+ * package*, the package has to keep the same shape: the shared modules at
+ * `ui/…` and this package's own at `extension/…`.
+ *
+ * ## What happens if this is dropped
+ *
+ * `dist/src/ext/adapter.js` writing `../../../ui/src/platform/errors.js`
+ * resolves to `apps/extension/ui/…` - outside the package, and a 404 in the
+ * browser. The bundled-only gate did **not** catch it, because
+ * {@link normalisePackagePath} folds a leading `..` away and then finds
+ * `ui/src/platform/errors.js` sitting happily in the ship list. `classifyRef`
+ * now refuses a reference that escapes the package root, so the mistake is
+ * loud rather than silent; that hardening and this prefix are the same fix
+ * seen from two ends.
+ */
+export const OWN_PACKAGE_PREFIX = `${OWN_BUILD_TREE}/`;
+
 /** Compiled `apps/ui` modules inside the build workspace, and their package path. */
 export const SHARED_BUILD_TREE = "ui";
 
@@ -120,16 +145,16 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "offscreen.html", from: "root" },
 	{ out: "service-worker.js", from: "root" },
 	{ out: "offscreen.js", from: "root" },
-	{ out: "src/permissions.js", from: "build" },
-	{ out: "src/viewer-boot.js", from: "build" },
-	{ out: "src/ext/adapter.js", from: "build" },
-	{ out: "src/ext/engine-client.js", from: "build" },
-	{ out: "src/ext/engine-link.js", from: "build" },
-	{ out: "src/ext/engine-protocol.js", from: "build" },
-	{ out: "src/ext/host-env.js", from: "build" },
-	{ out: "src/ext/offscreen-engine.js", from: "build" },
-	{ out: "src/ext/surface.js", from: "build" },
-	{ out: "src/ext/viewer-session.js", from: "build" },
+	{ out: "extension/src/permissions.js", from: "build" },
+	{ out: "extension/src/viewer-boot.js", from: "build" },
+	{ out: "extension/src/ext/adapter.js", from: "build" },
+	{ out: "extension/src/ext/engine-client.js", from: "build" },
+	{ out: "extension/src/ext/engine-link.js", from: "build" },
+	{ out: "extension/src/ext/engine-protocol.js", from: "build" },
+	{ out: "extension/src/ext/host-env.js", from: "build" },
+	{ out: "extension/src/ext/offscreen-engine.js", from: "build" },
+	{ out: "extension/src/ext/surface.js", from: "build" },
+	{ out: "extension/src/ext/viewer-session.js", from: "build" },
 	{ out: "ui/src/platform/errors.js", from: "shared-js" },
 	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
 	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
@@ -145,11 +170,17 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	},
 ];
 
-/** The path of a package entry's bytes inside the build workspace, or `null`. */
+/**
+ * The path of a package entry's bytes inside the build workspace, or `null`.
+ *
+ * For both compiled kinds that is simply `entry.out`, because the build
+ * workspace mirrors the package (see {@link OWN_PACKAGE_PREFIX}): `tsc` emits
+ * `dist/pkg/extension/…` and `dist/pkg/ui/…` from `rootDir: ".."`, and the
+ * package copies those same paths. Deriving a prefix here would double it.
+ */
 export function buildSourceOf(entry: PackageEntry): string | null {
 	switch (entry.from) {
 		case "build":
-			return `${OWN_BUILD_TREE}/${entry.out}`;
 		case "shared-js":
 			return entry.out;
 		default:
@@ -208,7 +239,16 @@ export function lineOf(text: string, index: number): number {
 	return line;
 }
 
-/** Normalise a package path: `\` folds to `/`, `.` and `..` segments resolve. */
+/**
+ * Normalise a package path: `\` folds to `/`, `.` and `..` segments resolve.
+ *
+ * A `..` that would step above the package root is **kept as `..`** rather than
+ * folded away. Folding it was a real hole: a module at `src/ext/adapter.js`
+ * importing `../../../ui/src/platform/errors.js` normalises to
+ * `ui/src/platform/errors.js`, which *is* on the ship list, so the reference
+ * passed — while in the browser it resolves above the package and 404s. The
+ * caller turns a surviving `..` into an `unresolved-local-ref` finding.
+ */
 export function normalisePackagePath(path: string): string {
 	const segments: string[] = [];
 	for (const segment of path.replaceAll("\\", "/").split("/")) {
@@ -216,6 +256,11 @@ export function normalisePackagePath(path: string): string {
 			continue;
 		}
 		if (segment === "..") {
+			if (segments.length === 0 || segments[segments.length - 1] === "..") {
+				// Escapes the package. Preserve it so the escape is visible.
+				segments.push("..");
+				continue;
+			}
 			segments.pop();
 			continue;
 		}
@@ -255,6 +300,12 @@ export function classifyRef(fromFile: string, ref: string, shipped: ReadonlySet<
 	const resolved = normalisePackagePath(
 		value.startsWith("/") ? value : `${dirOf(fromFile)}/${value}`,
 	);
+	// A surviving `..` means the reference climbs out of the package. It can
+	// never be a packaged file, so it is unresolved whatever the ship list
+	// says - see `normalisePackagePath`.
+	if (resolved === "" || resolved.startsWith("../")) {
+		return { kind: "unresolved", value };
+	}
 	return shipped.has(resolved)
 		? { kind: "packaged", path: resolved }
 		: { kind: "unresolved", value };

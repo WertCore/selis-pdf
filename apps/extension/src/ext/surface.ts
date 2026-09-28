@@ -106,11 +106,15 @@ export function createMainThreadSurface(options: { raster: SurfaceRaster }): Til
 		},
 
 		draw(frame: CompositorFrame): void {
-			if (!configured || last === null) {
-				throw new Error("the extension surface was drawn before it was configured");
-			}
+			// Disposal first: the compositor may have a frame in flight when a
+			// teardown races it, and throwing there would surface as an
+			// unhandled error during page teardown. Being unconfigured is a
+			// different matter - that is a wiring bug, and it is loud.
 			if (disposed) {
 				return;
+			}
+			if (!configured || last === null) {
+				throw new Error("the extension surface was drawn before it was configured");
 			}
 			raster.clear();
 			for (const op of frame.ops) {

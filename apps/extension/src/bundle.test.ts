@@ -75,30 +75,44 @@ const CLEAN_VIEWER_HTML = `<!doctype html>
 	<head>
 		<meta charset="utf-8" />
 		<title>Selis PDF Viewer</title>
-		<script type="module" src="./src/viewer-boot.js"></script>
+		<script type="module" src="./extension/src/viewer-boot.js"></script>
 	</head>
 	<body><main id="selis-viewer"></main></body>
 </html>
 `;
 
-/** Every file the ship list declares, each clean. */
+/**
+ * Every file the ship list declares, each clean.
+ *
+ * Derived from {@link SHIPPED_FILES} rather than written out, because the gate
+ * fails on a declared file that is *missing* from the package as well as on one
+ * that is extra. A hand-written list therefore has to be updated every time a
+ * row is added, and when it is not, the clean-baseline test fails with a wall
+ * of "missing from the built package" that reads like a scanner bug and is not
+ * one. Deriving it makes the fixture incapable of drifting.
+ */
 function cleanPackage(): BundleFile[] {
-	return [
-		{ path: "manifest.json", text: CLEAN_MANIFEST },
-		{ path: "viewer.html", text: CLEAN_VIEWER_HTML },
-		{ path: "offscreen.html", text: '<!doctype html>\n<script src="offscreen.js"></script>\n' },
-		{ path: "offscreen.js", text: 'globalThis.__selisOffscreen = "host";\n' },
-		{
-			path: "service-worker.js",
-			text: 'import { buildRedirectRules } from "./src/permissions.js";\n',
-		},
-		{
-			path: "src/permissions.js",
-			text: 'export const VIEWER_PATH = "/viewer.html";\nexport function buildRedirectRules() {\n\treturn [];\n}\n',
-		},
-		{ path: "src/viewer-boot.js", text: "export const boot = () => undefined;\n" },
-	];
+	const specific: Readonly<Record<string, string>> = {
+		"manifest.json": CLEAN_MANIFEST,
+		"viewer.html": CLEAN_VIEWER_HTML,
+		"offscreen.html": '<!doctype html>\n<script src="offscreen.js"></script>\n',
+		"offscreen.js": 'globalThis.__selisOffscreen = "host";\n',
+		"service-worker.js": 'import { buildRedirectRules } from "./extension/src/permissions.js";\n',
+		"extension/src/permissions.js":
+			'export const VIEWER_PATH = "/viewer.html";\nexport function buildRedirectRules() {\n\treturn [];\n}\n',
+		"extension/src/viewer-boot.js": "export const boot = () => undefined;\n",
+	};
+	return SHIPPED_FILES.map((path) => ({ path, text: specific[path] ?? CLEAN_FILLER }));
 }
+
+/**
+ * The body given to a declared file the fixture has nothing specific to say
+ * about.
+ *
+ * Deliberately inert: no URL, no import, no dynamic code, so a filler file can
+ * never be the reason a "clean baseline" test fails.
+ */
+const CLEAN_FILLER = ": selis filler;\n";
 
 /** The clean package with one file replaced. */
 function withFile(path: string, text: string): BundleFile[] {
@@ -176,13 +190,50 @@ describe("EXT.04 the gate rejects planted remote code", () => {
 	});
 
 	it("rejects a relative <script src> that resolves to nothing", () => {
-		const files = withFile("viewer.html", '<script src="./src/not-shipped.js"></script>\n');
+		const files = withFile(
+			"viewer.html",
+			'<script src="./extension/src/not-shipped.js"></script>\n',
+		);
 		expect(classesOf(files)).toContain("unresolved-local-ref");
+	});
+
+	/**
+	 * SL-4.EXT.06 added this one, and it exists because the gate was wrong.
+	 *
+	 * A module at `extension/src/ext/adapter.js` importing
+	 * `../../../ui/src/platform/errors.js` resolves, in a browser, to a path
+	 * *above* the package — a guaranteed 404. The old `normalisePackagePath`
+	 * folded the leading `..` away, landed on `ui/src/platform/errors.js`,
+	 * found it on the ship list, and reported the package clean. This asserts
+	 * the hardened behaviour, and it is the fixture that the real EXT.06
+	 * package tripped over.
+	 */
+	it("rejects a relative import that climbs out of the package", () => {
+		const files = withFile(
+			"extension/src/viewer-boot.js",
+			'import { AdapterError } from "../../../ui/src/platform/errors.js";\nexport const boot = AdapterError;\n',
+		);
+		const findings = scanBundle(files).filter((f) => f.class === "unresolved-import");
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.file).toBe("extension/src/viewer-boot.js");
+		expect(findings[0]?.detail).toContain("../../../ui/src/platform/errors.js");
+	});
+
+	it("still resolves an import that stays inside the package", () => {
+		// The other half of the previous test: hardening a path check is only
+		// worth anything if it still admits the legitimate shape, and the
+		// legitimate shape here is the real one — a nested module reaching a
+		// sibling directory, which is what the extension's own modules do.
+		const files = withFile(
+			"extension/src/ext/adapter.js",
+			'import { VIEWER_PATH } from "../permissions.js";\nexport const boot = VIEWER_PATH;\n',
+		);
+		expect(scanBundle(files).filter((f) => f.class === "unresolved-import")).toEqual([]);
 	});
 
 	it("rejects a remote URL literal in a shipped module", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'export const ENGINE = "https://cdn.example.com/engine.js";\nexport const boot = 1;\n',
 		);
 		expect(classesOf(files)).toContain("remote-url-literal");
@@ -190,7 +241,7 @@ describe("EXT.04 the gate rejects planted remote code", () => {
 
 	it("rejects a runtime fetch of a CDN in a shipped module", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'export async function boot() {\n\tconst r = await fetch("https://cdn.example.com/e.wasm");\n\treturn r;\n}\n',
 		);
 		expect(classesOf(files)).toContain("remote-url-literal");
@@ -208,7 +259,7 @@ describe("EXT.04 the gate rejects planted remote code", () => {
 describe("EXT.04 the gate rejects dynamic code execution", () => {
 	/** A module whose only content is `body`; asserts the finding appears. */
 	const rejects = (body: string): void => {
-		const files = withFile("src/viewer-boot.js", body);
+		const files = withFile("extension/src/viewer-boot.js", body);
 		expect(classesOf(files), `${body} -> ${reportOf(files)}`).toContain("dynamic-code");
 	};
 
@@ -238,41 +289,50 @@ describe("EXT.04 the gate rejects dynamic code execution", () => {
 
 	it("names eval on the line it is on", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			"export const a = 1;\nexport const b = 2;\neval(a);\n",
 		);
 		const finding = scanBundle(files).find((violation) => violation.class === "dynamic-code");
 		expect(finding?.line).toBe(3);
-		expect(finding?.file).toBe("src/viewer-boot.js");
+		expect(finding?.file).toBe("extension/src/viewer-boot.js");
 	});
 });
 
 describe("EXT.04 the gate rejects module specifiers that leave the package", () => {
 	it("rejects a bare CDN import", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'import "https://cdn.example.com/lib.js";\nexport const boot = 1;\n',
 		);
 		expect(classesOf(files)).toContain("remote-import");
 	});
 
 	it("rejects a protocol-relative import", () => {
-		const files = withFile("src/viewer-boot.js", 'import x from "//cdn.example.com/lib.js";\n');
+		const files = withFile(
+			"extension/src/viewer-boot.js",
+			'import x from "//cdn.example.com/lib.js";\n',
+		);
 		expect(classesOf(files)).toContain("remote-import");
 	});
 
 	it("rejects a relative import of a file that does not ship", () => {
-		const files = withFile("src/viewer-boot.js", 'import { a } from "./missing.js";\n');
+		const files = withFile("extension/src/viewer-boot.js", 'import { a } from "./missing.js";\n');
 		expect(classesOf(files)).toContain("unresolved-import");
 	});
 
 	it("rejects a Node builtin import", () => {
-		const files = withFile("src/viewer-boot.js", 'import { readFileSync } from "node:fs";\n');
+		const files = withFile(
+			"extension/src/viewer-boot.js",
+			'import { readFileSync } from "node:fs";\n',
+		);
 		expect(classesOf(files)).toContain("node-builtin-import");
 	});
 
 	it("rejects a computed dynamic import it cannot resolve", () => {
-		const files = withFile("src/viewer-boot.js", "export const boot = (n) => import(n);\n");
+		const files = withFile(
+			"extension/src/viewer-boot.js",
+			"export const boot = (n) => import(n);\n",
+		);
 		expect(classesOf(files)).toContain("unresolvable-dynamic-import");
 	});
 });
@@ -402,14 +462,14 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 	it("accepts an <a href> the user has to click", () => {
 		const files = withFile(
 			"viewer.html",
-			'<a href="https://selis.example/help">Help</a>\n<script src="./src/viewer-boot.js"></script>\n',
+			'<a href="https://selis.example/help">Help</a>\n<script src="./extension/src/viewer-boot.js"></script>\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
 	});
 
 	it("accepts a remote URL in a JS comment", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			"// never load https://cdn.example.com/lib.js - ADR-P0028\n/* also not https://cdn.example.com/x.js */\nexport const boot = 1;\n",
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -418,14 +478,14 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 	it("accepts a remote URL in an HTML comment", () => {
 		const files = withFile(
 			"viewer.html",
-			'<!-- the old build pulled https://cdn.example.com/lib.js; it must not -->\n<script src="./src/viewer-boot.js"></script>\n',
+			'<!-- the old build pulled https://cdn.example.com/lib.js; it must not -->\n<script src="./extension/src/viewer-boot.js"></script>\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
 	});
 
 	it("accepts the word eval in a comment and in a string", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'// eval() is banned here\nexport const BAN = "do not call eval( on anything";\nexport const boot = 1;\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -434,14 +494,14 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 	it("accepts the word importScripts in a comment", () => {
 		const files = withFile(
 			"service-worker.js",
-			'// importScripts() would be remote code; the ruleset is imported instead\nimport { buildRedirectRules } from "./src/permissions.js";\n',
+			'// importScripts() would be remote code; the ruleset is imported instead\nimport { buildRedirectRules } from "./extension/src/permissions.js";\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
 	});
 
 	it("accepts a DNR regexFilter, the most remote-looking string we ship", () => {
 		const files = withFile(
-			"src/permissions.js",
+			"extension/src/permissions.js",
 			'export function buildRedirectRules() {\n\treturn [{ condition: { regexFilter: "^https?://[^?#\\\\s]+(?i:\\\\.pdf)(?:[?#]\\\\S*)?$" } }];\n}\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -449,7 +509,7 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 
 	it("accepts a data-only export of URLs the ruleset must recognise", () => {
 		const files = withFile(
-			"src/permissions.js",
+			"extension/src/permissions.js",
 			'export const PATTERN_MATRIX = [\n\t{ url: "https://example.com/a.pdf" },\n\t{ url: "https://example.org/b.pdf?x=1" },\n];\nexport function buildRedirectRules() {\n\treturn [];\n}\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -460,7 +520,7 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 		// means the value is computed, and a computed value is not reviewable
 		// as data.
 		const files = withFile(
-			"src/permissions.js",
+			"extension/src/permissions.js",
 			'const base = "https://example.com";\nexport const PATTERN_MATRIX = [join(base, "a.pdf")];\nexport function buildRedirectRules() {\n\treturn [];\n}\n',
 		);
 		expect(classesOf(files)).toContain("remote-url-literal");
@@ -468,7 +528,7 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 
 	it("accepts a blob: URL, which names an origin but is made locally", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'export const url = URL.createObjectURL(new Blob([]));\nexport const sample = "blob:https://example.com/550e8400-e29b-41d4-a716-446655440000";\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -486,7 +546,7 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 
 	it("accepts a data: URL in a module", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'export const FONT = "data:font/woff2;base64,d09GMg==";\nexport const boot = FONT;\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -535,7 +595,7 @@ describe("EXT.04 the gate does not flag what is not remote code", () => {
 
 	it("accepts a relative import that resolves inside the package", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'import { VIEWER_PATH } from "./permissions.js";\nexport const boot = VIEWER_PATH;\n',
 		);
 		expect(scanBundle(files)).toEqual([]);
@@ -572,7 +632,7 @@ describe("EXT.04 the lexical mask is not evadable", () => {
 		// the file and this eval() was invisible. If this test ever goes green
 		// for the wrong reason, the mask has regressed.
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'const q = /\';\nexport const boot = () => {\n\teval("payload");\n};\n',
 		);
 		expect(classesOf(files)).toContain("dynamic-code");
@@ -580,7 +640,7 @@ describe("EXT.04 the lexical mask is not evadable", () => {
 
 	it("still sees a new Function() after a regex literal containing a quote", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'const q = /"/;\nexport const boot = () => new Function("x");\n',
 		);
 		expect(classesOf(files)).toContain("dynamic-code");
@@ -588,7 +648,7 @@ describe("EXT.04 the lexical mask is not evadable", () => {
 
 	it("still sees a remote URL after a regex literal containing a quote", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'const q = /\';\nexport const ENGINE = "https://cdn.example.com/e.js";\n',
 		);
 		expect(classesOf(files)).toContain("remote-url-literal");
@@ -598,7 +658,7 @@ describe("EXT.04 the lexical mask is not evadable", () => {
 		// The other direction of the same heuristic: if `/` were always taken as
 		// a regex opener, this file's tail would vanish from the scan.
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			"export const half = (total) => {\n\tconst half = total / 2;\n\tconst ratio = half / total;\n\teval(half);\n\treturn ratio;\n};\n",
 		);
 		expect(classesOf(files)).toContain("dynamic-code");
@@ -606,7 +666,7 @@ describe("EXT.04 the lexical mask is not evadable", () => {
 
 	it("does not treat a division result as a string body", () => {
 		const files = withFile(
-			"src/viewer-boot.js",
+			"extension/src/viewer-boot.js",
 			'export const q = (a) => a / 2;\nexport const ENGINE = "https://cdn.example.com/e.js";\n',
 		);
 		expect(classesOf(files)).toContain("remote-url-literal");
@@ -680,7 +740,9 @@ describe("EXT.04 the real built package", () => {
 	it("really does contain the remote URLs the exemptions cover", () => {
 		// Without this, "scans clean" is the trivially-passing case: a package
 		// with no URLs in it would pass a gate that never looks.
-		const built = readBuiltPackage(distRoot).filter((file) => file.path === "src/permissions.js");
+		const built = readBuiltPackage(distRoot).filter(
+			(file) => file.path === "extension/src/permissions.js",
+		);
 		const exempt = built.flatMap((file) => exemptRemoteLiterals(file));
 		expect(
 			exempt.length,
@@ -690,7 +752,10 @@ describe("EXT.04 the real built package", () => {
 			expect(DATA_ONLY_EXPORTS.has(literal.exemptBy)).toBe(true);
 		}
 		// And the same URLs, planted outside the reviewed export, must fail.
-		const smuggled = withFile("src/permissions.js", `export const X = "${exempt[0]?.value}";\n`);
+		const smuggled = withFile(
+			"extension/src/permissions.js",
+			`export const X = "${exempt[0]?.value}";\n`,
+		);
 		expect(classesOf(smuggled)).toContain("remote-url-literal");
 	});
 

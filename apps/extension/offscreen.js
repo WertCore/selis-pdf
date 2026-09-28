@@ -18,9 +18,9 @@
  * No remote code, no eval (ADR-P0028): every import below is a compiled module
  * from this same package. */
 
-import { createPortLink } from "./src/ext/engine-link.js";
-import { ENGINE_PORT_NAMES } from "./src/ext/engine-protocol.js";
-import { serveEngineHost } from "./src/ext/offscreen-engine.js";
+import { createPortLink } from "./extension/src/ext/engine-link.js";
+import { ENGINE_PORT_NAMES } from "./extension/src/ext/engine-protocol.js";
+import { serveEngineHost } from "./extension/src/ext/offscreen-engine.js";
 
 /** SL-4.EXT.03 replaces this with the WASM engine. */
 const engine = null;

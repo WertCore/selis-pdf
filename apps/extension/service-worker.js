@@ -9,8 +9,8 @@
  * and base64 tiles, in a context the browser kills after ~30 s idle. The
  * offscreen document listens instead (`offscreen.js`). */
 
-import { ENSURE_ENGINE_HOST } from "./src/ext/engine-protocol.js";
-import { buildRedirectRules } from "./src/permissions.js";
+import { ENSURE_ENGINE_HOST } from "./extension/src/ext/engine-protocol.js";
+import { buildRedirectRules } from "./extension/src/permissions.js";
 
 /** The page that hosts the engine, and the one it is created for. */
 const OFFSCREEN_PATH = "offscreen.html";
