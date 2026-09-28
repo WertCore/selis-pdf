@@ -39,9 +39,16 @@ const { BUILD_WORKSPACE, PACKAGE_ENTRIES, WASM_RELEASE_SUBDIR, buildSourceOf } =
  * Honoured here rather than hard-coded because the repo commits no
  * machine-specific target path - `.cargo/config.toml` carries the `xtask` alias
  * only - so the default really is `target/`.
+ *
+ * **Two levels up, not one.** `pkgRoot` is `<workspace>/apps/extension`, so a
+ * single `..` lands on `<workspace>/apps` and the default would be
+ * `apps/target/`, which cargo never writes. It worked while the task was being
+ * built only because that shell had `CARGO_TARGET_DIR` set, and failed the
+ * moment the build ran without it - a default that is wrong whenever the
+ * environment does not paper over it is not a default.
  */
 function cargoTargetDir() {
-	return process.env.CARGO_TARGET_DIR || resolve(pkgRoot, "..", "target");
+	return process.env.CARGO_TARGET_DIR || resolve(pkgRoot, "..", "..", "target");
 }
 
 /**
