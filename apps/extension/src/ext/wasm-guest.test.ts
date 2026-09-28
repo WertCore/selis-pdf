@@ -15,16 +15,21 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { type GuestExports, GuestAbiError, createWasmGuest } from "./wasm-guest.js";
+import { GuestAbiError, type GuestExports, createWasmGuest } from "./wasm-guest.js";
 
 /** A bump allocator over real linear memory, recording every free. */
-function createFakeGuest(answer: (request: unknown, payload: Uint8Array) => {
-	response: string;
-	attachment?: Uint8Array;
-	/** Deliberately lie about the out-words, to prove they are checked. */
-	report?: { responseLen?: number; payloadPtr?: number; payloadLen?: number };
-	nullDispatch?: boolean;
-}) {
+function createFakeGuest(
+	answer: (
+		request: unknown,
+		payload: Uint8Array,
+	) => {
+		response: string;
+		attachment?: Uint8Array;
+		/** Deliberately lie about the out-words, to prove they are checked. */
+		report?: { responseLen?: number; payloadPtr?: number; payloadLen?: number };
+		nullDispatch?: boolean;
+	},
+) {
 	const memory = new WebAssembly.Memory({ initial: 1 });
 	let next = 16;
 	const live = new Map<number, number>();

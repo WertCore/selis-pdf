@@ -36,9 +36,9 @@
  */
 
 import type { EnginePort } from "../../../ui/src/platform/adapter.js";
-import { type EngineChannel, createWasmEngine } from "./wasm-engine.js";
 import type { EngineLink } from "./engine-link.js";
 import { serveEngineHost } from "./offscreen-engine.js";
+import { type EngineChannel, createWasmEngine } from "./wasm-engine.js";
 import { CORE_CHUNK_PATH } from "./wasm-worker.js";
 
 /**

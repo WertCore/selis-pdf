@@ -24,11 +24,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PACKAGE_ENTRIES, SHIPPED_FILES } from "../bundle-paths.js";
 import { createEnginePort } from "./engine-client.js";
-import {
-	CORE_CHUNK_PATH,
-	ENGINE_WORKER_PATH,
-	startEngineHost,
-} from "./engine-host.js";
+import { CORE_CHUNK_PATH, ENGINE_WORKER_PATH, startEngineHost } from "./engine-host.js";
 import { createLoopbackLink } from "./loopback.js";
 import type { WorkerRequest, WorkerResponse } from "./wasm-worker.js";
 

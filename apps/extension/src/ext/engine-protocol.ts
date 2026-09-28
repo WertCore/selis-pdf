@@ -140,8 +140,7 @@ export type EngineRequest =
 			readonly op: "textLayer";
 			readonly doc: string;
 			readonly page: number;
-		}
-
+	  }
 	| {
 			readonly v: 1;
 			readonly id: number;
@@ -264,7 +263,13 @@ export interface EngineReply {
 	readonly id: number;
 	readonly ok: boolean;
 	/** Present when `ok`. */
-	readonly value?: WireDoc | WireTile | WirePageText | WirePageTextLayer | WireSearchBatch | WireAck;
+	readonly value?:
+		| WireDoc
+		| WireTile
+		| WirePageText
+		| WirePageTextLayer
+		| WireSearchBatch
+		| WireAck;
 	/** Present when not `ok`. */
 	readonly error?: WireError;
 }

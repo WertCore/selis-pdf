@@ -20,12 +20,12 @@
  * No remote code, no eval: every import below is a compiled module from this
  * same package. */
 
-import { createPortLink } from "./extension/src/ext/engine-link.js";
 import {
 	CORE_CHUNK_PATH,
 	ENGINE_WORKER_PATH,
 	startEngineHost,
 } from "./extension/src/ext/engine-host.js";
+import { createPortLink } from "./extension/src/ext/engine-link.js";
 import { ENGINE_PORT_NAMES } from "./extension/src/ext/engine-protocol.js";
 
 const link = createPortLink(chrome.runtime.connect({ name: ENGINE_PORT_NAMES.accept }));

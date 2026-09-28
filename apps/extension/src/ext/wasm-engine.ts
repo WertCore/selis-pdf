@@ -85,12 +85,7 @@ function asWorkerResponse(message: unknown): WorkerResponse | null {
 		return null;
 	}
 	const kind = (message as { kind?: unknown }).kind;
-	if (
-		kind !== "ready" &&
-		kind !== "init-error" &&
-		kind !== "reply" &&
-		kind !== "fault"
-	) {
+	if (kind !== "ready" && kind !== "init-error" && kind !== "reply" && kind !== "fault") {
 		return null;
 	}
 	return message as WorkerResponse;
@@ -257,14 +252,13 @@ export function createWasmEngine(options: {
 	};
 
 	/** The reply's `value`, or the engine's own typed failure. */
-	const valueOf = (reply: GuestReply): Record<string, unknown> => {
+	const engineValue = (reply: GuestReply): Record<string, unknown> => {
 		const { response } = reply;
 		if (response.ok !== true) {
 			throw new AdapterError({
 				code: response.code ?? ErrorCode.BindingBadArgument,
 				message: response.message ?? "the engine failed without saying why",
-				docState:
-					(response.docState as AdapterError["docState"] | undefined) ?? "Unchanged",
+				docState: (response.docState as AdapterError["docState"] | undefined) ?? "Unchanged",
 				retryable: response.code === ErrorCode.Cancelled,
 			});
 		}
@@ -283,7 +277,7 @@ export function createWasmEngine(options: {
 	 * something an engine in another context could reach. The page read the
 	 * file and sent the bytes; this is where they stop being base64.
 	 */
-	async function open(
+	async function openDocument(
 		source: DocumentSourceDescriptor,
 		options?: AdapterRequestOptions & { budget?: BudgetProfile },
 	): Promise<DocHandle> {
@@ -303,10 +297,10 @@ export function createWasmEngine(options: {
 			options,
 		);
 		options?.onProgress?.({ fraction: 1, stage: "open" });
-		return toDocHandle(valueOf(reply));
+		return toDocHandle(engineValue(reply));
 	}
 
-	async function close(doc: DocHandle, options?: AdapterRequestOptions): Promise<void> {
+	async function closeDocument(doc: DocHandle, options?: AdapterRequestOptions): Promise<void> {
 		await call({ op: "close", doc: rawHandle(doc) }, undefined, options);
 	}
 	/**
@@ -348,7 +342,7 @@ export function createWasmEngine(options: {
 			options,
 		);
 		options?.onProgress?.({ fraction: 1, stage: "render" });
-		return toRenderedTile(valueOf(reply), request.page, reply.attachment);
+		return toRenderedTile(engineValue(reply), request.page, reply.attachment);
 	}
 
 	async function extractText(
@@ -357,7 +351,7 @@ export function createWasmEngine(options: {
 		options?: AdapterRequestOptions,
 	): Promise<PageText> {
 		const reply = await call({ op: "text", doc: rawHandle(doc), page }, undefined, options);
-		valueOf(reply);
+		engineValue(reply);
 		options?.onProgress?.({ fraction: 1, stage: "text" });
 		// The text leaves as the response's attachment, not as a JSON field: a
 		// page of extracted text is thousands of characters, and a string in
@@ -379,7 +373,7 @@ export function createWasmEngine(options: {
 		options?: AdapterRequestOptions,
 	): Promise<PageTextLayer> {
 		const reply = await call({ op: "textLayer", doc: rawHandle(doc), page }, undefined, options);
-		const layer = toPageTextLayer(valueOf(reply), page);
+		const layer = toPageTextLayer(engineValue(reply), page);
 		options?.onProgress?.({ fraction: 1, stage: "text" });
 		return layer;
 	}
@@ -425,7 +419,7 @@ export function createWasmEngine(options: {
 			undefined,
 			options,
 		);
-		const matches = toSearchMatches(valueOf(reply));
+		const matches = toSearchMatches(engineValue(reply));
 		for (let at = 0; at < matches.length; at += SEARCH_BATCH_SIZE) {
 			if (options?.signal?.aborted === true) {
 				return;
@@ -441,17 +435,15 @@ export function createWasmEngine(options: {
 	}
 
 	return {
-		open,
-		close,
+		open: openDocument,
+		close: closeDocument,
 		renderTile,
 		extractText,
 		textLayer,
 		search,
 		start,
 		dispose() {
-			failAll(
-				engineUnavailable("the engine host is shutting down"),
-			);
+			failAll(engineUnavailable("the engine host is shutting down"));
 			channel.terminate();
 		},
 	};

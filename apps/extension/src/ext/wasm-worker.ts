@@ -65,7 +65,10 @@ export type WorkerResponse =
 
 /** A guest handle, narrowed to what this file calls. */
 type GuestLike = {
-	send(request: unknown, attachment?: Uint8Array): {
+	send(
+		request: unknown,
+		attachment?: Uint8Array,
+	): {
 		response: unknown;
 		attachment: Uint8Array;
 	};
@@ -167,9 +170,7 @@ export function serveWorker(scope: WorkerScope, guest: GuestLike | null = null):
 				response,
 				// Transferred, not copied: a rendered page is megabytes, and the
 				// document side owns the result.
-				...(attachment.byteLength === 0
-					? {}
-					: { attachment: attachment.buffer as ArrayBuffer }),
+				...(attachment.byteLength === 0 ? {} : { attachment: attachment.buffer as ArrayBuffer }),
 			});
 		} catch (error) {
 			scope.postMessage({

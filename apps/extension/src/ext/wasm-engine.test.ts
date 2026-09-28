@@ -29,7 +29,11 @@ interface Scripted {
 
 /** A fake Worker: records what was posted, answers from a script. */
 function createFakeWorker(script: {
-	reply(id: number, request: Record<string, unknown>, payload: Uint8Array | undefined): Scripted | null;
+	reply(
+		id: number,
+		request: Record<string, unknown>,
+		payload: Uint8Array | undefined,
+	): Scripted | null;
 	initFails?: string;
 }) {
 	const posted: WorkerRequest[] = [];
@@ -57,17 +61,16 @@ function createFakeWorker(script: {
 				});
 				return;
 			}
-			const payload =
-				request.payload === undefined ? undefined : new Uint8Array(request.payload);
+			const payload = request.payload === undefined ? undefined : new Uint8Array(request.payload);
 			const body = request.request as Record<string, unknown>;
 			if (ready) {
 				const answer = script.reply(request.id, body, payload);
-			if (answer === null) {
-				// A guest that has not answered yet: the request stays in
-				// flight, which is the only state in which cancellation is
-				// observable.
-				return;
-			}
+				if (answer === null) {
+					// A guest that has not answered yet: the request stays in
+					// flight, which is the only state in which cancellation is
+					// observable.
+					return;
+				}
 				send({
 					kind: "reply",
 					id: request.id,
@@ -179,9 +182,9 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 	it("refuses a source that is not inline bytes", async () => {
 		const { channel } = createFakeWorker({ reply: (id) => ({ response: openReply(id) }) });
 		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
-		await expect(
-			engine.open({ kind: "opfs", path: "/doc.pdf" }),
-		).rejects.toMatchObject({ code: ErrorCode.BindingBadArgument });
+		await expect(engine.open({ kind: "opfs", path: "/doc.pdf" })).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+		});
 	});
 
 	it("converts scale to dpi and flips a page-space rect into canvas coordinates", async () => {
@@ -243,9 +246,7 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 		const { channel } = createFakeWorker({
 			reply: (id, request) => ({
 				response:
-					(request.op as string) === "open"
-						? openReply(id)
-						: { v: 1, id, ok: true, value: broken },
+					(request.op as string) === "open" ? openReply(id) : { v: 1, id, ok: true, value: broken },
 			}),
 		});
 		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
@@ -368,7 +369,8 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 	it("reports a missing engine once, and every later request with the same reason", async () => {
 		const { channel, posted } = createFakeWorker({
 			reply: () => ({ response: {} }),
-			initFails: "the engine at chrome-extension://selis/wasm/selis_pdf_wasm.wasm did not load: 404",
+			initFails:
+				"the engine at chrome-extension://selis/wasm/selis_pdf_wasm.wasm did not load: 404",
 		});
 		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
 		const first = engine.open({ kind: "bytes", bytes: new ArrayBuffer(4), name: "a.pdf" });
