@@ -250,3 +250,19 @@ enable — they receive `&dyn Clock` from their caller), and the module is
 compiled out for wasm32, where the browser shell wraps `performance.now`
 (ADR-P0011). The kernel itself (`Budget`, `BudgetGuard`, cancellation) never
 names it."""
+
+# SL-0.WS.11 added a `#[cfg(test)]` corpus walker to selis-pdf-engine's tiled
+# module, and this gate reads a file as written - test code included, because
+# "the test can name the filesystem" is exactly how a test grows into reading
+# production paths only a test can resolve. The allowance covers the test
+# module's paths alone; the crate's production code is still scanned, which is
+# what keeps the guarantee.
+[[purity_allow]]
+crate = "selis-pdf-engine"
+paths = ["std::fs"]
+why = """
+Only the `#[cfg(test)]` modules name it, and only to walk in-repo fixture
+directories (`src/fixtures`, `corpus/fixtures`) for the determinism comparison
+that `xtask wasm-threads` runs over the same corpus. No shipped code path in
+this crate can reach the filesystem: the engine takes its bytes through
+DocSource and has no `fs` reference outside `cfg(test)`."""
