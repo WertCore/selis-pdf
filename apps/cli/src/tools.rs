@@ -1356,12 +1356,8 @@ fn dest_page_num(dest: &Obj, named: &NamedDests) -> Option<u32> {
 /// `Parent`/`Count`) are rebuilt over the kept items; every other entry of
 /// a kept item is copied through `copy_value_into`, so destinations remap
 /// at the surviving pages.
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn prune_outlines(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -1403,12 +1399,8 @@ fn prune_outlines(
 /// `parent_ref`), keeping items whose destination survives, and return the
 /// kept items' new object numbers in order. `parent_num` is the object the
 /// caller will link the returned chain under.
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn prune_outline_chain(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -1586,12 +1578,8 @@ fn link_outline_chain(
 /// widget page was deleted (WRITE.07). Default appearance, default
 /// resources, need-appearances, and calculation order pass through;
 /// `/XFA` is never carried (deprecated in PDF 2.0).
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn carry_acroform_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -1713,12 +1701,8 @@ fn field_survives(
 /// destinations whose target page was deleted are pruned, embedded files
 /// pass through, and everything else (`/JavaScript`, `/Launch`-bearing
 /// subtrees, …) is never copied — the writer introduces no actions.
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn carry_names_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -1787,12 +1771,8 @@ fn carry_names_single(
 /// `/StructParents` ids, and the `/ParentTree` keeps exactly those ids'
 /// entries with their values redirected at the pruned elements via the
 /// shared copy cache.
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn carry_struct_tree_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -1986,12 +1966,8 @@ fn carry_struct_tree_single(
 /// all pruned drops with them, and pairs referencing deleted pages are
 /// omitted. `dropped` remembers pruned source objects so the
 /// `/ParentTree` pass cannot resurrect them.
-// The conformance carry/prune pass is wide because WRITE.07's contract is
-// wide: the output builder, the source bytes, the parsed source, the page
-// remap, the kept-page list, the flags, and the two budget handles are all
-// needed at each step, and a context struct would hide which of them a given
-// carry actually reads. The arity stays and the allow is scoped to this
-// function (SL-0.WS.11).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
 fn copy_struct_value(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
