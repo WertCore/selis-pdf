@@ -310,7 +310,7 @@ impl CjkChunkLoader {
     pub fn new(core: Bytes, claims: Vec<ChunkClaim>, budget: Budget) -> Result<Self> {
         let mut resolved: BTreeMap<&'static str, ChunkClaim> = BTreeMap::new();
         for claim in claims {
-            let Some(chunk) = chunk_by_id(&claim.id) else {
+            let Some(chunk) = chunk_by_id(claim.id) else {
                 return Err(err!(
                     Code::BindingBadArgument,
                     during = "cjk-chunk",
