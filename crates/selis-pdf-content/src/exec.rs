@@ -49,10 +49,16 @@ const MAX_FORM_DEPTH: usize = 32;
 // its own caches without a vtable per lookup; the aliases exist because the
 // four signatures appear in two signatures each (SL-0.WS.11) and the spelled-
 // out `&dyn Fn(..) -> ..` form is what `type_complexity` measures.
-type FontWidthFn = dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64;
-type FontIsCidFn = dyn Fn(&Bytes, Option<&Bytes>) -> bool;
-type ResolveDoFn = dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget>;
-type ResolveExtGStateFn = dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>>;
+//
+// The `'a` is load-bearing (SL-0.WS.11): a bare `dyn Fn(..)` in a type alias
+// means `dyn Fn(..) + 'static`, while the same type written inline in an
+// argument position gets the anonymous lifetime. Without the parameter the
+// aliases would demand `'static` closures and the engine's borrowing
+// resolvers would not compile.
+type FontWidthFn<'a> = dyn Fn(&Bytes, u16, Option<&Bytes>) -> f64 + 'a;
+type FontIsCidFn<'a> = dyn Fn(&Bytes, Option<&Bytes>) -> bool + 'a;
+type ResolveDoFn<'a> = dyn Fn(&Bytes, Option<&Bytes>) -> Option<DoTarget> + 'a;
+type ResolveExtGStateFn<'a> = dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, Operand)>> + 'a;
 
 /// Execute a content stream into a display list.
 ///
@@ -66,10 +72,10 @@ type ResolveExtGStateFn = dyn Fn(&Bytes, Option<&Bytes>) -> Option<Vec<(Bytes, O
 /// resources.
 pub fn execute(
     content: &[u8],
-    font_width: &FontWidthFn,
-    font_is_cid: &FontIsCidFn,
-    resolve_do: &ResolveDoFn,
-    resolve_ext_gstate: &ResolveExtGStateFn,
+    font_width: &FontWidthFn<'_>,
+    font_is_cid: &FontIsCidFn<'_>,
+    resolve_do: &ResolveDoFn<'_>,
+    resolve_ext_gstate: &ResolveExtGStateFn<'_>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DisplayList> {
     let mut dl = DisplayList::new();
@@ -102,10 +108,10 @@ pub fn execute(
 #[allow(clippy::too_many_arguments)]
 fn execute_inner(
     content: &[u8],
-    font_width: &FontWidthFn,
-    font_is_cid: &FontIsCidFn,
-    resolve_do: &ResolveDoFn,
-    resolve_ext_gstate: &ResolveExtGStateFn,
+    font_width: &FontWidthFn<'_>,
+    font_is_cid: &FontIsCidFn<'_>,
+    resolve_do: &ResolveDoFn<'_>,
+    resolve_ext_gstate: &ResolveExtGStateFn<'_>,
     resources: Option<&Bytes>,
     g: &mut BudgetGuard<'_>,
     gstate: &mut GState,
