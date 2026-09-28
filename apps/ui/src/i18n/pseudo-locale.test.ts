@@ -33,6 +33,7 @@ import {
 import { placeholdersIn } from "./message.js";
 import { createPseudoCatalogue } from "./pseudo-locale.js";
 import { PSEUDO_LOCALE, createMessageRuntime, isMissingMessage } from "./runtime.js";
+import type { MessageTemplate } from "./runtime.js";
 
 const PSEUDO = createPseudoCatalogue(EN_VIEWER_CATALOGUE);
 
@@ -143,8 +144,15 @@ describe("the pseudo catalogue", () => {
 
 	it("keeps every placeholder name, so a pseudo build still formats", () => {
 		for (const key of VIEWER_MESSAGE_KEYS) {
-			expect(placeholdersIn(PSEUDO[key]).sort(), key).toEqual(
-				placeholdersIn(EN_VIEWER_CATALOGUE[key]).sort(),
+			// Same reasoning as the width test above: assert presence rather
+			// than letting `| undefined` through, so a key missing from either
+			// catalogue fails this test by name.
+			const pseudo = PSEUDO[key];
+			const source = EN_VIEWER_CATALOGUE[key];
+			expect(pseudo, `pseudo catalogue is missing ${key}`).toBeDefined();
+			expect(source, `English catalogue is missing ${key}`).toBeDefined();
+			expect(placeholdersIn(pseudo as MessageTemplate).sort(), key).toEqual(
+				placeholdersIn(source as MessageTemplate).sort(),
 			);
 		}
 	});
