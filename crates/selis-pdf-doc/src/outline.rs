@@ -278,11 +278,14 @@ pub fn outline(
             }
             match first_child {
                 Some(kid) => {
-                    stack.push(Resume {
-                        next,
-                        owner: Some(me),
-                        depth,
-                    });
+                    // The resume point is `me`'s **sibling** chain, so it
+                    // carries *`me`'s own* owner and depth — the level the
+                    // sibling sits at, not the level `me`'s children sit at.
+                    // Saving `Some(me)` here instead would re-parent every
+                    // `/Next` sibling to the item that named it, which reads
+                    // as a plausible outline while silently collapsing a
+                    // document's whole sibling list into one deep chain.
+                    stack.push(Resume { next, owner, depth });
                     // The child's level. `enter` is also the depth bound: a
                     // document nested past the budget gets a typed
                     // `BUDGET_DEPTH` refusal here, not a truncated tree.
