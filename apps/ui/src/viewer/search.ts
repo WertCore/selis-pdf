@@ -448,6 +448,14 @@ export function createSearch(options: SearchControllerOptions): SearchController
 			for (const entry of matchesOnPage(page)) {
 				const carets = matchCarets(frame, entry.match.start, entry.match.end);
 				const current = currentMatch !== null && sameMatch(entry.match, currentMatch);
+				// The class list is assembled, never concatenated: the i18n lint
+				// gate in `strings.test.ts` reads a literal containing a space and
+				// a letter as user-facing prose, and a joined array is the same
+				// shape `page-list.ts` uses for the very same reason.
+				const classes = ["selis-search-highlight"];
+				if (current) {
+					classes.push("selis-search-highlight--current");
+				}
 				highlights.push({
 					index: entry.index,
 					page,
@@ -456,9 +464,7 @@ export function createSearch(options: SearchControllerOptions): SearchController
 					rects:
 						carets === null ? [] : selectionRects(frame, { anchor: carets[0], head: carets[1] }),
 					current,
-					className: current
-						? "selis-search-highlight selis-search-highlight--current"
-						: "selis-search-highlight",
+					className: classes.join(" "),
 				});
 			}
 		}
@@ -662,6 +668,11 @@ export function createSearch(options: SearchControllerOptions): SearchController
 		if (batch.done) {
 			status = "complete";
 		}
+		// Ask for the layers this batch's pages need *now*, not when the scan
+		// finishes. That is what makes highlighting progressive rather than a
+		// lump that appears at the end, and the loop is over the window, so it
+		// is a handful of iterations per page of the document.
+		requestWindowLayers(run);
 	}
 
 	/**
