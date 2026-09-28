@@ -27,6 +27,8 @@ import type {
 	DocHandle,
 	DocumentSourceDescriptor,
 	PageText,
+	PageTextLayer,
+	Rect,
 	RenderTileRequest,
 	RenderedTile,
 	SearchBatch,
@@ -38,6 +40,7 @@ import {
 	type WireDoc,
 	type WireError,
 	type WirePageText,
+	type WirePageTextLayer,
 	type WireSearchBatch,
 	type WireTile,
 	base64ErrorReason,
@@ -306,6 +309,32 @@ export function createEnginePort(link: EngineLink): EnginePort {
 			return toPageText(wire);
 		},
 
+		/**
+		 * Character quads for the text layer (SL-4.UI.04).
+		 *
+		 * Same shape as every other engine op here: a message to the WASM
+		 * worker in the offscreen document, which is the same engine the web
+		 * build uses. Nothing is synthesised on this side — the contract in
+		 * `adapter.ts` requires a transport that cannot supply quads to
+		 * *reject* rather than invent them, because a text layer positioned by
+		 * guesswork is a selection that highlights the wrong words, which is
+		 * worse than no selection at all.
+		 *
+		 * Added when UI.04 made `EnginePort.textLayer` required, after EXT.06
+		 * had already been developed against the previous shape. The worker
+		 * side of the op lands with EXT.03; until then the call rejects at the
+		 * transport rather than returning empty quads that would look like a
+		 * page with no text.
+		 */
+		async textLayer(doc, page, requestOptions): Promise<PageTextLayer> {
+			const wire = await call(
+				() => ({ op: "textLayer", doc: doc.id, page }),
+				requestOptions,
+				STAGE_TEXT,
+			);
+			return toPageTextLayer(wire);
+		},
+
 		search(doc, query, searchOptions, requestOptions): AsyncIterable<SearchBatch> {
 			const resolved: SearchOptions = searchOptions ?? {};
 			const batches = stream(
@@ -408,6 +437,70 @@ function toPageText(wire: unknown): PageText {
 		throw AdapterError.badArgument("the engine host returned unreadable page text");
 	}
 	return { page: page.page, text: page.text };
+}
+
+/**
+ * Map the engine host's text layer onto {@link PageTextLayer}.
+ *
+ * Every field is validated rather than cast. A malformed quad would position a
+ * selection highlight somewhere arbitrary while still type-checking, and a
+ * text layer that is subtly wrong is worse than one that is refused — the
+ * caller cannot tell a silent geometry error from correct geometry.
+ */
+function toPageTextLayer(wire: unknown): PageTextLayer {
+	const layer = wire as WirePageTextLayer;
+	if (
+		typeof layer?.page !== "number" ||
+		typeof layer.width !== "number" ||
+		typeof layer.height !== "number" ||
+		typeof layer.text !== "string" ||
+		!Array.isArray(layer.lines)
+	) {
+		throw AdapterError.badArgument("the engine host returned an unreadable text layer");
+	}
+	return {
+		page: layer.page,
+		width: layer.width,
+		height: layer.height,
+		text: layer.text,
+		lowConfidence: layer.lowConfidence === true,
+		lines: layer.lines.map((line) => {
+			if (
+				typeof line?.text !== "string" ||
+				!Array.isArray(line.chars) ||
+				(line.direction !== "ltr" && line.direction !== "rtl")
+			) {
+				throw AdapterError.badArgument("the engine host returned an unreadable text line");
+			}
+			return {
+				text: line.text,
+				rect: toRect(line.rect),
+				direction: line.direction,
+				// Index-aligned with `text` (see TextLayerLine). A mismatch
+				// would desynchronise selection from the copied string, so it
+				// is refused rather than padded or truncated.
+				chars: line.chars.map((char: WirePageTextLayer["lines"][number]["chars"][number]) => {
+					if (typeof char?.advance !== "number") {
+						throw AdapterError.badArgument("the engine host returned an unreadable text character");
+					}
+					return { rect: toRect(char.rect), advance: char.advance, inked: char.inked !== false };
+				}),
+			};
+		}),
+	};
+}
+
+function toRect(value: unknown): Rect {
+	const rect = value as Rect;
+	if (
+		typeof rect?.x !== "number" ||
+		typeof rect.y !== "number" ||
+		typeof rect.width !== "number" ||
+		typeof rect.height !== "number"
+	) {
+		throw AdapterError.badArgument("the engine host returned an unreadable rectangle");
+	}
+	return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
 function isSearchBatch(value: unknown): value is WireSearchBatch {

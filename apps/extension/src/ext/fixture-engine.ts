@@ -29,6 +29,7 @@ import type {
 	DocHandle,
 	DocumentSourceDescriptor,
 	PageText,
+	PageTextLayer,
 	RenderTileRequest,
 	RenderedTile,
 	SearchBatch,
@@ -79,6 +80,14 @@ export function createFixtureEngine(): EnginePort {
 			page: number,
 			options?: AdapterRequestOptions,
 		): Promise<PageText> => mock.engine.extractText(doc, page, options),
+		// UI.04 made `EnginePort.textLayer` required; EXT.06 was developed
+		// against the previous shape. The mock already implements it, so the
+		// fixture forwards rather than inventing a second geometry source.
+		textLayer: (
+			doc: DocHandle,
+			page: number,
+			options?: AdapterRequestOptions,
+		): Promise<PageTextLayer> => mock.engine.textLayer(doc, page, options),
 		search: (
 			doc: DocHandle,
 			query: string,

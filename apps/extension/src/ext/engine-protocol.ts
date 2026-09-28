@@ -180,6 +180,31 @@ export interface WirePageText {
 	readonly text: string;
 }
 
+/**
+ * A page's text layer as the engine host sends it (SL-4.UI.04).
+ *
+ * Structurally the same as the UI's `PageTextLayer`; named separately because it
+ * is untrusted JSON arriving over a port, and every field is validated on the
+ * way in rather than cast.
+ */
+export interface WirePageTextLayer {
+	readonly page: number;
+	readonly width: number;
+	readonly height: number;
+	readonly text: string;
+	readonly lowConfidence?: boolean;
+	readonly lines: readonly {
+		readonly text: string;
+		readonly rect: { x: number; y: number; width: number; height: number };
+		readonly direction: "ltr" | "rtl";
+		readonly chars: readonly {
+			readonly rect: { x: number; y: number; width: number; height: number };
+			readonly advance: number;
+			readonly inked?: boolean;
+		}[];
+	}[];
+}
+
 /** One match, as a character range within a page's text. */
 export interface WireMatch {
 	readonly page: number;

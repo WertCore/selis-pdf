@@ -210,6 +210,13 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 					data: new ArrayBuffer(4),
 				}),
 				extractText: async () => ({ page: 0, text: "" }),
+				// UI.04 made EnginePort.textLayer required; these engine doubles were
+				// written against the previous shape. The op is not on the wire until
+				// EXT.03, so they reject rather than returning empty quads -- the
+				// contract forbids inventing geometry.
+				textLayer: async () => {
+					throw AdapterError.badArgument("textLayer is not implemented by the engine host");
+				},
 				search: async function* () {
 					yield { matches: [], progress: 1, done: true };
 				},
@@ -237,6 +244,13 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 					data: new ArrayBuffer(4),
 				}),
 				extractText: async () => ({ page: 0, text: "" }),
+				// UI.04 made EnginePort.textLayer required; these engine doubles were
+				// written against the previous shape. The op is not on the wire until
+				// EXT.03, so they reject rather than returning empty quads -- the
+				// contract forbids inventing geometry.
+				textLayer: async () => {
+					throw AdapterError.badArgument("textLayer is not implemented by the engine host");
+				},
 				search: async function* () {
 					yield { matches: [], progress: 1, done: true };
 				},
@@ -264,6 +278,7 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 				},
 				renderTile: engine.renderTile,
 				extractText: engine.extractText,
+				textLayer: engine.textLayer,
 				search: engine.search,
 			},
 		});
