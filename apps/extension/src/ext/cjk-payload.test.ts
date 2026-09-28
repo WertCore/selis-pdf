@@ -12,19 +12,19 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	CHROME_STORAGE_LOCAL_QUOTA_BYTES,
 	CJK_BROTLI_BUDGETS,
 	CJK_KEY_PREFIX,
 	CJK_MANIFEST_SCHEMA,
 	CJK_PAYLOAD_SOURCE,
 	CJK_STORAGE_BUDGET_BYTES,
-	CHROME_STORAGE_LOCAL_QUOTA_BYTES,
 	type CjkManifest,
 	CjkPayloadError,
 	type CjkSource,
 	type CjkStorage,
 	createChromeStorageLocal,
-	installedCjkIds,
 	installCjkChunk,
+	installedCjkIds,
 	parseCjkManifest,
 	readCjkChunk,
 	removeCjkChunk,
@@ -63,12 +63,20 @@ async function payload(id: string, rawBytes: number, brotliBytes: number) {
 	const bytes = new Uint8Array(rawBytes).fill(0x41);
 	return {
 		bytes,
-		row: { id, file: `cjk/${id}.ttf`, raw_bytes: rawBytes, brotli_bytes: brotliBytes, sha256: await sha256(bytes) },
+		row: {
+			id,
+			file: `cjk/${id}.ttf`,
+			raw_bytes: rawBytes,
+			brotli_bytes: brotliBytes,
+			sha256: await sha256(bytes),
+		},
 	};
 }
 
 /** A manifest over the given rows, shaped as `xtask cjk-build` writes it. */
-async function manifestOf(rows: readonly { id: string; raw_bytes: number; brotli_bytes: number; sha256: string }[]): Promise<CjkManifest> {
+async function manifestOf(
+	rows: readonly { id: string; raw_bytes: number; brotli_bytes: number; sha256: string }[],
+): Promise<CjkManifest> {
 	const core = rows.find((row) => row.id === "core") ?? rows[0];
 	if (core === undefined) {
 		throw new Error("a manifest needs at least the core");
@@ -84,10 +92,7 @@ async function manifestOf(rows: readonly { id: string; raw_bytes: number; brotli
 }
 
 /** A source serving exactly the rows it was built from. */
-function sourceOf(
-	manifest: CjkManifest,
-	files: ReadonlyMap<string, Uint8Array>,
-): CjkSource {
+function sourceOf(manifest: CjkManifest, files: ReadonlyMap<string, Uint8Array>): CjkSource {
 	return {
 		manifest: async () => JSON.parse(JSON.stringify(manifest)) as unknown,
 		bytes: async (file) => {
@@ -117,20 +122,24 @@ describe("EXT.05 the CJK payload is a post-install download, not a bundled asset
 		// outcome is a typed refusal; a placeholder URL would be remote content
 		// in an ADR-P0028 package and a claim that a payload exists.
 		expect(await codeOf(() => CJK_PAYLOAD_SOURCE.manifest())).toBe("cjk-no-producer");
-		expect(await codeOf(async () => CJK_PAYLOAD_SOURCE.bytes({
-			id: "core",
-			file: "cjk/core.ttf",
-			raw_bytes: 1,
-			brotli_bytes: 1,
-			sha256: "0".repeat(64),
-		}))).toBe("cjk-no-producer");
+		expect(
+			await codeOf(async () =>
+				CJK_PAYLOAD_SOURCE.bytes({
+					id: "core",
+					file: "cjk/core.ttf",
+					raw_bytes: 1,
+					brotli_bytes: 1,
+					sha256: "0".repeat(64),
+				}),
+			),
+		).toBe("cjk-no-producer");
 	});
 
 	it("refuses to install anything while the shipped source refuses", async () => {
 		const storage = memoryStorage();
-		expect(await codeOf(() => installCjkChunk({ storage, source: CJK_PAYLOAD_SOURCE, id: "core" }))).toBe(
-			"cjk-no-producer",
-		);
+		expect(
+			await codeOf(() => installCjkChunk({ storage, source: CJK_PAYLOAD_SOURCE, id: "core" })),
+		).toBe("cjk-no-producer");
 		expect(await installedCjkIds(storage)).toEqual([]);
 	});
 
@@ -155,17 +164,29 @@ describe("EXT.05 the manifest is validated before anything is fetched", () => {
 	});
 
 	it("rejects a chunk whose integrity pin is not a sha256", () => {
-		const row = { id: "core", file: "cjk/core.ttf", raw_bytes: 10, brotli_bytes: 5, sha256: "nope" };
-		expect(() =>
-			parseCjkManifest({ schema: CJK_MANIFEST_SCHEMA, core: row, chunks: [] }),
-		).toThrow(/sha256/);
+		const row = {
+			id: "core",
+			file: "cjk/core.ttf",
+			raw_bytes: 10,
+			brotli_bytes: 5,
+			sha256: "nope",
+		};
+		expect(() => parseCjkManifest({ schema: CJK_MANIFEST_SCHEMA, core: row, chunks: [] })).toThrow(
+			/sha256/,
+		);
 	});
 
 	it("rejects non-numeric sizes, which would make every budget a comparison against NaN", () => {
-		const row = { id: "core", file: "cjk/core.ttf", raw_bytes: "10", brotli_bytes: 5, sha256: "a".repeat(64) };
-		expect(() =>
-			parseCjkManifest({ schema: CJK_MANIFEST_SCHEMA, core: row, chunks: [] }),
-		).toThrow(/non-numeric/);
+		const row = {
+			id: "core",
+			file: "cjk/core.ttf",
+			raw_bytes: "10",
+			brotli_bytes: 5,
+			sha256: "a".repeat(64),
+		};
+		expect(() => parseCjkManifest({ schema: CJK_MANIFEST_SCHEMA, core: row, chunks: [] })).toThrow(
+			/non-numeric/,
+		);
 	});
 });
 
@@ -200,7 +221,9 @@ describe("EXT.05 the store installs, verifies, bounds and removes", () => {
 		// through, and the reason the store hashes.
 		const tampered = new Uint8Array(core.bytes).fill(0x42);
 		const source = sourceOf(manifest, new Map([[core.row.file, tampered]]));
-		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe("cjk-integrity");
+		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe(
+			"cjk-integrity",
+		);
 		expect(storage.written.size).toBe(0);
 	});
 
@@ -210,7 +233,9 @@ describe("EXT.05 the store installs, verifies, bounds and removes", () => {
 		const storage = memoryStorage();
 		const short = new Uint8Array(16);
 		const source = sourceOf(manifest, new Map([[core.row.file, short]]));
-		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe("cjk-integrity");
+		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe(
+			"cjk-integrity",
+		);
 		expect(storage.written.size).toBe(0);
 	});
 
@@ -221,7 +246,9 @@ describe("EXT.05 the store installs, verifies, bounds and removes", () => {
 		const manifest = await manifestOf([fat.row]);
 		const storage = memoryStorage();
 		const source = sourceOf(manifest, new Map([[fat.row.file, fat.bytes]]));
-		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe("cjk-over-budget");
+		expect(await codeOf(() => installCjkChunk({ storage, source, id: "core" }))).toBe(
+			"cjk-over-budget",
+		);
 		expect(storage.written.size).toBe(0);
 	});
 
@@ -324,11 +351,10 @@ describe("EXT.05 the chrome.storage.local binding", () => {
 			await storage.remove(key);
 			expect(await storage.get(key)).toBeNull();
 		} finally {
-			if (previous === undefined) {
-				delete globals.chrome;
-			} else {
-				globals.chrome = previous;
-			}
+			// Assigned rather than deleted: `delete` is a lint error here, and
+			// leaving an explicit `undefined` behind is equivalent for every
+			// reader of `globalThis.chrome` (it is an optional chain).
+			globals.chrome = previous;
 		}
 	});
 });

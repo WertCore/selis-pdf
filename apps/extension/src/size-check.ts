@@ -13,16 +13,12 @@
  * bytes and sets an exit code.
  */
 
-import { brotliCompressSync } from "node:zlib";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { brotliCompressSync } from "node:zlib";
 import { BUILD_WORKSPACE } from "./bundle-paths.js";
-import {
-	type SizeMeasurement,
-	describeSizeReport,
-	evaluateSizeBudget,
-} from "./size-budget.js";
+import { type SizeMeasurement, describeSizeReport, evaluateSizeBudget } from "./size-budget.js";
 
 /**
  * The package root, found by walking up from this module.

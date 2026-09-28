@@ -20,15 +20,10 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { brotliCompressSync, constants } from "node:zlib";
+import { constants, brotliCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { BUILD_WORKSPACE, PACKAGE_ENTRIES, SHIPPED_FILES } from "./bundle-paths.js";
-import {
-	type BundleFile,
-	describeViolations,
-	isBinaryAsset,
-	scanBundle,
-} from "./bundle-scan.js";
+import { type BundleFile, describeViolations, isBinaryAsset, scanBundle } from "./bundle-scan.js";
 import { CORE_CHUNK_PATH } from "./ext/wasm-worker.js";
 import {
 	CORE_CHUNK_PACKAGE_PATH,
@@ -58,7 +53,11 @@ const ENGINE_RAW = 4_135_676;
 const ENGINE_BROTLI = 1_313_250;
 
 /** One measured file. */
-function file(path: string, rawBytes: number, brotliBytes: number | null = rawBytes): SizeMeasurement {
+function file(
+	path: string,
+	rawBytes: number,
+	brotliBytes: number | null = rawBytes,
+): SizeMeasurement {
 	return { path, rawBytes, brotliBytes };
 }
 
@@ -78,7 +77,11 @@ function classesOf(measurements: readonly SizeMeasurement[]): SizeFindingClass[]
 }
 
 /** The clean package with one file replaced or added. */
-function withFile(path: string, rawBytes: number, brotliBytes: number | null = rawBytes): SizeMeasurement[] {
+function withFile(
+	path: string,
+	rawBytes: number,
+	brotliBytes: number | null = rawBytes,
+): SizeMeasurement[] {
 	const rest = cleanPackage().filter((m) => m.path !== path);
 	return [...rest, file(path, rawBytes, brotliBytes)];
 }

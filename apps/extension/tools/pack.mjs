@@ -84,11 +84,15 @@ for (const entry of PACKAGE_ENTRIES) {
 		// viewer rendered nothing, and every gate was green.
 		console.error(
 			entry.from === "wasm-artifact"
-				? `pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist.\n` +
-						`       The package carries the engine (SL-4.EXT.05), so this is a build failure, not a skip. Build and optimise it first:\n` +
-						`         cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release\n` +
-						`         wasm-opt -O3 <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm -o <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm\n` +
-						`       (set CARGO_TARGET_DIR if the build is redirected; \`cargo xtask size-check\` does both steps and measures the result)`
+				? [
+						`pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist.`,
+						"       The package carries the engine (SL-4.EXT.05), so this is a build failure, not a skip.",
+						"       Build and optimise it first:",
+						"         cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release",
+						"         wasm-opt -O3 <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm \\",
+						"                   -o <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm",
+						"       (set CARGO_TARGET_DIR if the build is redirected; `cargo xtask size-check` does both steps)",
+					].join("\n")
 				: `pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist`,
 		);
 		process.exit(1);
