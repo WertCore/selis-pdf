@@ -50,7 +50,9 @@ pub mod width;
 pub use agl::{glyph_to_unicode, AglEntry, AGL};
 
 pub use cid::{map_cid, resolve_cid_widths, CidToGid, CidWidthEntry, CidWidths};
-pub use cjk::build::{build_set, source_codepoints, CjkBuiltChunk, CjkSetBuild, CORE_SAMPLE_HANZI};
+pub use cjk::build::{
+    build_set, source_codepoints, CjkBuiltChunk, CjkSetBuild, CORE_SAMPLE_HANZI, SELIS_CJK_NAME,
+};
 pub use cjk::set::{CjkChunkSource, CjkFontSet, CjkGlyph, CjkSnapshot};
 pub use cjk::{chunk_by_id, chunk_for, is_cjk, CjkChunk, CjkSlot, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
@@ -68,7 +70,7 @@ pub use outline::{
 pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
 pub use recover::{Recovery, RecoveryConfidence, TextRecovery};
 pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};
-pub use subset::{add_glyph, subset_ttf, GlyphSet};
+pub use subset::{add_glyph, subset_ttf, subset_ttf_named, GlyphSet, SubsetName};
 pub use type1::{
     glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
     Type1Font,

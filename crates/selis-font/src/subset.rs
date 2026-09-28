@@ -46,6 +46,140 @@ pub struct GlyphSet {
 ///
 /// `BUDGET_BYTES` when exhausted. A broken font → `Ok(None)`.
 pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Result<Option<Bytes>> {
+    subset_ttf_named(data, keep, None, g)
+}
+
+/// The name a subset is published under (SL-3.FONT.10).
+///
+/// A subset is a **modified version** of its source, and the SIL OFL that
+/// covers every bundled font reserves the source's family name: shipping
+/// `NotoSansSC`-derived bytes under the name "Noto Sans SC" is exactly what
+/// the reserved-name clause forbids. So the CJK builder renames every file it
+/// emits through this struct, and the payload's provenance lives in
+/// `assets/cjk/PROVENANCE.md` and the manifest's `source` row instead of in a
+/// `name` table that claims to be somebody else's font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubsetName {
+    /// Name ID 1 — the family (e.g. `Selis CJK`).
+    pub family: &'static str,
+    /// Name ID 2 — the style within the family (e.g. `Regular`).
+    pub subfamily: &'static str,
+}
+
+impl SubsetName {
+    /// The name IDs written by [`build_name_table`]: 1 family, 2 subfamily,
+    /// 4 full name, 6 PostScript name. Deliberately *not* the vendor URL,
+    /// copyright or licence strings (IDs 0, 5, 7, 8, 9, 11–13): a subset is
+    /// not the source font, so it does not get to restate the source's
+    /// identity. The licence travels with the payload directory.
+    fn records(self) -> [(&'static str, u16); 4] {
+        let full = concat_static(self.family, &format!(" {}", self.subfamily));
+        [
+            (self.family, 1),
+            (self.subfamily, 2),
+            (full, 4),
+            (postscript_name(self.family, self.subfamily), 6),
+        ]
+    }
+}
+
+/// Build a `name` table (format 0, Windows/Unicode BMP, US English) carrying
+/// only `name`'s family/style records.
+///
+/// The source's own `name` table is *replaced*, never appended to: a subset
+/// that kept "Noto Sans SC" in it would be misidentifying itself, and one
+/// that kept the source's copyright string would be claiming a licence
+/// statement the subsetter has no standing to reissue.
+fn build_name_table(name: SubsetName) -> Vec<u8> {
+    let records = name.records();
+    let count = u16::try_from(records.len()).unwrap_or(u16::MAX);
+    let header = 6usize.saturating_add(usize::from(count).saturating_mul(12));
+    let mut storage: Vec<u8> = Vec::new();
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&0u16.to_be_bytes()); // format 0
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&u16::try_from(header).unwrap_or(u16::MAX).to_be_bytes());
+    for (value, id) in records {
+        let mut utf16: Vec<u8> = Vec::new();
+        for unit in value.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_be_bytes());
+        }
+        let length = u16::try_from(utf16.len()).unwrap_or(u16::MAX);
+        let offset = u16::try_from(storage.len()).unwrap_or(u16::MAX);
+        // platformID 3 (Windows), encodingID 1 (Unicode BMP),
+        // languageID 0x0409 (en-US), nameID.
+        for field in [3u16, 1, 0x0409, id, length, offset] {
+            out.extend_from_slice(&field.to_be_bytes());
+        }
+        storage.extend_from_slice(&utf16);
+    }
+    out.extend_from_slice(&storage);
+    out
+}
+
+/// A PostScript name (name ID 6): ASCII, no spaces, no punctuation beyond
+/// the hyphen and the period.
+fn postscript_name(family: &str, subfamily: &str) -> &'static str {
+    let cleaned: String = format!("{family}-{subfamily}")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.')
+        .collect();
+    concat_static(&cleaned, "")
+}
+
+/// Concatenate two `&str` into a `&'static str`.
+///
+/// Every call site passes either a literal or a value derived only from
+/// literals, and the set of such values is finite per call site — so the
+/// allocation is made once per distinct input and reused, not leaked per
+/// call. A `OnceLock` per call site would need a generic; a small bounded
+/// cache of the last result is enough because a subset build names the same
+/// family for every file it emits.
+fn concat_static(a: &str, b: &str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<Vec<(String, &'static str)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    let key = format!("{a}\u{1}{b}");
+    let Ok(mut guard) = cache.lock() else {
+        // A poisoned cache only costs the optimisation, never correctness.
+        return Box::leak((a.to_owned() + b).into_boxed_str());
+    };
+    if let Some((_, leaked)) = guard.iter().find(|(k, _)| *k == key) {
+        return *leaked;
+    }
+    let joined = a.to_string() + b;
+    let leaked: &'static str = Box::leak(joined.into_boxed_str());
+    // Bounded: the builder names one family per run, and a pathological
+    // caller cannot grow this without unbounded distinct inputs.
+    if guard.len() < 64 {
+        guard.push((key, leaked));
+    }
+    leaked
+}
+
+/// Subset a TrueType font to `keep`, **renaming** the output to `name`.
+///
+/// Identical to [`subset_ttf`] except for the `name` table: the source's is
+/// replaced by a fresh table carrying only the family/style records of `name`
+/// (see [`SubsetName`]). `None` keeps the source's `name` table verbatim,
+/// which is what the editing path (ADR-P0024) wants — a re-embedded subset
+/// still is the document's own font.
+///
+/// # Budget
+///
+/// Charges the output font bytes (document-derived; the output is bounded by
+/// the input).
+///
+/// # Malformed Input
+///
+/// `BUDGET_BYTES` when exhausted. A broken font, or one with no `name` record
+/// to write, → `Ok(None)`.
+pub fn subset_ttf_named(
+    data: &Bytes,
+    keep: &GlyphSet,
+    name: Option<SubsetName>,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Bytes>> {
     let font = match FontRef::new(data.as_slice()) {
         Ok(f) => f,
         Err(_) => return Ok(None),
@@ -153,10 +287,16 @@ pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Res
     // Build post (format 3.0: no names).
     let new_post = build_post_format3();
 
-    let name_data = font
-        .table_data(Tag::new(b"name"))
-        .map(|d| d.as_bytes())
-        .unwrap_or(&[]);
+    // The `name` table: the source's own, or a fresh table naming the subset
+    // (see `SubsetName` — an OFL reserved-name rename, not a re-issue of the
+    // source's copyright and vendor records).
+    let name_data = match name {
+        Some(n) => build_name_table(n),
+        None => font
+            .table_data(Tag::new(b"name"))
+            .map(|d| d.as_bytes().to_vec())
+            .unwrap_or_default(),
+    };
     let tables: [(&str, &[u8]); 9] = [
         ("cmap", &new_cmap),
         ("glyf", &new_glyf),
@@ -165,7 +305,7 @@ pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Res
         ("hmtx", &new_hmtx),
         ("loca", &new_loca_bytes(&new_loca_offsets)),
         ("maxp", &new_maxp),
-        ("name", name_data),
+        ("name", &name_data),
         ("post", &new_post),
     ];
     // assemble_sfnt charges the output buffer through the sandbox allocator.

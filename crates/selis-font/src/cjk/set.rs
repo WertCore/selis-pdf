@@ -131,12 +131,13 @@ pub trait CjkChunkSource {
 }
 
 /// The resident CJK fallback set: the subsetted core, the chunks loaded so
-/// far, the chunks a render asked for but did not find, and an invalidation
-/// [`revision`](Self::revision).
+/// far, the chunks a render asked for but did not find, the ranges the payload
+/// provably cannot serve, and an invalidation [`revision`](Self::revision).
 #[derive(Debug, Clone)]
 pub struct CjkFontSet {
     resident: CjkSnapshot,
     requested: BTreeSet<&'static str>,
+    unavailable: BTreeSet<&'static str>,
     revision: u64,
 }
 
@@ -147,6 +148,7 @@ impl CjkFontSet {
         Self {
             resident: CjkSnapshot::core_only(core),
             requested: BTreeSet::new(),
+            unavailable: BTreeSet::new(),
             revision: 0,
         }
     }
@@ -218,6 +220,9 @@ impl CjkFontSet {
         }
         self.resident.chunks.insert(chunk.id, bytes);
         self.requested.remove(chunk.id);
+        // Bytes beat a stale manifest: a payload that did ship this file is
+        // authoritative over one that said it could not.
+        self.unavailable.remove(chunk.id);
         self.revision = self.revision.saturating_add(1);
         true
     }
@@ -244,10 +249,17 @@ impl CjkFontSet {
     /// Record that a render needed the chunk addressing `code` but did not
     /// find it resident. Returns the chunk id, or `None` when the code is
     /// non-CJK, already covered (the core answered it, or some set member
-    /// does), or its covering chunk is already resident. That last rule is
-    /// the fetch-loop guard: a code the resident chunk font genuinely lacks
-    /// (a source gap — Noto's extensions have holes) renders `.notdef` with
-    /// no repeated download.
+    /// does), its covering chunk is already resident, or the payload was marked
+    /// unable to serve that range. That last rule is the fetch-loop guard for
+    /// a range the source font does not cover at all (Noto Sans SC has no
+    /// Hangul): the code renders `.notdef` with no repeated download, and
+    /// [`unavailable_ids`](Self::unavailable_ids) is what the shell reports to
+    /// the user as "this payload has no Korean" rather than "still loading".
+    ///
+    /// The rule before it is the fetch-loop guard for a *hole inside* a range
+    /// the source does cover (Noto's extensions have holes): a code the
+    /// resident chunk font genuinely lacks renders `.notdef` with no repeated
+    /// download either.
     pub fn request(&mut self, code: u32) -> Option<&'static str> {
         let chunk = chunk_for(code)?;
         if self.resident.covers(code) {
@@ -256,16 +268,57 @@ impl CjkFontSet {
         if self.resident.chunks.contains_key(chunk.id) {
             return None;
         }
+        if self.unavailable.contains(chunk.id) {
+            return None; // no file exists for this range: nothing to ask for
+        }
         self.requested.insert(chunk.id);
         Some(chunk.id)
     }
 
+    /// Record that the payload this set is fed from has **no file** for these
+    /// ranges — the manifest's `served_by: null` rows, which the build
+    /// reports as [`unserved`](super::build::CjkSetBuild::unserved).
+    ///
+    /// This is the defined behaviour for "a CJK font the system does not
+    /// have": a Noto Sans SC payload has no Hangul syllable, so a Korean
+    /// document's 가 (U+AC00) paints `.notdef` — permanently, deterministically,
+    /// and *without* the shell being told to fetch `hangul-1` on every
+    /// repaint. Without this the set would queue an id that can never be
+    /// satisfied, and a loader would retry a 404 forever.
+    ///
+    /// Unknown ids are ignored; a marked-unavailable id that is later
+    /// [`provide`](Self::provide)d is un-marked (bytes beat a stale manifest).
+    /// Marking does not bump [`revision`](Self::revision): it changes no
+    /// pixels, only what is worth asking for.
+    pub fn mark_unavailable(&mut self, ids: &[&str]) {
+        for id in ids {
+            if let Some(chunk) = chunk_by_id(id) {
+                let _ = self.unavailable.insert(chunk.id);
+                // A queue entry for a range that cannot exist is not a fetch.
+                let _ = self.requested.remove(chunk.id);
+            }
+        }
+    }
+
+    /// The ranges this set was told the payload cannot serve, in table order.
+    #[must_use]
+    pub fn unavailable_ids(&self) -> Vec<&'static str> {
+        super::CHUNKS
+            .iter()
+            .filter(|c| self.unavailable.contains(c.id))
+            .map(|c| c.id)
+            .collect()
+    }
+
     /// Record a needed chunk by id (from a walk's collected pending set).
-    /// Unknown or already-resident ids are ignored.
+    /// Unknown, already-resident, or unavailable ids are ignored.
     pub fn request_chunk(&mut self, id: &str) {
         let Some(chunk) = chunk_by_id(id) else {
             return;
         };
+        if self.unavailable.contains(chunk.id) {
+            return; // the payload has no such file: never queue a fetch
+        }
         if !self.resident.chunks.contains_key(chunk.id) {
             self.requested.insert(chunk.id);
         }
@@ -380,7 +433,7 @@ mod tests {
 
     #[test]
     fn core_only_set_resolves_core_codes_only() {
-        let source = source_font(&[0x3042, 0x4E00, 0x9BCA]);
+        let source = source_font(&[0x3042, 0x4E00, 0x6F00]);
         let core = subset_of(&source, &[0x3042, 0x4E00]);
         let set = CjkFontSet::new(core.clone());
         let g = set.resolve(0x4E00).expect("core hit");
@@ -391,13 +444,13 @@ mod tests {
             glyph_id_for_char(&core, 0x4E00).expect("core maps 一")
         );
         assert!(set.covers(0x3042));
-        assert!(!set.covers(0x9BCA));
+        assert!(!set.covers(0x6F00));
     }
 
     #[test]
     fn provide_validates_rejects_and_bumps_revision() {
-        let chunk = subset_of(&source_font(&[0x9BCA]), &[0x9BCA]);
-        let other = subset_of(&source_font(&[0x9BCA, 0x9BCB]), &[0x9BCA, 0x9BCB]);
+        let chunk = subset_of(&source_font(&[0x6F00]), &[0x6F00]);
+        let other = subset_of(&source_font(&[0x6F00, 0x6F01]), &[0x6F00, 0x6F01]);
         let mut set = CjkFontSet::new(Bytes::new());
         assert_eq!(set.revision(), 0);
         // Unknown id: rejected.
@@ -411,7 +464,7 @@ mod tests {
         // Valid chunk: adopted, revision bumps.
         assert!(set.provide("ideographs-4", chunk.clone()));
         assert_eq!(set.revision(), 1);
-        assert!(set.covers(0x9BCA));
+        assert!(set.covers(0x6F00));
         // Identical re-provide: no-op, no revision bump.
         assert!(!set.provide("ideographs-4", chunk));
         assert_eq!(set.revision(), 1);
@@ -426,8 +479,8 @@ mod tests {
         let mut set = CjkFontSet::new(Bytes::new());
         assert_eq!(set.request(0x41), None, "non-CJK asks for nothing");
         assert_eq!(set.request(0xAC00), Some("hangul-1"));
-        assert_eq!(set.request(0x9BCA), Some("ideographs-4"));
-        assert_eq!(set.request(0x9BDB), Some("ideographs-4"), "dedupes");
+        assert_eq!(set.request(0x6F00), Some("ideographs-4"));
+        assert_eq!(set.request(0x6F02), Some("ideographs-4"), "dedupes");
         assert_eq!(
             set.queued(),
             vec!["ideographs-4", "hangul-1"],
@@ -455,10 +508,10 @@ mod tests {
 
     #[test]
     fn drain_adopts_served_and_keeps_unserved_pending() {
-        let source = source_font(&[0x9BCA, 0xAC00]);
-        let han = subset_of(&source, &[0x9BCA]);
+        let source = source_font(&[0x6F00, 0xAC00]);
+        let han = subset_of(&source, &[0x6F00]);
         let mut set = CjkFontSet::new(Bytes::new());
-        set.request(0x9BCA);
+        set.request(0x6F00);
         set.request(0xAC00);
         let mut src = MapSource {
             map: BTreeMap::from([("ideographs-4", han)]),
@@ -466,7 +519,7 @@ mod tests {
         };
         assert_eq!(set.drain_requested(&mut src), 1);
         assert_eq!(src.fetches, 2, "both pending ids were asked once");
-        assert!(set.covers(0x9BCA));
+        assert!(set.covers(0x6F00));
         assert!(!set.covers(0xAC00));
         assert_eq!(
             set.take_requested(),
@@ -480,11 +533,52 @@ mod tests {
     fn loaded_but_uncovered_codes_stop_reserving_forever() {
         // ideographs-4 resident without the code: request() must say "nothing
         // to fetch" so a missing-in-source character cannot loop downloads.
-        let chunk = subset_of(&source_font(&[0x9BCA]), &[0x9BCA]);
+        let chunk = subset_of(&source_font(&[0x6F00]), &[0x6F00]);
         let mut set = CjkFontSet::new(Bytes::new());
         set.provide("ideographs-4", chunk);
-        assert!(!set.covers(0x9BDB));
-        assert_eq!(set.request(0x9BDB), None);
+        assert!(!set.covers(0x6F02));
+        assert_eq!(set.request(0x6F02), None);
+    }
+
+    /// "The payload has no Korean" — the defined, tested behaviour for a CJK
+    /// range the source font does not cover at all (SL-3.FONT.10's measured
+    /// Noto Sans SC result: zero Hangul syllables, so `hangul-1` has no file).
+    ///
+    /// Without the mark, `request` would queue an id no fetch can satisfy and
+    /// a shell would retry a 404 on every repaint; with it, the queue stays
+    /// empty, the code stays `.notdef`, and the shell can *name* the reason.
+    #[test]
+    fn an_unavailable_range_is_never_requested_and_stays_notdef() {
+        let mut set = CjkFontSet::new(Bytes::new());
+        set.mark_unavailable(&["hangul-1", "no-such-chunk"]);
+        assert_eq!(set.unavailable_ids(), vec!["hangul-1"], "unknown ids ignored");
+        assert_eq!(set.request(0xAC00), None, "가: nothing to fetch");
+        assert!(set.queued().is_empty(), "and nothing is queued");
+        set.request_chunk("hangul-1");
+        assert!(set.queued().is_empty(), "nor by id");
+        assert!(!set.covers(0xAC00), "the glyph is still notdef");
+        // Marking is not a pixel change: no repaint is owed.
+        assert_eq!(set.revision(), 0);
+        // A payload that did ship the file overrides the manifest.
+        let chunk = subset_of(&source_font(&[0xAC00]), &[0xAC00]);
+        assert!(set.provide("hangul-1", chunk));
+        assert!(set.covers(0xAC00));
+        assert!(set.unavailable_ids().is_empty());
+    }
+
+    /// An id already queued before the mark is dropped: the manifest is read
+    /// once, and a stale queue must not outlive it.
+    #[test]
+    fn marking_drops_an_already_queued_id() {
+        let mut set = CjkFontSet::new(Bytes::new());
+        assert_eq!(set.request(0xAC00), Some("hangul-1"));
+        assert_eq!(set.queued(), vec!["hangul-1"]);
+        set.mark_unavailable(&["hangul-1"]);
+        assert_eq!(
+            set.take_requested(),
+            Vec::<&'static str>::new(),
+            "a queue entry for an impossible chunk is not a fetch"
+        );
     }
 
     #[test]
@@ -503,14 +597,14 @@ mod tests {
 
     #[test]
     fn snapshot_is_immutable_across_provides() {
-        let chunk = subset_of(&source_font(&[0x9BCA]), &[0x9BCA]);
+        let chunk = subset_of(&source_font(&[0x6F00]), &[0x6F00]);
         let mut set = CjkFontSet::new(Bytes::new());
         let walk_view = set.snapshot();
-        assert!(!walk_view.covers(0x9BCA));
+        assert!(!walk_view.covers(0x6F00));
         set.provide("ideographs-4", chunk);
         // The walk's snapshot keeps pre-provide pixels…
-        assert!(!walk_view.covers(0x9BCA));
+        assert!(!walk_view.covers(0x6F00));
         // …while the next walk's snapshot sees the chunk.
-        assert!(set.snapshot().covers(0x9BCA));
+        assert!(set.snapshot().covers(0x6F00));
     }
 }
