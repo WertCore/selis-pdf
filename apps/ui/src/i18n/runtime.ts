@@ -100,12 +100,12 @@
  */
 
 import {
+	type MessageTemplate,
+	type MessageValues,
 	formatNumber,
 	interpolate,
 	isBlankTemplate,
 	isMessageTemplate,
-	type MessageTemplate,
-	type MessageValues,
 	pluralCategory,
 } from "./message.js";
 
@@ -314,8 +314,6 @@ export interface MessageRuntimeOptions {
 	readonly onGap?: ((gap: MessageGap) => void) | undefined;
 }
 
-
-
 /** Normalise a tag for comparison: `de_AT` is `de-at`. */
 function canonical(tag: string): string {
 	return tag.trim().replaceAll("_", "-").toLowerCase();
@@ -386,9 +384,7 @@ export function createMessageRuntime(options: MessageRuntimeOptions): MessageRun
 				throw new I18nConfigurationError(`${tag}: key "${key}" is not namespace.segment`);
 			}
 			if (!isMessageTemplate(template)) {
-				throw new I18nConfigurationError(
-					`${tag}: "${key}" is not a string or a plural message`,
-				);
+				throw new I18nConfigurationError(`${tag}: "${key}" is not a string or a plural message`);
 			}
 			if (tag === sourceTag && isBlankTemplate(template)) {
 				throw new I18nConfigurationError(
@@ -568,7 +564,10 @@ export function createMessageRuntime(options: MessageRuntimeOptions): MessageRun
 				// Merged over the *requested* locale, so an override handed to a
 				// German runtime corrects the German rather than the English it
 				// would have been merged over by the pre-UI.11 factories.
-				catalogues: { ...catalogues, [requestedTag]: { ...catalogues[requestedTag], ...overrides } },
+				catalogues: {
+					...catalogues,
+					[requestedTag]: { ...catalogues[requestedTag], ...overrides },
+				},
 				declaredKeys: declared,
 				strict,
 				onGap,
@@ -650,7 +649,9 @@ export function negotiateLocale(
 			return byLanguage;
 		}
 	}
-	return available.find((tag) => canonical(tag) === canonical(fallback)) ?? available[0] ?? fallback;
+	return (
+		available.find((tag) => canonical(tag) === canonical(fallback)) ?? available[0] ?? fallback
+	);
 }
 
 /** A `key -> text` function: the shape a DOM fill and a factory both want. */
@@ -668,4 +669,3 @@ export type Formatter = (key: MessageKey, values?: MessageValues) => string;
 export function createFormatter(runtime: MessageRuntime): Formatter {
 	return (key, values) => runtime.t(key, values);
 }
-

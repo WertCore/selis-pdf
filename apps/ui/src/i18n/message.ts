@@ -160,7 +160,6 @@ function foundIn(text: string): string[] {
 	return [...text.matchAll(PLACEHOLDER)].map((match) => match[0]);
 }
 
-
 /**
  * The plural category a count falls into, in `locale`.
  *
@@ -178,11 +177,7 @@ export function pluralCategory(count: number, locale: string): PluralCategory {
 }
 
 /** The variant `locale` uses for `count`, falling back to `other`. */
-export function selectPluralVariant(
-	message: PluralMessage,
-	count: number,
-	locale: string,
-): string {
+export function selectPluralVariant(message: PluralMessage, count: number, locale: string): string {
 	const category = pluralCategory(count, locale);
 	if (category !== "other") {
 		const variant = message[category];
@@ -204,7 +199,6 @@ export function selectPluralVariant(
 export function formatNumber(value: number, locale: string): string {
 	return new Intl.NumberFormat(locale).format(value);
 }
-
 
 /**
  * Fill a template's placeholders from `values`.
@@ -309,4 +303,3 @@ export function isBlankTemplate(template: MessageTemplate): boolean {
 export function sourceTextOf(template: MessageTemplate): string {
 	return typeof template === "string" ? template : template.other;
 }
-

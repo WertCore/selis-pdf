@@ -41,12 +41,12 @@
 import { interpolate } from "../i18n/message.js";
 import { createPseudoCatalogue } from "../i18n/pseudo-locale.js";
 import {
-	PSEUDO_LOCALE,
-	SOURCE_LOCALE,
 	type Catalogue,
 	type CatalogueSet,
 	type MessageGap,
 	type MessageRuntime,
+	PSEUDO_LOCALE,
+	SOURCE_LOCALE,
 	createMessageRuntime,
 } from "../i18n/runtime.js";
 import type { PageFitMode } from "./layout.js";
@@ -624,9 +624,7 @@ export interface ViewerRuntimeOptions {
  * key the code dropped — a rename that missed a file, which is otherwise
  * invisible until somebody reads the file.
  */
-export function createViewerMessageRuntime(
-	options: ViewerRuntimeOptions = {},
-): MessageRuntime {
+export function createViewerMessageRuntime(options: ViewerRuntimeOptions = {}): MessageRuntime {
 	const runtime = createMessageRuntime({
 		locale: options.locale ?? SOURCE_LOCALE,
 		catalogues: { [SOURCE_LOCALE]: EN_VIEWER_CATALOGUE, ...options.catalogues },
@@ -691,4 +689,3 @@ export function createPseudoViewerStrings(): ViewerStrings {
 		strict: true,
 	});
 }
-

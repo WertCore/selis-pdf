@@ -82,9 +82,9 @@ describe("the i18n runtime boundary (SL-4.UI.11)", () => {
 		// The other half of the same property: the catalogues are the viewer's, so
 		// they live in the viewer, and `i18n/` never reaches back for them.
 		const source = readFileSync(join(here, "..", "viewer", "strings.ts"), "utf8");
-		const specifiers = [
-			...source.matchAll(/(?:from|import)\s*"([^"]+)"/g),
-		].map((match) => match[1] ?? "");
+		const specifiers = [...source.matchAll(/(?:from|import)\s*"([^"]+)"/g)].map(
+			(match) => match[1] ?? "",
+		);
 		expect(specifiers).toContain("../i18n/runtime.js");
 		expect(specifiers).toContain("../i18n/pseudo-locale.js");
 	});

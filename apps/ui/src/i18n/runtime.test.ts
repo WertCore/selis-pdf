@@ -68,9 +68,9 @@ describe("namespaces are derived from the key, not declared beside it", () => {
 	it("refuses a key that is not namespace.segment", () => {
 		// Caught at construction rather than at first render, because coverage
 		// reporting and per-component shipping are both derived from the shape.
-		expect(() =>
-			createMessageRuntime({ catalogues: { en: { orphan: "text" } } }),
-		).toThrow(I18nConfigurationError);
+		expect(() => createMessageRuntime({ catalogues: { en: { orphan: "text" } } })).toThrow(
+			I18nConfigurationError,
+		);
 		expect(() => createMessageRuntime({ catalogues: { en: { orphan: "text" } } })).toThrow(
 			/not namespace.segment/,
 		);
@@ -170,7 +170,6 @@ describe("coverage: what a locale has actually translated", () => {
 		expect(runtime().coverage().translated).toBe(3);
 	});
 });
-
 
 describe("tier 3 — a key nothing has, the documented answer", () => {
 	const orphan = "pageList.page.doomed";
@@ -272,7 +271,13 @@ describe("stale keys: a rename that missed a file", () => {
 			declaredKeys: ["a.b"],
 		});
 		expect(en.gaps()).toEqual([
-			{ kind: "stale", key: "a.renamed", namespace: "a", locale: "de", detail: "not declared by this build" },
+			{
+				kind: "stale",
+				key: "a.renamed",
+				namespace: "a",
+				locale: "de",
+				detail: "not declared by this build",
+			},
 		]);
 	});
 
@@ -292,7 +297,6 @@ describe("stale keys: a rename that missed a file", () => {
 		expect(en.keys).toEqual(["a.b", "a.extra"]);
 	});
 });
-
 
 describe("other gaps the runtime records rather than swallows", () => {
 	const COUNTED: Catalogue = {
@@ -350,7 +354,6 @@ describe("other gaps the runtime records rather than swallows", () => {
 	});
 });
 
-
 describe("a host supplies another locale", () => {
 	it("maps what the host asked for onto what the build ships", () => {
 		const available = ["en", "de", "pt-BR"];
@@ -405,7 +408,6 @@ describe("a host supplies another locale", () => {
 	});
 });
 
-
 describe("the host port (SL-4.UI.11's `PlatformAdapter.locale`)", () => {
 	it("reports the host's own preference when the user has chosen nothing", () => {
 		const adapter = createMockAdapter({ locale: "de-AT" });
@@ -442,10 +444,13 @@ describe("the host port (SL-4.UI.11's `PlatformAdapter.locale`)", () => {
 		// Absence is a real state, and it is the same state the contract suite
 		// already treats as legitimate for `navigation`. A harness with no answer
 		// reports no port, and the viewer ships English.
-		const adapter: { locale?: unknown } = createMockAdapter();
-		delete adapter.locale;
+		//
+		// Built by omission rather than `delete`: the property is genuinely
+		// absent, which is what a host that never implemented the port looks
+		// like, and it keeps the fixture free of a mutation.
+		const { locale: _neverDeclared, ...withoutLocale } = createMockAdapter();
+		const adapter: { locale?: unknown } = withoutLocale;
 		expect(adapter.locale).toBeUndefined();
 		expect(negotiateLocale(undefined, ["en"])).toBe("en");
 	});
 });
-

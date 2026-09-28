@@ -158,4 +158,3 @@ describe("introspection", () => {
 		expect(sourceTextOf({ count: "n", one: "one", other: "other" })).toBe("other");
 	});
 });
-

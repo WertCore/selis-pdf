@@ -167,7 +167,6 @@ describe("the pseudo catalogue", () => {
 	});
 });
 
-
 describe("the pseudo build — CI's half of the DoD", () => {
 	it("renders every string through a catalogue", () => {
 		const strings = renderedStrings();
@@ -184,9 +183,7 @@ describe("the pseudo build — CI's half of the DoD", () => {
 		// provenance, and this proves the *words* are gone too — a catalogue whose
 		// text were somehow passed through would still be bracketed.
 		for (const text of renderedStrings()) {
-			expect(/Document pages|fit page|Next match|No matches|Moved to/.test(text), text).toBe(
-				false,
-			);
+			expect(/Document pages|fit page|Next match|No matches|Moved to/.test(text), text).toBe(false);
 		}
 	});
 
@@ -245,4 +242,3 @@ describe("the pseudo build — CI's half of the DoD", () => {
 		expect(createPseudoViewerStrings().locale).toBe("en-XA");
 	});
 });
-
