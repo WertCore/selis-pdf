@@ -176,3 +176,260 @@ fn rect_of(value: &Obj) -> Option<[f64; 4]> {
     }
     Some(out)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
+    use super::*;
+    use crate::nav::ActionKind;
+    use selis_pdf_cos::XrefEntry;
+    use selis_sandbox::{CancelToken, FixedClock};
+
+    /// Assemble a single-revision document from `(object number, body)` pairs.
+    fn build(objects: &[(u32, &str)]) -> (selis_pdf_cos::Doc, Vec<u8>) {
+        let mut src = Vec::new();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, body) in objects {
+            let offset = u64::try_from(src.len()).unwrap_or(0);
+            src.extend_from_slice(format!("{num} 0 obj\n{body}\nendobj\n").as_bytes());
+            xref.insert(*num, XrefEntry::InUse { offset, gen: 0 });
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        (selis_pdf_cos::Doc::from_single_revision(xref, trailer), src)
+    }
+
+    /// The page map the tests address destinations against: object 3 is page 0.
+    fn one_page() -> PageMap {
+        PageMap::new(&[crate::Page {
+            num: 3,
+            media_box: None,
+            crop_box: None,
+            rotate: None,
+            resources: None,
+            contents: None,
+        }])
+    }
+
+    /// Read page 3's links out of `objects`.
+    fn read_links(objects: &[(u32, &str)]) -> Result<Vec<LinkAnnotation>> {
+        let budget = Budget::unlimited();
+        let (doc, src) = build(objects);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut resolver = Resolver::new(&doc, &src, &budget);
+        page_links(&mut resolver, Ref::new(3, 0), &one_page(), &budget, &mut g)
+    }
+
+    /// **The bare-string file specification**, which is how most writers spell
+    /// `/Launch`. A reader that only understood the dictionary form delivered
+    /// this as a `/Launch` with nothing to show the reader, and "an action
+    /// class with no readable target" is the state ADR-P0020 exists to keep
+    /// distinguishable from "no action".
+    #[test]
+    fn a_launch_keeps_its_class_and_a_string_file_specification() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R] >>"),
+            (
+                20,
+                "<< /Type /Annot /Subtype /Link /Rect [10 700 200 720] \
+                 /A << /S /Launch /F (cmd.exe /c calc.exe) >> >>",
+            ),
+        ])
+        .expect("read");
+        let action = links
+            .first()
+            .and_then(|l| l.action.as_ref())
+            .expect("the action survives");
+        assert_eq!(action.kind, ActionKind::Launch);
+        assert_eq!(action.uri.as_deref(), Some("cmd.exe /c calc.exe"));
+        assert_eq!(action.kind.as_name(), b"Launch");
+    }
+
+    /// The dictionary form, and the `/UF` over `/F` precedence. Both spellings
+    /// have to reach the viewer, because which one a document used is the
+    /// document's business and not a reason to drop the target.
+    #[test]
+    fn a_launch_also_reads_a_dictionary_file_specification() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R] >>"),
+            (20, "<< /Type /Annot /Subtype /Link /A 21 0 R >>"),
+            (21, "<< /S /Launch /F 22 0 R >>"),
+            (22, "<< /Type /Filespec /F (plain.txt) /UF (unicode.txt) >>"),
+        ])
+        .expect("read");
+        let action = links
+            .first()
+            .and_then(|l| l.action.as_ref())
+            .expect("the action survives");
+        assert_eq!(action.kind, ActionKind::Launch);
+        assert_eq!(
+            action.uri.as_deref(),
+            Some("unicode.txt"),
+            "/UF is the spec's first choice"
+        );
+    }
+
+    /// Annotations that are not `/Link` are not the link layer's business, and
+    /// a form field's activation surface must not arrive as a clickable link.
+    #[test]
+    fn a_widget_annotation_is_not_a_link() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R 21 0 R] >>"),
+            (
+                20,
+                "<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /FT /Tx /T (field1) >>",
+            ),
+            (
+                21,
+                "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Dest [3 0 R /Fit] >>",
+            ),
+        ])
+        .expect("read");
+        assert_eq!(links.len(), 1, "the widget is skipped, the link is not");
+        assert_eq!(links.first().map(|l| l.object), Some(Some(21)));
+    }
+
+    /// A link with no `/Rect` and no action is still a link. It is a *dead*
+    /// link, which the viewer can refuse with a reason — a state it can only
+    /// reach if the engine told it the link exists.
+    #[test]
+    fn a_dead_link_is_still_a_link() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R] >>"),
+            (20, "<< /Type /Annot /Subtype /Link >>"),
+        ])
+        .expect("read");
+        let link = links.first().expect("the link");
+        assert!(link.rect.is_none());
+        assert!(link.action.is_none());
+        assert!(link.target.is_none());
+        assert!(link.contents.is_none());
+    }
+
+    /// `/Annots` order is the document's order and the reader hands it back
+    /// unchanged: `index` is what a viewer hands back to mean "this link".
+    #[test]
+    fn links_keep_annots_order_and_their_index() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R 21 0 R 22 0 R] >>"),
+            (20, "<< /Type /Annot /Subtype /Link /Contents (first) >>"),
+            (21, "<< /Type /Annot /Subtype /Link /Contents (second) >>"),
+            (22, "<< /Type /Annot /Subtype /Link /Contents (third) >>"),
+        ])
+        .expect("read");
+        let seen: Vec<(u32, Option<String>)> = links
+            .iter()
+            .map(|l| (l.index, l.contents.clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (0, Some("first".to_owned())),
+                (1, Some("second".to_owned())),
+                (2, Some("third".to_owned())),
+            ]
+        );
+    }
+
+    /// A `/Rect` that is not four numbers is `None`, not a zero box. A
+    /// fabricated zero rectangle would swallow clicks in the corner of the
+    /// page, which is a *worse* defect than a link the viewer cannot place.
+    #[test]
+    fn a_malformed_rect_is_absent_not_zero() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R 21 0 R] >>"),
+            (20, "<< /Type /Annot /Subtype /Link /Rect [0 0 10] >>"),
+            (21, "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>"),
+        ])
+        .expect("read");
+        assert!(links.first().expect("first").rect.is_none());
+        assert_eq!(
+            links.get(1).expect("second").rect,
+            Some([0.0, 0.0, 10.0, 10.0]),
+            "an honest rectangle is verbatim"
+        );
+    }
+
+    /// A page with no `/Annots` has no links. That is a list, not a refusal.
+    #[test]
+    fn a_page_with_no_annots_has_no_links() {
+        let links =
+            read_links(&[(1, "<< /Type /Catalog >>"), (3, "<< /Type /Page >>")]).expect("read");
+        assert!(links.is_empty());
+    }
+
+    /// Object exhaustion is a typed refusal, not a short list. The difference
+    /// between "this page has three links" and "we stopped looking" is the
+    /// difference between a list and a lie.
+    #[test]
+    fn object_exhaustion_is_a_typed_refusal() {
+        let budget = Budget {
+            objects: 1,
+            ..Budget::unlimited()
+        };
+        let objects = [
+            (1u32, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R 21 0 R] >>"),
+            (20, "<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] >>"),
+            (21, "<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] >>"),
+        ];
+        let (doc, src) = build(&objects);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut resolver = Resolver::new(&doc, &src, &budget);
+        let err = page_links(&mut resolver, Ref::new(3, 0), &one_page(), &budget, &mut g)
+            .expect_err("must refuse, not truncate");
+        assert_eq!(err.code(), selis_error::Code::BudgetObjects);
+    }
+
+    /// **An action class this build has never heard of is reported as itself.**
+    /// This is the assertion ADR-P0020 is load-bearing on: the engine reports
+    /// the class, the viewer decides. `/SetState` is a real action this build
+    /// does not model, and coercing it to `None` — or to a neighbouring class —
+    /// would make "the viewer refused this" and "the engine never heard of it"
+    /// the same wire value, and only one of those is a decision anybody made.
+    #[test]
+    fn an_unmodelled_action_class_surfaces_as_itself_never_as_nothing() {
+        let links = read_links(&[
+            (1, "<< /Type /Catalog >>"),
+            (3, "<< /Type /Page /Annots [20 0 R 21 0 R] >>"),
+            (
+                20,
+                "<< /Type /Annot /Subtype /Link /A << /S /SetState /State (x) >> >>",
+            ),
+            // A class this build *does* model keeps its own name, so "unknown"
+            // on the wire means genuinely unmodelled rather than merely unlisted
+            // in a match arm.
+            (
+                21,
+                "<< /Type /Annot /Subtype /Link /A << /S /Rendition /R 22 0 R >> >>",
+            ),
+            (22, "<< /Type /MediaPlayback /D 3 0 R >>"),
+        ])
+        .expect("read");
+        let unmodelled = links
+            .first()
+            .and_then(|l| l.action.as_ref())
+            .expect("an unmodelled class is still an action");
+        assert_eq!(
+            unmodelled.kind,
+            ActionKind::Other(selis_bytes::Bytes::copy_from_slice(b"SetState")),
+            "the document's own name, verbatim"
+        );
+        assert_eq!(unmodelled.kind.as_name(), b"SetState");
+        let modelled = links
+            .get(1)
+            .and_then(|l| l.action.as_ref())
+            .expect("the modelled class is an action too");
+        assert_eq!(modelled.kind, ActionKind::Rendition);
+        assert_eq!(modelled.kind.as_name(), b"Rendition");
+    }
+}
