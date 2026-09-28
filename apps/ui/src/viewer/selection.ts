@@ -478,24 +478,39 @@ function stepVisual(line: LayerLineBox, offset: number, towardsLeft: boolean): n
 	return best;
 }
 
+/** True when boundary `offset` begins a word: an inked character after a gap. */
+function beginsWord(line: LayerLineBox, offset: number): boolean {
+	return offset === 0 || (line.inked[offset] === true && line.inked[offset - 1] === false);
+}
+
 /**
  * The nearest word boundary in the given visual direction, or `null` at the edge.
  *
- * Boundaries that begin a word (the one just before an inked run) are the
- * candidates, so a word move skips the whole run rather than one character —
- * which is what Ctrl+Arrow does, and what makes the move reversible by
- * repeating it in the other direction.
+ * Candidates are the boundaries that *begin* a word — an inked character
+ * immediately after a gap — so a word move skips a whole run rather than one
+ * character, which is what Ctrl+Arrow does. Direction is resolved visually
+ * against `boundaryX`, so this is mirrored correctly on a right-to-left line.
+ *
+ * The candidate test has to look at the character *after* the boundary. Testing
+ * the character *at* it instead selects the boundaries that precede a gap, which
+ * are word *ends*; from the first of those, no further candidate lies in the
+ * same direction, so Ctrl+Arrow lands once and then stops for the rest of the
+ * line. A move that cannot be repeated in the other direction is not a word
+ * move, and reversibility is the property that makes it navigable.
  */
 function stepWord(line: LayerLineBox, offset: number, towardsLeft: boolean): number | null {
 	const here = boundaryX(line, offset);
 	let best: number | null = null;
 	let bestDistance = Number.POSITIVE_INFINITY;
 	for (let candidate = 0; candidate <= line.chars.length; candidate += 1) {
-		const x = boundaryX(line, candidate);
-		if ((x < here - EPSILON) !== towardsLeft) {
+		// The caret's own boundary is never the answer: a caret already sitting
+		// on a word start would otherwise be its own nearest candidate, at
+		// distance zero, and the move would not move at all.
+		if (candidate === offset || !beginsWord(line, candidate)) {
 			continue;
 		}
-		if (line.inked[candidate] !== false) {
+		const x = boundaryX(line, candidate);
+		if ((x < here - EPSILON) !== towardsLeft) {
 			continue;
 		}
 		const distance = Math.abs(here - x);
