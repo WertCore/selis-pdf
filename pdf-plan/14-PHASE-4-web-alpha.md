@@ -106,9 +106,17 @@ proves the engine in the harshest environment, and it costs nothing to distribut
     Nothing tested that, which is why it was added.
   - **Gates:** `cargo test -p selis-io` 68 passed (was 65, +3). The pre-existing `selis-bytes`
     clippy failure is unrelated and left alone (see 14 file header note on the fmt/clippy debt).
-- [ ] **SL-4.WASM.06 — `HttpRangeSource` fetch driver** · deps: WASM.01, SL-0.IO.04 · owner: AI
+- [x] **SL-4.WASM.06 — `HttpRangeSource` fetch driver** · deps: WASM.01, SL-0.IO.04 · owner: AI
   - **Do:** The JS side of range fetching, with CORS handling, an abort signal wired to
     `CancelToken`, and a documented fallback when the origin refuses ranges or omits CORS headers.
+  - **Shipped as a range *exchange* on the wire** — `rangeOpen` / `rangeChunk` / `rangeClose` — not a
+    fire-and-forget fetch, and it is a **leg of the `cargo xtask wasm-protocol` conformance harness**,
+    which is the real proof: it runs over the actual guest ABI, not a unit-test double. The
+    workspace clippy stayed clean at `-D warnings` throughout, including the deny-level hostile-input
+    lints (`expect_used`, `indexing_slicing`, `arithmetic_side_effects`, `unwrap_used`, `panic`).
+  - **What this reuses rather than reimplements:** `SL-0.IO.04`'s `HttpRangeSource` already existed
+    at the IO layer, so this task is the fetch driver that drives it — 2 226 lines across
+    `httprange.rs` (1 347), the guest surface, `protocol.rs`, `worker.rs` and the harness.
 - [ ] **SL-4.WASM.07 — Lazy font chunk loading** · deps: SL-3.FONT.10, WASM.02 · owner: AI+
 - [x] **SL-4.WASM.08 — Deterministic-render CI on WASM** · deps: WASM.03 · owner: AI
   - **DoD:** Headless-browser render of the corpus hash-matches the native render.
@@ -276,7 +284,47 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     would need UI.06's page model. And under ADR-P0021 nothing has been looked at on a screen.
 - [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
-    the full destination shown, and `/Launch` is refused.
+    the full destination shown, and `/Launch` is refused.  - **The UI is complete (7 commits, 5 240 lines, 156 new tests, 440 in `apps/ui`); the box stays open
+    because the ENGINE cannot supply outlines or links yet.** `selis-pdf-doc` has `page_labels` and
+    `parse_destination` but no `/Outlines` walk and no annotation reader, and the WASM.01 protocol
+    has no op for either. So `PlatformAdapter.navigation` is an **optional** port and both real hosts
+    report it absent - the viewer then says *"this host cannot read the document's outline"*,
+    deliberately distinct from *"this document has no outline"*. Everything is proven against the mock
+    only. **This is what a reviewer should weigh: UI.06 is done on the UI side and blocked on the engine
+    side.**
+  - **ADR-P0020 is genuinely enforced, not merely unhandled.** `decideLinkAction` returns a
+    `blocked` decision *with a spoken reason*, so a refused `/Launch` is announced rather than
+    silently swallowed. The disabled classes are checked **before any field is read**, so a `/Launch`
+    carrying a `/URI`-shaped string is still a launch - with a test for exactly that smuggling case.
+    `/GoToR`, `/SubmitForm`, `/ImportData` and `/JS` are all refused. `openExternal` has
+    exactly **one** call site, inside `confirmExternal()`; tests assert a URL never reaches the host
+    unconfirmed, opens exactly once after confirming, opens nothing on cancel, and carries the
+    destination **verbatim** plus a userinfo-stripped host.
+  - **Thumbnails really are the existing ladder.** `thumbnails.ts` imports `planLadder` and
+    `TileScheduler` and instantiates a second *scheduler* (independent cache and budget -
+    deliberate), not a second rasterisation path. The only adaptation is rewriting the request `hint`
+    to `"thumbnail"`, which `tileKey` excludes, so caching is unchanged.
+  - **Key-map overlap resolved differently from UI.05's, and deliberately.** UI.05's
+    `resolveSearchKey` and UI.02's `resolvePageKey` are disjoint, so separate resolvers are free.
+    But `resolveNavigationKey` claims arrows/`Home`/`End` - **the same keys the page list claims**
+    - so the overlap is stated explicitly and separated by a `hasFocus` flag returning `null` for
+    every key when unfocused. Tested on both halves. Roving tabindex drops its row from the tab order
+    when a collapse hides it, and page labels are treated as *data* ("iv" is the document's own token,
+    never translated).
+  - **Spec problems, reported rather than edited:** UI.06's plan entry is three lines and its only DoD
+    is about links - outline, thumbnails, page labels and destinations have **no stated acceptance
+    criteria at all**, so the design decisions behind them (bijective base-26 labels, roman cap at
+    3999, the row cap, two schedulers) are unrecorded judgement calls a reviewer cannot check. Also,
+    **ADR-P0021 is cited throughout for a rule it does not contain**: as written it is the *dependency
+    licence* policy (`deny.toml`/`cargo deny`), while the no-jsdom / zero-dependency convention
+    lives in `03-CONVENTIONS.md`. That mis-citation is pre-existing and widespread (it appears in
+    `page-list.ts`, `text-layer.ts`, `search.ts`, the viewer README and the plan itself), and it
+    makes the ADR trail misleading on exactly the question "what can be asserted headlessly". Worth
+    fixing centrally.
+  - **Other limits:** a mid-page `/XYZ` destination lands on the top of the page (reduced to page plus
+    alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
+    appearance and prompt readability are all owed a manual pass; only the prompt's *content* is
+    asserted headlessly.
 - [ ] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
   - **Do:** Expose the structure tree to AT: proper roles, headings, reading order, alt text for
     figures, table semantics. Full keyboard navigation. This is ADR-P0031 applied to our own UI,
@@ -477,8 +525,45 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     falsifiable: a remote `<script src>` planted in the real built `viewer.html` fails the gate with
     file/line/URL. 98 tests, ~45 of them planted-violation cases. Lexical-scan limits (template
     literals, the regex-vs-division heuristic) are stated honestly in `apps/extension/BUNDLING.md`.
-- [ ] **SL-4.EXT.05 — Extension size budget** · deps: EXT.04, WASM.02 · owner: AI+
+- [x] **SL-4.EXT.05 — Extension size budget** · deps: EXT.04, WASM.02 · owner: AI+
   - **Do:** The package carries the WASM. Tighter budget than the web app; CJK fonts are an
+  - **The engine now ships.** EXT.03's headline gap is closed: `wasm/selis_pdf_wasm.wasm` (the
+    `wasm-opt -O3` output of the same `wasm32-unknown-unknown --release` build `cargo xtask size-check`
+    produces) is in the package — 26 shipped files, 4 381 299 bytes. A missing artefact is a **build
+    failure** naming the two commands that make it, not a silently skipped ship-list row.
+  - **What counts, and why it is two numbers.** The package is measured **raw and uncompressed**, as
+    `pack.mjs` emitted it, because a store takes an upload and unpacks it on the user's disk. Brotli is
+    measured for every file and **one rule** uses it: the core chunk's — §12 and `size-budgets.toml`
+    state the engine's budget in brotli because that is what a slow connection pays. `size-check.ts`
+    uses `brotliCompressSync` with no options, the identical call `xtask/src/size_check.rs` makes, so
+    the figure is comparable with the WASM.02 baseline (1 326 454 measured here vs 1 313 250
+    recorded — a different Rust build, the same quantity).
+  - **Tighter than the web app, deliberately and separately.** Package cap 8 MB, per-file 6 MB (both
+    below WEB.02's 12 MB runtime-cache entry, because a cache entry is evictable and a package install
+    is not); core-chunk budget 2 000 000 brotli vs the web app's 3 000 000, *because the same engine
+    ships in both* so growth has to be decided twice rather than inherited once; plus a 1 MB shell-only
+    cap so viewer growth cannot hide inside the engine's number. Measured: package 54.1 %, engine
+    66.3 % brotli, shell 19.3 %. Enforced by a **second build gate** (`size-check.js`) chained after
+    EXT.04's, with every rule crossed on purpose in unit tests.
+  - **CJK is a store with no caller yet, and says so.** `ext/cjk-payload.ts` validates a
+    `selis-cjk/1` manifest, applies a per-file brotli and an 8 MiB resident budget, verifies length
+    then SHA-256, and only then writes to `chrome.storage.local` — budget before bytes, bytes before
+    integrity, write last. But `CJK_PAYLOAD_SOURCE` is a typed `cjk-no-producer` refusal, because
+    **SL-3.FONT.10 is still open**, `host_permissions` is `[]` so there is no origin to fetch from, and
+    the transport is WASM.07's row. `bundled-font` fails the build on any font extension in the
+    package, so the split is enforced even with nothing to download yet. ~5 KB of deliberate dead code,
+    recorded in `REUSE.md`.
+  - **Two defects found at merge, neither visible from the branch:**
+    1. `pack.mjs` resolved the artefact one level up from `apps/extension`, landing on `apps/target/`
+       — a path cargo never writes. It worked only because that shell had `CARGO_TARGET_DIR` set, and
+       failed the moment the build ran without it. **A default that is wrong whenever the environment
+       does not paper over it is not a default.** Fixed to two levels up.
+    2. **EXT.05 makes `pnpm -r build` depend on `cargo xtask size-check` having run first**, so a
+       clean-tree `pnpm -r build` fails until the WASM is built. `SIZE.md` documents the required
+       ordering, but the plan does not state it and **CI will hit this**.
+  - **Cross-task change needing sign-off:** `storage` joins EXT.01's approved permission set
+    (`ALLOWED_PERMISSIONS`, `manifest.json`, `PERMISSIONS.md`, `adapter.test.ts`) for the CJK payload.
+    `host_permissions` is still `[]` and `unlimitedStorage` stays refused (the documented escalation).
     optional post-install download into extension storage, not a bundled asset.
 - [x] **SL-4.EXT.06 — Reuse `apps/web/ui` via the extension adapter** · deps: UI.01 · owner: AI
   - **Shipped**, and it found a real gate blind spot: the built `adapter.js` imported
