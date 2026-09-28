@@ -351,13 +351,8 @@ mod tests {
         let mut g = guard();
         // Build `[[[[...]]]]` with 20k opens. The lexer's arrays are one byte
         // each; 40k bytes of brackets.
-        let mut src = Vec::new();
-        for _ in 0..20_000 {
-            src.push(b'[');
-        }
-        for _ in 0..20_000 {
-            src.push(b']');
-        }
+        let mut src = vec![b'['; 20_000];
+        src.extend(vec![b']'; 20_000]);
         let mut lexer = crate::Lexer::new(&src);
         let mut toks = Vec::new();
         while let Some(t) = lexer.next_token(&mut g).expect("lex") {

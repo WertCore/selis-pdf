@@ -95,19 +95,14 @@ fn prev_chain_of_ten_thousand_terminates() {
 /// through the public `parse` entry point.)
 #[test]
 fn deep_array_nesting_terminates() {
-    let mut input = Vec::new();
-    for _ in 0..20_000 {
-        input.push(b'[');
-    }
-    for _ in 0..20_000 {
-        input.push(b']');
-    }
+    let mut input = vec![b'['; 20_000];
+    input.extend(vec![b']'; 20_000]);
     let budget = Budget {
         depth: 128,
         ..Budget::unlimited()
     };
     let g = guard(budget);
-    let result = parse(&input, &g.budget(), &FixedClock(0));
+    let result = parse(&input, g.budget(), &FixedClock(0));
     match result {
         Ok(_) => panic!("20k-deep array must exhaust the depth budget"),
         Err(e) => {

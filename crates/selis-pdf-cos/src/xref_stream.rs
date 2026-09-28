@@ -453,8 +453,8 @@ mod tests {
             })
         );
         // Objects outside the subsections are absent.
-        assert!(index.get(&0).is_none());
-        assert!(index.get(&6).is_none());
+        assert!(!index.contains_key(&0));
+        assert!(!index.contains_key(&6));
     }
 
     #[test]

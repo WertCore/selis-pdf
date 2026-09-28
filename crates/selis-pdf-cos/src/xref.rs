@@ -53,6 +53,17 @@ impl XrefEntry {
     }
 }
 
+/// What one `/Prev` step of the chain yields (SL-0.WS.11): the revision's
+/// cross-reference index, the trailer dictionary's raw pairs, and the offset
+/// `/Prev` names (the next revision to walk, or `None` at the end of the
+/// chain). Named because three functions return exactly this triple and the
+/// tuple-of-three-with-a-nested-map spelling says none of that.
+type Revision = (
+    BTreeMap<u32, XrefEntry>,
+    Vec<(selis_bytes::Bytes, Obj)>,
+    Option<u64>,
+);
+
 /// A parsed cross-reference index: object number → entry.
 ///
 /// `BTreeMap` gives deterministic iteration for `inspect --json` output.
@@ -219,11 +230,7 @@ pub(crate) fn parse_one_revision(
     cursor: u64,
     budget: &selis_sandbox::Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(
-    BTreeMap<u32, XrefEntry>,
-    Vec<(selis_bytes::Bytes, Obj)>,
-    Option<u64>,
-)> {
+) -> Result<Revision> {
     let pos = usize::try_from(cursor).unwrap_or(usize::MAX);
     let _ = src
         .get(pos..)
@@ -261,11 +268,7 @@ fn parse_classic_revision(
     mut p: usize,
     budget: &selis_sandbox::Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(
-    BTreeMap<u32, XrefEntry>,
-    Vec<(selis_bytes::Bytes, Obj)>,
-    Option<u64>,
-)> {
+) -> Result<Revision> {
     let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
 
     // Subsection entries: `N COUNT` then COUNT entry lines.
@@ -293,11 +296,7 @@ fn parse_xref_stream_revision(
     p: usize,
     budget: &selis_sandbox::Budget,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(
-    BTreeMap<u32, XrefEntry>,
-    Vec<(selis_bytes::Bytes, Obj)>,
-    Option<u64>,
-)> {
+) -> Result<Revision> {
     // Resolve the stream object: dict plus raw (unfiltered) body.
     let offset = u64::try_from(p).unwrap_or(cursor);
     let obj = crate::resolve::resolve_object(src, offset, budget, g)?;
@@ -548,16 +547,11 @@ fn parse_trailer(
     let trailer_slice = src.get(after_trailer..).unwrap_or(&[]);
     let mut lexer = crate::Lexer::new(trailer_slice);
     let mut tokens = Vec::new();
-    loop {
-        match lexer.next_token(g)? {
-            Some(tok) => {
-                let is_dict_end = matches!(tok, crate::Token::DictEnd);
-                tokens.push(tok);
-                if is_dict_end {
-                    break;
-                }
-            }
-            None => break,
+    while let Some(tok) = lexer.next_token(g)? {
+        let is_dict_end = matches!(tok, crate::Token::DictEnd);
+        tokens.push(tok);
+        if is_dict_end {
+            break;
         }
     }
     let mut parser = ObjectParser::new(&tokens, budget);

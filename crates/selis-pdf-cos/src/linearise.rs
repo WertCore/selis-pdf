@@ -24,7 +24,12 @@ use selis_sandbox::BudgetGuard;
 use crate::obj::Obj;
 
 /// A parsed linearisation dictionary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Default` is derived (SL-0.WS.11), and the derive is the honest reading of
+/// the type: every field is an `Option` the document may or may not state,
+/// and "not stated" is `None` for all of them. The hand-written `Default` it
+/// replaces set exactly those six `None`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Linearisation {
     /// `/L` — the declared file length.
     pub file_length: Option<u64>,
@@ -90,19 +95,6 @@ impl Linearisation {
         out.first_page_start = get_int(b"T").and_then(|v| u64::try_from(v).ok());
         out.first_page_num = get_int(b"P").and_then(|v| u32::try_from(v).ok());
         Ok(out)
-    }
-}
-
-impl Default for Linearisation {
-    fn default() -> Self {
-        Self {
-            file_length: None,
-            first_page_obj: None,
-            first_page_end: None,
-            page_count: None,
-            first_page_start: None,
-            first_page_num: None,
-        }
     }
 }
 

@@ -11,6 +11,11 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::obj::{Obj, Ref};
 
+/// The renumbered objects a copy produces, plus the source→new object-number
+/// remap (SL-0.WS.11). Named because the pair is this function's whole
+/// contract and both halves are needed together by every caller.
+pub type Copied = (Vec<(u32, Obj)>, HashMap<u32, u32>);
+
 /// Collect all objects reachable from `roots` in the source document, renumber
 /// them, and return the (renumbered) objects plus the remap (source object
 /// number → new object number).
@@ -28,7 +33,7 @@ pub fn collect_objects(
     next_num: &mut u32,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<(Vec<(u32, Obj)>, HashMap<u32, u32>)> {
+) -> Result<Copied> {
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = crate::parse_revisions(src, startxref, budget, g)?;
     let mut remap: HashMap<u32, u32> = HashMap::new();

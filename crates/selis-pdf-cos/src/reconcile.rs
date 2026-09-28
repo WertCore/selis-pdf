@@ -45,6 +45,13 @@ use crate::{Obj, Ref};
 /// # Malformed Input
 ///
 /// `OBJ_UNEXPECTED` when a referenced object cannot be resolved.
+// The parameters are the ones a recursive copy genuinely needs at every
+// level (the destination builder, the source bytes, the parsed source, the
+// page remap, the assignment cache, the value being copied, and the two
+// budget handles); bundling the last two into a context struct would be a
+// larger refactor than a lint fix, so the arity stays and the allow is
+// scoped to this function (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 pub fn copy_value_into(
     builder: &mut DocumentBuilder,
     src: &[u8],

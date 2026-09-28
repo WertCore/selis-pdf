@@ -34,7 +34,7 @@ fn open(src: &[u8]) -> selis_pdf_cos::Doc {
 #[test]
 fn form_two_pages_opens_and_root_resolves() {
     let src = FORM_TWO_PAGES;
-    let doc = open(&src);
+    let doc = open(src);
     let rev = doc.revisions().last().expect("one revision");
     assert_eq!(rev.root, Some(selis_pdf_cos::Ref::new(1, 0)));
     assert_eq!(
@@ -55,14 +55,9 @@ fn form_two_pages_opens_and_root_resolves() {
     // /Root resolves and is the catalog.
     let budget = Budget::unlimited();
     let mut g = budget.guard();
-    let root = selis_pdf_cos::copy::resolve_ref(
-        &src,
-        &doc,
-        selis_pdf_cos::Ref::new(1, 0),
-        &budget,
-        &mut g,
-    )
-    .expect("resolve /Root");
+    let root =
+        selis_pdf_cos::copy::resolve_ref(src, &doc, selis_pdf_cos::Ref::new(1, 0), &budget, &mut g)
+            .expect("resolve /Root");
     let selis_pdf_cos::Obj::Dict(pairs) = &root else {
         panic!("catalog is not a dict");
     };
@@ -76,7 +71,7 @@ fn form_two_pages_opens_and_root_resolves() {
 #[test]
 fn outlines_for_editor_opens_and_root_resolves() {
     let src = OUTLINES_FOR_EDITOR;
-    let doc = open(&src);
+    let doc = open(src);
     let rev = doc.revisions().last().expect("one revision");
     assert_eq!(rev.root, Some(selis_pdf_cos::Ref::new(1, 0)));
     assert_eq!(rev.entries.len(), 35, "the full xref table, not a fallback");
@@ -88,14 +83,9 @@ fn outlines_for_editor_opens_and_root_resolves() {
     // /Root resolves and is the catalog, despite every offset being 8 short.
     let budget = Budget::unlimited();
     let mut g = budget.guard();
-    let root = selis_pdf_cos::copy::resolve_ref(
-        &src,
-        &doc,
-        selis_pdf_cos::Ref::new(1, 0),
-        &budget,
-        &mut g,
-    )
-    .expect("resolve /Root");
+    let root =
+        selis_pdf_cos::copy::resolve_ref(src, &doc, selis_pdf_cos::Ref::new(1, 0), &budget, &mut g)
+            .expect("resolve /Root");
     let selis_pdf_cos::Obj::Dict(pairs) = &root else {
         panic!("catalog is not a dict");
     };

@@ -747,7 +747,8 @@ mod tests {
     #[test]
     fn table_driven_malformations_match_the_catalogue() {
         // (input, expected deviation kind, expected token)
-        let cases: &[(&[u8], fn(&Deviation) -> bool, Token)] = &[
+        type Case<'a> = (&'a [u8], fn(&Deviation) -> bool, Token);
+        let cases: &[Case<'_>] = &[
             (
                 b"--5",
                 |d| matches!(d, Deviation::DoubleSign { .. }),
@@ -794,7 +795,7 @@ mod tests {
             // For the `>` case there is no token; use a sentinel to assert the
             // deviation and, when present, the token.
             assert!(
-                devs.iter().any(|d| pred(d)),
+                devs.iter().any(pred),
                 "expected a deviation for input {:?}",
                 String::from_utf8_lossy(src)
             );
@@ -822,12 +823,7 @@ mod tests {
             ) {
                 let mut g = guard();
                 let mut l = Lexer::new(&data);
-                loop {
-                    match l.next_token(&mut g) {
-                        Ok(Some(_)) => continue,
-                        Ok(None) | Err(_) => break,
-                    }
-                }
+                while let Ok(Some(_)) = l.next_token(&mut g) {}
             }
         }
     }

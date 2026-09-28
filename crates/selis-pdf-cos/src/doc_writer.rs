@@ -1082,10 +1082,10 @@ mod tests {
         assert_eq!(doc.revisions().len(), 1);
         let rev = &doc.revisions()[0];
         // Objects: 1 catalog, 2 pages, 3 content, 4 page.
-        assert!(rev.entries.get(&1).is_some());
-        assert!(rev.entries.get(&2).is_some());
-        assert!(rev.entries.get(&3).is_some());
-        assert!(rev.entries.get(&4).is_some());
+        assert!(rev.entries.contains_key(&1));
+        assert!(rev.entries.contains_key(&2));
+        assert!(rev.entries.contains_key(&3));
+        assert!(rev.entries.contains_key(&4));
     }
 
     #[test]
@@ -1143,9 +1143,9 @@ mod tests {
         assert_eq!(doc.revisions().len(), 1);
         let rev = &doc.revisions()[0];
         assert_eq!(rev.root, Some(Ref::new(1, 0)));
-        assert!(rev.entries.get(&1).is_some());
-        assert!(rev.entries.get(&5).is_some());
-        assert!(rev.entries.get(&7).is_some());
+        assert!(rev.entries.contains_key(&1));
+        assert!(rev.entries.contains_key(&5));
+        assert!(rev.entries.contains_key(&7));
         // A gap (object 2) is a free entry, not in use.
         assert!(matches!(
             rev.entries.get(&2),
@@ -1497,7 +1497,7 @@ mod tests {
 
         // Verify the page count is preserved by resolving the /Pages object.
         let mut pages_count = 0i64;
-        for (_, entry) in &enc_rev.entries {
+        for entry in enc_rev.entries.values() {
             if let crate::XrefEntry::InUse { offset, .. } = entry {
                 let obj =
                     crate::resolve_object(&encrypted, *offset, &budget, &mut g).expect("resolve");
