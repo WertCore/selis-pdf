@@ -447,10 +447,11 @@ describe("the host port (SL-4.UI.11's `PlatformAdapter.locale`)", () => {
 		//
 		// Built by omission rather than `delete`: the property is genuinely
 		// absent, which is what a host that never implemented the port looks
-		// like, and it keeps the fixture free of a mutation.
+		// like, and it keeps the fixture free of a mutation. The assertion is
+		// `in` rather than `toBeUndefined` because the point is that the key is
+		// not there at all, not merely present-and-undefined.
 		const { locale: _neverDeclared, ...withoutLocale } = createMockAdapter();
-		const adapter: { locale?: unknown } = withoutLocale;
-		expect(adapter.locale).toBeUndefined();
+		expect("locale" in withoutLocale).toBe(false);
 		expect(negotiateLocale(undefined, ["en"])).toBe("en");
 	});
 });
