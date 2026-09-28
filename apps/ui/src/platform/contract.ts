@@ -215,6 +215,64 @@ export function definePlatformAdapterContract(
 			adapter.telemetry.record({ name: "session_start", metrics: { pages_shown: 3 } });
 		});
 
+		// SL-4.UI.11. `locale` is optional for the same reason `navigation` is:
+		// a host that cannot say what language the reader wants should report
+		// nothing rather than guess, and the viewer treats absence as "ship the
+		// source locale". The probes are therefore conditional on the port's
+		// presence, and the *shape* of the absence is asserted too, because
+		// "no port" and "a port that throws" are different states and the shell
+		// branches on the first.
+		describe("locale port", () => {
+			it("is present or absent, never half-present", async () => {
+				const { adapter } = await createFixture();
+				const port = adapter.locale;
+				if (port === undefined) {
+					return;
+				}
+				expect(typeof port.current).toBe("function");
+				expect(typeof port.onChange).toBe("function");
+			});
+
+			it("reports a non-empty tag that a shell can resolve", async () => {
+				const { adapter } = await createFixture();
+				// The tag itself is the host's business — `negotiateLocale` maps it
+				// onto what the build ships — but "empty" is not a tag, and a
+				// shell that got one would have nothing to negotiate from.
+				// The port is optional -- the same convention the test below follows --
+				// because a host need not have a locale preference to report. A host
+				// without it is saying "I have no preference", which the runtime
+				// resolves from the source locale. What *is* a violation is a host
+				// that HAS the port and answers with an empty tag, so only the
+				// present case is asserted.
+				if (adapter.locale === undefined) {
+					return;
+				}
+				expect(adapter.locale.current().trim()).not.toBe("");
+			});
+
+			it("hands back an unsubscribe, and unsubscribing twice is harmless", async () => {
+				const { adapter } = await createFixture();
+				if (adapter.locale === undefined) {
+					return;
+				}
+				const stop = adapter.locale.onChange(() => undefined);
+				expect(typeof stop).toBe("function");
+				stop();
+				// A shell that tears down twice (a hot reload, a closed tab) must
+				// not have to know whether the host already dropped the handler.
+				expect(() => stop()).not.toThrow();
+			});
+
+			// There is deliberately **no** "delivers a change" probe. The port is
+			// read-only by design (a chosen locale is a *setting*, and settings go
+			// through `storage`), so a host with a fixed build-time language
+			// legitimately never fires `onChange`. A probe demanding a change
+			// would force every transport to invent a writable language setting,
+			// which is the half of the design this port refuses. The mock, which
+			// does have one, is held to the delivery behaviour in
+			// `i18n/runtime.test.ts` instead of here.
+		});
+
 		// SL-4.UI.06. `navigation` is optional by design (a host whose engine has
 		// no outline walk reports `undefined`), so the probes are conditional on
 		// its presence rather than skipped per host: a host that *does* declare

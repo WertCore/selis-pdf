@@ -14,6 +14,7 @@
 import type {
 	ClipboardPort,
 	FilePort,
+	LocalePort,
 	NavigationPort,
 	PlatformAdapter,
 	PrintPort,
@@ -269,7 +270,7 @@ function syntheticPdf(name: string): Uint8Array {
  * everything is in-memory and session-scoped.
  */
 export function createMockAdapter(
-	options: { capabilities?: Partial<PlatformCapabilities> } = {},
+	options: { capabilities?: Partial<PlatformCapabilities>; locale?: string } = {},
 ): MockAdapter {
 	const capabilities: PlatformCapabilities = {
 		platform: "mock",
@@ -292,9 +293,28 @@ export function createMockAdapter(
 	const saveQueue: string[] = [];
 	const storage = new Map<string, string>();
 	const deepLinkHandlers = new Set<(link: DeepLink) => void>();
+	const localeHandlers = new Set<(tag: string) => void>();
 	let clipboard = "";
 	let telemetryEnabled = false;
 	let documentCounter = 0;
+	// SL-4.UI.11. A locale the *user* chose is a setting, so it is written
+	// through `storage` under this key and the read-only port reports whatever
+	// that says — which is the whole reason the port has no setter. The option
+	// is the host's own preference, and it is what an absent setting falls back
+	// to.
+	const LOCALE_KEY = "ui.locale";
+	const hostLocale = options.locale ?? "en";
+	let locale = hostLocale;
+
+	const setLocale = (tag: string): void => {
+		if (tag === locale) {
+			return;
+		}
+		locale = tag;
+		for (const handler of localeHandlers) {
+			handler(tag);
+		}
+	};
 
 	const recording: MockRecording = {
 		telemetryEvents: [],
@@ -552,10 +572,19 @@ export function createMockAdapter(
 			async set(key, value) {
 				await microtask();
 				storage.set(key, value);
+				// SL-4.UI.11: writing the setting is how a host's language choice
+				// reaches the port, so the port's subscribers hear about it.
+				if (key === LOCALE_KEY) {
+					setLocale(value);
+				}
 			},
 			async delete(key) {
 				await microtask();
 				storage.delete(key);
+				// Deleting the choice hands the decision back to the host.
+				if (key === LOCALE_KEY) {
+					setLocale(hostLocale);
+				}
 			},
 		} satisfies StoragePort,
 
@@ -616,6 +645,23 @@ export function createMockAdapter(
 				};
 			},
 		} satisfies WindowPort,
+
+		// SL-4.UI.11. The mock is the only host that *has* a language to report,
+		// and it is a variable rather than a constant for the reason a real one
+		// is: `negotiateLocale` has to be testable against a host that changes
+		// its mind, and a mock that always said "en" could only ever test the
+		// trivial case. It is seeded from storage, because a locale the user
+		// chose is a setting (UI.10's rule) and this port reports the preference
+		// that overrides it.
+		locale: {
+			current: () => locale,
+			onChange(handler) {
+				localeHandlers.add(handler);
+				return () => {
+					localeHandlers.delete(handler);
+				};
+			},
+		} satisfies LocalePort,
 
 		async dispose() {
 			await microtask();

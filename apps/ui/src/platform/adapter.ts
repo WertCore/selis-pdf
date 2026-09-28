@@ -270,6 +270,45 @@ export interface WindowPort {
 }
 
 /**
+ * Which language the reader wants (SL-4.UI.11).
+ *
+ * A **host** fact, and the reason this is a port rather than a line in
+ * `apps/ui`: the answer lives in `navigator.language`, an OS setting, or a
+ * build-time constant, and reading any of them from the UI is exactly what
+ * `platform-globals.test.ts` exists to prevent. The host already owns every
+ * other environment fact for the same reason.
+ *
+ * It is **read-only on purpose**. A locale the *user* chose is a setting, and
+ * settings go through {@link StoragePort} (the theme and density already do, see
+ * UI.10); this port reports the preference that choice overrides. Letting the
+ * UI write the tag here as well would put the user's choice in two stores that
+ * could disagree, and the loser would be the locale the reader sees.
+ *
+ * Optional, and absent is the honest default: a host that has no answer (a test
+ * harness, a service worker with no UI) simply reports no port and the viewer
+ * ships English. `negotiateLocale` then does the rest — see
+ * `i18n/README.md`.
+ */
+export interface LocalePort {
+	/**
+	 * The host's current preference as a BCP 47 tag (`"en"`, `"de-AT"`).
+	 *
+	 * A tag the build does not ship is not an error: `negotiateLocale` resolves
+	 * it to the closest locale that does, and falls back to the source.
+	 */
+	current(): string;
+	/**
+	 * Subscribe to the preference changing — a user switching the OS language,
+	 * or a host that offers a language picker.
+	 *
+	 * The handler receives the new tag and nothing else: applying it is the
+	 * shell's job (rebuild the runtime, repaint), which keeps the runtime a pure
+	 * function of its catalogues. Returns an unsubscribe.
+	 */
+	onChange(handler: (tag: string) => void): () => void;
+}
+
+/**
  * The host seam. UI code receives one of these at startup and threads it
  * down; it never imports a concrete adapter — composition (which adapter to
  * install) belongs to each shell's entry point, outside `apps/ui`.
@@ -315,6 +354,20 @@ export interface PlatformAdapter {
 	 * bytes itself.
 	 */
 	readonly navigation?: NavigationPort;
+
+	/**
+	 * The reader's language preference (SL-4.UI.11), or `undefined` when the
+	 * host has no answer.
+	 *
+	 * Optional for the same reason {@link navigation} is: a port a host cannot
+	 * fill should be absent rather than faked, and "this host cannot say what
+	 * language the reader wants" is a real state for a harness and for a
+	 * service worker with no UI. The viewer reads it once at startup, resolves
+	 * it through `negotiateLocale` against the catalogues the build actually
+	 * ships, and renders English when there is nothing to resolve to. It never
+	 * sniffs the environment itself (ADR-P0022: one UI, every host).
+	 */
+	readonly locale?: LocalePort;
 
 	/** Release host resources (workers, streams). Optional; shells may omit. */
 	dispose?(): Promise<void>;
