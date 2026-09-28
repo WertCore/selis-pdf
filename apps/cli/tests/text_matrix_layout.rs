@@ -36,6 +36,13 @@
 //! cargo test -p selis-cli --test text_matrix_layout
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// `indexing_slicing` / `arithmetic_side_effects` (added SL-0.WS.11): the only
+// site is `ink_extent`, which hand-parses the P6 header of a PPM *this test
+// just rendered* and then walks that buffer pixel by pixel. Every index and
+// every `+ 1` walks the harness's own output, never a document under test, so
+// 03-CONVENTIONS.md §1 has nothing to protect here. Same shape (and same
+// reason) as the allow in `write06_kill_test.rs`.
+#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -200,20 +207,20 @@ fn scaled_tm_paints_outlines_at_12pt_like_mupdf() {
     let ppm = render_ppm(&write_fixture("scaled-paint.pdf", SCALED), "scaled");
     let (x0, y0, x1, y1) = ink_extent(&ppm).expect("the fixture paints ink");
     assert!(
-        x0 >= 58 && x0 <= 64,
+        (58..=64).contains(&x0),
         "ink starts at the text origin: x0={x0}"
     );
     assert!(
-        y0 >= 80 && y0 <= 88,
+        (80..=88).contains(&y0),
         "the scaled row reaches 12 pt above baseline 700 (MuPDF y0=83): y0={y0}"
     );
     // The two 12 pt rows are 50 pt apart: the extent must span both baselines.
     assert!(
-        y1 >= 135 && y1 <= 160,
+        (135..=160).contains(&y1),
         "both rows paint at 12 pt (MuPDF y1=142): y1={y1}"
     );
     assert!(
-        x1 >= 115 && x1 <= 125,
+        (115..=125).contains(&x1),
         "the 12 pt advance spans 'World' (MuPDF x1=121): x1={x1}"
     );
 }
@@ -237,17 +244,17 @@ fn rotated_tm_paints_outlines_rotated_like_mupdf() {
     );
     // The identity control 'ABCDEF' at 24 pt from x=100 ends at ≈ 196.
     assert!(
-        x1 >= 190 && x1 <= 200,
+        (190..=200).contains(&x1),
         "identity control sets the right edge (MuPDF x1=196): x1={x1}"
     );
     // The rotated run steps along +y from 100 to 182.68, the control sits at
     // y=500: the vertical extent must cover both.
     assert!(
-        y1 >= 685 && y1 <= 695,
+        (685..=695).contains(&y1),
         "rotated run reaches device y≈691 (user 101): y1={y1}"
     );
     assert!(
-        y0 >= 268 && y0 <= 282,
+        (268..=282).contains(&y0),
         "identity control caps reach device y≈274 (user 517): y0={y0}"
     );
 }
