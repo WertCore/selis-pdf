@@ -1,7 +1,103 @@
-# `@selis/web-host` — the web deployment shell (SL-4.WEB.03)
+# `@selis/web-host` — the web deployment shell (WEB.01, WEB.02, WEB.03)
 
-Local-only document handoff over the WASM.01 Worker protocol. The one thing
-this app must never do is upload a document.
+Static hosting with cross-origin isolation, an offline service worker whose
+caching policy cannot persist a document, and local-only document handoff. The
+one thing this app must never do is upload a document.
+
+## Offline (SL-4.WEB.02)
+
+| Module | Role |
+|---|---|
+| `sw-policy.ts` | The caching policy as pure data and functions: precache list, cache names, the request/response allow-lists, the budgets. No DOM, no `caches`, no `fetch`. |
+| `sw.ts` | The worker. `install` precaches the shell, `activate` purges our own stale cache names and claims clients, `fetch` classifies then answers. Owns the only two cache-write call sites in the package. |
+| `sw-register.ts` | Registration, scope `/`, the refusal conditions, and the update handoff. |
+| `tools/place-sw.mjs` | Copies the compiled `sw.js` + `sw-register.js` into `public/` (the deploy root) after `tsc`, refusing any bare or remote specifier. |
+| `public/assets/boot.js` | Registers the worker on load and records the outcome on `globalThis.__selisServiceWorker` (registered, or which refusal applied). |
+
+### What is cached, and what is not
+
+**Precached (install):** `/`, `/index.html`, `/assets/style.css`,
+`/assets/boot.js` — the boot minimum, and nothing else. `addAll` is atomic, so
+one missing asset fails the install and the browser keeps the previous worker
+rather than activating a half-cached app.
+
+**Runtime-cached (first use, cache-first):** `/assets/…` (the built UI and its
+code-split chunks) and `/wasm/…` (the WASM.02 chunks the manifest points at).
+The core module is up to 3 MB brotli (`03-CONVENTIONS.md` §12), so it is
+fetched once, on demand, rather than installed for every visitor — the same
+reasoning as EXT.05, which keeps CJK fonts an optional download rather than a
+bundled asset. Caps: 12 MB per entry (4× the brotli core budget, because Cache
+Storage keeps the *decoded* body) and 32 entries, oldest evicted first.
+
+**Never cached:** anything that is not a bodyless same-origin `GET` with no
+`Range` header, no query string, and an allow-listed path; and any response
+whose content type is not an allow-listed asset type. `application/pdf` and
+`application/octet-stream` are absent from that list, so a document is refused
+by URL *and* by content type.
+
+### Why a document cannot be cached
+
+Structurally, in three layers rather than by intent:
+
+1. **Request.** `?src=` is refused three times over: it is cross-origin (or
+   same-origin with a `Range` header, which is how WEB.03 pulls bytes), and it
+   carries a query string. A path that is not on the fixed allow-list is
+   refused by default, and `..`/`%2e%2e` cannot climb into one.
+2. **Response.** Even from an allow-listed path a document is refused: the
+   content type is checked against an allow-list, and so are
+   `Content-Disposition: attachment`, `Cache-Control: no-store`, `Vary: *`,
+   opaque bodies, and any non-200.
+3. **Call sites.** There are exactly two writes to a cache in the whole
+   package — `install` (the fixed list) and the runtime branch — and a test
+   counts them in the sources, so a third `put`/`addAll` fails the build.
+
+The suite is verified falsifiable: planting a policy that drops the `Range`
+rule, widens the path allow-list to everything, and makes `application/pdf`
+storable makes the real `?src=` intake test fail.
+
+### The cache does not weaken the no-upload gate
+
+The page's wrapper runs **before** the browser dispatches a request; the
+worker's `fetch` event fires **after** that dispatch. The worker is downstream
+of the gate, not upstream of it, so a cached response changes what comes back
+and cannot change what the page already recorded going out. `sw.test.ts` drives
+the real `installRequestRecorder` with the worker in the path and asserts every
+request is still seen, still bodyless, and still passes `assertNoUpload` — with
+a planted `POST` of the same bytes as the negative control.
+
+The one thing the page's gate cannot see is a request the *worker* originates
+on its own initiative. There are none: a test asserts the worker's own fetch log
+during a document session is empty, and that the install's own fetches are the
+shell, all bodyless `GET`s.
+
+### COOP/COEP and updates
+
+Cached navigations are returned as the **cached `Response` object**, never
+rebuilt, so WEB.01's `COOP: same-origin` + `COEP: require-corp` survive and the
+threaded engine path (WASM.03) still works offline. The only synthesised
+response is the offline 503, which sets the isolation headers itself. Runtime
+entries are keyed by `Request` rather than by URL so the Cache API honours
+`Vary` — a brotli-served asset varies on `Accept-Encoding`, and a URL-only key
+would replay compressed bytes to a client that cannot decode them.
+
+Updates: `updateViaCache: "none"`, and the worker does **not** call
+`skipWaiting` on install. A replacement waits until the page posts
+`selis:skip-waiting` (`applyUpdate`), so the engine is never swapped underneath
+an open document. `CACHE_VERSION` namespaces the caches; `activate` deletes our
+own previous names and nothing else.
+
+### Not proven in a browser
+
+A service worker cannot register under `file://`, and this package ships no
+browser harness (ADR-P0021 keeps the JS tree dependency-free), so the worker is
+driven in Node with real `Request`/`Response` objects and a Cache Storage double
+that implements `addAll` atomicity, `Vary`-aware `match`, and insertion-ordered
+`keys`. **Not** covered here, and to be confirmed at deploy or in a real
+browser: real `install`/`activate` event delivery, `clients.claim()`,
+browser-enforced `respondWith` semantics, real Cache Storage quota behaviour,
+and the DoD's manual airplane-mode pass (open a local PDF, view, search,
+print). The logic those tests assert is in this package; the browser's
+adherence to it is not.
 
 ## Entry points (all local)
 
