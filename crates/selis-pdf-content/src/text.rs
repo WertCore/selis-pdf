@@ -324,7 +324,7 @@ fn space_width_units(is_cid: bool, width_of: &dyn Fn(u16) -> f64) -> f64 {
     if !w.is_finite() || w <= 0.0 {
         return FALLBACK;
     }
-    if is_cid && (w < 100.0 || w > 600.0) {
+    if is_cid && !(100.0..=600.0).contains(&w) {
         return FALLBACK;
     }
     w
@@ -417,7 +417,17 @@ fn clamp_u8(v: f64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+    // `field_reassign_with_default` (added SL-0.WS.11) fires on the 18 tests
+    // that build a `TextState::default()` and then set the two or three fields
+    // the test is actually about. Restructuring those into struct-update
+    // literals would bury the one field under test in a list of the ones that
+    // are not; the lint is a style preference with no bearing on the
+    // hostile-input set this module is also allowed to skip.
+    #![allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::field_reassign_with_default
+    )]
 
     use super::*;
     use crate::dispatch::Operand;

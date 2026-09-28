@@ -344,16 +344,15 @@ impl<'a> Lexer<'a> {
             match b {
                 b'>' => break,
                 b if is_ws(b) => continue,
-                b => match hex_val(b) {
-                    Some(v) => {
+                b => {
+                    if let Some(v) = hex_val(b) {
                         if let Some(h) = hi.take() {
                             out.push((h << 4) | v);
                         } else {
                             hi = Some(v);
                         }
                     }
-                    None => {}
-                },
+                }
             }
         }
         if let Some(h) = hi {

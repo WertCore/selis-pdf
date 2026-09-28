@@ -161,7 +161,12 @@ pub enum ClipRule {
 }
 
 /// The result of painting or clipping a path.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Default` is `PaintOp::None` — the derive is `#[default]` on that variant
+/// rather than a hand-written impl (SL-0.WS.11). Same value as before, and
+/// the annotation keeps the default visible at the variant, which is where a
+/// reader checking "what does a fresh path do?" will look.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PaintOp {
     /// `S` — stroke the path.
     Stroke,
@@ -180,6 +185,7 @@ pub enum PaintOp {
     /// `b*` — close, even-odd fill, stroke.
     CloseFillStrokeEvenOdd,
     /// `n` — no-op.
+    #[default]
     None,
 }
 
@@ -188,12 +194,6 @@ impl PaintOp {
     #[must_use]
     pub const fn paints(self) -> bool {
         !matches!(self, PaintOp::None)
-    }
-}
-
-impl Default for PaintOp {
-    fn default() -> Self {
-        PaintOp::None
     }
 }
 
