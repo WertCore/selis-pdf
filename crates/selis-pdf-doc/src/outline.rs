@@ -474,8 +474,7 @@ mod tests {
     /// 99 over two items, and an outline item whose `/A` is a `/GoTo` — and it
     /// is the *same bytes* the WASM conformance leg drives, so a behaviour
     /// proven here is the behaviour proven over the real guest ABI.
-    const NAV_FIXTURE: &[u8] =
-        include_bytes!("../../selis-pdf-engine/src/fixtures/nav.pdf");
+    const NAV_FIXTURE: &[u8] = include_bytes!("../../selis-pdf-engine/src/fixtures/nav.pdf");
 
     fn guard() -> BudgetGuard<'static> {
         Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
@@ -488,13 +487,7 @@ mod tests {
         for (num, body) in objects {
             let offset = u64::try_from(src.len()).unwrap_or(0);
             src.extend_from_slice(format!("{num} 0 obj\n{body}\nendobj\n").as_bytes());
-            xref.insert(
-                *num,
-                XrefEntry::InUse {
-                    offset,
-                    gen: 0,
-                },
-            );
+            xref.insert(*num, XrefEntry::InUse { offset, gen: 0 });
         }
         let trailer = vec![(
             selis_bytes::Bytes::copy_from_slice(b"Root"),
@@ -542,13 +535,19 @@ mod tests {
     fn ordinary_tree() -> Vec<(u32, &'static str)> {
         vec![
             (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
-            (10, "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 99 >>"),
+            (
+                10,
+                "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 99 >>",
+            ),
             (
                 11,
                 "<< /Title (Chapter One) /Parent 10 0 R /Next 12 0 R /First 13 0 R \
                  /Last 13 0 R /Count -2 /Dest [4 0 R /XYZ 100 200 1.5] >>",
             ),
-            (12, "<< /Title (Appendix) /Parent 10 0 R /Prev 11 0 R /Dest (chapter-one) >>"),
+            (
+                12,
+                "<< /Title (Appendix) /Parent 10 0 R /Prev 11 0 R /Dest (chapter-one) >>",
+            ),
             (13, "<< /Title (Section 1.1) /Parent 11 0 R /A 14 0 R >>"),
             (14, "<< /S /GoTo /D [3 0 R /Fit] >>"),
         ]
@@ -623,7 +622,10 @@ mod tests {
                 11,
                 "<< /Title (Chapter One) /Parent 10 0 R /First 13 0 R /Count 1 >>",
             ),
-            (13, "<< /Title (Section 1.1) /Parent 11 0 R /First 11 0 R >>"),
+            (
+                13,
+                "<< /Title (Section 1.1) /Parent 11 0 R /First 11 0 R >>",
+            ),
         ];
         // Without the visited set this call would not return.
         let (tree, _) = walk(&objects, &budget).expect("walk");
@@ -693,10 +695,7 @@ mod tests {
                 ),
             ));
         }
-        let borrowed: Vec<(u32, &str)> = objects
-            .iter()
-            .map(|(n, b)| (*n, b.as_str()))
-            .collect();
+        let borrowed: Vec<(u32, &str)> = objects.iter().map(|(n, b)| (*n, b.as_str())).collect();
         let (tree, _) = walk(&borrowed, &budget).expect("walk");
         let mut count = 0usize;
         let mut stack: Vec<&OutlineItem> = tree.items.iter().collect();
@@ -728,8 +727,8 @@ mod tests {
     #[test]
     fn an_unreadable_outline_is_present_but_truncated() {
         let budget = Budget::unlimited();
-        let (tree, _) = walk(&[(1, "<< /Type /Catalog /Outlines 99 0 R >>")], &budget)
-            .expect("walk");
+        let (tree, _) =
+            walk(&[(1, "<< /Type /Catalog /Outlines 99 0 R >>")], &budget).expect("walk");
         assert!(tree.present, "the catalog claimed one");
         assert!(tree.truncated, "and we could not read it");
         assert!(tree.items.is_empty());
@@ -819,7 +818,10 @@ mod tests {
             &[
                 (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
                 (10, "<< /Type /Outlines /First 11 0 R >>"),
-                (11, "<< /Title (Nowhere) /Parent 10 0 R /Dest [77 0 R /Fit] >>"),
+                (
+                    11,
+                    "<< /Title (Nowhere) /Parent 10 0 R /Dest [77 0 R /Fit] >>",
+                ),
             ],
             &budget,
         )
@@ -905,10 +907,7 @@ mod tests {
             ));
         }
         objects.push((112, "<< /Title (Leaf) /Parent 111 0 R >>".to_owned()));
-        let borrowed: Vec<(u32, &str)> = objects
-            .iter()
-            .map(|(n, b)| (*n, b.as_str()))
-            .collect();
+        let borrowed: Vec<(u32, &str)> = objects.iter().map(|(n, b)| (*n, b.as_str())).collect();
         let budget = Budget {
             depth: 4,
             ..Budget::unlimited()

@@ -1304,12 +1304,7 @@ impl Worker {
         ))
     }
 
-    fn op_page_labels(
-        &mut self,
-        id: u64,
-        doc: DocHandle,
-        env: &WorkerEnv<'_>,
-    ) -> Result<Outgoing> {
+    fn op_page_labels(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
         let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
         let budget = opened.budget;
         let mut g = budget.guard_with(env.clock, env.cancel.clone());
