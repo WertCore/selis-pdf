@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use selis_bytes::Bytes;
 use selis_color::Rgba;
 use selis_error::{err, Code, Result};
-use selis_geom::{Matrix, Point};
+use selis_geom::{Matrix, Point, Rect};
 use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
