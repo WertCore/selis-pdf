@@ -19,16 +19,51 @@
  */
 export const BUILD_WORKSPACE = "pkg";
 
+/**
+ * SL-4.EXT.06: the build workspace holds **two** compiled trees, because the
+ * extension reuses `apps/ui` verbatim (SL-4.UI.01's `PlatformAdapter` seam) and
+ * `tsc` compiles both in one program.
+ *
+ * `rootDir` is `apps/`, so the emitted layout under `dist/pkg/` mirrors the
+ * monorepo: this package's own sources under {@link OWN_BUILD_TREE}, the shared
+ * UI modules under {@link SHARED_BUILD_TREE}. That is not cosmetic — the
+ * relative specifiers the extension's sources write (`../../ui/src/...`) are
+ * never rewritten by `tsc`, so the package has to keep the same shape for them
+ * to resolve inside it. A row in {@link PACKAGE_ENTRIES} that renames either
+ * tree's prefix therefore has to be accompanied by an edit to the sources that
+ * import across it, and the gate fails loudly if it is not.
+ */
+export const OWN_BUILD_TREE = "extension";
+
+/** Compiled `apps/ui` modules inside the build workspace, and their package path. */
+export const SHARED_BUILD_TREE = "ui";
+
+/**
+ * Where a shipped file's bytes come from. Each kind is a different trust
+ * question, which is why they are named rather than unified:
+ *
+ * - `root` — a hand-written file of this package (manifest, pages, the service
+ *   worker). Not compiled, so it is not typechecked; read it in review.
+ * - `build` — a module `tsc` compiled from this package's own `src/`.
+ * - `shared-js` — a module `tsc` compiled from `apps/ui`, shipped because the
+ *   extension *reuses* it rather than forking it (SL-4.EXT.06). It is the same
+ *   source the web app runs; a change in `apps/ui` lands in the extension
+ *   package on the next build, which is the point and also the risk.
+ * - `shared-asset` — a non-JS file copied from `apps/ui` (the stylesheets).
+ */
+export type PackageSource = "root" | "build" | "shared-js" | "shared-asset";
+
 /** One file in the shipped package: where it lands, and where it comes from. */
 export interface PackageEntry {
 	/** Path inside the built package (`dist/`), always with `/` separators. */
 	readonly out: string;
+	readonly from: PackageSource;
 	/**
-	 * `root` = a hand-written file copied from the package source directory;
-	 * `build` = a compiled module copied from {@link BUILD_WORKSPACE} under
-	 * its basename (`src/permissions.js` <- `permissions.js`).
+	 * Required for `shared-asset`: the file's path relative to this package's
+	 * root, e.g. `../ui/src/viewer/page-list.css`. Assets are not compiled, so
+	 * there is no build-tree path to derive and the path is spelled out.
 	 */
-	readonly from: "root" | "build";
+	readonly source?: string;
 }
 
 /**
@@ -36,6 +71,42 @@ export interface PackageEntry {
  *
  * Adding a module means adding it here, and `bundle.test.ts` fails when a row
  * names a file the build does not produce or a packaged page references.
+ *
+ * ## The `shared-*` rows are the EXT.06 reuse, and they are the interesting ones
+ *
+ * `apps/ui` is not forked into this package. The four modules below are compiled
+ * from `apps/ui/src` by this package's own `tsc` program and copied into
+ * `ui/src/…`, which is exactly where the relative specifiers in this package's
+ * sources point (`src/ext/adapter.ts` writes `../../ui/src/platform/errors.js`).
+ * They are the whole of what the extension borrows, and the list is short on
+ * purpose:
+ *
+ * - `platform/errors.ts` — `AdapterError` / `ErrorCode`. The extension refuses
+ *   several capabilities (clipboard read, save-in-place, deep links), and a
+ *   refusal that invented its own error type would break the one rule the seam
+ *   has: every rejection is a registry code with a `docState`.
+ * - `viewer/surface.ts` — the `TileSurface` / `FrameClock` ports and
+ *   `SurfaceFaultError`.
+ * - `viewer/worker-surface.ts` — `createAnimationFrameClock`, the one piece of
+ *   UI.03's worker surface the extension uses verbatim, because a frame clock is
+ *   a frame clock and re-deriving it here would be the second implementation
+ *   the seam exists to prevent.
+ *
+ * What is deliberately **not** shipped, though the module exists and the web app
+ * runs it: `worker-surface`'s `createWorkerSurface` and
+ * `offscreen-compositor.ts`. Both need an `OffscreenCanvas` transferred to a
+ * worker, and in MV3 the engine is not in this page's worker — it is in the
+ * offscreen document, reached by `chrome.runtime` messaging, which cannot carry
+ * an `ImageBitmap` at all. So the extension presents on the main thread
+ * (`src/ext/surface.ts`, `takesOwnership: false`) and those two modules stay
+ * unused here. Shipping dead code into a size-budgeted package (SL-4.EXT.05) to
+ * look like the web app would be the wrong trade. See `REUSE.md`.
+ *
+ * The stylesheets are `apps/ui`'s and `@selis/ui-kit`'s, copied verbatim
+ * (`shared-asset`): ADR-P0021 forbids a bundler that would inline them, so a
+ * shell links them, and the tokens file is generated so it is never hand-edited
+ * (UI.14). No font is fetched — the font stacks are `system-ui` and friends,
+ * which is also why the CJK payload is a post-install download (EXT.05).
  */
 export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "manifest.json", from: "root" },
@@ -45,7 +116,43 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "offscreen.js", from: "root" },
 	{ out: "src/permissions.js", from: "build" },
 	{ out: "src/viewer-boot.js", from: "build" },
+	{ out: "src/ext/adapter.js", from: "build" },
+	{ out: "src/ext/engine-protocol.js", from: "build" },
+	{ out: "src/ext/host-env.js", from: "build" },
+	{ out: "src/ext/offscreen-engine.js", from: "build" },
+	{ out: "src/ext/surface.js", from: "build" },
+	{ out: "src/ext/viewer-session.js", from: "build" },
+	{ out: "ui/src/platform/errors.js", from: "shared-js" },
+	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
+	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
+	{
+		out: "ui/src/viewer/page-list.css",
+		from: "shared-asset",
+		source: "../ui/src/viewer/page-list.css",
+	},
+	{
+		out: "ui-kit/css/tokens.css",
+		from: "shared-asset",
+		source: "../../packages/ui-kit/css/tokens.css",
+	},
+	{
+		out: "ui-kit/css/base.css",
+		from: "shared-asset",
+		source: "../../packages/ui-kit/css/base.css",
+	},
 ];
+
+/** The path of a package entry's bytes inside the build workspace, or `null`. */
+export function buildSourceOf(entry: PackageEntry): string | null {
+	switch (entry.from) {
+		case "build":
+			return `${OWN_BUILD_TREE}/${entry.out}`;
+		case "shared-js":
+			return entry.out;
+		default:
+			return null;
+	}
+}
 
 /** Every path in the shipped package, in declaration order. */
 export const SHIPPED_FILES: readonly string[] = PACKAGE_ENTRIES.map((entry) => entry.out);

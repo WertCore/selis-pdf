@@ -5,7 +5,7 @@
 	"type": "module",
 	"description": "Selis MV3 browser extension: minimal-permission manifest, bundled-only build (SL-4.EXT.04, ADR-P0028). No remote code, no CDN, no eval, no broad host permissions.",
 	"scripts": {
-		"build": "tsc -p tsconfig.json && node tools/pack.mjs && node dist/pkg/bundle-check.js",
+		"build": "tsc -p tsconfig.json && node tools/pack.mjs && node dist/pkg/extension/src/bundle-check.js",
 		"check:bundle": "pnpm run build",
 		"test": "pnpm run build && vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"

@@ -27,18 +27,41 @@ if (!existsSync(buildRoot)) {
 	process.exit(1);
 }
 
-const { BUILD_WORKSPACE, PACKAGE_ENTRIES } = await import(
-	pathToFileURL(join(buildRoot, "bundle-scan.js")).href
+const { BUILD_WORKSPACE, PACKAGE_ENTRIES, buildSourceOf } = await import(
+	pathToFileURL(join(buildRoot, "extension", "src", "bundle-scan.js")).href
 );
+
+/**
+ * Where one declared entry's bytes are read from, or `null` if the row is
+ * malformed. A `null` here is a build failure rather than a skip: a ship list
+ * row that cannot be located is a file the store upload would silently miss.
+ */
+function sourcePathOf(entry) {
+	if (entry.from === "root") {
+		return join(pkgRoot, ...entry.out.split("/"));
+	}
+	const inBuild = buildSourceOf(entry);
+	if (inBuild !== null) {
+		return join(buildRoot, ...inBuild.split("/"));
+	}
+	if (entry.from === "shared-asset" && typeof entry.source === "string") {
+		return resolve(pkgRoot, entry.source);
+	}
+	return null;
+}
 
 // Read everything into memory before touching dist/: the wipe below would
 // otherwise delete the compiled modules this script is about to copy.
 const contents = new Map();
 for (const entry of PACKAGE_ENTRIES) {
-	const from =
-		entry.from === "root"
-			? join(pkgRoot, ...entry.out.split("/"))
-			: join(buildRoot, entry.out.split("/").at(-1));
+	const from = sourcePathOf(entry);
+	if (from === null) {
+		console.error(
+			`pack: ${entry.out} declares from='${entry.from}' but pack.mjs cannot locate it ` +
+				"(shared-asset rows need an explicit `source`)",
+		);
+		process.exit(1);
+	}
 	if (!existsSync(from)) {
 		console.error(`pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist`);
 		process.exit(1);
