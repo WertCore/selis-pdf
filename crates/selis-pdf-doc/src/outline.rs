@@ -155,10 +155,15 @@ enum Pending {
 }
 
 /// One open level of the walk: where to resume, and for whom.
+///
+/// There is deliberately no `depth` field. The nesting bound is
+/// [`BudgetGuard::enter`], which is charged and released as the walk descends
+/// and climbs, so a counter threaded through this stack would be a second,
+/// unread copy of a bound that is already enforced — and a reader would have no
+/// way to tell which of the two was actually holding the line.
 struct Resume {
     next: Option<Pending>,
     owner: Option<usize>,
-    depth: u16,
 }
 
 /// Walk the catalog's `/Outlines` tree.
@@ -218,15 +223,15 @@ pub fn outline(
     let mut pruned: u32 = 0;
     let mut cur: Option<Pending> = Some(first);
     let mut owner: Option<usize> = None;
-    let mut depth: u16 = 1;
 
     // One `enter` per open level and one `leave` when it closes, so the depth
-    // the kernel sees is the outline's real nesting. `DepthGuard` cannot be
-    // held across the whole walk because the levels are interleaved on one
-    // stack rather than nested on the Rust stack; an early return leaves the
-    // counter high, which is harmless because every early return out of this
-    // loop is a budget or cancellation failure and those poison the guard
-    // (ADR-P0006), so nothing further can be charged against it.
+    // the kernel sees is the outline's real nesting — and it is the *only*
+    // nesting bound in this walk. `DepthGuard` cannot be held across the whole
+    // walk because the levels are interleaved on one stack rather than nested on
+    // the Rust stack; an early return leaves the counter high, which is
+    // harmless because every early return out of this loop is a budget or
+    // cancellation failure and those poison the guard (ADR-P0006), so nothing
+    // further can be charged against it.
     g.enter()?;
     let mut walking = true;
     while walking {
@@ -279,20 +284,19 @@ pub fn outline(
             match first_child {
                 Some(kid) => {
                     // The resume point is `me`'s **sibling** chain, so it
-                    // carries *`me`'s own* owner and depth — the level the
-                    // sibling sits at, not the level `me`'s children sit at.
-                    // Saving `Some(me)` here instead would re-parent every
-                    // `/Next` sibling to the item that named it, which reads
-                    // as a plausible outline while silently collapsing a
-                    // document's whole sibling list into one deep chain.
-                    stack.push(Resume { next, owner, depth });
+                    // carries *`me`'s own* owner — the level the sibling sits
+                    // at, not the level `me`'s children sit at. Saving
+                    // `Some(me)` here instead would re-parent every `/Next`
+                    // sibling to the item that named it, which reads as a
+                    // plausible outline while silently collapsing a document's
+                    // whole sibling list into one deep chain.
+                    stack.push(Resume { next, owner });
                     // The child's level. `enter` is also the depth bound: a
                     // document nested past the budget gets a typed
                     // `BUDGET_DEPTH` refusal here, not a truncated tree.
                     g.enter()?;
                     cur = Some(kid);
                     owner = Some(me);
-                    depth = depth.saturating_add(1);
                     descended = true;
                     break;
                 }
@@ -307,7 +311,6 @@ pub fn outline(
             Some(resume) => {
                 cur = resume.next;
                 owner = resume.owner;
-                depth = resume.depth;
             }
             None => walking = false,
         }
