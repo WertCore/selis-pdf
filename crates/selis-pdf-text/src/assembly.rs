@@ -108,8 +108,10 @@ pub fn assemble(glyphs: Vec<TextGlyph>) -> Vec<TextLine> {
 /// something the user can see, and both rendering oracles extract it; dropping
 /// it would trade one invisible-text failure for a worse one — visible text
 /// silently deleted from a page whose `/MediaBox` a producer set slightly too
-/// small. `Rect::intersect` also rejects a box that merely *touches* the
-/// boundary (zero-area overlap), which is right: such a glyph paints no pixels.
+/// small. The test is a closed-set overlap (see [`overlaps`]), so even a
+/// zero-area glyph box standing inside the page counts as visible — a code the
+/// font gives no width for still puts ink at its origin, and dropping those
+/// would delete real text.
 ///
 /// `visible: None` clips nothing. That is the honest reading of "this page
 /// declares no visible region" (no `/MediaBox`, a non-finite box, an empty
@@ -145,7 +147,7 @@ pub fn gather_glyphs(
                 for &code in &run.glyphs {
                     let placed = place_glyph(at, *tm, run, state.ctm);
                     if let Some(region) = region {
-                        if glyph_box(&placed).intersect(region).is_none() {
+                        if !overlaps(&glyph_box(&placed), region) {
                             continue; // painted off-page: not text on this page
                         }
                     }
@@ -178,7 +180,10 @@ pub fn gather_glyphs(
 /// Rectangular clips, the overwhelmingly common case, are exact.
 fn narrow_by_clip(
     page: Rect,
-    clip: &[(selis_pdf_content::path::Path, selis_pdf_content::path::ClipRule)],
+    clip: &[(
+        selis_pdf_content::path::Path,
+        selis_pdf_content::path::ClipRule,
+    )],
 ) -> Rect {
     let mut region = page;
     for (path, _rule) in clip {
@@ -303,16 +308,35 @@ fn writing_dir(matrix: &selis_geom::Matrix) -> (f64, f64, f64) {
     (a / scale, b / scale, scale)
 }
 
+/// Whether two rectangles overlap **as closed sets** — a shared point counts.
+///
+/// This is deliberately not [`Rect::intersect`], which answers a different
+/// question: it returns `None` whenever the overlap has no *area*. A glyph box
+/// can easily have no area — a code the font gives no width for yields
+/// `advance == 0`, so the box collapses to a vertical segment, and a page's
+/// `W`-clip can collapse the region the same way. Under area semantics every
+/// such glyph reads as "not on the page" and is silently deleted: measured on
+/// `text08_encoding_unicode.pdf`, the `/Differences` and MacRoman lines lost
+/// their `é` and `°` that way, and a whole zero-advance line vanished. A
+/// closed-set test keeps them, because a glyph standing at a point inside the
+/// page does put ink there.
+///
+/// The cost of the closed test is a measure-zero over-permissiveness: a box
+/// that exactly abuts the page edge from outside is kept rather than dropped.
+/// That is the safe direction — this filter exists to stop *invisible* text
+/// being extracted, and a hair of extra tolerance can never delete a glyph a
+/// renderer would paint.
+fn overlaps(a: &Rect, b: Rect) -> bool {
+    a.x1 >= b.x0 && a.x0 <= b.x1 && a.y1 >= b.y0 && a.y0 <= b.y1
+}
+
 /// A placed glyph's box: its origin, `advance` along the writing direction, and
 /// ±`size` perpendicular — the same generous em box
 /// [`crate::selection::glyph_rect`] builds (ascent ≈ 0.8 em, descent ≈ 0.2 em,
 /// rounded out to a full em each way), so "visible to the extractor" and
 /// "highlightable by selection" cannot disagree about where a glyph is.
 fn glyph_box(g: &PlacedGlyph) -> Rect {
-    let tip = Point::new(
-        g.at.x + g.dir_x * g.advance,
-        g.at.y + g.dir_y * g.advance,
-    );
+    let tip = Point::new(g.at.x + g.dir_x * g.advance, g.at.y + g.dir_y * g.advance);
     let (nx, ny) = (-g.dir_y, g.dir_x);
     let up = Point::new(g.at.x + nx * g.size, g.at.y + ny * g.size);
     let down = Point::new(g.at.x - nx * g.size, g.at.y - ny * g.size);
@@ -703,14 +727,14 @@ mod visible_region {
         };
         let glyphs = gather_glyphs(&dl, Some(Rect::new(0.0, 0.0, 100.0, 10.0)));
         assert_eq!(glyphs.len(), 1, "a straddling glyph is visible text");
+    }
 
-        // A box that only *touches* the boundary has zero overlap and paints
-        // no pixels: a glyph whose em box ends exactly on the page's bottom
-        // edge (baseline at −12, so the box is −24..0 against a page at 0..10)
-        // is gone.
+    /// A glyph whose box lies *entirely* outside is dropped — the defect.
+    #[test]
+    fn a_glyph_entirely_off_the_page_is_dropped() {
         let dl = DisplayList {
             ops: vec![text_op(
-                Point::new(50.0, -12.0),
+                Point::new(50.0, 200.0),
                 Matrix::IDENTITY,
                 Matrix::IDENTITY,
                 65,
@@ -718,6 +742,37 @@ mod visible_region {
             )],
         };
         assert!(gather_glyphs(&dl, Some(Rect::new(0.0, 0.0, 100.0, 10.0))).is_empty());
+    }
+
+    /// A **zero-advance** glyph is still on the page, and this is the case a
+    /// naive area test gets wrong. `text08_encoding_unicode.pdf` (caught by the
+    /// existing SL-3.TEXT.08 CLI pin when this filter was first written) has
+    /// codes its fonts give no width for: `advance == 0` collapses the glyph box
+    /// to a vertical segment, and `Rect::intersect` — which answers "does the
+    /// overlap have *area*?" — reported no overlap, deleting the MacRoman `é`,
+    /// the WinAnsi `°`, and an entire line. The shape here is theirs: origin
+    /// (76.032, 760), advance 0, size 16, on a 612×792 page.
+    #[test]
+    fn a_zero_advance_glyph_inside_the_page_is_kept() {
+        let mut op = text_op(
+            Point::new(76.032, 760.0),
+            Matrix::IDENTITY,
+            Matrix::IDENTITY,
+            0xB0,
+            1,
+        );
+        if let Op::Text { runs, .. } = &mut op {
+            runs[0].advance = 0.0; // the font has no width for this code
+        }
+        let glyphs = gather_glyphs(
+            &DisplayList { ops: vec![op] },
+            Some(Rect::new(0.0, 0.0, 612.0, 792.0)),
+        );
+        assert_eq!(
+            glyphs.len(),
+            1,
+            "a zero-width glyph standing on the page is visible text"
+        );
     }
 
     /// `None` clips nothing: a page that declares no visible region must not
