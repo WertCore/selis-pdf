@@ -130,7 +130,11 @@ pub(crate) fn page_lines(
     // shared gather helper also carries each glyph's pen advance and the
     // font's space width so word-gap inference has same-space references
     // (SL-3.TEXT.09).
-    let mut glyphs = selis_pdf_text::gather_glyphs(dl);
+    // The page's visible region (`/MediaBox ∩ /CropBox`) gates extraction:
+    // a glyph the page clips away is not text on this page (SL-3.TEXT.26).
+    // `None` (no declared region) clips nothing.
+    let visible = session.page_visible_box(page);
+    let mut glyphs = selis_pdf_text::gather_glyphs(dl, visible);
     let drew_text = !glyphs.is_empty();
     selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
         session.text_unicode(page, font, code, budget, g)

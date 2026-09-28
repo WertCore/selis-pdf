@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use selis_bytes::Bytes;
 use selis_color::Rgba;
 use selis_error::{err, Code, Result};
-use selis_geom::{Matrix, Point};
+use selis_geom::{Matrix, Point, Rect};
 use selis_pdf_content::dispatch::Operand;
 use selis_pdf_cos::{Doc, Obj};
 use selis_pdf_doc::Resolver;
@@ -489,6 +489,42 @@ impl Session {
                 .filter(|(w, h)| *w > 0.0 && *h > 0.0)
                 .unwrap_or(DEFAULT_MEDIA_BOX)
         })
+    }
+
+    /// The page's **visible region** in default user space: the `/MediaBox`
+    /// intersected with the `/CropBox` (ISO 32000-2 §14.11.2 — a conforming
+    /// reader must not display anything outside it), normalised.
+    ///
+    /// This is the box SL-3.TEXT.26 clips text extraction against, and it is
+    /// *not* the render canvas: the canvas is the `/MediaBox` mapped through
+    /// `/Rotate` and the DPI scale (`page_view`), whereas this stays in the
+    /// page's own user space so content-stream coordinates compare against it
+    /// directly.
+    ///
+    /// `None` when the page declares neither box, when the declared box is
+    /// non-finite, or when the intersection is empty. `None` means *no visible
+    /// region is declared*, not *nothing is visible* — callers must treat it as
+    /// "clip nothing" rather than "drop everything", because a document with no
+    /// `/MediaBox` is incomplete authoring (SL-2.CONF.05 renders it at the
+    /// ISO default), and silently deleting its text would be the very failure
+    /// SL-3.TEXT.26 exists to remove.
+    #[must_use]
+    pub fn page_visible_box(&self, page_num: usize) -> Option<Rect> {
+        let page = self.document.pages.get(page_num)?;
+        // The doc model carries `/CropBox` as inherited, defaulting to nothing
+        // rather than to the `/MediaBox`; the intersection rule is applied here
+        // so both boxes go through the same normalisation.
+        let media = page.media_box?;
+        if !media.is_finite() {
+            return None;
+        }
+        let Some(crop) = page.crop_box else {
+            return (!media.is_empty()).then_some(media);
+        };
+        if !crop.is_finite() {
+            return None;
+        }
+        media.intersect(crop)
     }
 
     /// The rendered view of a page at `dpi` (SL-2.RAST.12): the output canvas

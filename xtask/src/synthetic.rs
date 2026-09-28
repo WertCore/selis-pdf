@@ -805,6 +805,20 @@ fn generate_bugfix_text() -> Result<(), String> {
             "apps/cli/tests/fixtures/text11_tm_scaled.pdf",
             1,
         ),
+        (
+            // SL-3.TEXT.26: the `issue7454` shape — a full A4 Form XObject
+            // placed at net scale 1.0 with a translate of (-19.01, -623.92)
+            // onto a 384×111 page, so only a thin band of the sheet is on the
+            // page. Page 0 is that placement (three lines, one on-page); page 1
+            // is a 2×-scaled placement with one line on-page and one off. The
+            // `[text]` hash is the *whole-document* extraction, so it moves if
+            // the off-page bands ever come back — which is the regression this
+            // task exists to prevent. MuPDF 1.23.0 returns `ON-THE-PAGE-BAND`
+            // and `SCALED-ON-PAGE` for these two pages, and nothing else.
+            "bugfix_text26_form_placement",
+            "apps/cli/tests/fixtures/text26_form_placement.pdf",
+            2,
+        ),
     ] {
         let bytes = std::fs::read(src).map_err(|e| format!("{id}: read {src}: {e}"))?;
         std::fs::write(dir.join(format!("{id}.pdf")), &bytes).map_err(|e| format!("{id}: {e}"))?;
