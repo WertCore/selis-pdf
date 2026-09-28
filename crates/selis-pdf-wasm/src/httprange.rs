@@ -348,6 +348,13 @@ impl HttpRangeDriver {
         self.requests
     }
 
+    /// The budget this transfer runs under — the one the caller chose at
+    /// `rangeOpen` (ADR-P0006: the caller picks, the engine never does).
+    #[must_use]
+    pub const fn budget(&self) -> Budget {
+        self.budget
+    }
+
     /// The end of the next window, clamped to a known total.
     fn window_end(&self) -> u64 {
         match self.total {

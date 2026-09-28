@@ -44,8 +44,13 @@
 //!
 //! # What v1 does not do (yet, honestly)
 //!
-//! * Source adapters other than inline `bytes` answer
-//!   `BINDING_UNSUPPORTED_OP` until SL-4.WASM.05/06.
+//! * The blob/OPFS/FSA source adapters (SL-4.WASM.05) drain through their own
+//!   `DocSource`, so the `DocSource` contract is the path every open takes.
+//! * A remote document (SL-4.WASM.06) is *not* one of them: it has no bytes
+//!   to hand over, so it is fetched by the `rangeOpen` / `rangeChunk` /
+//!   `rangeClose` exchange, where the guest names each range and judges each
+//!   response. `open` with a `http-range` descriptor answers
+//!   `BINDING_UNSUPPORTED_OP` pointing there.
 //! * `mutate`/`save` validate their versioned envelopes and answer
 //!   `BINDING_UNSUPPORTED_OP` until Phase 5.
 //! * `search` with `matchCase` answers `BINDING_UNSUPPORTED_OP` until the
@@ -89,6 +94,7 @@ use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
 
+use crate::httprange::{ChunkReport, ChunkStep, HttpRangeDriver, RangeRequest};
 use crate::memory::{MemoryStats, JS_DEFAULT_CAP_BYTES, WASM_MAX_BYTES};
 use crate::protocol::{
     BudgetOverrides, BudgetProfile, DocHandle, MutationEnvelope, PageRange, RenderParams,
@@ -110,6 +116,12 @@ pub const MAX_CANVAS_DIM: u32 = 16_384;
 /// Maximum simultaneously open documents (the guest registry bound; further
 /// opens answer `BUDGET_BYTES` until one is closed).
 pub const MAX_OPEN_DOCS: u64 = 64;
+
+/// Maximum simultaneously open range transfers (SL-4.WASM.06). Small on
+/// purpose: a transfer holds a partially-assembled document, so this is a
+/// memory bound wearing a registry's clothes, and a hostile client must not be
+/// able to open transfers without limit.
+pub const MAX_OPEN_TRANSFERS: usize = 8;
 
 /// Maximum recorded pre-cancellations (FIFO eviction of stale targets).
 const MAX_PRECANCELLED: usize = 256;
@@ -281,6 +293,12 @@ pub struct Worker {
     blobs: BTreeMap<String, Vec<u8>>,
     opfs: BTreeMap<String, Vec<u8>>,
     fsa: BTreeMap<String, Vec<u8>>,
+    // SL-4.WASM.06: in-flight range transfers. A remote document is fetched by
+    // the guest *asking* for ranges and the shell delivering them, so a
+    // transfer is a multi-message session with its own id space and its own
+    // bound. The driver owns the request budget; the map owns the lifetime.
+    transfers: BTreeMap<u64, HttpRangeDriver>,
+    next_transfer: u64,
 }
 
 impl Default for Worker {
@@ -302,6 +320,8 @@ impl Worker {
             blobs: BTreeMap::new(),
             opfs: BTreeMap::new(),
             fsa: BTreeMap::new(),
+            transfers: BTreeMap::new(),
+            next_transfer: 1,
         }
     }
 
@@ -464,6 +484,31 @@ impl Worker {
             RequestOp::Text { doc, page, format } => self.op_text(id, doc, page, format, env),
             RequestOp::TextLayer { doc, page } => self.op_text_layer(id, doc, page, env),
             RequestOp::Search { doc, query, opts } => self.op_search(id, doc, query, opts, env),
+            RequestOp::RangeOpen {
+                url,
+                size,
+                chunk,
+                budget,
+            } => self.op_range_open(id, url, size, chunk, budget, env),
+            RequestOp::RangeChunk {
+                transfer,
+                start,
+                status,
+                content_range,
+                content_length,
+                len,
+            } => self.op_range_chunk(
+                id,
+                transfer,
+                start,
+                status,
+                content_range,
+                content_length,
+                len,
+                payload,
+                env,
+            ),
+            RequestOp::RangeClose { transfer } => self.op_range_close(id, transfer),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
             RequestOp::Cancel { target } => self.op_cancel(id, target),
@@ -474,6 +519,13 @@ impl Worker {
 
     // -- open / close ------------------------------------------------------
 
+    /// Open a session over already-assembled bytes and mint its handle.
+    ///
+    /// Shared by every source that ends up holding the whole document: the
+    /// inline `bytes` attachment, the WASM.05 adapters, and a completed
+    /// SL-4.WASM.06 range transfer. Sharing it is the point — the memory
+    /// gates, the registry bound and the reply shape (including SL-4.EXT.03's
+    /// index-aligned `pageSizes`) must not be one adapter's private idea.
     fn open_with_bytes(
         &mut self,
         id: u64,
@@ -503,6 +555,7 @@ impl Worker {
         env.progress.progress(id, Stage::Open, 0);
         let session = Session::open(bytes, &budget, env.clock)?;
         let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
+        let page_sizes = page_sizes(&session);
         let handle = self.mint_handle()?;
         self.live_bytes = self.live_bytes.saturating_add(len);
         self.peak_bytes = self.peak_bytes.max(self.live_bytes);
@@ -516,7 +569,7 @@ impl Worker {
         );
         Ok(Outgoing::ok(
             id,
-            serde_json::json!({ "doc": handle.raw, "pages": pages }),
+            serde_json::json!({ "doc": handle.raw, "pages": pages, "pageSizes": page_sizes }),
         ))
     }
 
@@ -549,13 +602,6 @@ impl Worker {
                         detail = "payload length does not match the bytes descriptor"
                     ));
                 }
-                if self.docs.len() as u64 >= MAX_OPEN_DOCS {
-                    return Err(err!(
-                        Code::BudgetBytes,
-                        during = "wasm-worker",
-                        detail = "document registry full; close a document first"
-                    ));
-                }
                 env.progress.progress(id, Stage::Open, 0);
                 // Budgeted copy: charge before allocating so a hostile length
                 // yields BUDGET_BYTES in constant memory, never an OOM abort.
@@ -566,45 +612,7 @@ impl Worker {
                 let mut copy_guard = budget.guard_with(&frozen, env.cancel.clone());
                 let owned: Vec<u8> = selis_sandbox::alloc::copy_slice(&mut copy_guard, payload)?;
                 drop(copy_guard);
-                let session = Session::open(owned, &budget, env.clock)?;
-                let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
-                // SL-4.EXT.03: the page media sizes travel with the handle.
-                // Every shell's DocHandle is index-aligned with page numbers
-                // (a viewer has to lay a page out before it renders it), and one
-                // page round trip per page would make opening a 5 000-page
-                // report 5 000 messages. page_size reads a box the parser has
-                // already resolved, so this is a walk and not a re-parse; the
-                // sizes are points, like the rest of the wire.
-                let page_sizes: Vec<serde_json::Value> = (0..session.len())
-                    .map(|i| match session.page_size(i) {
-                        Some((width, height)) => {
-                            serde_json::json!({ "width": width, "height": height })
-                        }
-                        // A page whose box did not resolve still occupies a
-                        // slot: dropping it would desynchronise the array from
-                        // the page numbers the handle is used with.
-                        None => serde_json::json!({ "width": 0.0, "height": 0.0 }),
-                    })
-                    .collect();
-                let handle = self.mint_handle()?;
-                self.live_bytes = self.live_bytes.saturating_add(len);
-                self.peak_bytes = self.peak_bytes.max(self.live_bytes);
-                self.docs.insert(
-                    handle.raw,
-                    OpenDoc {
-                        session,
-                        budget,
-                        src_len: len,
-                    },
-                );
-                Ok(Outgoing::ok(
-                    id,
-                    serde_json::json!({
-                        "doc": handle.raw,
-                        "pages": pages,
-                        "pageSizes": page_sizes,
-                    }),
-                ))
+                self.open_with_bytes(id, owned, budget, env)
             }
             SourceDescriptor::Blob { source_id } => {
                 let stored = self.blobs.get(&source_id).ok_or_else(|| {
@@ -648,7 +656,7 @@ impl Worker {
             SourceDescriptor::HttpRange { .. } => Err(err!(
                 Code::BindingUnsupportedOp,
                 during = "wasm-worker",
-                detail = "HttpRange adapter lands with SL-4.WASM.06"
+                detail = "a remote document is fetched by rangeOpen/rangeChunk: open promises a handle and there are no bytes to mint one from yet"
             )),
         }
     }
@@ -714,6 +722,195 @@ impl Worker {
         }
         out.truncate(usize::try_from(off).unwrap_or(n));
         Ok(out)
+    }
+
+    // -- the HttpRangeSource fetch driver (SL-4.WASM.06) --------------------
+    //
+    // Three ops, and the direction of travel is the whole design: the guest
+    // names the range it wants, the shell fetches it, the guest judges what
+    // came back. See `crate::httprange` for why the decisions live here and
+    // `RequestOp::RangeOpen` for the shell's obligations (bodyless `GET`, no
+    // upload, CORS-exposed headers, `AbortSignal` → `rangeClose`).
+
+    fn op_range_open(
+        &mut self,
+        id: u64,
+        url: String,
+        size: Option<u64>,
+        chunk: Option<u64>,
+        budget: Option<BudgetProfile>,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let budget = budget_from_profile(&budget.unwrap_or_default())?;
+        // A claimed length is hostile input until the origin confirms it, so
+        // it goes through the same pre-copy gate as an inline attachment: the
+        // wasm ceiling, the document byte budget, the 64 MiB source bound and
+        // the tab cap, all before a single byte is fetched (SL-4.WASM.04).
+        if let Some(claimed) = size {
+            crate::memory::check_inline_len(
+                claimed,
+                budget.bytes,
+                self.live_bytes,
+                JS_DEFAULT_CAP_BYTES,
+            )?;
+        }
+        if self.transfers.len() >= MAX_OPEN_TRANSFERS {
+            return Err(err!(
+                Code::BudgetBytes,
+                during = "wasm-worker",
+                detail = "range transfer registry full; finish or close one first"
+            ));
+        }
+        if url.is_empty() {
+            return Err(err!(
+                Code::BindingBadArgument,
+                during = "wasm-worker",
+                detail = "a range transfer needs a url"
+            ));
+        }
+        let raw = self.next_transfer;
+        self.next_transfer = raw.checked_add(1).ok_or_else(|| {
+            err!(
+                Code::BudgetBytes,
+                during = "wasm-worker",
+                detail = "range transfer id space exhausted"
+            )
+        })?;
+        let mut driver = HttpRangeDriver::new(url.clone(), size, chunk, budget);
+        let first = driver.plan()?;
+        self.transfers.insert(raw, driver);
+        env.progress.progress(id, Stage::Open, 0);
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "transfer": raw,
+                "url": url,
+                "request": first.map(request_value),
+            }),
+        ))
+    }
+
+    fn op_range_chunk(
+        &mut self,
+        id: u64,
+        transfer: u64,
+        start: u64,
+        status: u16,
+        content_range: Option<String>,
+        content_length: Option<u64>,
+        len: u64,
+        payload: &[u8],
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let arrived = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+        if arrived != len {
+            return Err(err!(
+                Code::BindingBadArgument,
+                during = "wasm-worker",
+                detail = "range chunk length does not match its attachment"
+            ));
+        }
+        let Some(mut driver) = self.transfers.remove(&transfer) else {
+            return Err(bad_transfer());
+        };
+        let budget = driver.budget();
+        // A failed transfer is dropped whole: a half-assembled document is
+        // never a thing here, and holding the prefix would only delay the tab
+        // cap. The transfer is removed above, so every exit from here — typed
+        // error included — leaves nothing behind.
+        let step = match self.judge_chunk(
+            &mut driver,
+            ChunkReport {
+                start,
+                status,
+                content_range,
+                content_length,
+                body: payload.to_vec(),
+            },
+            arrived,
+            budget,
+            env,
+        ) {
+            Ok(step) => step,
+            Err(e) => return Err(e),
+        };
+        match step {
+            ChunkStep::Request(req) | ChunkStep::Retry(req) => {
+                let received = driver.received();
+                self.transfers.insert(transfer, driver);
+                Ok(Outgoing::ok(
+                    id,
+                    serde_json::json!({
+                        "transfer": transfer,
+                        "received": received,
+                        "complete": false,
+                        "request": request_value(req),
+                    }),
+                ))
+            }
+            ChunkStep::Complete { degraded } => {
+                // The bytes leave through the IO layer's own range source, so
+                // a remotely-fetched document is read by the same `DocSource`
+                // path as every WASM.05 adapter rather than a private one.
+                let bytes = driver.drain_through_source()?;
+                let received = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let opened = self.open_with_bytes(id, bytes, budget, env)?;
+                let value = opened.response.value.unwrap_or(serde_json::Value::Null);
+                Ok(Outgoing::ok(
+                    id,
+                    serde_json::json!({
+                        "transfer": transfer,
+                        "received": received,
+                        "complete": true,
+                        "degraded": degraded,
+                        "randomAccess": !degraded,
+                        "doc": value["doc"],
+                        "pages": value["pages"],
+                        "pageSizes": value["pageSizes"],
+                    }),
+                ))
+            }
+        }
+    }
+
+    /// Run one response past the memory gates and into the driver.
+    ///
+    /// Split out of `op_range_chunk` so the borrow of `self.transfers` ends
+    /// before the driver is judged: the tab cap is a *worker*-level fact
+    /// (open documents count against it) while the request and byte bounds are
+    /// the driver's.
+    fn judge_chunk(
+        &self,
+        driver: &mut HttpRangeDriver,
+        report: ChunkReport,
+        arrived: u64,
+        budget: Budget,
+        env: &WorkerEnv<'_>,
+    ) -> Result<ChunkStep> {
+        // The tab cap and the document budget, checked against the transfer's
+        // running total *before* the body is copied — the same gate `open`
+        // applies, so a transfer cannot route around it.
+        let projected = driver.received().saturating_add(arrived);
+        crate::memory::check_inline_len(
+            projected,
+            budget.bytes,
+            self.live_bytes,
+            JS_DEFAULT_CAP_BYTES,
+        )?;
+        let mut guard = budget.guard_with(env.clock, env.cancel.clone());
+        driver.accept(&report, &mut guard)
+    }
+
+    fn op_range_close(&mut self, id: u64, transfer: u64) -> Result<Outgoing> {
+        // Also the abort path: a shell whose `AbortSignal` fires releases the
+        // transfer here instead of abandoning a guest-side buffer.
+        if self.transfers.remove(&transfer).is_none() {
+            return Err(bad_transfer());
+        }
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({ "transfer": transfer, "closed": true }),
+        ))
     }
 
     fn mint_handle(&mut self) -> Result<DocHandle> {
@@ -1191,6 +1388,51 @@ impl Worker {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The wire form of a planned range request.
+///
+/// Deliberately only an offset pair and a header string: the shell's whole
+/// vocabulary for talking to the origin is "GET these bytes". There is no
+/// method and no body to name, so the no-upload invariant (ADR-P0016) is a
+/// property of this value rather than a rule the shell is trusted to follow.
+fn request_value(req: RangeRequest) -> serde_json::Value {
+    serde_json::json!({
+        "start": req.start,
+        "end": req.end,
+        "header": req.header_value(),
+    })
+}
+
+/// A stale or unknown range transfer id.
+///
+/// A transfer id is a handle across the binding boundary, so it gets the
+/// registry's handle code rather than a new one — the bindings never invent a
+/// taxonomy.
+fn bad_transfer() -> Error {
+    err!(
+        Code::BindingBadHandle,
+        during = "wasm-worker",
+        detail = "unknown range transfer"
+    )
+}
+
+/// The page media sizes that travel with every document handle (SL-4.EXT.03).
+///
+/// Every shell's `DocHandle` is index-aligned with page numbers (a viewer has
+/// to lay a page out before it renders it), and one page round trip per page
+/// would make opening a 5 000-page report 5 000 messages. `page_size` reads a
+/// box the parser has already resolved, so this is a walk and not a re-parse;
+/// the sizes are points, like the rest of the wire. A page whose box did not
+/// resolve still occupies a slot: dropping it would desynchronise the array
+/// from the page numbers the handle is used with.
+fn page_sizes(session: &Session) -> Vec<serde_json::Value> {
+    (0..session.len())
+        .map(|i| match session.page_size(i) {
+            Some((width, height)) => serde_json::json!({ "width": width, "height": height }),
+            None => serde_json::json!({ "width": 0.0, "height": 0.0 }),
+        })
+        .collect()
+}
 
 /// A stale or unknown document handle.
 fn bad_handle() -> Error {
