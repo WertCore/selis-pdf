@@ -37,6 +37,7 @@ import type {
 	DocHandle,
 	DocumentSourceDescriptor,
 	PageText,
+	PageTextLayer,
 	PlatformCapabilities,
 	PrintOptions,
 	RenderTileRequest,
