@@ -4,13 +4,21 @@
 		<meta charset="utf-8" />
 		<title>Selis Engine (offscreen)</title>
 		<!--
-			Offscreen engine host skeleton (SL-4.EXT.01). The WASM engine
-			lifecycle + state recovery lands in SL-4.EXT.03; this document
-			exists now so the architecture (viewer -> offscreen, never bytes
-			through the service worker) is reviewable in EXT.01.
+			Offscreen engine host (SL-4.EXT.01 + SL-4.EXT.06).
+
+			Why this document exists, in one paragraph: an MV3 service worker is
+			killed after ~30 s idle and has no DOM, so it cannot host the WASM
+			engine - and must not be handed document bytes anyway. A Worker
+			spawned by the viewer page dies with that page, which is the lifetime
+			the `offscreen` permission exists to avoid. This document is a real
+			DOM document that outlives any one page, so it is where the engine
+			lives and where document bytes are allowed to be.
+
+			No remote code and no eval (ADR-P0028): offscreen.js imports the
+			compiled host from this same package.
 		-->
 	</head>
 	<body>
-		<script src="offscreen.js" type="module"></script>
+		<script type="module" src="./offscreen.js"></script>
 	</body>
 </html>

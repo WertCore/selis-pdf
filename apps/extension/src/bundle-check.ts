@@ -11,12 +11,45 @@
  * could reach.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUILD_WORKSPACE, type BundleFile, describeViolations, scanBundle } from "./bundle-scan.js";
 
-const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/**
+ * The package root, found by walking up from this module.
+ *
+ * SL-4.EXT.06 moved this module three directories deeper: `tsc` now compiles
+ * `apps/ui` in the same program, so `rootDir` is `apps/` and the emitted tree
+ * is `dist/pkg/extension/src/…`. The old hard-coded `../..` kept working right
+ * up until someone changed the layout again, and would then have scanned the
+ * wrong directory — the worst failure mode a gate has.
+ *
+ * The anchor is the pair **`package.json` + `dist/manifest.json`**, and the pair
+ * matters. `dist/manifest.json` alone is not enough: `pack.mjs` copies the
+ * manifest into `dist/`, so a walk looking only for that file stops at `dist/`
+ * itself and the gate then looks for `dist/dist` and reports a missing package.
+ * That is not hypothetical — it is what the first EXT.06 build did.
+ * `package.json` is not copied into `dist/`, so the only directory holding both
+ * is the package root.
+ */
+function findPackageRoot(from: string): string {
+	let dir = from;
+	for (;;) {
+		if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "dist", "manifest.json"))) {
+			return dir;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) {
+			throw new Error(
+				`no package.json + dist/manifest.json pair above ${from} - the built package is not where it should be`,
+			);
+		}
+		dir = parent;
+	}
+}
+
+const pkgRoot = findPackageRoot(dirname(fileURLToPath(import.meta.url)));
 const distRoot = join(pkgRoot, "dist");
 
 /** Every file under `dir`, as package-relative `/`-separated paths. */

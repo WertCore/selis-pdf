@@ -59,7 +59,15 @@ import {
 } from "./bundle-paths.js";
 import { buildRedirectRules } from "./permissions.js";
 
-export { BUILD_WORKSPACE, PACKAGE_ENTRIES, SHIPPED_FILES, shippedSet } from "./bundle-paths.js";
+export {
+	BUILD_WORKSPACE,
+	OWN_BUILD_TREE,
+	PACKAGE_ENTRIES,
+	SHARED_BUILD_TREE,
+	SHIPPED_FILES,
+	buildSourceOf,
+	shippedSet,
+} from "./bundle-paths.js";
 export { DATA_ONLY_EXPORTS } from "./bundle-js.js";
 export type { PackageEntry, RefClass } from "./bundle-paths.js";
 

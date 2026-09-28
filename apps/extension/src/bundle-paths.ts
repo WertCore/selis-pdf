@@ -19,16 +19,76 @@
  */
 export const BUILD_WORKSPACE = "pkg";
 
+/**
+ * SL-4.EXT.06: the build workspace holds **two** compiled trees, because the
+ * extension reuses `apps/ui` verbatim (SL-4.UI.01's `PlatformAdapter` seam) and
+ * `tsc` compiles both in one program.
+ *
+ * `rootDir` is `apps/`, so the emitted layout under `dist/pkg/` mirrors the
+ * monorepo: this package's own sources under {@link OWN_BUILD_TREE}, the shared
+ * UI modules under {@link SHARED_BUILD_TREE}. That is not cosmetic — the
+ * relative specifiers the extension's sources write (`../../ui/src/...`) are
+ * never rewritten by `tsc`, so the package has to keep the same shape for them
+ * to resolve inside it. A row in {@link PACKAGE_ENTRIES} that renames either
+ * tree's prefix therefore has to be accompanied by an edit to the sources that
+ * import across it, and the gate fails loudly if it is not.
+ */
+export const OWN_BUILD_TREE = "extension";
+
+/**
+ * The prefix this package's own compiled modules carry **in the shipped
+ * package**, not only in the build workspace.
+ *
+ * This is not cosmetic and it is not a preference. `rootDir` is `apps/`, so
+ * `tsc` emits `dist/pkg/extension/src/ext/adapter.js` and
+ * `dist/pkg/ui/src/platform/errors.js` - it preserves the monorepo's shape
+ * because the sources' relative specifiers are written against that shape and
+ * `tsc` never rewrites them. For those specifiers to still resolve *inside the
+ * package*, the package has to keep the same shape: the shared modules at
+ * `ui/…` and this package's own at `extension/…`.
+ *
+ * ## What happens if this is dropped
+ *
+ * `dist/src/ext/adapter.js` writing `../../../ui/src/platform/errors.js`
+ * resolves to `apps/extension/ui/…` - outside the package, and a 404 in the
+ * browser. The bundled-only gate did **not** catch it, because
+ * {@link normalisePackagePath} folds a leading `..` away and then finds
+ * `ui/src/platform/errors.js` sitting happily in the ship list. `classifyRef`
+ * now refuses a reference that escapes the package root, so the mistake is
+ * loud rather than silent; that hardening and this prefix are the same fix
+ * seen from two ends.
+ */
+export const OWN_PACKAGE_PREFIX = `${OWN_BUILD_TREE}/`;
+
+/** Compiled `apps/ui` modules inside the build workspace, and their package path. */
+export const SHARED_BUILD_TREE = "ui";
+
+/**
+ * Where a shipped file's bytes come from. Each kind is a different trust
+ * question, which is why they are named rather than unified:
+ *
+ * - `root` — a hand-written file of this package (manifest, pages, the service
+ *   worker). Not compiled, so it is not typechecked; read it in review.
+ * - `build` — a module `tsc` compiled from this package's own `src/`.
+ * - `shared-js` — a module `tsc` compiled from `apps/ui`, shipped because the
+ *   extension *reuses* it rather than forking it (SL-4.EXT.06). It is the same
+ *   source the web app runs; a change in `apps/ui` lands in the extension
+ *   package on the next build, which is the point and also the risk.
+ * - `shared-asset` — a non-JS file copied from `apps/ui` (the stylesheets).
+ */
+export type PackageSource = "root" | "build" | "shared-js" | "shared-asset";
+
 /** One file in the shipped package: where it lands, and where it comes from. */
 export interface PackageEntry {
 	/** Path inside the built package (`dist/`), always with `/` separators. */
 	readonly out: string;
+	readonly from: PackageSource;
 	/**
-	 * `root` = a hand-written file copied from the package source directory;
-	 * `build` = a compiled module copied from {@link BUILD_WORKSPACE} under
-	 * its basename (`src/permissions.js` <- `permissions.js`).
+	 * Required for `shared-asset`: the file's path relative to this package's
+	 * root, e.g. `../ui/src/viewer/page-list.css`. Assets are not compiled, so
+	 * there is no build-tree path to derive and the path is spelled out.
 	 */
-	readonly from: "root" | "build";
+	readonly source?: string;
 }
 
 /**
@@ -36,6 +96,48 @@ export interface PackageEntry {
  *
  * Adding a module means adding it here, and `bundle.test.ts` fails when a row
  * names a file the build does not produce or a packaged page references.
+ *
+ * ## The `shared-*` rows are the EXT.06 reuse, and they are the interesting ones
+ *
+ * `apps/ui` is not forked into this package. The three modules below are
+ * compiled from `apps/ui/src` by this package's own `tsc` program and copied to
+ * `ui/src/…`, which is exactly where the relative specifiers in this package's
+ * sources point (`src/ext/adapter.ts` writes
+ * `../../../ui/src/platform/errors.js`). They are the whole of what the
+ * extension borrows at runtime, and the list is short on purpose:
+ *
+ * - `platform/errors.ts` — `AdapterError` / `ErrorCode`. The extension refuses
+ *   several capabilities (clipboard read, save-in-place, deep links), and a
+ *   refusal that invented its own error type would break the one rule the seam
+ *   has: every rejection is a registry code with a `docState`.
+ * - `viewer/surface.ts` — the `TileSurface` / `FrameClock` ports, and
+ *   `SurfaceFaultError`. Pulled in at runtime by the row below.
+ * - `viewer/worker-surface.ts` — `createAnimationFrameClock`, the one piece of
+ *   UI.03's worker surface the extension uses verbatim, because a frame clock is
+ *   a frame clock and re-deriving it here would be the second implementation
+ *   the seam exists to prevent.
+ *
+ * Nothing else from `apps/ui` ships, and that is a decision rather than an
+ * oversight. The rest of the UI is either type-only (erased at compile, so
+ * costing nothing) or belongs to a viewer this package does not contain yet —
+ * the virtualised page list and its stylesheet are UI.04+'s to mount, and
+ * shipping them now would put a half-built viewer in a package that
+ * SL-4.EXT.05 has to fit a size budget.
+ *
+ * ### One row ships more than the extension uses
+ *
+ * `worker-surface.js` also contains `createWorkerSurface`, which the extension
+ * never calls: it needs an `OffscreenCanvas` transferred to a worker, and a
+ * `chrome.runtime` port has no transfer list (see `src/ext/surface.ts` and
+ * `REUSE.md`). It cannot be dropped without a bundler, and ADR-P0021 rules one
+ * out. Shipping it is cheaper than the alternative, and the call site that would
+ * make it live does not exist — which is what the reuse doc records.
+ *
+ * The stylesheets are `@selis/ui-kit`'s, copied verbatim (`shared-asset`): the
+ * same no-bundler reason, so a shell links them, and `tokens.css` is generated
+ * so it is never hand-edited (UI.14). No font is fetched — the stacks are
+ * `system-ui` and friends, which is also why the CJK payload is a post-install
+ * download (EXT.05).
  */
 export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "manifest.json", from: "root" },
@@ -43,9 +145,48 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "offscreen.html", from: "root" },
 	{ out: "service-worker.js", from: "root" },
 	{ out: "offscreen.js", from: "root" },
-	{ out: "src/permissions.js", from: "build" },
-	{ out: "src/viewer-boot.js", from: "build" },
+	{ out: "extension/src/permissions.js", from: "build" },
+	{ out: "extension/src/viewer-boot.js", from: "build" },
+	{ out: "extension/src/ext/adapter.js", from: "build" },
+	{ out: "extension/src/ext/engine-client.js", from: "build" },
+	{ out: "extension/src/ext/engine-link.js", from: "build" },
+	{ out: "extension/src/ext/engine-protocol.js", from: "build" },
+	{ out: "extension/src/ext/host-env.js", from: "build" },
+	{ out: "extension/src/ext/offscreen-engine.js", from: "build" },
+	{ out: "extension/src/ext/surface.js", from: "build" },
+	{ out: "extension/src/ext/viewer-session.js", from: "build" },
+	{ out: "ui/src/platform/errors.js", from: "shared-js" },
+	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
+	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
+	{
+		out: "ui-kit/css/tokens.css",
+		from: "shared-asset",
+		source: "../../packages/ui-kit/css/tokens.css",
+	},
+	{
+		out: "ui-kit/css/base.css",
+		from: "shared-asset",
+		source: "../../packages/ui-kit/css/base.css",
+	},
 ];
+
+/**
+ * The path of a package entry's bytes inside the build workspace, or `null`.
+ *
+ * For both compiled kinds that is simply `entry.out`, because the build
+ * workspace mirrors the package (see {@link OWN_PACKAGE_PREFIX}): `tsc` emits
+ * `dist/pkg/extension/…` and `dist/pkg/ui/…` from `rootDir: ".."`, and the
+ * package copies those same paths. Deriving a prefix here would double it.
+ */
+export function buildSourceOf(entry: PackageEntry): string | null {
+	switch (entry.from) {
+		case "build":
+		case "shared-js":
+			return entry.out;
+		default:
+			return null;
+	}
+}
 
 /** Every path in the shipped package, in declaration order. */
 export const SHIPPED_FILES: readonly string[] = PACKAGE_ENTRIES.map((entry) => entry.out);
@@ -98,7 +239,16 @@ export function lineOf(text: string, index: number): number {
 	return line;
 }
 
-/** Normalise a package path: `\` folds to `/`, `.` and `..` segments resolve. */
+/**
+ * Normalise a package path: `\` folds to `/`, `.` and `..` segments resolve.
+ *
+ * A `..` that would step above the package root is **kept as `..`** rather than
+ * folded away. Folding it was a real hole: a module at `src/ext/adapter.js`
+ * importing `../../../ui/src/platform/errors.js` normalises to
+ * `ui/src/platform/errors.js`, which *is* on the ship list, so the reference
+ * passed — while in the browser it resolves above the package and 404s. The
+ * caller turns a surviving `..` into an `unresolved-local-ref` finding.
+ */
 export function normalisePackagePath(path: string): string {
 	const segments: string[] = [];
 	for (const segment of path.replaceAll("\\", "/").split("/")) {
@@ -106,6 +256,11 @@ export function normalisePackagePath(path: string): string {
 			continue;
 		}
 		if (segment === "..") {
+			if (segments.length === 0 || segments[segments.length - 1] === "..") {
+				// Escapes the package. Preserve it so the escape is visible.
+				segments.push("..");
+				continue;
+			}
 			segments.pop();
 			continue;
 		}
@@ -145,6 +300,12 @@ export function classifyRef(fromFile: string, ref: string, shipped: ReadonlySet<
 	const resolved = normalisePackagePath(
 		value.startsWith("/") ? value : `${dirOf(fromFile)}/${value}`,
 	);
+	// A surviving `..` means the reference climbs out of the package. It can
+	// never be a packaged file, so it is unresolved whatever the ship list
+	// says - see `normalisePackagePath`.
+	if (resolved === "" || resolved.startsWith("../")) {
+		return { kind: "unresolved", value };
+	}
 	return shipped.has(resolved)
 		? { kind: "packaged", path: resolved }
 		: { kind: "unresolved", value };

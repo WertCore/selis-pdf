@@ -5,10 +5,12 @@
  * so this module's job is to recover the document URL exactly as the browser
  * sent it, and to fetch it with the browser's own credentials so the auth the
  * user already has (basic-auth, SSO cookies, a presigned signature) survives
- * the redirect. The engine and UI land with SL-4.EXT.06; what EXT.02 owns is
- * the URL arriving intact and the document never being uploaded.
+ * the redirect. SL-4.EXT.06 adds the composition that opens that document
+ * behind the extension adapter; what EXT.02 owns is the URL arriving intact
+ * and the document never being uploaded.
  */
 
+import { createBrowserViewerSession, describeFailure, openDocument } from "./ext/viewer-session.js";
 import { SRC_PARAM } from "./permissions.js";
 
 /** Why a viewer session has no document, for the SL-4.UI.12 error state. */
@@ -69,4 +71,75 @@ export function fetchInterceptedDocument(url: string): Promise<Response> {
 		redirect: "follow",
 		referrerPolicy: "strict-origin-when-cross-origin",
 	});
+}
+
+/**
+ * Bring the viewer page up: session, document, and a line the user can read.
+ *
+ * Every failure path here ends in the same place - a message in the page, with
+ * the registry code kept - because a viewer that silently shows nothing is the
+ * one failure mode the seam cannot excuse. `describeFailure` is what turns a
+ * rejection into that message; the alternative is a bare `catch {}`, which is
+ * what EXT.01 shipped and which is precisely why nothing was visible.
+ */
+export async function bootViewer(container: HTMLElement): Promise<void> {
+	report(container, "Starting the Selis engine...");
+
+	let documentUrl: string;
+	try {
+		documentUrl = documentUrlFromViewerLocation(globalThis.location.search);
+	} catch (error) {
+		report(container, error instanceof Error ? error.message : "no document to open");
+		return;
+	}
+
+	try {
+		// The one network request this extension makes, and it is a GET of the
+		// document the user asked for, with the credentials the browser would
+		// have sent. Nothing is uploaded (EXT.02, and the web app's no-upload
+		// gate has the same rule for the same reason).
+		const response = await fetchInterceptedDocument(documentUrl);
+		if (!response.ok) {
+			report(container, `The document server answered ${response.status}.`);
+			return;
+		}
+		const bytes = await response.arrayBuffer();
+
+		const { adapter } = await createBrowserViewerSession();
+		const name = fileNameFromUrl(documentUrl);
+		const { doc } = await openDocument(adapter, { kind: "bytes", bytes, name });
+		report(container, `Opened ${name} - ${doc.pageCount} page${doc.pageCount === 1 ? "" : "s"}.`);
+	} catch (error) {
+		const failure = describeFailure(error);
+		report(container, failure.message);
+	}
+}
+
+/**
+ * The document's file name, for the title and the page count line.
+ *
+ * Derived from the URL's path rather than fetched from a `Content-Disposition`
+ * header: the name is only ever shown to the user, and a header the server
+ * controls is a name the server chose. It is never used as a path.
+ */
+export function fileNameFromUrl(documentUrl: string): string {
+	try {
+		const last = new URL(documentUrl).pathname.split("/").filter(Boolean).at(-1);
+		return last === undefined || last.length === 0 ? "document.pdf" : decodeURIComponent(last);
+	} catch {
+		return "document.pdf";
+	}
+}
+
+/** Write one line of status into the page. */
+function report(container: HTMLElement, message: string): void {
+	container.textContent = message;
+}
+
+/** Run the viewer when this module is loaded as the page's entry point. */
+if (typeof document !== "undefined") {
+	const mount = document.getElementById("selis-viewer");
+	if (mount !== null) {
+		void bootViewer(mount);
+	}
 }
