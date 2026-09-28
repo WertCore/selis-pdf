@@ -184,7 +184,6 @@ export function createPageListStrings(overrides: Partial<PageListCatalogue> = {}
 }
 
 /** The shared English instance, for callers that override nothing. */
-export const DEFAULT_STRINGS: PageListStrings = createPageListStrings();
 
 /**
  * Every user-facing string search owns (SL-4.UI.05). Closed for the same
@@ -333,7 +332,6 @@ export function createSearchStrings(overrides: Partial<SearchCatalogue> = {}): S
 }
 
 /** The shared English search strings, for callers that override nothing. */
-export const DEFAULT_SEARCH_STRINGS: SearchStrings = createSearchStrings();
 
 /**
  * ## Why navigation is a third key set, and not a widening of either of these
@@ -573,6 +571,20 @@ export const EN_VIEWER_CATALOGUE: Readonly<Record<ViewerMessageKey, string>> = {
 	...EN_NAVIGATION_CATALOGUE,
 };
 
+/*
+ * The three per-component defaults live HERE, after the catalogues they are built
+ * from. They used to sit beside their own factories, which no longer works: each
+ * one calls createViewerMessageRuntime, which reads EN_VIEWER_CATALOGUE below, so
+ * evaluating one before that const is initialised is a temporal-dead-zone
+ * ReferenceError that fails ten test suites at import time. Order is the fix; the
+ * values are unchanged.
+ */
+export const DEFAULT_STRINGS: PageListStrings = createPageListStrings();
+
+export const DEFAULT_SEARCH_STRINGS: SearchStrings = createSearchStrings();
+
+export const DEFAULT_NAVIGATION_STRINGS: NavigationStrings = createNavigationStrings();
+
 /** What a host may pass to {@link createViewerMessageRuntime}. */
 export interface ViewerRuntimeOptions {
 	/** The locale to render. Defaults to {@link SOURCE_LOCALE}. */
@@ -680,4 +692,3 @@ export function createPseudoViewerStrings(): ViewerStrings {
 	});
 }
 
-export const DEFAULT_NAVIGATION_STRINGS: NavigationStrings = createNavigationStrings();
