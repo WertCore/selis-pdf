@@ -36,6 +36,10 @@ import type {
 	DeepLink,
 	DocHandle,
 	DocumentSourceDescriptor,
+	LinkAnnotation,
+	NamedDestination,
+	OutlineNode,
+	PageLabelRange,
 	PageText,
 	PageTextLayer,
 	PlatformCapabilities,
@@ -128,6 +132,84 @@ export interface EnginePort {
 	): AsyncIterable<SearchBatch>;
 }
 
+/**
+ * Navigation: the document structures that are not pixels and not text
+ * (SL-4.UI.06) — the outline (bookmarks), `/PageLabels`, the `/Dests` name
+ * tree, and a page's link annotations.
+ *
+ * ## Why this is a *separate port* and not four more `EnginePort` methods
+ *
+ * Three reasons, and the third is the one that would bite:
+ *
+ * 1. **It is optional, and optionality has to live somewhere structural.** The
+ *    WASM.01 protocol (`crates/selis-pdf-wasm/src/protocol.rs`) has ops for
+ *    open/render/text/textLayer/search and nothing for outlines or links, and
+ *    the engine's outline walk is not merged. A port whose methods are required
+ *    would have been satisfied today only by every transport answering
+ *    `BINDING_UNSUPPORTED_OP` — a permanent, indistinguishable "no". Declaring
+ *    `PlatformAdapter.navigation` optional says what is actually true: a host
+ *    without it has **no** outline, **no** labels and **no** links, and the
+ *    viewer says so in its published state instead of showing an empty panel
+ *    that looks like a broken document.
+ * 2. **The cost model differs.** Everything in `EnginePort` is either a render
+ *    or a per-page scan, cancellable mid-flight. The outline is a whole-tree
+ *    walk that can be pathological (a 2 000-item outline, each item with 2 000
+ *    children), so it belongs behind its own budget argument rather than
+ *    sharing `renderTile`'s.
+ * 3. **Activation is a viewer decision, not a transport one.** ADR-P0020 makes
+ *    *what happens* to a `/Launch` or a `javascript:` URI a policy of this
+ *    product. A port that also decided would put the policy on the wrong side
+ *    of a boundary the extension and the desktop shell both implement, and
+ *    would make "does the desktop viewer prompt where the extension refuses?"
+ *    a question about two Rust crates instead of one function.
+ *
+ * So this port **reports what the document says**, including the action
+ * classes ADR-P0020 disables, and `viewer/links.ts` decides what happens. The
+ * tests in `viewer/links.test.ts` drive the decision and assert the disabled
+ * classes cannot be reached.
+ */
+export interface NavigationPort {
+	/**
+	 * The document's outline (bookmark) tree, in document order.
+	 *
+	 * An unresolvable item (a `/Dest` naming a destination that is not in the
+	 * name tree) is still returned, with `namedDestination` set and no
+	 * `destination`: a bookmark the reader can see and that reports "this
+	 * document's destination is missing" is more useful, and more honest, than
+	 * a silently shorter outline.
+	 */
+	outline(doc: DocHandle, options?: AdapterRequestOptions): Promise<readonly OutlineNode[]>;
+
+	/**
+	 * The `/PageLabels` ranges, in document order. Empty for a document with
+	 * no labels tree, which the viewer reads as "use the page number".
+	 */
+	pageLabels(doc: DocHandle, options?: AdapterRequestOptions): Promise<readonly PageLabelRange[]>;
+
+	/**
+	 * The `/Dests` name tree. Used to resolve named destinations, in outline
+	 * items and in `/GoTo` link actions alike.
+	 */
+	destinations(
+		doc: DocHandle,
+		options?: AdapterRequestOptions,
+	): Promise<readonly NamedDestination[]>;
+
+	/**
+	 * One page's link annotations, in annotation-array order.
+	 *
+	 * Out-of-range pages reject with `BINDING_BAD_ARGUMENT`, like every other
+	 * per-page port method — a transport that returned an empty list for page
+	 * 9 000 of a 3-page document would be indistinguishable from a page with
+	 * no links.
+	 */
+	pageLinks(
+		doc: DocHandle,
+		page: number,
+		options?: AdapterRequestOptions,
+	): Promise<readonly LinkAnnotation[]>;
+}
+
 /** Host file dialogs. The viewer is read-only; save targets exist for Phase 5. */
 export interface FilePort {
 	/** Open the host picker. Resolves to the descriptors the user picked. */
@@ -216,6 +298,23 @@ export interface PlatformAdapter {
 
 	/** Window title, external links, deep links. */
 	readonly window: WindowPort;
+
+	/**
+	 * Document navigation structures (SL-4.UI.06), or `undefined` when the host
+	 * cannot supply them.
+	 *
+	 * Optional because it is genuinely absent today: the WASM.01 worker protocol
+	 * has no outline/links op and the engine's outline walk is not merged, so
+	 * `apps/web/host` and the extension both report `undefined` until a later
+	 * engine task lands. That is the honest shape, and it is why a required port
+	 * would have been wrong — see {@link NavigationPort}.
+	 *
+	 * The viewer treats `undefined` as "this host has no outline, no page
+	 * labels and no link annotations", publishes that in its state, and offers
+	 * the reader nothing it cannot honour. It never falls back to reading the
+	 * bytes itself.
+	 */
+	readonly navigation?: NavigationPort;
 
 	/** Release host resources (workers, streams). Optional; shells may omit. */
 	dispose?(): Promise<void>;

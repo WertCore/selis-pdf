@@ -14,6 +14,7 @@
 import type {
 	ClipboardPort,
 	FilePort,
+	NavigationPort,
 	PlatformAdapter,
 	PrintPort,
 	StoragePort,
@@ -26,6 +27,10 @@ import type {
 	DeepLink,
 	DocHandle,
 	DocumentSourceDescriptor,
+	LinkAnnotation,
+	NamedDestination,
+	OutlineNode,
+	PageLabelRange,
 	PageText,
 	PageTextLayer,
 	PlatformCapabilities,
@@ -71,7 +76,35 @@ export interface MockDocumentSpec {
 	readonly bytes?: Uint8Array;
 	/** RGBA fill for rendered tiles; default slate blue. */
 	readonly tileColour?: readonly [number, number, number];
+	/**
+	 * The `/Outlines` tree (SL-4.UI.06). Default none, which is what most
+	 * documents have and what the viewer must show as an empty panel rather
+	 * than a broken one.
+	 */
+	readonly outline?: readonly OutlineNode[];
+	/** The `/PageLabels` ranges; default none, meaning "label = page number". */
+	readonly pageLabels?: readonly PageLabelRange[];
+	/** The `/Dests` name tree; default none. */
+	readonly destinations?: readonly NamedDestination[];
+	/** Link annotations per page, index-aligned with page numbers. */
+	readonly links?: readonly PageLinkSet[];
 }
+
+/**
+ * One page's link annotations, as the mock takes them.
+ *
+ * The `id` is defaulted from the page and index so a test that only cares about
+ * an action does not have to invent identifiers, and the shape stays honest
+ * about what a real transport must supply (a document-scoped id and a quad in
+ * user space).
+ */
+export interface PageLinkSet {
+	readonly page: number;
+	readonly links: readonly MockLinkAnnotation[];
+}
+
+/** A mock link annotation: {@link LinkAnnotation} with the id defaulted. */
+export type MockLinkAnnotation = Omit<LinkAnnotation, "id"> & { readonly id?: string };
 
 /** Observable state of the mock for assertions. */
 export interface MockRecording {
@@ -435,6 +468,52 @@ export function createMockAdapter(
 				}
 			},
 		},
+
+		// SL-4.UI.06. The mock serves the navigation port from the declarative
+		// spec rather than from bytes, and it validates the same things a real
+		// transport must: handle liveness, page bounds, and cancellation. It
+		// reports action classes ADR-P0020 disables **verbatim** — `/Launch`,
+		// `/GoToR`, `/SubmitForm` — because the viewer's refusal is the thing
+		// under test, and a mock that quietly dropped them would make the
+		// refusal untestable.
+		navigation: {
+			async outline(doc, requestOptions) {
+				assertNotAborted(requestOptions);
+				const mock = lookupDocument(doc.id);
+				await microtask();
+				assertNotAborted(requestOptions);
+				return mock.spec.outline ?? [];
+			},
+
+			async pageLabels(doc, requestOptions) {
+				assertNotAborted(requestOptions);
+				const mock = lookupDocument(doc.id);
+				await microtask();
+				assertNotAborted(requestOptions);
+				return mock.spec.pageLabels ?? [];
+			},
+
+			async destinations(doc, requestOptions) {
+				assertNotAborted(requestOptions);
+				const mock = lookupDocument(doc.id);
+				await microtask();
+				assertNotAborted(requestOptions);
+				return mock.spec.destinations ?? [];
+			},
+
+			async pageLinks(doc, page, requestOptions) {
+				assertNotAborted(requestOptions);
+				const mock = lookupDocument(doc.id);
+				assertPage(mock.spec, page);
+				await microtask();
+				assertNotAborted(requestOptions);
+				const set = mock.spec.links?.find((candidate) => candidate.page === page);
+				return (set?.links ?? []).map((link, index) => ({
+					...link,
+					id: link.id ?? `p${page}-l${index}`,
+				}));
+			},
+		} satisfies NavigationPort,
 
 		files: {
 			async pickOpen() {

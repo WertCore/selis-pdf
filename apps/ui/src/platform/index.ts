@@ -8,6 +8,7 @@ export {
 export type {
 	PlatformAdapter,
 	EnginePort,
+	NavigationPort,
 	FilePort,
 	PickOpenOptions,
 	StoragePort,
@@ -34,6 +35,15 @@ export type {
 	SearchOptions,
 	SearchMatch,
 	SearchBatch,
+	PageLabelStyle,
+	PageLabelRange,
+	DestinationKind,
+	PdfDestination,
+	OutlineNode,
+	NamedDestination,
+	LinkActionKind,
+	LinkAction,
+	LinkAnnotation,
 	SaveTarget,
 	PrintOptions,
 	TelemetryEvent,
@@ -44,6 +54,8 @@ export {
 	createMockAdapter,
 	type MockAdapter,
 	type MockDocumentSpec,
+	type MockLinkAnnotation,
 	type MockRecording,
+	type PageLinkSet,
 } from "./mock-adapter.js";
 export { definePlatformAdapterContract, type AdapterFixture, SAMPLE_TEXTS } from "./contract.js";

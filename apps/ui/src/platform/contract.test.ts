@@ -150,4 +150,121 @@ describe("mock adapter specifics", () => {
 		const iterator = adapter.engine.search(doc, "")[Symbol.asyncIterator]();
 		await expect(iterator.next()).rejects.toBeInstanceOf(AdapterError);
 	});
+
+	// SL-4.UI.06 — the navigation port's own specifics. The shared contract
+	// covers the port's *shape*; these are the mock's guarantees a UI.06 test
+	// leans on, and the reason the disabled action classes survive the trip
+	// through the transport at all.
+	describe("navigation specifics", () => {
+		async function navFixture() {
+			const adapter = createMockAdapter();
+			const descriptor = adapter.addDocument({
+				name: "nav.pdf",
+				pageCount: 3,
+				pageLabels: [
+					{ firstPage: 0, style: "r", prefix: "p" },
+					{ firstPage: 2, style: "D", firstValue: 7 },
+				],
+				outline: [
+					{
+						title: "Chapter one",
+						destination: { page: 0, kind: "fit" },
+						descendantCount: -1,
+						children: [{ title: "Figure 1", destination: { page: 1, kind: "xyz", top: 700 } }],
+					},
+					{ title: "Missing", namedDestination: "nowhere" },
+				],
+				destinations: [{ name: "here", destination: { page: 2 } }],
+				links: [
+					{
+						page: 0,
+						links: [
+							{
+								rect: { x: 72, y: 700, width: 100, height: 12 },
+								action: { kind: "uri", uri: "https://example.com/a" },
+							},
+							{
+								id: "launch-1",
+								rect: { x: 72, y: 680, width: 100, height: 12 },
+								action: { kind: "launch", uri: "C:/payload.exe" },
+							},
+						],
+					},
+				],
+			});
+			const doc = await adapter.engine.open(descriptor);
+			return { adapter, doc };
+		}
+
+		it("serves the declarative outline, labels, destinations and links", async () => {
+			const { adapter, doc } = await navFixture();
+			const navigation = adapter.navigation;
+			if (navigation === undefined) {
+				throw new Error("the mock must provide the navigation port");
+			}
+			const outline = await navigation.outline(doc);
+			expect(outline).toHaveLength(2);
+			expect(outline[0]?.title).toBe("Chapter one");
+			expect(outline[0]?.children?.[0]?.destination?.page).toBe(1);
+			// An item naming a destination the name tree does not define comes
+			// back as itself, not dropped: the outline is the document's.
+			expect(outline[1]?.namedDestination).toBe("nowhere");
+			expect(outline[1]?.destination).toBeUndefined();
+			expect(await navigation.pageLabels(doc)).toHaveLength(2);
+			expect(await navigation.destinations(doc)).toEqual([
+				{ name: "here", destination: { page: 2 } },
+			]);
+			const links = await navigation.pageLinks(doc, 0);
+			expect(links.map((link) => link.id)).toEqual(["p0-l0", "launch-1"]);
+		});
+
+		it("reports ADR-P0020's disabled action classes verbatim", async () => {
+			const { adapter, doc } = await navFixture();
+			const links = await adapter.navigation?.pageLinks(doc, 0);
+			// The transport's job is to say what the document says. A mock that
+			// dropped `/Launch` would make the viewer's refusal untestable, and
+			// would let a real transport get away with the same.
+			expect(links?.map((link) => link.action.kind)).toEqual(["uri", "launch"]);
+			expect(links?.[1]?.action.uri).toBe("C:/payload.exe");
+		});
+
+		it("defaults every navigation structure to empty, not to an error", async () => {
+			const adapter = createMockAdapter();
+			const descriptor = adapter.addDocument({ name: "plain.pdf", pageCount: 2 });
+			const doc = await adapter.engine.open(descriptor);
+			expect(await adapter.navigation?.outline(doc)).toEqual([]);
+			expect(await adapter.navigation?.pageLabels(doc)).toEqual([]);
+			expect(await adapter.navigation?.destinations(doc)).toEqual([]);
+			expect(await adapter.navigation?.pageLinks(doc, 1)).toEqual([]);
+		});
+
+		it("rejects an out-of-range page on pageLinks, like every per-page port", async () => {
+			const { adapter, doc } = await navFixture();
+			await expect(adapter.navigation?.pageLinks(doc, 3)).rejects.toMatchObject({
+				code: ErrorCode.BindingBadArgument,
+			});
+		});
+
+		it("honours cancellation on every navigation method", async () => {
+			const { adapter, doc } = await navFixture();
+			const controller = new AbortController();
+			controller.abort();
+			const options = { signal: controller.signal };
+			const navigation = adapter.navigation;
+			if (navigation === undefined) {
+				throw new Error("the mock must provide the navigation port");
+			}
+			for (const call of [
+				navigation.outline(doc, options),
+				navigation.pageLabels(doc, options),
+				navigation.destinations(doc, options),
+				navigation.pageLinks(doc, 0, options),
+			]) {
+				await expect(call).rejects.toMatchObject({
+					code: ErrorCode.Cancelled,
+					docState: "Unchanged",
+				});
+			}
+		});
+	});
 });
