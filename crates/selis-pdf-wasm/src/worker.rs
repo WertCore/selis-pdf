@@ -1229,7 +1229,10 @@ fn page_text(
     mcid_order: Option<&[u32]>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<PageText> {
-    let mut glyphs = selis_pdf_text::gather_glyphs(dl);
+    // Same visible-region gate as the CLI's `page_lines`, so search can never
+    // surface a span the page clips away (SL-3.TEXT.26).
+    let visible = session.page_visible_box(page);
+    let mut glyphs = selis_pdf_text::gather_glyphs(dl, visible);
     let drew_text = !glyphs.is_empty();
     selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
         session.text_unicode(page, font, code, budget, g)
