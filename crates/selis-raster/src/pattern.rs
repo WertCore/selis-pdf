@@ -114,7 +114,11 @@ pub fn plan_pattern(
     region: Rect,
     g: &mut BudgetGuard<'_>,
 ) -> Result<TilePlan> {
-    if !(pattern.x_step > 0.0) || !(pattern.y_step > 0.0) {
+    // A NaN step is rejected too, which is why this stays a negated `>`
+    // rather than `<=`: `!(x > 0.0 && y > 0.0)` is De Morgan's identity for
+    // `!(x > 0.0) || !(y > 0.0)`, and it keeps NaN in the error arm
+    // (SL-0.WS.11).
+    if !(pattern.x_step > 0.0 && pattern.y_step > 0.0) {
         return Err(err!(
             Code::PatternMalformed,
             during = "tiling-pattern",
@@ -215,7 +219,9 @@ fn rects_intersect(a: Rect, b: Rect) -> bool {
 /// than wrap or loop.
 #[must_use]
 fn ceil_div(span: f64, step: f64) -> u64 {
-    if !(span > 0.0) || !(step > 0.0) || !span.is_finite() {
+    // See `plan_pattern`: the negated `>` keeps NaN in the `return 0` arm;
+    // De Morgan's identity is what lets the two tests be one (SL-0.WS.11).
+    if !(span > 0.0 && step > 0.0 && span.is_finite()) {
         return 0;
     }
     let v = (span / step).ceil();

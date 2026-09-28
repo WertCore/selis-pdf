@@ -280,9 +280,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    // `integer_division` (added SL-0.WS.11) is `probe_tile`'s `i / pixel_w`
+    // row decomposition over a `pixel_w` the test itself constructs non-zero
+    // — an index split over a test fixture, not a document-derived length.
     #![allow(
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
+        clippy::integer_division,
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::cast_possible_truncation,
