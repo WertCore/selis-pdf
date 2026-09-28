@@ -160,8 +160,8 @@ describe("the pseudo catalogue", () => {
 			const source = EN_VIEWER_CATALOGUE[key];
 			expect(pseudo, `pseudo catalogue is missing ${key}`).toBeDefined();
 			expect(source, `English catalogue is missing ${key}`).toBeDefined();
-			expect(placeholdersIn(pseudo as Template).sort(), key).toEqual(
-				placeholdersIn(source as Template).sort(),
+			expect([...placeholdersIn(pseudo as Template)].sort(), key).toEqual(
+				[...placeholdersIn(source as Template)].sort(),
 			);
 		}
 	});
