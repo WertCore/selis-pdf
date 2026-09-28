@@ -34,6 +34,7 @@
 
 import type { PickOpenOptions } from "../../../ui/src/platform/adapter.js";
 import type { DocumentSourceDescriptor } from "../../../ui/src/platform/types.js";
+import { ENSURE_ENGINE_HOST } from "./engine-protocol.js";
 
 /** The subset of a `chrome.runtime` port this package uses. */
 export interface HostPort {
@@ -94,9 +95,6 @@ export interface HostEnv {
 	/** Monotonic milliseconds, for diagnostics. */
 	now(): number;
 }
-
-/** Message the viewer page sends the service worker to get an engine document. */
-export const ENSURE_ENGINE_HOST = "selis/ensure-engine-host";
 
 /**
  * The real environment, read off the current window.

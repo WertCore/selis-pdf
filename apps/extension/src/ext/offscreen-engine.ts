@@ -71,9 +71,33 @@ export function isEngineRequest(message: unknown): message is EngineRequest {
 	return typeof candidate.id === "number" && Number.isInteger(candidate.id);
 }
 
-/** Serve the engine half of `link`. The returned function tears it down. */
-export function serveEngineHost(options: { link: EngineLink; engine: EnginePort }): () => void {
+/**
+ * Serve the engine half of `link`. The returned function tears it down.
+ *
+ * `engine` may be `null`, and that is the state this package ships in: the WASM
+ * engine is SL-4.EXT.03's, and until it is installed the host still answers —
+ * with `BINDING_BAD_HANDLE` (6000) and a message saying so. Failing loudly per
+ * request is the point. The alternative, not answering at all, is
+ * indistinguishable from a hung engine: `chrome.runtime.connect` does not queue,
+ * so the viewer's request would simply vanish and the page would spin forever.
+ */
+export function serveEngineHost(options: {
+	link: EngineLink;
+	engine: EnginePort | null;
+}): () => void {
 	const { link, engine } = options;
+	const requireEngine = (): EnginePort => {
+		if (engine === null) {
+			throw new AdapterError({
+				code: ErrorCode.BindingBadHandle,
+				message:
+					"the offscreen engine host is running but no engine is installed yet (SL-4.EXT.03)",
+				docState: "NotLoaded",
+				retryable: false,
+			});
+		}
+		return engine;
+	};
 	const documents = new Map<string, DocHandle>();
 	const inFlight = new Map<number, AbortController>();
 
@@ -103,7 +127,7 @@ export function serveEngineHost(options: { link: EngineLink; engine: EnginePort 
 		};
 
 		if (request.op === "search") {
-			void runSearch(request, controller.signal, link, documents, engine).then(
+			void runSearch(request, controller.signal, link, documents, requireEngine).then(
 				done,
 				(error: unknown) => {
 					done();
@@ -113,7 +137,7 @@ export function serveEngineHost(options: { link: EngineLink; engine: EnginePort 
 			return;
 		}
 
-		void runOne(request, controller.signal, documents, engine).then(
+		void runOne(request, controller.signal, documents, requireEngine).then(
 			(value) => {
 				done();
 				ok(request.id, value);
@@ -132,7 +156,7 @@ export function serveEngineHost(options: { link: EngineLink; engine: EnginePort 
 		}
 		inFlight.clear();
 		for (const doc of documents.values()) {
-			void engine.close(doc).catch(() => {
+			void engine?.close(doc).catch(() => {
 				// The page is gone; a close that fails here has nobody to tell.
 			});
 		}
@@ -145,7 +169,7 @@ async function runOne(
 	request: Exclude<EngineRequest, { op: "search" } | { op: "cancel" }>,
 	signal: AbortSignal,
 	documents: Map<string, DocHandle>,
-	engine: EnginePort,
+	requireEngine: () => EnginePort,
 ): Promise<NonNullable<EngineReply["value"]>> {
 	switch (request.op) {
 		case "open": {
@@ -154,7 +178,7 @@ async function runOne(
 				bytes: toArrayBuffer(decodeSource(request.src.bytes64)),
 				name: request.src.name,
 			};
-			const doc = await engine.open(descriptor, { signal });
+			const doc = await requireEngine().open(descriptor, { signal });
 			documents.set(doc.id, doc);
 			const wire: WireDoc = {
 				doc: doc.id,
@@ -167,13 +191,13 @@ async function runOne(
 			return wire;
 		}
 		case "close": {
-			await engine.close(requireDoc(documents, request.doc), { signal });
+			await requireEngine().close(requireDoc(documents, request.doc), { signal });
 			documents.delete(request.doc);
 			const ack: WireAck = { done: true };
 			return ack;
 		}
 		case "render": {
-			const tile = await engine.renderTile(
+			const tile = await requireEngine().renderTile(
 				{
 					doc: requireDoc(documents, request.doc),
 					page: request.page,
@@ -191,9 +215,13 @@ async function runOne(
 			};
 		}
 		case "text": {
-			const page = await engine.extractText(requireDoc(documents, request.doc), request.page, {
-				signal,
-			});
+			const page = await requireEngine().extractText(
+				requireDoc(documents, request.doc),
+				request.page,
+				{
+					signal,
+				},
+			);
 			return { page: page.page, text: page.text };
 		}
 		default:
@@ -217,9 +245,9 @@ async function runSearch(
 	signal: AbortSignal,
 	link: EngineLink,
 	documents: Map<string, DocHandle>,
-	engine: EnginePort,
+	requireEngine: () => EnginePort,
 ): Promise<void> {
-	const batches: AsyncIterable<SearchBatch> = engine.search(
+	const batches: AsyncIterable<SearchBatch> = requireEngine().search(
 		requireDoc(documents, request.doc),
 		request.query,
 		{

@@ -4,20 +4,27 @@
 		<meta charset="utf-8" />
 		<title>Selis PDF Viewer</title>
 		<!--
-			Extension viewer skeleton (SL-4.EXT.01). The bundled UI (apps/web/ui
-			behind the extension adapter) lands in SL-4.EXT.06. No remote scripts
-			(ADR-P0028): every script below must stay same-extension-origin.
+			The extension viewer (SL-4.EXT.02 + SL-4.EXT.06). This page is the
+			redirect target for intercepted PDF navigations, so the document URL
+			arrives as the ?src= parameter.
+
+			SL-4.EXT.06: it now hosts the shared UI (apps/ui) behind the
+			extension's PlatformAdapter. Two rules govern every reference below:
+
+			1. Same-extension-origin only, and the bundled-only build gate scans
+			   this file for anything else (ADR-P0028). A <link> to a stylesheet
+			   is a fetch, so it is a resource position the gate treats exactly
+			   like a <script src>.
+			2. The stylesheets are @selis/ui-kit's own, copied in rather than
+			   linked from a CDN, because there is no bundler to inline them
+			   (ADR-P0021) and a CDN would be remote code. tokens.css is
+			   generated (UI.14) and must never be edited here.
 		-->
-		<!--
-			SL-4.EXT.02: this page is the redirect target for intercepted PDF
-			navigations. The DNR rule rewrites the browser's address bar, so the
-			document URL arrives as the ?src= parameter. The engine and UI land
-			with EXT.06; what EXT.02 owns is that the URL reaches the viewer
-			intact and is displayed, never uploaded.
-		-->
+		<link rel="stylesheet" href="./ui-kit/css/tokens.css" />
+		<link rel="stylesheet" href="./ui-kit/css/base.css" />
 		<script type="module" src="./src/viewer-boot.js"></script>
 	</head>
-	<body>
-		<main id="selis-viewer"><p>Loading Selis PDF Viewer…</p></main>
+	<body class="selis-root">
+		<main id="selis-viewer" class="selis-doc-area"></main>
 	</body>
 </html>

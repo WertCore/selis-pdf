@@ -74,39 +74,45 @@ export interface PackageEntry {
  *
  * ## The `shared-*` rows are the EXT.06 reuse, and they are the interesting ones
  *
- * `apps/ui` is not forked into this package. The four modules below are compiled
- * from `apps/ui/src` by this package's own `tsc` program and copied into
+ * `apps/ui` is not forked into this package. The three modules below are
+ * compiled from `apps/ui/src` by this package's own `tsc` program and copied to
  * `ui/src/…`, which is exactly where the relative specifiers in this package's
- * sources point (`src/ext/adapter.ts` writes `../../ui/src/platform/errors.js`).
- * They are the whole of what the extension borrows, and the list is short on
- * purpose:
+ * sources point (`src/ext/adapter.ts` writes
+ * `../../../ui/src/platform/errors.js`). They are the whole of what the
+ * extension borrows at runtime, and the list is short on purpose:
  *
  * - `platform/errors.ts` — `AdapterError` / `ErrorCode`. The extension refuses
  *   several capabilities (clipboard read, save-in-place, deep links), and a
  *   refusal that invented its own error type would break the one rule the seam
  *   has: every rejection is a registry code with a `docState`.
- * - `viewer/surface.ts` — the `TileSurface` / `FrameClock` ports and
- *   `SurfaceFaultError`.
+ * - `viewer/surface.ts` — the `TileSurface` / `FrameClock` ports, and
+ *   `SurfaceFaultError`. Pulled in at runtime by the row below.
  * - `viewer/worker-surface.ts` — `createAnimationFrameClock`, the one piece of
  *   UI.03's worker surface the extension uses verbatim, because a frame clock is
  *   a frame clock and re-deriving it here would be the second implementation
  *   the seam exists to prevent.
  *
- * What is deliberately **not** shipped, though the module exists and the web app
- * runs it: `worker-surface`'s `createWorkerSurface` and
- * `offscreen-compositor.ts`. Both need an `OffscreenCanvas` transferred to a
- * worker, and in MV3 the engine is not in this page's worker — it is in the
- * offscreen document, reached by `chrome.runtime` messaging, which cannot carry
- * an `ImageBitmap` at all. So the extension presents on the main thread
- * (`src/ext/surface.ts`, `takesOwnership: false`) and those two modules stay
- * unused here. Shipping dead code into a size-budgeted package (SL-4.EXT.05) to
- * look like the web app would be the wrong trade. See `REUSE.md`.
+ * Nothing else from `apps/ui` ships, and that is a decision rather than an
+ * oversight. The rest of the UI is either type-only (erased at compile, so
+ * costing nothing) or belongs to a viewer this package does not contain yet —
+ * the virtualised page list and its stylesheet are UI.04+'s to mount, and
+ * shipping them now would put a half-built viewer in a package that
+ * SL-4.EXT.05 has to fit a size budget.
  *
- * The stylesheets are `apps/ui`'s and `@selis/ui-kit`'s, copied verbatim
- * (`shared-asset`): ADR-P0021 forbids a bundler that would inline them, so a
- * shell links them, and the tokens file is generated so it is never hand-edited
- * (UI.14). No font is fetched — the font stacks are `system-ui` and friends,
- * which is also why the CJK payload is a post-install download (EXT.05).
+ * ### One row ships more than the extension uses
+ *
+ * `worker-surface.js` also contains `createWorkerSurface`, which the extension
+ * never calls: it needs an `OffscreenCanvas` transferred to a worker, and a
+ * `chrome.runtime` port has no transfer list (see `src/ext/surface.ts` and
+ * `REUSE.md`). It cannot be dropped without a bundler, and ADR-P0021 rules one
+ * out. Shipping it is cheaper than the alternative, and the call site that would
+ * make it live does not exist — which is what the reuse doc records.
+ *
+ * The stylesheets are `@selis/ui-kit`'s, copied verbatim (`shared-asset`): the
+ * same no-bundler reason, so a shell links them, and `tokens.css` is generated
+ * so it is never hand-edited (UI.14). No font is fetched — the stacks are
+ * `system-ui` and friends, which is also why the CJK payload is a post-install
+ * download (EXT.05).
  */
 export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "manifest.json", from: "root" },
@@ -117,6 +123,8 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "src/permissions.js", from: "build" },
 	{ out: "src/viewer-boot.js", from: "build" },
 	{ out: "src/ext/adapter.js", from: "build" },
+	{ out: "src/ext/engine-client.js", from: "build" },
+	{ out: "src/ext/engine-link.js", from: "build" },
 	{ out: "src/ext/engine-protocol.js", from: "build" },
 	{ out: "src/ext/host-env.js", from: "build" },
 	{ out: "src/ext/offscreen-engine.js", from: "build" },
@@ -125,11 +133,6 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "ui/src/platform/errors.js", from: "shared-js" },
 	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
 	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
-	{
-		out: "ui/src/viewer/page-list.css",
-		from: "shared-asset",
-		source: "../ui/src/viewer/page-list.css",
-	},
 	{
 		out: "ui-kit/css/tokens.css",
 		from: "shared-asset",

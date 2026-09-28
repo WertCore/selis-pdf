@@ -17,25 +17,33 @@ import { fileURLToPath } from "node:url";
 import { BUILD_WORKSPACE, type BundleFile, describeViolations, scanBundle } from "./bundle-scan.js";
 
 /**
- * The package root, found by walking up to the directory that holds
- * `manifest.json`.
+ * The package root, found by walking up from this module.
  *
- * SL-4.EXT.06 moved this module two directories deeper: `tsc` now compiles
+ * SL-4.EXT.06 moved this module three directories deeper: `tsc` now compiles
  * `apps/ui` in the same program, so `rootDir` is `apps/` and the emitted tree
- * is `dist/pkg/extension/src/…`. A hard-coded `../..` would keep working right
- * up until someone changed the layout again, and would then scan the wrong
- * directory — the worst failure mode a gate has. The manifest is the one file
- * that is always at the package root by definition, so it is the anchor.
+ * is `dist/pkg/extension/src/…`. The old hard-coded `../..` kept working right
+ * up until someone changed the layout again, and would then have scanned the
+ * wrong directory — the worst failure mode a gate has.
+ *
+ * The anchor is the pair **`package.json` + `dist/manifest.json`**, and the pair
+ * matters. `dist/manifest.json` alone is not enough: `pack.mjs` copies the
+ * manifest into `dist/`, so a walk looking only for that file stops at `dist/`
+ * itself and the gate then looks for `dist/dist` and reports a missing package.
+ * That is not hypothetical — it is what the first EXT.06 build did.
+ * `package.json` is not copied into `dist/`, so the only directory holding both
+ * is the package root.
  */
 function findPackageRoot(from: string): string {
 	let dir = from;
 	for (;;) {
-		if (existsSync(join(dir, "manifest.json"))) {
+		if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "dist", "manifest.json"))) {
 			return dir;
 		}
 		const parent = dirname(dir);
 		if (parent === dir) {
-			throw new Error(`no manifest.json above ${from} - the built package is not where it should be`);
+			throw new Error(
+				`no package.json + dist/manifest.json pair above ${from} - the built package is not where it should be`,
+			);
 		}
 		dir = parent;
 	}

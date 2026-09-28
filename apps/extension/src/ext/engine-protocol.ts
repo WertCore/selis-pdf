@@ -58,6 +58,21 @@ export const ENGINE_PORT_NAMES = {
 	accept: "selis.engine.host.v1",
 } as const;
 
+/**
+ * The viewer page's one message to the service worker, asking it to make sure
+ * an offscreen document exists.
+ *
+ * It lives here because it is the extension's internal protocol vocabulary and
+ * both ends import this module: the page sends it, and the worker — which
+ * imports nothing from `host-env.ts`, having no DOM — matches on it.
+ *
+ * **It carries a verb and nothing else.** That is the whole reason the service
+ * worker may be involved at all: `chrome.offscreen.createDocument` may only be
+ * called from the worker, so asking for a document is unavoidable, and a
+ * message that carried document bytes would not be (24-BINDINGS-SPEC §5).
+ */
+export const ENSURE_ENGINE_HOST = "selis/ensure-engine-host";
+
 /** Budget surface names, matching the Rust `SurfaceName` enum (`worker-glue.ts`). */
 export type WireSurface = "thumbnail" | "viewer" | "editor" | "batch" | "server";
 
