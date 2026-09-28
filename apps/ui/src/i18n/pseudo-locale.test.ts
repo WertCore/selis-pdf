@@ -33,9 +33,17 @@ import {
 import { placeholdersIn } from "./message.js";
 import { createPseudoCatalogue } from "./pseudo-locale.js";
 import { PSEUDO_LOCALE, createMessageRuntime, isMissingMessage } from "./runtime.js";
-import type { MessageTemplate } from "./runtime.js";
 
 const PSEUDO = createPseudoCatalogue(EN_VIEWER_CATALOGUE);
+
+/**
+ * The template type, derived from the catalogue rather than imported:
+ * `MessageTemplate` is declared inside `runtime.ts` and not re-exported, and
+ * widening the module's public surface for a test's convenience is the wrong
+ * trade. `NonNullable` cancels the `| undefined` that `noUncheckedIndexedAccess`
+ * puts on an index access.
+ */
+type Template = NonNullable<(typeof EN_VIEWER_CATALOGUE)[string]>;
 
 /** Values that fill every placeholder the viewer's catalogues declare. */
 const VALUES: Readonly<Record<string, string | number>> = {
@@ -151,8 +159,8 @@ describe("the pseudo catalogue", () => {
 			const source = EN_VIEWER_CATALOGUE[key];
 			expect(pseudo, `pseudo catalogue is missing ${key}`).toBeDefined();
 			expect(source, `English catalogue is missing ${key}`).toBeDefined();
-			expect(placeholdersIn(pseudo as MessageTemplate).sort(), key).toEqual(
-				placeholdersIn(source as MessageTemplate).sort(),
+			expect(placeholdersIn(pseudo as Template).sort(), key).toEqual(
+				placeholdersIn(source as Template).sort(),
 			);
 		}
 	});
