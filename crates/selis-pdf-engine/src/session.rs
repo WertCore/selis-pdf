@@ -602,6 +602,126 @@ impl Session {
         Ok(tree.mcid_order())
     }
 
+    /// The document's outline (bookmark) tree, in document order.
+    ///
+    /// The engine half of `SL-4.UI.06`'s `NavigationPort.outline`. The tree is
+    /// nested, cycle-safe, and carries each item's `/Count` verbatim (negative
+    /// meaning "starts collapsed") without ever trusting it for traversal.
+    ///
+    /// `present` distinguishes *this document has no outline* from *this
+    /// outline could not be read in full*; `truncated` distinguishes the
+    /// second from a complete tree. Both matter because the viewer publishes
+    /// them as different states, and a viewer that cannot tell them apart can
+    /// only ever say "nothing here".
+    ///
+    /// # Budget
+    ///
+    /// One `Objects` charge per outline item plus a `Depth` level per open
+    /// level of the tree, both against the caller's guard. The outline walk is
+    /// a whole-tree walk over document-chosen structure, which is exactly why
+    /// it takes its own budget rather than sharing a render's.
+    ///
+    /// # Malformed Input
+    ///
+    /// A document with no `/Outlines` yields `present: false` and no items. A
+    /// cyclic or unresolvable item costs the reader that branch and sets
+    /// `truncated`. Budget exhaustion and cancellation are typed errors, not a
+    /// short tree — see `selis_pdf_doc::outline`.
+    pub fn outline(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<selis_pdf_doc::OutlineTree> {
+        let mut resolver = self.new_resolver(budget);
+        let pages = selis_pdf_doc::PageMap::new(&self.document.pages);
+        selis_pdf_doc::outline(&mut resolver, &self.document.catalog, &pages, budget, g)
+    }
+
+    /// One page's link annotations, in `/Annots` order.
+    ///
+    /// The engine half of `NavigationPort.pageLinks`. Every action class the
+    /// document wrote is reported by name, including the four ADR-P0020
+    /// disables and any class this build does not model — the *decision* is
+    /// the viewer's, and a transport that filtered classes here would make
+    /// "is the viewer refusing this?" unanswerable.
+    ///
+    /// # Budget
+    ///
+    /// `Objects` per annotation resolved, against the caller's guard.
+    ///
+    /// # Malformed Input
+    ///
+    /// An out-of-range `page_num` yields an empty list — the caller checks the
+    /// range, because "page 9000 of a 3-page document has no links" and "this
+    /// host cannot read links" must not look alike. A malformed annotation is
+    /// skipped; a page whose links are partly unreadable still returns the
+    /// rest. Budget and cancellation propagate as typed errors.
+    pub fn page_links(
+        &self,
+        page_num: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<selis_pdf_doc::LinkAnnotation>> {
+        let Some(page) = self.document.pages.get(page_num) else {
+            return Ok(Vec::new());
+        };
+        let mut resolver = self.new_resolver(budget);
+        let pages = selis_pdf_doc::PageMap::new(&self.document.pages);
+        // The page model records the object number, not the full reference;
+        // generation 0 is what every writer emits and what the revision index
+        // is keyed on anyway (`Resolver::resolve` looks up by number).
+        selis_pdf_doc::page_links(
+            &mut resolver,
+            selis_pdf_cos::Ref::new(page.num, 0),
+            &pages,
+            budget,
+            g,
+        )
+    }
+
+    /// The document's named destinations (`/Dests`).
+    ///
+    /// # Budget
+    ///
+    /// Bounded by the name-tree walk and `Objects` per entry.
+    ///
+    /// # Malformed Input
+    ///
+    /// A document with no `/Dests` yields an empty list. Entries that do not
+    /// resolve are reported as unresolvable targets rather than dropped.
+    pub fn named_destinations(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<selis_pdf_doc::NamedDestination>> {
+        let mut resolver = self.new_resolver(budget);
+        let pages = selis_pdf_doc::PageMap::new(&self.document.pages);
+        selis_pdf_doc::named_destinations(&mut resolver, &self.document.catalog, &pages, budget, g)
+    }
+
+    /// The `/PageLabels` ranges, in document order.
+    ///
+    /// Reachable from the engine for the first time here: `page_labels` existed
+    /// in `selis-pdf-doc` since SL-1.DOC.08 but no engine entry point reached
+    /// it, so no host could have served it.
+    ///
+    /// # Budget
+    ///
+    /// Bounded by the number-tree walk.
+    ///
+    /// # Malformed Input
+    ///
+    /// A document with no `/PageLabels` yields an empty list, which a viewer
+    /// reads as "use the page number".
+    pub fn page_labels(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Vec<selis_pdf_doc::PageLabel>> {
+        let mut resolver = self.new_resolver(budget);
+        selis_pdf_doc::page_labels(&mut resolver, &self.document.catalog, budget, g)
+    }
+
     /// The Unicode scalar for a shown code in a page's font.
     ///
     /// Resolution follows the SL-3.TEXT.02 recovery chain, in precedence
