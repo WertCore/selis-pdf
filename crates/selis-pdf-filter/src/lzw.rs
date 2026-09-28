@@ -180,10 +180,7 @@ pub fn lzw_decode(data: &[u8], early_change: u8, g: &mut BudgetGuard<'_>) -> Res
 pub fn lzw_encode(data: &[u8], early_change: u8) -> Vec<u8> {
     let mut dict: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
     for i in 0..256u32 {
-        dict.insert(
-            vec![u8::try_from(i).unwrap_or(0)],
-            u32::try_from(i).unwrap_or(0),
-        );
+        dict.insert(vec![u8::try_from(i).unwrap_or(0)], i);
     }
     let mut next_code: u32 = 258; // 256 = CLEAR, 257 = EOD are reserved
     let mut codes: Vec<u32> = vec![CLEAR];

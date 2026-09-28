@@ -27,7 +27,7 @@ pub fn ascii_hex_decode(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<u8>>
         g.tick()?;
         match b {
             b'>' => break,
-            b if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c) => continue,
+            b' ' | b'\t' | b'\n' | b'\r' | 0x0c => continue,
             b => {
                 let v = hex_val(b).ok_or_else(|| err!(Code::AsciiCorrupt, during = "ascii-hex"))?;
                 if let Some(h) = hi.take() {
@@ -78,8 +78,8 @@ pub fn ascii85_decode(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
             b'z' if count == 0 => {
                 out.extend_from_slice(&[0, 0, 0, 0]);
             }
-            b if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c) => continue,
-            b if b >= b'!' && b <= b'u' => {
+            b' ' | b'\t' | b'\n' | b'\r' | 0x0c => continue,
+            b if (b'!'..=b'u').contains(&b) => {
                 if let Some(slot) = group.get_mut(count) {
                     *slot = u32::from(b.wrapping_sub(b'!'));
                 }
