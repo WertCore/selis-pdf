@@ -353,6 +353,13 @@ fn walk_pages(
 
 /// Materialise a resolved page node into a [`Page`], resolving indirect
 /// `/Resources` and collecting the content-stream references.
+// The page-walk context is genuinely eight things wide — the node, its number,
+// the inherited attributes, the revision view, the bytes, the budget, the
+// guard, and the decrypt policy — and every one of them is needed to build
+// the `Page`. Folding them into a walk-context struct is a design change, not
+// a lint fix, so the arity stays and the allow is scoped to this function
+// (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn materialize_page(
     node: &Obj,
     num: u32,
@@ -403,6 +410,9 @@ fn materialize_page(
 
 /// Walk an inline page dict found directly inside a `/Kids` array (damaged
 /// writers embed the page body rather than a reference).
+// See `materialize_page`: the same walk context, and the same reason the
+// arity stays (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn walk_inline_page(
     view: &RevisionView,
     src: &[u8],
