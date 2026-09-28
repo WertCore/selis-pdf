@@ -210,10 +210,14 @@ describe("the pseudo build — CI's half of the DoD", () => {
 		// Every key, not just the ones the helpers above happen to touch: a key
 		// nobody renders today is still a key the next task will render, and this
 		// is where its absence is found.
+		//
+		// `declaredKeys` is deliberately NOT passed: `createViewerMessageRuntime`
+		// supplies `VIEWER_MESSAGE_KEYS` itself, because the viewer key set is the
+		// factory's business and letting a caller narrow it would let a host hide
+		// its own gap. So the set under test here is the full union either way.
 		const runtime = createViewerMessageRuntime({
 			locale: PSEUDO_LOCALE,
 			catalogues: { [PSEUDO_LOCALE]: PSEUDO },
-			declaredKeys: VIEWER_MESSAGE_KEYS,
 			strict: true,
 		});
 		for (const key of VIEWER_MESSAGE_KEYS) {
