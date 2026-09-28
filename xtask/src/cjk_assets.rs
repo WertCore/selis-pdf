@@ -56,6 +56,7 @@ use std::path::{Path, PathBuf};
 use selis_bytes::Bytes;
 use selis_font::cjk::build::{build_set, CORE_SAMPLE_HANZI, SELIS_CJK_NAME};
 use selis_font::cjk::{chunk_by_id, chunk_for, CHUNKS, CORE_STATIC_IDS};
+use selis_font::glyph_id_for_char;
 use selis_sandbox::Budget;
 use sha2::{Digest, Sha256};
 
@@ -595,11 +596,24 @@ fn check_file(
 /// `cargo xtask cjk-measure <dir> <text>` — what a document's CJK costs.
 ///
 /// The DoD asks for a *measured incremental download*; this is the
-/// measurement. Take the code points a document actually shows, map each
-/// through the same [`chunk_for`] the engine maps them through, and total the
-/// brotli bytes of the files that answer them — the core, plus one chunk per
-/// range touched. Ranges the payload does not serve are reported too, because
-/// "0 bytes and a `.notdef` box" is a result as well and should read like one.
+/// measurement. Every code point the document shows is classified the way the
+/// engine classifies it:
+///
+/// * the **core** already answers it → 0 extra bytes (the core is fetched
+///   once, beside the wasm binary, whatever the document contains);
+/// * otherwise the covering **chunk** answers it → that chunk's measured
+///   brotli bytes, once per range;
+/// * the payload has no glyph for the range → 0 extra bytes and a `.notdef`
+///   box, reported as such.
+///
+/// The first rule is why this reads the *core file's* cmap rather than asking
+/// which ranges the core is "for": a common character in the frequency list
+/// lives in a chunk range too, and it is the core that answers it at zero
+/// marginal cost. Asking the question at range level over-reports badly — the
+/// first measurement of an 83-character paragraph said six chunks and
+/// 2 824 942 B, when 54 of its 63 CJK characters are in the core. If the
+/// core file is not next to the manifest, the tool says so and falls back to
+/// the range-level answer rather than silently guessing.
 pub fn measure(dir: &Path, text_path: &Path) -> Result<(), String> {
     let cjk = dir.join("cjk");
     let manifest_path = cjk.join("manifest.json");
@@ -626,32 +640,56 @@ pub fn measure(dir: &Path, text_path: &Path) -> Result<(), String> {
                 .collect()
         })
         .unwrap_or_default();
+    let core_path = cjk.join("core.ttf");
+    let core_bytes = match std::fs::read(&core_path) {
+        Ok(bytes) => Some(Bytes::copy_from_slice(&bytes)),
+        Err(e) => {
+            println!(
+                "cjk-measure: WARNING no core at {} ({e}); falling back to \
+                 range-level attribution, which over-reports",
+                core_path.display()
+            );
+            None
+        }
+    };
 
     let mut wanted: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut unserved: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut in_core = 0u64;
+    let mut by_chunk = 0u64;
+    let mut notdef = 0u64;
     let mut cjk_chars = 0u64;
     for ch in doc.chars() {
-        let Some(chunk) = chunk_for(u32::from(ch)) else {
+        let code = u32::from(ch);
+        let Some(chunk) = chunk_for(code) else {
             continue;
         };
         cjk_chars = cjk_chars.saturating_add(1);
-        match served.get(chunk.id).copied() {
-            Some(None) => {
-                let _ = unserved.insert(chunk.id);
-            }
-            Some(Some("core")) => in_core = in_core.saturating_add(1),
-            _ => {
-                let _ = wanted.insert(chunk.id);
-            }
+        if served.get(chunk.id).copied() == Some(None) {
+            let _ = unserved.insert(chunk.id);
+            notdef = notdef.saturating_add(1);
+            continue;
+        }
+        // The core's own cmap is the authority on "already downloaded".
+        let covered = core_bytes
+            .as_ref()
+            .is_some_and(|core| glyph_id_for_char(core, code).is_some())
+            || served.get(chunk.id).copied() == Some(Some("core"));
+        if covered {
+            in_core = in_core.saturating_add(1);
+        } else {
+            by_chunk = by_chunk.saturating_add(1);
+            let _ = wanted.insert(chunk.id);
         }
     }
     let core_brotli = m["core"]["brotli_bytes"].as_u64().unwrap_or(0);
     let mut total = core_brotli;
     println!(
-        "cjk-measure: {} — {cjk_chars} CJK char(s), {in_core} answered by the core \
-         ({core_brotli} B brotli)",
-        text_path.display()
+        "cjk-measure: {} — {cjk_chars} CJK char(s): {in_core} answered by the core \
+         (already fetched, {core_brotli} B), {by_chunk} needing {} chunk file(s), \
+         {notdef} with no glyph in this payload",
+        text_path.display(),
+        wanted.len()
     );
     for id in &wanted {
         let bytes = sizes.get(id).copied().unwrap_or(0);
@@ -865,6 +903,7 @@ mod tests {
         assert!(Scope::parse("everything").is_err());
         let root = built_payload("scope");
         std::fs::remove_file(root.join("cjk").join("hangul-1.ttf")).expect("remove");
+
         assert!(
             verify(&root, Scope::Full).is_err(),
             "a built payload needs its chunks"
@@ -911,5 +950,75 @@ mod tests {
         std::fs::write(&doc, "\u{20B9F}").expect("write doc");
         measure(&root, &doc).expect("measure runs over an unserved range");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+    /// The repository's committed record is checked on every test run, not only
+    /// when someone remembers to: `assets/cjk/manifest.json` must verify
+    /// against itself (`cjk-verify --scope manifest`), and the core list it
+    /// names must be the one in the repository, byte for byte. A record that
+    /// has drifted from its own inputs is the failure mode a pinned manifest
+    /// exists to prevent, and it is silent -- nothing about the JSON looks
+    /// wrong until a reader is offered a chunk no build ever produced.
+    #[test]
+    fn the_committed_record_verifies_against_its_own_inputs() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/cjk");
+        verify(
+            assets.parent().expect("assets dir"),
+            Scope::Manifest,
+        )
+        .expect("assets/cjk/manifest.json verifies");
+
+        let text = std::fs::read_to_string(assets.join("manifest.json")).expect("manifest");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let pinned = v["core"]["core_list_sha256"]
+            .as_str()
+            .expect("core list digest");
+        let list = std::fs::read(assets.join("core-list.txt")).expect("core list");
+        assert_eq!(
+            sha256_hex(&list),
+            pinned,
+            "core-list.txt is not the list the committed manifest was built from"
+        );
+        // And the list is a real frequency list, not a placeholder.
+        let codes = parse_core_list(&String::from_utf8_lossy(&list)).expect("core list parses");
+        assert!(
+            codes.len() >= 3_000,
+            "a core list of {} is a sample, not a frequency list",
+            codes.len()
+        );
+        assert_eq!(codes.first(), Some(&0x7684), "the most frequent hanzi leads");
+        assert!(
+            v["core"]["codes"].as_u64().unwrap_or(0) > u64::try_from(codes.len()).unwrap_or(0),
+            "the core covers its static ranges plus the list"
+        );
+    }
+
+    /// A committed record is a promise about a payload, so the budgets it
+    /// publishes have to still hold: every file it names must fit the ceilings
+    /// ADR-P0043 sets -- the ones the extension's store independently mirrors
+    /// and would refuse to install past.
+    #[test]
+    fn the_committed_record_respects_the_published_budgets() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/cjk/manifest.json");
+        let text = std::fs::read_to_string(&path).expect("manifest");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(v["budgets"]["core_brotli"].as_u64(), Some(1_200_000));
+        assert_eq!(v["budgets"]["chunk_brotli"].as_u64(), Some(1_500_000));
+        let core = v["core"]["brotli_bytes"].as_u64().expect("core brotli");
+        assert!(core <= 1_200_000, "core over budget: {core}");
+        for row in v["chunks"].as_array().expect("chunks") {
+            let id = row["id"].as_str().unwrap_or("?");
+            let b = row["brotli_bytes"].as_u64().unwrap_or(u64::MAX);
+            assert!(b <= 1_500_000, "{id} over budget: {b}");
+        }
+        // The extension's store refuses a payload that does not fit its own
+        // 8 MB budget, so "install every range" has to be a legal operation
+        // for a user who wants it.
+        let total = v["totals"]["raw_bytes"].as_u64().expect("totals");
+        assert!(
+            total < 8 * 1024 * 1024,
+            "the full payload must fit the store's 8 MB budget: {total}"
+        );
     }
 }

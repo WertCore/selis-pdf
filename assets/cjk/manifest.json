@@ -442,10 +442,10 @@
     }
   ],
   "core": {
-    "brotli_bytes": 135699,
-    "codes": 1552,
-    "core_extra_count": 39,
-    "core_list_sha256": null,
+    "brotli_bytes": 641043,
+    "codes": 5013,
+    "core_extra_count": 3500,
+    "core_list_sha256": "164c89603c8d4db74f073c8a9e1277b6f8f53e2dd617740ca594f8698a584d32",
     "core_static_ids": [
       "radicals",
       "kangxi",
@@ -460,8 +460,8 @@
       "halfwidth"
     ],
     "file": "cjk/core.ttf",
-    "raw_bytes": 295080,
-    "sha256": "6068f07e805a29e3f4da8a136d7a3972d9f6ed1e064790625346032f26974da0"
+    "raw_bytes": 1290100,
+    "sha256": "6e000b3a9f306903ee8d308ebdc4b1d67977d5c95620ab7a771a6dd0ae1b80f7"
   },
   "name": {
     "family": "Selis CJK",
@@ -474,14 +474,15 @@
     "id": "noto-sans-sc",
     "license": "SIL Open Font License 1.1",
     "raw_bytes": 17772300,
+    "reserved_font_name": "Source",
     "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
     "url": "https://raw.githubusercontent.com/google/fonts/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
   },
   "task": "SL-3.FONT.10",
   "totals": {
-    "brotli_bytes": 4698914,
+    "brotli_bytes": 5204258,
     "files": 16,
-    "raw_bytes": 10167248
+    "raw_bytes": 11162268
   },
   "unserved": [
     "jamo",
