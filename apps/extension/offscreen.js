@@ -36,11 +36,29 @@ const host = startEngineHost({
 	// script is a ship-list row, so the bundled-only gate knows about it;
 	// `chrome.runtime.getURL` is what turns that path into a same-origin URL
 	// an extension page may read without a host permission.
-	createWorker: () =>
-		new Worker(chrome.runtime.getURL(ENGINE_WORKER_PATH), {
+	createWorker: () => {
+		const worker = new Worker(chrome.runtime.getURL(ENGINE_WORKER_PATH), {
 			type: "module",
 			name: "selis-engine",
-		}),
+		});
+		// A `Worker`'s own method is `postMessage`; the engine is written
+		// against the narrower `post`, so the two are bridged here rather than
+		// in a wrapper the bundler-less package would then have to ship.
+		return {
+			post: (message, transfer) => worker.postMessage(message, transfer ?? []),
+			onMessage: (listener) => {
+				const handler = (event) => listener(event.data);
+				worker.addEventListener("message", handler);
+				return () => worker.removeEventListener("message", handler);
+			},
+			onError: (listener) => {
+				const handler = (event) => listener(new Error(event.message));
+				worker.addEventListener("error", handler);
+				return () => worker.removeEventListener("error", handler);
+			},
+			terminate: () => worker.terminate(),
+		};
+	},
 	wasmUrl: chrome.runtime.getURL(CORE_CHUNK_PATH),
 });
 

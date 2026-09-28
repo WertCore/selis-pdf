@@ -53,10 +53,15 @@ import { CORE_CHUNK_PATH } from "./wasm-worker.js";
  */
 export const ENGINE_WORKER_PATH = "extension/src/ext/wasm-worker.js";
 
-/** The channel `createWasmEngine` needs, as a real `Worker` presents it. */
-export interface WorkerLike extends EngineChannel {
-	postMessage(message: unknown, transfer?: Transferable[]): void;
-}
+/**
+ * The channel `createWasmEngine` needs, as a real `Worker` presents it.
+ *
+ * `post`, not `postMessage`: a `Worker`'s own method is named `postMessage`
+ * and the engine is written against the narrower name, so the adapter is a
+ * one-line lambda in the root file rather than a wrapper class. Naming it
+ * here is what lets a test hand over a plain object.
+ */
+export type WorkerLike = EngineChannel;
 
 /** What `startEngineHost` hands back, so a caller can tear it down. */
 export interface EngineHost {

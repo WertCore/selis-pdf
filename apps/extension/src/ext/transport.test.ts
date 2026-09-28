@@ -210,10 +210,12 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 					data: new ArrayBuffer(4),
 				}),
 				extractText: async () => ({ page: 0, text: "" }),
-				// UI.04 made EnginePort.textLayer required; these engine doubles were
-				// written against the previous shape. The op is not on the wire until
-				// EXT.03, so they reject rather than returning empty quads -- the
-				// contract forbids inventing geometry.
+				// UI.04 made EnginePort.textLayer required; these engine doubles
+				// exist to make a *tile* fail, so they reject rather than
+				// returning empty quads - the contract forbids inventing
+				// geometry. The op is on the wire as of SL-4.EXT.03; the real
+				// text layer is covered in engine-host.test.ts, which drives the
+				// real host and the real engine mapping.
 				textLayer: async () => {
 					throw AdapterError.badArgument("textLayer is not implemented by the engine host");
 				},
@@ -244,10 +246,12 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 					data: new ArrayBuffer(4),
 				}),
 				extractText: async () => ({ page: 0, text: "" }),
-				// UI.04 made EnginePort.textLayer required; these engine doubles were
-				// written against the previous shape. The op is not on the wire until
-				// EXT.03, so they reject rather than returning empty quads -- the
-				// contract forbids inventing geometry.
+				// UI.04 made EnginePort.textLayer required; these engine doubles
+				// exist to make a *tile* fail, so they reject rather than
+				// returning empty quads - the contract forbids inventing
+				// geometry. The op is on the wire as of SL-4.EXT.03; the real
+				// text layer is covered in engine-host.test.ts, which drives the
+				// real host and the real engine mapping.
 				textLayer: async () => {
 					throw AdapterError.badArgument("textLayer is not implemented by the engine host");
 				},

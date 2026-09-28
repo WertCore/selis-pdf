@@ -21,9 +21,10 @@ import type { EngineChannel } from "./wasm-engine.js";
 import { createWasmEngine } from "./wasm-engine.js";
 import type { WorkerRequest, WorkerResponse } from "./wasm-worker.js";
 
-/** One scripted answer from the fake guest. */
+/** One scripted answer from the fake guest: its reply, plus any attachment. */
 interface Scripted {
-	(response: unknown, attachment?: Uint8Array): void;
+	readonly response: unknown;
+	readonly attachment?: Uint8Array;
 }
 
 /** A fake Worker: records what was posted, answers from a script. */
@@ -134,7 +135,17 @@ function layerValue(): unknown {
 
 /** The op a posted message carries, or `""` for an `init`. */
 function opOf(message: WorkerRequest): string {
-	return message.kind === "request" ? ((message.request as { op: string }).op ?? "") : "";
+	return (message as { request?: { op?: string } }).request?.op ?? "";
+}
+
+/** The attachment a posted request carried, if any. */
+function payloadOf(message: WorkerRequest): ArrayBuffer | undefined {
+	return (message as { payload?: ArrayBuffer }).payload;
+}
+
+/** The JSON body a posted request carried. */
+function bodyOf(message: WorkerRequest): unknown {
+	return (message as { request?: unknown }).request;
 }
 
 const WASM_URL = "chrome-extension://selis/wasm/selis_pdf_wasm.wasm";
@@ -156,11 +167,13 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 			pageSizes: [{ width: 612, height: 792 }],
 		});
 		const open = posted.find((m) => opOf(m) === "open");
-		expect(open?.payload).toBeDefined();
-		expect(Array.from(new Uint8Array(open?.payload as ArrayBuffer))).toEqual([37, 80, 68, 70]);
+		expect(payloadOf(open as WorkerRequest)).toBeDefined();
+		expect(Array.from(new Uint8Array(payloadOf(open as WorkerRequest) as ArrayBuffer))).toEqual([
+			37, 80, 68, 70,
+		]);
 		// The wire never carries the bytes twice: the JSON body declares the
 		// length and the attachment carries the bytes.
-		expect(JSON.stringify(open?.request)).not.toContain("PDF");
+		expect(JSON.stringify(bodyOf(open as WorkerRequest))).not.toContain("PDF");
 	});
 
 	it("refuses a source that is not inline bytes", async () => {
@@ -193,7 +206,7 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 			})
 			.catch(() => undefined);
 		const render = posted.find((m) => opOf(m) === "render");
-		const params = (render?.request as { params: Record<string, unknown> }).params;
+		const params = (bodyOf(render as WorkerRequest) as { params: Record<string, unknown> }).params;
 		expect(params.dpi).toBe(144);
 		// (792 - 100 - 20) * 2 = 1344: the same 20pt band, measured from the top.
 		expect(params.tile).toEqual({ x: 20, y: 1344, w: 100, h: 40 });
