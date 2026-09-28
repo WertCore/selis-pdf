@@ -87,6 +87,16 @@ fn first_available(
 mod tests {
     use super::*;
 
+    /// One row of the decision matrix: (case name, symbolic, base encoding,
+    /// the CMaps the font actually carries, the expected selection).
+    type Case<'a> = (
+        &'a str,
+        bool,
+        Option<BaseEncoding>,
+        &'a [CmapEncoding],
+        Option<CmapEncoding>,
+    );
+
     /// DoD: table-driven test over the encoding decision matrix.
     /// (symbolic, encoding, available, expected).
     #[test]
@@ -96,13 +106,7 @@ mod tests {
             CmapEncoding::WindowsSymbol,
             CmapEncoding::MacRoman,
         ];
-        let cases: &[(
-            &str,
-            bool,
-            Option<BaseEncoding>,
-            &[CmapEncoding],
-            Option<CmapEncoding>,
-        )] = &[
+        let cases: &[Case<'_>] = &[
             // Nonsymbolic: (3,1) preferred, (1,0) fallback, (3,0) never.
             (
                 "non-sym all",

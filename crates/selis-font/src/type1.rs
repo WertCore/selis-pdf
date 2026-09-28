@@ -38,7 +38,7 @@ pub fn parse(data: &Bytes, g: &mut BudgetGuard<'_>) -> Result<Option<Type1Font>>
     )?;
     // Panic containment: read-fonts can panic on hostile fonts
     // (SL-1.ROB.06, e.g. its Type1 real-number parser overflowing).
-    if !crate::contain(|| RawType1::new(data.as_slice())).is_some_and(|parsed| parsed.is_ok()) {
+    if crate::contain(|| RawType1::new(data.as_slice())).is_none_or(|parsed| parsed.is_err()) {
         return Ok(None);
     }
     Ok(Some(Type1Font { data: data.clone() }))
