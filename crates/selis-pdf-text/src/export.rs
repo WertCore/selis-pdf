@@ -118,14 +118,33 @@ pub fn structured(
 /// confused with a genuinely blank page.
 #[must_use]
 pub fn to_text(lines: &[TextLine], line_texts: &[String], low_confidence: bool) -> String {
+    to_text_from_line_texts(
+        &line_texts[..lines.len().min(line_texts.len())],
+        low_confidence,
+    )
+}
+
+/// Plain text from a page's line texts alone, one line per newline.
+///
+/// The formatter [`to_text`] and the text layer
+/// ([`PageTextLayer::text`](crate::text_layer::PageTextLayer::text)) must produce
+/// the same bytes for the same page — that equality *is* the SL-4.UI.04 copy DoD
+/// — and the text layer holds only the recovered strings, not the assembled
+/// `TextLine`s. So the joining and the low-confidence marker live here, once,
+/// and both callers go through it. A caller that formatted its own copy of this
+/// logic is how the two would drift.
+///
+/// `low_confidence` (SL-3.TEXT.10) appends the marker line when the page drew
+/// text the extractor could not recover, so a silent empty string is never
+/// confused with a genuinely blank page.
+#[must_use]
+pub fn to_text_from_line_texts(line_texts: &[String], low_confidence: bool) -> String {
     let mut out = String::new();
-    let n = lines.len().min(line_texts.len());
-    for i in 0..n {
+    for (i, text) in line_texts.iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        let text = line_texts.get(i).cloned().unwrap_or_default();
-        out.push_str(&text);
+        out.push_str(text);
     }
     if low_confidence {
         if !out.is_empty() {
