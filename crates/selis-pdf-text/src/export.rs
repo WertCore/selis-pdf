@@ -118,10 +118,13 @@ pub fn structured(
 /// confused with a genuinely blank page.
 #[must_use]
 pub fn to_text(lines: &[TextLine], line_texts: &[String], low_confidence: bool) -> String {
-    to_text_from_line_texts(
-        &line_texts[..lines.len().min(line_texts.len())],
-        low_confidence,
-    )
+    // `get` rather than a range slice: 03-CONVENTIONS makes `indexing_slicing`
+    // a deny, and the escape hatch is `get`, not an `#[allow]`. The bound is
+    // `min` of the two lengths, so this cannot fail -- but a range slice is
+    // still a panic-shaped expression, and it is what the deny exists to stop.
+    let paired = lines.len().min(line_texts.len());
+    let texts = line_texts.get(..paired).unwrap_or_default();
+    to_text_from_line_texts(texts, low_confidence)
 }
 
 /// Plain text from a page's line texts alone, one line per newline.
