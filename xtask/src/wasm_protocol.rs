@@ -38,6 +38,7 @@
 //!    `BUDGET_BYTES` (never a trap), `memoryStats` reports the live/peak
 //!    tallies and the 4 GiB ceiling, `close` releases live bytes, and
 //!    `memoryPressure` answers with clamped levels.
+//! 10. **The `HttpRangeSource` fetch driver (SL-4.WASM.06)** — the range exchange driven over the real ABI with a *scripted hostile origin*: a cooperative two-range fetch reassembles a document whose render hash-matches the native one, and an origin that ignores `Range`, one that hides `Content-Range`, one that serves another offset, one that changes its mind mid-transfer and one that never answers are each the registry code the driver's decision table promises. That last is the denial-of-service bound, and it is the leg that would notice if the bound were only on paper.
 
 use serde_json::{json, Value};
 
@@ -50,6 +51,11 @@ const CODE_BAD_ARGUMENT: u32 = 6001;
 const CODE_BUDGET_BYTES: u32 = 4000;
 const CODE_CANCELLED: u32 = 4020;
 const CODE_UNSUPPORTED_OP: u32 = 6017;
+/// `BINDING_BAD_HANDLE` — also the code for an unknown range transfer, which
+/// is a handle across the boundary like any other.
+const CODE_BAD_HANDLE_OR_TRANSFER: u32 = 6000;
+const CODE_SOURCE_CHANGED: u32 = 2804;
+const CODE_IO_READ_FAILED: u32 = 5000;
 
 /// A fixture from the engine's test set.
 fn fixture(name: &str) -> Result<Vec<u8>, String> {
@@ -557,6 +563,236 @@ pub fn run() -> Result<(), String> {
         return Err(format!("memory-pressure: level must clamp to 2: {resp}"));
     }
     println!("wasm-protocol: memory ok (typed 1.5 GiB, stats, release, pressure)");
+
+    // ── 10. the HttpRangeSource fetch driver (SL-4.WASM.06) ────────────────
+    //
+    // The guest plans and judges; this leg plays the host *and* the origin, so
+    // it is the only place the decision table is checked over the real ABI
+    // rather than in-crate. Every request the guest names is a bodyless GET
+    // for a byte range, and there is no message field a document could be
+    // uploaded through — asserted below, because it is the invariant.
+    let total = u64::try_from(doc_bytes.len()).map_err(|_| "fixture length".to_string())?;
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeOpen",
+               "url": "https://example.test/minimal.pdf",
+               "size": total, "chunk": 64}),
+        None,
+    )?;
+    let resp = expect(resp, "rangeOpen")?;
+    let transfer = resp["value"]["transfer"]
+        .as_u64()
+        .ok_or("rangeOpen: no transfer id")?;
+    let first_start = resp["value"]["request"]["start"]
+        .as_u64()
+        .ok_or("rangeOpen: no first range")?;
+    let first_end = resp["value"]["request"]["end"]
+        .as_u64()
+        .ok_or("rangeOpen: no first range end")?;
+    if first_start != 0 || first_end == 0 || first_end >= total {
+        return Err(format!(
+            "rangeOpen: first range {first_start}-{first_end} is not a sane slice of {total}"
+        ));
+    }
+    // The planned request is a `Range` header and two offsets. Nothing else.
+    let planned = serde_json::to_string(&resp["value"]["request"]).map_err(|e| e.to_string())?;
+    for forbidden in [
+        "\"body\"",
+        "\"method\"",
+        "\"upload\"",
+        "\"post\"",
+        "\"formData\"",
+    ] {
+        if planned.contains(forbidden) {
+            return Err(format!(
+                "rangeOpen: the request shape grew a {forbidden} field"
+            ));
+        }
+    }
+
+    // The first range, served cooperatively.
+    let cut = usize::try_from(first_end).map_err(|_| "range".to_string())?;
+    let head = &doc_bytes[..cut];
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": transfer, "start": first_start,
+               "status": 206,
+               "contentRange": format!("bytes {first_start}-{}/{total}", head.len() - 1),
+               "contentLength": head.len(), "len": head.len()}),
+        Some(head),
+    )?;
+    let resp = expect(resp, "rangeChunk-head")?;
+    if resp["value"]["complete"] != json!(false) {
+        return Err(format!("rangeChunk-head: must not be complete yet: {resp}"));
+    }
+    if resp["value"]["received"].as_u64() != Some(head.len() as u64) {
+        return Err(format!("rangeChunk-head: received is wrong: {resp}"));
+    }
+    let next_start = resp["value"]["request"]["start"]
+        .as_u64()
+        .ok_or("rangeChunk-head: no next range")?;
+    if next_start != head.len() as u64 {
+        return Err(format!(
+            "rangeChunk-head: next range starts at {next_start}"
+        ));
+    }
+
+    // The rest, as a legitimate short final range.
+    let tail = &doc_bytes[cut..];
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": transfer, "start": next_start,
+               "status": 206,
+               "contentRange": format!("bytes {next_start}-{}/{total}", total - 1),
+               "contentLength": tail.len(), "len": tail.len()}),
+        Some(tail),
+    )?;
+    let resp = expect(resp, "rangeChunk-tail")?;
+    if resp["value"]["complete"] != json!(true)
+        || resp["value"]["degraded"] != json!(false)
+        || resp["value"]["randomAccess"] != json!(true)
+        || resp["value"]["received"].as_u64() != Some(total)
+    {
+        return Err(format!("rangeChunk-tail: wrong completion: {resp}"));
+    }
+    let remote_doc = resp["value"]["doc"]
+        .as_u64()
+        .ok_or("rangeChunk-tail: no document handle")?;
+    if resp["value"]["pageSizes"].as_array().map(Vec::len) != Some(1) {
+        return Err(format!("rangeChunk-tail: pageSizes missing: {resp}"));
+    }
+
+    // The reassembled document is byte-exact: its render hash-matches the
+    // native render of the same fixture. This is the check that would notice a
+    // splice, a dropped byte or an off-by-one in the range arithmetic.
+    let (resp, remote_pixels) = s.rpc(
+        json!({"op":"render", "doc": remote_doc, "page": 0, "params": {"dpi": 72.0}}),
+        None,
+    )?;
+    expect(resp, "range-render")?;
+    let remote_sum = checksum(&remote_pixels);
+    if remote_sum != guest_sum {
+        return Err(format!(
+            "range: the range-fetched document renders to {remote_sum}, the inline one to {guest_sum}: reassembly is not byte-exact"
+        ));
+    }
+    let (resp, _) = s.rpc(json!({"op":"close", "doc": remote_doc}), None)?;
+    expect(resp, "range-close-doc")?;
+    println!(
+        "wasm-protocol: httpRange ok (two ranges reassemble; render checksum {remote_sum} matches)"
+    );
+
+    // A scripted origin helper: open a fresh transfer and hand back its id
+    // and first planned range, so each hostile case starts from zero.
+    macro_rules! open_transfer {
+        () => {{
+            let (r, _) = s.rpc(
+                json!({"op": "rangeOpen",
+                       "url": "https://example.test/hostile.pdf",
+                       "size": total, "chunk": 64}),
+                None,
+            )?;
+            let v = expect(r, "rangeOpen-hostile")?;
+            let t = v["value"]["transfer"].as_u64().ok_or("no transfer id")?;
+            let st = v["value"]["request"]["start"].as_u64().ok_or("no start")?;
+            (t, st)
+        }};
+    }
+
+    // (a) The origin ignores `Range` and sends the whole document: the
+    //     documented fallback, complete and degraded.
+    let (t, st) = open_transfer!();
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": t, "start": st, "status": 200,
+               "contentLength": doc_bytes.len(), "len": doc_bytes.len()}),
+        Some(&doc_bytes),
+    )?;
+    let resp = expect(resp, "range-degraded")?;
+    if resp["value"]["complete"] != json!(true)
+        || resp["value"]["degraded"] != json!(true)
+        || resp["value"]["randomAccess"] != json!(false)
+    {
+        return Err(format!("range-degraded: not reported as degraded: {resp}"));
+    }
+    let degraded_doc = resp["value"]["doc"].as_u64().ok_or("no handle")?;
+    let (resp, _) = s.rpc(json!({"op":"close", "doc": degraded_doc}), None)?;
+    expect(resp, "range-degraded-close")?;
+
+    // (b) `206` with no readable `Content-Range` — the cross-origin case where
+    //     the origin did not expose it. Typed, and the transfer is released.
+    let (t, st) = open_transfer!();
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": t, "start": st, "status": 206,
+               "contentLength": 4, "len": 4}),
+        Some(&doc_bytes[..4]),
+    )?;
+    expect_code(&resp, CODE_IO_READ_FAILED, "range-no-content-range")?;
+    if resp["detail"].as_str() != Some("origin-refused-ranges") {
+        return Err(format!(
+            "range-no-content-range: detail must name the fallback: {resp}"
+        ));
+    }
+    let (resp, _) = s.rpc(json!({"op":"rangeClose", "transfer": t}), None)?;
+    expect_code(
+        &resp,
+        CODE_BAD_HANDLE_OR_TRANSFER,
+        "range-no-content-range-release",
+    )?;
+
+    // (c) A `Content-Range` for an offset nobody asked for: the origin is
+    //     serving something else, and splicing it would be silent corruption.
+    let (t, st) = open_transfer!();
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": t, "start": st, "status": 206,
+               "contentRange": format!("bytes {}-{}/{total}", total - 4, total - 1),
+               "contentLength": 4, "len": 4}),
+        Some(&doc_bytes[..4]),
+    )?;
+    expect_code(&resp, CODE_SOURCE_CHANGED, "range-wrong-offset")?;
+
+    // (d) A `200` *after* a range was accepted: the origin changed its mind,
+    //     and the only safe answer is to refuse.
+    let (t, st) = open_transfer!();
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": t, "start": st, "status": 206,
+               "contentRange": format!("bytes 0-{}/{total}", cut - 1),
+               "contentLength": cut, "len": cut}),
+        Some(&doc_bytes[..cut]),
+    )?;
+    expect(resp, "range-then-head")?;
+    let (resp, _) = s.rpc(
+        json!({"op": "rangeChunk", "transfer": t, "start": cut, "status": 200,
+               "contentLength": doc_bytes.len(), "len": doc_bytes.len()}),
+        Some(&doc_bytes),
+    )?;
+    expect_code(&resp, CODE_SOURCE_CHANGED, "range-200-mid-transfer")?;
+
+    // (e) An origin that never answers: the retry bound stops it, and it stops
+    //     it *here*, over the wire, where the host is the one asking.
+    let (t, st) = open_transfer!();
+    let mut retried = 0u32;
+    let last = loop {
+        let (resp, _) = s.rpc(
+            json!({"op": "rangeChunk", "transfer": t, "start": st, "status": 0, "len": 0}),
+            None,
+        )?;
+        if resp["ok"] == json!(false) {
+            break resp;
+        }
+        retried += 1;
+        if retried > 16 {
+            return Err(
+                "range-never-answers: the guest kept asking for a retry; the bound is not real"
+                    .to_string(),
+            );
+        }
+    };
+    expect_code(&last, CODE_IO_READ_FAILED, "range-never-answers")?;
+    if retried < 2 {
+        return Err(format!(
+            "range-never-answers: only {retried} retries; the allowance should be spent"
+        ));
+    }
+    println!(
+        "wasm-protocol: httpRange hostile ok (degrade, no Content-Range, wrong offset, 200 mid-transfer, {retried} retries then a bound)"
+    );
 
     println!("wasm-protocol: all legs passed");
     Ok(())

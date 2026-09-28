@@ -10,8 +10,10 @@
 //! # The wire, in one paragraph
 //!
 //! A request is `{"v":1,"id":N,"op":...}` where `op` selects one of the
-//! request bodies below (`open`, `close`, `page`, `render`, `text`, `search`,
-//! `mutate`, `save`, `cancel`, `memoryStats`, `memoryPressure`). A response is `{"v":1,"id":N,...}` with
+//! request bodies below (`open`, `close`, `page`, `render`, `text`,
+//! `textLayer`, `search`, `rangeOpen`, `rangeChunk`, `rangeClose`, `mutate`,
+//! `save`, `cancel`, `memoryStats`, `memoryPressure`). A response is
+//! `{"v":1,"id":N,...}` with
 //! exactly one of: `ok:true` + `value` (the op's result object), `ok:false` +
 //! `code` + `message` + `docState` (+ optional engine-owned `detail`), or
 //! `progress` (`{fraction, stage}`, reserved for the threaded shell path —
@@ -24,9 +26,13 @@
 //! # Binary attachments
 //!
 //! Document bytes (`open` with a `bytes` source) arrive as the request's
-//! attachment; rendered pixels and extracted text leave as the response's
+//! attachment; range responses (`rangeChunk`, SL-4.WASM.06) arrive the same
+//! way, and the body is the *only* thing that op's attachment can carry —
+//! there is no field for a request body, which is how "never upload the
+//! document" (ADR-P0016) holds across the wire and not just in the guest.
+//! Rendered pixels and extracted text leave as the response's
 //! attachment. The attachment is declared in the message body (`len` on
-//! `bytes`, `format` + dimensions on render, `length` on text) and validated
+//! `bytes` and on `rangeChunk`, `format` + dimensions on render, `length` on text) and validated
 //! before use. Over the cdylib ABI the shell's glue copies both buffers into
 //! guest linear memory (`selis_input_alloc`) and hands over their guest
 //! addresses; the wire format itself never contains a pointer.
@@ -154,6 +160,81 @@ pub enum RequestOp {
         #[serde(skip_serializing_if = "Option::is_none")]
         opts: Option<SearchOpts>,
     },
+    /// Begin a range fetch for a remote document (SL-4.WASM.06).
+    ///
+    /// The response carries the first `RangeRequest` the engine wants; the
+    /// shell answers with `rangeChunk`. The engine plans and judges, the shell
+    /// only moves bytes — see `crate::httprange` for why the split falls there
+    /// and what each hostile origin does.
+    ///
+    /// Cancellation: the `cancel` message whose `target` is a not-yet-arrived
+    /// `rangeChunk` answers `CANCELLED` without executing (the pre-cancel
+    /// channel a single-threaded Worker can actually deliver), an in-flight
+    /// fetch is aborted by the shell and reported as `rangeChunk` with
+    /// `status: 0` — which the engine observes through the cancel token at its
+    /// next tick — and `rangeClose` releases a transfer outright.
+    #[serde(rename_all = "camelCase")]
+    RangeOpen {
+        /// The document URL. The engine never interprets it and never sends
+        /// anything to it: the only requests it can name are bodyless `GET`s
+        /// for byte ranges.
+        url: String,
+        /// The document length when the caller knows one. A claim, not a fact:
+        /// the origin confirms or contradicts it in the first response.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
+        /// The working unit of one range request, in bytes. Absent means the
+        /// engine's 1 MiB default; a non-positive value is hostile input and
+        /// falls back to it rather than producing an empty request.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chunk: Option<u64>,
+        /// Resource limits for this transfer (ADR-P0006: the caller chooses,
+        /// the engine never picks its own).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<BudgetProfile>,
+    },
+    /// Deliver one range response, as the request's binary attachment.
+    ///
+    /// The attachment is the response body and nothing else; there is no field
+    /// to put a request body in, which is how the no-upload invariant
+    /// (ADR-P0016) holds across the wire and not only in the guest.
+    ///
+    /// # Malformed Input
+    ///
+    /// `len` must match the attachment exactly, `status` is bounded to a `u16`,
+    /// and the header strings are parsed defensively — a stale `transfer`, a
+    /// mismatched `len` and an unparseable `contentRange` each answer a typed
+    /// error, release the transfer, and leave the document registry untouched.
+    #[serde(rename_all = "camelCase")]
+    RangeChunk {
+        /// The transfer this answers.
+        transfer: u64,
+        /// The offset the engine asked for; the engine rejects a response
+        /// whose `Content-Range` names a different one.
+        start: u64,
+        /// The HTTP status, or `0` for "no response arrived" — a network
+        /// error, a CORS refusal or an abort, which the host cannot tell apart.
+        status: u16,
+        /// The raw `Content-Range` response header, if the origin sent one and
+        /// CORS let the shell read it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_range: Option<String>,
+        /// The raw `Content-Length` response header, if readable.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_length: Option<u64>,
+        /// The attachment's length in bytes; must match it exactly.
+        len: u64,
+    },
+    /// Release a range transfer and every byte it has assembled.
+    ///
+    /// This is also the abort path: a shell whose `AbortSignal` fires sends it
+    /// rather than abandoning the transfer silently, so the guest's memory is
+    /// reclaimed instead of waiting for a tab cap.
+    #[serde(rename_all = "camelCase")]
+    RangeClose {
+        /// The transfer to release.
+        transfer: u64,
+    },
     /// Apply a mutation journal (Phase 5). The envelope schema is versioned
     /// now; v1 engines validate the envelope and answer
     /// `BINDING_UNSUPPORTED_OP` for every body they cannot execute.
@@ -206,8 +287,15 @@ pub enum RequestOp {
 /// Handles, not structures: every non-inline descriptor names something the
 /// shell owns (a `Blob`, an OPFS path, a File System Access handle, a URL)
 /// and the main thread never hands over document bytes it has parsed. The
-/// Worker-side `DocSource` adapters land with SL-4.WASM.05/06; a v1 engine
-/// accepts only `bytes` and answers the rest with `BINDING_UNSUPPORTED_OP`.
+/// Worker-side `DocSource` adapters land with SL-4.WASM.05 (blob/opfs/fsa) and
+/// SL-4.WASM.06 (http-range).
+///
+/// `http-range` is the odd one out, and deliberately so: a remote document
+/// has no bytes to hand over yet, so it cannot be named by `open` at all. It
+/// is fetched by the `rangeOpen` / `rangeChunk` / `rangeClose` exchange, and a
+/// v1 engine answers `open` with this descriptor `BINDING_UNSUPPORTED_OP`
+/// pointing there — `open` promises a document handle, and there is nothing to
+/// mint one from until the bytes exist.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SourceDescriptor {
@@ -585,6 +673,14 @@ mod tests {
             r#"{"v":1,"id":21,"op":"cancel","target":17}"#,
             r#"{"v":1,"id":22,"op":"memoryStats"}"#,
             r#"{"v":1,"id":23,"op":"memoryPressure","level":1}"#,
+            // SL-4.WASM.06: the range exchange. `rangeChunk` is the only op
+            // whose attachment is a network response body, and it is the only
+            // op with no field a document could be uploaded through.
+            r#"{"v":1,"id":24,"op":"rangeOpen","url":"https://example.test/a.pdf"}"#,
+            r#"{"v":1,"id":25,"op":"rangeOpen","url":"https://example.test/b.pdf","size":423,"chunk":65536,"budget":{"surface":"viewer"}}"#,
+            r#"{"v":1,"id":26,"op":"rangeChunk","transfer":1,"start":0,"status":206,"contentRange":"bytes 0-422/423","contentLength":423,"len":423}"#,
+            r#"{"v":1,"id":27,"op":"rangeChunk","transfer":1,"start":0,"status":0,"len":0}"#,
+            r#"{"v":1,"id":28,"op":"rangeClose","transfer":1}"#,
         ];
         for s in msgs {
             let msg: RequestMessage =

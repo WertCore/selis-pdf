@@ -64,6 +64,7 @@ use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_sandbox::{CancelToken, Clock, Nanos};
 
 pub mod chunks;
+pub mod httprange;
 pub mod memory;
 pub mod protocol;
 pub mod worker;
@@ -534,7 +535,7 @@ mod tests {
         BudgetOverrides, BudgetProfile, RequestMessage, RequestOp, ResponseMessage,
         SourceDescriptor,
     };
-    use crate::worker::{NullProgress, PayloadFormat, ProgressSink, Stage, WorkerEnv};
+    use crate::worker::{NullProgress, Outgoing, PayloadFormat, ProgressSink, Stage, WorkerEnv};
     use selis_error::Code;
     use selis_sandbox::FixedClock;
     /// The ABI surface works natively too: allocate, reject garbage, free.
@@ -621,6 +622,253 @@ mod tests {
             src: SourceDescriptor::Bytes { len },
             budget: None,
         }
+    }
+
+    // -- the HttpRangeSource fetch driver over the protocol (SL-4.WASM.06) --
+
+    /// Open a transfer and return `(transfer id, first planned start, end)`.
+    fn range_open(w: &mut Worker, size: Option<u64>, chunk: Option<u64>) -> (u64, u64, u64) {
+        let e = env();
+        let out = w.handle(
+            &request(
+                100,
+                protocol::RequestOp::RangeOpen {
+                    url: "https://example.test/minimal.pdf".to_owned(),
+                    size,
+                    chunk,
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert!(out.response.ok.unwrap_or(false), "{:?}", out.response);
+        let v = out.response.value.unwrap();
+        let transfer = v["transfer"].as_u64().expect("transfer id");
+        let start = v["request"]["start"].as_u64().expect("start");
+        let end = v["request"]["end"].as_u64().expect("end");
+        (transfer, start, end)
+    }
+
+    /// Deliver one range response as the host would.
+    fn range_chunk(
+        w: &mut Worker,
+        id: u64,
+        transfer: u64,
+        start: u64,
+        status: u16,
+        content_range: Option<&str>,
+        body: &[u8],
+    ) -> Outgoing {
+        let e = env();
+        let len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        let raw = serde_json::to_vec(&RequestMessage {
+            v: protocol::PROTOCOL_VERSION,
+            id,
+            op: protocol::RequestOp::RangeChunk {
+                transfer,
+                start,
+                status,
+                content_range: content_range.map(str::to_owned),
+                content_length: Some(len),
+                len,
+            },
+        })
+        .expect("serialise");
+        w.handle(&raw, body, &e)
+    }
+
+    /// A cooperative origin, in two ranges, opens a document whose page
+    /// renders — the whole point of the driver.
+    #[test]
+    fn a_range_fetched_document_opens_and_renders() {
+        let mut w = Worker::new();
+        let e = env();
+        let total = u64::try_from(MINIMAL.len()).unwrap_or(0);
+        let (transfer, start, end) = range_open(&mut w, Some(total), Some(64));
+        assert_eq!(start, 0);
+        assert!(end > 0 && end < total, "the fixture is fetched in pieces");
+
+        let first = MINIMAL
+            .get(..usize::try_from(end).unwrap_or(0))
+            .unwrap_or(&[]);
+        let out = range_chunk(
+            &mut w,
+            101,
+            transfer,
+            start,
+            206,
+            Some(&format!(
+                "bytes 0-{}/{total}",
+                first.len().saturating_sub(1)
+            )),
+            first,
+        );
+        let v = out.response.value.expect("value");
+        assert_eq!(v["complete"], false);
+        assert_eq!(v["received"].as_u64(), Some(first.len() as u64));
+
+        let at = u64::try_from(first.len()).unwrap_or(0);
+        let rest = MINIMAL
+            .get(usize::try_from(at).unwrap_or(0)..)
+            .unwrap_or(&[]);
+        let out = range_chunk(
+            &mut w,
+            102,
+            transfer,
+            at,
+            206,
+            Some(&format!("bytes {at}-{}/{total}", total.saturating_sub(1))),
+            rest,
+        );
+        let v = out.response.value.expect("value");
+        assert_eq!(v["complete"], true);
+        assert_eq!(v["degraded"], false);
+        assert_eq!(v["randomAccess"], true);
+        assert_eq!(v["received"].as_u64(), Some(total));
+        let doc = v["doc"].as_u64().expect("a document handle");
+        assert_eq!(v["pages"], 1);
+        assert_eq!(v["pageSizes"].as_array().map(Vec::len), Some(1));
+
+        // The document is real: it renders through the normal path.
+        let out = w.handle(
+            &request(
+                103,
+                protocol::RequestOp::Render {
+                    doc: protocol::DocHandle { raw: doc },
+                    page: 0,
+                    params: protocol::RenderParams {
+                        dpi: 72.0,
+                        ..Default::default()
+                    },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert!(out.response.ok.unwrap_or(false));
+        assert!(out.payload.is_some_and(|p| !p.bytes.is_empty()));
+    }
+
+    /// An origin that ignores `Range` and sends the whole document: the
+    /// documented fallback, reported as complete *and* degraded.
+    #[test]
+    fn a_server_that_ignores_range_degrades_instead_of_failing() {
+        let mut w = Worker::new();
+        let total = u64::try_from(MINIMAL.len()).unwrap_or(0);
+        let (transfer, start, _) = range_open(&mut w, Some(total), Some(64));
+        let out = range_chunk(&mut w, 104, transfer, start, 200, None, MINIMAL);
+        let v = out.response.value.expect("value");
+        assert_eq!(v["complete"], true);
+        assert_eq!(v["degraded"], true);
+        assert_eq!(v["randomAccess"], false);
+        assert!(v["doc"].as_u64().is_some());
+    }
+
+    /// A stale transfer id, a `len` that disagrees with the attachment, and a
+    /// body with no `Content-Range` are each typed, and none of them leaves a
+    /// transfer or a document behind.
+    #[test]
+    fn hostile_range_responses_are_typed_and_leave_nothing_behind() {
+        let e = env();
+        // No such transfer.
+        let mut stale = Worker::new();
+        let out = range_chunk(&mut stale, 105, 999, 0, 206, Some("bytes 0-3/4"), b"%PDF");
+        assert_eq!(out.response.code, Some(6000));
+
+        let mut w = Worker::new();
+        let (transfer, start, _) = range_open(&mut w, Some(4096), Some(64));
+        // `len` that disagrees with the attachment.
+        let raw = serde_json::to_vec(&RequestMessage {
+            v: protocol::PROTOCOL_VERSION,
+            id: 106,
+            op: protocol::RequestOp::RangeChunk {
+                transfer,
+                start,
+                status: 206,
+                content_range: Some("bytes 0-3/4096".to_owned()),
+                content_length: Some(4),
+                len: 4096,
+            },
+        })
+        .expect("serialise");
+        let out = w.handle(&raw, b"%PDF", &e);
+        assert_eq!(out.response.code, Some(6001));
+
+        // No `Content-Range` — the CORS fallback trigger.
+        let out = range_chunk(&mut w, 107, transfer, start, 206, None, b"%PDF");
+        assert_eq!(out.response.code, Some(5000));
+        assert_eq!(
+            out.response.detail.as_deref(),
+            Some("origin-refused-ranges")
+        );
+
+        // The failed transfer is gone, and a `close` for it says so.
+        let out = w.handle(
+            &request(108, protocol::RequestOp::RangeClose { transfer }),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(6000));
+        assert_eq!(w.open_docs(), 0);
+    }
+
+    /// `rangeClose` releases a transfer without a document — the abort path a
+    /// shell's `AbortSignal` takes.
+    #[test]
+    fn range_close_releases_a_transfer() {
+        let mut w = Worker::new();
+        let e = env();
+        let (transfer, _, _) = range_open(&mut w, Some(4096), Some(64));
+        let out = w.handle(
+            &request(109, protocol::RequestOp::RangeClose { transfer }),
+            &[],
+            &e,
+        );
+        assert!(out.response.ok.unwrap_or(false));
+        assert_eq!(out.response.value.unwrap()["closed"], true);
+        assert_eq!(w.open_docs(), 0);
+        // A fresh transfer still works afterwards: the worker stayed healthy.
+        let (next, _, _) = range_open(&mut w, Some(4096), Some(64));
+        assert!(next > transfer);
+    }
+
+    /// A 1.5 GiB claim is refused before a byte is fetched, and an empty URL
+    /// never becomes a transfer.
+    #[test]
+    fn a_hostile_range_open_is_refused_typed() {
+        let mut w = Worker::new();
+        let e = env();
+        let big = 1_610_612_736u64;
+        let out = w.handle(
+            &request(
+                110,
+                protocol::RequestOp::RangeOpen {
+                    url: "https://example.test/huge.pdf".to_owned(),
+                    size: Some(big),
+                    chunk: None,
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(4000));
+        let out = w.handle(
+            &request(
+                111,
+                protocol::RequestOp::RangeOpen {
+                    url: String::new(),
+                    size: None,
+                    chunk: None,
+                    budget: None,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(6001));
+        assert_eq!(w.open_docs(), 0);
     }
 
     /// `open` mints a handle; `close` releases it; a stale handle is a
