@@ -459,3 +459,481 @@ pub(crate) fn resolve_lenient(
         Err(_) => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
+    use super::*;
+    use crate::nav::{ActionKind, DestinationKind};
+    use selis_pdf_cos::XrefEntry;
+    use selis_sandbox::{CancelToken, FixedClock};
+
+    /// The `nav.pdf` conformance fixture, verbatim. It carries the hostile
+    /// cases this module's tests are about — a cyclic `/First`, a `/Count` of
+    /// 99 over two items, and an outline item whose `/A` is a `/GoTo` — and it
+    /// is the *same bytes* the WASM conformance leg drives, so a behaviour
+    /// proven here is the behaviour proven over the real guest ABI.
+    const NAV_FIXTURE: &[u8] =
+        include_bytes!("../../selis-pdf-engine/src/fixtures/nav.pdf");
+
+    fn guard() -> BudgetGuard<'static> {
+        Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
+    }
+
+    /// Assemble a single-revision document from `(object number, body)` pairs.
+    fn build(objects: &[(u32, &str)]) -> (selis_pdf_cos::Doc, Vec<u8>) {
+        let mut src = Vec::new();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, body) in objects {
+            let offset = u64::try_from(src.len()).unwrap_or(0);
+            src.extend_from_slice(format!("{num} 0 obj\n{body}\nendobj\n").as_bytes());
+            xref.insert(
+                *num,
+                XrefEntry::InUse {
+                    offset,
+                    gen: 0,
+                },
+            );
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        (selis_pdf_cos::Doc::from_single_revision(xref, trailer), src)
+    }
+
+    /// A two-page document: object 3 is page 0, object 4 is page 1. The
+    /// destinations in these tests are expressed in terms of it.
+    fn two_pages() -> PageMap {
+        PageMap::new(&[
+            crate::Page {
+                num: 3,
+                media_box: None,
+                crop_box: None,
+                rotate: None,
+                resources: None,
+                contents: None,
+            },
+            crate::Page {
+                num: 4,
+                media_box: None,
+                crop_box: None,
+                rotate: None,
+                resources: None,
+                contents: None,
+            },
+        ])
+    }
+
+    /// Walk a catalog over `objects` and return the tree.
+    fn walk(objects: &[(u32, &str)], budget: &Budget) -> Result<(OutlineTree, PageMap)> {
+        let (doc, src) = build(objects);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut resolver = Resolver::new(&doc, &src, budget);
+        let catalog = resolver.resolve(Ref::new(1, 0), &mut g)?;
+        let pages = two_pages();
+        let tree = outline(&mut resolver, &catalog, &pages, budget, &mut g)?;
+        Ok((tree, pages))
+    }
+
+    /// A catalog with a two-level outline whose root `/Count` lies (99 over two
+    /// items) and whose first item's `/Count` is negative.
+    fn ordinary_tree() -> Vec<(u32, &'static str)> {
+        vec![
+            (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+            (10, "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 99 >>"),
+            (
+                11,
+                "<< /Title (Chapter One) /Parent 10 0 R /Next 12 0 R /First 13 0 R \
+                 /Last 13 0 R /Count -2 /Dest [4 0 R /XYZ 100 200 1.5] >>",
+            ),
+            (12, "<< /Title (Appendix) /Parent 10 0 R /Prev 11 0 R /Dest (chapter-one) >>"),
+            (13, "<< /Title (Section 1.1) /Parent 11 0 R /A 14 0 R >>"),
+            (14, "<< /S /GoTo /D [3 0 R /Fit] >>"),
+        ]
+    }
+
+    /// A two-level outline, with `/Count` lying at the root and negative on the
+    /// first item. The walk follows `/First`/`/Next` and ignores `/Count`
+    /// entirely, so the declared 99 costs the reader nothing.
+    #[test]
+    fn walks_a_nested_outline_and_never_trusts_count() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(&ordinary_tree(), &budget).expect("walk");
+        assert!(tree.present);
+        assert!(!tree.truncated, "an honest tree must not be flagged");
+        assert_eq!(tree.items.len(), 2, "two top-level items, not /Count 99");
+        let first = tree.items.first().expect("first item");
+        assert_eq!(first.title, "Chapter One");
+        assert_eq!(first.count, Some(-2), "/Count is verbatim, sign included");
+        let child = first.children.first().expect("child");
+        assert_eq!(child.title, "Section 1.1");
+        // A negative /Count is the spec's "starts collapsed". The walk must not
+        // act on that convention itself: the viewer owns the decision, which is
+        // why the child is in the tree either way.
+        assert!(
+            child.children.is_empty(),
+            "the child is expanded regardless of the parent's negative /Count"
+        );
+    }
+
+    /// The first item's destination resolves to a real page index, and the
+    /// `/XYZ` parameters survive.
+    #[test]
+    fn an_xyz_destination_keeps_its_placement() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(&ordinary_tree(), &budget).expect("walk");
+        let first = tree.items.first().expect("first item");
+        let Some(NavTarget::Page(page)) = first.target.as_ref() else {
+            panic!("expected a page destination, got {:?}", first.target);
+        };
+        assert_eq!(page.page, 1, "object 4 is the document's second page");
+        assert_eq!(page.kind, DestinationKind::Xyz);
+        assert_eq!(page.left, Some(100.0));
+        assert_eq!(page.top, Some(200.0));
+        assert_eq!(page.zoom, Some(1.5));
+    }
+
+    /// A named `/Dest` is passed through verbatim for the viewer to resolve
+    /// against `/Dests`. The engine does not chase it: deciding where a name
+    /// ends is the viewer's lookup, not the reader's guess.
+    #[test]
+    fn a_named_destination_is_carried_not_chased() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(&ordinary_tree(), &budget).expect("walk");
+        let second = tree.items.get(1).expect("second item");
+        assert_eq!(
+            second.target,
+            Some(NavTarget::Named("chapter-one".to_owned()))
+        );
+    }
+
+    /// **The cycle.** Object 13's `/First` points at object 11, its own
+    /// ancestor. The walk must terminate, must flag itself, and must still
+    /// return everything reachable *outside* the cycle — the reader keeps the
+    /// bookmarks they can see.
+    #[test]
+    fn a_cyclic_outline_terminates_and_is_flagged() {
+        let budget = Budget::unlimited();
+        let objects = vec![
+            (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+            (10, "<< /Type /Outlines /First 11 0 R /Count 1 >>"),
+            (
+                11,
+                "<< /Title (Chapter One) /Parent 10 0 R /First 13 0 R /Count 1 >>",
+            ),
+            (13, "<< /Title (Section 1.1) /Parent 11 0 R /First 11 0 R >>"),
+        ];
+        // Without the visited set this call would not return.
+        let (tree, _) = walk(&objects, &budget).expect("walk");
+        assert!(tree.present);
+        assert!(tree.truncated, "a cycle must be reported, not hidden");
+        assert!(tree.pruned >= 1, "the pruned branch is counted");
+        assert_eq!(tree.items.len(), 1);
+        let first = tree.items.first().expect("first item");
+        assert_eq!(first.title, "Chapter One");
+        let child = first.children.first().expect("the child before the cycle");
+        assert_eq!(child.title, "Section 1.1");
+        assert!(
+            child.children.is_empty(),
+            "the cycle is cut, not expanded a second time"
+        );
+    }
+
+    /// **The same cycle, over the committed fixture** — the bytes the WASM
+    /// conformance leg drives. This is the assertion that the hostile document
+    /// is a real document, not a hand-built object graph that happens to model
+    /// one.
+    #[test]
+    fn the_fixture_outline_cycle_terminates_over_the_real_document() {
+        let budget = Budget::unlimited();
+        let mut g = guard();
+        let (doc, _) = selis_pdf_cos::reconstruct(NAV_FIXTURE, &budget, &mut g)
+            .expect("reconstruct the fixture");
+        let mut resolver = Resolver::new(&doc, NAV_FIXTURE, &budget);
+        let catalog = resolver.resolve(Ref::new(1, 0), &mut g).expect("catalog");
+        let tree = outline(&mut resolver, &catalog, &two_pages(), &budget, &mut g).expect("walk");
+        assert!(tree.present, "the fixture declares an /Outlines");
+        assert!(
+            tree.truncated,
+            "the fixture's item 13 points /First at its own ancestor"
+        );
+        // The two honest top-level items survive; the third level does not.
+        assert_eq!(tree.items.len(), 2);
+        let first = tree.items.first().expect("first item");
+        assert_eq!(first.title, "Chapter One");
+        assert_eq!(first.children.len(), 1);
+        assert_eq!(
+            first.children.first().map(|c| c.title.as_str()),
+            Some("Section 1.1")
+        );
+    }
+
+    /// **The diamond.** Two items both name the same child, and that child's
+    /// own two children do the same again, twenty levels deep. An
+    /// ancestor-path check expands this as `2^depth`; a global visited set
+    /// expands each object once, so the walk is linear in the number of
+    /// objects — the only bound a hostile document cannot choose.
+    #[test]
+    fn a_shared_item_is_expanded_once_not_exponentially() {
+        let budget = Budget::unlimited();
+        let mut objects: Vec<(u32, String)> = vec![
+            (1, "<< /Type /Catalog /Outlines 10 0 R >>".to_owned()),
+            (10, "<< /Type /Outlines /First 100 0 R >>".to_owned()),
+        ];
+        for level in 0..20u32 {
+            let id = 100 + level;
+            let shared = id.saturating_add(1);
+            objects.push((
+                id,
+                format!(
+                    "<< /Title (L{level}) /Parent 10 0 R /First {shared} 0 R \
+                     /Last {shared} 0 R >>"
+                ),
+            ));
+        }
+        let borrowed: Vec<(u32, &str)> = objects
+            .iter()
+            .map(|(n, b)| (*n, b.as_str()))
+            .collect();
+        let (tree, _) = walk(&borrowed, &budget).expect("walk");
+        let mut count = 0usize;
+        let mut stack: Vec<&OutlineItem> = tree.items.iter().collect();
+        while let Some(item) = stack.pop() {
+            count = count.saturating_add(1);
+            stack.extend(item.children.iter());
+        }
+        assert!(
+            count <= 20,
+            "a shared object must be expanded once, saw {count} items"
+        );
+    }
+
+    /// A catalog with no `/Outlines` is a document with no outline — which the
+    /// viewer must be able to say, distinctly from "this host cannot read it".
+    #[test]
+    fn an_absent_outline_is_not_present_and_not_truncated() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(&[(1, "<< /Type /Catalog >>")], &budget).expect("walk");
+        assert!(!tree.present, "no /Outlines means the document has none");
+        assert!(!tree.truncated, "and nothing was lost trying");
+        assert!(tree.items.is_empty());
+    }
+
+    /// A catalog that *claims* an outline it cannot supply is `present` and
+    /// `truncated`: the document has an outline, this host could not read it.
+    /// Collapsing that into "no outline" is the exact confusion the optional
+    /// navigation port exists to avoid.
+    #[test]
+    fn an_unreadable_outline_is_present_but_truncated() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(&[(1, "<< /Type /Catalog /Outlines 99 0 R >>")], &budget)
+            .expect("walk");
+        assert!(tree.present, "the catalog claimed one");
+        assert!(tree.truncated, "and we could not read it");
+        assert!(tree.items.is_empty());
+    }
+
+    /// An `/Outlines` with no `/First` is an empty outline: present and whole.
+    #[test]
+    fn an_empty_outline_is_present_and_complete() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /Count 0 >>"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        assert!(tree.present);
+        assert!(!tree.truncated, "an empty outline is a whole outline");
+        assert!(tree.items.is_empty());
+    }
+
+    /// A `/First` naming an object the document does not contain costs the
+    /// reader that branch and is flagged. It does not fail the document, and it
+    /// does not pass as a complete outline either.
+    #[test]
+    fn an_unresolvable_item_is_flagged_not_fatal() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 99 0 R >>"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        assert!(tree.truncated);
+        assert!(tree.items.is_empty());
+    }
+
+    /// A `/First` resolving to something other than a dictionary is a document
+    /// defect of the same class.
+    #[test]
+    fn an_item_that_is_not_a_dictionary_is_flagged() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 11 0 R >>"),
+                (11, "42"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        assert!(tree.truncated);
+        assert!(tree.items.is_empty());
+    }
+
+    /// An item with no `/Title`, no `/Dest` and no `/A` is still an item. This
+    /// is the "silently shorter outline" the whole module exists to prevent.
+    #[test]
+    fn a_bare_item_is_still_an_item() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 11 0 R >>"),
+                (11, "<< /Parent 10 0 R >>"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        assert!(!tree.truncated, "a bare item is not a defect");
+        let item = tree.items.first().expect("the item");
+        assert_eq!(item.title, "");
+        assert!(item.target.is_none());
+        assert!(item.action.is_none());
+    }
+
+    /// A `/Dest` naming a page the document does not contain is reported as
+    /// unresolved. Inventing page 0 would navigate the reader somewhere the
+    /// document never said.
+    #[test]
+    fn a_destination_naming_a_missing_page_is_unresolved() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 11 0 R >>"),
+                (11, "<< /Title (Nowhere) /Parent 10 0 R /Dest [77 0 R /Fit] >>"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        let item = tree.items.first().expect("the item");
+        assert_eq!(item.target, Some(NavTarget::Unresolved));
+    }
+
+    /// An outline item whose `/A` is a `/Launch` keeps its class. The UI's
+    /// `OutlineNode` has no field for an action, which is a finding — but
+    /// dropping it here would deliver a `/Launch` bookmark to the viewer looking
+    /// exactly like a bookmark with no target.
+    #[test]
+    fn a_launch_on_an_outline_item_keeps_its_class() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 11 0 R >>"),
+                (
+                    11,
+                    "<< /Title (Run) /Parent 10 0 R /A << /S /Launch /F (calc.exe) >> >>",
+                ),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        let item = tree.items.first().expect("the item");
+        let action = item.action.as_ref().expect("the action survives");
+        assert_eq!(action.kind, ActionKind::Launch);
+        assert_eq!(action.uri.as_deref(), Some("calc.exe"));
+        // `/A` wins over `/Dest` (section 12.3.3), and a non-`/GoTo` action
+        // contributes no destination of its own.
+        assert!(item.target.is_none());
+    }
+
+    /// A `/Next` chain is reported and not followed. The chain is a second place
+    /// a `/Launch` can hide, and whether a chain is part of one activation is
+    /// the viewer's call — but the engine must not hide that one exists.
+    #[test]
+    fn a_next_chain_is_reported_and_not_followed() {
+        let budget = Budget::unlimited();
+        let (tree, _) = walk(
+            &[
+                (1, "<< /Type /Catalog /Outlines 10 0 R >>"),
+                (10, "<< /Type /Outlines /First 11 0 R >>"),
+                (
+                    11,
+                    "<< /Title (Chained) /Parent 10 0 R /A << /S /URI /URI (https://a.test/) \
+                     /Next 12 0 R >> >>",
+                ),
+                (12, "<< /S /Launch /F (calc.exe) >>"),
+            ],
+            &budget,
+        )
+        .expect("walk");
+        let action = tree
+            .items
+            .first()
+            .and_then(|i| i.action.as_ref())
+            .expect("the action");
+        assert!(
+            action.has_next,
+            "the chain is visible, not silently dropped"
+        );
+        assert_eq!(action.kind, ActionKind::Uri);
+    }
+
+    /// Nesting past the depth budget is a **typed refusal**, not a truncated
+    /// tree. This is the one case where "shorter" would have meant "wrong".
+    #[test]
+    fn depth_past_the_budget_is_a_typed_refusal_not_a_short_tree() {
+        let mut objects: Vec<(u32, String)> = vec![
+            (1, "<< /Type /Catalog /Outlines 10 0 R >>".to_owned()),
+            (10, "<< /Type /Outlines /First 100 0 R >>".to_owned()),
+        ];
+        for level in 0..12u32 {
+            let id = 100 + level;
+            let child = id.saturating_add(1);
+            objects.push((
+                id,
+                format!("<< /Title (L{level}) /Parent 10 0 R /First {child} 0 R >>"),
+            ));
+        }
+        objects.push((112, "<< /Title (Leaf) /Parent 111 0 R >>".to_owned()));
+        let borrowed: Vec<(u32, &str)> = objects
+            .iter()
+            .map(|(n, b)| (*n, b.as_str()))
+            .collect();
+        let budget = Budget {
+            depth: 4,
+            ..Budget::unlimited()
+        };
+        let err = walk(&borrowed, &budget).expect_err("must refuse, not truncate");
+        assert_eq!(
+            err.code(),
+            selis_error::Code::BudgetDepth,
+            "expected BUDGET_DEPTH"
+        );
+    }
+
+    /// The object budget bounds the walk the same way: exhaustion is a typed
+    /// `BUDGET_OBJECTS`, not a quietly short outline.
+    #[test]
+    fn object_exhaustion_is_a_typed_refusal() {
+        let budget = Budget {
+            objects: 3,
+            ..Budget::unlimited()
+        };
+        let err = walk(&ordinary_tree(), &budget).expect_err("must refuse");
+        assert_eq!(
+            err.code(),
+            selis_error::Code::BudgetObjects,
+            "expected BUDGET_OBJECTS"
+        );
+    }
+}

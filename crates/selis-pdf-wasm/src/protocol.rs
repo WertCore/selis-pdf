@@ -11,9 +11,9 @@
 //!
 //! A request is `{"v":1,"id":N,"op":...}` where `op` selects one of the
 //! request bodies below (`open`, `close`, `page`, `render`, `text`,
-//! `textLayer`, `search`, `rangeOpen`, `rangeChunk`, `rangeClose`, `mutate`,
-//! `save`, `cancel`, `memoryStats`, `memoryPressure`). A response is
-//! `{"v":1,"id":N,...}` with
+//! `textLayer`, `search`, `outline`, `pageLabels`, `destinations`, `pageLinks`,
+//! `rangeOpen`, `rangeChunk`, `rangeClose`, `mutate`, `save`, `cancel`,
+//! `memoryStats`, `memoryPressure`). A response is `{"v":1,"id":N,...}` with
 //! exactly one of: `ok:true` + `value` (the op's result object), `ok:false` +
 //! `code` + `message` + `docState` (+ optional engine-owned `detail`), or
 //! `progress` (`{fraction, stage}`, reserved for the threaded shell path —
@@ -159,6 +159,55 @@ pub enum RequestOp {
         /// Search options.
         #[serde(skip_serializing_if = "Option::is_none")]
         opts: Option<SearchOpts>,
+    },
+    /// The document's outline (bookmark) tree, in document order
+    /// (SL-3.DOC-NAV).
+    ///
+    /// One op per structure rather than a `navigation` op with a `what`
+    /// selector, for the reason the `Text`/`TextLayer` split already states:
+    /// an op that answers two shapes forces every shell that validates replies
+    /// field by field to guess which arrived.
+    ///
+    /// The response separates three states the viewer must not confuse:
+    /// `present:false` (this document has no outline), `truncated:true` (it has
+    /// one this engine could not read in full), and a complete tree. A refusal
+    /// — budget or cancellation — is a typed error response, not an empty list.
+    #[serde(rename_all = "camelCase")]
+    Outline {
+        /// The document handle.
+        doc: DocHandle,
+    },
+    /// The document's `/PageLabels` ranges, in document order (SL-3.DOC.08).
+    #[serde(rename_all = "camelCase")]
+    PageLabels {
+        /// The document handle.
+        doc: DocHandle,
+    },
+    /// The document's `/Dests` name tree (SL-3.DOC-NAV), used to resolve the
+    /// named destinations outline items and `/GoTo` actions may carry.
+    #[serde(rename_all = "camelCase")]
+    Destinations {
+        /// The document handle.
+        doc: DocHandle,
+    },
+    /// One page's link annotations, in `/Annots` order (SL-3.DOC-NAV).
+    ///
+    /// **Every action class the document wrote crosses this boundary by name**,
+    /// including the classes ADR-P0020 disables and any class the engine does
+    /// not model. The engine reports; the viewer decides. An op that filtered
+    /// them would make "is the viewer refusing this, or does the engine not
+    /// know about it?" unanswerable from the outside — which is the question
+    /// `apps/ui/src/viewer/links.test.ts` exists to answer.
+    ///
+    /// An out-of-range page answers `PAGE_OUT_OF_RANGE`, never an empty list:
+    /// "page 9000 of a 3-page document has no links" and "this host cannot read
+    /// links" must not look alike.
+    #[serde(rename_all = "camelCase")]
+    PageLinks {
+        /// The document handle.
+        doc: DocHandle,
+        /// Zero-based page number.
+        page: u32,
     },
     /// Begin a range fetch for a remote document (SL-4.WASM.06).
     ///
