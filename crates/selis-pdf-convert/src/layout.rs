@@ -235,12 +235,11 @@ fn render_block(
             let runs = wrap_spans(
                 spans,
                 &|s: Style| {
-                    let s = if italicize {
+                    if italicize {
                         s.with_bold().with_italic()
                     } else {
                         s.with_bold()
-                    };
-                    s
+                    }
                 },
                 &size_of,
                 MARGIN + indent,
@@ -346,7 +345,7 @@ fn render_block(
             }
             layout.cursor += 2.0;
         }
-        Block::CodeBlock(lines) => {
+        Block::Code(lines) => {
             layout.ensure_room(CODE_LINE);
             let avail = layout.max_x() - (MARGIN + indent) - 8.0;
             for code_line in lines {
@@ -380,7 +379,7 @@ fn render_block(
             }
             layout.cursor += PARA_GAP;
         }
-        Block::Blockquote(inner) => {
+        Block::Quote(inner) => {
             layout.ensure_room(BODY_SIZE);
             let mut inner_first = true;
             for child in inner {
@@ -581,7 +580,7 @@ mod tests {
 
     #[test]
     fn code_blocks_render_rectangles_and_truncate() {
-        let blocks = vec![Block::CodeBlock(vec!["y".repeat(300)])];
+        let blocks = vec![Block::Code(vec!["y".repeat(300)])];
         let pages = lay_out(
             &blocks,
             PageSize::Letter,

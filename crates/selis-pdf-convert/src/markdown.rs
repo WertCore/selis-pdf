@@ -40,7 +40,7 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
                 code.push((*l).to_string());
                 i = i.saturating_add(1);
             }
-            out.push(Block::CodeBlock(code));
+            out.push(Block::Code(code));
             continue;
         }
 
@@ -69,7 +69,7 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
             continue;
         }
 
-        // Blockquote.
+        // Quote.
         if trimmed.starts_with('>') {
             let mut quoted: Vec<&str> = Vec::new();
             while let Some(l) = lines.get(i) {
@@ -85,7 +85,7 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
                 quoted.push(stripped);
                 i = i.saturating_add(1);
             }
-            out.push(Block::Blockquote(parse_lines(&quoted, base_indent)));
+            out.push(Block::Quote(parse_lines(&quoted, base_indent)));
             continue;
         }
 
@@ -116,7 +116,7 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
                 code.pop();
             }
             if !code.is_empty() {
-                out.push(Block::CodeBlock(code));
+                out.push(Block::Code(code));
             }
             continue;
         }
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn fenced_code_blocks() {
         let blocks = parse("```rust\nfn main() {}\n```\n");
-        let Block::CodeBlock(lines) = &blocks[0] else {
+        let Block::Code(lines) = &blocks[0] else {
             panic!("expected code block");
         };
         assert_eq!(lines, &["fn main() {}".to_string()]);
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn blockquotes_and_rules() {
         let blocks = parse("> quoted text\n\n---\n");
-        assert!(matches!(&blocks[0], Block::Blockquote(_)));
+        assert!(matches!(&blocks[0], Block::Quote(_)));
         assert!(matches!(&blocks[1], Block::Rule));
     }
 
@@ -474,6 +474,6 @@ mod tests {
     #[test]
     fn indented_code_block() {
         let blocks = parse("intro paragraph\n\n    line one\n    line two\n");
-        assert!(matches!(&blocks[1], Block::CodeBlock(_)));
+        assert!(matches!(&blocks[1], Block::Code(_)));
     }
 }

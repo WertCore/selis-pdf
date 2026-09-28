@@ -355,14 +355,14 @@ impl<'a> Parser<'a> {
                 let (lines, new_pos) = extract_pre(self.chars, self.pos);
                 self.pos = new_pos;
                 if !lines.is_empty() {
-                    self.blocks.push(Block::CodeBlock(lines));
+                    self.blocks.push(Block::Code(lines));
                 }
             }
             "blockquote" => {
                 self.flush_paragraph();
                 let (inner, new_pos) = extract_balanced(self.chars, self.pos, "blockquote");
                 self.pos = new_pos;
-                self.blocks.push(Block::Blockquote(parse(&inner)));
+                self.blocks.push(Block::Quote(parse(&inner)));
             }
             "ul" | "ol" => {
                 self.flush_paragraph();
@@ -714,7 +714,7 @@ fn starts_with_ci(chars: &[char], pos: usize, needle: &str) -> bool {
         let Some(&c) = chars.get(p) else {
             return false;
         };
-        if c.to_ascii_lowercase() != n.to_ascii_lowercase() {
+        if !c.eq_ignore_ascii_case(&n) {
             return false;
         }
         p = p.saturating_add(1);
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn pre_blocks_keep_text_verbatim() {
         let blocks = parse("<pre><code>let x = 1;\nlet y = 2;</code></pre>");
-        let Block::CodeBlock(lines) = &blocks[0] else {
+        let Block::Code(lines) = &blocks[0] else {
             panic!("expected code block");
         };
         assert_eq!(lines, &["let x = 1;".to_string(), "let y = 2;".to_string()]);
@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn blockquotes_nest_blocks() {
         let blocks = parse("<blockquote><p>quoted</p></blockquote>");
-        let Block::Blockquote(inner) = &blocks[0] else {
+        let Block::Quote(inner) = &blocks[0] else {
             panic!("expected blockquote");
         };
         assert!(matches!(&inner[0], Block::Paragraph(_)));
