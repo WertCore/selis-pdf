@@ -689,7 +689,7 @@ mod tests {
                         );
                     }
                     Metric::Percent | Metric::Bytes => {
-                        assert!(false, "measuring row with no enforcement path: {}", b.path);
+                        panic!("measuring row with no enforcement path: {}", b.path);
                     }
                 }
             } else {

@@ -543,13 +543,14 @@ fn build_mixed() -> Result<DocumentBuilder, String> {
 fn build_all() -> Result<Vec<(&'static str, Vec<u8>)>, String> {
     // Materialise each PDF fully before writing anything, so a mid-run
     // failure cannot leave a half-regenerated set on disk.
-    let mut docs: Vec<(&'static str, DocumentBuilder)> = Vec::new();
-    docs.push(("text-heavy", build_text()?));
-    docs.push(("vector-heavy", build_vector()?));
-    docs.push(("large-image", build_image()?));
-    docs.push(("shading", build_shading()?));
-    docs.push(("transparency", build_transparency()?));
-    docs.push(("mixed", build_mixed()?));
+    let docs: Vec<(&'static str, DocumentBuilder)> = vec![
+        ("text-heavy", build_text()?),
+        ("vector-heavy", build_vector()?),
+        ("large-image", build_image()?),
+        ("shading", build_shading()?),
+        ("transparency", build_transparency()?),
+        ("mixed", build_mixed()?),
+    ];
     let budget = selis_sandbox::Budget::unlimited();
     let clock = selis_sandbox::shell_clock();
     let mut out = Vec::new();

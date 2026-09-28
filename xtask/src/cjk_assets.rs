@@ -200,7 +200,7 @@ fn parse_core_list(text: &str) -> Result<Vec<u32>, String> {
                 continue;
             }
             if !token.is_ascii() {
-                out.extend(token.chars().map(|ch| u32::from(ch)));
+                out.extend(token.chars().map(u32::from));
                 continue;
             }
             let v = u32::from_str_radix(token, 16).map_err(|e| format!("token {token:?}: {e}"))?;

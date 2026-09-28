@@ -36,7 +36,7 @@ pub fn run() -> Result<(), String> {
     // llvm-cov JSON: `data[0].files[]` with `name`, `summary.lines.percent`.
     let files = report["data"]
         .as_array()
-        .and_then(|d| d.get(0))
+        .and_then(|d| d.first())
         .and_then(|d| d["files"].as_array())
         .ok_or_else(|| "unexpected llvm-cov JSON shape (missing data[0].files)".to_string())?;
 
