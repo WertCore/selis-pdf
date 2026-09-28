@@ -951,7 +951,6 @@ mod tests {
         measure(&root, &doc).expect("measure runs over an unserved range");
         let _ = std::fs::remove_dir_all(&root);
     }
-}
 
     /// The repository's committed record is checked on every test run, not only
     /// when someone remembers to: `assets/cjk/manifest.json` must verify
