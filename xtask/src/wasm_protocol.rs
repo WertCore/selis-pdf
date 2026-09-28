@@ -39,6 +39,15 @@
 //!    tallies and the 4 GiB ceiling, `close` releases live bytes, and
 //!    `memoryPressure` answers with clamped levels.
 //! 10. **The `HttpRangeSource` fetch driver (SL-4.WASM.06)** — the range exchange driven over the real ABI with a *scripted hostile origin*: a cooperative two-range fetch reassembles a document whose render hash-matches the native one, and an origin that ignores `Range`, one that hides `Content-Range`, one that serves another offset, one that changes its mind mid-transfer and one that never answers are each the registry code the driver's decision table promises. That last is the denial-of-service bound, and it is the leg that would notice if the bound were only on paper.
+//! 11. **Navigation (SL-3.DOC-NAV)** — the four read-only navigation ops driven
+//!     over the real ABI against `nav.pdf`, the same committed fixture the
+//!     engine-side tests use, so the leg checks the *protocol* rather than a
+//!     second parser. It pins the three properties a shell cannot recover if
+//!     the guest gets them wrong: a `/Outlines` whose item points at its own
+//!     ancestor terminates **and says so**; a `/Launch` crosses by name **and
+//!     with its target**, because the viewer enforces ADR-P0020 against what it
+//!     is told; and an action class this build does not model crosses as
+//!     `unknown` plus the document's own `rawName`. See `nav_leg`.
 
 use serde_json::{json, Value};
 
@@ -56,6 +65,10 @@ const CODE_UNSUPPORTED_OP: u32 = 6017;
 const CODE_BAD_HANDLE_OR_TRANSFER: u32 = 6000;
 const CODE_SOURCE_CHANGED: u32 = 2804;
 const CODE_IO_READ_FAILED: u32 = 5000;
+/// `pageLinks` answers an out-of-range page with this rather than an empty
+/// list, so a shell can tell "no links on that page" from "this host cannot
+/// read links".
+const CODE_PAGE_OUT_OF_RANGE: u32 = 1301;
 
 /// A fixture from the engine's test set.
 fn fixture(name: &str) -> Result<Vec<u8>, String> {
@@ -794,6 +807,15 @@ pub fn run() -> Result<(), String> {
         "wasm-protocol: httpRange hostile ok (degrade, no Content-Range, wrong offset, 200 mid-transfer, {retried} retries then a bound)"
     );
 
+    // ── 11. navigation (SL-3.DOC-NAV) ──────────────────────────────────────
+    // See `nav_leg`. Opened last so it cannot perturb the memory tallies leg 9
+    // pinned, and closed again before the suite reports.
+    let nav_bytes = fixture("nav.pdf")?;
+    nav_leg(&mut s, &nav_bytes)?;
+    println!(
+        "wasm-protocol: navigation ok (cyclic outline terminated and flagged, /Launch and /Rendition by name, labels, destinations, typed out-of-range)"
+    );
+
     println!("wasm-protocol: all legs passed");
     Ok(())
 }
@@ -815,4 +837,234 @@ fn native_render(doc: &[u8]) -> Result<Vec<u8>, String> {
         .render_page(0, &mut backend, view.ctm, &budget, &mut g)
         .map_err(|e| format!("native render: {e}"))?;
     Ok(backend.pixmap().data().to_vec())
+}
+
+/// Leg 11: the four read-only navigation ops (SL-3.DOC-NAV) over the real
+/// guest ABI, against `nav.pdf` — the same committed fixture the engine-side
+/// tests use, so this checks the *protocol* rather than a second parser.
+///
+/// The properties it pins are the ones a shell cannot recover if the guest gets
+/// them wrong:
+///
+/// * A `/Outlines` whose item points at its own ancestor **terminates and says
+///   so**. The walk is bounded by object identity, not depth; a depth-only
+///   bound would be a hang this harness would simply never return from, and a
+///   silently truncated outline would be worse — a viewer that cannot tell a
+///   complete tree from a short one can only ever say "nothing here".
+/// * A `/Launch` crosses **by name and with its target**. A viewer enforces
+///   ADR-P0020 against what it is *told*, so an op answering "no action" here
+///   would deliver a process-start link wearing a dead bookmark's shape, and
+///   nothing downstream could tell the difference.
+/// * An action class this build does not model crosses as `unknown` **plus the
+///   document's own `rawName`** — surfaced, never coerced, never dropped, so
+///   "the viewer refused this" stays a question anybody can answer.
+fn nav_leg(s: &mut Session<'_>, nav_bytes: &[u8]) -> Result<(), String> {
+    let (resp, _) = s.rpc(
+        json!({"op":"open",
+               "src": {"kind":"bytes", "len": nav_bytes.len()},
+               "budget": {"surface":"viewer"}}),
+        Some(nav_bytes),
+    )?;
+    let resp = expect(resp, "nav-open")?;
+    let nav = resp["value"]["doc"]
+        .as_u64()
+        .ok_or("nav-open: no doc handle")?;
+
+    // The outline. `present` and `truncated` are separate booleans and this
+    // document is the case that needs both: it *has* an outline, and the walk
+    // gave up on the cyclic branch.
+    let (resp, _) = s.rpc(json!({"op":"outline", "doc": nav}), None)?;
+    let resp = expect(resp, "outline")?;
+    if resp["value"]["present"] != json!(true) {
+        return Err(format!("outline: present must be true: {resp}"));
+    }
+    if resp["value"]["truncated"] != json!(true) {
+        return Err(format!(
+            "outline: the fixture's cyclic branch must be reported, not hidden: {resp}"
+        ));
+    }
+    if resp["value"]["pruned"].as_u64().unwrap_or(0) < 1 {
+        return Err(format!("outline: pruned must count the cut branch: {resp}"));
+    }
+    // `/Count 99` lies; the walk follows `/First`/`/Next` and gets two items.
+    let top = resp["value"]["items"]
+        .as_array()
+        .ok_or("outline: items is not an array")?;
+    if top.len() != 2 {
+        return Err(format!(
+            "outline: two top-level items, not /Count 99: {}",
+            serde_json::to_string(top).map_err(|e| e.to_string())?
+        ));
+    }
+    let first = top.first().ok_or("outline: no first item")?;
+    if first["title"] != json!("Chapter One") {
+        return Err(format!("outline: first title wrong: {first}"));
+    }
+    // The sign is the spec's "starts collapsed" convention and crosses verbatim.
+    if first["count"] != json!(-2) {
+        return Err(format!(
+            "outline: /Count must cross verbatim, sign included: {first}"
+        ));
+    }
+    // The cycle is cut at the item that would close it, not expanded.
+    let children = first["children"]
+        .as_array()
+        .ok_or("outline: children is not an array")?;
+    if children.len() != 1 {
+        return Err(format!("outline: one honest child expected: {first}"));
+    }
+    let child = children.first().ok_or("outline: no child")?;
+    if child["title"] != json!("Section 1.1") {
+        return Err(format!("outline: child title wrong: {child}"));
+    }
+    if !child["children"].as_array().is_none_or(Vec::is_empty) {
+        return Err(format!(
+            "outline: the cycle was expanded instead of cut: {child}"
+        ));
+    }
+    // A `/Next` sibling is a *sibling*. Re-parenting it under the item that
+    // named it reads as a plausible outline while collapsing a document's whole
+    // sibling list into one deep chain, and it is the mistake a hand-built
+    // object graph in a unit test would not necessarily catch.
+    if top.get(1).map(|i| i["title"].as_str()) != Some(Some("Appendix")) {
+        return Err(format!("outline: the /Next sibling lost its place: {resp}"));
+    }
+    // A named destination is carried verbatim, not chased: deciding where a
+    // name ends is the viewer's lookup against `/Dests`, not the reader's guess.
+    if top.get(1).map(|i| &i["target"]["kind"]) != Some(&json!("named"))
+        || top.get(1).map(|i| i["target"]["name"].as_str()) != Some(Some("chapter-one"))
+    {
+        return Err(format!(
+            "outline: a named /Dest must cross verbatim: {resp}"
+        ));
+    }
+
+    // The link annotations on page 0. Seven `/Annots`, one of which is a
+    // `/Widget` and must not appear here at all.
+    let (resp, _) = s.rpc(json!({"op":"pageLinks", "doc": nav, "page": 0}), None)?;
+    let resp = expect(resp, "pageLinks")?;
+    let links = resp["value"]["links"]
+        .as_array()
+        .ok_or("pageLinks: links is not an array")?;
+    if links.len() != 6 {
+        return Err(format!(
+            "pageLinks: six links, the /Widget excluded: {}",
+            serde_json::to_string(links).map_err(|e| e.to_string())?
+        ));
+    }
+    let kinds: Vec<&str> = links
+        .iter()
+        .filter_map(|l| l["action"]["kind"].as_str())
+        .collect();
+    for (label, expected) in [
+        ("the /Launch", "launch"),
+        ("the /Rendition", "unknown"),
+        ("the /URI", "uri"),
+        ("the /SubmitForm", "submitForm"),
+    ] {
+        if !kinds.contains(&expected) {
+            return Err(format!(
+                "pageLinks: {label} must cross as {expected:?}, got {kinds:?}"
+            ));
+        }
+    }
+    // The `/Launch` carries its target verbatim: a `/Launch` with nothing to
+    // show the reader is not a link the viewer can refuse *with a reason*.
+    let launch = links
+        .iter()
+        .find(|l| l["action"]["kind"] == json!("launch"))
+        .ok_or("pageLinks: no /Launch crossed the boundary")?;
+    if launch["action"]["uri"] != json!("cmd.exe /c calc.exe") {
+        return Err(format!(
+            "pageLinks: the /Launch lost its file specification: {launch}"
+        ));
+    }
+    if launch["action"]["rawName"] != json!("Launch") {
+        return Err(format!(
+            "pageLinks: the /Launch lost its own class name: {launch}"
+        ));
+    }
+    // The unmodelled class surfaces under the viewer's `unknown` *and* keeps
+    // the document's own spelling.
+    let rendition = links
+        .iter()
+        .find(|l| l["action"]["rawName"] == json!("Rendition"))
+        .ok_or("pageLinks: the /Rendition did not cross")?;
+    if rendition["action"]["kind"] != json!("unknown") {
+        return Err(format!(
+            "pageLinks: an unmodelled class must not be coerced into a modelled one: {rendition}"
+        ));
+    }
+    // The count above is the proof the `/Widget` was excluded: guessing
+    // "probably a link" about a form field would put its activation surface
+    // into the link layer. The fixture's dead link (`/Subtype /Link` and
+    // nothing else) *is* a link and does cross, because "this link has nowhere
+    // to go" is a state the viewer can refuse with a reason — and it can only
+    // refuse it if the link is reported at all.
+    if !links
+        .iter()
+        .any(|l| l["action"].is_null() && l["rect"].is_null())
+    {
+        return Err(format!(
+            "pageLinks: the dead link must still be reported: {resp}"
+        ));
+    }
+    // `/Rect` crosses verbatim, as the four numbers the viewer hit-tests. The
+    // `/Launch` is the fixture's third annotation, so its rectangle is the
+    // third band's — asserting the *right* band matters, because a transport
+    // that shifted a link's rect onto its neighbour's would still be "four
+    // numbers" and would still pass a shape-only check.
+    if launch["rect"]["x0"] != json!(10.0)
+        || launch["rect"]["y0"] != json!(620.0)
+        || launch["rect"]["x1"] != json!(200.0)
+        || launch["rect"]["y1"] != json!(640.0)
+    {
+        return Err(format!(
+            "pageLinks: the /Rect did not cross verbatim: {launch}"
+        ));
+    }
+
+    // The `/Dests` name tree, through which the viewer resolves that name.
+    let (resp, _) = s.rpc(json!({"op":"destinations", "doc": nav}), None)?;
+    let resp = expect(resp, "destinations")?;
+    let dests = resp["value"]["destinations"]
+        .as_array()
+        .ok_or("destinations: not an array")?;
+    if !dests
+        .iter()
+        .any(|d| d["name"] == json!("chapter-one") && d["target"]["page"] == json!(1))
+    {
+        return Err(format!(
+            "destinations: chapter-one must resolve to page 1: {resp}"
+        ));
+    }
+
+    // `/PageLabels`: two ranges, the first lower-roman, the second `A-` decimal.
+    let (resp, _) = s.rpc(json!({"op":"pageLabels", "doc": nav}), None)?;
+    let resp = expect(resp, "pageLabels")?;
+    let ranges = resp["value"]["ranges"]
+        .as_array()
+        .ok_or("pageLabels: ranges is not an array")?;
+    if ranges.len() != 2
+        || ranges.first().map(|r| &r["style"]) != Some(&json!("r"))
+        || ranges.get(1).map(|r| &r["prefix"]) != Some(&json!("A-"))
+    {
+        return Err(format!(
+            "pageLabels: the two label ranges must cross: {resp}"
+        ));
+    }
+
+    // An out-of-range page is a typed refusal, never an empty list: "page 9000
+    // of a 2-page document has no links" and "this host cannot read links" must
+    // not look alike to a shell deciding whether to show a navigation panel.
+    let (resp, _) = s.rpc(json!({"op":"pageLinks", "doc": nav, "page": 9000}), None)?;
+    expect_code(&resp, CODE_PAGE_OUT_OF_RANGE, "pageLinks-out-of-range")?;
+
+    // A stale handle is still a bad handle after all of the above.
+    let (resp, _) = s.rpc(json!({"op":"outline", "doc": nav + 9999}), None)?;
+    expect_code(&resp, CODE_BAD_HANDLE, "outline-stale-handle")?;
+
+    let (resp, _) = s.rpc(json!({"op":"close", "doc": nav}), None)?;
+    expect(resp, "nav-close")?;
+    Ok(())
 }
