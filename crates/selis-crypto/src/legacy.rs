@@ -235,7 +235,7 @@ fn rot28(val: u64, shift: u8) -> u64 {
 
 /// f(R, K): E, ⊕K, the eight S-boxes, P.
 fn f(input: u64, key: u64) -> u64 {
-    let mut val = expand(input as u64);
+    let mut val = expand(input);
     val ^= key;
     val = apply_sboxes(val);
     p_perm(val)
@@ -271,7 +271,10 @@ impl Des {
         for key in &self.keys {
             data = round(data, *key);
         }
-        fp((data << 32) | (data >> 32))
+        // The final permutation takes (L||R) as R||L: a 32-bit swap, spelled
+        // as the two shifts it is (SL-0.WS.11 — `rotate_left(32)` is the same
+        // value, since the two shifts are complementary halves of one word).
+        fp(data.rotate_left(32))
     }
 
     fn decrypt_word(&self, mut data: u64) -> u64 {
@@ -279,7 +282,8 @@ impl Des {
         for key in self.keys.iter().rev() {
             data = round(data, *key);
         }
-        fp((data << 32) | (data >> 32))
+        // See `encrypt_word`: same 32-bit swap of the halves.
+        fp(data.rotate_left(32))
     }
 
     fn crypt(&self, block: &mut [u8; 8], decrypting: bool) {
