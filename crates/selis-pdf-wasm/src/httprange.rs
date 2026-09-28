@@ -363,6 +363,34 @@ impl HttpRangeDriver {
         }
     }
 
+    /// Spend one request against the bounds, or refuse.
+    ///
+    /// The single place [`HttpRangeDriver::plan`] and the retry path both go
+    /// through, so neither can issue a request the bounds would have stopped.
+    /// Sharing it is the point: an earlier shape counted attempts only in
+    /// `plan`, which meant a host that kept reporting "no response" could ask
+    /// for a retry without ever spending an attempt — the per-offset bound
+    /// would have been on paper rather than in the path.
+    fn spend_attempt(&mut self) -> Result<()> {
+        if self.requests >= MAX_REQUESTS {
+            return Err(err!(
+                Code::IoReadFailed,
+                during = "http-range",
+                detail = "range request bound exhausted; the origin is not making progress"
+            ));
+        }
+        if self.attempts >= MAX_ATTEMPTS_PER_RANGE {
+            return Err(err!(
+                Code::IoReadFailed,
+                during = "http-range",
+                detail = "range attempt bound exhausted for this offset"
+            ));
+        }
+        self.requests += 1;
+        self.attempts += 1;
+        Ok(())
+    }
+
     /// The next range to ask for, or `None` when the document is already whole.
     ///
     /// # Budget
@@ -379,27 +407,12 @@ impl HttpRangeDriver {
         if self.is_complete() {
             return Ok(None);
         }
-        if self.requests >= MAX_REQUESTS {
-            return Err(err!(
-                Code::IoReadFailed,
-                during = "http-range",
-                detail = "range request bound exhausted; the origin is not making progress"
-            ));
-        }
-        if self.attempts >= MAX_ATTEMPTS_PER_RANGE {
-            return Err(err!(
-                Code::IoReadFailed,
-                during = "http-range",
-                detail = "range attempt bound exhausted for this offset"
-            ));
-        }
+        self.spend_attempt()?;
         let start = self.next;
         let end = self.window_end();
         if end <= start {
             return Ok(None);
         }
-        self.requests += 1;
-        self.attempts += 1;
         Ok(Some(RangeRequest { start, end }))
     }
 }
@@ -445,10 +458,11 @@ impl HttpRangeDriver {
         guard.charge(Resource::Bytes, body_len)?;
 
         if report.status == 0 || report.status >= 500 {
-            // No response, or a server-side failure. Nothing is kept and the
-            // same offset is retried; `plan` is what bounds that, so the
-            // attempt counter is *not* advanced here — re-planning is the only
-            // way to spend an attempt.
+            // No response, or a server-side failure. Nothing is kept, and the
+            // retry is charged against the same bounds as any other request —
+            // which is what makes the per-offset allowance real rather than a
+            // promise the wire path could route around.
+            self.spend_attempt()?;
             return Ok(ChunkStep::Retry(RangeRequest {
                 start: self.next,
                 end: self.window_end(),
@@ -1124,13 +1138,15 @@ mod tests {
 
     #[test]
     fn attempts_on_one_offset_are_bounded() {
-        // A range that keeps failing at the same offset: bounded retries, then
-        // typed. The bound is per-offset, not merely per-transfer.
+        // A range that keeps failing at the same offset. The shape here is the
+        // wire's: one `plan`, then as many `accept`s as the host likes asking
+        // for. The bound has to hold in *that* shape, or it is decoration.
         let mut d = driver(64);
         let clock = FixedClock(0);
         let mut guard = d.budget.guard_with(&clock, CancelToken::new());
-        for planned in 0..MAX_ATTEMPTS_PER_RANGE {
-            let req = d.plan().expect("plan").expect("a range");
+        let req = d.plan().expect("plan").expect("a range");
+        assert_eq!(d.requests(), 1);
+        for spent in 1..MAX_ATTEMPTS_PER_RANGE {
             let report = ChunkReport {
                 start: req.start,
                 status: 0,
@@ -1141,14 +1157,23 @@ mod tests {
             let step = d.accept(&report, &mut guard).expect("a bounded retry");
             assert_eq!(step, ChunkStep::Retry(req), "same offset, no bytes kept");
             assert_eq!(d.received(), 0);
-            assert_eq!(d.requests(), planned + 1, "one request spent per attempt");
+            assert_eq!(d.requests(), spent + 1, "one request spent per retry");
         }
-        let e = d.plan().expect_err("attempt bound");
+        let report = ChunkReport {
+            start: req.start,
+            status: 0,
+            content_range: None,
+            content_length: None,
+            body: Vec::new(),
+        };
+        let e = d.accept(&report, &mut guard).expect_err("attempt bound");
         assert_eq!(e.code(), Code::IoReadFailed);
         assert_eq!(
             e.ctx().detail.as_deref(),
             Some("range attempt bound exhausted for this offset")
         );
+        assert_eq!(d.requests(), u32::from(MAX_ATTEMPTS_PER_RANGE));
+        assert!(d.plan().is_err(), "and planning is refused too");
     }
 
     #[test]
@@ -1157,7 +1182,7 @@ mod tests {
         let clock = FixedClock(0);
         let mut guard = d.budget.guard_with(&clock, CancelToken::new());
         let req = d.plan().expect("plan").expect("a range");
-        for status in [500u16, 502, 503] {
+        for status in [500u16, 502] {
             let report = ChunkReport {
                 start: req.start,
                 status,
@@ -1170,6 +1195,19 @@ mod tests {
                 ChunkStep::Retry(req)
             );
         }
+        let report = ChunkReport {
+            start: req.start,
+            status: 503,
+            content_range: None,
+            content_length: None,
+            body: Vec::new(),
+        };
+        assert_eq!(
+            d.accept(&report, &mut guard)
+                .expect_err("the third failure is one too many")
+                .code(),
+            Code::IoReadFailed
+        );
         assert_eq!(d.received(), 0, "a 5xx never contributes bytes");
     }
 
