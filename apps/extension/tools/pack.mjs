@@ -57,8 +57,7 @@ for (const entry of PACKAGE_ENTRIES) {
 	const from = sourcePathOf(entry);
 	if (from === null) {
 		console.error(
-			`pack: ${entry.out} declares from='${entry.from}' but pack.mjs cannot locate it ` +
-				"(shared-asset rows need an explicit `source`)",
+			`pack: ${entry.out} declares from='${entry.from}' but pack.mjs cannot locate it (shared-asset rows need an explicit \`source\`)`,
 		);
 		process.exit(1);
 	}
