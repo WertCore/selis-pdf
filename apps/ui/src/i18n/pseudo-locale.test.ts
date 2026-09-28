@@ -125,9 +125,19 @@ describe("the pseudo catalogue", () => {
 		for (const key of VIEWER_MESSAGE_KEYS) {
 			const source = EN_VIEWER_CATALOGUE[key];
 			const pseudo = PSEUDO[key];
+			// `noUncheckedIndexedAccess` is right that an index may be missing,
+			// and a missing entry is exactly what this runtime is built to make
+			// loud rather than render as an empty string. So assert presence here
+			// instead of asserting `| undefined` is a string: a key that vanished
+			// from the pseudo catalogue should fail this test by name, not pass
+			// a width comparison of 0 against 0.
+			expect(pseudo, `pseudo catalogue is missing ${key}`).toBeDefined();
+			expect(source, `English catalogue is missing ${key}`).toBeDefined();
 			const width = (value: string | { other: string }): number =>
 				(typeof value === "string" ? value : value.other).length;
-			expect(width(pseudo), key).toBeGreaterThanOrEqual(width(source));
+			expect(width(pseudo as string | { other: string }), key).toBeGreaterThanOrEqual(
+				width(source as string | { other: string }),
+			);
 		}
 	});
 
