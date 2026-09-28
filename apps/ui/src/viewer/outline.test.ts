@@ -169,12 +169,13 @@ describe("flattenOutline", () => {
 		for (let depth = 0; depth < 1_000; depth += 1) {
 			node = { title: `level ${depth}`, children: [node] };
 		}
+		// The top asks to be closed, so it is the one id not in the expanded set.
 		const closed: OutlineNode[] = [{ ...node, descendantCount: -1 }];
-		expect([...initialExpansion(closed)]).toEqual(["0"]);
+		expect([...initialExpansion(closed)]).not.toContain("0");
 	});
 
 describe("initialExpansion", () => {
-	it("closes exactly the items whose /Count is negative", () => {
+	it("expands everything except the items whose /Count is negative", () => {
 		const nodes: OutlineNode[] = [
 			{
 				title: "closed",
@@ -184,20 +185,29 @@ describe("initialExpansion", () => {
 			{ title: "open", descendantCount: 2, children: [{ title: "d" }] },
 			{ title: "unspecified", children: [{ title: "e" }] },
 		];
-		expect([...initialExpansion(nodes)].sort()).toEqual(["0"]);
+		// "0" is the closed chapter; everything else, at every depth, is expanded.
+		expect([...initialExpansion(nodes)].sort()).toEqual([
+			"0.0",
+			"0.1",
+			"0.1.0",
+			"1",
+			"1.0",
+			"2",
+			"2.0",
+		]);
 	});
 
 	it("does not decide a child's state from its parent's", () => {
 		const nodes: OutlineNode[] = [
 			{ title: "p", descendantCount: -1, children: [{ title: "c", children: [{ title: "g" }] }] },
 		];
-		// Only the top is asked to be closed; the child's state is its own, and a
-		// closed parent makes the question moot until it opens.
-		expect([...initialExpansion(nodes)]).toEqual(["0"]);
+		// Only "0" is asked to be closed; the child's state is its own, and it is
+		// moot until the parent opens.
+		expect([...initialExpansion(nodes)].sort()).toEqual(["0.0", "0.0.0"]);
 	});
 
-	it("is empty for a flat outline", () => {
-		expect(initialExpansion([{ title: "a" }]).size).toBe(0);
+	it("expands a flat outline entirely, which is a no-op for a row list", () => {
+		expect([...initialExpansion([{ title: "a" }, { title: "b" }])]).toEqual(["0", "1"]);
 	});
 });
 

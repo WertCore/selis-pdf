@@ -112,11 +112,16 @@ export const MAX_OUTLINE_DEPTH = 256;
 export const MAX_OUTLINE_ITEMS = 20_000;
 
 /**
- * Which items start expanded, from the document's own `/Count` values.
+ * Which items start **expanded**, from the document's own `/Count` values.
  *
- * Only items with a **negative** `/Count` start closed. An item with no
- * `/Count` starts open, because the author wrote children they expected to be
- * reachable and said nothing about hiding them.
+ * Only items with a **negative** `/Count` start closed. An item with no `/Count`
+ * starts open, because the author wrote children they expected to be reachable
+ * and said nothing about hiding them.
+ *
+ * The name says "expanded" because that is what the caller wants: the
+ * controller's expansion set is a whitelist, so handing it the *collapsed* ids
+ * would open exactly the chapters the document asked to have closed — an
+ * inversion that is invisible in a flat outline and obvious in a real one.
  */
 export function initialExpansion(nodes: readonly OutlineNode[]): ReadonlySet<string> {
 	const collapsed = new Set<string>();
@@ -126,7 +131,16 @@ export function initialExpansion(nodes: readonly OutlineNode[]): ReadonlySet<str
 			collapsed.add(id);
 		}
 	});
-	return collapsed;
+	// A collapsed parent's descendants are irrelevant until it opens, so only the
+	// ids that can be *shown* need to be in the expanded set.
+	const expanded = new Set<string>();
+	walkIds(nodes, (id) => {
+		expanded.add(id);
+	});
+	for (const id of collapsed) {
+		expanded.delete(id);
+	}
+	return expanded;
 }
 
 /** Ids of every item that has children, expanded or not. */

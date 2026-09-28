@@ -156,6 +156,21 @@ export interface ThumbnailRail {
 	dispose(): void;
 }
 
+/**
+ * Re-label a planned task as a thumbnail render.
+ *
+ * `planLadder` marks a *visible* page's full-res task `hint: "view"`, which is
+ * right for the document area and wrong here: every page in the rail is a
+ * preview, and the engine's budget profile follows the hint (ADR-P0006 — the
+ * profile is chosen per request, not per surface). Rewriting the hint is the
+ * only adaptation the rail makes to a planned task; the rung, the scale and the
+ * cache key are the ladder's, and `tileKey` does not include the hint, so
+ * nothing about the cache changes.
+ */
+function asThumbnailTask(task: TileTask): TileTask {
+	return { ...task, request: { ...task.request, hint: "thumbnail" } };
+}
+
 /** One row of the rail: a page, its box, and the scale its preview is drawn at. */
 interface RailRow {
 	readonly page: number;
@@ -242,6 +257,13 @@ export function createThumbnailRail(options: ThumbnailRailOptions): ThumbnailRai
 		overscan: readonly number[];
 		clamped: boolean;
 	} {
+		// A rail with no height has nothing to show. This is what makes the
+		// controller's initial state empty, exactly as the page list's is: a
+		// shell can paint the panel's frame before the first metrics report, and
+		// there is nothing to invent in the meantime.
+		if (rows.length === 0 || next.height <= 0) {
+			return { visible: [], overscan: [], clamped: false };
+		}
 		const top = Math.max(0, next.scrollTop) - THUMBNAIL_OVERSCAN_PX;
 		const bottom = Math.max(0, next.scrollTop) + Math.max(0, next.height) + THUMBNAIL_OVERSCAN_PX;
 		const first = rowAt(top);
@@ -290,7 +312,7 @@ export function createThumbnailRail(options: ThumbnailRailOptions): ThumbnailRai
 				cssScale: row.cssScale,
 				satisfied,
 				budget,
-			});
+			}).map(asThumbnailTask);
 		};
 		return [
 			...visible.flatMap((page) => plan(page, 1)),
