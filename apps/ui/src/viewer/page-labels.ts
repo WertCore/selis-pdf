@@ -120,7 +120,6 @@ export function rangeForPage(
 	return found;
 }
 
-
 /**
  * Roman numerals for 1…{@link MAX_ROMAN}. `0` and negatives return `null`, so
  * the caller decides the fallback rather than this function inventing one.
@@ -257,9 +256,7 @@ export function hasMeaningfulLabels(
 	}
 	return table.some(
 		(range) =>
-			range.prefix.length > 0 ||
-			range.style !== DEFAULT_LABEL_STYLE ||
-			range.firstValue !== 1,
+			range.prefix.length > 0 || range.style !== DEFAULT_LABEL_STYLE || range.firstValue !== 1,
 	);
 }
 

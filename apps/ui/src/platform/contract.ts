@@ -277,8 +277,9 @@ export function definePlatformAdapterContract(
 				}
 				const controller = new AbortController();
 				controller.abort();
-				await expect(adapter.navigation.pageLinks(doc, 0, { signal: controller.signal })).rejects
-					.toMatchObject({ code: ErrorCode.Cancelled, docState: "Unchanged" });
+				await expect(
+					adapter.navigation.pageLinks(doc, 0, { signal: controller.signal }),
+				).rejects.toMatchObject({ code: ErrorCode.Cancelled, docState: "Unchanged" });
 			});
 		});
 	});

@@ -52,11 +52,10 @@ describe("normaliseLabelRanges", () => {
 
 	it("drops an unknown /S rather than silently labelling decimal", () => {
 		// Five styles exist. A sixth is a producer bug, and guessing `D` would
-		// mislabel a document without saying so.
-		const ranges = normaliseLabelRanges([
-			{ firstPage: 0, style: "Z" as PageLabelRange["style"] },
-			{ firstPage: 0, style: "A" },
-		]);
+		// mislabel a document without saying so — so the entry is dropped, which
+		// is why the cast is needed: the type says this cannot happen.
+		const bogus = { firstPage: 0, style: "Z" } as unknown as PageLabelRange;
+		const ranges = normaliseLabelRanges([bogus, { firstPage: 0, style: "A" }]);
 		expect(ranges).toHaveLength(1);
 		expect(ranges[0]?.style).toBe("A");
 	});
@@ -120,101 +119,100 @@ describe("the sequence renderers", () => {
 		}
 	});
 
-describe("pageLabelFor", () => {
-	it("labels an unlabelled document with its own number", () => {
-		expect(pageLabelFor(0, undefined)).toBe("1");
-		expect(pageLabelFor(9, undefined)).toBe("10");
-		expect(pageLabelFor(0, [])).toBe("1");
+	describe("pageLabelFor", () => {
+		it("labels an unlabelled document with its own number", () => {
+			expect(pageLabelFor(0, undefined)).toBe("1");
+			expect(pageLabelFor(9, undefined)).toBe("10");
+			expect(pageLabelFor(0, [])).toBe("1");
+		});
+
+		it("numbers a page before the first range with the page number", () => {
+			const ranges: PageLabelRange[] = [{ firstPage: 4, style: "r" }];
+			expect(pageLabelFor(0, ranges)).toBe("1");
+			expect(pageLabelFor(3, ranges)).toBe("4");
+			expect(pageLabelFor(4, ranges)).toBe("i");
+		});
+
+		it("counts from /St within a range", () => {
+			const ranges: PageLabelRange[] = [{ firstPage: 2, style: "D", firstValue: 7 }];
+			expect(pageLabelFor(0, ranges)).toBe("1");
+			expect(pageLabelFor(2, ranges)).toBe("7");
+			expect(pageLabelFor(3, ranges)).toBe("8");
+		});
+
+		it("uses the range with the largest start at or before the page", () => {
+			const ranges: PageLabelRange[] = [
+				{ firstPage: 0, style: "r" },
+				{ firstPage: 3, style: "D" },
+				{ firstPage: 5, style: "A" },
+			];
+			expect(pageLabelFor(2, ranges)).toBe("iii");
+			expect(pageLabelFor(3, ranges)).toBe("1");
+			expect(pageLabelFor(4, ranges)).toBe("2");
+			expect(pageLabelFor(5, ranges)).toBe("A");
+			expect(pageLabelFor(6, ranges)).toBe("B");
+		});
+
+		it("applies the prefix verbatim", () => {
+			const ranges: PageLabelRange[] = [{ firstPage: 0, style: "D", prefix: "A-" }];
+			expect(pageLabelFor(0, ranges)).toBe("A-1");
+			expect(pageLabelFor(41, ranges)).toBe("A-42");
+		});
+
+		it("falls back to the page number when the style cannot express the value", () => {
+			// A 4 000-page document in roman. Page 3 998 is the 3 999th page, so its
+			// label is 3999 — the last roman numeral there is; page 3 999 would be
+			// 4000, which no roman numeral can say, so the label degrades to the
+			// page number rather than to nothing.
+			const ranges: PageLabelRange[] = [{ firstPage: 0, style: "R" }];
+			expect(pageLabelFor(3997, ranges)).toBe("MMMCMXCVIII");
+			expect(pageLabelFor(3998, ranges)).toBe("MMMCMXCIX");
+			expect(pageLabelFor(3999, ranges)).toBe("4000");
+		});
+
+		it("is empty for a page that is not a page", () => {
+			expect(pageLabelFor(-1, undefined)).toBe("");
+			expect(pageLabelFor(1.5, undefined)).toBe("");
+			expect(pageLabelFor(Number.NaN, undefined)).toBe("");
+		});
+
+		it("accepts a pre-normalised table without re-sorting it", () => {
+			const table = normaliseLabelRanges([{ firstPage: 0, style: "r" }]);
+			expect(pageLabelFor(3, undefined, table)).toBe("iv");
+		});
 	});
 
-	it("numbers a page before the first range with the page number", () => {
-		const ranges: PageLabelRange[] = [{ firstPage: 4, style: "r" }];
-		expect(pageLabelFor(0, ranges)).toBe("1");
-		expect(pageLabelFor(3, ranges)).toBe("4");
-		expect(pageLabelFor(4, ranges)).toBe("i");
+	describe("hasMeaningfulLabels", () => {
+		it("is false when the document says nothing a page number would not", () => {
+			expect(hasMeaningfulLabels(undefined, 10)).toBe(false);
+			expect(hasMeaningfulLabels([], 10)).toBe(false);
+			// Decimal from page 0, no prefix: identical to the page list's own box.
+			expect(hasMeaningfulLabels([{ firstPage: 0, style: "D" }], 10)).toBe(false);
+		});
+
+		it("is true for anything that differs from the page number", () => {
+			expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }], 10)).toBe(true);
+			expect(hasMeaningfulLabels([{ firstPage: 0, prefix: "A-" }], 10)).toBe(true);
+			expect(hasMeaningfulLabels([{ firstPage: 0, firstValue: 5 }], 10)).toBe(true);
+			// Front matter labelled, body not: the gap is itself a labelling decision.
+			expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }, { firstPage: 4 }], 10)).toBe(true);
+		});
+
+		it("treats a range that starts after page 0 as meaningful", () => {
+			// The range runs to the end of the document, so the only unlabelled pages
+			// are the ones *before* it — and that is already a difference.
+			expect(hasMeaningfulLabels([{ firstPage: 0, style: "D" }], 10)).toBe(false);
+			expect(hasMeaningfulLabels([{ firstPage: 2, style: "D" }], 10)).toBe(true);
+			// A document with no pages has nothing to differ from.
+			expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }], 0)).toBe(false);
+		});
 	});
 
-	it("counts from /St within a range", () => {
-		const ranges: PageLabelRange[] = [{ firstPage: 2, style: "D", firstValue: 7 }];
-		expect(pageLabelFor(0, ranges)).toBe("1");
-		expect(pageLabelFor(2, ranges)).toBe("7");
-		expect(pageLabelFor(3, ranges)).toBe("8");
+	describe("pageLabelsFor", () => {
+		it("labels a list of pages in one pass, in order", () => {
+			const ranges: PageLabelRange[] = [{ firstPage: 0, style: "r" }];
+			expect(pageLabelsFor([0, 1, 2, 3], ranges)).toEqual(["i", "ii", "iii", "iv"]);
+			expect(pageLabelsFor([], ranges)).toEqual([]);
+		});
 	});
-
-	it("uses the range with the largest start at or before the page", () => {
-		const ranges: PageLabelRange[] = [
-			{ firstPage: 0, style: "r" },
-			{ firstPage: 3, style: "D" },
-			{ firstPage: 5, style: "A" },
-		];
-		expect(pageLabelFor(2, ranges)).toBe("iii");
-		expect(pageLabelFor(3, ranges)).toBe("1");
-		expect(pageLabelFor(4, ranges)).toBe("2");
-		expect(pageLabelFor(5, ranges)).toBe("A");
-		expect(pageLabelFor(6, ranges)).toBe("B");
-	});
-
-	it("applies the prefix verbatim", () => {
-		const ranges: PageLabelRange[] = [{ firstPage: 0, style: "D", prefix: "A-" }];
-		expect(pageLabelFor(0, ranges)).toBe("A-1");
-		expect(pageLabelFor(41, ranges)).toBe("A-42");
-	});
-
-	it("falls back to the page number when the style cannot express the value", () => {
-		// A 4 000-page document in roman. Page 3 998 is the 3 999th page, so its
-		// label is 3999 — the last roman numeral there is; page 3 999 would be
-		// 4000, which no roman numeral can say, so the label degrades to the
-		// page number rather than to nothing.
-		const ranges: PageLabelRange[] = [{ firstPage: 0, style: "R" }];
-		expect(pageLabelFor(3997, ranges)).toBe("MMMCMXCVIII");
-		expect(pageLabelFor(3998, ranges)).toBe("MMMCMXCIX");
-		expect(pageLabelFor(3999, ranges)).toBe("4000");
-	});
-
-	it("is empty for a page that is not a page", () => {
-		expect(pageLabelFor(-1, undefined)).toBe("");
-		expect(pageLabelFor(1.5, undefined)).toBe("");
-		expect(pageLabelFor(Number.NaN, undefined)).toBe("");
-	});
-
-	it("accepts a pre-normalised table without re-sorting it", () => {
-		const table = normaliseLabelRanges([{ firstPage: 0, style: "r" }]);
-		expect(pageLabelFor(3, undefined, table)).toBe("iv");
-	});
-});
-
-describe("hasMeaningfulLabels", () => {
-	it("is false when the document says nothing a page number would not", () => {
-		expect(hasMeaningfulLabels(undefined, 10)).toBe(false);
-		expect(hasMeaningfulLabels([], 10)).toBe(false);
-		// Decimal from page 0, no prefix: identical to the page list's own box.
-		expect(hasMeaningfulLabels([{ firstPage: 0, style: "D" }], 10)).toBe(false);
-	});
-
-	it("is true for anything that differs from the page number", () => {
-		expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }], 10)).toBe(true);
-		expect(hasMeaningfulLabels([{ firstPage: 0, prefix: "A-" }], 10)).toBe(true);
-		expect(hasMeaningfulLabels([{ firstPage: 0, firstValue: 5 }], 10)).toBe(true);
-		// Front matter labelled, body not: the gap is itself a labelling decision.
-		expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }, { firstPage: 4 }], 10)).toBe(true);
-	});
-
-	it("treats a range that starts after page 0 as meaningful", () => {
-		// The range runs to the end of the document, so the only unlabelled pages
-		// are the ones *before* it — and that is already a difference.
-		expect(hasMeaningfulLabels([{ firstPage: 0, style: "D" }], 10)).toBe(false);
-		expect(hasMeaningfulLabels([{ firstPage: 2, style: "D" }], 10)).toBe(true);
-		// A document with no pages has nothing to differ from.
-		expect(hasMeaningfulLabels([{ firstPage: 0, style: "r" }], 0)).toBe(false);
-	});
-});
-
-describe("pageLabelsFor", () => {
-	it("labels a list of pages in one pass, in order", () => {
-		const ranges: PageLabelRange[] = [{ firstPage: 0, style: "r" }];
-		expect(pageLabelsFor([0, 1, 2, 3], ranges)).toEqual(["i", "ii", "iii", "iv"]);
-		expect(pageLabelsFor([], ranges)).toEqual([]);
-	});
-});
-
 });

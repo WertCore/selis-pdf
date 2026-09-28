@@ -127,134 +127,133 @@
 .selis-outline__row--unresolved .selis-outline__title {
 	color: var(--selis-color-fg-subtle);
 
-/* The rail. Fixed width from the shell; the previews inside carry their own
+	/* The rail. Fixed width from the shell; the previews inside carry their own
  * boxes, so nothing here can move a thumbnail when its bitmap lands. */
-.selis-thumbnail-rail {
-	display: flex;
-	flex-direction: column;
-	gap: var(--selis-space-2);
-	padding: var(--selis-space-2);
-	margin: 0;
-	list-style: none;
-	overflow-y: auto;
-	overscroll-behavior: contain;
-	contain: layout paint;
-}
+	.selis-thumbnail-rail {
+		display: flex;
+		flex-direction: column;
+		gap: var(--selis-space-2);
+		padding: var(--selis-space-2);
+		margin: 0;
+		list-style: none;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		contain: layout paint;
+	}
 
-.selis-thumbnail {
-	position: relative;
-	display: block;
-	width: var(--thumb-w, 0px);
-	height: var(--thumb-h, 0px);
-	padding: 0;
-	background: var(--selis-color-page-placeholder);
-	color: var(--selis-color-fg);
-	border: var(--selis-border-hairline) solid var(--selis-color-border);
-	border-radius: var(--selis-radius-sm);
-	/* Isolate each preview's layout and paint: a rail of a hundred boxes is cheap
+	.selis-thumbnail {
+		position: relative;
+		display: block;
+		width: var(--thumb-w, 0px);
+		height: var(--thumb-h, 0px);
+		padding: 0;
+		background: var(--selis-color-page-placeholder);
+		color: var(--selis-color-fg);
+		border: var(--selis-border-hairline) solid var(--selis-color-border);
+		border-radius: var(--selis-radius-sm);
+		/* Isolate each preview's layout and paint: a rail of a hundred boxes is cheap
 	 * to scroll only if each box is cheap to paint. */
-	contain: layout paint;
-	cursor: pointer;
-}
+		contain: layout paint;
+		cursor: pointer;
+	}
 
-/* The low-res rung: stretched pixels read as "not yet sharp", which is the honest
+	/* The low-res rung: stretched pixels read as "not yet sharp", which is the honest
  * signal. No filter — a blur radius is a value the tokens do not define, and
  * inventing one in a component is what the token layer exists to prevent. */
-.selis-thumbnail--lowres {
-	background: var(--selis-color-page-placeholder);
-}
+	.selis-thumbnail--lowres {
+		background: var(--selis-color-page-placeholder);
+	}
 
-/* A preview that is not the current page. The border is stated rather than left
+	/* A preview that is not the current page. The border is stated rather than left
  * to inheritance so both states are explicit: `--current` overrides it, and a
  * reader who cannot see colour still has the outline to tell them apart. */
-.selis-thumbnail--idle {
-	border-color: var(--selis-color-border);
-}
+	.selis-thumbnail--idle {
+		border-color: var(--selis-color-border);
+	}
 
-.selis-thumbnail--current {
-	border-color: var(--selis-color-accent);
-	outline: var(--selis-border-thick) solid var(--selis-color-accent);
-	outline-offset: var(--selis-space-1);
-}
+	.selis-thumbnail--current {
+		border-color: var(--selis-color-accent);
+		outline: var(--selis-border-thick) solid var(--selis-color-accent);
+		outline-offset: var(--selis-space-1);
+	}
 
-.selis-thumbnail:focus-visible {
-	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
-	outline-offset: var(--selis-space-1);
-}
+	.selis-thumbnail:focus-visible {
+		outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+		outline-offset: var(--selis-space-1);
+	}
 
-/* The page number under a preview. Small and muted so it reads as a caption to
+	/* The page number under a preview. Small and muted so it reads as a caption to
  * the image rather than as a second heading. */
-.selis-thumbnail__label {
-	position: absolute;
-	inset-block-end: var(--selis-space-1);
-	inset-inline: var(--selis-space-1);
-	color: var(--selis-color-fg-subtle);
-	font-size: var(--selis-text-xs);
-	text-align: center;
-}
+	.selis-thumbnail__label {
+		position: absolute;
+		inset-block-end: var(--selis-space-1);
+		inset-inline: var(--selis-space-1);
+		color: var(--selis-color-fg-subtle);
+		font-size: var(--selis-text-xs);
+		text-align: center;
+	}
 
-/* The prompt's backdrop. `z-dialog-backdrop` is the token for "above everything
+	/* The prompt's backdrop. `z-dialog-backdrop` is the token for "above everything
  * in the app"; inventing a number here would be a second z-ordering scheme. */
-.selis-navigation__backdrop {
-	position: fixed;
-	inset: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: var(--selis-space-6);
-	background: var(--selis-color-shadow);
-	z-index: var(--selis-z-dialog-backdrop);
-}
+	.selis-navigation__backdrop {
+		position: fixed;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--selis-space-6);
+		background: var(--selis-color-shadow);
+		z-index: var(--selis-z-dialog-backdrop);
+	}
 
-.selis-navigation__dialog {
-	display: flex;
-	flex-direction: column;
-	gap: var(--selis-space-4);
-	max-width: var(--selis-space-12);
-	padding: var(--selis-space-6);
-	background: var(--selis-color-bg-raised);
-	color: var(--selis-color-fg);
-	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
-	border-radius: var(--selis-radius-md);
-	box-shadow: var(--selis-shadow-2);
-	z-index: var(--selis-z-dialog);
-}
+	.selis-navigation__dialog {
+		display: flex;
+		flex-direction: column;
+		gap: var(--selis-space-4);
+		max-width: var(--selis-space-12);
+		padding: var(--selis-space-6);
+		background: var(--selis-color-bg-raised);
+		color: var(--selis-color-fg);
+		border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+		border-radius: var(--selis-radius-md);
+		box-shadow: var(--selis-shadow-2);
+		z-index: var(--selis-z-dialog);
+	}
 
-/* The destination, in full. A monospace face because a URL is an identifier:
+	/* The destination, in full. A monospace face because a URL is an identifier:
  * proportional fonts make `l` and `1`, and `.` and `,`, hard to tell apart — and
  * this is the one string a reader is expected to *check*. `overflow-wrap:
  * anywhere` because a URL has no spaces to break at, and without it the dialog
  * scrolls sideways on a narrow window. */
-.selis-navigation__url {
-	font-family: var(--selis-font-mono);
-	font-size: var(--selis-text-sm);
-	color: var(--selis-color-fg);
-	overflow-wrap: anywhere;
-}
+	.selis-navigation__url {
+		font-family: var(--selis-font-mono);
+		font-size: var(--selis-text-sm);
+		color: var(--selis-color-fg);
+		overflow-wrap: anywhere;
+	}
 
-.selis-navigation__actions {
-	display: flex;
-	justify-content: flex-end;
-	gap: var(--selis-space-3);
-}
+	.selis-navigation__actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--selis-space-3);
+	}
 
-/* Forced colours: the system pair replaces ours, and the focus outline is stated
+	/* Forced colours: the system pair replaces ours, and the focus outline is stated
  * explicitly because forced-colours mode drops author `outline-color` in some
  * engines — which would leave a keyboard reader with no visible focus at all. */
-@media (forced-colors: active) {
-	.selis-outline__row--current,
-	.selis-thumbnail--current {
-		border-color: Highlight;
-	}
+	@media (forced-colors: active) {
+		.selis-outline__row--current,
+		.selis-thumbnail--current {
+			border-color: Highlight;
+		}
 
-	.selis-outline__row:focus-visible,
-	.selis-thumbnail:focus-visible {
-		outline: var(--selis-border-thick) solid CanvasText;
-	}
+		.selis-outline__row:focus-visible,
+		.selis-thumbnail:focus-visible {
+			outline: var(--selis-border-thick) solid CanvasText;
+		}
 
-	.selis-navigation__dialog {
-		border-color: CanvasText;
+		.selis-navigation__dialog {
+			border-color: CanvasText;
+		}
 	}
-}
-
 }

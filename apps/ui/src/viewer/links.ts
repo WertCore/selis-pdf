@@ -238,4 +238,3 @@ export function decideLinkAction(
 export function alignmentForDestination(destination: PdfDestination): "start" | "centre" {
 	return destination.kind === "fitV" ? "start" : "centre";
 }
-

@@ -53,7 +53,6 @@ export interface ThumbnailViewport {
 	readonly devicePixelRatio: number;
 }
 
-
 /** One thumbnail to paint. */
 export interface ThumbnailView {
 	readonly page: number;
@@ -434,4 +433,3 @@ export function thumbnailClassName(stage: TileStage, current: boolean): string {
 		current ? "selis-thumbnail--current" : "selis-thumbnail--idle",
 	].join(" ");
 }
-

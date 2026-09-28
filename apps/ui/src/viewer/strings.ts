@@ -442,7 +442,6 @@ export interface NavigationStrings {
 	readonly refusal: (reason: string) => string;
 }
 
-
 /** Merge a partial navigation catalogue over English and bind the strings. */
 export function createNavigationStrings(
 	overrides: Partial<NavigationCatalogue> = {},
@@ -495,4 +494,3 @@ export function createNavigationStrings(
 
 /** The shared English navigation strings, for callers that override nothing. */
 export const DEFAULT_NAVIGATION_STRINGS: NavigationStrings = createNavigationStrings();
-

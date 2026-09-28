@@ -52,7 +52,13 @@ import { resolveNavigationKey } from "./keyboard.js";
 import type { LinkDecision, LinkRefusal } from "./links.js";
 import { alignmentForDestination, decideLinkAction } from "./links.js";
 import type { OutlineRow } from "./outline.js";
-import { expandSubtree, flattenOutline, initialExpansion, moveOutlineFocus, rowPage } from "./outline.js";
+import {
+	expandSubtree,
+	flattenOutline,
+	initialExpansion,
+	moveOutlineFocus,
+	rowPage,
+} from "./outline.js";
 import type { NormalisedLabelRange } from "./page-labels.js";
 import { hasMeaningfulLabels, normaliseLabelRanges, pageLabelFor } from "./page-labels.js";
 import type { NavigationCatalogue, PageListCatalogue } from "./strings.js";
@@ -592,4 +598,3 @@ export function createNavigation(options: NavigationOptions): NavigationControll
 	publish();
 	return controller;
 }
-

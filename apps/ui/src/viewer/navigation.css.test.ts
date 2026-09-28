@@ -73,9 +73,7 @@ describe("navigation.css", () => {
 		const declarations = [...css.matchAll(/:\s*([^;{}]+);/g)].flatMap((match) =>
 			match[1] !== undefined ? [match[1].replace(/var\([^)]*\)/g, "").trim()] : [],
 		);
-		const offenders = declarations.filter((value) =>
-			/\d+(?:\.\d+)?(?:px|rem|em|ms)\b/.test(value),
-		);
+		const offenders = declarations.filter((value) => /\d+(?:\.\d+)?(?:px|rem|em|ms)\b/.test(value));
 		expect(offenders, `literal dimensions: ${offenders.join(" | ")}`).toEqual([]);
 	});
 
@@ -98,56 +96,55 @@ describe("navigation.css", () => {
 		expect(unstyled, `class names with no styles: ${unstyled.join(", ")}`).toEqual([]);
 	});
 
-describe("navigation.css, continued", () => {
-	it("keeps geometry carriers out of the token namespace", () => {
-		// `--thumb-w` and `--row-indent` are document data; `--selis-*` is design.
-		// Mixing the two is how a computed pixel value becomes a design decision
-		// by accident, and `page-list.css` makes the same rule for `--tile-x`.
-		const carriers = [...appCss.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].flatMap((match) =>
-			match[1] !== undefined ? [match[1]] : [],
-		);
-		const stray = [...new Set(carriers)].filter((name) => !name.startsWith("--selis-")).sort();
-		expect(stray, `carriers outside the namespace: ${stray.join(", ")}`).toEqual([
-			"--row-indent",
-			"--thumb-h",
-			"--thumb-w",
-		]);
-	});
+	describe("navigation.css, continued", () => {
+		it("keeps geometry carriers out of the token namespace", () => {
+			// `--thumb-w` and `--row-indent` are document data; `--selis-*` is design.
+			// Mixing the two is how a computed pixel value becomes a design decision
+			// by accident, and `page-list.css` makes the same rule for `--tile-x`.
+			const carriers = [...appCss.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].flatMap((match) =>
+				match[1] !== undefined ? [match[1]] : [],
+			);
+			const stray = [...new Set(carriers)].filter((name) => !name.startsWith("--selis-")).sort();
+			expect(stray, `carriers outside the namespace: ${stray.join(", ")}`).toEqual([
+				"--row-indent",
+				"--thumb-h",
+				"--thumb-w",
+			]);
+		});
 
-	it("gives every focusable surface a visible focus ring", () => {
-		// The outline and the rail are the two keyboard-reachable surfaces this
-		// file owns. A stylesheet that styles `:hover` and forgets
-		// `:focus-visible` is the most common way a viewer loses its keyboard.
-		const focusRules = [
-			...rulesOnly(appCss).matchAll(/:focus-visible\s*\{([^}]*)\}/g),
-		].flatMap((match) => (match[1] !== undefined ? [match[1]] : []));
-		expect(focusRules.length).toBeGreaterThanOrEqual(2);
-		for (const rule of focusRules) {
-			expect(rule, "a focus ring").toContain("outline");
-		}
-	});
+		it("gives every focusable surface a visible focus ring", () => {
+			// The outline and the rail are the two keyboard-reachable surfaces this
+			// file owns. A stylesheet that styles `:hover` and forgets
+			// `:focus-visible` is the most common way a viewer loses its keyboard.
+			const focusRules = [...rulesOnly(appCss).matchAll(/:focus-visible\s*\{([^}]*)\}/g)].flatMap(
+				(match) => (match[1] !== undefined ? [match[1]] : []),
+			);
+			expect(focusRules.length).toBeGreaterThanOrEqual(2);
+			for (const rule of focusRules) {
+				expect(rule, "a focus ring").toContain("outline");
+			}
+		});
 
-	it("keeps the thumbnail box out of the flow of its own bitmap", () => {
-		// `position: relative` plus a fixed box is what makes the label a caption
-		// rather than a second line, and what keeps a resolving preview from
-		// changing the rail's height.
-		const thumb = /\.selis-thumbnail\s*\{([^}]*)\}/.exec(rulesOnly(appCss))?.[1] ?? "";
-		expect(thumb).toContain("position: relative");
-		expect(thumb).toContain("contain");
-		// The var() fallbacks are stripped first, exactly as the tokenised-length
-		// check does: `var(--thumb-w, 0px)` is a carrier with a default, not a
-		// hard-coded size.
-		expect(thumb.replace(/var\([^)]*\)/g, "")).not.toMatch(/\d+(?:\.\d+)?(?:px|rem|em)\b/);
-	});
+		it("keeps the thumbnail box out of the flow of its own bitmap", () => {
+			// `position: relative` plus a fixed box is what makes the label a caption
+			// rather than a second line, and what keeps a resolving preview from
+			// changing the rail's height.
+			const thumb = /\.selis-thumbnail\s*\{([^}]*)\}/.exec(rulesOnly(appCss))?.[1] ?? "";
+			expect(thumb).toContain("position: relative");
+			expect(thumb).toContain("contain");
+			// The var() fallbacks are stripped first, exactly as the tokenised-length
+			// check does: `var(--thumb-w, 0px)` is a carrier with a default, not a
+			// hard-coded size.
+			expect(thumb.replace(/var\([^)]*\)/g, "")).not.toMatch(/\d+(?:\.\d+)?(?:px|rem|em)\b/);
+		});
 
-	it("gives the outline rows a roving-focus hook that does not move them", () => {
-		// `:focus-visible` rather than `:focus`, and `outline` rather than
-		// `border`: a keyboard reader must be able to see where they are, and
-		// showing it must not reflow the sidebar.
-		const css = rulesOnly(appCss);
-		expect(css).toContain(".selis-outline__row:focus-visible");
-		expect(css).not.toContain(".selis-outline__row:focus {");
+		it("gives the outline rows a roving-focus hook that does not move them", () => {
+			// `:focus-visible` rather than `:focus`, and `outline` rather than
+			// `border`: a keyboard reader must be able to see where they are, and
+			// showing it must not reflow the sidebar.
+			const css = rulesOnly(appCss);
+			expect(css).toContain(".selis-outline__row:focus-visible");
+			expect(css).not.toContain(".selis-outline__row:focus {");
+		});
 	});
-});
-
 });

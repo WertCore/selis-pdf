@@ -127,7 +127,11 @@ export function initialExpansion(nodes: readonly OutlineNode[]): ReadonlySet<str
 	const collapsed = new Set<string>();
 	walkIds(nodes, (id, node) => {
 		const children = node.children ?? [];
-		if (children.length > 0 && typeof node.descendantCount === "number" && node.descendantCount < 0) {
+		if (
+			children.length > 0 &&
+			typeof node.descendantCount === "number" &&
+			node.descendantCount < 0
+		) {
 			collapsed.add(id);
 		}
 	});
@@ -431,4 +435,3 @@ export function rowPage(
 function isUnder(root: string, candidate: string): boolean {
 	return candidate === root || candidate.startsWith(`${root}.`);
 }
-

@@ -174,137 +174,143 @@ describe("flattenOutline", () => {
 		expect([...initialExpansion(closed)]).not.toContain("0");
 	});
 
-describe("initialExpansion", () => {
-	it("expands everything except the items whose /Count is negative", () => {
-		const nodes: OutlineNode[] = [
-			{
-				title: "closed",
-				descendantCount: -3,
-				children: [{ title: "a" }, { title: "b", children: [{ title: "c" }] }],
-			},
-			{ title: "open", descendantCount: 2, children: [{ title: "d" }] },
-			{ title: "unspecified", children: [{ title: "e" }] },
-		];
-		// "0" is the closed chapter; everything else, at every depth, is expanded.
-		expect([...initialExpansion(nodes)].sort()).toEqual([
-			"0.0",
-			"0.1",
-			"0.1.0",
-			"1",
-			"1.0",
-			"2",
-			"2.0",
-		]);
+	describe("initialExpansion", () => {
+		it("expands everything except the items whose /Count is negative", () => {
+			const nodes: OutlineNode[] = [
+				{
+					title: "closed",
+					descendantCount: -3,
+					children: [{ title: "a" }, { title: "b", children: [{ title: "c" }] }],
+				},
+				{ title: "open", descendantCount: 2, children: [{ title: "d" }] },
+				{ title: "unspecified", children: [{ title: "e" }] },
+			];
+			// "0" is the closed chapter; everything else, at every depth, is expanded.
+			expect([...initialExpansion(nodes)].sort()).toEqual([
+				"0.0",
+				"0.1",
+				"0.1.0",
+				"1",
+				"1.0",
+				"2",
+				"2.0",
+			]);
+		});
+
+		it("does not decide a child's state from its parent's", () => {
+			const nodes: OutlineNode[] = [
+				{ title: "p", descendantCount: -1, children: [{ title: "c", children: [{ title: "g" }] }] },
+			];
+			// Only "0" is asked to be closed; the child's state is its own, and it is
+			// moot until the parent opens.
+			expect([...initialExpansion(nodes)].sort()).toEqual(["0.0", "0.0.0"]);
+		});
+
+		it("expands a flat outline entirely, which is a no-op for a row list", () => {
+			expect([...initialExpansion([{ title: "a" }, { title: "b" }])]).toEqual(["0", "1"]);
+		});
 	});
 
-	it("does not decide a child's state from its parent's", () => {
-		const nodes: OutlineNode[] = [
-			{ title: "p", descendantCount: -1, children: [{ title: "c", children: [{ title: "g" }] }] },
-		];
-		// Only "0" is asked to be closed; the child's state is its own, and it is
-		// moot until the parent opens.
-		expect([...initialExpansion(nodes)].sort()).toEqual(["0.0", "0.0.0"]);
+	describe("expandSubtree", () => {
+		it("returns the subtree under a row, and nothing outside it", () => {
+			expect([...expandSubtree(TREE, "0.1")].sort()).toEqual(["0.1", "0.1.0"]);
+			expect([...expandSubtree(TREE, "0")].sort()).toEqual(["0", "0.0", "0.1", "0.1.0"]);
+		});
+
+		it("does not confuse id 1 with id 10 — ids are paths, not prefixes", () => {
+			const wide: OutlineNode[] = Array.from({ length: 12 }, (_unused, index) => ({
+				title: `Item ${index}`,
+			}));
+			// Only "1": "10" and "11" are siblings, not descendants.
+			expect([...expandSubtree(wide, "1")]).toEqual(["1"]);
+		});
+
+		it("is empty for an id that is not in the tree", () => {
+			expect(expandSubtree(TREE, "nope").size).toBe(0);
+		});
 	});
 
-	it("expands a flat outline entirely, which is a no-op for a row list", () => {
-		expect([...initialExpansion([{ title: "a" }, { title: "b" }])]).toEqual(["0", "1"]);
-	});
-});
-
-describe("expandSubtree", () => {
-	it("returns the subtree under a row, and nothing outside it", () => {
-		expect([...expandSubtree(TREE, "0.1")].sort()).toEqual(["0.1", "0.1.0"]);
-		expect([...expandSubtree(TREE, "0")].sort()).toEqual(["0", "0.0", "0.1", "0.1.0"]);
-	});
-
-	it("does not confuse id 1 with id 10 — ids are paths, not prefixes", () => {
-		const wide: OutlineNode[] = Array.from({ length: 12 }, (_unused, index) => ({
-			title: `Item ${index}`,
-		}));
-		// Only "1": "10" and "11" are siblings, not descendants.
-		expect([...expandSubtree(wide, "1")]).toEqual(["1"]);
-	});
-
-	it("is empty for an id that is not in the tree", () => {
-		expect(expandSubtree(TREE, "nope").size).toBe(0);
-	});
-});
-
-describe("moveOutlineFocus", () => {
-	function rows() {
-		return flattenOutline({ nodes: TREE, expanded: ALL_OPEN }).rows;
-	}
-
-	it("moves down and up, stopping at the ends", () => {
-		const list = rows();
-		expect(moveOutlineFocus(list, "0", "ArrowDown")).toBe("0.0");
-		expect(moveOutlineFocus(list, "0", "ArrowUp")).toBe("0");
-		// The last visible row is id "2" — the third top-level item.
-		expect(moveOutlineFocus(list, "1", "ArrowDown")).toBe("2");
-		expect(moveOutlineFocus(list, "2", "ArrowDown")).toBe("2");
-		expect(moveOutlineFocus(list, "0.0", "ArrowUp")).toBe("0");
-	});
-
-	it("jumps to the first and last visible row", () => {
-		const list = rows();
-		expect(moveOutlineFocus(list, "0.1", "Home")).toBe("0");
-		expect(moveOutlineFocus(list, "0.1", "End")).toBe("2");
-	});
-
-	it("steps into an expanded parent and back out to the parent", () => {
-		const list = rows();
-		expect(moveOutlineFocus(list, "0", "ArrowRight")).toBe("0.0");
-		expect(moveOutlineFocus(list, "0.1", "ArrowLeft")).toBe("0.1");
-		expect(moveOutlineFocus(list, "0.0", "ArrowLeft")).toBe("0");
-	});
-
-	it("does nothing on a row with no children", () => {
-		const list = rows();
-		const unlinked = list[list.length - 1];
-		expect(moveOutlineFocus(list, unlinked?.id ?? "", "ArrowRight")).toBe(unlinked?.id);
-		// And ArrowLeft on a top-level leaf stays put: there is no parent.
-		expect(moveOutlineFocus(list, "1", "ArrowLeft")).toBe("1");
-	});
-
-	it("starts at the first row when nothing is focused", () => {
-		const list = rows();
-		expect(moveOutlineFocus(list, null, "ArrowDown")).toBe("0.0");
-		expect(moveOutlineFocus(list, null, "ArrowUp")).toBe("0");
-	});
-
-	it("is null for an empty list, for every key", () => {
-		for (const key of ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"] as const) {
-			expect(moveOutlineFocus([], "0", key), key).toBeNull();
+	describe("moveOutlineFocus", () => {
+		function rows() {
+			return flattenOutline({ nodes: TREE, expanded: ALL_OPEN }).rows;
 		}
-	});
-});
 
-describe("rowPage", () => {
-	it("prefers the row's own destination", () => {
-		const row = flattenOutline({ nodes: TREE, expanded: ALL_OPEN }).rows[0];
-		const map = new Map<string, PdfDestination>([["anything", { page: 99 }]]);
-		expect(row?.page === null ? null : rowPage(row ?? ({ page: null } as never), map)).toBe(0);
+		it("moves down and up, stopping at the ends", () => {
+			const list = rows();
+			expect(moveOutlineFocus(list, "0", "ArrowDown")).toBe("0.0");
+			expect(moveOutlineFocus(list, "0", "ArrowUp")).toBe("0");
+			// The last visible row is id "2" — the third top-level item.
+			expect(moveOutlineFocus(list, "1", "ArrowDown")).toBe("2");
+			expect(moveOutlineFocus(list, "2", "ArrowDown")).toBe("2");
+			expect(moveOutlineFocus(list, "0.0", "ArrowUp")).toBe("0");
+		});
+
+		it("jumps to the first and last visible row", () => {
+			const list = rows();
+			expect(moveOutlineFocus(list, "0.1", "Home")).toBe("0");
+			expect(moveOutlineFocus(list, "0.1", "End")).toBe("2");
+		});
+
+		it("steps into an expanded parent and back out to the parent", () => {
+			const list = rows();
+			expect(moveOutlineFocus(list, "0", "ArrowRight")).toBe("0.0");
+			expect(moveOutlineFocus(list, "0.1", "ArrowLeft")).toBe("0.1");
+			expect(moveOutlineFocus(list, "0.0", "ArrowLeft")).toBe("0");
+		});
+
+		it("does nothing on a row with no children", () => {
+			const list = rows();
+			const unlinked = list[list.length - 1];
+			expect(moveOutlineFocus(list, unlinked?.id ?? "", "ArrowRight")).toBe(unlinked?.id);
+			// And ArrowLeft on a top-level leaf stays put: there is no parent.
+			expect(moveOutlineFocus(list, "1", "ArrowLeft")).toBe("1");
+		});
+
+		it("starts at the first row when nothing is focused", () => {
+			const list = rows();
+			expect(moveOutlineFocus(list, null, "ArrowDown")).toBe("0.0");
+			expect(moveOutlineFocus(list, null, "ArrowUp")).toBe("0");
+		});
+
+		it("is null for an empty list, for every key", () => {
+			for (const key of [
+				"ArrowDown",
+				"ArrowUp",
+				"ArrowRight",
+				"ArrowLeft",
+				"Home",
+				"End",
+			] as const) {
+				expect(moveOutlineFocus([], "0", key), key).toBeNull();
+			}
+		});
 	});
 
-	it("resolves a named destination from the document's name tree", () => {
-		const nodes: OutlineNode[] = [{ title: "Named", namedDestination: "here" }];
-		const row = flattenOutline({ nodes, expanded: new Set() }).rows[0];
-		const map = new Map<string, PdfDestination>([["here", { page: 12 }]]);
-		expect(rowPage(row ?? ({ page: null } as never), map)).toBe(12);
+	describe("rowPage", () => {
+		it("prefers the row's own destination", () => {
+			const row = flattenOutline({ nodes: TREE, expanded: ALL_OPEN }).rows[0];
+			const map = new Map<string, PdfDestination>([["anything", { page: 99 }]]);
+			expect(row?.page === null ? null : rowPage(row ?? ({ page: null } as never), map)).toBe(0);
+		});
+
+		it("resolves a named destination from the document's name tree", () => {
+			const nodes: OutlineNode[] = [{ title: "Named", namedDestination: "here" }];
+			const row = flattenOutline({ nodes, expanded: new Set() }).rows[0];
+			const map = new Map<string, PdfDestination>([["here", { page: 12 }]]);
+			expect(rowPage(row ?? ({ page: null } as never), map)).toBe(12);
+		});
+
+		it("is null when the name is not in the tree", () => {
+			const nodes: OutlineNode[] = [{ title: "Named", namedDestination: "gone" }];
+			const row = flattenOutline({ nodes, expanded: new Set() }).rows[0];
+			expect(rowPage(row ?? ({ page: null } as never), new Map())).toBeNull();
+		});
 	});
 
-	it("is null when the name is not in the tree", () => {
-		const nodes: OutlineNode[] = [{ title: "Named", namedDestination: "gone" }];
-		const row = flattenOutline({ nodes, expanded: new Set() }).rows[0];
-		expect(rowPage(row ?? ({ page: null } as never), new Map())).toBeNull();
+	describe("hasOutline", () => {
+		it("is true only when there is at least one item", () => {
+			expect(hasOutline([])).toBe(false);
+			expect(hasOutline([{ title: "a" }])).toBe(true);
+		});
 	});
-});
-
-describe("hasOutline", () => {
-	it("is true only when there is at least one item", () => {
-		expect(hasOutline([])).toBe(false);
-		expect(hasOutline([{ title: "a" }])).toBe(true);
-	});
-});
-
 });

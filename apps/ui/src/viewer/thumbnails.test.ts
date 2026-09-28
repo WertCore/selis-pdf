@@ -18,8 +18,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createMockAdapter, type MockAdapter } from "../platform/mock-adapter.js";
-import type { DocHandle, RenderTileRequest, Size } from "../platform/types.js";
+import { createMockAdapter } from "../platform/mock-adapter.js";
+import type { RenderTileRequest, Size } from "../platform/types.js";
 import {
 	MAX_THUMBNAIL_ROWS,
 	MAX_THUMBNAIL_WIDTH,
@@ -163,169 +163,167 @@ describe("the thumbnail rail", () => {
 		rail.dispose();
 	});
 
-describe("labels, focus and geometry", () => {
-	it("labels thumbnails with the document's own page labels", async () => {
-		const { rail, doc } = await fixture(4);
-		rail.setPageLabels([{ firstPage: 0, style: "r" }]);
-		const state = rail.update(VIEWPORT);
-		expect(state.thumbnails[0]?.label).toBe("i");
-		expect(state.thumbnails[3]?.label).toBe("iv");
-		expect(doc.pageCount).toBe(4);
-		rail.dispose();
-	});
-
-	it("keeps the current page in the tab order and no other", async () => {
-		const { rail } = await fixture();
-		rail.setCurrentPage(2);
-		const state = rail.update(VIEWPORT);
-		const current = state.thumbnails.filter((thumb) => thumb.current);
-		expect(current).toHaveLength(1);
-		expect(current[0]?.tabIndex).toBe(0);
-		for (const thumb of state.thumbnails) {
-			if (!thumb.current) {
-				expect(thumb.tabIndex).toBe(-1);
-			}
-		}
-		rail.dispose();
-	});
-
-	it("clamps a current page outside the document", async () => {
-		const { rail } = await fixture(3);
-		expect(rail.setCurrentPage(99).currentPage).toBe(2);
-		expect(rail.setCurrentPage(-4).currentPage).toBe(0);
-		expect(rail.setCurrentPage(Number.NaN).currentPage).toBe(0);
-		rail.dispose();
-	});
-
-	it("gives every thumbnail a class the stylesheet can style", async () => {
-		const { rail } = await fixture();
-		const state = rail.update(VIEWPORT);
-		for (const thumb of state.thumbnails) {
-			expect(thumb.className).toContain("selis-thumbnail");
-			expect(thumb.className).not.toContain("undefined");
-		}
-		rail.dispose();
-	});
-
-	it("sizes a landscape page's preview by its own aspect", async () => {
-		const { rail } = await fixture(2, { width: 792, height: 612 });
-		const state = rail.update(VIEWPORT);
-		const first = state.thumbnails[0];
-		const second = state.thumbnails[1];
-		// The box is wider than tall for a landscape page, and the second page
-		// starts below the first by exactly that height plus the gap.
-		expect(first?.height).toBeLessThan(first?.width ?? 0);
-		expect(second?.y).toBeCloseTo((first?.y ?? 0) + (first?.height ?? 0) + 8, 6);
-		rail.dispose();
-	});
-
-	it("bounds the rail's width, because a preview is not a second viewport", async () => {
-		const { rail, requested } = await fixture(2);
-		rail.update({ ...VIEWPORT, width: 4_000 });
-		await settle();
-		// Clamped to the maximum, so the scale cannot become a document view.
-		expect(requested[0]?.scale).toBeCloseTo((MAX_THUMBNAIL_WIDTH - 8) / LETTER.width, 5);
-		expect(MIN_THUMBNAIL_WIDTH).toBeGreaterThan(0);
-		rail.dispose();
-	});
-
-	it("asks for one scale when every page is the same size", async () => {
-		// A landscape and a portrait page share the rail's width but cannot share
-		// a scale, which is why `planLadder` is called per page; a uniform
-		// document must still produce one scale, or the rail is inventing
-		// variation it does not have.
-		const { rail, requested } = await fixture(4);
-		rail.update(VIEWPORT);
-		await settle();
-		expect(new Set(requested.map((request) => request.scale)).size).toBe(1);
-		rail.dispose();
-	});
-});
-
-
-describe("subscriptions and disposal", () => {
-	it("publishes through subscribe, including when a tile lands", async () => {
-		const { rail } = await fixture();
-		const seen: number[] = [];
-		const unsubscribe = rail.subscribe((state) => seen.push(state.thumbnails.length));
-		rail.update(VIEWPORT);
-		await settle();
-		rail.update(VIEWPORT);
-		unsubscribe();
-		const after = seen.length;
-		rail.update({ ...VIEWPORT, scrollTop: 5_000 });
-		expect(seen.length).toBe(after);
-		rail.dispose();
-	});
-
-	it("hands every subscriber the same state object", async () => {
-		const { rail } = await fixture();
-		const first: unknown[] = [];
-		const second: unknown[] = [];
-		rail.subscribe((state) => first.push(state));
-		rail.subscribe((state) => second.push(state));
-		rail.update(VIEWPORT);
-		expect(first[0]).toBe(second[0]);
-		rail.dispose();
-	});
-
-	it("exposes the cached tile for a page, for a shell painting it directly", async () => {
-		const { rail } = await fixture();
-		rail.update(VIEWPORT);
-		await settle();
-		expect(rail.tileAt(0)).not.toBeNull();
-		expect(rail.tileAt(11)).toBeNull();
-		rail.dispose();
-	});
-
-	it("stops asking for renders after dispose", async () => {
-		const { rail, requested } = await fixture();
-		rail.update(VIEWPORT);
-		await settle();
-		const before = requested.length;
-		rail.dispose();
-		rail.update({ ...VIEWPORT, scrollTop: 100_000 });
-		await settle();
-		expect(requested.length).toBe(before);
-	});
-
-	it("reports a render failure through onError and does not throw", async () => {
-		const adapter = createMockAdapter();
-		const errors: unknown[] = [];
-		// A hostile transport: every render fails. The rail's contract is to
-		// report it through `onError` — the same seam the page list's ladder
-		// reports through — and to keep publishing placeholders rather than
-		// throwing at the shell.
-		adapter.engine.renderTile = async () => {
-			throw new Error("engine unavailable");
-		};
-		const descriptor = adapter.addDocument({ name: "boom.pdf", pageCount: 2 });
-		const doc = await adapter.engine.open(descriptor);
-		const rail = createThumbnailRail({
-			adapter,
-			doc,
-			width: VIEWPORT.width,
-			onError: (error) => errors.push(error),
+	describe("labels, focus and geometry", () => {
+		it("labels thumbnails with the document's own page labels", async () => {
+			const { rail, doc } = await fixture(4);
+			rail.setPageLabels([{ firstPage: 0, style: "r" }]);
+			const state = rail.update(VIEWPORT);
+			expect(state.thumbnails[0]?.label).toBe("i");
+			expect(state.thumbnails[3]?.label).toBe("iv");
+			expect(doc.pageCount).toBe(4);
+			rail.dispose();
 		});
-		expect(() => rail.update(VIEWPORT)).not.toThrow();
-		await settle();
-		expect(errors.length).toBeGreaterThan(0);
-		// And the rail still publishes: a failed preview is a placeholder, not a
-		// missing thumbnail.
-		expect(rail.state().thumbnails.length).toBeGreaterThan(0);
-		rail.dispose();
-	});
-});
 
-describe("thumbnailClassName", () => {
-	it("names the rung and the current state", () => {
-		expect(thumbnailClassName("placeholder", false)).toBe(
-			"selis-thumbnail selis-thumbnail--placeholder selis-thumbnail--idle",
-		);
-		expect(thumbnailClassName("full", true)).toBe(
-			"selis-thumbnail selis-thumbnail--full selis-thumbnail--current",
-		);
-	});
-});
+		it("keeps the current page in the tab order and no other", async () => {
+			const { rail } = await fixture();
+			rail.setCurrentPage(2);
+			const state = rail.update(VIEWPORT);
+			const current = state.thumbnails.filter((thumb) => thumb.current);
+			expect(current).toHaveLength(1);
+			expect(current[0]?.tabIndex).toBe(0);
+			for (const thumb of state.thumbnails) {
+				if (!thumb.current) {
+					expect(thumb.tabIndex).toBe(-1);
+				}
+			}
+			rail.dispose();
+		});
 
+		it("clamps a current page outside the document", async () => {
+			const { rail } = await fixture(3);
+			expect(rail.setCurrentPage(99).currentPage).toBe(2);
+			expect(rail.setCurrentPage(-4).currentPage).toBe(0);
+			expect(rail.setCurrentPage(Number.NaN).currentPage).toBe(0);
+			rail.dispose();
+		});
+
+		it("gives every thumbnail a class the stylesheet can style", async () => {
+			const { rail } = await fixture();
+			const state = rail.update(VIEWPORT);
+			for (const thumb of state.thumbnails) {
+				expect(thumb.className).toContain("selis-thumbnail");
+				expect(thumb.className).not.toContain("undefined");
+			}
+			rail.dispose();
+		});
+
+		it("sizes a landscape page's preview by its own aspect", async () => {
+			const { rail } = await fixture(2, { width: 792, height: 612 });
+			const state = rail.update(VIEWPORT);
+			const first = state.thumbnails[0];
+			const second = state.thumbnails[1];
+			// The box is wider than tall for a landscape page, and the second page
+			// starts below the first by exactly that height plus the gap.
+			expect(first?.height).toBeLessThan(first?.width ?? 0);
+			expect(second?.y).toBeCloseTo((first?.y ?? 0) + (first?.height ?? 0) + 8, 6);
+			rail.dispose();
+		});
+
+		it("bounds the rail's width, because a preview is not a second viewport", async () => {
+			const { rail, requested } = await fixture(2);
+			rail.update({ ...VIEWPORT, width: 4_000 });
+			await settle();
+			// Clamped to the maximum, so the scale cannot become a document view.
+			expect(requested[0]?.scale).toBeCloseTo((MAX_THUMBNAIL_WIDTH - 8) / LETTER.width, 5);
+			expect(MIN_THUMBNAIL_WIDTH).toBeGreaterThan(0);
+			rail.dispose();
+		});
+
+		it("asks for one scale when every page is the same size", async () => {
+			// A landscape and a portrait page share the rail's width but cannot share
+			// a scale, which is why `planLadder` is called per page; a uniform
+			// document must still produce one scale, or the rail is inventing
+			// variation it does not have.
+			const { rail, requested } = await fixture(4);
+			rail.update(VIEWPORT);
+			await settle();
+			expect(new Set(requested.map((request) => request.scale)).size).toBe(1);
+			rail.dispose();
+		});
+	});
+
+	describe("subscriptions and disposal", () => {
+		it("publishes through subscribe, including when a tile lands", async () => {
+			const { rail } = await fixture();
+			const seen: number[] = [];
+			const unsubscribe = rail.subscribe((state) => seen.push(state.thumbnails.length));
+			rail.update(VIEWPORT);
+			await settle();
+			rail.update(VIEWPORT);
+			unsubscribe();
+			const after = seen.length;
+			rail.update({ ...VIEWPORT, scrollTop: 5_000 });
+			expect(seen.length).toBe(after);
+			rail.dispose();
+		});
+
+		it("hands every subscriber the same state object", async () => {
+			const { rail } = await fixture();
+			const first: unknown[] = [];
+			const second: unknown[] = [];
+			rail.subscribe((state) => first.push(state));
+			rail.subscribe((state) => second.push(state));
+			rail.update(VIEWPORT);
+			expect(first[0]).toBe(second[0]);
+			rail.dispose();
+		});
+
+		it("exposes the cached tile for a page, for a shell painting it directly", async () => {
+			const { rail } = await fixture();
+			rail.update(VIEWPORT);
+			await settle();
+			expect(rail.tileAt(0)).not.toBeNull();
+			expect(rail.tileAt(11)).toBeNull();
+			rail.dispose();
+		});
+
+		it("stops asking for renders after dispose", async () => {
+			const { rail, requested } = await fixture();
+			rail.update(VIEWPORT);
+			await settle();
+			const before = requested.length;
+			rail.dispose();
+			rail.update({ ...VIEWPORT, scrollTop: 100_000 });
+			await settle();
+			expect(requested.length).toBe(before);
+		});
+
+		it("reports a render failure through onError and does not throw", async () => {
+			const adapter = createMockAdapter();
+			const errors: unknown[] = [];
+			// A hostile transport: every render fails. The rail's contract is to
+			// report it through `onError` — the same seam the page list's ladder
+			// reports through — and to keep publishing placeholders rather than
+			// throwing at the shell.
+			adapter.engine.renderTile = async () => {
+				throw new Error("engine unavailable");
+			};
+			const descriptor = adapter.addDocument({ name: "boom.pdf", pageCount: 2 });
+			const doc = await adapter.engine.open(descriptor);
+			const rail = createThumbnailRail({
+				adapter,
+				doc,
+				width: VIEWPORT.width,
+				onError: (error) => errors.push(error),
+			});
+			expect(() => rail.update(VIEWPORT)).not.toThrow();
+			await settle();
+			expect(errors.length).toBeGreaterThan(0);
+			// And the rail still publishes: a failed preview is a placeholder, not a
+			// missing thumbnail.
+			expect(rail.state().thumbnails.length).toBeGreaterThan(0);
+			rail.dispose();
+		});
+	});
+
+	describe("thumbnailClassName", () => {
+		it("names the rung and the current state", () => {
+			expect(thumbnailClassName("placeholder", false)).toBe(
+				"selis-thumbnail selis-thumbnail--placeholder selis-thumbnail--idle",
+			);
+			expect(thumbnailClassName("full", true)).toBe(
+				"selis-thumbnail selis-thumbnail--full selis-thumbnail--current",
+			);
+		});
+	});
 });
