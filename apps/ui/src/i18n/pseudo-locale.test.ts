@@ -37,13 +37,14 @@ import { PSEUDO_LOCALE, createMessageRuntime, isMissingMessage } from "./runtime
 const PSEUDO = createPseudoCatalogue(EN_VIEWER_CATALOGUE);
 
 /**
- * The template type, derived from the catalogue rather than imported:
+ * The template type, derived from the data rather than imported:
  * `MessageTemplate` is declared inside `runtime.ts` and not re-exported, and
  * widening the module's public surface for a test's convenience is the wrong
  * trade. `NonNullable` cancels the `| undefined` that `noUncheckedIndexedAccess`
- * puts on an index access.
+ * puts on an index access — the catalogues are keyed by *literal* key unions,
+ * so the element type is reached through `keyof`, not through `[string]`.
  */
-type Template = NonNullable<(typeof EN_VIEWER_CATALOGUE)[string]>;
+type Template = NonNullable<(typeof PSEUDO)[keyof typeof PSEUDO]>;
 
 /** Values that fill every placeholder the viewer's catalogues declare. */
 const VALUES: Readonly<Record<string, string | number>> = {
