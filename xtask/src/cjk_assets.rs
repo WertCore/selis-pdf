@@ -962,11 +962,8 @@ mod tests {
     #[test]
     fn the_committed_record_verifies_against_its_own_inputs() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/cjk");
-        verify(
-            assets.parent().expect("assets dir"),
-            Scope::Manifest,
-        )
-        .expect("assets/cjk/manifest.json verifies");
+        verify(assets.parent().expect("assets dir"), Scope::Manifest)
+            .expect("assets/cjk/manifest.json verifies");
 
         let text = std::fs::read_to_string(assets.join("manifest.json")).expect("manifest");
         let v: serde_json::Value = serde_json::from_str(&text).expect("json");
@@ -986,7 +983,11 @@ mod tests {
             "a core list of {} is a sample, not a frequency list",
             codes.len()
         );
-        assert_eq!(codes.first(), Some(&0x7684), "the most frequent hanzi leads");
+        assert_eq!(
+            codes.first(),
+            Some(&0x7684),
+            "the most frequent hanzi leads"
+        );
         assert!(
             v["core"]["codes"].as_u64().unwrap_or(0) > u64::try_from(codes.len()).unwrap_or(0),
             "the core covers its static ranges plus the list"
