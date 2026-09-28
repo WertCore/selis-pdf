@@ -231,24 +231,35 @@ export function pageLabelFor(
  * all: a document with no `/PageLabels` tree gets a page box reading "4 of 900",
  * and one whose only range is "decimal from 1" would get the same box, because
  * a label identical to the page number is noise.
+ *
+ * The coverage test is about the **first** range only, and that is worth
+ * spelling out because it is easy to get backwards: a range does not *stop*,
+ * it runs until the next one, so the last range covers the rest of the document
+ * and no page is ever unlabelled at the end. A per-range check would call a
+ * perfectly ordinary document "meaningful" for no reason a reader would thank
+ * us for.
  */
 export function hasMeaningfulLabels(
 	ranges: readonly PageLabelRange[] | undefined,
 	pageCount: number,
 ): boolean {
 	const table = normaliseLabelRanges(ranges);
-	if (table.length === 0) {
+	const first = table[0];
+	if (first === undefined || pageCount <= 0) {
+		// No ranges, or no pages: there is nothing for a label to differ from.
 		return false;
+	}
+	// Pages before the first range are unlabelled, so some page's label is the
+	// page number while another's is not — which is the whole definition of
+	// "meaningful" here.
+	if (first.firstPage > 0) {
+		return true;
 	}
 	return table.some(
 		(range) =>
 			range.prefix.length > 0 ||
 			range.style !== DEFAULT_LABEL_STYLE ||
-			range.firstValue !== 1 ||
-			// A range that starts after the first page leaves those pages
-			// unlabelled, which is itself a labelling decision.
-			range.firstPage > 0 ||
-			range.firstPage < pageCount - 1,
+			range.firstValue !== 1,
 	);
 }
 

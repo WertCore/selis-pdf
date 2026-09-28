@@ -103,6 +103,15 @@ export const MAX_OUTLINE_ROWS = 2000;
 export const MAX_OUTLINE_DEPTH = 256;
 
 /**
+ * Items the survey walk will count before it gives up.
+ *
+ * The panel can only draw {@link MAX_OUTLINE_ROWS} of them, so counting far past
+ * that buys nothing — except the "N of M" sentence, and M is a number the reader
+ * would rather have approximately and immediately than exactly and late.
+ */
+export const MAX_OUTLINE_ITEMS = 20_000;
+
+/**
  * Which items start expanded, from the document's own `/Count` values.
  *
  * Only items with a **negative** `/Count` start closed. An item with no
@@ -181,6 +190,43 @@ export interface FlattenRequest {
 }
 
 /**
+ * The ids the document's own `/Count` closes, plus how many items it has and
+ * which of them are parents — one iterative walk for all three.
+ *
+ * The counts are needed *independently* of the visible rows, because a panel
+ * that has collapsed everything still has to be able to say "showing 3 of 900
+ * items", and because a row's expander must be offered for a parent that is not
+ * currently on screen. Both properties are of the whole document, not of the
+ * current expansion, so they are computed from the tree and the flatten walks
+ * only what is visible.
+ *
+ * {@link MAX_OUTLINE_ITEMS} bounds that walk. A tree larger than the budget is
+ * a document the viewer will not fully enumerate, and it says so through
+ * `truncated` rather than spending a keystroke's budget counting what it cannot
+ * draw.
+ */
+function surveyTree(nodes: readonly OutlineNode[]): {
+	parentIds: Set<string>;
+	itemCount: number;
+	scannedAll: boolean;
+} {
+	const parentIds = new Set<string>();
+	let itemCount = 0;
+	let scannedAll = true;
+	walkIds(nodes, (id, node) => {
+		if (itemCount >= MAX_OUTLINE_ITEMS) {
+			scannedAll = false;
+			return;
+		}
+		itemCount += 1;
+		if ((node.children?.length ?? 0) > 0) {
+			parentIds.add(id);
+		}
+	});
+	return { parentIds, itemCount, scannedAll };
+}
+
+/**
  * Flatten a tree into the rows a panel shows.
  *
  * `expanded` is a *whitelist*, not a blacklist: an id absent from it is closed
@@ -192,8 +238,7 @@ export interface FlattenRequest {
 export function flattenOutline(request: FlattenRequest): FlatOutline {
 	const maxRows = Math.max(0, request.maxRows ?? MAX_OUTLINE_ROWS);
 	const rows: OutlineRow[] = [];
-	const parents = new Set<string>();
-	let itemCount = 0;
+	const survey = surveyTree(request.nodes);
 	let maxDepth = 0;
 	let truncated = false;
 
@@ -206,15 +251,11 @@ export function flattenOutline(request: FlattenRequest): FlatOutline {
 	): void => {
 		entries.forEach((node, index) => {
 			const id = depth === 0 ? String(index) : `${prefix}.${index}`;
-			itemCount += 1;
 			if (depth + 1 > maxDepth) {
 				maxDepth = depth + 1;
 			}
 			const children = node.children ?? [];
 			const hasChildren = children.length > 0;
-			if (hasChildren) {
-				parents.add(id);
-			}
 			// A row is emitted only when every ancestor is open, which is the
 			// whole meaning of "collapsed" and the reason this is one walk
 			// rather than a filter over a pre-flattened list.
@@ -251,7 +292,15 @@ export function flattenOutline(request: FlattenRequest): FlatOutline {
 	};
 
 	walk(request.nodes, "", 0, null, true);
-	return { rows, parentIds: parents, itemCount, maxDepth, truncated };
+	return {
+		rows,
+		parentIds: survey.parentIds,
+		itemCount: survey.itemCount,
+		maxDepth,
+		// Either the row cap or the item budget stopped us, and a reader told
+		// "3 of 900" deserves to know the 900 is itself a lower bound.
+		truncated: truncated || !survey.scannedAll,
+	};
 }
 
 /** Whether the outline is worth showing at all. */
