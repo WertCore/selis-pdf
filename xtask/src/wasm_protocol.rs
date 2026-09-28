@@ -404,9 +404,7 @@ pub fn run() -> Result<(), String> {
     // if the guest gets it wrong.
     let (resp, _) = s.rpc(json!({"op":"textLayer", "doc": text_doc, "page": 0}), None)?;
     let resp = expect(resp, "textLayer")?;
-    let layer_text = resp["value"]["text"]
-        .as_str()
-        .ok_or("textLayer: no text")?;
+    let layer_text = resp["value"]["text"].as_str().ok_or("textLayer: no text")?;
     let lines = resp["value"]["lines"]
         .as_array()
         .ok_or("textLayer: no lines")?;
@@ -438,7 +436,10 @@ pub fn run() -> Result<(), String> {
     if layer_text.is_empty() {
         return Err("textLayer: the fixture drew no text".to_string());
     }
-    println!("wasm-protocol: textLayer ok ({quads} quads over {} lines)", lines.len());
+    println!(
+        "wasm-protocol: textLayer ok ({quads} quads over {} lines)",
+        lines.len()
+    );
 
     println!(
         "wasm-protocol: text/search ok ({} bytes of text, {} matches for {word:?}); progress slot ok",

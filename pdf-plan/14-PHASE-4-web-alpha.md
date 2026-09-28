@@ -250,9 +250,30 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     so mixed-direction lines are a known limit; no live-region caret announcements; and under
     ADR-P0021's no-jsdom rule selection is asserted **as data** — real glyph alignment,
     find-in-page and screen-reader behaviour still need a manual browser pass.
-- [ ] **SL-4.UI.05 — Search UI** · deps: SL-3.TEXT.06 · owner: AI
+- [x] **SL-4.UI.05 — Search UI** · deps: SL-3.TEXT.06 · owner: AI
   - **Do:** Incremental search with match count, highlight-all, next/previous, and progressive
     results as pages load.
+  - **Shipped.** `apps/ui/src/viewer/search.ts` (~940 lines) consumes `EnginePort.search`'s async
+    batches and publishes one immutable `SearchState`; it renders nothing and reads no viewport or
+    platform global. 42 new tests, 279 in `apps/ui`. Keyboard handling is a *separate* `resolveSearchKey`
+    map beside `resolvePageKey` rather than one combined resolver, because the two claim disjoint keys
+    and merging them would need a precedence rule the plan never states.
+  - **`SearchMatch.rects` is deliberately UNREAD, and that is the subtle part.** It is optional, and
+    the engine's own `SearchMatch` carries the *line's* rect — so a transport forwarding it verbatim
+    would highlight **whole lines** rather than matches. Highlights are computed instead from
+    `selectionRects` over the same `TextLayerFrame` UI.04's text selection uses, projected at
+    `PlacedPage.scale`. A test asserts the field is ignored. The engine's layer cache is keyed by
+    page and is scale-free, so a zoom re-projects and fetches nothing (asserted: `layerRequests` stays
+    `[0]` across 1× → 2.5× → 3×).
+  - **Cancellation is belt *and* braces.** Every run gets a monotonic id **and** an `AbortController`;
+    the abort is the optimisation, the id is the guarantee, because an `AsyncIterable` makes
+    cancellation a promise the transport may break. The test drives a **hostile** engine that ignores
+    its signal and keeps yielding, and asserts `matchCount` stays 0.
+  - **Limits recorded, not hidden:** a range that does not index the page's text yields a counted,
+    navigable match with **no** rectangle — the engine normalises (ligatures, soft hyphens, NFD)
+    before searching, so offsets can be non-authoritative, and making them authoritative is a
+    TEXT.06 question. The per-page breakdown is windowed, not document-wide; a results *sidebar*
+    would need UI.06's page model. And under ADR-P0021 nothing has been looked at on a screen.
 - [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
     the full destination shown, and `/Launch` is refused.
@@ -320,6 +341,40 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
   - **Do:** Cache the app shell and WASM chunks; the app opens local files with no network at all.
   - **DoD:** Airplane-mode test: open a local PDF, view, search, print.
+  - **Code shipped, but the box stays open: the DoD is a manual browser test and no browser was
+    involved.** A service worker cannot register under `file://` and the repo ships no browser
+    harness, so real event delivery, `clients.claim()`, browser-enforced `respondWith`, quota
+    behaviour, and the DoD's own airplane-mode pass are all unverified. The logic is asserted through
+    a Cache Storage double that implements `addAll` atomicity, `Vary`-aware `match` and
+    insertion-ordered `keys` — 72 new tests — and the gates are proven falsifiable (dropping the
+    `Range` rule fails 3 tests; widening paths and making `application/pdf` storable fails 4, including
+    the crux case at `sw.test.ts:476`).
+  - **Caching policy:** precache is only `/`, `/index.html`, `/assets/style.css`, `/assets/boot.js` —
+    the core WASM is ≤3 MB brotli (§12), so installing it for every visitor is wrong; it is fetched
+    once on demand into the runtime cache. Runtime cache is `/assets/…` and `/wasm/…`, capped at
+    12 MB/entry and 32 entries, oldest evicted. **Never cached:** non-`GET`, any request with a body,
+    non-http(s), cross-origin, any `Range`, any query string, any non-allow-listed path (including
+    `..`/`%2e%2e`), and any response outside the content-type allow-list — `application/pdf` and
+    `application/octet-stream` are deliberately absent. **Document safety is structural**, not intent:
+    three independent layers (request rules, response rules, and a source-level count of the two
+    permitted cache-write call sites).
+  - **The WEB.03 no-upload gate survives the worker, and this was the question most likely to produce
+    a real bug.** The page's wrapper runs *before* dispatch and the worker's `fetch` event fires
+    *after*, so the worker is **downstream** of the gate: a cached response changes what comes back
+    and cannot change what the page recorded going out. Tested with the real `installRequestRecorder`
+    and the worker in the path — every request still seen, still bodyless, `assertNoUpload` passes,
+    and a planted `POST` of the same bytes is rejected. The one thing the gate cannot see is a
+    request the worker *originates*; there are none, and a test asserts the worker's own fetch log is
+    empty during a document session.
+  - **COOP/COEP preserved:** cached navigations are returned as the cached `Response` object verbatim,
+    never rebuilt; the one synthesised response (offline 503) sets the isolation headers itself.
+    `Vary`-aware because runtime entries are keyed by `Request`, not URL — a URL-only key would
+    replay brotli bytes to a client that asked for gzip. No `skipWaiting` on install: a replacement
+    waits for the page's `selis:skip-waiting`, so the engine is never swapped under an open document.
+  - **Spec problems worth deciding:** the DoD is a manual browser test with no automated equivalent
+    and the repo has no harness — either a Playwright smoke test lands or the DoD should say so; and
+    "cache the app shell and WASM chunks" states no budget, so 12 MB/32 entries was derived from §12
+    and EXT.05 and should be pinned in the plan.
 - [x] **SL-4.WEB.03 — Document handoff without upload** · deps: SL-4.WASM.05 · owner: AI+
   - **Do:** Drag-drop, file picker, paste, and `?src=` URL opening — all local. The one thing this
     app must never do is upload a document, and a CI test asserts no request body ever contains
@@ -381,9 +436,39 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     signatures across the redirect.
   - **Gates:** `tsc -p apps/extension --noEmit` clean; `vitest` 25 passed (was 6); biome at
     main's exact baseline (pre-existing CRLF format drift, zero findings in new code).
-- [ ] **SL-4.EXT.03 — Offscreen document hosting the engine** · deps: EXT.01, WASM.01 · owner: AI+
+- [x] **SL-4.EXT.03 — Offscreen document hosting the engine** · deps: EXT.01, WASM.01 · owner: AI+
   - **Do:** MV3 service workers are killed aggressively; the engine runs in an offscreen document
     or a dedicated worker with a documented lifecycle and state recovery.
+  - **Shipped, and EXT.06's engine is no longer `null`.** The offscreen document now hosts a real
+    WASM engine (`wasm-engine.ts`, `wasm-guest.ts`, `wasm-worker.ts`, composed by `engine-host.ts`),
+    and `textLayer` — which UI.04 made required and which rejected for want of a host side — now
+    crosses the guest ABI (`RequestOp::TextLayer` in `crates/selis-pdf-wasm`, delegating to
+    `selis_pdf_text::page_layer`) and is a leg of the `wasm-protocol` conformance harness. That
+    harness **caught a defect in itself**: it printed the search tally *after* the text-layer leg
+    rebound the response object, so a passing run could report a number belonging to a different leg.
+  - **`host_permissions` is still `[]`** — the worker reads the `.wasm` from the extension's own
+    origin, which needs no host permission, and the host never fetches a document origin. CSP is
+    `script-src 'self' 'wasm-unsafe-eval'; object-src 'self';` — the `wasm-unsafe-eval` is what lets
+    the engine compile at all; no remote code, no eval, no dynamic import. Verified falsifiable twice:
+    a remote import planted in the *built* `wasm-worker.js` fails the bundled-only gate, and a planted
+    `chrome.runtime.onConnect` fails the DoD assertion that the service worker stays out of the
+    engine's lifetime.
+  - **Honest gaps, recorded in `REUSE.md`:**
+    1. **The `.wasm` is not in the package yet** — that is EXT.05's row. The engine reports a typed
+       failure naming the path it looked for, and a test asserts the *name* agrees with the WASM.02
+       manifest rather than pretending the binary exists. **So the extension viewer renders nothing
+       today — deliberately and loudly.**
+    2. **A pending request does not settle when the port dies** — a viewer promise waits rather than
+       rejecting. This is EXT.06 transport, and the fix changes shared transport semantics, so it
+       wants its own change. *This is the one thing to fix before beta.*
+    3. The offscreen document is never closed; `stop()` is wired to `pagehide` but nothing *decides*
+       to close it, so it outlives every viewer that uses it.
+    4. Search is not truly progressive (single-threaded WASM cannot interleave); batches are sliced
+       host-side. `wholeWord` is **refused**, not ignored.
+    5. Character widths resolve per code, not per font — a page drawing one code at two sizes gives
+       both the first width, and a code that never appears yields a zero-width quad. The text layer
+       is also the most expensive thing this transport carries: per-character geometry in JSON over a
+       JSON port, plus a base64 hop.
   - **DoD:** A test that the viewer survives service-worker termination mid-session.
 - [x] **SL-4.EXT.04 — Bundled-only build** · deps: EXT.01 · owner: AI+
   - **Do:** No remote code, no CDN, no `eval` (ADR-P0028). A build check fails on any remote URL
