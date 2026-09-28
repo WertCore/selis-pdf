@@ -26,7 +26,12 @@ import { describe, expect, it } from "vitest";
 import { findHtmlViolations, findManifestViolations } from "./bundle-docs.js";
 import { maskJs } from "./bundle-js.js";
 import { shippedSet } from "./bundle-paths.js";
-import { OPTIONS_LOCALE, OPTIONS_MESSAGE_KEYS } from "./options-strings.js";
+import { EN_OPTIONS_CATALOGUE, OPTIONS_LOCALE, OPTIONS_MESSAGE_KEYS } from "./options-strings.js";
+
+/** Every `{placeholder}` a template asks for. */
+function placeholdersIn(template: string): string[] {
+	return [...template.matchAll(/\{(\w+)\}/g)].map((match) => match[1] ?? "");
+}
 import { ALLOWED_HOST_PERMISSIONS, ALLOWED_PERMISSIONS } from "./permissions.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -105,10 +110,29 @@ describe("the page itself (SL-4.EXT.07)", () => {
 		for (const key of i18nKeysIn(page)) {
 			expect(OPTIONS_MESSAGE_KEYS, `${key} is not in the catalogue`).toContain(key);
 		}
-		// And the keys the page does not use are not a silent omission: every
-		// key in the catalogue that is not a placeholder-only helper is either
-		// used by the page or filled by the boot.
 		expect(i18nKeysIn(page).length).toBeGreaterThan(15);
+	});
+
+	it("asks only for keys with no placeholder, so the generic fill can resolve them", () => {
+		// The bug this caught: `data-i18n="options.page.heading"` on the `h1`, whose
+		// template takes `{product}`. The generic pass has no values to give it, and
+		// `formatMessage` deliberately leaves an unfilled placeholder visible — so
+		// the page's first line read "{product} options". A templated key has to be
+		// filled by the boot, from an id, and this is what keeps the two apart.
+		const catalogue = new Map<string, string>(
+			OPTIONS_MESSAGE_KEYS.map((key) => [key, EN_OPTIONS_CATALOGUE[key]] as const),
+		);
+		for (const key of i18nKeysIn(page)) {
+			const template = catalogue.get(key) ?? "";
+			expect(
+				placeholdersIn(template),
+				`${key} has a placeholder but is filled generically`,
+			).toEqual([]);
+		}
+		// And the two that do take a value are filled by id, so they are not
+		// `data-i18n` keys at all.
+		expect(page).toContain('id="selis-title"');
+		expect(page).toContain('id="selis-version"');
 	});
 
 	it("titles itself with the manifest's product name", () => {

@@ -54,6 +54,8 @@ import { ALLOWED_HOST_PERMISSIONS } from "./permissions.js";
 
 /** The element ids the page's skeleton declares and this module drives. */
 const IDS = {
+	title: "selis-title",
+	version: "selis-version",
 	welcome: "selis-welcome",
 	welcomeHeading: "selis-welcome-heading",
 	welcomeDone: "selis-welcome-done",
@@ -161,7 +163,15 @@ export async function bootOptions(root: Element, deps: OptionsDeps): Promise<voi
 	const format = createOptionsFormatter(createOptionsCatalogue());
 	translate(root.ownerDocument, format);
 	root.ownerDocument.documentElement.lang = OPTIONS_LOCALE;
+
+	// The three strings that take a value, filled here rather than by
+	// `translate`. A templated key reached through `data-i18n` would render as
+	// `{product}` in front of a user — `formatMessage` leaves an unfilled
+	// placeholder visible on purpose, so the mistake shows rather than hides,
+	// and this is where it is avoided.
 	root.ownerDocument.title = format("options.documentTitle", { product: deps.product });
+	setText(root, IDS.title, format("options.page.heading", { product: deps.product }));
+	setText(root, IDS.version, format("options.version", { version: deps.version }));
 
 	const announce = (key: OptionsMessageKey): void => deps.announce(format(key));
 
@@ -171,6 +181,14 @@ export async function bootOptions(root: Element, deps: OptionsDeps): Promise<voi
 	renderHostAccess(requireElement(root, IDS.hosts), format);
 	renderCjkStatus(root, format);
 	mountActions(root, deps, announce);
+}
+
+/** Put one resolved string into the element the skeleton gives it an id for. */
+function setText(root: Element, id: string, text: string): void {
+	const element = root.ownerDocument.getElementById(id);
+	if (element !== null) {
+		element.textContent = text;
+	}
 }
 
 /**

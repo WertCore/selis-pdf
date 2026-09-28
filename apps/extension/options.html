@@ -28,7 +28,14 @@
 	</head>
 	<body class="selis-root">
 		<main id="selis-options" class="selis-options">
-			<h1 class="selis-options__title" data-i18n="options.page.heading"></h1>
+			<!--
+				The heading and the version line are the two strings on this page
+				that take a value, so they are filled by the boot rather than by the
+				generic `data-i18n` pass: a templated key with no values renders as
+				`{product}` in front of a user, which is exactly what the i18n seam
+				does on purpose when it cannot fill something.
+			-->
+			<h1 id="selis-title" class="selis-options__title"></h1>
 
 			<!--
 				The welcome guide. `hidden` in the markup and removed by the boot
@@ -121,7 +128,7 @@
 			<p id="selis-status" class="selis-visually-hidden" role="status" aria-live="polite"></p>
 
 			<footer class="selis-options__footer">
-				<p class="selis-options__version" data-i18n="options.version"></p>
+				<p id="selis-version" class="selis-options__version"></p>
 			</footer>
 		</main>
 	</body>
