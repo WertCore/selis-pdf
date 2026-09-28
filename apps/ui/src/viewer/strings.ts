@@ -8,11 +8,13 @@
  * `page-list.ts` makes a rename a code change in two files, and it puts English
  * in the geometry layer where a translator cannot reach it.
  *
- * SL-4.UI.11 owns the real i18n runtime (English shipping, pseudo-locale in
- * CI). It is not written yet, so this module deliberately stays a *seam* and
- * not a framework: a key set, one English catalogue, placeholder interpolation,
- * and a `createPageListStrings` factory that takes overrides. UI.11 replaces the
- * body of that factory with a catalogue lookup and nothing else has to move.
+ * SL-4.UI.11 has since written the runtime this module was a placeholder for,
+ * and this file is now a **registration** of the viewer's three catalogues
+ * against it: the keys, the English text and the three factories all stay
+ * exactly where they were, and the body of each factory is a lookup in
+ * `createViewerMessageRuntime()` rather than a merge written out by hand. The
+ * seam's own promise — "UI.11 replaces the body of that factory and nothing
+ * else has to move" — is what this file is the evidence for.
  *
  * The page list is the first component to need this, and the right place to
  * prove the shape, because the same catalogue has to carry the strings UI.05
@@ -32,9 +34,21 @@
  *
  * Placeholders are `{name}` and are substituted by name, not by position, so a
  * catalogue can reorder a sentence — which most languages need to do — without
- * the code changing.
+ * the code changing. The substitution itself is `i18n/message.ts`'s, not this
+ * file's: four copies of a grammar is four grammars.
  */
 
+import { interpolate } from "../i18n/message.js";
+import { createPseudoCatalogue } from "../i18n/pseudo-locale.js";
+import {
+	PSEUDO_LOCALE,
+	SOURCE_LOCALE,
+	type Catalogue,
+	type CatalogueSet,
+	type MessageGap,
+	type MessageRuntime,
+	createMessageRuntime,
+} from "../i18n/runtime.js";
 import type { PageFitMode } from "./layout.js";
 
 /**
@@ -118,32 +132,55 @@ export function modeKey(mode: PageFitMode): PageListMessageKey {
  * rather than silently blanked: a catalogue with a typo should look wrong in
  * the UI, where someone can see it, not read as an empty label to a screen
  * reader.
+ *
+ * A thin call into the runtime's `interpolate`, kept because it is this module's
+ * published name and because the rule above is the seam's rule rather than the
+ * runtime's. Formatting a bare template here is locale-free; a factory resolves
+ * through a {@link MessageRuntime} instead, so the locale that mattered is the
+ * one the runtime was built with.
  */
 export function formatMessage(template: string, values: PageListMessageValues): string {
-	return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-		name in values ? String(values[name]) : whole,
-	);
+	return interpolate(template, values, SOURCE_LOCALE);
 }
 
-/** Merge a partial catalogue over English and bind the two formatted strings. */
-export function createPageListStrings(overrides: Partial<PageListCatalogue> = {}): PageListStrings {
-	const catalogue: PageListCatalogue = { ...EN_PAGE_LIST_CATALOGUE, ...overrides };
-	const format = (key: PageListMessageKey, values: PageListMessageValues): string =>
-		formatMessage(catalogue[key], values);
+/**
+ * Bind the page list's strings over a runtime.
+ *
+ * The one implementation that the pre-UI.11 `createPageListStrings` and
+ * `createViewerStrings` both call, so a host assembling all three components and
+ * a host wanting only the page list resolve a key the same way — including what
+ * a missing one looks like.
+ */
+export function pageListStrings(runtime: MessageRuntime): PageListStrings {
 	const label = (page: number, pageCount: number): string =>
-		format("pageList.page.label", { page: page + 1, total: pageCount });
+		runtime.t("pageList.page.label", { page: page + 1, total: pageCount });
 	return {
 		pageLabel: label,
 		announcement: (page, pageCount, mode) =>
-			format("pageList.page.announcement", {
+			runtime.t("pageList.page.announcement", {
 				page: page + 1,
 				total: pageCount,
 				pageLabel: label(page, pageCount),
-				mode: catalogue[modeKey(mode)],
+				// The mode name is *resolved* rather than read out of the
+				// catalogue, so a countable or missing mode template behaves like
+				// every other message instead of being pasted in as raw syntax.
+				mode: runtime.t(modeKey(mode)),
 			}),
-		regionLabel: catalogue["pageList.region.label"],
-		listLabel: catalogue["pageList.list.label"],
+		regionLabel: runtime.t("pageList.region.label"),
+		listLabel: runtime.t("pageList.list.label"),
 	};
+}
+
+/**
+ * Merge a partial page-list catalogue over English and bind the strings.
+ *
+ * The `Partial` is the host's "I have translated these" list, and the runtime
+ * resolves each key in the requested locale before falling back to English —
+ * which, for the default English runtime, is the same merge this function used
+ * to write out by hand.
+ */
+export function createPageListStrings(overrides: Partial<PageListCatalogue> = {}): PageListStrings {
+	return pageListStrings(createViewerMessageRuntime({ overrides }));
 }
 
 /** The shared English instance, for callers that override nothing. */
@@ -269,28 +306,30 @@ export interface SearchStrings {
 	readonly wordLabel: string;
 }
 
+/** Bind search's strings over a runtime. See {@link pageListStrings}. */
+export function searchStrings(runtime: MessageRuntime): SearchStrings {
+	return {
+		fieldLabel: runtime.t("search.field.label"),
+		fieldPlaceholder: runtime.t("search.field.placeholder"),
+		regionLabel: runtime.t("search.region.label"),
+		idle: () => runtime.t("search.status.idle"),
+		scanning: (count) => runtime.t("search.status.scanning", { count }),
+		found: (count) => runtime.t("search.status.found", { count }),
+		none: () => runtime.t("search.status.none"),
+		match: (current, count, pageLabel) =>
+			runtime.t("search.status.match", { current, count, pageLabel }),
+		failed: () => runtime.t("search.status.failed"),
+		nextLabel: runtime.t("search.button.next"),
+		previousLabel: runtime.t("search.button.previous"),
+		closeLabel: runtime.t("search.button.close"),
+		caseLabel: runtime.t("search.option.case"),
+		wordLabel: runtime.t("search.option.word"),
+	};
+}
+
 /** Merge a partial search catalogue over English and bind the formatted strings. */
 export function createSearchStrings(overrides: Partial<SearchCatalogue> = {}): SearchStrings {
-	const catalogue: SearchCatalogue = { ...EN_SEARCH_CATALOGUE, ...overrides };
-	const format = (key: SearchMessageKey, values: PageListMessageValues): string =>
-		formatMessage(catalogue[key], values);
-	return {
-		fieldLabel: catalogue["search.field.label"],
-		fieldPlaceholder: catalogue["search.field.placeholder"],
-		regionLabel: catalogue["search.region.label"],
-		idle: () => format("search.status.idle", {}),
-		scanning: (count) => format("search.status.scanning", { count }),
-		found: (count) => format("search.status.found", { count }),
-		none: () => format("search.status.none", {}),
-		match: (current, count, pageLabel) =>
-			format("search.status.match", { current, count, pageLabel }),
-		failed: () => format("search.status.failed", {}),
-		nextLabel: catalogue["search.button.next"],
-		previousLabel: catalogue["search.button.previous"],
-		closeLabel: catalogue["search.button.close"],
-		caseLabel: catalogue["search.option.case"],
-		wordLabel: catalogue["search.option.word"],
-	};
+	return searchStrings(createViewerMessageRuntime({ overrides }));
 }
 
 /** The shared English search strings, for callers that override nothing. */
@@ -442,13 +481,8 @@ export interface NavigationStrings {
 	readonly refusal: (reason: string) => string;
 }
 
-/** Merge a partial navigation catalogue over English and bind the strings. */
-export function createNavigationStrings(
-	overrides: Partial<NavigationCatalogue> = {},
-): NavigationStrings {
-	const catalogue: NavigationCatalogue = { ...EN_NAVIGATION_CATALOGUE, ...overrides };
-	const format = (key: NavigationMessageKey, values: PageListMessageValues): string =>
-		formatMessage(catalogue[key], values);
+/** Bind navigation's strings over a runtime. See {@link pageListStrings}. */
+export function navigationStrings(runtime: MessageRuntime): NavigationStrings {
 	// One table from a refusal reason to its key. A reason with no entry is a
 	// bug in `links.ts` rather than a runtime surprise, so the fallback is the
 	// generic refusal: a live region is never left blank.
@@ -464,33 +498,186 @@ export function createNavigationStrings(
 		unsupported: "navigation.link.blocked.unsupported",
 	};
 	return {
-		regionLabel: catalogue["navigation.region.label"],
-		outlineLabel: catalogue["navigation.outline.label"],
-		empty: () => format("navigation.outline.empty", {}),
-		unavailable: () => format("navigation.outline.unavailable", {}),
-		truncated: (shown, total) => format("navigation.outline.truncated", { shown, total }),
+		regionLabel: runtime.t("navigation.region.label"),
+		outlineLabel: runtime.t("navigation.outline.label"),
+		empty: () => runtime.t("navigation.outline.empty"),
+		unavailable: () => runtime.t("navigation.outline.unavailable"),
+		truncated: (shown, total) => runtime.t("navigation.outline.truncated", { shown, total }),
 		row: (title, pageLabel) =>
 			pageLabel === null
-				? format("navigation.outline.row.unresolved", { title })
-				: format("navigation.outline.row", { title, pageLabel }),
-		moved: (pageLabel) => format("navigation.outline.moved", { pageLabel }),
-		thumbnailsLabel: catalogue["navigation.thumbnails.label"],
-		thumbnailItem: (pageLabel) => format("navigation.thumbnails.item", { pageLabel }),
-		externalTitle: catalogue["navigation.link.external.title"],
-		externalBody: (url, host) => format("navigation.link.external.body", { url, host }),
-		externalConfirm: catalogue["navigation.link.external.confirm"],
-		externalCancel: catalogue["navigation.link.external.cancel"],
+				? runtime.t("navigation.outline.row.unresolved", { title })
+				: runtime.t("navigation.outline.row", { title, pageLabel }),
+		moved: (pageLabel) => runtime.t("navigation.outline.moved", { pageLabel }),
+		thumbnailsLabel: runtime.t("navigation.thumbnails.label"),
+		thumbnailItem: (pageLabel) => runtime.t("navigation.thumbnails.item", { pageLabel }),
+		externalTitle: runtime.t("navigation.link.external.title"),
+		externalBody: (url, host) => runtime.t("navigation.link.external.body", { url, host }),
+		externalConfirm: runtime.t("navigation.link.external.confirm"),
+		externalCancel: runtime.t("navigation.link.external.cancel"),
 		refusal: (reason) => {
 			const key = refusalKey[reason] ?? "navigation.link.blocked.unsupported";
 			// Only the scheme refusal has a `{url}`; the rest take none. Passing
 			// the reason as the URL would print "scheme" in a sentence about an
 			// address, so the value is supplied for that one key alone.
 			return key === "navigation.link.blocked.scheme"
-				? format(key, { url: reason })
-				: format(key, {});
+				? runtime.t(key, { url: reason })
+				: runtime.t(key);
 		},
 	};
 }
 
+/**
+ * Merge a partial navigation catalogue over English and bind the strings.
+ *
+ * The `Partial` is the host's "I have translated these" list; the resolution
+ * order that turns it into a sentence is the runtime's, and is the same one the
+ * page list and search use.
+ */
+export function createNavigationStrings(
+	overrides: Partial<NavigationCatalogue> = {},
+): NavigationStrings {
+	return navigationStrings(createViewerMessageRuntime({ overrides }));
+}
+
 /** The shared English navigation strings, for callers that override nothing. */
+
+/**
+ * ## The three catalogues, registered (SL-4.UI.11)
+ *
+ * Everything below is the assembly UI.02's comment above kept promising. It is
+ * a *registration*, not a merge: the three catalogues stay three catalogues with
+ * three closed key unions, each next to the component that owns its sentences,
+ * and the runtime is handed all three so that one locale decision and one
+ * fallback rule apply to the whole viewer.
+ *
+ * The tempting alternative — one `ViewerCatalogue` a build step generates from
+ * the three — was rejected. A generated catalogue is a second place a rename has
+ * to be applied, and a rename applied to the source and not the generated file
+ * is exactly the failure ADR-P0034 names, arrived at from the other direction.
+ */
+
+/** Every key the viewer owns, from the three closed sets above. */
+export const VIEWER_MESSAGE_KEYS = [
+	...PAGE_LIST_MESSAGE_KEYS,
+	...SEARCH_MESSAGE_KEYS,
+	...NAVIGATION_MESSAGE_KEYS,
+] as const;
+
+/** A key into {@link VIEWER_MESSAGE_KEYS}. */
+export type ViewerMessageKey = (typeof VIEWER_MESSAGE_KEYS)[number];
+
+/** The three English catalogues as one source catalogue. */
+export const EN_VIEWER_CATALOGUE: Readonly<Record<ViewerMessageKey, string>> = {
+	...EN_PAGE_LIST_CATALOGUE,
+	...EN_SEARCH_CATALOGUE,
+	...EN_NAVIGATION_CATALOGUE,
+};
+
+/** What a host may pass to {@link createViewerMessageRuntime}. */
+export interface ViewerRuntimeOptions {
+	/** The locale to render. Defaults to {@link SOURCE_LOCALE}. */
+	readonly locale?: string | undefined;
+	/**
+	 * Extra locales, merged over the English source.
+	 *
+	 * A `Partial<Catalogue>` per locale, which is the point: a translator ships
+	 * the strings they have done, and the runtime resolves the rest from the
+	 * source and records them as untranslated rather than failing.
+	 */
+	readonly catalogues?: Partial<CatalogueSet> | undefined;
+	/**
+	 * Templates for {@link locale} alone, merged over whatever that locale
+	 * already has. This is the pre-UI.11 `Partial` override, still accepted
+	 * unchanged by all three `createXStrings` factories.
+	 */
+	readonly overrides?: Partial<Record<ViewerMessageKey, string>> | undefined;
+	/**
+	 * Throw on a key no locale has, instead of rendering the missing marker.
+	 *
+	 * Off by default because a shell must not crash on a bad catalogue, and on
+	 * in CI, where the same defect is a build failure instead of a token in a
+	 * screenshot.
+	 */
+	readonly strict?: boolean | undefined;
+	/** Called per gap as it is found. */
+	readonly onGap?: ((gap: MessageGap) => void) | undefined;
+}
+
+/**
+ * The viewer's messages as one runtime.
+ *
+ * The single place a viewer host states a locale, and the single place the three
+ * components' keys meet. `VIEWER_MESSAGE_KEYS` is passed as the declared key
+ * set, which is what lets the runtime report a translation file still carrying a
+ * key the code dropped — a rename that missed a file, which is otherwise
+ * invisible until somebody reads the file.
+ */
+export function createViewerMessageRuntime(
+	options: ViewerRuntimeOptions = {},
+): MessageRuntime {
+	const runtime = createMessageRuntime({
+		locale: options.locale ?? SOURCE_LOCALE,
+		catalogues: { [SOURCE_LOCALE]: EN_VIEWER_CATALOGUE, ...options.catalogues },
+		declaredKeys: VIEWER_MESSAGE_KEYS,
+		strict: options.strict,
+		onGap: options.onGap,
+	});
+	return options.overrides === undefined
+		? runtime
+		: runtime.withOverrides(options.overrides as Catalogue);
+}
+
+/** The three components' resolved strings, over one runtime. */
+export interface ViewerStrings {
+	/** The locale these were resolved in. */
+	readonly locale: string;
+	readonly pageList: PageListStrings;
+	readonly search: SearchStrings;
+	readonly navigation: NavigationStrings;
+	/**
+	 * The runtime behind all three.
+	 *
+	 * Exposed for the two things only the runtime can answer: `gaps()` for a
+	 * report, and `coverage()` for "which of this viewer's strings has this
+	 * locale not translated yet".
+	 */
+	readonly runtime: MessageRuntime;
+}
+
+/**
+ * Every user-facing string the viewer owns, in one locale.
+ *
+ * What a shell mounts. The three `DEFAULT_*` constants below remain for a host
+ * that overrides nothing and wants one component; this is the one-call form the
+ * `i18n/README.md` tells a shell to use, because three separately-constructed
+ * runtimes are three chances to disagree about a locale.
+ */
+export function createViewerStrings(options: ViewerRuntimeOptions = {}): ViewerStrings {
+	const runtime = createViewerMessageRuntime(options);
+	return {
+		locale: runtime.locale,
+		runtime,
+		pageList: pageListStrings(runtime),
+		search: searchStrings(runtime),
+		navigation: navigationStrings(runtime),
+	};
+}
+
+/**
+ * The viewer's strings rendered in the pseudo-locale.
+ *
+ * Exported rather than left for a test to assemble, so "run the UI.11 gate" is a
+ * call with no arguments and the gate cannot drift from the way a shell would
+ * build it. The pseudo catalogue is total by construction
+ * (`pseudo-locale.ts`), so every `GapKind` this can report is one the English
+ * catalogue caused.
+ */
+export function createPseudoViewerStrings(): ViewerStrings {
+	return createViewerStrings({
+		locale: PSEUDO_LOCALE,
+		catalogues: { [PSEUDO_LOCALE]: createPseudoCatalogue(EN_VIEWER_CATALOGUE) },
+		strict: true,
+	});
+}
+
 export const DEFAULT_NAVIGATION_STRINGS: NavigationStrings = createNavigationStrings();

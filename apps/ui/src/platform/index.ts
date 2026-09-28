@@ -9,6 +9,7 @@ export type {
 	PlatformAdapter,
 	EnginePort,
 	NavigationPort,
+	LocalePort,
 	FilePort,
 	PickOpenOptions,
 	StoragePort,
