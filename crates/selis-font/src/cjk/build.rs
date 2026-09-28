@@ -22,8 +22,8 @@ use selis_sandbox::BudgetGuard;
 use skrifa::{FontRef, MetadataProvider, Tag};
 
 use super::set::CjkFontSet;
-use super::{chunk_by_id, CjkChunk, CHUNKS, CORE_STATIC_IDS};
-use crate::subset::{subset_ttf, GlyphSet};
+use super::{CjkChunk, CHUNKS, CORE_STATIC_IDS};
+use crate::subset::{subset_ttf_named, GlyphSet, SubsetName};
 
 /// Sample high-frequency Simplified Chinese core list (the opening of the
 /// standard frequency order — 的 一 是 在 …). Production builds pass a
@@ -66,6 +66,18 @@ pub struct CjkSetBuild {
     /// The chunk files, in table order (table ranges the source misses are
     /// skipped: not every CJK font covers every block).
     pub chunks: Vec<CjkBuiltChunk>,
+    /// The table ranges this source has **no** glyphs for at all, core-static
+    /// ones included, in table order.
+    ///
+    /// This is the "what happens when the glyph is missing from the chosen
+    /// source" answer, as data rather than as an absence: a payload built from
+    /// Noto Sans SC has no Hangul syllable at all, so `hangul-1`…`hangul-4`
+    /// are listed here and a Korean document's ᄀ U+AC00 paints `.notdef`
+    /// forever. The manifest publishes this list, the shell feeds it to
+    /// [`CjkFontSet::mark_unavailable`](super::set::CjkFontSet::mark_unavailable)
+    /// so no chunk that cannot exist is ever requested, and a user is told
+    /// "this payload has no Korean" rather than "still loading".
+    pub unserved: Vec<&'static CjkChunk>,
 }
 
 impl CjkSetBuild {
@@ -97,12 +109,23 @@ pub fn source_codepoints(source: &Bytes) -> Option<BTreeMap<u32, u16>> {
     .flatten()
 }
 
+/// The name every CJK payload file is published under.
+///
+/// Not "Noto Sans SC": a subset is a modified version, and the OFL reserves
+/// the source's family name (see [`SubsetName`]). The source's real identity
+/// is pinned in the manifest's `source` row and in
+/// `assets/cjk/PROVENANCE.md` — which is where a licence claim belongs.
+pub const SELIS_CJK_NAME: SubsetName = SubsetName {
+    family: "Selis CJK",
+    subfamily: "Regular",
+};
+
 /// Build the core + chunk payload from a source font.
 ///
 /// `core_extra` are additional code points forced into the core beyond
 /// [`CORE_STATIC_IDS`] (the frequency list; pass
 /// [`CORE_SAMPLE_HANZI`](self::CORE_SAMPLE_HANZI) codes for the offline
-/// default).
+/// default). Every emitted file is named `name`.
 ///
 /// # Budget
 ///
@@ -116,6 +139,7 @@ pub fn source_codepoints(source: &Bytes) -> Option<BTreeMap<u32, u16>> {
 pub fn build_set(
     source: &Bytes,
     core_extra: &[u32],
+    name: SubsetName,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<CjkSetBuild>> {
     let Some(map) = source_codepoints(source) else {
@@ -123,11 +147,15 @@ pub fn build_set(
     };
     let mut core_gids: BTreeSet<u16> = BTreeSet::new();
     let mut core_codes = 0usize;
-    for id in CORE_STATIC_IDS {
-        let Some(chunk) = chunk_by_id(id) else {
-            continue;
-        };
+    let mut unserved: Vec<&'static CjkChunk> = Vec::new();
+    for chunk in CHUNKS {
         let (gids, n) = range_gids(&map, chunk);
+        if n == 0 {
+            unserved.push(chunk);
+        }
+        if !CORE_STATIC_IDS.contains(&chunk.id) {
+            continue;
+        }
         core_codes = core_codes.saturating_add(n);
         core_gids.extend(gids);
     }
@@ -137,7 +165,7 @@ pub fn build_set(
             let _ = core_gids.insert(gid);
         }
     }
-    let Some(core) = subset_gids(source, &core_gids, g)? else {
+    let Some(core) = subset_gids(source, &core_gids, name, g)? else {
         return Ok(None);
     };
     let mut chunks = Vec::new();
@@ -147,9 +175,10 @@ pub fn build_set(
         }
         let (gids, n) = range_gids(&map, chunk);
         if gids.is_empty() {
-            continue; // nothing in this range in this source: no file
+            continue; // nothing in this range in this source: no file (reported
+                      // in `unserved` — the range is addressable, just empty)
         }
-        if let Some(data) = subset_gids(source, &gids, g)? {
+        if let Some(data) = subset_gids(source, &gids, name, g)? {
             chunks.push(CjkBuiltChunk {
                 chunk,
                 codes: n,
@@ -163,6 +192,7 @@ pub fn build_set(
         core,
         core_codes,
         chunks,
+        unserved,
     }))
 }
 
@@ -181,10 +211,11 @@ fn range_gids(map: &BTreeMap<u32, u16>, range: &CjkChunk) -> (BTreeSet<u16>, usi
 fn subset_gids(
     source: &Bytes,
     gids: &BTreeSet<u16>,
+    name: SubsetName,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Bytes>> {
     let keep = gids.iter().copied().collect();
-    subset_ttf(source, &GlyphSet { keep }, g)
+    subset_ttf_named(source, &GlyphSet { keep }, Some(name), g)
 }
 
 #[cfg(test)]
@@ -216,7 +247,7 @@ mod tests {
     fn fixture_source() -> Bytes {
         let mut g = guard();
         let mut font = Bytes::copy_from_slice(include_bytes!("../../tests/fixtures/mini.ttf"));
-        for &code in &[0x3042u32, 0x4E00, 0x9BCA, 0xAC00, 0x20000, 0x2F81] {
+        for &code in &[0x3042u32, 0x4E00, 0x6F00, 0xAC00, 0x20000, 0x2F81] {
             font = crate::subset::add_glyph(&font, code, &rect_outline(), 1000, &mut g)
                 .expect("add ok")
                 .expect("merged");
@@ -227,7 +258,7 @@ mod tests {
     fn built() -> CjkSetBuild {
         let mut g = guard();
         let extra: Vec<u32> = ['一', '的'].iter().map(|c| u32::from(*c)).collect();
-        build_set(&fixture_source(), &extra, &mut g)
+        build_set(&fixture_source(), &extra, SELIS_CJK_NAME, &mut g)
             .expect("budget ok")
             .expect("glyf source")
     }
@@ -244,7 +275,7 @@ mod tests {
             glyph_id_for_char(&b.core, 0x2F81).is_some(),
             "kangxi is core-static"
         );
-        assert!(glyph_id_for_char(&b.core, 0x9BCA).is_none());
+        assert!(glyph_id_for_char(&b.core, 0x6F00).is_none());
         assert!(b.core_codes >= 3);
     }
 
@@ -265,7 +296,7 @@ mod tests {
             .find(|c| c.chunk.id == "ideographs-4")
             .expect("built");
         assert_eq!(four.codes, 1, "one source code point in range");
-        assert!(glyph_id_for_char(&four.data, 0x9BCA).is_some());
+        assert!(glyph_id_for_char(&four.data, 0x6F00).is_some());
         assert!(
             glyph_id_for_char(&four.data, 0xAC00).is_none(),
             "chunk is range-scoped"
@@ -292,7 +323,7 @@ mod tests {
             assert!(c.provide(&mut set), "chunk adopted for its own id");
         }
         // Core + chunks now cover every fixture code, each by its own rule.
-        for code in [0x3042u32, 0x4E00, 0x9BCA, 0xAC00, 0x2F81] {
+        for code in [0x3042u32, 0x4E00, 0x6F00, 0xAC00, 0x2F81] {
             assert!(set.covers(code), "resident set covers {code:04X}");
         }
         assert_eq!(set.revision(), 4, "four chunk adoptions");
@@ -307,8 +338,124 @@ mod tests {
     fn cff_and_broken_sources_are_rejected_not_misbuilt() {
         let mut g = guard();
         let cff = Bytes::copy_from_slice(include_bytes!("../../tests/fixtures/cff.otf"));
-        assert!(build_set(&cff, &[], &mut g).expect("budget ok").is_none());
+        assert!(build_set(&cff, &[], SELIS_CJK_NAME, &mut g)
+            .expect("budget ok")
+            .is_none());
         let junk = Bytes::copy_from_slice(b"not a font");
-        assert!(build_set(&junk, &[], &mut g).expect("budget ok").is_none());
+        assert!(build_set(&junk, &[], SELIS_CJK_NAME, &mut g)
+            .expect("budget ok")
+            .is_none());
+    }
+
+    /// Every file the builder emits is named `SELIS_CJK_NAME`, never the
+    /// source's family: a subset is an OFL modified version and the reserved
+    /// name does not travel with the outlines.
+    #[test]
+    fn emitted_files_are_renamed_away_from_the_source_family() {
+        let b = built();
+        assert_eq!(
+            name_ids(&b.core),
+            vec![
+                (1u16, "Selis CJK".to_string()),
+                (2u16, "Regular".to_string()),
+                (4u16, "Selis CJK Regular".to_string()),
+                (6u16, "SelisCJK-Regular".to_string())
+            ]
+        );
+        for c in &b.chunks {
+            assert_eq!(
+                name_ids(&c.data),
+                vec![
+                    (1u16, "Selis CJK".to_string()),
+                    (2u16, "Regular".to_string()),
+                    (4u16, "Selis CJK Regular".to_string()),
+                    (6u16, "SelisCJK-Regular".to_string())
+                ],
+                "chunk {}",
+                c.chunk.id
+            );
+        }
+        // The source keeps its own records: the builder renames the output, it
+        // does not rewrite its input.
+        let source = name_ids(&fixture_source());
+        assert!(
+            source.iter().all(|(_, value)| value != "Selis CJK"),
+            "the fixture source is not renamed in place"
+        );
+    }
+
+    /// Decode a font's `name` table into `(nameID, value)` pairs (format 0,
+    /// UTF-16BE) — the assertions above are about *bytes we wrote*, so they
+    /// read the bytes rather than asking a library what it makes of them.
+    fn name_ids(bytes: &Bytes) -> Vec<(u16, String)> {
+        fn be16(data: &[u8], off: usize) -> u16 {
+            let pair = data.get(off..off.saturating_add(2)).unwrap_or(&[0, 0]);
+            let hi = pair.first().copied().unwrap_or(0);
+            let lo = pair.get(1).copied().unwrap_or(0);
+            u16::from_be_bytes([hi, lo])
+        }
+        let font = FontRef::new(bytes.as_slice()).expect("parses");
+        let table = font
+            .table_data(Tag::new(b"name"))
+            .expect("has a name table");
+        let data = table.as_bytes();
+        let count = usize::from(be16(data, 2));
+        let storage = usize::from(be16(data, 4));
+        (0..count)
+            .map(|i| {
+                let rec = 6usize.saturating_add(i.saturating_mul(12));
+                let id = be16(data, rec.saturating_add(6));
+                let len = usize::from(be16(data, rec.saturating_add(8)));
+                let off = usize::from(be16(data, rec.saturating_add(10)));
+                let start = storage.saturating_add(off);
+                let units: Vec<u16> = data
+                    .get(start..start.saturating_add(len))
+                    .unwrap_or_default()
+                    .chunks_exact(2)
+                    .map(|p| {
+                        let hi = p.first().copied().unwrap_or(0);
+                        let lo = p.get(1).copied().unwrap_or(0);
+                        u16::from_be_bytes([hi, lo])
+                    })
+                    .collect();
+                (id, String::from_utf16_lossy(&units))
+            })
+            .collect()
+    }
+
+    /// The ranges a source has nothing for are *reported*, not silently
+    /// absent — that is the "no CJK font for this script" answer the manifest
+    /// publishes and the shell turns into a refusal instead of a fetch loop.
+    #[test]
+    fn unserved_ranges_are_reported() {
+        let b = built();
+        let ids: Vec<&str> = b.unserved.iter().map(|c| c.id).collect();
+        for absent in ["jamo", "ext-a", "compat-ideographs", "ext-sup"] {
+            assert!(ids.contains(&absent), "{absent} has no fixture glyph");
+        }
+        for served in ["punct-kana", "ideographs-4", "hangul-1", "ext-b"] {
+            assert!(!ids.contains(&served), "{served} is served");
+        }
+        // Every table range is classified exactly once: `unserved` (the source
+        // has no glyph there) or served — by a chunk file, or by the core for
+        // a core-static range. Never both, never neither: a range the build
+        // cannot classify is a range a shell cannot answer for.
+        for chunk in CHUNKS {
+            let listed = b.unserved.iter().any(|c| c.id == chunk.id);
+            let has_file = b.chunks.iter().any(|c| c.chunk.id == chunk.id);
+            // A core-static range the source has nothing for is *unserved*,
+            // not "served by the core": the core file carries no glyph for it.
+            let served = has_file || (CORE_STATIC_IDS.contains(&chunk.id) && !listed);
+            assert!(
+                listed != served,
+                "{} is {}",
+                chunk.id,
+                if listed {
+                    "both unserved and served"
+                } else {
+                    "neither unserved nor served"
+                }
+            );
+        }
     }
 }

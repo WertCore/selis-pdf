@@ -27,7 +27,15 @@
 //! The ranges follow Unicode CJK block boundaries; the main Ideographs block
 //! (U+4E00–U+9FFF) and the Hangul syllables block (U+AC00–U+D7A3) are
 //! quartered, so a document that only uses a slice of a block downloads a
-//! fraction of it.
+//! fraction of it. The table is **measured**, not guessed: the first build
+//! against real Noto (SL-3.FONT.10) put 16 624 of Noto Sans SC's ideographs in
+//! the U+5F00–U+9FFF tail, which is 2.4 MB brotli in one file — over the ADR
+//! chunk budget and eight times any other quarter. That range is therefore
+//! quartered again (four sub-ranges, `ideographs-4`…`ideographs-7`, each under
+//! 0.7 MB brotli against the same source), and the sub-ranges are named
+//! contiguously so the ids stay sortable. Changing this table is a
+//! compatibility event for any cache that has seen it: no payload has shipped,
+//! so this is the cheapest moment it will ever happen.
 
 pub mod build;
 pub mod set;
@@ -72,11 +80,11 @@ pub fn is_cjk(code: u32) -> bool {
 /// The full chunk table, in code-point order.
 ///
 /// The main Ideographs block is quartered (U+4E00–U+51FF, U+5200–U+57FF,
-/// U+5800–U+5EFF, U+5F00–U+9FFF) and the modern Hangul syllables block is
-/// quartered likewise; every other range is a whole Unicode block. The core
-/// coverage (subset at build time from [`CORE_STATIC_IDS`] plus a frequency
-/// list) overlaps this table: coverage is cmap-driven at runtime, *addressing*
-/// is table-driven.
+/// U+5800–U+5EFF, and the U+5F00–U+9FFF tail in four measured sub-ranges) and
+/// the modern Hangul syllables block is quartered likewise; every other range
+/// is a whole Unicode block. The core coverage (subset at build time from
+/// [`CORE_STATIC_IDS`] plus a frequency list) overlaps this table: coverage is
+/// cmap-driven at runtime, *addressing* is table-driven.
 pub const CHUNKS: &[CjkChunk] = &[
     CjkChunk {
         id: "jamo",
@@ -141,6 +149,21 @@ pub const CHUNKS: &[CjkChunk] = &[
     CjkChunk {
         id: "ideographs-4",
         first: 0x5F00,
+        last: 0x6F3F,
+    },
+    CjkChunk {
+        id: "ideographs-5",
+        first: 0x6F40,
+        last: 0x7F7F,
+    },
+    CjkChunk {
+        id: "ideographs-6",
+        first: 0x7F80,
+        last: 0x8FBF,
+    },
+    CjkChunk {
+        id: "ideographs-7",
+        first: 0x8FC0,
         last: 0x9FFF,
     },
     CjkChunk {
@@ -267,8 +290,17 @@ mod tests {
         assert_eq!(chunk_for(0x51FF).expect("chunk").id, "ideographs-1");
         assert_eq!(chunk_for(0x5200).expect("chunk").id, "ideographs-2");
         assert_eq!(chunk_for(0x5800).expect("chunk").id, "ideographs-3");
+        assert_eq!(chunk_for(0x5EFF).expect("chunk").id, "ideographs-3");
+        // The dense tail is quartered again: the measured Noto Sans SC build
+        // put 16 624 codes in it, 2.4 MB brotli as one file (SL-3.FONT.10).
         assert_eq!(chunk_for(0x5F00).expect("chunk").id, "ideographs-4");
-        assert_eq!(chunk_for(0x9FFF).expect("chunk").id, "ideographs-4");
+        assert_eq!(chunk_for(0x6F3F).expect("chunk").id, "ideographs-4");
+        assert_eq!(chunk_for(0x6F40).expect("chunk").id, "ideographs-5");
+        assert_eq!(chunk_for(0x7F7F).expect("chunk").id, "ideographs-5");
+        assert_eq!(chunk_for(0x7F80).expect("chunk").id, "ideographs-6");
+        assert_eq!(chunk_for(0x8FBF).expect("chunk").id, "ideographs-6");
+        assert_eq!(chunk_for(0x8FC0).expect("chunk").id, "ideographs-7");
+        assert_eq!(chunk_for(0x9FFF).expect("chunk").id, "ideographs-7");
     }
 
     #[test]

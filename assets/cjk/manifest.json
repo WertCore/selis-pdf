@@ -1,0 +1,497 @@
+{
+  "adr": "ADR-P0043",
+  "budgets": {
+    "chunk_brotli": 1500000,
+    "core_brotli": 1200000
+  },
+  "chunk_table": [
+    {
+      "core_static": false,
+      "first": "U+1100",
+      "id": "jamo",
+      "last": "U+11FF",
+      "served_by": null
+    },
+    {
+      "core_static": true,
+      "first": "U+2E80",
+      "id": "radicals",
+      "last": "U+2EFF",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+2F00",
+      "id": "kangxi",
+      "last": "U+2FDF",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+3000",
+      "id": "punct-kana",
+      "last": "U+30FF",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+3130",
+      "id": "hangul-compat-jamo",
+      "last": "U+318F",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+31C0",
+      "id": "strokes",
+      "last": "U+31EF",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+3200",
+      "id": "enclosed",
+      "last": "U+32FF",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+3300",
+      "id": "compat",
+      "last": "U+33FF",
+      "served_by": "core"
+    },
+    {
+      "core_static": false,
+      "first": "U+3400",
+      "id": "ext-a",
+      "last": "U+4DBF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+4E00",
+      "id": "ideographs-1",
+      "last": "U+51FF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+5200",
+      "id": "ideographs-2",
+      "last": "U+57FF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+5800",
+      "id": "ideographs-3",
+      "last": "U+5EFF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+5F00",
+      "id": "ideographs-4",
+      "last": "U+6F3F",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+6F40",
+      "id": "ideographs-5",
+      "last": "U+7F7F",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+7F80",
+      "id": "ideographs-6",
+      "last": "U+8FBF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+8FC0",
+      "id": "ideographs-7",
+      "last": "U+9FFF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+A960",
+      "id": "jamo-ext-a",
+      "last": "U+A97C",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+AC00",
+      "id": "hangul-1",
+      "last": "U+B7FF",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+B800",
+      "id": "hangul-2",
+      "last": "U+C3FF",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+C400",
+      "id": "hangul-3",
+      "last": "U+CFFF",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+D000",
+      "id": "hangul-4",
+      "last": "U+D7A3",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+D7B0",
+      "id": "jamo-ext-b",
+      "last": "U+D7FF",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+F900",
+      "id": "compat-ideographs",
+      "last": "U+FAFF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": true,
+      "first": "U+FE10",
+      "id": "vertical",
+      "last": "U+FE1F",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+FE30",
+      "id": "compat-forms",
+      "last": "U+FE4F",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+FE50",
+      "id": "small-forms",
+      "last": "U+FE6F",
+      "served_by": "core"
+    },
+    {
+      "core_static": true,
+      "first": "U+FF00",
+      "id": "halfwidth",
+      "last": "U+FFEF",
+      "served_by": "core"
+    },
+    {
+      "core_static": false,
+      "first": "U+20000",
+      "id": "ext-b",
+      "last": "U+2A6DF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+2A700",
+      "id": "ext-c",
+      "last": "U+2B73F",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+2B740",
+      "id": "ext-d",
+      "last": "U+2B81F",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+2B820",
+      "id": "ext-e",
+      "last": "U+2CEAF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+2CEB0",
+      "id": "ext-f",
+      "last": "U+2EBEF",
+      "served_by": "chunk"
+    },
+    {
+      "core_static": false,
+      "first": "U+2EBF0",
+      "id": "ext-g",
+      "last": "U+2EE5F",
+      "served_by": null
+    },
+    {
+      "core_static": false,
+      "first": "U+2F800",
+      "id": "ext-sup",
+      "last": "U+2FA1F",
+      "served_by": "chunk"
+    }
+  ],
+  "chunks": [
+    {
+      "brotli_bytes": 1093755,
+      "codes": 6582,
+      "file": "cjk/ext-a.ttf",
+      "id": "ext-a",
+      "range": [
+        "U+3400",
+        "U+4DBF"
+      ],
+      "raw_bytes": 2449132,
+      "sha256": "b59fa20d172e9be342abf5bc0bb0600d89858e3f9de9ab5f3869eb2a8a76e041",
+      "url": "cjk/ext-a.ttf"
+    },
+    {
+      "brotli_bytes": 150235,
+      "codes": 1024,
+      "file": "cjk/ideographs-1.ttf",
+      "id": "ideographs-1",
+      "range": [
+        "U+4E00",
+        "U+51FF"
+      ],
+      "raw_bytes": 263840,
+      "sha256": "716cc1d4d59d648e24b5a0b05d74202cf2703bcf1107100f2b4d10360c27942b",
+      "url": "cjk/ideographs-1.ttf"
+    },
+    {
+      "brotli_bytes": 231249,
+      "codes": 1536,
+      "file": "cjk/ideographs-2.ttf",
+      "id": "ideographs-2",
+      "range": [
+        "U+5200",
+        "U+57FF"
+      ],
+      "raw_bytes": 411712,
+      "sha256": "0cfe4f1249860e8509ed67757e6f547480f67d30ccf5d95917bb521ae9c12797",
+      "url": "cjk/ideographs-2.ttf"
+    },
+    {
+      "brotli_bytes": 296755,
+      "codes": 1792,
+      "file": "cjk/ideographs-3.ttf",
+      "id": "ideographs-3",
+      "range": [
+        "U+5800",
+        "U+5EFF"
+      ],
+      "raw_bytes": 551672,
+      "sha256": "53a6df608f0540f2b1d99d62a42ce1fd2c1679d463689219bfb34d36e10559d1",
+      "url": "cjk/ideographs-3.ttf"
+    },
+    {
+      "brotli_bytes": 645043,
+      "codes": 4160,
+      "file": "cjk/ideographs-4.ttf",
+      "id": "ideographs-4",
+      "range": [
+        "U+5F00",
+        "U+6F3F"
+      ],
+      "raw_bytes": 1366916,
+      "sha256": "d9e664d9842a26e670a0213fb5c4df74aae37adab3df5d669fac1793f62adea1",
+      "url": "cjk/ideographs-4.ttf"
+    },
+    {
+      "brotli_bytes": 694493,
+      "codes": 4160,
+      "file": "cjk/ideographs-5.ttf",
+      "id": "ideographs-5",
+      "range": [
+        "U+6F40",
+        "U+7F7F"
+      ],
+      "raw_bytes": 1563488,
+      "sha256": "b53f2980c80b62458192572707b281b5f4a5816211236d9e84af44e39d3e2c39",
+      "url": "cjk/ideographs-5.ttf"
+    },
+    {
+      "brotli_bytes": 671468,
+      "codes": 4160,
+      "file": "cjk/ideographs-6.ttf",
+      "id": "ideographs-6",
+      "range": [
+        "U+7F80",
+        "U+8FBF"
+      ],
+      "raw_bytes": 1429460,
+      "sha256": "8b40aea640b3f1a6ead614584ed4990839c3dfc52345be8f401a406a42232575",
+      "url": "cjk/ideographs-6.ttf"
+    },
+    {
+      "brotli_bytes": 705637,
+      "codes": 4144,
+      "file": "cjk/ideographs-7.ttf",
+      "id": "ideographs-7",
+      "range": [
+        "U+8FC0",
+        "U+9FFF"
+      ],
+      "raw_bytes": 1716884,
+      "sha256": "229176e82b6a1ee954e1aa3fa3d84342f334eb99c2b0e47baa7b53d4a9752321",
+      "url": "cjk/ideographs-7.ttf"
+    },
+    {
+      "brotli_bytes": 24058,
+      "codes": 122,
+      "file": "cjk/compat-ideographs.ttf",
+      "id": "compat-ideographs",
+      "range": [
+        "U+F900",
+        "U+FAFF"
+      ],
+      "raw_bytes": 38148,
+      "sha256": "ae7b4b74c110f1ea61c13f6ae3da2c40aa299abe3b166d7b1932aa1c96e0a10b",
+      "url": "cjk/compat-ideographs.ttf"
+    },
+    {
+      "brotli_bytes": 11453,
+      "codes": 54,
+      "file": "cjk/ext-b.ttf",
+      "id": "ext-b",
+      "range": [
+        "U+20000",
+        "U+2A6DF"
+      ],
+      "raw_bytes": 17196,
+      "sha256": "fa8a0b2e42936af82b7bf82c848eab6121cf4eb01fb000853566c8e73f552210",
+      "url": "cjk/ext-b.ttf"
+    },
+    {
+      "brotli_bytes": 11141,
+      "codes": 44,
+      "file": "cjk/ext-c.ttf",
+      "id": "ext-c",
+      "range": [
+        "U+2A700",
+        "U+2B73F"
+      ],
+      "raw_bytes": 17520,
+      "sha256": "49c24209f0b290464c27af82be9b47ddfb6859d445e4de55cc2df51c535156c0",
+      "url": "cjk/ext-c.ttf"
+    },
+    {
+      "brotli_bytes": 2794,
+      "codes": 8,
+      "file": "cjk/ext-d.ttf",
+      "id": "ext-d",
+      "range": [
+        "U+2B740",
+        "U+2B81F"
+      ],
+      "raw_bytes": 3880,
+      "sha256": "ceddaca3814522cf30ad9fa91e1153e30281712f6583328a7779e1a38054468f",
+      "url": "cjk/ext-d.ttf"
+    },
+    {
+      "brotli_bytes": 23844,
+      "codes": 108,
+      "file": "cjk/ext-e.ttf",
+      "id": "ext-e",
+      "range": [
+        "U+2B820",
+        "U+2CEAF"
+      ],
+      "raw_bytes": 40312,
+      "sha256": "02fe3c2fb727e63b8264e0e8c1aa21c00b45f3ec6e9a11ef6c3db6d201e4ae97",
+      "url": "cjk/ext-e.ttf"
+    },
+    {
+      "brotli_bytes": 429,
+      "codes": 1,
+      "file": "cjk/ext-f.ttf",
+      "id": "ext-f",
+      "range": [
+        "U+2CEB0",
+        "U+2EBEF"
+      ],
+      "raw_bytes": 728,
+      "sha256": "a27712fef2ec1b75914274a4ae3e0d0c229ece7e5033d597050a7392d764acb4",
+      "url": "cjk/ext-f.ttf"
+    },
+    {
+      "brotli_bytes": 861,
+      "codes": 2,
+      "file": "cjk/ext-sup.ttf",
+      "id": "ext-sup",
+      "range": [
+        "U+2F800",
+        "U+2FA1F"
+      ],
+      "raw_bytes": 1280,
+      "sha256": "3c57ee11784aaf835544309e1cb42e85b91370451f87e721578f3e1a543e0e50",
+      "url": "cjk/ext-sup.ttf"
+    }
+  ],
+  "core": {
+    "brotli_bytes": 641043,
+    "codes": 5013,
+    "core_extra_count": 3500,
+    "core_list_sha256": "164c89603c8d4db74f073c8a9e1277b6f8f53e2dd617740ca594f8698a584d32",
+    "core_static_ids": [
+      "radicals",
+      "kangxi",
+      "punct-kana",
+      "hangul-compat-jamo",
+      "strokes",
+      "enclosed",
+      "compat",
+      "vertical",
+      "compat-forms",
+      "small-forms",
+      "halfwidth"
+    ],
+    "file": "cjk/core.ttf",
+    "raw_bytes": 1290100,
+    "sha256": "6e000b3a9f306903ee8d308ebdc4b1d67977d5c95620ab7a771a6dd0ae1b80f7"
+  },
+  "name": {
+    "family": "Selis CJK",
+    "subfamily": "Regular"
+  },
+  "schema": "selis-cjk/1",
+  "source": {
+    "family": "Noto Sans SC",
+    "file": "NotoSansSC-wght.ttf",
+    "id": "noto-sans-sc",
+    "license": "SIL Open Font License 1.1",
+    "raw_bytes": 17772300,
+    "reserved_font_name": "Source",
+    "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+    "url": "https://raw.githubusercontent.com/google/fonts/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+  },
+  "task": "SL-3.FONT.10",
+  "totals": {
+    "brotli_bytes": 5204258,
+    "files": 16,
+    "raw_bytes": 11162268
+  },
+  "unserved": [
+    "jamo",
+    "jamo-ext-a",
+    "hangul-1",
+    "hangul-2",
+    "hangul-3",
+    "hangul-4",
+    "jamo-ext-b",
+    "ext-g"
+  ]
+}

@@ -318,7 +318,20 @@ pub(crate) fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
     // go to a temp file, not stdout — writing a large buffer to a pipe-backed
     // stdout can hit EAGAIN on the runner (observed with the ~7 MB wasm
     // artifact); a regular file cannot.
-    let out_path = std::env::temp_dir().join("selis-size-brotli.bin");
+    //
+    // The name is unique per call, and that is load-bearing: `cjk-build` calls
+    // this once per emitted file, and the test suite builds several payloads
+    // in parallel threads. A single shared name let one call read another's
+    // bytes — mid-write, so the read failed and the caller recorded a size of
+    // 0, or it read a *different* file's compressed length, which is worse
+    // because it is silently wrong. The sequence number is what makes the
+    // calls independent; the pid keeps two test binaries apart.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out_path = std::env::temp_dir().join(format!(
+        "selis-size-brotli-{}-{seq}.bin",
+        std::process::id()
+    ));
     let script = format!(
         "const z=require('node:zlib');const fs=require('fs');\
          const d=fs.readFileSync('{src}');\
@@ -329,12 +342,22 @@ pub(crate) fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
     let out = std::process::Command::new("node")
         .args(["-e", &script])
         .output()
-        .map_err(|e| format!("node brotli: {e}"))?;
+        .map_err(|e| format!("node brotli: {e}"));
+    let out = match out {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&out_path);
+            return Err(e);
+        }
+    };
     if !out.status.success() {
+        let _ = std::fs::remove_file(&out_path);
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("node brotli compression failed: {stderr}"));
     }
-    std::fs::read(&out_path).map_err(|e| format!("{}: {e}", out_path.display()))
+    let bytes = std::fs::read(&out_path).map_err(|e| format!("{}: {e}", out_path.display()));
+    let _ = std::fs::remove_file(&out_path);
+    bytes
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 mod bench;
 mod checks;
 mod cjk_assets;
+mod cjk_source;
 mod codes;
 mod conformance;
 mod corpus;
@@ -99,11 +100,16 @@ enum Command {
     /// `cjk/core.ttf`, one `cjk/<id>.ttf` per covered chunk range, and the
     /// size-pinned `cjk/manifest.json` (SL-3.FONT.10, ADR-P0043).
     CjkBuild {
-        /// Source font (glyf-flavored, e.g. a pinned Noto Sans CJK static).
+        /// Source font (glyf-flavored; a pinned one from `cjk-fetch`).
         source: PathBuf,
         /// Output directory (files land under `<out>/cjk/`).
         #[arg(long)]
         out: PathBuf,
+        /// Record the payload as a build of this pinned source — refused if
+        /// the file is not byte-for-byte the pinned one, so a manifest can
+        /// never name a source it was not built from.
+        #[arg(long)]
+        source_id: Option<String>,
         /// Code-point list forced into the core beyond the static CJK
         /// ranges (tokens: `U+XXXX` / `0xXXXX` / bare hex / literal chars);
         /// defaults to the documented `CORE_SAMPLE_HANZI` sample.
@@ -116,6 +122,40 @@ enum Command {
         #[arg(long)]
         budget_chunk: Option<u64>,
     },
+    /// Download a **pinned** CJK source font and verify its SHA-256
+    /// (SL-3.FONT.10). The release pipeline's only network step, and it is not
+    /// the shipped product's: no shell ever fetches a source font.
+    CjkFetch {
+        /// List the pinned source ids and exit.
+        #[arg(long)]
+        list: bool,
+        /// Pinned source id (omitted with `--list`).
+        source: Option<String>,
+        /// Directory to write the font into.
+        #[arg(long, default_value = "target/cjk-src")]
+        dir: PathBuf,
+    },
+    /// Re-check a built CJK payload against its own manifest: every file's
+    /// SHA-256 and size, the brotli budgets, and the chunk table's
+    /// `served_by` rows against the files that actually exist.
+    CjkVerify {
+        /// The build output directory (the one holding `cjk/`).
+        dir: PathBuf,
+        /// `full` (every file the manifest lists must be present) or
+        /// `manifest` (cross-check the record; the repository
+        /// carries no chunk binaries, they are release artifacts).
+        #[arg(long, default_value = "full")]
+        scope: String,
+    },
+    /// Measure what a document's CJK costs to download: the core plus the
+    /// chunks its code points fall in, in brotli bytes.
+    CjkMeasure {
+        /// A built payload directory (the one holding `cjk/`).
+        dir: PathBuf,
+        /// A UTF-8 text file whose CJK characters stand in for the document's.
+        text: PathBuf,
+    },
+
     /// Coverage floors per crate (SL-0.WS.08).
     Coverage,
     /// Mutation testing scoped to sandbox/edit/redact/sign (SL-0.WS.08).
@@ -548,10 +588,40 @@ fn main() -> ExitCode {
         Command::CjkBuild {
             source,
             out,
+            source_id,
             core_list,
             budget_core,
             budget_chunk,
-        } => cjk_assets::run(&source, &out, core_list.as_ref(), budget_core, budget_chunk),
+        } => cjk_assets::run(
+            &source,
+            &out,
+            core_list.as_ref(),
+            budget_core,
+            budget_chunk,
+            source_id.as_deref(),
+        ),
+        Command::CjkFetch { list, source, dir } => {
+            if list || source.is_none() {
+                println!("pinned CJK sources:");
+                for s in cjk_source::PINNED_SOURCES {
+                    println!("  {}", s.id);
+                    println!("    file     {} ({} B)", s.file, s.bytes);
+                    println!("    sha256   {}", s.sha256);
+                    println!("    licence  {}", s.license);
+                    if let Some(rfn) = s.reserved_font_name {
+                        println!("    OFL RFN   {rfn} — subsets are published as Selis CJK");
+                    }
+                    println!("    coverage {}", s.coverage());
+                }
+                return ExitCode::SUCCESS;
+            }
+            cjk_assets::fetch(&source.unwrap_or_default(), &dir)
+        }
+        Command::CjkVerify { dir, scope } => match cjk_assets::Scope::parse(&scope) {
+            Ok(scope) => cjk_assets::verify(&dir, scope),
+            Err(e) => Err(e),
+        },
+        Command::CjkMeasure { dir, text } => cjk_assets::measure(&dir, &text),
         Command::Coverage => coverage::run(),
         Command::Mutate => coverage::mutate(),
         Command::Corpus(args) => match args.sub {
