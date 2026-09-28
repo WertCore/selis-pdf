@@ -164,27 +164,6 @@ export type {
 export { caretAtTextIndex, createSearch, matchCarets } from "./search.js";
 
 export type {
-	PageListCatalogue,
-	PageListMessageKey,
-	PageListMessageValues,
-	PageListStrings,
-	SearchMessageKey,
-	SearchStrings,
-} from "./strings.js";
-export {
-	DEFAULT_SEARCH_STRINGS,
-	DEFAULT_STRINGS,
-	EN_PAGE_LIST_CATALOGUE,
-	EN_SEARCH_CATALOGUE,
-	PAGE_LIST_MESSAGE_KEYS,
-	SEARCH_MESSAGE_KEYS,
-	createPageListStrings,
-	createSearchStrings,
-	formatMessage,
-	modeKey,
-} from "./strings.js";
-
-export type {
 	PageList,
 	PageListMetrics,
 	PageListOptions,
@@ -193,3 +172,105 @@ export type {
 	PageTileView,
 } from "./page-list.js";
 export { DEFAULT_METRICS, createPageList } from "./page-list.js";
+
+export type { NormalisedLabelRange } from "./page-labels.js";
+export {
+	DEFAULT_LABEL_STYLE,
+	MAX_ROMAN,
+	formatSequenceValue,
+	hasMeaningfulLabels,
+	normaliseLabelRanges,
+	pageLabelFor,
+	pageLabelsFor,
+	rangeForPage,
+	toAlphabetic,
+	toRoman,
+} from "./page-labels.js";
+
+export type { FlatOutline, FlattenRequest, OutlineKey, OutlineRow } from "./outline.js";
+export {
+	MAX_OUTLINE_DEPTH,
+	MAX_OUTLINE_ITEMS,
+	MAX_OUTLINE_ROWS,
+	expandSubtree,
+	flattenOutline,
+	hasOutline,
+	initialExpansion,
+	moveOutlineFocus,
+	parentIdsOf,
+	rowPage,
+} from "./outline.js";
+
+export type { LinkDecision, LinkRefusal } from "./links.js";
+export {
+	ALLOWED_EXTERNAL_SCHEMES,
+	REFUSAL_FOR_ACTION,
+	alignmentForDestination,
+	decideLinkAction,
+	hostOf,
+	isAllowedExternalScheme,
+	schemeOf,
+} from "./links.js";
+
+export type {
+	LinkActivation,
+	NavigationController,
+	NavigationOptions,
+	NavigationState,
+	NavigationTarget,
+	PendingExternal,
+} from "./navigation.js";
+export { createNavigation } from "./navigation.js";
+
+export type {
+	ThumbnailRail,
+	ThumbnailRailOptions,
+	ThumbnailRailState,
+	ThumbnailView,
+	ThumbnailViewport,
+} from "./thumbnails.js";
+export {
+	DEFAULT_THUMBNAIL_GAP,
+	MAX_THUMBNAIL_ROWS,
+	MAX_THUMBNAIL_WIDTH,
+	MIN_THUMBNAIL_WIDTH,
+	THUMBNAIL_OVERSCAN_PX,
+	createThumbnailRail,
+	thumbnailClassName,
+} from "./thumbnails.js";
+
+export type {
+	NavigationCommand,
+	NavigationCommandAction,
+	NavigationKey,
+	NavigationKeyContext,
+} from "./keyboard.js";
+export { resolveNavigationKey } from "./keyboard.js";
+
+export type {
+	NavigationCatalogue,
+	NavigationMessageKey,
+	NavigationStrings,
+	PageListCatalogue,
+	PageListMessageKey,
+	PageListMessageValues,
+	PageListStrings,
+	SearchMessageKey,
+	SearchStrings,
+} from "./strings.js";
+export {
+	DEFAULT_NAVIGATION_STRINGS,
+	DEFAULT_SEARCH_STRINGS,
+	DEFAULT_STRINGS,
+	EN_NAVIGATION_CATALOGUE,
+	EN_PAGE_LIST_CATALOGUE,
+	EN_SEARCH_CATALOGUE,
+	NAVIGATION_MESSAGE_KEYS,
+	PAGE_LIST_MESSAGE_KEYS,
+	SEARCH_MESSAGE_KEYS,
+	createNavigationStrings,
+	createPageListStrings,
+	createSearchStrings,
+	formatMessage,
+	modeKey,
+} from "./strings.js";

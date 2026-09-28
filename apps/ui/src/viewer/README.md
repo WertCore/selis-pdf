@@ -29,6 +29,12 @@ Node — the repo ships no jsdom, by ADR-P0021's zero-dependency rule.
 | `worker-surface.ts` | The `OffscreenCanvas` surface: transfers the canvas to a worker, and strips tile pixels out of the frame on the way. |
 | `offscreen-compositor.ts` | The worker half: owns the canvas, draws the ops, hands the composed frame back by transfer. |
 | `page-list.css` | Presentation, entirely token-driven. |
+| `page-labels.ts` | The document's own page numbering: `/PageLabels` ranges, styles, prefixes, and the bijective-alphabetic and roman renderers. Pure. |
+| `outline.ts` | The bookmark tree as a flat, navigable list: path ids, expansion, the row cap, and the treeview key movement. Pure. |
+| `links.ts` | **ADR-P0020**: what activating a link does — `internal`, `external` (with the full destination) or `blocked` (with a reason). Pure. |
+| `navigation.ts` | The controller: the outline, the labels, the named destinations, the roving focus, and the external-link handshake. |
+| `thumbnails.ts` | The rail: the tile ladder at a fixed width, windowed and bounded. |
+| `navigation.css` | Presentation for the outline panel and the rail, token-driven. |
 | `text-layer.ts` | Where every character is, in CSS pixels inside a page box. Pure projection from the engine's user-space quads. |
 | `selection.ts` | Hit testing, caret movement, selection rectangles, and copy. Pure functions of a `TextLayerFrame`. |
 | `search.ts` | The search controller (SL-4.UI.05): consumes `EnginePort.search`'s batches, owns the query, the matches and the current one, and publishes highlights. |
@@ -390,12 +396,51 @@ literal. It is a lint-style unit test, following the idiom
   current match. Highlights are DOM boxes inside the page element, positioned by
   `--match-x`/`-y`/`-w`/`-h` exactly as a placed tile is, and they sit under the
   text layer so the glyphs stay legible and the text stays selectable.
-- **UI.06** (navigation): `scrollTopFor(page)` and `goToPage(page)` are the only
-  two ways to move; do not compute offsets anywhere else. Search does not add a
-  third.
+- **UI.06** (navigation): shipped. `scrollTopFor(page)` and `goToPage(page)` are
+  still the only two ways to move; navigation does not add a third. It
+  **publishes a target** (`NavigationState.target`) and the shell hands it to the
+  page list, so a bookmark and a search hit move the document the same way.
+- **UI.06** (links): `decideLinkAction` in `links.ts` is the whole of ADR-P0020
+  in this package. `internal` moves inside the document, `external` publishes a
+  **prompt and opens nothing**, and `blocked` carries a reason the live region
+  says out loud. `openExternal` is called from exactly one place in
+  `navigation.ts`, behind a confirmation. `/Launch`, `/GoToR`, `/SubmitForm`,
+  `/ImportData` and document JavaScript are refused *before* any field of the
+  action is examined, so a `/Launch` carrying a URI-shaped string is still a
+  launch. `links.test.ts` drives all of them through the real controller and
+  asserts the mock host recorded no URL.
+- **UI.06** (page labels): a page's own label, in `page-labels.ts`. It is data,
+  not prose, so it is never in the catalogue; the sentences around it are, and
+  they take the page-list's catalogue so "Page 7 of 900" cannot be worded two
+  ways. A label a style cannot express (roman above 3 999) degrades to the page
+  number rather than to an empty string — a recorded fidelity limit.
+- **UI.06** (thumbnails): a thumbnail rail is the same ladder at a fixed width —
+  `planLadder` per page, into its own `TileScheduler`. Two instances of one class,
+  not a second implementation. The rail's one adaptation is the request `hint`,
+  which it rewrites to `thumbnail`: the engine picks its budget profile from the
+  hint, and every page in a rail is a preview. The cache key does not include the
+  hint, so nothing else changes.
 - **UI.08** (print): `TileSurface` is not the print path. Print renders at print
   resolution to its own target (ADR-P0030's colour question and the
   `/PrintScaling` requirement both outrank reusing a screen compositor).
-- **Thumbnails** (UI.02's sibling in UI.06's scope): a thumbnail rail is the same
-  ladder at a fixed width — reuse `planLadder` with a viewport one page wide
-  rather than writing a second renderer.
+
+## What UI.06 does *not* prove, and what is owed a manual pass
+
+Honest limits, in the spirit of the search section above:
+
+- **The engine has no outline walk and no link reader yet.** `selis-pdf-doc`
+  exports `page_labels` and `parse_destination` but nothing for `/Outlines` or
+  annotations, and the WASM.01 protocol has no op for either. So
+  `PlatformAdapter.navigation` is an **optional** port, and `apps/web/host` and
+  the extension both report it absent today; the viewer then says *"this host
+  cannot read the document's outline"*, which is a different sentence from
+  *"this document has no outline"* and is the truth. Everything above is proven
+  against the mock, which serves the port from a declarative spec.
+- **A mid-page `/XYZ` destination shows the top of the page.** The point is
+  reduced to a page and an alignment because `goToPage` is the only way to move;
+  scrolling to a position inside a page is a UI.07 question with a real answer.
+- **Nothing has been looked at on a screen.** The outline's treeview roles, the
+  dialog's chrome, the rail's appearance and the prompt's readability are all
+  owed a browser pass. What *is* asserted headlessly is the prompt's **content**
+  (the full destination, verbatim, plus the host), because that is the part this
+  code owns and the part ADR-P0020 is about.

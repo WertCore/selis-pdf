@@ -19,8 +19,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+	EN_NAVIGATION_CATALOGUE,
 	EN_PAGE_LIST_CATALOGUE,
+	EN_SEARCH_CATALOGUE,
+	NAVIGATION_MESSAGE_KEYS,
 	PAGE_LIST_MESSAGE_KEYS,
+	SEARCH_MESSAGE_KEYS,
+	createNavigationStrings,
 	createPageListStrings,
 	formatMessage,
 	modeKey,
@@ -80,6 +85,106 @@ describe("message catalogue", () => {
 			(key) => EN_PAGE_LIST_CATALOGUE[key] === undefined,
 		);
 		expect(missing, `keys with no English text: ${missing.join(", ")}`).toEqual([]);
+		const missingSearch = SEARCH_MESSAGE_KEYS.filter(
+			(key) => EN_SEARCH_CATALOGUE[key] === undefined,
+		);
+		expect(missingSearch, `search keys with no English text: ${missingSearch.join(", ")}`).toEqual(
+			[],
+		);
+		const missingNav = NAVIGATION_MESSAGE_KEYS.filter(
+			(key) => EN_NAVIGATION_CATALOGUE[key] === undefined,
+		);
+		expect(missingNav, `navigation keys with no English text: ${missingNav.join(", ")}`).toEqual(
+			[],
+		);
+	});
+});
+
+describe("the navigation catalogue (SL-4.UI.06)", () => {
+	it("defaults to English", () => {
+		const strings = createNavigationStrings();
+		expect(strings.regionLabel).toBe("Document navigation");
+		expect(strings.outlineLabel).toBe("Outline");
+		expect(strings.empty()).toBe("This document has no outline.");
+		expect(strings.unavailable()).toContain("host");
+		expect(strings.thumbnailsLabel).toBe("Page thumbnails");
+	});
+
+	it("says two different things about an absent outline and an absent host", () => {
+		const strings = createNavigationStrings();
+		// One sentence for both would lie about one of them: "no outline" is a
+		// fact about the document, "cannot read" is a fact about the host.
+		expect(strings.empty()).not.toBe(strings.unavailable());
+	});
+
+	it("puts the document's own label in a row's name, and says so when there is none", () => {
+		const strings = createNavigationStrings();
+		expect(strings.row("Chapter one", "iv")).toBe("Chapter one, iv");
+		const unresolved = strings.row("Broken", null);
+		expect(unresolved).toContain("Broken");
+		expect(unresolved).not.toBe("Broken");
+	});
+
+	it("shows the FULL destination in the prompt, host included", () => {
+		const strings = createNavigationStrings();
+		const url = "https://example.com/redirect?to=https%3A%2F%2Fevil.example&x=1";
+		const body = strings.externalBody(url, "example.com");
+		expect(body).toContain(url);
+		expect(body).toContain("example.com");
+		// No ellipsis, ever: a shortened destination is how a reader approves one
+		// URL and is sent to another.
+		expect(body).not.toContain("…");
+		expect(body).not.toContain("...");
+	});
+
+	it("has a distinct sentence for every refusal reason", () => {
+		const strings = createNavigationStrings();
+		const reasons = [
+			"launch",
+			"remote-destination",
+			"submit-form",
+			"import-data",
+			"javascript",
+			"missing-destination",
+			"no-target",
+			"unsupported",
+		] as const;
+		const sentences = reasons.map((reason) => strings.refusal(reason));
+		expect(new Set(sentences).size, "two reasons sharing a sentence").toBe(reasons.length);
+		for (const sentence of sentences) {
+			expect(sentence.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("never returns a blank refusal, even for a reason it does not know", () => {
+		const strings = createNavigationStrings();
+		expect(strings.refusal("something-new").length).toBeGreaterThan(0);
+	});
+
+	it("names the launch for what it is rather than saying 'blocked'", () => {
+		const strings = createNavigationStrings();
+		// A reader told what the document tried to do can decide whether they
+		// need a different tool. "Link blocked" tells them nothing.
+		expect(strings.refusal("launch")).toContain("launch");
+	});
+
+	it("lets a host override one string without restating the catalogue", () => {
+		const strings = createNavigationStrings({
+			"navigation.outline.label": "Inhalt",
+			"navigation.link.external.confirm": "Öffnen",
+		});
+		expect(strings.outlineLabel).toBe("Inhalt");
+		expect(strings.externalConfirm).toBe("Öffnen");
+		// The keys it did not override still resolve to English.
+		expect(strings.regionLabel).toBe("Document navigation");
+		expect(strings.thumbnailsLabel).toBe("Page thumbnails");
+	});
+
+	it("reorders by name, not by position", () => {
+		const strings = createNavigationStrings({
+			"navigation.outline.moved": "{pageLabel} — aufgesucht",
+		});
+		expect(strings.moved("Seite iv")).toBe("Seite iv — aufgesucht");
 	});
 });
 

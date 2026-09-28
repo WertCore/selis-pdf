@@ -1,12 +1,30 @@
 /**
  * Keyboard/AT tests (SL-4.UI.02's share of SL-4.UI.07's accessibility pass).
- * The key map is pure, so it is pinned here; UI.07 extends it rather than
- * re-inventing it.
+ * The key maps are pure, so they are pinned here; UI.06 and UI.07 extend this
+ * file rather than re-inventing it.
+ *
+ * The three maps and the argument for keeping them apart:
+ * - `resolvePageKey` (UI.02) — the document's arrows, home and end.
+ * - `resolveSearchKey` (UI.05) — Enter, Escape, F3, and only with a query.
+ * - `resolveNavigationKey` (UI.06) — the outline tree's arrows, home and end,
+ *   and **only while the panel has focus**.
+ *
+ * The first two claim disjoint keys, so both can be consulted unconditionally.
+ * The third claims the *same key names* as the first, which is why it is
+ * focus-scoped: without focus it returns `null` for everything, and that is the
+ * assertion below.
  */
 
 import { describe, expect, it } from "vitest";
-import type { KeyboardContext } from "./keyboard.js";
-import { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
+import type { KeyboardContext, NavigationKeyContext } from "./keyboard.js";
+import {
+	announcement,
+	pageLabel,
+	resolveNavigationKey,
+	resolvePageKey,
+	resolveSearchKey,
+	stepFor,
+} from "./keyboard.js";
 
 function context(overrides: Partial<KeyboardContext> = {}): KeyboardContext {
 	return {
@@ -83,5 +101,94 @@ describe("labels", () => {
 		expect(announcement(0, 12, "page")).toBe("Page 1 of 12 — fit page");
 		expect(announcement(4, 12, "width")).toBe("Page 5 of 12 — fit width");
 		expect(announcement(4, 12, "spread")).toBe("Page 5 of 12 — two-up");
+	});
+});
+
+function navContext(overrides: Partial<NavigationKeyContext> = {}): NavigationKeyContext {
+	return {
+		hasFocus: true,
+		hasRows: true,
+		focusedHasChildren: false,
+		focusedExpanded: false,
+		...overrides,
+	};
+}
+
+describe("the navigation key map (SL-4.UI.06)", () => {
+	it("claims nothing at all without focus — the page list keeps its arrows", () => {
+		// The whole overlap argument in one assertion: the outline and the page
+		// list claim the same key *names*, and focus is what separates them.
+		for (const key of [
+			"ArrowDown",
+			"ArrowUp",
+			"ArrowLeft",
+			"ArrowRight",
+			"Home",
+			"End",
+			"Enter",
+			" ",
+		]) {
+			expect(resolveNavigationKey(key, navContext({ hasFocus: false })), key).toBeNull();
+		}
+		// And with no focus the document area still moves, which is the point.
+		expect(resolvePageKey("ArrowDown", context())?.page).toBe(11);
+	});
+
+	it("claims nothing when the panel is empty", () => {
+		for (const key of ["ArrowDown", "End", "Enter"]) {
+			expect(resolveNavigationKey(key, navContext({ hasRows: false })), key).toBeNull();
+		}
+	});
+
+	it("moves between rows with the arrows and the ends", () => {
+		expect(resolveNavigationKey("ArrowDown", navContext())).toEqual({
+			action: "next",
+			key: "ArrowDown",
+		});
+		expect(resolveNavigationKey("ArrowUp", navContext())?.action).toBe("previous");
+		expect(resolveNavigationKey("Home", navContext())?.action).toBe("first");
+		expect(resolveNavigationKey("End", navContext())?.action).toBe("last");
+	});
+
+	it("opens a closed parent with ArrowRight and steps into an open one", () => {
+		const closed = navContext({ focusedHasChildren: true, focusedExpanded: false });
+		expect(resolveNavigationKey("ArrowRight", closed)?.action).toBe("expand");
+		const open = navContext({ focusedHasChildren: true, focusedExpanded: true });
+		expect(resolveNavigationKey("ArrowRight", open)?.action).toBe("open-child");
+	});
+
+	it("collapses an open parent with ArrowLeft and steps out of a leaf", () => {
+		const open = navContext({ focusedHasChildren: true, focusedExpanded: true });
+		expect(resolveNavigationKey("ArrowLeft", open)?.action).toBe("collapse");
+		const closed = navContext({ focusedHasChildren: true, focusedExpanded: false });
+		expect(resolveNavigationKey("ArrowLeft", closed)?.action).toBe("open-parent");
+		// A leaf: stepping out is the only meaning ArrowLeft has.
+		expect(resolveNavigationKey("ArrowLeft", navContext())?.action).toBe("open-parent");
+		// And a leaf has nowhere to step *into*.
+		expect(resolveNavigationKey("ArrowRight", navContext())).toBeNull();
+	});
+
+	it("activates the focused row with Enter and Space", () => {
+		expect(resolveNavigationKey("Enter", navContext())?.action).toBe("open");
+		expect(resolveNavigationKey(" ", navContext())?.action).toBe("open");
+	});
+
+	it("claims no key that belongs to search or the shell", () => {
+		for (const key of ["F3", "Escape", "PageDown", "PageUp", "Tab", "a", "Shift"]) {
+			expect(resolveNavigationKey(key, navContext()), key).toBeNull();
+		}
+		// And the search map keeps its own: Escape closes search, not the panel.
+		expect(resolveSearchKey("Escape", { hasQuery: true, shift: false })?.action).toBe("close");
+		expect(resolveSearchKey("Escape", { hasQuery: false, shift: false })).toBeNull();
+	});
+
+	it("and the page list keeps its own, so the three maps compose", () => {
+		// With the panel focused, the document area's arrows are the panel's; the
+		// page list is not consulted at all, and the page list's own resolver is
+		// untouched by that. This is the composition a shell performs by focus.
+		const panel = resolveNavigationKey("ArrowDown", navContext());
+		const document = resolvePageKey("ArrowDown", context());
+		expect(panel?.action).toBe("next");
+		expect(document?.page).toBe(11);
 	});
 });
