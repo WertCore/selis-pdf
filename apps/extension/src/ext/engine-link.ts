@@ -93,6 +93,7 @@ const KNOWN_OPS: ReadonlySet<string> = new Set([
 	"close",
 	"render",
 	"text",
+	"textLayer",
 	"search",
 	"cancel",
 ]);

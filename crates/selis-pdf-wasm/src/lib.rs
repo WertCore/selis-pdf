@@ -683,6 +683,120 @@ mod tests {
         assert!(out.response.ok.unwrap_or(false));
     }
 
+    /// SL-4.EXT.03: the text layer answers a page's characters, and its
+    /// `chars` line up with its `text` character for character.
+    ///
+    /// Index alignment is the whole contract a selection rests on, so it is
+    /// asserted here rather than in the projection module alone: this is the
+    /// path a shell actually drives.
+    #[test]
+    fn text_layer_chars_are_index_aligned_with_their_text() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(TEXT_PDF.len() as u64)), TEXT_PDF, &e);
+        assert!(out.response.ok.unwrap_or(false));
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+
+        let out = w.handle(
+            &request(
+                2,
+                protocol::RequestOp::TextLayer {
+                    doc: protocol::DocHandle { raw: doc },
+                    page: 0,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert!(out.response.ok.unwrap_or(false), "{:?}", out.response);
+        let v = out.response.value.unwrap();
+        let page_text = v["text"].as_str().expect("text");
+        assert!(!page_text.is_empty(), "the fixture draws text");
+        assert!(v["width"].as_f64().unwrap() > 0.0);
+        assert!(v["height"].as_f64().unwrap() > 0.0);
+
+        let mut chars_total = 0usize;
+        for line in v["lines"].as_array().expect("lines") {
+            let line_text = line["text"].as_str().expect("line text");
+            let chars = line["chars"].as_array().expect("chars");
+            // UTF-16 code units, because the consumer indexes a JavaScript
+            // string - a scalar count would pass here and desynchronise there.
+            assert_eq!(
+                chars.len(),
+                line_text.encode_utf16().count(),
+                "line {line_text:?} has one char entry per code unit"
+            );
+            assert!(matches!(line["direction"].as_str(), Some("ltr" | "rtl")));
+            for c in chars {
+                let r = &c["rect"];
+                for field in ["x", "y", "width", "height"] {
+                    assert!(r[field].is_f64(), "rect.{field} is a number");
+                }
+                assert!(c["advance"].is_f64());
+                assert!(c["inked"].is_boolean());
+            }
+            chars_total += chars.len();
+        }
+        // The page's text is the lines joined the way `selis extract` joins
+        // them, plus the low-confidence marker when the page drew nothing
+        // readable - so the copy path matches the CLI byte for byte.
+        let joined: Vec<String> = v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["text"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        let expected = selis_pdf_text::to_text_from_line_texts(
+            &joined,
+            v["lowConfidence"].as_bool().unwrap_or(false),
+        );
+        assert_eq!(page_text, expected);
+        assert!(chars_total > 0, "the fixture's text has characters");
+    }
+
+    /// A page outside the document is a typed `PAGE_OUT_OF_RANGE`, and the
+    /// worker stays healthy - a text layer that trapped on a bad page number
+    /// would take the whole engine with it.
+    #[test]
+    fn text_layer_rejects_a_page_out_of_range() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(TEXT_PDF.len() as u64)), TEXT_PDF, &e);
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let out = w.handle(
+            &request(
+                2,
+                protocol::RequestOp::TextLayer {
+                    doc: protocol::DocHandle { raw: doc },
+                    page: 9_999,
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(Code::PageOutOfRange.id()));
+    }
+
+    /// `open` carries the media sizes, because every shell's `DocHandle` is
+    /// index-aligned with page numbers and a viewer has to lay a page out
+    /// before it renders it.
+    #[test]
+    fn open_carries_a_page_size_per_page() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+        let v = out.response.value.unwrap();
+        let pages = v["pages"].as_u64().unwrap();
+        let sizes = v["pageSizes"].as_array().expect("pageSizes");
+        assert_eq!(sizes.len() as u64, pages, "one size per page, in order");
+        assert!(sizes[0]["width"].as_f64().unwrap() > 0.0);
+        assert!(sizes[0]["height"].as_f64().unwrap() > 0.0);
+    }
+
     /// The payload length must match the `bytes` descriptor exactly.
     #[test]
     fn open_rejects_a_mismatched_payload_length() {

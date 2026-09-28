@@ -123,6 +123,24 @@ export type EngineRequest =
 			readonly scale: number;
 			readonly rect?: WireRect;
 	  }
+	/**
+	 * Per-character geometry for one page (SL-4.UI.04, SL-4.EXT.03).
+	 *
+	 * A separate op from `text` rather than a `format` on it, and the reason
+	 * is the payload: `text` answers with a UTF-8 attachment that travels as
+	 * one base64 string, while a text layer is per-character rectangles whose
+	 * whole value is their precision. One op meaning two wire shapes would
+	 * have forced the client's reply validator - which checks every field of
+	 * a layer, because a subtly wrong quad still type-checks - to guess
+	 * which shape arrived.
+	 */
+	| {
+			readonly v: 1;
+			readonly id: number;
+			readonly op: "textLayer";
+			readonly doc: string;
+			readonly page: number;
+	  }
 	| {
 			readonly v: 1;
 			readonly id: number;
@@ -245,7 +263,13 @@ export interface EngineReply {
 	readonly id: number;
 	readonly ok: boolean;
 	/** Present when `ok`. */
-	readonly value?: WireDoc | WireTile | WirePageText | WireSearchBatch | WireAck;
+	readonly value?:
+		| WireDoc
+		| WireTile
+		| WirePageText
+		| WirePageTextLayer
+		| WireSearchBatch
+		| WireAck;
 	/** Present when not `ok`. */
 	readonly error?: WireError;
 }

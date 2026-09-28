@@ -133,6 +133,24 @@ export interface PackageEntry {
  * out. Shipping it is cheaper than the alternative, and the call site that would
  * make it live does not exist — which is what the reuse doc records.
  *
+ * ### What SL-4.EXT.03 added, and what it deliberately did not
+ *
+ * Four compiled modules: the offscreen document''s composition root, the
+ * `EnginePort` over the engine Worker, the guest ABI, and the Worker script
+ * itself. The last one is the interesting row - it is loaded by
+ * `new Worker(chrome.runtime.getURL(...))` rather than by an import, so no
+ * other row implies it, and a Worker script the ship list forgot would 404 in
+ * the browser while every gate stayed green. `engine-host.test.ts` asserts the
+ * path the code uses is a row here.
+ *
+ * **The core `.wasm` is not on this list yet, and that is deliberate.**
+ * SL-4.EXT.05 is the task that makes the package carry the WASM and fits it to
+ * a size budget; adding a multi-megabyte binary to the ship list here would
+ * put that decision in a task that has not made it. Until then the engine
+ * reports a typed failure naming the missing path, which is the honest
+ * outcome: a viewer that says "the engine is not in this build" beats one that
+ * renders nothing and says nothing.
+ *
  * The stylesheets are `@selis/ui-kit`'s, copied verbatim (`shared-asset`): the
  * same no-bundler reason, so a shell links them, and `tokens.css` is generated
  * so it is never hand-edited (UI.14). No font is fetched — the stacks are
@@ -148,6 +166,13 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "extension/src/permissions.js", from: "build" },
 	{ out: "extension/src/viewer-boot.js", from: "build" },
 	{ out: "extension/src/ext/adapter.js", from: "build" },
+	{ out: "extension/src/ext/engine-host.js", from: "build" },
+	{ out: "extension/src/ext/wasm-engine.js", from: "build" },
+	{ out: "extension/src/ext/wasm-guest.js", from: "build" },
+	// Loaded by `new Worker(chrome.runtime.getURL(...))` from the offscreen
+	// document, so it is shipped as a page would load it: a Worker script the
+	// gate cannot see referenced would be a script the store upload omits.
+	{ out: "extension/src/ext/wasm-worker.js", from: "build" },
 	{ out: "extension/src/ext/engine-client.js", from: "build" },
 	{ out: "extension/src/ext/engine-link.js", from: "build" },
 	{ out: "extension/src/ext/engine-protocol.js", from: "build" },

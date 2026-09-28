@@ -209,8 +209,18 @@ describe("EXT.01 MV3 minimal-permission manifest", () => {
 	it("contains no remote code references (ADR-P0028, EXT.04 precursor)", () => {
 		const raw = readFileSync(join(pkgRoot, "manifest.json"), "utf8");
 		expect(raw).not.toMatch(/https?:\/\/cdn\./);
-		expect(raw).not.toContain("unsafe-eval");
+		// `'wasm-unsafe-eval'` is not `'unsafe-eval'`, and the distinction is
+		// the whole point: it permits compiling WebAssembly and nothing else -
+		// no string-to-code, no `eval`, no `Function`. MV3 provides it for
+		// exactly this case, and SL-4.EXT.03 needs it to run the engine. The
+		// ban below is on the quoted bare source, so a future edit cannot slip
+		// `'unsafe-eval'` in beside it.
+		expect(raw).not.toContain("'unsafe-eval'");
+		expect(raw).not.toContain('"unsafe-eval"');
 		expect(raw).not.toContain("unsafe-inline");
+		// And the permission the engine does need is present, so removing it
+		// (which would break every render) fails here too.
+		expect(raw).toContain("'wasm-unsafe-eval'");
 		const worker = join(pkgRoot, "service-worker.js");
 		const workerSrc = readFileSync(worker, "utf8");
 		expect(workerSrc).not.toMatch(/https?:\/\//);

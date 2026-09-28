@@ -25,6 +25,20 @@ Adding a module to the package therefore means adding a row to
 `PACKAGE_ENTRIES`, which is the moment somebody has to ask "is this remote
 code?".
 
+### The one file nothing else implies (SL-4.EXT.03)
+
+`extension/src/ext/wasm-worker.js` is loaded by
+`new Worker(chrome.runtime.getURL(...))`, not by an import, so no other row
+implies it and no import scan would notice it missing. A Worker script the
+ship list forgot is a 404 in the browser with every gate green, which is why
+`engine-host.test.ts` asserts the path the code uses is a row here.
+
+The core `.wasm` is **not** on the list yet. SL-4.EXT.05 is the task that
+makes the package carry the WASM and fits it to a size budget, and putting a
+multi-megabyte binary on this list from a task that has not made that decision
+would be the wrong order. Until then the engine reports a typed failure
+naming the missing path.
+
 ## What the gate rejects
 
 | Class | What it is |
@@ -114,3 +128,25 @@ pnpm --filter @selis/extension check:bundle   # the same thing, named
 pnpm --filter @selis/extension test           # builds, then the full suite
 pnpm --filter @selis/extension typecheck      # tsc --noEmit
 ```
+
+### Re-verifying it, and one way to verify it wrong
+
+The gate was re-checked against this build by planting violations in the
+**built** package (not the sources) and running the gate's own entry point:
+
+```
+cd apps/extension
+pnpm run build                                   # tsc + pack + gate
+# plant, then: node dist/pkg/extension/src/bundle-check.js
+```
+
+A remote URL literal appended to `dist/offscreen.js` fails with
+`remote-url-literal`, file, line and URL; `eval("1+1")` appended to
+`dist/extension/src/ext/wasm-worker.js` fails with `dynamic-code` at the line
+it was planted on.
+
+**The way to verify it wrong:** append to a built file *without a leading
+newline*. `tsc`'s last line in every emitted module is
+`//# sourceMappingURL=...`, so the planted statement joins that comment and
+the gate - correctly - reports nothing, because it is a comment. A gate that
+"passed" a plant that was never code has told you nothing at all.

@@ -71,6 +71,38 @@ algorithm. Three consequences, each a decision rather than an accident:
 3. **A blob handle cannot cross.** `File` / `Blob` / `FileSystemFileHandle` are
    not serialisable, so the page reads the file and sends bytes.
 
+### What SL-4.EXT.03 measured, and what it decided
+
+SL-4.EXT.03 kept the arrangement and did not re-examine it, for a reason
+that only became clear once the engine was real: the base64 hop is on the
+*page-to-document* link, and the engine does not live on that link. The
+document hands the bytes to its own Worker, which is a structured clone, so
+the ~33 % document penalty is paid once on the way in and the tile penalty
+is paid on the way out to a surface that has to be main-thread anyway. The
+arrangement's real cost turned out to be different from the one EXT.06
+predicted, and it is written down below rather than left as a suspicion.
+
+## The engine, and the Worker around it
+
+`offscreen.html` spawns a module Worker that owns the WASM guest. The Worker
+is not there for its lifetime - the document already outlives every viewer -
+it is there because one WASM call occupies its thread until it returns, and
+on the document's main thread that would stop the `chrome.runtime` port from
+being serviced. A `cancel` from a viewer would then queue behind the render
+it is meant to stop. With the engine in a Worker the document keeps servicing
+the port, so the WASM.01 in-flight `cancel` is a real channel rather than a
+nominal one.
+
+`wasm-guest.ts` is the only module that knows a pointer exists. Everything
+above it speaks bytes and JSON, which is what makes the ABI testable without
+a browser - and, more usefully, makes a mistake in it a wrong answer rather
+than a memory-safety bug, because every length the guest reports is checked
+against its memory before anything is read.
+
+The guest is read from `chrome-extension://<id>/wasm/selis_pdf_wasm.wasm`:
+the extension's own origin, so `host_permissions` stays `[]`. The manifest
+gains `'wasm-unsafe-eval'` and nothing else.
+
 This is the strongest argument for SL-4.EXT.03 re-examining the arrangement.
 The honest summary is that the extension gives up UI.03's zero-copy rendering in
 exchange for an engine that survives the page, and nobody has measured which
@@ -89,7 +121,7 @@ what this paragraph is for.
 
 | Port | Verdict | Why |
 |---|---|---|
-| `engine` | supplied | Offscreen document over a port. |
+| `engine` | supplied | The WASM engine, in a Worker the offscreen document owns (SL-4.EXT.03), reached over a `chrome.runtime` port. |
 | `files.pickOpen` | supplied | A transient `<input type="file">`. No MV3 permission needed. |
 | `files.pickSave` | **refused** | Save-in-place is a File System Access handle. The viewer is read-only; the only caller would be Phase 5. Returning `null` would read as "the user cancelled", which a UI cannot distinguish from a real cancellation. |
 | `storage` | supplied | `localStorage` on the extension origin. `chrome.storage` needs the `storage` permission, which EXT.01 did not approve. |
@@ -149,13 +181,47 @@ in-package shape still resolves.
 
 ## Known gaps this task leaves behind
 
-- **The engine is not installed.** `offscreen.js` passes `engine: null` until
-  SL-4.EXT.03. The host still answers, with a coded refusal, because an
-  unanswered request is indistinguishable from a hung engine and would leave the
-  viewer spinning.
-- **The offscreen document is never closed.** The service worker creates it on
-  demand and nothing tears it down. A lifecycle for it is EXT.03's scope, and
-  the honest statement is that today it outlives every viewer that uses it.
+- **The engine is installed (SL-4.EXT.03), and the WASM is not in the package
+  yet.** The engine is a real WASM guest in a Worker the offscreen document
+  spawns; the core `.wasm` is a row SL-4.EXT.05 adds, along with the size
+  budget that decides whether it can. Until then the engine reports a typed
+  failure naming the path it looked for, which is the honest outcome: a viewer
+  that says the engine is not in this build beats one that renders nothing and
+  says nothing.
+- **The offscreen document is still never closed.** SL-4.EXT.03 gave it a
+  teardown (`stop()` terminates the Worker and releases every open document)
+  and a trigger (`pagehide`), but nothing *decides* to close it: the service
+  worker creates it on demand and no timer or viewer count tears it down. So
+  the honest statement is unchanged from EXT.06 - it outlives every viewer
+  that uses it - and the engine it holds is released when it does go.
+- **The engine is warm-started and its failure is swallowed.** `startEngineHost`
+  fires the compile and does not await it, so a viewer that opens nothing pays
+  nothing and a viewer that opens something does not pay twice. The failure is
+  reported by the first request instead, with the same message.
+- **Search is not progressive in the way the threaded shell is.** A
+  single-threaded WASM call cannot be interleaved, so the guest answers a
+  search in one response and `wasm-engine.ts` slices it into batches. The UI
+  sees a quick sequence of slices rather than a page-by-page scan.
+- **`SearchOptions.wholeWord` is refused, not ignored.** The WASM.01 search
+  options have no word-boundary flag, and a shell that dropped the request
+  would answer a different question than the UI asked.
+- **The text layer is the most expensive thing this transport carries.** It is
+  per-character geometry, in JSON, over a JSON port: a few hundred kilobytes
+  for a dense page, and the base64 hop on top. It is resolution-independent,
+  which is why it is fetched once per page rather than per zoom, but a
+  text-heavy 500-page document is a real memory ceiling.
+- **A character width is resolved per code, not per font.** `page_layer` asks
+  its callback for a code's advance and the callback is keyed by code alone,
+  so the engine reads the widths off the page's own glyphs. A page that draws
+  the same character at two sizes gives both occurrences the first one's width.
+  A code that never appears yields a zero-width quad, which highlights nothing
+  rather than highlighting the wrong place.
+- **A pending request does not settle when the port dies.** If the offscreen
+  document itself goes away mid-request, the viewer's promise waits rather
+  than rejecting. That is EXT.06's transport, not this task's, and it is the
+  one thing here I would fix before a beta: the fix is a close notification on
+  the link, and it changes shared transport semantics, so it wants its own
+  change rather than a late edit from a task that was not asked for it.
 - **No page list.** The viewer shows a page count and any failure, not pages.
   That is UI.04+ and the reason `page-list.css` is not shipped.
 - **`getContexts` needs Chrome 116** and the manifest floor is 114, so the

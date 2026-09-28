@@ -11,7 +11,9 @@
 //! Legs, in order:
 //!
 //! 1. **Open/page/render/text/search round-trips** — every op of schema v1
-//!    dispatches and answers `ok:true`.
+//!    dispatches and answers `ok:true`. The text layer (SL-4.EXT.03) is
+//!    checked here rather than in a shell: its `chars` must be index-aligned
+//!    with its `text`, which is the invariant every selection rests on.
 //! 2. **guest == native checksum** — the rendered page's RGBA8 pixels hash
 //!    identically in the guest and natively (the PERF.03 discipline applied
 //!    to the protocol surface: ADR-P0042).
@@ -379,6 +381,9 @@ pub fn run() -> Result<(), String> {
     if resp["value"]["total"].as_u64().unwrap_or(0) < 1 {
         return Err(format!("search: no matches for {word:?}"));
     }
+    // Captured here because the text layer below rebinds `resp`, and a report
+    // that prints the wrong leg's number is worse than no report.
+    let search_matches = resp["value"]["total"].as_u64().unwrap_or(0);
     // The progress slot reflects the last stage boundary of the search.
     let search_id = resp["id"].as_u64().unwrap_or(0);
     let (slot_request, slot_stage, slot_fraction) = s.progress()?;
@@ -392,10 +397,53 @@ pub fn run() -> Result<(), String> {
             "progress slot: request id {slot_request} != search id {search_id}"
         ));
     }
+    // The text layer (SL-4.EXT.03): the same page, asked for its characters.
+    // The invariant this leg exists for is index alignment - `chars[i]`
+    // describes `text[i]` - because that is what a selection and a copied
+    // string both rest on, and it is the one property a shell cannot recover
+    // if the guest gets it wrong.
+    let (resp, _) = s.rpc(json!({"op":"textLayer", "doc": text_doc, "page": 0}), None)?;
+    let resp = expect(resp, "textLayer")?;
+    let layer_text = resp["value"]["text"]
+        .as_str()
+        .ok_or("textLayer: no text")?;
+    let lines = resp["value"]["lines"]
+        .as_array()
+        .ok_or("textLayer: no lines")?;
+    let mut quads = 0usize;
+    for line in lines {
+        let line_text = line["text"].as_str().ok_or("textLayer: line has no text")?;
+        let chars = line["chars"]
+            .as_array()
+            .ok_or("textLayer: line has no chars")?;
+        if chars.len() != line_text.encode_utf16().count() {
+            return Err(format!(
+                "textLayer: {} quads for {} code units - index alignment is broken",
+                chars.len(),
+                line_text.encode_utf16().count()
+            ));
+        }
+        for c in chars {
+            for field in ["x", "y", "width", "height"] {
+                if c["rect"][field].as_f64().is_none() {
+                    return Err(format!("textLayer: rect.{field} is not a number"));
+                }
+            }
+            if c["advance"].as_f64().is_none() || !c["inked"].is_boolean() {
+                return Err("textLayer: a char entry is missing advance or inked".to_string());
+            }
+            quads += 1;
+        }
+    }
+    if layer_text.is_empty() {
+        return Err("textLayer: the fixture drew no text".to_string());
+    }
+    println!("wasm-protocol: textLayer ok ({quads} quads over {} lines)", lines.len());
+
     println!(
         "wasm-protocol: text/search ok ({} bytes of text, {} matches for {word:?}); progress slot ok",
         text.len(),
-        resp["value"]["total"].as_u64().unwrap_or(0),
+        search_matches,
     );
 
     // ── 5. budget exhaustion over the boundary ────────────────────────────

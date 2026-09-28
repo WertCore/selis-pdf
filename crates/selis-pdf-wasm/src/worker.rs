@@ -462,6 +462,7 @@ impl Worker {
             RequestOp::Page { doc, page } => self.op_page(id, doc, page),
             RequestOp::Render { doc, page, params } => self.op_render(id, doc, page, params, env),
             RequestOp::Text { doc, page, format } => self.op_text(id, doc, page, format, env),
+            RequestOp::TextLayer { doc, page } => self.op_text_layer(id, doc, page, env),
             RequestOp::Search { doc, query, opts } => self.op_search(id, doc, query, opts, env),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
@@ -567,6 +568,24 @@ impl Worker {
                 drop(copy_guard);
                 let session = Session::open(owned, &budget, env.clock)?;
                 let pages = u32::try_from(session.len()).unwrap_or(u32::MAX);
+                // SL-4.EXT.03: the page media sizes travel with the handle.
+                // Every shell's DocHandle is index-aligned with page numbers
+                // (a viewer has to lay a page out before it renders it), and one
+                // page round trip per page would make opening a 5 000-page
+                // report 5 000 messages. page_size reads a box the parser has
+                // already resolved, so this is a walk and not a re-parse; the
+                // sizes are points, like the rest of the wire.
+                let page_sizes: Vec<serde_json::Value> = (0..session.len())
+                    .map(|i| match session.page_size(i) {
+                        Some((width, height)) => {
+                            serde_json::json!({ "width": width, "height": height })
+                        }
+                        // A page whose box did not resolve still occupies a
+                        // slot: dropping it would desynchronise the array from
+                        // the page numbers the handle is used with.
+                        None => serde_json::json!({ "width": 0.0, "height": 0.0 }),
+                    })
+                    .collect();
                 let handle = self.mint_handle()?;
                 self.live_bytes = self.live_bytes.saturating_add(len);
                 self.peak_bytes = self.peak_bytes.max(self.live_bytes);
@@ -580,7 +599,11 @@ impl Worker {
                 );
                 Ok(Outgoing::ok(
                     id,
-                    serde_json::json!({ "doc": handle.raw, "pages": pages }),
+                    serde_json::json!({
+                        "doc": handle.raw,
+                        "pages": pages,
+                        "pageSizes": page_sizes,
+                    }),
                 ))
             }
             SourceDescriptor::Blob { source_id } => {
@@ -938,6 +961,106 @@ impl Worker {
         })
     }
 
+    // -- text layer (SL-4.EXT.03) -------------------------------------------
+
+    /// One page's text layer: per-character selection geometry.
+    ///
+    /// ## Why the geometry is built here and not in a shell
+    ///
+    /// The glyphs are the only place character geometry exists, and
+    /// `selis_pdf_text::page_layer` is the only projection of them that
+    /// keeps `chars` index-aligned with the text - the property the whole
+    /// selection and copy story rests on (SL-4.UI.04). A shell that rebuilt
+    /// the quads from a rendered tile would couple selection to the render
+    /// ladder, which deliberately shows a previous scale's bitmap while
+    /// zooming: selection would be wrong exactly when it has to survive.
+    ///
+    /// ## The wire shape
+    ///
+    /// JSON, in the message body, with no binary attachment: a layer is
+    /// rectangles and flags, and a base64 attachment of the same numbers
+    /// would be a decode step on every page for no saving. Rectangles are
+    /// `{x, y, width, height}` - the shape `apps/ui`'s `Rect` already has,
+    /// so the MV3 host (SL-4.EXT.03) maps the reply without a rename that
+    /// could be done on the wrong field. The cost is honest and is stated
+    /// in `REUSE.md`: a dense page is a few hundred kilobytes of JSON, and
+    /// `chrome.runtime` ports base64 it, so a text layer is the most
+    /// expensive thing this transport carries.
+    fn op_text_layer(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        page: u32,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let idx = page_index(page);
+        let Some((width, height)) = opened.session.page_size(idx) else {
+            return Err(err!(Code::PageOutOfRange, during = "wasm-worker"));
+        };
+        let budget = opened.budget;
+        let mut g = budget.guard_with(env.clock, env.cancel.clone());
+        env.progress.progress(id, Stage::Text, 0);
+        let dl = opened
+            .session
+            .page_text_display_list(idx, &budget, &mut g)?;
+        let mcid = opened
+            .session
+            .mcid_order(&budget, &mut g)
+            .ok()
+            .filter(|v| !v.is_empty());
+        let assembled = page_text(&opened.session, idx, &budget, &dl, mcid.as_deref(), &mut g)?;
+        let widths = advance_table(&assembled.lines);
+        let width_of = |code: u16| widths.get(&code).copied().unwrap_or(0.0);
+        let mut layer = selis_pdf_text::page_layer(
+            idx,
+            (width, height),
+            &assembled.lines,
+            &assembled.line_texts,
+            &width_of,
+        );
+        // SL-3.TEXT.10: the assembler's own verdict, carried through so the
+        // copy path shows the marker instead of an empty layer that reads as
+        // a blank page.
+        layer.low_confidence = assembled.low_confidence;
+        let text = layer.text();
+        let lines: Vec<serde_json::Value> = layer
+            .lines
+            .iter()
+            .map(|line| {
+                let chars: Vec<serde_json::Value> = line
+                    .chars
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "rect": rect_value(&c.rect),
+                            "advance": c.advance,
+                            "inked": c.inked,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "text": line.text,
+                    "rect": rect_value(&line.rect),
+                    "direction": if line.direction.is_rtl() { "rtl" } else { "ltr" },
+                    "chars": chars,
+                })
+            })
+            .collect();
+        env.progress.progress(id, Stage::Text, 10_000);
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "page": layer.page,
+                "width": layer.width,
+                "height": layer.height,
+                "lowConfidence": layer.low_confidence,
+                "text": text,
+                "lines": lines,
+            }),
+        ))
+    }
+
     // -- search ------------------------------------------------------------
 
     fn op_search(
@@ -1276,6 +1399,59 @@ fn page_text(
     })
 }
 
+/// The advance width of every character code drawn on a page, in user space.
+///
+/// ## Why this table rather than a font lookup
+///
+/// `page_layer` asks for a code's advance and leaves font resolution to its
+/// caller, because only the caller knows which font a glyph was drawn with.
+/// This worker has that information - and it already paid for it: every
+/// `TextGlyph` in the assembled lines carries `advance`, the pen step it
+/// actually moved in user space, justified advance included. So the table is
+/// read off the page's own glyphs rather than re-resolved from font
+/// dictionaries, which is both cheaper and strictly more accurate: a
+/// selection highlight belongs where the glyph was *drawn*, not where an
+/// un-justified font metric says it should have been.
+///
+/// ## The limit, stated rather than hidden
+///
+/// The table is keyed by character code alone, because that is the only key
+/// `page_layer` hands the callback. A page that draws the same code at two
+/// sizes therefore gives both occurrences the first one's width, and the
+/// second one's highlight runs short. Single-size pages - which is what the
+/// conformance corpus is - are exact. A code that never appears yields a
+/// zero-width quad, which highlights nothing rather than highlighting the
+/// wrong place; both are visible, and neither is a silently correct-looking
+/// selection.
+fn advance_table(lines: &[TextLine]) -> std::collections::HashMap<u16, f64> {
+    let mut widths = std::collections::HashMap::new();
+    for line in lines {
+        for word in &line.words {
+            for run in &word.runs {
+                for gl in &run.glyphs {
+                    widths.entry(gl.code).or_insert(gl.advance);
+                }
+            }
+        }
+    }
+    widths
+}
+
+/// A rectangle on the wire, in the shape `apps/ui`'s `Rect` already uses.
+///
+/// Named `x`/`y`/`width`/`height` rather than the `w`/`h` this crate's search
+/// matches use: those are match rectangles for a results list, this is a
+/// selection quad a viewer positions directly, and the host validates it
+/// field by field. Two spellings of the same rectangle in one protocol is
+/// how a rename gets applied to the wrong one.
+fn rect_value(rect: &selis_geom::Rect) -> serde_json::Value {
+    serde_json::json!({
+        "x": rect.x0,
+        "y": rect.y0,
+        "width": rect.width(),
+        "height": rect.height(),
+    })
+}
 /// The recovered text of a line (code â†’ Unicode char), with a space between
 /// words (the assembler strips space glyphs when splitting runs into words).
 fn line_text(line: &TextLine) -> String {
