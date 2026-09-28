@@ -165,7 +165,7 @@ fn header_version(data: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(head);
     let text = text.trim_start_matches('\u{feff}');
     let version = text.strip_prefix("%PDF-")?;
-    let version = version.split(|c: char| c == '\n' || c == '\r').next()?;
+    let version = version.split(['\n', '\r']).next()?;
     Some(version.to_string())
 }
 

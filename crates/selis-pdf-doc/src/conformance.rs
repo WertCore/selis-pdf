@@ -358,11 +358,14 @@ fn rule_metadata_consistency(ctx: &EvaluationCtx<'_>) -> RuleResult {
 fn rule_embedded_files(ctx: &EvaluationCtx<'_>) -> RuleResult {
     // Inventory-only is the Phase-1 posture (ADR-P0020). An inventory exists
     // when the catalog has a /Names tree.
-    if ctx.catalog_dict(b"Names").is_some() {
-        RuleResult::Pass
-    } else {
-        RuleResult::Pass // no embedded files to inventory
-    }
+    //
+    // Both arms were `Pass` (SL-0.WS.11): with a /Names tree there is an
+    // inventory to carry forward, and without one there is nothing to
+    // inventory, so the rule cannot fail either way yet. Collapsed rather than
+    // annotated — when Phase 1 grows the inventory check, the branch comes
+    // back with it.
+    let _ = ctx;
+    RuleResult::Pass
 }
 
 fn rule_no_javascript(ctx: &EvaluationCtx<'_>) -> RuleResult {
@@ -395,24 +398,21 @@ fn rule_encryption(_ctx: &EvaluationCtx<'_>) -> RuleResult {
 
 fn rule_pdfaid(ctx: &EvaluationCtx<'_>) -> RuleResult {
     // A /Metadata stream naming pdfaid without the matching conformance is a
-    // lie; surface it. Phase 1 surfaces the presence of the claim.
-    if ctx.catalog_dict(b"Metadata").is_some() {
-        RuleResult::Pass
-    } else {
-        RuleResult::Pass
-    }
+    // lie; surface it. Phase 1 surfaces the presence of the claim — and, as
+    // with `rule_embedded_files`, both arms were `Pass` (SL-0.WS.11), because
+    // Phase 1 has no conformance-part check to fail on yet.
+    let _ = ctx;
+    RuleResult::Pass
 }
 
 fn catalog_has_action(ctx: &EvaluationCtx<'_>, action: &[u8]) -> bool {
     // Scan the catalog for an /AA or /OpenAction referencing the action.
     for key in [b"OpenAction".as_slice(), b"AA"] {
-        if let Some(v) = ctx.catalog_dict(key) {
-            if let Obj::Dict(pairs) = v {
-                if pairs.iter().any(|(k, val)| {
-                    k.as_slice() == b"S" && matches!(val, Obj::Name(n) if n.as_slice() == action)
-                }) {
-                    return true;
-                }
+        if let Some(Obj::Dict(pairs)) = ctx.catalog_dict(key) {
+            if pairs.iter().any(|(k, val)| {
+                k.as_slice() == b"S" && matches!(val, Obj::Name(n) if n.as_slice() == action)
+            }) {
+                return true;
             }
         }
     }
@@ -568,7 +568,7 @@ mod tests {
     }
 
     fn figure(ty: &[u8], direct_alt: Option<&[u8]>, attr_alt: bool) -> crate::StructElement {
-        let alt = direct_alt.map(|b| selis_bytes::Bytes::copy_from_slice(b));
+        let alt = direct_alt.map(selis_bytes::Bytes::copy_from_slice);
         let attrs = if attr_alt {
             Some(dict(vec![
                 (

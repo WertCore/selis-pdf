@@ -68,7 +68,7 @@ pub fn search(text: &str, query: &str) -> Vec<Range<usize>> {
     let n = needle.len();
     let mut i = 0usize;
     while i.saturating_add(n) <= bytes.len() {
-        if bytes.get(i..i.saturating_add(n)) == Some(&needle.as_bytes()[..]) {
+        if bytes.get(i..i.saturating_add(n)) == Some(needle.as_bytes()) {
             out.push(i..i.saturating_add(n));
             i = i.saturating_add(n);
         } else {

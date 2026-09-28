@@ -136,7 +136,7 @@ fn detect_columns(lines: &[LineWithMcid]) -> (Vec<(f64, f64)>, f64) {
     let threshold = median_width * 1.5;
     let mut boundaries: Vec<f64> = Vec::new();
     for pair in centres.windows(2) {
-        let a = pair.get(0).copied().unwrap_or(0.0);
+        let a = pair.first().copied().unwrap_or(0.0);
         let b = pair.get(1).copied().unwrap_or(0.0);
         if (b - a).abs() > threshold {
             boundaries.push((a + b) / 2.0);
@@ -202,7 +202,7 @@ fn xy_cut_order(lines: Vec<LineWithMcid>, columns: &[(f64, f64)]) -> Vec<TextLin
             let by = (b.bbox.y0 + b.bbox.y1) / 2.0;
             by.partial_cmp(&ay).unwrap_or(std::cmp::Ordering::Equal)
         });
-        out.extend(col.drain(..));
+        out.append(col);
     }
     out
 }

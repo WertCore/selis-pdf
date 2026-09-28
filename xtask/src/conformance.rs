@@ -32,14 +32,15 @@ const LEVEL_NAMES: [&str; 7] = [
 
 pub fn report() -> Result<(), String> {
     let cfg = load()?;
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("# Selis conformance ladder".to_string());
-    lines.push(String::new());
-    lines.push("Every area starts at `None` and climbs as the corpus proves it. ".to_string());
-    lines.push("The published claim is never ahead of the measured level.".to_string());
-    lines.push(String::new());
-    lines.push("| Area | Level | Notes |".to_string());
-    lines.push("|---|---|---|".to_string());
+    let mut lines: Vec<String> = vec![
+        "# Selis conformance ladder".to_string(),
+        String::new(),
+        "Every area starts at `None` and climbs as the corpus proves it. ".to_string(),
+        "The published claim is never ahead of the measured level.".to_string(),
+        String::new(),
+        "| Area | Level | Notes |".to_string(),
+        "|---|---|---|".to_string(),
+    ];
     for a in &cfg.area {
         let level = LEVEL_NAMES
             .get(a.level as usize)

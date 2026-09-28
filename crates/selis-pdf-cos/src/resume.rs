@@ -204,9 +204,14 @@ impl<'a> ResumableLexer<'a> {
     }
 }
 
-/// A resumable wrapper over the object parser is the next layer up
-/// (SL-1.COS.07 continues in `selis-pdf-doc`); the lexer is the resumability
-/// primitive every parse entry point drives.
+// A resumable wrapper over the object parser is the next layer up
+// (SL-1.COS.07 continues in `selis-pdf-doc`); the lexer is the resumability
+// primitive every parse entry point drives.
+//
+// SL-0.WS.11: this was a `///` block that had drifted above the test module
+// and was therefore documenting `mod tests`, which it says nothing about. It
+// is a note about where the work goes next, not a doc comment on an item, so
+// it is a plain comment here.
 
 #[cfg(test)]
 mod tests {
@@ -300,7 +305,7 @@ mod tests {
         let toks = collect(&mut lex, &mut g);
         assert_eq!(toks.len(), 1);
         match &toks[0] {
-            crate::Token::Name(b) => assert_eq!(b.as_slice(), &"A".repeat(200).as_bytes()[..]),
+            crate::Token::Name(b) => assert_eq!(b.as_slice(), "A".repeat(200).as_bytes()),
             other => panic!("expected a name, got {other:?}"),
         }
     }

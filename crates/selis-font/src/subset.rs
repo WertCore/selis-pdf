@@ -454,7 +454,7 @@ fn build_simple_glyph(commands: &[OutlineCmd]) -> Option<Vec<u8>> {
 
 /// A finite f64 within the TrueType coordinate range, as i16.
 fn num_i16(v: f64) -> Option<i16> {
-    if !v.is_finite() || v < -32768.0 || v > 32767.0 {
+    if !v.is_finite() || !(-32768.0..=32767.0).contains(&v) {
         return None;
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

@@ -43,7 +43,7 @@ pub fn jbig2_decode(data: &[u8], globals: &[u8], g: &mut BudgetGuard<'_>) -> Res
 
         match segment.type_ {
             // Generic region, MMR-coded: decode and keep the bitmap.
-            20 | 21 | 22 | 23 => {
+            20..=23 => {
                 let decoded = decode_generic_region(segment.type_, body, globals, g)?;
                 region = Some(decoded);
                 found = true;

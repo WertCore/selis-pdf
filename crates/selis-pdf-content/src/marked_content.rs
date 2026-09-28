@@ -135,7 +135,6 @@ impl McidMap {
     }
 
     /// All (MCID, range) pairs in content order.
-    #[must_use]
     pub fn entries(&self) -> impl Iterator<Item = (u32, (usize, usize))> + '_ {
         self.map.iter().map(|(&k, &v)| (k, v))
     }

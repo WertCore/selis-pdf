@@ -315,6 +315,25 @@ fn image_manifest(
     out
 }
 
+/// The recovered text of a line (code → Unicode char), with a space between
+/// words (the assembler strips space glyphs when splitting runs into words).
+fn line_text(line: &TextLine) -> String {
+    let mut out = String::new();
+    for (wi, word) in line.words.iter().enumerate() {
+        if wi > 0 {
+            out.push(' ');
+        }
+        for run in &word.runs {
+            for g in &run.glyphs {
+                if let Some(ch) = char::from_u32(u32::from(g.code)) {
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use selis_pdf_content::display_list::{DisplayList, Op, ResolvedState};
@@ -399,23 +418,4 @@ mod tests {
         };
         assert_eq!(line_text(&line), "Hi W");
     }
-}
-
-/// The recovered text of a line (code → Unicode char), with a space between
-/// words (the assembler strips space glyphs when splitting runs into words).
-fn line_text(line: &TextLine) -> String {
-    let mut out = String::new();
-    for (wi, word) in line.words.iter().enumerate() {
-        if wi > 0 {
-            out.push(' ');
-        }
-        for run in &word.runs {
-            for g in &run.glyphs {
-                if let Some(ch) = char::from_u32(u32::from(g.code)) {
-                    out.push(ch);
-                }
-            }
-        }
-    }
-    out
 }

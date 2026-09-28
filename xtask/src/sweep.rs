@@ -966,7 +966,7 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
     sorted.get(idx.min(sorted.len() - 1)).copied()
 }
 
-fn diff_stats(values: &mut Vec<f64>) -> DiffStats {
+fn diff_stats(values: &mut [f64]) -> DiffStats {
     values.sort_by(|a, b| a.total_cmp(b));
     DiffStats {
         n: u64::try_from(values.len()).unwrap_or(u64::MAX),
@@ -1427,8 +1427,8 @@ mod tests {
         assert_eq!(percentile(&v, 51.0), Some(30.0));
         assert_eq!(percentile(&v, 100.0), Some(40.0));
         assert_eq!(percentile(&v, 0.0), Some(10.0));
-        assert_eq!(percentile(&mut Vec::new(), 50.0), None);
-        let stats = diff_stats(&mut vec![100.0, 1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(percentile(&[], 50.0), None);
+        let stats = diff_stats(&mut [100.0, 1.0, 2.0, 3.0, 4.0]);
         assert_eq!(stats.n, 5);
         assert_eq!(stats.p50, Some(3.0));
         assert_eq!(stats.max, Some(100.0));

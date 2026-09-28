@@ -126,12 +126,7 @@ mod tests {
         let result = interp.step(&mut g, 2).expect("step");
         assert_eq!(result, Step::Yield, "bounded step must yield");
         // Running to completion consumes everything.
-        loop {
-            match interp.step(&mut g, 2).expect("step") {
-                Step::Yield => continue,
-                Step::Done => break,
-            }
-        }
+        while let Step::Yield = interp.step(&mut g, 2).expect("step") {}
         assert_eq!(interp.op_count, 4);
     }
 

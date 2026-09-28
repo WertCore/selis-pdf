@@ -22,6 +22,34 @@ use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock};
 use crate::page::{page_view as compute_page_view, PageView};
 use crate::render::render_display_list;
 
+// The three compound shapes this module keeps re-spelling (SL-0.WS.11).
+// Named, not inlined into a `type_complexity` allow: each one is a contract
+// that more than one function returns or takes, and the alias is where that
+// contract is written down once.
+
+/// A resolved appearance or content stream: its dictionary pairs plus its
+/// unfiltered body.
+type StreamBody = (Vec<(Bytes, Obj)>, Vec<u8>);
+
+/// A shading mesh in the common (vertices, triangles) form that types 4–7
+/// decode into: Gouraud and lattice flatten to it, the rest are already it.
+type Mesh = (
+    Vec<selis_raster::shading::ShadingPoint>,
+    Vec<(u32, u32, u32)>,
+);
+
+/// What the shared open path yields: the COS document, the resolved document
+/// model, the standard-handler decrypt policy (absent for an unencrypted
+/// document), the public-key receipt (`/Adobe.PPKLite` only), and the
+/// validated `/P`.
+type Opened = (
+    Doc,
+    selis_pdf_doc::Document,
+    Option<selis_pdf_cos::encrypt::DecryptPolicy>,
+    Option<PublicKeyReceipt>,
+    Option<u32>,
+);
+
 /// Detect encryption and build the resolved document model (the shared open
 /// path of [`Session::open`] and [`Session::open_public_key`]).
 ///
@@ -42,13 +70,7 @@ fn open_doc(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
     credential: Option<&selis_crypto::pkcs7::PubKeyCredential>,
-) -> Result<(
-    Doc,
-    selis_pdf_doc::Document,
-    Option<selis_pdf_cos::encrypt::DecryptPolicy>,
-    Option<PublicKeyReceipt>,
-    Option<u32>,
-)> {
+) -> Result<Opened> {
     // (`key`, `receipt`, `pdf_bits`) — `pdf_bits` records the parsed `/P`
     // whenever the /Encrypt dict carries it, for every handler and every
     // open path: a credential-less public-key or standard open surfaces the
@@ -766,6 +788,12 @@ impl Session {
     /// [`Session::render_page_cjk`] plus the walk's workload counters (see
     /// [`crate::render::RenderStats`] — `cjk_pending` is the raw per-walk
     /// observation the outcome list is merged from).
+    // A page render is eight things wide because a page render *is*: the page
+    // index, the backend, the CTM, the budget, the guard, the lazy-CJK set,
+    // and the stats sink, plus `self`. Threading them through a context
+    // struct would hide which of them the CJK path actually differs in, so
+    // the arity stays and the allow is scoped to this function (SL-0.WS.11).
+    #[allow(clippy::too_many_arguments)]
     pub fn render_page_cjk_with_stats(
         &self,
         page_num: usize,
@@ -797,6 +825,9 @@ impl Session {
 
     /// The shared raster walk (page content + annotation appearances) with
     /// an optional lazy-CJK snapshot for `font_data` to attach.
+    // See `render_page_cjk_with_stats`: the same walk context, minus the CJK
+    // set it snapshots before calling (SL-0.WS.11).
+    #[allow(clippy::too_many_arguments)]
     fn render_page_walk(
         &self,
         page_num: usize,
@@ -1098,8 +1129,8 @@ fn resolve_appearance_stream(
     resolver: &mut Resolver<'_>,
     n_obj: &Obj,
     g: &mut BudgetGuard<'_>,
-) -> Option<(Vec<(Bytes, Obj)>, Vec<u8>)> {
-    let as_stream = |o: &Obj| -> Option<(Vec<(Bytes, Obj)>, Vec<u8>)> {
+) -> Option<StreamBody> {
+    let as_stream = |o: &Obj| -> Option<StreamBody> {
         match o {
             Obj::Stream { dict, data } => Some((dict.clone(), data.as_slice().to_vec())),
             _ => None,
@@ -1277,8 +1308,8 @@ fn build_display_list(
     // work. Keyed by (font, resource scope, code) — a different scope may
     // resolve the same name differently, so the key must not collapse it.
     // Walk-local and lookup-only, so determinism holds by construction.
-    let width_cache: RefCell<HashMap<(Bytes, Option<Bytes>, u16), f64>> =
-        RefCell::new(HashMap::new());
+    type WidthKey = (Bytes, Option<Bytes>, u16);
+    let width_cache: RefCell<HashMap<WidthKey, f64>> = RefCell::new(HashMap::new());
     let font_width = move |font_name: &Bytes, code: u16, key: Option<&Bytes>| -> f64 {
         let cache_key = (font_name.clone(), key.cloned(), code);
         if let Some(w) = width_cache.borrow().get(&cache_key) {
@@ -1350,7 +1381,7 @@ fn resolve_resources_for_key(
 ) -> Option<Obj> {
     let key = match key {
         Some(k) => k,
-        None => return fallback.map(Obj::clone),
+        None => return fallback.cloned(),
     };
     let key_str = std::str::from_utf8(key.as_slice()).ok()?;
     let mut it = key_str.split_whitespace();
@@ -1360,8 +1391,8 @@ fn resolve_resources_for_key(
         .resolve(selis_pdf_cos::Ref::new(num, gen), g)
         .ok()?;
     match &form {
-        Obj::Stream { dict, .. } => dict_get_obj(dict, b"Resources").map(Obj::clone),
-        _ => fallback.map(Obj::clone),
+        Obj::Stream { dict, .. } => dict_get_obj(dict, b"Resources").cloned(),
+        _ => fallback.cloned(),
     }
 }
 
@@ -1442,15 +1473,15 @@ fn resolve_pattern_inner(
         }
         _ => selis_geom::Matrix::IDENTITY,
     };
-    if !(x_step > 0.0) || !(y_step > 0.0) {
+    if !(x_step > 0.0 && y_step > 0.0) {
         return None;
     }
     // The pattern's content, executed against its own /Resources (falling
     // back to the caller's).
     let content = unfilter_stream_data(pairs, data, g);
     let pattern_resources = dict_get_obj(pairs, b"Resources")
-        .map(|o| o.clone())
-        .or_else(|| caller_resources.map(Obj::clone));
+        .cloned()
+        .or_else(|| caller_resources.cloned());
     let dl = build_display_list(session, content, pattern_resources.as_ref(), budget, g).ok()?;
     let w = dim_ceil(bbox.width()).max(1);
     let h = dim_ceil(bbox.height()).max(1);
@@ -1696,7 +1727,7 @@ fn resolve_stream(
     resolver: &mut Resolver<'_>,
     r: selis_pdf_cos::Ref,
     g: &mut BudgetGuard<'_>,
-) -> Result<Option<(Vec<(Bytes, Obj)>, Vec<u8>)>> {
+) -> Result<Option<StreamBody>> {
     let obj = resolver.resolve(r, g)?;
     match &obj {
         // The resolver decrypts stream bodies, so use its data directly.
@@ -1899,7 +1930,7 @@ fn parse_font_dict(
                     });
                     let differences = dict_get_obj(&d, b"Differences")
                         .and_then(|o| {
-                            differences_from_obj(&o)
+                            differences_from_obj(o)
                                 .map(|items| selis_font::expand_differences(&items))
                         })
                         .unwrap_or_default();
@@ -2669,10 +2700,7 @@ fn resolve_shading_inner(
     };
     // Types 4/5 (Gouraud and lattice meshes): decode the packed vertex stream
     // into a common (vertices, triangles) mesh.
-    let mesh: Option<(
-        Vec<selis_raster::shading::ShadingPoint>,
-        Vec<(u32, u32, u32)>,
-    )> = match shading_type {
+    let mesh: Option<Mesh> = match shading_type {
         4 | 5 => {
             let data = mesh_data?;
             let bpc = f64_to_u32(on(pairs, b"BitsPerCoordinate").unwrap_or(8.0));
@@ -2807,7 +2835,7 @@ fn resolve_shading_inner(
                     Some(c) => c,
                     None => continue,
                 },
-                4 | 5 | 6 | 7 => {
+                4..=7 => {
                     // Find the triangle containing the point and interpolate
                     // the vertex colours (barycentric).
                     let Some((vertices, triangles)) = &mesh else {
@@ -2939,7 +2967,7 @@ fn components_to_rgb(components: &[f64], color_space: &[u8]) -> [f64; 3] {
             [g, g, g]
         }
         b"DeviceCMYK" | b"CMYK" => {
-            let c = components.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let c = components.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let m = components.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let y = components.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let k = components.get(3).copied().unwrap_or(0.0).clamp(0.0, 1.0);
@@ -2950,7 +2978,7 @@ fn components_to_rgb(components: &[f64], color_space: &[u8]) -> [f64; 3] {
         }
         _ => {
             // DeviceRGB or other: treat first 3 components as RGB.
-            let r = components.get(0).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let r = components.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let g = components.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let b = components.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             [r, g, b]
@@ -3019,7 +3047,7 @@ fn parse_gouraud_shading(
             decode_raw(
                 x_raw,
                 bpc,
-                decode.get(0).copied().unwrap_or(0.0),
+                decode.first().copied().unwrap_or(0.0),
                 decode.get(1).copied().unwrap_or(0.0),
             ),
             decode_raw(
@@ -3081,12 +3109,16 @@ fn parse_gouraud_shading(
         }
         let tri = match flag {
             0 => (
-                *new_indices.get(0)?,
+                *new_indices.first()?,
                 *new_indices.get(1)?,
                 *new_indices.get(2)?,
             ),
-            1 => (*pending.get(0)?, *pending.get(1)?, *new_indices.get(0)?),
-            2 => (*pending.get(0)?, *new_indices.get(0)?, *new_indices.get(1)?),
+            1 => (*pending.first()?, *pending.get(1)?, *new_indices.first()?),
+            2 => (
+                *pending.first()?,
+                *new_indices.first()?,
+                *new_indices.get(1)?,
+            ),
             _ => return None,
         };
         triangles.push(tri);
@@ -3128,7 +3160,7 @@ fn parse_lattice_shading(
             decode_raw(
                 x_raw,
                 bpc,
-                decode.get(0).copied().unwrap_or(0.0),
+                decode.first().copied().unwrap_or(0.0),
                 decode.get(1).copied().unwrap_or(0.0),
             ),
             decode_raw(
@@ -3333,7 +3365,7 @@ fn tessellate_patch(
                 coons_patch(patch, u, v)
             };
             let point = Point::new(
-                s.get(0).copied().unwrap_or(0.0),
+                s.first().copied().unwrap_or(0.0),
                 s.get(1).copied().unwrap_or(0.0),
             );
             let components = s.get(2..).map(|c| c.to_vec()).unwrap_or_default();
@@ -3380,7 +3412,7 @@ fn parse_patch_shading(
                 decode_raw(
                     x_raw,
                     bpc,
-                    decode.get(0).copied().unwrap_or(0.0),
+                    decode.first().copied().unwrap_or(0.0),
                     decode.get(1).copied().unwrap_or(0.0),
                 ),
                 decode_raw(

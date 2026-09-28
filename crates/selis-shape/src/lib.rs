@@ -259,7 +259,7 @@ impl SwashShaper {
         shaper.add_str(params.text);
         shaper.shape_with(|cluster| {
             for g in cluster.glyphs {
-                let gid = u16::from(g.id);
+                let gid = g.id;
                 let cluster_byte = cluster.source.start;
                 glyphs.push(PositionedGlyph {
                     glyph_id: gid,

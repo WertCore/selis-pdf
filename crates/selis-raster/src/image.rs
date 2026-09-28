@@ -224,11 +224,12 @@ fn decode_pixel(
 ) -> (u8, u8, u8, u8) {
     let read_sample = |i: usize| -> u8 {
         let off = base.saturating_add(i.saturating_mul(bytes_per_sample));
-        if bytes_per_sample == 2 {
-            samples.get(off).copied().unwrap_or(0)
-        } else {
-            samples.get(off).copied().unwrap_or(0)
-        }
+        // SL-0.WS.11: the 1-byte and 2-byte arms were byte-for-byte the same
+        // expression (`get(off).copied().unwrap_or(0)`), so the branch chose
+        // nothing. Collapsed to the arm both took. The value is unchanged: a
+        // 16-bit sample still contributes only its first byte here, and
+        // changing that is a decoding decision, not a lint fix.
+        samples.get(off).copied().unwrap_or(0)
     };
     match components {
         1 => {

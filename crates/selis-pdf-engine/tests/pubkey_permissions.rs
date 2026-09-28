@@ -42,8 +42,10 @@ static CERT_RSA: &[u8] = include_bytes!("fixtures/enc03-recipient-rsa2048.x509.d
 static CERT_BOB: &[u8] = include_bytes!("fixtures/enc03-wrong-rsa2048.x509.der");
 static CERT_EC: &[u8] = include_bytes!("fixtures/enc03-recipient-ecp256.x509.der");
 
-/// The permission blocks the generator encodes (keep in sync with
-/// `xtask pkcs7_fixtures.rs` — the engine tests only read them).
+// The permission blocks the generator encodes (keep in sync with
+// `xtask pkcs7_fixtures.rs` — the engine tests only read them). A note, not a
+// doc comment: it had drifted onto the `mod tests` below and then onto
+// `viewer`, neither of which it describes (SL-0.WS.11).
 
 fn viewer() -> Budget {
     Budget::profile(Surface::Viewer)

@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn style_hints_select_the_variant() {
         let hints = style_hints("Times-BoldItalic");
-        assert_eq!(hints.italic, true);
+        assert!(hints.italic);
         assert_eq!(hints.weight, 700);
         assert_eq!(
             substitute("Times-Roman", &hints),

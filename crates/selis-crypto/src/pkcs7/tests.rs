@@ -345,12 +345,12 @@ fn legacy_content_algorithms_parse_for_read() {
 
     let rc4_oid: &[u64] = &[1, 2, 840, 113_549, 3, 4];
     let eci = encrypted_content_info(rc4_oid, None, &[0x11; 24]);
-    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
     let parsed = parse_enveloped_data(&blob, &mut g).expect("rc4 parses");
     assert_eq!(parsed.cek_algorithm, CekAlgorithm::Rc4);
 
     let eci = encrypted_content_info(DES_EDE3_CBC, Some(&[0x22; 8]), &[0x11; 32]);
-    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
     let parsed = parse_enveloped_data(&blob, &mut g).expect("3des parses");
     assert_eq!(
         parsed.cek_algorithm,
@@ -398,7 +398,7 @@ fn unsupported_content_algorithms_are_typed_errors() {
     // AES key wrap is a *key-management* algorithm, never a content one.
     let wrap_oid: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 5];
     let eci = encrypted_content_info(wrap_oid, Some(&[0x22; 16]), &[0x11; 32]);
-    let blob = enveloped_blob(&[ktri.clone()], &eci);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
     let e = parse_enveloped_data(&blob, &mut g).expect_err("wrap-as-content refused");
     assert_eq!(e.code(), Code::EncryptUnsupported);
 
@@ -987,7 +987,7 @@ fn authenticate_alg(
     let blob = enveloped_with(
         key,
         cek,
-        &enc_oid,
+        enc_oid,
         param.as_deref(),
         &content_encrypt(algorithm, cek, payload),
     );

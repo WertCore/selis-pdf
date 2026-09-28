@@ -466,7 +466,7 @@ fn main() {
                     let parts: Vec<&str> = r.split(',').collect();
                     if parts.len() == 4 {
                         Some((
-                            parts.get(0)?.trim().parse().unwrap_or(0.0),
+                            parts.first()?.trim().parse().unwrap_or(0.0),
                             parts.get(1)?.trim().parse().unwrap_or(0.0),
                             parts.get(2)?.trim().parse().unwrap_or(0.0),
                             parts.get(3)?.trim().parse().unwrap_or(0.0),

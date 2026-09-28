@@ -77,6 +77,17 @@ pub trait DocSource: Send + Sync {
     /// The total length in bytes, or `None` while unknown (streaming).
     fn len(&self) -> Option<u64>;
 
+    /// Whether the source is known to hold zero bytes.
+    ///
+    /// Provided (SL-0.WS.11) so the trait keeps the `len`/`is_empty` pair
+    /// every `len`-bearing type in the tree has. "Empty" means *known* empty:
+    /// a streaming source whose length is not yet known is not empty, it is
+    /// unmeasured, and reporting it as empty would let a caller skip a read it
+    /// still has to make.
+    fn is_empty(&self) -> bool {
+        self.len() == Some(0)
+    }
+
     /// Fill `buf` with bytes starting at `off`.
     ///
     /// Returns:

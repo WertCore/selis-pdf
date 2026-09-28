@@ -126,9 +126,8 @@ fn ensure_outside_repo(batch: &Path) -> Result<(), String> {
             let repo = dir
                 .canonicalize()
                 .map_err(|e| format!("cannot canonicalize {}: {e}", dir.display()))?;
-            let created = std::fs::create_dir_all(batch)
+            std::fs::create_dir_all(batch)
                 .map_err(|e| format!("cannot create {}: {e}", batch.display()))?;
-            let _ = created;
             let resolved = batch
                 .canonicalize()
                 .map_err(|e| format!("cannot canonicalize {}: {e}", batch.display()))?;

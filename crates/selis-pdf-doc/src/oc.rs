@@ -126,10 +126,7 @@ impl OcProperties {
         if cfg.off.contains(&group) {
             return false;
         }
-        match cfg.base_state.as_ref().map(|n| n.as_slice()) {
-            Some(b"OFF") => false,
-            _ => true,
-        }
+        !matches!(cfg.base_state.as_ref().map(|n| n.as_slice()), Some(b"OFF"))
     }
 }
 

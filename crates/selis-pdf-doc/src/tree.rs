@@ -47,7 +47,12 @@ fn walk_name_node(
     node: Ref,
     visited: &mut std::collections::BTreeSet<u32>,
     out: &mut NameTree,
-    budget: &Budget,
+    // Charges here are the per-level `DepthGuard` below; the `Budget` itself
+    // is threaded only so the two walkers keep one signature, exactly as
+    // `walk_number_node` already does (SL-0.WS.11 — the lint named the
+    // parameter as recursion-only, and the underscore is that file's own
+    // existing spelling of it).
+    _budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<()> {
     if !visited.insert(node.num) {
@@ -65,7 +70,7 @@ fn walk_name_node(
     if let Some(Obj::Array(kids)) = dict_get(&dict, b"Kids") {
         for kid in kids {
             if let Obj::Ref(r) = kid {
-                walk_name_node(resolver, *r, visited, out, budget, d.guard())?;
+                walk_name_node(resolver, *r, visited, out, _budget, d.guard())?;
             }
         }
     }

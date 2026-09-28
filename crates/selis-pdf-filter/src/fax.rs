@@ -326,7 +326,7 @@ fn decode_g4(
             break;
         }
         let mut cur = Vec::new();
-        decode_2d_row(bits, &mut prev_row, &mut cur, columns, black_bit, g)?;
+        decode_2d_row(bits, &prev_row, &mut cur, columns, black_bit, g)?;
         out.extend_from_slice(&pack_row(&cur, row_bytes, g)?);
         prev_row = cur;
         row_count = row_count.saturating_add(1);
@@ -397,8 +397,11 @@ fn decode_1d_into(
         } else {
             read_run(bits, BLACK_RUNS, BLACK_EXT)?
         };
-        let colour = if white { 0 ^ black_bit } else { 1 ^ black_bit };
-        let run = usize::try_from(run).unwrap_or(usize::MAX);
+        // `black_bit` is the caller's ink polarity: 0 = black-is-zero,
+        // 1 = black-is-one. XOR with an all-zero white pattern is the
+        // identity, so the white arm reduces to `black_bit` (it was spelled
+        // `0 ^ black_bit` to mirror the black arm; same value, SL-0.WS.11).
+        let colour = if white { black_bit } else { 1 ^ black_bit };
         for _ in 0..run {
             row.push(colour);
             if row.len() >= columns {
@@ -477,8 +480,10 @@ fn decode_2d_row(
                 let cols = i64::try_from(columns).unwrap_or(i64::MAX);
                 let target_i = (b1_i.wrapping_add(offset)).clamp(0, cols);
                 let target = usize::try_from(target_i).unwrap_or(usize::MAX);
+                // See `decode_g3_1d`: `0 ^ black_bit` is the identity, so the
+                // even arm is `black_bit` (same value, SL-0.WS.11).
                 let colour = if a0 % 2 == 0 {
-                    0 ^ black_bit
+                    black_bit
                 } else {
                     1 ^ black_bit
                 };
@@ -492,8 +497,9 @@ fn decode_2d_row(
             }
             7 => {
                 // Horizontal mode: two run lengths (current colour then next).
+                // `0 ^ black_bit` is the identity; see `decode_g3_1d`.
                 let colour = if a0 % 2 == 0 {
-                    0 ^ black_bit
+                    black_bit
                 } else {
                     1 ^ black_bit
                 };

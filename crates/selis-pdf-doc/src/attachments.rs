@@ -173,11 +173,7 @@ fn stream_length(obj: &Obj) -> Option<i64> {
     dict_value_int(&Obj::Dict(pairs.clone()), b"Length")
 }
 
-fn as_dict<'a>(
-    resolver: &mut Resolver<'_>,
-    value: &'a Obj,
-    g: &mut BudgetGuard<'_>,
-) -> Option<Obj> {
+fn as_dict(resolver: &mut Resolver<'_>, value: &Obj, g: &mut BudgetGuard<'_>) -> Option<Obj> {
     match value {
         Obj::Dict(_) => Some(value.clone()),
         Obj::Ref(r) => resolver.resolve(*r, g).ok(),

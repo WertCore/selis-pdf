@@ -494,7 +494,11 @@ fn shaped_advances_are_font_units() {
 /// Glyph ids pin the committed fonts (they change with the font — that is
 /// the point: a font update must consciously re-verify shaping).
 #[allow(clippy::too_many_lines)]
-const PARITY: &[(&str, &[(u16, u32, i32, i32, i32)])] = &[
+// One parity case: (shaping script, expected `(glyph id, cluster byte,
+// x advance, x offset, y offset)` per glyph). Named so the table below reads
+// as a list of cases rather than as a type signature (SL-0.WS.11).
+type ParityCase<'a> = (&'a str, &'a [(u16, u32, i32, i32, i32)]);
+const PARITY: &[ParityCase<'_>] = &[
     // Divergence legend (swash vs HarfBuzz 12.1 — shaping-side only):
     // * `cluster swash=A hb=B` — swash merges the conjunct to the
     //   syllable-start byte; HarfBuzz merges to the base consonant. Same

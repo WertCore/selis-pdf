@@ -357,7 +357,9 @@ fn checksum(pixels: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
+// SL-0.WS.11: as in `perf_wasm.rs`, the doc line "A finite, non-negative f64
+// as a u32 dimension (ceil, saturate)." here described a `dim_ceil` helper
+// that no longer exists in this file, and was documenting `axis_of` instead.
 
 /// The cost axis from the file stem (`text-heavy` → `text`).
 fn axis_of(stem: &str) -> &str {

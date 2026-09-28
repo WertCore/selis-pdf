@@ -73,9 +73,12 @@ pub(crate) enum Block {
         spans: Vec<Span>,
     },
     /// Preformatted code lines (rendered verbatim in Courier).
-    CodeBlock(Vec<String>),
+    // `Code` and `Quote`, not `CodeBlock` and `Blockquote` (SL-0.WS.11):
+    // inside `enum Block` the longer names stutter — `Block::CodeBlock` — and
+    // clippy's `enum_variant_names` is right about it.
+    Code(Vec<String>),
     /// A blockquote wrapping further blocks.
-    Blockquote(Vec<Block>),
+    Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
 }

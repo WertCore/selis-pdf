@@ -1134,12 +1134,19 @@ fn attach_ocproperties(
 /// `/Info` dictionary (`set-metadata`): the input's XMP packet is then
 /// stripped rather than left inconsistent with the new Info values (XMP
 /// editing is a TOOL.09 refinement).
+// The conformance carry/prune pass is wide because WRITE.07's contract is
+// wide: the output builder, the source bytes, the parsed source, the page
+// remap, the kept-page list, the flags, and the two budget handles are all
+// needed at each step, and a context struct would hide which of them a given
+// carry actually reads. The arity stays and the allow is scoped to this
+// function (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn reconcile_single_input(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     all_pages: &[Ref],
-    kept: &[(usize, u32, Ref)],
+    kept: &[KeptPage],
     carry_metadata: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
@@ -1349,6 +1356,9 @@ fn dest_page_num(dest: &Obj, named: &NamedDests) -> Option<u32> {
 /// `Parent`/`Count`) are rebuilt over the kept items; every other entry of
 /// a kept item is copied through `copy_value_into`, so destinations remap
 /// at the surviving pages.
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn prune_outlines(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -1389,6 +1399,9 @@ fn prune_outlines(
 /// `parent_ref`), keeping items whose destination survives, and return the
 /// kept items' new object numbers in order. `parent_num` is the object the
 /// caller will link the returned chain under.
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn prune_outline_chain(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -1565,6 +1578,9 @@ fn link_outline_chain(
 /// widget page was deleted (WRITE.07). Default appearance, default
 /// resources, need-appearances, and calculation order pass through;
 /// `/XFA` is never carried (deprecated in PDF 2.0).
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn carry_acroform_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -1685,6 +1701,9 @@ fn field_survives(
 /// destinations whose target page was deleted are pruned, embedded files
 /// pass through, and everything else (`/JavaScript`, `/Launch`-bearing
 /// subtrees, …) is never copied — the writer introduces no actions.
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn carry_names_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -1752,11 +1771,14 @@ fn carry_names_single(
 /// `/StructParents` ids, and the `/ParentTree` keeps exactly those ids'
 /// entries with their values redirected at the pruned elements via the
 /// shared copy cache.
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn carry_struct_tree_single(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
-    kept: &[(usize, u32, Ref)],
+    kept: &[KeptPage],
     page_map: &std::collections::HashMap<u32, Ref>,
     deleted: &std::collections::HashSet<u32>,
     cache: &mut std::collections::HashMap<(u32, u16), u32>,
@@ -1944,6 +1966,9 @@ fn carry_struct_tree_single(
 /// all pruned drops with them, and pairs referencing deleted pages are
 /// omitted. `dropped` remembers pruned source objects so the
 /// `/ParentTree` pass cannot resurrect them.
+// Same WRITE.07 carry/prune arity as `reconcile_single_input`; see the
+// justification there (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn copy_struct_value(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -2063,14 +2088,12 @@ fn edit_dict_entry(
     key: &[u8],
     value: Obj,
 ) {
-    if let Some((_, obj)) = merged.objects_mut().iter_mut().find(|(n, _)| *n == num) {
-        if let Obj::Dict(pairs) = obj {
-            let key_b = selis_bytes::Bytes::copy_from_slice(key);
-            if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_slice() == key) {
-                slot.1 = value;
-            } else {
-                pairs.push((key_b, value));
-            }
+    if let Some((_, Obj::Dict(pairs))) = merged.objects_mut().iter_mut().find(|(n, _)| *n == num) {
+        let key_b = selis_bytes::Bytes::copy_from_slice(key);
+        if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_slice() == key) {
+            slot.1 = value;
+        } else {
+            pairs.push((key_b, value));
         }
     }
 }
@@ -2536,13 +2559,22 @@ fn collect_refs_in(obj: &Obj, out: &mut Vec<Ref>) {
 /// The page's (media box, content refs, resources value, existing /Rotate,
 /// annotations value). The resources and annotations values are the raw page
 /// entries: an indirect reference, an inline dictionary/array, or absent.
+/// (old page index, old page object number, merged page reference).
+type KeptPage = (usize, u32, Ref);
+
+/// What `page_info` reads off one page (SL-0.WS.11): its media box, the
+/// annotation references, the (possibly indirect) `/StructParents`, the
+/// rotation, and the (possibly indirect) `/Tabs` value. Named because the
+/// five-tuple is a contract every page-tree caller reads positionally.
+type PageInfo = ((f64, f64), Vec<Ref>, Option<Obj>, i64, Option<Obj>);
+
 fn page_info(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     page_ref: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<((f64, f64), Vec<Ref>, Option<Obj>, i64, Option<Obj>), String> {
+) -> Result<PageInfo, String> {
     let page = resolve_ref_obj(src, doc, page_ref, budget, g)?;
     let Obj::Dict(pairs) = &page else {
         return Err("page is not a dict".to_string());
@@ -2909,6 +2941,13 @@ fn annots_on_pages(
 /// `annotations_override` replaces the input-total annotation expectation
 /// when only a subset of pages survives (split, delete). `in_bytes` is the
 /// size of what was read (the display's `bytes_in`).
+// The single commit surface every tool funnels through (WRITE.05), so its
+// parameters are the whole per-operation contract: the builder, the output
+// and input paths and size, the preserved-count policy, the page-count and
+// annotation overrides, the conformance text, and the two budget handles.
+// That is the point of a commit surface — one place that knows all of it —
+// so the arity stays and the allow is scoped to this function (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn write_document(
     builder: selis_pdf_cos::doc_writer::DocumentBuilder,
     output: &str,

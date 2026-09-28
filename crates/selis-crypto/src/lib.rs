@@ -158,6 +158,13 @@ pub fn compute_u(key: &[u8], r: u8, id0: &[u8]) -> Vec<u8> {
 /// unwrap `/UE` (or fall back to the owner password via `/O`/`/OE`) with the
 /// Algorithm 2.A/2.B construction.
 #[must_use]
+// The parameter list *is* the `/Encrypt` dictionary: `/O`, `/U`, `/P`, the
+// first file identifier, `/R`, `/Length`, `/CF` cipher choice,
+// `/EncryptMetadata`, `/UE`, `/OE`, and the password to test (ISO 32000-1
+// §7.6.3.2, Table 20). Bundling them into a struct would hide exactly the
+// correspondence a reader needs when checking this against the spec, so the
+// arity stays and the lint is scoped to this function (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 pub fn authenticate_user(
     o: &[u8],
     u: &[u8],
@@ -195,6 +202,10 @@ pub fn authenticate_user(
 /// only, then the 50-iteration rehash for R3+), decrypt `/O` to recover the
 /// user password, then authenticate the user password normally.
 #[must_use]
+// See `authenticate_user`: these are the same `/Encrypt` dictionary entries
+// (minus the R5/R6-only `/UE`, which owner recovery never consumes), and the
+// same argument stands for keeping the spec correspondence legible.
+#[allow(clippy::too_many_arguments)]
 pub fn authenticate_owner(
     o: &[u8],
     u: &[u8],
@@ -365,6 +376,9 @@ pub fn authenticate_owner_r56(
 /// dictionary-shape symmetry with the caller — owner validation never
 /// consumes it (only user authentication unwraps the `/UE` key).
 #[must_use]
+// See `authenticate_user`: the same `/Encrypt` dictionary entries, exposed
+// here as the question "is this the owner password?" rather than a derivation.
+#[allow(clippy::too_many_arguments)]
 pub fn is_owner_password(
     o: &[u8],
     u: &[u8],
@@ -767,9 +781,9 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
 /// only on platforms without an OS entropy source).
 #[must_use]
 pub fn random_bytes(n: usize) -> Vec<u8> {
-    // Key-sized only (16/32 in every caller): `resize` allocates exactly `n`.
-    let mut out = Vec::new();
-    out.resize(n, 0);
+    // Key-sized only (16/32 in every caller): `vec![0; n]` allocates exactly
+    // `n`, and every byte is overwritten by `fill_random` below.
+    let mut out = vec![0; n];
     fill_random(&mut out);
     out
 }

@@ -445,7 +445,10 @@ fn median_ms(mut samples: Vec<f64>) -> f64 {
     samples.get(samples.len() / 2).copied().unwrap_or(0.0)
 }
 
-/// A finite, non-negative f64 as a u32 dimension (ceil, saturate).
+// SL-0.WS.11: the doc line "A finite, non-negative f64 as a u32 dimension
+// (ceil, saturate)." that sat here described a `dim_ceil` helper that no
+// longer exists in this file; left in place it documented whatever came next
+// (`checksum`), which it says nothing about.
 
 /// A wrapping FNV-1a hash of the pixmap (the cross-arch identity check).
 pub(crate) fn checksum(pixels: &[u8]) -> String {

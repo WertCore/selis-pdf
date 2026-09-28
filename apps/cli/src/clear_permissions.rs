@@ -118,6 +118,13 @@ pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult
 /// R5/6: `/P` does not feed the key derivation, so the content stays
 /// encrypted at rest under the same file key.  Only `/P` and `/Perms` change,
 /// and the new `/Encrypt` object is appended as a new revision (WRITE.02).
+// A permission rewrite needs the whole encryption record end to end: the
+// source bytes, the parsed document, the `/Encrypt` dictionary, the file key,
+// the recovered passwords, the root and first-page ids, the two paths, the
+// trailer pairs, and the budget handles. Splitting the R2–4 and R5/6 halves
+// across a context struct would not make either one narrower to read, so the
+// arity stays and the allow is scoped to this function (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn clear_permissions_r56(
     src: &[u8],
     info: &encrypt::EncryptInfo,
@@ -176,6 +183,10 @@ fn clear_permissions_r56(
 /// R2–4: `/P` feeds the key derivation.  Decrypt all content with the old
 /// key, derive a new key from the cleared `/P`, recompute `/U`, and
 /// re-encrypt every stream/string.
+// See `clear_permissions_r56`: the R2-4 half needs the same record plus the
+// user password it recovers and the old file key it decrypts with, which is
+// why it is the wider of the two (SL-0.WS.11).
+#[allow(clippy::too_many_arguments)]
 fn clear_permissions_r24(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
@@ -532,7 +543,7 @@ mod tests {
         // The content stream, RC4-encrypted under object 6.
         let stream_body = format!("<< /Length {} >>\nstream\n", enc_content.len());
         offsets.insert(6, out.len());
-        out.extend_from_slice(format!("6 0 obj\n").as_bytes());
+        out.extend_from_slice("6 0 obj\n".as_bytes());
         out.extend_from_slice(stream_body.as_bytes());
         out.extend_from_slice(&enc_content);
         out.extend_from_slice(b"\nendstream\nendobj\n");
@@ -545,7 +556,7 @@ mod tests {
             out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
         }
         out.extend_from_slice(b"trailer\n");
-        let id_hex = format!("{}", hex(&id0));
+        let id_hex = hex(&id0);
         out.extend_from_slice(
             format!("<< /Size 7 /Root 1 0 R /Encrypt 5 0 R /ID [<{id_hex}><{id_hex}>] >>\n")
                 .as_bytes(),

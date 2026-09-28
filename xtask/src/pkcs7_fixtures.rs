@@ -214,6 +214,11 @@ const GRANT_VIEW: u32 = 0xFFFF_F000; // no functional bits set
 const PAGE_CONTENT: &[u8] = b"0 0 1 rg 10 10 180 180 re f\n";
 
 /// An AES block handle for the generator.
+// `Cipher` is a two-variant handle to a RustCrypto block cipher whose types
+// are large (≈1 KiB each); boxing one variant would put an allocation in the
+// middle of a fixture generator that runs a handful of times per fixture set
+// (SL-0.WS.11). The size is the dependency's, not drift.
+#[allow(clippy::large_enum_variant)]
 enum Cipher {
     A128(aes::Aes128),
     A256(aes::Aes256),
@@ -265,16 +270,18 @@ fn aes_kw_wrap(kek: &[u8], key: &[u8]) -> Vec<u8> {
     let cipher = Cipher::new(kek);
     let n = key.len() / 8;
     let mut a: [u8; 8] = [0xA6; 8];
-    let mut r: Vec<[u8; 8]> = Vec::new();
-    for i in 0..n {
-        r.push(key[i * 8..(i + 1) * 8].try_into().expect("block"));
-    }
+    let mut r: Vec<[u8; 8]> = key
+        .chunks_exact(8)
+        .map(|b| b.try_into().expect("block"))
+        .collect();
     for j in 0..6usize {
-        for i in 0..n {
+        // `i` is the RFC 3394 counter (t = n*j + i + 1), so the block it
+        // selects is iterated rather than indexed (SL-0.WS.11).
+        for (i, ri) in r.iter_mut().enumerate() {
             let t = (j * n + i + 1) as u64;
             let mut input = [0u8; 16];
             input[..8].copy_from_slice(&a);
-            input[8..].copy_from_slice(&r[i]);
+            input[8..].copy_from_slice(ri);
             let mut block: aes::Block = input.into();
             cipher.encrypt_block(&mut block);
             let t_bytes = t.to_be_bytes();
@@ -284,7 +291,7 @@ fn aes_kw_wrap(kek: &[u8], key: &[u8]) -> Vec<u8> {
             for k in 0..8 {
                 a[k] ^= t_bytes[k];
             }
-            r[i].copy_from_slice(&block[8..16]);
+            ri.copy_from_slice(&block[8..16]);
         }
     }
     let mut out = a.to_vec();
@@ -1365,57 +1372,53 @@ pub fn legacy_seeds() -> Vec<(&'static str, Vec<u8>)> {
         perms: PERMISSIONS,
         id: IdKind::IssuerSerial,
     };
-    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
-    out.push((
-        "cms-rc4-128",
-        legacy_recipient_blob(LegacyCipher::Rc4_128, &vec![0x10u8; 16], &alice),
-    ));
-    out.push((
-        "cms-rc4-40",
-        legacy_recipient_blob(LegacyCipher::Rc4_40, &vec![0x10u8; 5], &alice),
-    ));
-    out.push((
-        "cms-tdea",
-        legacy_recipient_blob(LegacyCipher::Tdea, &vec![0x10u8; 24], &alice),
-    ));
-    out.push((
-        "cms-rc2-128",
-        legacy_recipient_blob(LegacyCipher::Rc2 { bits: 128 }, &vec![0x10u8; 16], &alice),
-    ));
-    out.push((
-        "cms-rc2-40",
-        legacy_recipient_blob(LegacyCipher::Rc2 { bits: 40 }, &vec![0x10u8; 16], &alice),
-    ));
-    out.push((
-        "cms-rc4-cek-too-long",
-        legacy_recipient_blob_keyed(
-            LegacyCipher::Rc4_128,
-            &vec![0x10u8; 20],
-            &vec![0x10u8; 16],
-            &alice,
+    let mut out: Vec<(&'static str, Vec<u8>)> = vec![
+        (
+            "cms-rc4-128",
+            legacy_recipient_blob(LegacyCipher::Rc4_128, &[0x10u8; 16], &alice),
         ),
-    ));
-    out.push((
-        "cms-tdea-cek-wrong-length",
-        legacy_recipient_blob_keyed(
-            LegacyCipher::Tdea,
-            &vec![0x10u8; 20],
-            &vec![0x10u8; 24],
-            &alice,
+        (
+            "cms-rc4-40",
+            legacy_recipient_blob(LegacyCipher::Rc4_40, &[0x10u8; 5], &alice),
         ),
-    ));
-    // A two-key TDEA envelope: 16 bytes is a legitimate TDEA key (K1,K2,K1).
-    out.push((
-        "cms-tdea-two-key",
-        legacy_recipient_blob(LegacyCipher::Tdea, &vec![0x10u8; 16], &alice),
-    ));
-    // An RC4 envelope whose ciphertext is *not* the 24-byte payload: RC4 has
-    // no padding to fail on, so the length rule is the entire wrong-key
-    // story — this seed must end the scan typed, never hand over a key.
-    out.push((
-        "cms-rc4-bad-length",
-        legacy_recipient_blob_raw(LegacyCipher::Rc4_128, &vec![0x10u8; 16], &[7u8; 31], &alice),
-    ));
+        (
+            "cms-tdea",
+            legacy_recipient_blob(LegacyCipher::Tdea, &[0x10u8; 24], &alice),
+        ),
+        (
+            "cms-rc2-128",
+            legacy_recipient_blob(LegacyCipher::Rc2 { bits: 128 }, &[0x10u8; 16], &alice),
+        ),
+        (
+            "cms-rc2-40",
+            legacy_recipient_blob(LegacyCipher::Rc2 { bits: 40 }, &[0x10u8; 16], &alice),
+        ),
+        (
+            "cms-rc4-cek-too-long",
+            legacy_recipient_blob_keyed(
+                LegacyCipher::Rc4_128,
+                &[0x10u8; 20],
+                &[0x10u8; 16],
+                &alice,
+            ),
+        ),
+        (
+            "cms-tdea-cek-wrong-length",
+            legacy_recipient_blob_keyed(LegacyCipher::Tdea, &[0x10u8; 20], &[0x10u8; 24], &alice),
+        ),
+        // A two-key TDEA envelope: 16 bytes is a legitimate TDEA key (K1,K2,K1).
+        (
+            "cms-tdea-two-key",
+            legacy_recipient_blob(LegacyCipher::Tdea, &[0x10u8; 16], &alice),
+        ),
+        // An RC4 envelope whose ciphertext is *not* the 24-byte payload: RC4 has
+        // no padding to fail on, so the length rule is the entire wrong-key
+        // story — this seed must end the scan typed, never hand over a key.
+        (
+            "cms-rc4-bad-length",
+            legacy_recipient_blob_raw(LegacyCipher::Rc4_128, &[0x10u8; 16], &[7u8; 31], &alice),
+        ),
+    ];
     for (tag, sha256) in [("cms-oaep-sha1", false), ("cms-oaep-sha256", true)] {
         let cek: Vec<u8> = (0..32u8).map(|i| 0x10u8 + i).collect();
         let cert = cert_for(alice.key);

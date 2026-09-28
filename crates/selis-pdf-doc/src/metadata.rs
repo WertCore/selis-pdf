@@ -60,28 +60,23 @@ impl Metadata {
 
         // Info dictionary.
         if let Some(Obj::Ref(r)) = catalog_dict(catalog, b"Info") {
-            match resolver.resolve(*r, g) {
-                Ok(Obj::Dict(pairs)) => {
-                    let mut map = BTreeMap::new();
-                    for (k, v) in pairs {
-                        map.insert(String::from_utf8_lossy(k.as_slice()).to_string(), v);
-                    }
-                    info = Some(map);
+            if let Ok(Obj::Dict(pairs)) = resolver.resolve(*r, g) {
+                let mut map = BTreeMap::new();
+                for (k, v) in pairs {
+                    map.insert(String::from_utf8_lossy(k.as_slice()).to_string(), v);
                 }
-                _ => {}
+                info = Some(map);
             }
         }
 
         // XMP metadata stream.
         if let Some(Obj::Ref(r)) = catalog_dict(catalog, b"Metadata") {
-            if let Ok(meta_obj) = resolver.resolve(*r, g) {
-                if let Obj::Stream { data, .. } = &meta_obj {
-                    // The stream data is the raw XMP packet. Phase 1 extracts
-                    // a few fields via a simple scan; full XML parsing is a
-                    // dependency we pull in when needed.
-                    let text = String::from_utf8_lossy(data.as_slice()).to_string();
-                    xmp = Some(text);
-                }
+            if let Ok(Obj::Stream { data, .. }) = resolver.resolve(*r, g) {
+                // The stream data is the raw XMP packet. Phase 1 extracts
+                // a few fields via a simple scan; full XML parsing is a
+                // dependency we pull in when needed.
+                let text = String::from_utf8_lossy(data.as_slice()).to_string();
+                xmp = Some(text);
             }
         }
 
@@ -99,9 +94,7 @@ impl Metadata {
             "Trapped",
         ];
         for key in &known_keys {
-            let info_val = info
-                .as_ref()
-                .and_then(|m| m.get(*key).map(|v| obj_to_string(v)));
+            let info_val = info.as_ref().and_then(|m| m.get(*key).map(obj_to_string));
             let _xmp_val = xmp.as_ref().and_then(|x| extract_xmp_field(x, key));
             // Info wins over XMP when both are present (per spec §14.3.2).
             if let Some(v) = info_val.and_then(|v| v) {

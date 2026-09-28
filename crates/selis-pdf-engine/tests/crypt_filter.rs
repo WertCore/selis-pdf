@@ -149,5 +149,5 @@ fn issue19484_2_metadata_crypt_identity_not_decrypted() {
 #[test]
 fn bug1782186_standard_crypt() {
     let session = open(BUG1782186);
-    assert!(session.len() > 0, "must have at least one page");
+    assert!(!session.is_empty(), "must have at least one page");
 }

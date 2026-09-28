@@ -192,21 +192,22 @@ impl RenderParams {
             }
             None => Vec::new(),
         });
-        let mut prefix = Vec::new();
-        prefix.push(match self.target_space {
-            TargetColourSpace::DeviceRgb => 0u8,
-            TargetColourSpace::DeviceCmyk => 1,
-        });
-        prefix.push(u8::from(self.alpha));
-        prefix.push(u8::from(self.include_annotations));
-        prefix.push(u8::from(self.for_print));
-        prefix.push(u8::from(self.text_hinting));
-        prefix.push(match self.intent {
-            RenderIntent::RelativeColorimetric => 0,
-            RenderIntent::AbsoluteColorimetric => 1,
-            RenderIntent::Saturation => 2,
-            RenderIntent::Perceptual => 3,
-        });
+        let prefix = vec![
+            match self.target_space {
+                TargetColourSpace::DeviceRgb => 0u8,
+                TargetColourSpace::DeviceCmyk => 1,
+            },
+            u8::from(self.alpha),
+            u8::from(self.include_annotations),
+            u8::from(self.for_print),
+            u8::from(self.text_hinting),
+            match self.intent {
+                RenderIntent::RelativeColorimetric => 0,
+                RenderIntent::AbsoluteColorimetric => 1,
+                RenderIntent::Saturation => 2,
+                RenderIntent::Perceptual => 3,
+            },
+        ];
         h.feed(&prefix);
         for (k, v) in &self.oc {
             h.feed(&k.to_le_bytes());
@@ -240,7 +241,10 @@ impl Fnv {
 }
 
 fn width_u32(v: f64) -> u32 {
-    if !(v > 0.0) || !v.is_finite() {
+    // See `pattern::plan_pattern`: the negated `>` is what rejects NaN, so
+    // the two tests are merged by De Morgan rather than rewritten to `<=`
+    // (SL-0.WS.11).
+    if !(v > 0.0 && v.is_finite()) {
         return 0;
     }
     let c = v.ceil();

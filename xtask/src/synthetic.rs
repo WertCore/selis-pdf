@@ -37,10 +37,9 @@ fn preserve_annotation(path: std::path::PathBuf, record: String) -> String {
 /// can exercise the preservation contract directly; shared with
 /// `corpus expect-merge`, which must preserve triage verdicts too.
 pub(crate) fn extract_annotation_table(text: &str) -> Option<String> {
-    let mut lines = text.lines().peekable();
     let mut block = String::new();
     let mut inside = false;
-    while let Some(line) = lines.next() {
+    for line in text.lines() {
         if line.trim() == "[annotation]" {
             inside = true;
             block.push_str(line);

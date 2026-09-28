@@ -192,10 +192,8 @@ impl Writer {
         let scale_us = usize::from(scale);
         if digits.len() <= scale_us {
             // Pad leading zeros so the fractional part has the right width.
-            let mut padded = Vec::new();
-            for _ in 0..scale_us.saturating_sub(digits.len()).saturating_add(1) {
-                padded.push(b'0');
-            }
+            let n = scale_us.saturating_sub(digits.len()).saturating_add(1);
+            let mut padded = vec![b'0'; n];
             padded.extend_from_slice(&digits);
             digits = padded;
         }
