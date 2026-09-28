@@ -591,7 +591,14 @@ fn grow_bbox(b: Rect, p: Point) -> Rect {
 /// end-to-end one rests on, at the level the geometry is actually decided.
 #[cfg(test)]
 mod visible_region {
-    #![allow(clippy::arithmetic_side_effects)]
+    // A test module indexing its own fixture is not a crash primitive — the
+    // input here is `issue7454_ops()`, a `DisplayList` this module builds two
+    // lines above, whose glyph count is fixed by construction. The same
+    // reasoning, in the same form, is why `clippy.toml` sets
+    // `allow-unwrap-in-tests` and why the sibling `gap_properties` module below
+    // allows the arithmetic lints. Deliberately scoped to tests: no production
+    // module in this file may widen this.
+    #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
     use super::*;
     use selis_bytes::Bytes;
