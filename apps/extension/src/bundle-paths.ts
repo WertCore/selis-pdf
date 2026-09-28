@@ -64,6 +64,19 @@ export const OWN_PACKAGE_PREFIX = `${OWN_BUILD_TREE}/`;
 export const SHARED_BUILD_TREE = "ui";
 
 /**
+ * Where a linked WASM artefact lives, relative to a cargo target directory.
+ *
+ * `cargo xtask size-check` builds every chunk with
+ * `--target wasm32-unknown-unknown --release` and writes `wasm-opt -O3`
+ * output next to the linked binary as `<stem>.opt.wasm`
+ * (`xtask/src/size_check.rs`). Naming the same directory here is what makes
+ * the bytes the packer ships the bytes `size-check` measured — a package
+ * carrying an unoptimised binary while the budget is enforced on the
+ * optimised one would be a budget for an artefact nobody runs.
+ */
+export const WASM_RELEASE_SUBDIR = "wasm32-unknown-unknown/release";
+
+/**
  * Where a shipped file's bytes come from. Each kind is a different trust
  * question, which is why they are named rather than unified:
  *
@@ -75,8 +88,12 @@ export const SHARED_BUILD_TREE = "ui";
  *   source the web app runs; a change in `apps/ui` lands in the extension
  *   package on the next build, which is the point and also the risk.
  * - `shared-asset` — a non-JS file copied from `apps/ui` (the stylesheets).
+ * - `wasm-artifact` — a linked `.wasm` built by `cargo` for
+ *   `wasm32-unknown-unknown` and optimised with `wasm-opt` (SL-4.EXT.05). It
+ *   is the one row whose bytes no other row can derive, so its source is
+ *   spelled out and its absence is a build failure rather than a skip.
  */
-export type PackageSource = "root" | "build" | "shared-js" | "shared-asset";
+export type PackageSource = "root" | "build" | "shared-js" | "shared-asset" | "wasm-artifact";
 
 /** One file in the shipped package: where it lands, and where it comes from. */
 export interface PackageEntry {
@@ -84,9 +101,12 @@ export interface PackageEntry {
 	readonly out: string;
 	readonly from: PackageSource;
 	/**
-	 * Required for `shared-asset`: the file's path relative to this package's
-	 * root, e.g. `../ui/src/viewer/page-list.css`. Assets are not compiled, so
-	 * there is no build-tree path to derive and the path is spelled out.
+	 * Required for `shared-asset` and `wasm-artifact`: where the bytes come
+	 * from, relative to a directory this package names. Assets are not
+	 * compiled, so there is no build-tree path to derive and the path is
+	 * spelled out — a stylesheet is `../ui/src/viewer/page-list.css`, and a
+	 * WASM artefact is a file stem inside the cargo release directory
+	 * ({@link WASM_RELEASE_SUBDIR}).
 	 */
 	readonly source?: string;
 }
@@ -143,13 +163,21 @@ export interface PackageEntry {
  * the browser while every gate stayed green. `engine-host.test.ts` asserts the
  * path the code uses is a row here.
  *
- * **The core `.wasm` is not on this list yet, and that is deliberate.**
- * SL-4.EXT.05 is the task that makes the package carry the WASM and fits it to
- * a size budget; adding a multi-megabyte binary to the ship list here would
- * put that decision in a task that has not made it. Until then the engine
- * reports a typed failure naming the missing path, which is the honest
- * outcome: a viewer that says "the engine is not in this build" beats one that
- * renders nothing and says nothing.
+ * **The core `.wasm` is on this list, and it is SL-4.EXT.05's row.** The
+ * engine EXT.03 hosts is a real WASM guest; without these bytes the viewer
+ * renders nothing, which is why the row exists and why the engine's own
+ * "missing path" failure became a build failure instead. The bytes come from
+ * the `wasm32-unknown-unknown` release build of `selis-pdf-wasm` after
+ * `wasm-opt -O3` — the same artefact `cargo xtask size-check` measures, so the
+ * bytes that ship and the bytes that are budgeted are the same bytes.
+ *
+ * The five lazy chunks are **not** rows. `jpx`/`cjk` are fetched on demand in
+ * the web app; in the extension there is no origin to fetch them from
+ * (`host_permissions` is `[]`), so shipping them would spend package budget on
+ * a viewer session that mostly never asks. `ocr`/`convert`/`editor` are
+ * `viewerAuto: false` and must never reach a viewer at all (WASM.02).
+ * `size-budget.ts` fails the build if one of them appears in the package, so
+ * "we did not ship it" is a checked fact rather than a claim in a comment.
  *
  * The stylesheets are `@selis/ui-kit`'s, copied verbatim (`shared-asset`): the
  * same no-bundler reason, so a shell links them, and `tokens.css` is generated
@@ -176,6 +204,13 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "extension/src/ext/engine-client.js", from: "build" },
 	{ out: "extension/src/ext/engine-link.js", from: "build" },
 	{ out: "extension/src/ext/engine-protocol.js", from: "build" },
+	// SL-4.EXT.05: the CJK payload store. Nothing calls it yet — the transport
+	// that would fill it is WASM.07's row and SL-3.FONT.10 has produced no
+	// payload — so this is shipped dead code, deliberately and cheaply (~5 KB).
+	// Shipping it is what makes "the payload is not a bundled asset" a
+	// structural fact: the store the extension will use is here, and the
+	// bytes it will hold are not. See `REUSE.md`.
+	{ out: "extension/src/ext/cjk-payload.js", from: "build" },
 	{ out: "extension/src/ext/host-env.js", from: "build" },
 	{ out: "extension/src/ext/offscreen-engine.js", from: "build" },
 	{ out: "extension/src/ext/surface.js", from: "build" },
@@ -183,6 +218,11 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "ui/src/platform/errors.js", from: "shared-js" },
 	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
 	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
+	// SL-4.EXT.05: the core WASM chunk. `wasm-worker.test.ts` already asserts
+	// this path agrees with the WASM.02 manifest; `size-budget.test.ts` asserts
+	// it agrees with the row below, so the ship list and the code that reads
+	// it cannot disagree about where the engine lives.
+	{ out: "wasm/selis_pdf_wasm.wasm", from: "wasm-artifact", source: "selis_pdf_wasm.opt.wasm" },
 	{
 		out: "ui-kit/css/tokens.css",
 		from: "shared-asset",

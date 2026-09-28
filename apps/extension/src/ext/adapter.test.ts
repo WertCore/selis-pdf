@@ -54,7 +54,12 @@ describe("extension capabilities (SL-4.EXT.06)", () => {
 		expect(EXTENSION_CAPABILITIES.deepLinks).toBe(false);
 		expect(EXTENSION_CAPABILITIES.threads).toBe(false);
 		expect(ALLOWED_HOST_PERMISSIONS).toEqual([]);
-		expect(ALLOWED_PERMISSIONS).toEqual(["declarativeNetRequest", "offscreen"]);
+		// `storage` (SL-4.EXT.05) buys the optional CJK payload store and
+		// nothing else: it grants no origin, so `httpRange` above is still
+		// false and the adapter's `storage` port is still the `localStorage`
+		// one. A permission that starts changing what the adapter can reach
+		// has to fail here.
+		expect(ALLOWED_PERMISSIONS).toEqual(["declarativeNetRequest", "offscreen", "storage"]);
 	});
 
 	it("refuses clipboard read, and does not pretend to have read anything", async () => {

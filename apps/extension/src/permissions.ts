@@ -474,8 +474,22 @@ export function isRequestIntercepted(
 	);
 }
 
-/** Permissions EXT.01 approves. Anything else fails the manifest gate. */
-export const ALLOWED_PERMISSIONS: readonly string[] = ["declarativeNetRequest", "offscreen"];
+/**
+ * Permissions EXT.01 approves. Anything else fails the manifest gate.
+ *
+ * `storage` arrived with SL-4.EXT.05, which is the task that decided the CJK
+ * payload is an optional post-install download into extension storage rather
+ * than a bundled asset — a decision that is unimplementable without it. It is
+ * the plain `storage` permission and deliberately **not** `unlimitedStorage`:
+ * `storage.local`'s default 10 MB quota is the ceiling the payload store is
+ * budgeted against (`ext/cjk-payload.ts`), so the wider permission has not
+ * been earned. `PERMISSIONS.md` carried the forward reference from EXT.01.
+ */
+export const ALLOWED_PERMISSIONS: readonly string[] = [
+	"declarativeNetRequest",
+	"offscreen",
+	"storage",
+];
 
 /**
  * Host patterns EXT.01 approves. Empty on purpose: DNR interception targets

@@ -27,9 +27,22 @@ if (!existsSync(buildRoot)) {
 	process.exit(1);
 }
 
-const { BUILD_WORKSPACE, PACKAGE_ENTRIES, buildSourceOf } = await import(
+const { BUILD_WORKSPACE, PACKAGE_ENTRIES, WASM_RELEASE_SUBDIR, buildSourceOf } = await import(
 	pathToFileURL(join(buildRoot, "extension", "src", "bundle-scan.js")).href
 );
+
+/**
+ * The cargo target directory a WASM artefact is read from.
+ *
+ * `CARGO_TARGET_DIR` when set (it is set on the size-check CI job and on any
+ * machine that redirects the build), otherwise the workspace's own `target/`.
+ * Honoured here rather than hard-coded because the repo commits no
+ * machine-specific target path - `.cargo/config.toml` carries the `xtask` alias
+ * only - so the default really is `target/`.
+ */
+function cargoTargetDir() {
+	return process.env.CARGO_TARGET_DIR || resolve(pkgRoot, "..", "target");
+}
 
 /**
  * Where one declared entry's bytes are read from, or `null` if the row is
@@ -47,6 +60,9 @@ function sourcePathOf(entry) {
 	if (entry.from === "shared-asset" && typeof entry.source === "string") {
 		return resolve(pkgRoot, entry.source);
 	}
+	if (entry.from === "wasm-artifact" && typeof entry.source === "string") {
+		return join(cargoTargetDir(), WASM_RELEASE_SUBDIR, ...entry.source.split("/"));
+	}
 	return null;
 }
 
@@ -62,7 +78,23 @@ for (const entry of PACKAGE_ENTRIES) {
 		process.exit(1);
 	}
 	if (!existsSync(from)) {
-		console.error(`pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist`);
+		// SL-4.EXT.05: the engine is the one row no other build step produces,
+		// so its absence needs a command rather than a path. Failing here
+		// rather than skipping is deliberate: EXT.03 shipped a package whose
+		// viewer rendered nothing, and every gate was green.
+		console.error(
+			entry.from === "wasm-artifact"
+				? [
+						`pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist.`,
+						"       The package carries the engine (SL-4.EXT.05), so this is a build failure, not a skip.",
+						"       Build and optimise it first:",
+						"         cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release",
+						"         wasm-opt -O3 <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm \\",
+						"                   -o <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm",
+						"       (set CARGO_TARGET_DIR if the build is redirected; `cargo xtask size-check` does both steps)",
+					].join("\n")
+				: `pack: ${entry.out} is declared in PACKAGE_ENTRIES but ${from} does not exist`,
+		);
 		process.exit(1);
 	}
 	contents.set(entry.out, readFileSync(from));

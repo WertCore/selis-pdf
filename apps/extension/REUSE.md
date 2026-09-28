@@ -181,13 +181,25 @@ in-package shape still resolves.
 
 ## Known gaps this task leaves behind
 
-- **The engine is installed (SL-4.EXT.03), and the WASM is not in the package
-  yet.** The engine is a real WASM guest in a Worker the offscreen document
-  spawns; the core `.wasm` is a row SL-4.EXT.05 adds, along with the size
-  budget that decides whether it can. Until then the engine reports a typed
-  failure naming the path it looked for, which is the honest outcome: a viewer
-  that says the engine is not in this build beats one that renders nothing and
-  says nothing.
+- **The engine is installed (SL-4.EXT.03) and the WASM is in the package
+  (SL-4.EXT.05).** The engine is a real WASM guest in a Worker the offscreen
+  document spawns, and the package now carries `wasm/selis_pdf_wasm.wasm` — a
+  ship-list row whose bytes come from the `wasm-opt -O3` output of the same
+  `wasm32-unknown-unknown` build `cargo xtask size-check` measures, at a
+  measured 4,135,676 raw / 1,326,454 brotli. The typed "the engine is not in
+  this build" failure EXT.03 reported is no longer reachable from a green
+  build: `pack.mjs` fails when the artefact is absent and the size gate fails on
+  a package that somehow lost it. See `SIZE.md`.
+- **The CJK payload store ships with no producer and no caller**
+  (`extension/src/ext/cjk-payload.js`, ~5 KB of dead code). SL-4.EXT.05
+  implemented the store half of "an optional post-install download into
+  extension storage" and refused to invent the other half: SL-3.FONT.10 has
+  produced no `cjk/manifest.json`, the transport is WASM.07's row, and
+  `host_permissions` is `[]`, so there is no origin to fetch one from. The
+  module is on the ship list anyway, because a store nobody can reach is not a
+  split — the store is here and the bytes it will hold are not, and the size
+  gate fails if a font ever appears in the package. The call site arrives with
+  WASM.07.
 - **The offscreen document is still never closed.** SL-4.EXT.03 gave it a
   teardown (`stop()` terminates the Worker and releases every open document)
   and a trigger (`pagehide`), but nothing *decides* to close it: the service

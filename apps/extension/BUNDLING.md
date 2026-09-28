@@ -33,11 +33,21 @@ implies it and no import scan would notice it missing. A Worker script the
 ship list forgot is a 404 in the browser with every gate green, which is why
 `engine-host.test.ts` asserts the path the code uses is a row here.
 
-The core `.wasm` is **not** on the list yet. SL-4.EXT.05 is the task that
-makes the package carry the WASM and fits it to a size budget, and putting a
-multi-megabyte binary on this list from a task that has not made that decision
-would be the wrong order. Until then the engine reports a typed failure
-naming the missing path.
+The core `.wasm` **is** on the list, as of SL-4.EXT.05. It is the one row whose
+bytes no other build step produces, so `pack.mjs` reads it from
+`$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm` —
+the `wasm-opt -O3` output of the same `wasm32-unknown-unknown` release build
+`cargo xtask size-check` measures — and a missing artefact is a **build
+failure**, with the two commands that produce it, rather than a skipped row.
+Before EXT.05 the engine reported a typed failure naming the path it looked
+for; that failure is now unreachable from a successful build.
+
+The five lazy chunks are not rows, and `size-budget.ts` fails the build if one
+of them turns up in the package. See `SIZE.md`.
+
+No font is fetched, and none is bundled: the CJK payload is an optional
+post-install download into extension storage (`src/ext/cjk-payload.ts`), and
+the size gate fails on any font extension in the package.
 
 ## What the gate rejects
 
@@ -82,9 +92,12 @@ in `src/bundle.test.ts`:
 - **`blob:` / `data:` / `chrome-extension:`.** Local by construction. A
   `blob:` URL embeds the origin that created it, but the bytes it names were
   made in this process.
-- **Binary assets.** A file with a NUL byte in its first 8 KB (the WASM payload
-  SL-4.EXT.05 will add) is data in the package by construction, and is not
-  utf8-decoded and scanned.
+- **Binary assets.** A file with a NUL byte in its first 8 KB — the core
+  `.wasm`, which SL-4.EXT.05 added to the package — is data in the package by
+  construction, and is not utf8-decoded and scanned. The exemption is
+  width-blind, so it is asserted rather than assumed: `size-budget.test.ts`
+  plants a violation in the real package and in a text file beside it, and
+  fails if the presence of the binary stops the gate reporting anything.
 
 
 ## How far a lexical scan goes, and where it stops
