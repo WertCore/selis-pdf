@@ -217,6 +217,18 @@ async function runOne(
 			);
 			return { page: page.page, text: page.text };
 		}
+		// SL-4.EXT.03: the text layer's own op. It is mapped field by field
+		// rather than cast, because the wire is JSON and a Rect that arrives
+		// with a missing field is a highlight somewhere arbitrary that still
+		// type-checks on the far side.
+		case "textLayer": {
+			const layer = await requireEngine().textLayer(
+				requireDoc(documents, request.doc),
+				request.page,
+				{ signal },
+			);
+			return layer;
+		}
 		default:
 			throw AdapterError.badArgument(
 				`the engine host does not implement '${(request as { op: string }).op}'`,

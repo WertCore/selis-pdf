@@ -115,6 +115,22 @@ pub enum RequestOp {
         /// Canvas and tile selection.
         params: RenderParams,
     },
+    /// One page's text layer: per-character selection geometry (SL-4.UI.04).
+    ///
+    /// A separate op from `Text` because the payloads are different
+    /// things, not different encodings: `Text` answers with a UTF-8
+    /// attachment, while a layer is rectangles and a per-character index
+    /// that has to line up with the text. Folding it in as a `TextFormat`
+    /// would have made one op answer two shapes, and the shells that
+    /// validate replies field by field (the MV3 extension, SL-4.EXT.03)
+    /// would then have to guess which arrived.
+    #[serde(rename = "textLayer")]
+    TextLayer {
+        /// The document handle.
+        doc: DocHandle,
+        /// Zero-based page number.
+        page: u32,
+    },
     /// Extract one page's text. The text leaves as the response's attachment.
     #[serde(rename_all = "camelCase")]
     Text {
