@@ -65,6 +65,7 @@ export {
 	PACKAGE_ENTRIES,
 	SHARED_BUILD_TREE,
 	SHIPPED_FILES,
+	WASM_RELEASE_SUBDIR,
 	buildSourceOf,
 	shippedSet,
 } from "./bundle-paths.js";

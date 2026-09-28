@@ -12,7 +12,7 @@
 		"service_worker": "service-worker.js",
 		"type": "module"
 	},
-	"permissions": ["declarativeNetRequest", "offscreen"],
+	"permissions": ["declarativeNetRequest", "offscreen", "storage"],
 	"host_permissions": [],
 	"content_security_policy": {
 		"extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
