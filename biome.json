@@ -2,7 +2,15 @@
 	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
 	"files": {
 		"include": ["apps/ui", "apps/web/host", "apps/extension", "packages/ui-kit", "packages/wasm-loader"],
-		"ignore": ["dist", "node_modules", "packages/ui-kit/css"]
+		"ignore": [
+			"dist",
+			"node_modules",
+			"packages/ui-kit/css",
+			"apps/web/host/public/sw.js",
+			"apps/web/host/public/sw-policy.js",
+			"apps/web/host/public/sw-register.js",
+			"apps/web/host/public/sw-manifest.json"
+		]
 	},
 	"formatter": {
 		"enabled": true,

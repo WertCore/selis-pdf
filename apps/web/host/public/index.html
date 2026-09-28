@@ -15,7 +15,9 @@
 			  on the document-handling path). sri.test.ts fails the build
 			  otherwise. Recompute digests when an asset changes:
 			  node -e "…createHash('sha384')…".
-			- Threads need COOP/COEP (see src/isolation.ts); without them the
+			- The boot script is a module: it imports /sw-register.js, which registers
+		  the offline service worker (SL-4.WEB.02, src/sw.ts + src/sw-policy.ts).
+		- Threads need COOP/COEP (see src/isolation.ts); without them the
 			  engine uses the identical single-threaded path (DoD test in
 			  src/isolation.test.ts).
 		-->
@@ -33,9 +35,10 @@
 		</main>
 		<script
 			src="/assets/boot.js"
-			integrity="sha384-vGC0e2ySUbbjIUwf+8+TKZqfKcLFhlFAbEOKcrz/H/AFzlJGbrGnCfhVqJA5NqF9"
+			integrity="sha384-MosREp+OVbLXWOKk7tlMmlfxclf0+JUwICIB5iGqaNM3Km/Jxye7j9HIPoGiSV6u"
 			crossorigin="anonymous"
 			defer
+			type="module"
 		></script>
 	</body>
 </html>
