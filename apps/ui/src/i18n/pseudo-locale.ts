@@ -102,20 +102,40 @@ const ACCENTS: Readonly<Record<string, string>> = {
 const OPEN = "⟦";
 const CLOSE = "⟧";
 
+	/**
+	 * Appended to a literal run that has no letter to accent, so a punctuation-only
+	 * run still reads as a translation. Accented, and not a character any English UI
+	 * string carries.
+	 */
+	const WIDEN_MARKER = "Ę";
+
 /** A placeholder, matched so its name is never transformed. */
 const PLACEHOLDER = /(\{\w+(?:,\s*\w+)?\})/g;
 
-/** Accent one literal run of a template, leaving placeholders alone. */
-function accent(text: string): string {
-	return text
-		.split(PLACEHOLDER)
-		.map((part) =>
-			part.startsWith("{")
-				? part
-				: part.replace(/[A-Za-z]/g, (letter) => ACCENTS[letter] ?? letter),
-		)
-		.join("");
-}
+	/**
+	 * Accent one literal run of a template, leaving placeholders alone.
+	 *
+	 * A run with no ASCII letter to accent still has to come out visibly
+	 * non-English: `{pageLabel} - {mode}` is entirely placeholders and an em
+	 * dash, so a letters-only transform leaves it byte-identical to the English
+	 * and the pseudo string could pass for a real translation -- which is
+	 * exactly the failure the pseudo-locale exists to catch. Such a run is widened
+	 * with a marker instead; the em-dash keeps its place, so the shape survives.
+	 */
+	function accent(text: string): string {
+		return text
+			.split(PLACEHOLDER)
+			.map((part) => {
+				if (part.startsWith("{")) {
+					return part;
+				}
+				if (part.length === 0 || !/[A-Za-z]/.test(part)) {
+					return part.length === 0 ? part : `${part}${WIDEN_MARKER}`;
+				}
+				return part.replace(/[A-Za-z]/g, (letter) => ACCENTS[letter] ?? letter);
+			})
+			.join("");
+	}
 
 /** Accent and bracket, so a pseudo string cannot pass for a real one. */
 function wrap(template: string): string {
