@@ -104,10 +104,10 @@ const CLOSE = "⟧";
 
 	/**
 	 * Appended to a literal run that has no letter to accent, so a punctuation-only
-	 * run still reads as a translation. Accented, and not a character any English UI
+	 * run still reads as a translation. Taken from the same map as every other accent, and
 	 * string carries.
 	 */
-	const WIDEN_MARKER = "Ę";
+	const WIDEN_MARKER = "á";
 
 /** A placeholder, matched so its name is never transformed. */
 const PLACEHOLDER = /(\{\w+(?:,\s*\w+)?\})/g;
