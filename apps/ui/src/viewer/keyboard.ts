@@ -207,3 +207,116 @@ export function resolveSearchKey(key: string, context: SearchKeyContext): Search
 			return null;
 	}
 }
+
+/**
+ * ## UI.06 (navigation): a third key map, and the one place the maps overlap
+ *
+ * The outline panel is a treeview, so it claims arrows, `Home` and `End` —
+ * **the same key names the page list claims**. That is a real overlap and it is
+ * why this is a separate resolver with a focus flag rather than a third entry in
+ * one combined map:
+ *
+ * - Search (UI.05) and the page list (UI.02) claim *disjoint* keys, so their
+ *   resolvers can both be consulted unconditionally and a combined resolver
+ *   would have needed a precedence rule to break ties that cannot occur.
+ * - The outline's keys are exactly the page list's keys. They are separated by
+ *   **which widget has focus**, which is a fact the shell knows and this
+ *   resolver cannot: `hasFocus: false` returns `null` for every key, so a
+ *   document area with focus keeps its arrows no matter what the outline panel
+ *   is showing, and a panel with focus takes them.
+ *
+ * That is the whole of the overlap argument, and `keyboard.test.ts` asserts
+ * both halves of it: the map claims nothing without focus, and it claims nothing
+ * at all when the panel is empty. It is also why the shell routes by focus
+ * (outline → search → page list) rather than by asking one function.
+ */
+export type NavigationKey =
+	| "ArrowDown"
+	| "ArrowUp"
+	| "ArrowRight"
+	| "ArrowLeft"
+	| "Home"
+	| "End"
+	| "Enter"
+	| " ";
+
+/** What a key press asked the navigation panel to do. */
+export type NavigationCommandAction =
+	| "next"
+	| "previous"
+	| "first"
+	| "last"
+	| "expand"
+	| "collapse"
+	| "open"
+	| "open-child"
+	| "open-parent";
+
+/** A resolved navigation key press. */
+export interface NavigationCommand {
+	readonly action: NavigationCommandAction;
+	/** The key that produced it, for tests and for UI.07's audit trail. */
+	readonly key: NavigationKey;
+}
+
+export interface NavigationKeyContext {
+	/**
+	 * The outline panel owns the keyboard. Set from the focus event, not from
+	 * "the panel is open": a visible panel without focus must not take the
+	 * reader's arrows away from the document.
+	 */
+	readonly hasFocus: boolean;
+	/** There is at least one visible row to move between. */
+	readonly hasRows: boolean;
+	/**
+	 * The focused row has children. `ArrowRight`/`ArrowLeft` mean different
+	 * things on a parent and on a leaf, and the resolver is where that
+	 * difference is stated.
+	 */
+	readonly focusedHasChildren: boolean;
+	/** The focused row is expanded; `ArrowLeft` collapses it rather than going up. */
+	readonly focusedExpanded: boolean;
+}
+
+/**
+ * Resolve a key press against the navigation panel, or `null` if it is not ours.
+ *
+ * Total and context-sensitive in the same way `resolveSearchKey` is: with no
+ * focus, or with nothing to move between, every key returns `null`, so the
+ * panel never swallows a key it has no business acting on.
+ */
+export function resolveNavigationKey(
+	key: string,
+	context: NavigationKeyContext,
+): NavigationCommand | null {
+	if (!context.hasFocus || !context.hasRows) {
+		return null;
+	}
+	const command = (action: NavigationCommandAction): NavigationCommand => ({
+		action,
+		key: key as NavigationKey,
+	});
+	switch (key) {
+		case "ArrowDown":
+			return command("next");
+		case "ArrowUp":
+			return command("previous");
+		case "Home":
+			return command("first");
+		case "End":
+			return command("last");
+		case "ArrowRight":
+			return context.focusedHasChildren
+				? command(context.focusedExpanded ? "open-child" : "expand")
+				: null;
+		case "ArrowLeft":
+			return context.focusedHasChildren
+				? command(context.focusedExpanded ? "collapse" : "open-parent")
+				: command("open-parent");
+		case "Enter":
+		case " ":
+			return command("open");
+		default:
+			return null;
+	}
+}
