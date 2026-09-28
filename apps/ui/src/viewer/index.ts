@@ -116,6 +116,32 @@ export {
 export type { KeyboardContext, PageListKey, PageNavigationCommand } from "./keyboard.js";
 export { announcement, pageLabel, resolvePageKey, stepFor } from "./keyboard.js";
 
+export type { CharBox, LayerLineBox, TextLayerFrame } from "./text-layer.js";
+export { buildTextLayer, caretX, lineLength } from "./text-layer.js";
+
+export type {
+	Caret,
+	CaretMove,
+	CopyRequest,
+	OrderedRange,
+	SelectionRange,
+} from "./selection.js";
+export {
+	caretFromPoint,
+	clampCaret,
+	collapsedAt,
+	copyText,
+	documentEnd,
+	documentStart,
+	expandToWord,
+	isCollapsed,
+	moveCaret,
+	moveRange,
+	orderedRange,
+	selectedText,
+	selectionRects,
+} from "./selection.js";
+
 export type {
 	PageListCatalogue,
 	PageListMessageKey,

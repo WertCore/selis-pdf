@@ -27,6 +27,7 @@ import type {
 	DocHandle,
 	DocumentSourceDescriptor,
 	PageText,
+	PageTextLayer,
 	PlatformCapabilities,
 	PrintOptions,
 	ProgressReport,
@@ -37,6 +38,8 @@ import type {
 	SearchOptions,
 	Size,
 	TelemetryEvent,
+	TextLayerChar,
+	TextLayerLine,
 } from "./types.js";
 
 /** Declarative description of a mock document. */
@@ -48,6 +51,18 @@ export interface MockDocumentSpec {
 	readonly pageSize?: Size;
 	/** Text per page (search/extraction source); missing pages are empty. */
 	readonly textPages?: readonly string[];
+	/**
+	 * Explicit text layers per page, for tests that need *known* quads — the
+	 * DoD's "selection accuracy tested against known quads".
+	 *
+	 * When a page is absent here the mock synthesises a deterministic monospace
+	 * layer from `textPages` instead, so a test that only cares about selection
+	 * behaviour does not have to hand-author geometry, and a test that cares
+	 * about exact quads can. The synthesised layout is a *model* of the
+	 * contract, not a substitute for it: it produces index-aligned chars,
+	 * reading-ordered lines, and signed advances exactly as the engine does.
+	 */
+	readonly textLayers?: readonly PageTextLayer[];
 	/**
 	 * Real bytes to validate on open. When provided, open() requires a
 	 * `%PDF-` header (registry 1000 NOT_A_PDF otherwise). When omitted, a
@@ -104,6 +119,106 @@ function isWordBoundary(haystack: string, start: number, end: number): boolean {
 
 function isWordChar(ch: string): boolean {
 	return /[a-zA-Z0-9_]/.test(ch);
+}
+
+/**
+ * Synthetic layout constants, in points. Fixed so every test is reproducible.
+ *
+ * A space occupies `SYNTH_ADVANCE` of gap and does **not** move the pen, which
+ * is the engine's own rule: the space glyph is stripped when the assembler
+ * splits words, and the synthesised quad is the gap between the two words.
+ */
+const SYNTH_ADVANCE = 7;
+const SYNTH_ASCENT = 9;
+const SYNTH_DESCENT = 3;
+const SYNTH_MARGIN_X = 72;
+const SYNTH_TOP = 720;
+const SYNTH_LEADING = 18;
+
+/**
+ * Build a deterministic text layer for a page's plain text.
+ *
+ * A *model* of what the engine produces, faithful to the properties a
+ * consumer depends on — index-aligned `chars`, reading-ordered lines, a
+ * synthesised quad for the inter-word space, signed advances, and an explicit
+ * `direction` — and deliberately not a rasteriser. Monospaced metrics make
+ * every quad predictable, which is what lets a UI test assert exact numbers
+ * without hard-coding a font.
+ */
+export function synthesiseTextLayer(
+	page: number,
+	text: string,
+	size: Size = DEFAULT_PAGE,
+): PageTextLayer {
+	const lines = text.split("\n");
+	const built: TextLayerLine[] = [];
+	lines.forEach((lineText, lineIndex) => {
+		if (lineText.length === 0) {
+			// A drawn-but-unrecovered line still holds its reading-order slot with
+			// no characters, because `to_text` still emits its newline.
+			built.push({
+				text: "",
+				rect: { x: 0, y: 0, width: 0, height: 0 },
+				direction: "ltr",
+				chars: [],
+			});
+			return;
+		}
+		const baseline = SYNTH_TOP - lineIndex * SYNTH_LEADING;
+		const top = baseline + SYNTH_ASCENT;
+		const bottom = baseline - SYNTH_DESCENT;
+		const chars: TextLayerChar[] = [];
+		let pen = SYNTH_MARGIN_X;
+		let previousRight: number | null = null;
+		for (const unit of lineText) {
+			if (/\s/.test(unit)) {
+				const left = previousRight ?? SYNTH_MARGIN_X;
+				chars.push({
+					rect: { x: left, y: bottom, width: SYNTH_ADVANCE, height: top - bottom },
+					advance: 0,
+					inked: false,
+				});
+				// The space occupies gap width; the next glyph starts past it.
+				pen = left + SYNTH_ADVANCE;
+				continue;
+			}
+			// An astral scalar occupies two UTF-16 code units; the second shares
+			// the first's quad and takes no advance, exactly as the engine does.
+			chars.push({
+				rect: { x: pen, y: bottom, width: SYNTH_ADVANCE, height: top - bottom },
+				advance: SYNTH_ADVANCE,
+				inked: true,
+			});
+			for (let extra = 1; extra < unit.length; extra += 1) {
+				chars.push({
+					rect: { x: pen, y: bottom, width: SYNTH_ADVANCE, height: top - bottom },
+					advance: 0,
+					inked: false,
+				});
+			}
+			pen += SYNTH_ADVANCE;
+			previousRight = pen;
+		}
+		built.push({
+			text: lineText,
+			rect: {
+				x: SYNTH_MARGIN_X,
+				y: bottom,
+				width: Math.max(0, pen - SYNTH_MARGIN_X),
+				height: top - bottom,
+			},
+			direction: "ltr",
+			chars,
+		});
+	});
+	return {
+		page,
+		width: size.width,
+		height: size.height,
+		lines: built,
+		text: built.map((line) => line.text).join("\n"),
+		lowConfidence: false,
+	};
 }
 
 function syntheticPdf(name: string): Uint8Array {
@@ -267,6 +382,23 @@ export function createMockAdapter(
 				const text = mock.spec.textPages?.[page] ?? "";
 				const result: PageText = { page, text };
 				return result;
+			},
+
+			async textLayer(doc, page, requestOptions) {
+				assertNotAborted(requestOptions);
+				const mock = lookupDocument(doc.id);
+				assertPage(mock.spec, page);
+				await microtask();
+				assertNotAborted(requestOptions);
+				// An explicitly registered layer wins: a test asserting against
+				// known quads needs geometry it controls, including cases the
+				// synthesiser deliberately cannot produce (a mirrored RTL run).
+				const explicit = mock.spec.textLayers?.[page];
+				if (explicit !== undefined) {
+					return explicit;
+				}
+				const text = mock.spec.textPages?.[page] ?? "";
+				return synthesiseTextLayer(page, text, mock.spec.pageSize ?? DEFAULT_PAGE);
 			},
 
 			async *search(doc, query, searchOptions, requestOptions) {

@@ -116,6 +116,104 @@ export interface PageText {
 	readonly text: string;
 }
 
+/**
+ * One UTF-16 code unit of a {@link TextLayerLine}'s text, with its selection
+ * quad (SL-4.UI.04).
+ *
+ * The array is **index-aligned with the line's `text`**: `chars[i]` describes
+ * `text[i]`. That is what makes a selection a pair of integer ranges and the
+ * copied text a slice, and it is why the unit is a UTF-16 code unit rather than
+ * a Unicode scalar — a JavaScript string is a UTF-16 sequence, so a
+ * scalar-indexed array would desynchronise from it on the first astral
+ * character. An astral character therefore occupies two entries: the first
+ * carries the quad, the second is a zero-width, uninked continuation.
+ */
+export interface TextLayerChar {
+	/** Selection quad in PDF user space (points, y-up, origin bottom-left). */
+	readonly rect: Rect;
+	/**
+	 * The pen step to the next character along the writing direction, in points.
+	 * Negative on a right-to-left line; zero on a continuation half and on a
+	 * synthesised space. Signed on purpose: it is the only place the direction
+	 * shows up in the data, and a viewer that sorts or measures by it gets
+	 * right-to-left right for free.
+	 */
+	readonly advance: number;
+	/**
+	 * False for a character with no glyph of its own: a synthesised inter-word
+	 * space (the assembler strips space glyphs when it splits words, so the text
+	 * has characters the glyphs do not) and the trailing half of an astral
+	 * scalar. Such a character still occupies an index, and its rect is the gap
+	 * it stands for — which is what lets a selection across a word boundary
+	 * include the space and a highlight over it cover the gap.
+	 */
+	readonly inked: boolean;
+}
+
+/**
+ * One line of a page's text layer: its text, its box, and its characters.
+ *
+ * Lines arrive in **reading** order (the engine's SL-3.TEXT.04 answer:
+ * structure-tree-first, geometry-fallback), not visual order. Copy walks them in
+ * this order, which is the whole of "copy preserves reading order, not visual
+ * order".
+ */
+export interface TextLayerLine {
+	/** The recovered text of the line; words joined by single spaces. */
+	readonly text: string;
+	/** The line's bounding box, user space. */
+	readonly rect: Rect;
+	/**
+	 * Which way this line's characters run, as the engine resolved it from the
+	 * quads themselves. A host must not infer this from the text: a line of
+	 * digits is left-to-right whatever the document's base direction is.
+	 */
+	readonly direction: "ltr" | "rtl";
+	/** One entry per UTF-16 code unit of `text`, in order. */
+	readonly chars: readonly TextLayerChar[];
+}
+
+/**
+ * A page's text layer (SL-4.UI.04): character geometry in PDF user space.
+ *
+ * **User space, not device pixels, and not CSS pixels.** The layer is
+ * resolution-independent, so one fetch serves every zoom level and a selection
+ * made at one zoom is still exactly right at the next — the viewer multiplies
+ * by the page's current CSS scale and by nothing else. Two traps this shape
+ * exists to close:
+ *
+ * - Deriving text geometry from the compositor's tiles instead would couple
+ *   selection to the render ladder, and the ladder deliberately presents a
+ *   *previous* scale's bitmap during a zoom (`DrawOp.provisional`), so
+ *   selection would be wrong exactly when it has to survive zooming.
+ * - Multiplying by `SurfaceSize.devicePixelRatio` here would be a second,
+ *   different mistake: that field is the *nominal* ratio, whereas the backing
+ *   store's real factor is `SurfaceSize.scale` (`deviceWidth / cssWidth`).
+ *   A text layer is DOM, positioned in CSS pixels inside the page tile, so it
+ *   wants the page's CSS scale and must not know about device pixels at all.
+ *
+ * `text` is the page's text in reading order and is byte-identical to what
+ * `selis extract --format=text` prints for the page — the DoD for copy is stated
+ * against that, and a full-page copy is defined to reproduce it exactly.
+ */
+export interface PageTextLayer {
+	readonly page: number;
+	/** Page width in points; the box the layer's coordinates are relative to. */
+	readonly width: number;
+	/** Page height in points. */
+	readonly height: number;
+	/** Lines in reading order. */
+	readonly lines: readonly TextLayerLine[];
+	/** The page's text in reading order (low-confidence marker included). */
+	readonly text: string;
+	/**
+	 * SL-3.TEXT.10: the page drew text the engine could not recover. A viewer
+	 * should still show the layer (empty) and still copy the marker rather than
+	 * an empty string that reads as a blank page.
+	 */
+	readonly lowConfidence: boolean;
+}
+
 /** Search modifiers; defaults are case-insensitive substring matching. */
 export interface SearchOptions {
 	readonly caseSensitive?: boolean;

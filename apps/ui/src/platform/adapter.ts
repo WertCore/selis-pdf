@@ -37,6 +37,7 @@ import type {
 	DocHandle,
 	DocumentSourceDescriptor,
 	PageText,
+	PageTextLayer,
 	PlatformCapabilities,
 	PrintOptions,
 	RenderTileRequest,
@@ -79,6 +80,40 @@ export interface EnginePort {
 
 	/** Extract one page's text in engine reading order. */
 	extractText(doc: DocHandle, page: number, options?: AdapterRequestOptions): Promise<PageText>;
+
+	/**
+	 * Fetch one page's text layer: per-character selection quads in PDF user
+	 * space, with the recovered text, in engine reading order (SL-4.UI.04).
+	 *
+	 * **Why this exists beside `extractText`, and why it is not the tiles.**
+	 * `extractText` answers "what does the page say"; the text layer answers
+	 * "where is each character", which is a different question with a different
+	 * cost model. Three properties make the split deliberate rather than
+	 * accidental:
+	 *
+	 * 1. **The glyphs are the only source of character geometry.** A rendered
+	 *    tile has pixels and no characters. Deriving a text layer from tiles
+	 *    would couple selection to the render ladder, and UI.03's ladder
+	 *    deliberately presents a *previous* scale's bitmap during a zoom
+	 *    (`DrawOp.provisional`) — so selection would be wrong exactly during the
+	 *    zoom it has to survive.
+	 * 2. **The result is scale-free.** The quads are in PDF points, so one fetch
+	 *    serves every zoom level and a selection made at one zoom is still
+	 *    exactly right at the next. A selection is stored as character indices
+	 *    and re-projected, never as pixels.
+	 * 3. **It is resolution-independent of the surface.** The caller multiplies
+	 *    by the page's *CSS* scale. `SurfaceSize.scale` (the backing store's
+	 *    real device factor) and `SurfaceSize.devicePixelRatio` (the nominal
+	 *    one) are both canvas concepts and must not appear here — the layer is
+	 *    DOM positioned in CSS pixels.
+	 *
+	 * Transports map this onto whatever their engine offers: the WASM worker
+	 *    protocol gets a `textLayer` op, the desktop transport a Tauri command.
+	 *    A transport that cannot supply quads must reject rather than invent
+	 *    them — a text layer positioned by guesswork is a selection that
+	 *    highlights the wrong words, which is worse than no selection.
+	 */
+	textLayer(doc: DocHandle, page: number, options?: AdapterRequestOptions): Promise<PageTextLayer>;
 
 	/**
 	 * Search the whole document progressively. Batches stream page-by-page;

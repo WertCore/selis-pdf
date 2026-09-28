@@ -29,6 +29,8 @@ Node — the repo ships no jsdom, by ADR-P0021's zero-dependency rule.
 | `worker-surface.ts` | The `OffscreenCanvas` surface: transfers the canvas to a worker, and strips tile pixels out of the frame on the way. |
 | `offscreen-compositor.ts` | The worker half: owns the canvas, draws the ops, hands the composed frame back by transfer. |
 | `page-list.css` | Presentation, entirely token-driven. |
+| `text-layer.ts` | Where every character is, in CSS pixels inside a page box. Pure projection from the engine's user-space quads. |
+| `selection.ts` | Hit testing, caret movement, selection rectangles, and copy. Pure functions of a `TextLayerFrame`. |
 
 ## Using it
 
@@ -63,6 +65,83 @@ Two rules for the shell:
    is where the reader's page will be after the relayout (anchoring); the state
    delivered to `onState` already assumes the shell applied it. Feed it back
    through `compositor.update({ …viewport, scrollTop })`.
+
+## The text layer, selection, and copy (SL-4.UI.04)
+
+`text-layer.ts` turns the engine's `PageTextLayer` (PDF user space: points, y up,
+origin at the MediaBox's bottom-left) into a `TextLayerFrame` of CSS-pixel boxes
+inside one page element. `selection.ts` answers every selection question as a pure
+function of that frame. Neither paints; the host renders the frame as ordinary
+DOM, which is what keeps `platform-globals.test.ts` green and lets the whole thing
+be asserted in Node (the repo ships no jsdom, by ADR-P0021).
+
+### Four decisions worth knowing before you touch this
+
+1. **Geometry comes from the engine's quads, never from the compositor's tiles.**
+   A tile has pixels and no characters. Deriving the layer from tiles would couple
+   selection to the render ladder, and the ladder deliberately presents a
+   *previous* scale's bitmap during a zoom (`DrawOp.provisional`) -- so selection
+   would be wrong exactly when the reader is zooming, which is the one moment it
+   has to survive. The quads are resolution-independent, so one fetch serves every
+   zoom level.
+
+2. **The only multiplier is `PlacedPage.scale` (CSS px per PDF point).** Neither
+   `SurfaceSize.scale` (the real backing-store factor, `deviceWidth / cssWidth`) nor
+   `SurfaceSize.devicePixelRatio` (the nominal ratio) belongs here. The text layer
+   is DOM positioned in CSS pixels, so the browser applies the device factor itself,
+   once, when it rasterises. Multiplying by a device ratio would place the layer at
+   1.25x its box on a 125% display -- and the drift would be proportional, so it
+   would still look plausible. `text-layer.test.ts` asserts this explicitly.
+
+3. **A caret is a `(line, utf16Offset)` pair, so zoom survival is structural.**
+   Nothing in the frame is a pixel; the quads are re-projected on every zoom. A
+   selection stored as pixel rectangles would have to be rescaled by hand, and any
+   disagreement with the new layout is a selection that is subtly off at some zoom
+   levels and not others -- the bug this shape makes unrepresentable.
+
+4. **Copy is a slice, so it cannot drift from `selis extract`.** The engine builds
+   `chars` index-aligned with each line's `text` and pins the page's `text` to be
+   byte-identical to `to_text`, which is what `apps/cli/src/extract.rs` prints.
+   `selectedText` is therefore `line.text.slice(a, b)`: no re-extraction, no
+   re-joining, no second code path. A whole-page selection copies exactly
+   `frame.text`, and a whole document is `pages.join("\n")` -- one separator,
+   because `extract.rs` prints one between pages and `to_text` emits no trailing
+   newline.
+
+### Accessibility, and not regressing UI.02
+
+The text layer is the accessible surface, not a decoration over one: it carries the
+real text in reading order, so a screen reader and the browser's own find-in-page and
+selection all work against it. Three rules for the host, all of which protect the
+keyboard and announcement support UI.02 built:
+
+- **The page tile keeps its `listitem` role and its `aria-label`.** The text layer
+  goes *inside* the page element; it does not replace it. UI.02's roving tab order
+  and "Page 7 of 312" announcements are unchanged because nothing about the tile's
+  role or label changes.
+- **Do not put the text layer in the roving tab order.** It is reachable by the
+  caret commands in `selection.ts`, which the page tile forwards. Adding every line
+  as a tab stop would make a 2 000-page document untabbable and would fight the
+  arrow-key model the layer already implements.
+- **The canvas stays `aria-hidden="true"` and the layer stays real text.** The
+  canvas is a painting; the text is the content. This is the same split as UI.03's
+  and it is why the layer is DOM rather than drawn into the surface.
+
+### Known limits, recorded rather than papered over
+
+- **One direction per line.** `direction` is read from the sign of the step between
+  a line's first two inked quads -- a mirrored run's quads descend in x, and that
+  descent is what a mirrored caret has to mirror. It is deliberately *not* a UAX #9
+  resolution. A mixed-direction line (an Arabic word inside an English sentence) is
+  therefore resolved against a single per-line answer, and a visual move on such a
+  line may be off within the embedded run. Fixing it properly needs a real bidi
+  pass, which is a shaper/extractor question, not a viewer one.
+- **Paragraph base direction is not applied to the layer.** It is a different
+  question, asked by `selis-shape`'s first-strong, and importing it here would be
+  both a new layer edge and the wrong answer for a *visual* layer.
+- **No live-region announcements for caret moves.** Caret position is a visual
+  concept; announcing every arrow press would be noise. UI.02's page-level
+  announcements are the ones that matter and they are unaffected.
 
 ## Adding the compositor
 

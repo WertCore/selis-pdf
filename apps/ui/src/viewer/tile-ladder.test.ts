@@ -63,6 +63,18 @@ function fakeEngine(): FakeEngine {
 		open: async () => doc,
 		close: async () => undefined,
 		extractText: async (_d, page) => ({ page, text: "" }),
+		// The ladder never asks for character geometry — UI.04's text layer does,
+		// and it has its own port. The fake answers rather than being cast past,
+		// so that adding a method to `EnginePort` fails this test at the cast
+		// (which is the point of the `FakeEngine` shape) instead of at runtime.
+		textLayer: async (_d, page) => ({
+			page,
+			width: LETTER.width,
+			height: LETTER.height,
+			lines: [],
+			text: "",
+			lowConfidence: false,
+		}),
 		// The fake resolves on demand rather than on a timer, so this is a plain
 		// function returning a promise, not an `async` one.
 		renderTile: (request: RenderTileRequest, options?: AdapterRequestOptions) => {
