@@ -1,13 +1,13 @@
 /**
- * SL-4.EXT.06 â€” the wire between the viewer page and the offscreen engine host.
+ * SL-4.EXT.06 — the wire between the viewer page and the offscreen engine host.
  *
  * ## Why a wire vocabulary at all
  *
  * The extension reuses `apps/ui` verbatim, and `apps/ui` reaches the engine
- * through `PlatformAdapter.engine` â€” an in-process interface. In MV3 the engine
+ * through `PlatformAdapter.engine` — an in-process interface. In MV3 the engine
  * is not in the viewer's process: it lives in the offscreen document
  * (`offscreen.html`), because a service worker is killed aggressively and
- * document bytes must never transit it (24-BINDINGS-SPEC Â§5). So the engine
+ * document bytes must never transit it (24-BINDINGS-SPEC §5). So the engine
  * port here is a **transport**, and this module is its protocol. It is pure data
  * plus a codec: no `chrome.*`, no `fetch`, no DOM, so both ends and the tests
  * can be exercised under Vitest without a browser. SL-4.EXT.03 writes the
@@ -23,7 +23,7 @@
  *    path moves both by *ownership*; nothing can be moved by ownership across
  *    this link. Rendered tiles therefore travel as base64 text, and the
  *    viewer's `TileSurface` has to be a main-thread one
- *    (`takesOwnership: false` â€” see `surface.ts` and `REUSE.md`).
+ *    (`takesOwnership: false` — see `surface.ts` and `REUSE.md`).
  * 2. **Document bytes travel as base64 too**, which costs ~33 % on the way out
  *    and another decode on the way in. `apps/web/host` gets them for free
  *    because a `Worker` port is a structured clone. This is the price of the
@@ -36,7 +36,7 @@
  *
  * The alternative was ruled out rather than not considered: the service worker
  * cannot instantiate the WASM engine (no DOM, and MV3 blocks it there), and a
- * `Worker` spawned by the viewer page dies with the page â€” which is exactly the
+ * `Worker` spawned by the viewer page dies with the page — which is exactly the
  * lifetime the `offscreen` permission was justified for (PERMISSIONS.md,
  * SL-4.EXT.01). See `REUSE.md` for the full argument.
  */
@@ -51,7 +51,7 @@ export const ENGINE_PORT_NAMES = {
 	/**
 	 * The offscreen host connects with this purely to *listen*. Chrome delivers
 	 * a connection to every extension context holding an `onConnect` listener,
-	 * the service worker included â€” and that one must never see a port which
+	 * the service worker included — and that one must never see a port which
 	 * can carry document bytes, so it deliberately has no listener
 	 * (`service-worker.js`).
 	 */
@@ -69,8 +69,8 @@ export type WireDocState = "NotLoaded" | "Loaded" | "PartiallyLoaded" | "Unchang
  *
  * Both supported UI descriptors (`bytes`, `blob`) collapse to this: the page
  * reads the blob and sends the same thing. The descriptors the extension
- * refuses (`opfs`, `fsa`, `file`) are refused *before* a request is built â€” see
- * `adapter.ts` â€” so this type never has to represent them and the host never
+ * refuses (`opfs`, `fsa`, `file`) are refused *before* a request is built — see
+ * `adapter.ts` — so this type never has to represent them and the host never
  * has to guess whether an OPFS path is a path or a document name.
  */
 export interface WireSource {
@@ -89,7 +89,7 @@ export interface WireRect {
 	readonly height: number;
 }
 
-/** Viewer page â†’ offscreen host. Every request carries the id it is answered by. */
+/** Viewer page → offscreen host. Every request carries the id it is answered by. */
 export type EngineRequest =
 	| {
 			readonly v: 1;
@@ -128,7 +128,7 @@ export type EngineRequest =
 	/**
 	 * Cancellation, as its own message rather than a flag on the request: the
 	 * request is already in flight and may already be answered. Fire-and-forget,
-	 * and a host may ignore it â€” the client's own rejection is what the UI
+	 * and a host may ignore it — the client's own rejection is what the UI
 	 * sees, so a host that ignores `cancel` wastes work but never hangs the
 	 * reader. That property is what makes cancelling *prompt* here rather than
 	 * best-effort.
@@ -177,26 +177,40 @@ export interface WireMatch {
  * share the request's `id` and the last carries `done: true`. That is why `id`
  * is not a one-shot correlation token, and why a stream needs an explicit
  * terminator rather than the channel going quiet.
+ *
+ * No `page` field: the UI's `SearchBatch` does not carry one, and every match
+ * already names its page. A batch-level page would be a field only the wire
+ * believed in.
  */
 export interface WireSearchBatch {
-	readonly page: number;
 	readonly matches: readonly WireMatch[];
 	readonly progress: number;
 	readonly done: boolean;
 }
 
-/** Offscreen host â†’ viewer page. */
+/**
+ * The reply to a request with no result value of its own (`close`).
+ *
+ * It exists because `replyRejection` refuses an `ok` reply carrying no `value`:
+ * a missing value and a dropped reply are indistinguishable to the client, and
+ * the point of an explicit terminator is that they never have to be.
+ */
+export interface WireAck {
+	readonly done: true;
+}
+
+/** Offscreen host → viewer page. */
 export interface EngineReply {
 	readonly v: 1;
 	readonly id: number;
 	readonly ok: boolean;
 	/** Present when `ok`. */
-	readonly value?: WireDoc | WireTile | WirePageText | WireSearchBatch;
+	readonly value?: WireDoc | WireTile | WirePageText | WireSearchBatch | WireAck;
 	/** Present when not `ok`. */
 	readonly error?: WireError;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Base64.
 //
 // Hand-rolled rather than `btoa`/`atob` for two reasons, both testable: this
@@ -205,7 +219,7 @@ export interface EngineReply {
 // (it turns a string off the wire into an allocation), so it is written to
 // reject rather than to guess. `engine-protocol.test.ts` pins the round trip
 // over every byte value and every length up to 1 000, plus the rejection cases.
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const PAD = "=";

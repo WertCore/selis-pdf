@@ -17,8 +17,8 @@
  * value that does not survive it.
  */
 
-import { type EngineLink, type PortLink, replyRejection } from "./engine-link.js";
-import type { EngineReply, EngineRequest } from "./engine-protocol.js";
+import { type EngineMessage, type PortLink, replyRejection } from "./engine-link.js";
+import type { EngineReply } from "./engine-protocol.js";
 
 /** A connected link pair, one per end. */
 export interface LoopbackLink {
@@ -41,7 +41,7 @@ export function createLoopbackLink(): LoopbackLink {
 
 	/** Deliver `message` to whoever is listening on the far side, asynchronously. */
 	const cross = (read: () => Handler | null) => {
-		return (message: EngineRequest): void => {
+		return (message: EngineMessage): void => {
 			const target = read();
 			if (target === null) {
 				return;
@@ -54,7 +54,7 @@ export function createLoopbackLink(): LoopbackLink {
 	};
 
 	const make = (
-		deliver: (message: EngineRequest) => void,
+		deliver: (message: EngineMessage) => void,
 		attach: (handler: Handler) => () => void,
 		state: { rejected: number; delivered: number },
 	): PortLink => {

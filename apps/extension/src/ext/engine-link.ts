@@ -25,10 +25,16 @@
 import type { EngineReply, EngineRequest } from "./engine-protocol.js";
 import type { HostPort } from "./host-env.js";
 
+/**
+ * Anything this link carries. A port is bidirectional: requests go one way and
+ * replies the other, so one `post` serves both ends.
+ */
+export type EngineMessage = EngineRequest | EngineReply;
+
 /** One direction-pair of the transport, independent of what is on the far end. */
 export interface EngineLink {
-	/** Send a request. Fire-and-forget; the reply arrives via {@link subscribe}. */
-	post(request: EngineRequest): void;
+	/** Send a message. Fire-and-forget; the other direction arrives via {@link subscribe}. */
+	post(message: EngineMessage): void;
 	/** Observe replies. Returns an unsubscribe. */
 	subscribe(listener: (reply: EngineReply) => void): () => void;
 	/** Close the link. Idempotent. */
@@ -125,11 +131,11 @@ export function createPortLink(port: HostPort): PortLink {
 	});
 
 	return {
-		post(request) {
+		post(message) {
 			if (closed) {
 				return;
 			}
-			port.postMessage(request);
+			port.postMessage(message);
 		},
 		subscribe(listener) {
 			if (closed) {
