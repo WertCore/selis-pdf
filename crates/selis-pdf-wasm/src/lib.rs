@@ -624,8 +624,6 @@ mod tests {
         }
     }
 
-    /// `open` mints a handle; `close` releases it; a stale handle is a
-    /// typed `BINDING_BAD_HANDLE` and the worker stays healthy.
     // -- the HttpRangeSource fetch driver over the protocol (SL-4.WASM.06) --
 
     /// Open a transfer and return `(transfer id, first planned start, end)`.
@@ -691,14 +689,19 @@ mod tests {
         assert_eq!(start, 0);
         assert!(end > 0 && end < total, "the fixture is fetched in pieces");
 
-        let first = MINIMAL.get(..usize::try_from(end).unwrap_or(0)).unwrap_or(&[]);
+        let first = MINIMAL
+            .get(..usize::try_from(end).unwrap_or(0))
+            .unwrap_or(&[]);
         let out = range_chunk(
             &mut w,
             101,
             transfer,
             start,
             206,
-            Some(&format!("bytes 0-{}/{total}", first.len().saturating_sub(1))),
+            Some(&format!(
+                "bytes 0-{}/{total}",
+                first.len().saturating_sub(1)
+            )),
             first,
         );
         let v = out.response.value.expect("value");
@@ -706,7 +709,9 @@ mod tests {
         assert_eq!(v["received"].as_u64(), Some(first.len() as u64));
 
         let at = u64::try_from(first.len()).unwrap_or(0);
-        let rest = MINIMAL.get(usize::try_from(at).unwrap_or(0)..).unwrap_or(&[]);
+        let rest = MINIMAL
+            .get(usize::try_from(at).unwrap_or(0)..)
+            .unwrap_or(&[]);
         let out = range_chunk(
             &mut w,
             102,
@@ -866,6 +871,8 @@ mod tests {
         assert_eq!(w.open_docs(), 0);
     }
 
+    /// `open` mints a handle; `close` releases it; a stale handle is a
+    /// typed `BINDING_BAD_HANDLE` and the worker stays healthy.
     #[test]
     fn open_page_close_and_stale_handle() {
         let mut w = Worker::new();

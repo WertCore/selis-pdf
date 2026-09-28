@@ -386,8 +386,8 @@ impl HttpRangeDriver {
                 detail = "range attempt bound exhausted for this offset"
             ));
         }
-        self.requests += 1;
-        self.attempts += 1;
+        self.requests = self.requests.saturating_add(1);
+        self.attempts = self.attempts.saturating_add(1);
         Ok(())
     }
 
@@ -524,7 +524,11 @@ impl HttpRangeDriver {
 impl HttpRangeDriver {
     /// `206`: the origin honoured the range. Judge the headers, then the body.
     fn accept_partial(&mut self, report: &ChunkReport) -> Result<ChunkStep> {
-        let Some(range) = report.content_range.as_deref().and_then(parse_content_range) else {
+        let Some(range) = report
+            .content_range
+            .as_deref()
+            .and_then(parse_content_range)
+        else {
             // `Access-Control-Expose-Headers` did not name `Content-Range`, or
             // the origin never sent it, or it was not the documented shape. The
             // bytes cannot be placed, and an engine that guessed the offset
@@ -830,7 +834,13 @@ mod tests {
             "header": req.header_value(),
         }))
         .expect("serialise");
-        for forbidden in ["\"body\"", "\"method\"", "\"upload\"", "\"post\"", "\"formData\""] {
+        for forbidden in [
+            "\"body\"",
+            "\"method\"",
+            "\"upload\"",
+            "\"post\"",
+            "\"formData\"",
+        ] {
             assert!(
                 !json.contains(forbidden),
                 "the request shape grew a {forbidden} field"
@@ -852,7 +862,7 @@ mod tests {
         // the same `DocSource` path as every WASM.05 adapter.
         let doc = b"%PDF-1.7\n0123456789\n%%EOF".to_vec();
         let mut d = driver(u64::try_from(doc.len()).unwrap_or(0));
-        let _ = fetch_all(&mut d, &doc);
+        fetch_all(&mut d, &doc);
         assert_eq!(d.drain_through_source().expect("drain"), doc);
     }
 
@@ -1172,7 +1182,7 @@ mod tests {
             e.ctx().detail.as_deref(),
             Some("range attempt bound exhausted for this offset")
         );
-        assert_eq!(d.requests(), u32::from(MAX_ATTEMPTS_PER_RANGE));
+        assert_eq!(d.requests(), MAX_ATTEMPTS_PER_RANGE);
         assert!(d.plan().is_err(), "and planning is refused too");
     }
 
@@ -1323,7 +1333,14 @@ mod tests {
                 total: None
             })
         );
-        for bad in ["", "bytes", "bytes 0-9", "bytes 0-9/", "bytes 0-9/x", "bytes 9-0/10"] {
+        for bad in [
+            "",
+            "bytes",
+            "bytes 0-9",
+            "bytes 0-9/",
+            "bytes 0-9/x",
+            "bytes 9-0/10",
+        ] {
             assert_eq!(parse_content_range(bad), None, "bad = {bad:?}");
         }
     }

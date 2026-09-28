@@ -38,15 +38,7 @@
 //!    `BUDGET_BYTES` (never a trap), `memoryStats` reports the live/peak
 //!    tallies and the 4 GiB ceiling, `close` releases live bytes, and
 //!    `memoryPressure` answers with clamped levels.
-//! 10. **The `HttpRangeSource` fetch driver (SL-4.WASM.06)** — the range
-//!    exchange driven over the real ABI with a *scripted hostile origin*: a
-//!    cooperative two-range fetch reassembles a document whose render
-//!    hash-matches the native one, an origin that ignores `Range` degrades to
-//!    the whole body, and a missing `Content-Range`, a `Content-Range` for
-//!    another offset, a `200` mid-transfer and a server that never answers
-//!    are each the registry code the driver's decision table promises. The
-//!    last of those is the denial-of-service bound, and it is the leg that
-//!    would notice if the bound were only on paper.
+//! 10. **The `HttpRangeSource` fetch driver (SL-4.WASM.06)** — the range exchange driven over the real ABI with a *scripted hostile origin*: a cooperative two-range fetch reassembles a document whose render hash-matches the native one, and an origin that ignores `Range`, one that hides `Content-Range`, one that serves another offset, one that changes its mind mid-transfer and one that never answers are each the registry code the driver's decision table promises. That last is the denial-of-service bound, and it is the leg that would notice if the bound were only on paper.
 
 use serde_json::{json, Value};
 
@@ -603,7 +595,13 @@ pub fn run() -> Result<(), String> {
     }
     // The planned request is a `Range` header and two offsets. Nothing else.
     let planned = serde_json::to_string(&resp["value"]["request"]).map_err(|e| e.to_string())?;
-    for forbidden in ["\"body\"", "\"method\"", "\"upload\"", "\"post\"", "\"formData\""] {
+    for forbidden in [
+        "\"body\"",
+        "\"method\"",
+        "\"upload\"",
+        "\"post\"",
+        "\"formData\"",
+    ] {
         if planned.contains(forbidden) {
             return Err(format!(
                 "rangeOpen: the request shape grew a {forbidden} field"
@@ -632,7 +630,9 @@ pub fn run() -> Result<(), String> {
         .as_u64()
         .ok_or("rangeChunk-head: no next range")?;
     if next_start != head.len() as u64 {
-        return Err(format!("rangeChunk-head: next range starts at {next_start}"));
+        return Err(format!(
+            "rangeChunk-head: next range starts at {next_start}"
+        ));
     }
 
     // The rest, as a legitimate short final range.

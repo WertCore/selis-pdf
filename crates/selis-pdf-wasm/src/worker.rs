@@ -490,24 +490,7 @@ impl Worker {
                 chunk,
                 budget,
             } => self.op_range_open(id, url, size, chunk, budget, env),
-            RequestOp::RangeChunk {
-                transfer,
-                start,
-                status,
-                content_range,
-                content_length,
-                len,
-            } => self.op_range_chunk(
-                id,
-                transfer,
-                start,
-                status,
-                content_range,
-                content_length,
-                len,
-                payload,
-                env,
-            ),
+            op @ RequestOp::RangeChunk { .. } => self.op_range_chunk(id, op, payload, env),
             RequestOp::RangeClose { transfer } => self.op_range_close(id, transfer),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
@@ -790,18 +773,33 @@ impl Worker {
         ))
     }
 
+    /// Deliver one range response, as the host would.
+    ///
+    /// The op body travels as one value rather than ten parameters: it *is* a
+    /// wire message, and flattening it into the signature would be a second,
+    /// silently different shape to keep in step with `RequestOp::RangeChunk`.
     fn op_range_chunk(
         &mut self,
         id: u64,
-        transfer: u64,
-        start: u64,
-        status: u16,
-        content_range: Option<String>,
-        content_length: Option<u64>,
-        len: u64,
+        body: RequestOp,
         payload: &[u8],
         env: &WorkerEnv<'_>,
     ) -> Result<Outgoing> {
+        let RequestOp::RangeChunk {
+            transfer,
+            start,
+            status,
+            content_range,
+            content_length,
+            len,
+        } = body
+        else {
+            return Err(err!(
+                Code::BindingBadArgument,
+                during = "wasm-worker",
+                detail = "rangeChunk routed with the wrong op body"
+            ));
+        };
         let arrived = u64::try_from(payload.len()).unwrap_or(u64::MAX);
         if arrived != len {
             return Err(err!(
@@ -818,7 +816,7 @@ impl Worker {
         // never a thing here, and holding the prefix would only delay the tab
         // cap. The transfer is removed above, so every exit from here — typed
         // error included — leaves nothing behind.
-        let step = match self.judge_chunk(
+        let step = self.judge_chunk(
             &mut driver,
             ChunkReport {
                 start,
@@ -830,10 +828,7 @@ impl Worker {
             arrived,
             budget,
             env,
-        ) {
-            Ok(step) => step,
-            Err(e) => return Err(e),
-        };
+        )?;
         match step {
             ChunkStep::Request(req) | ChunkStep::Retry(req) => {
                 let received = driver.received();
@@ -856,6 +851,11 @@ impl Worker {
                 let received = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                 let opened = self.open_with_bytes(id, bytes, budget, env)?;
                 let value = opened.response.value.unwrap_or(serde_json::Value::Null);
+                // `get` rather than `[]`: the value came from a reply this
+                // function built, but a missing key must degrade to `null` in
+                // the wire rather than panic the guest (ADR-P0017).
+                let field =
+                    |name: &str| value.get(name).cloned().unwrap_or(serde_json::Value::Null);
                 Ok(Outgoing::ok(
                     id,
                     serde_json::json!({
@@ -864,9 +864,9 @@ impl Worker {
                         "complete": true,
                         "degraded": degraded,
                         "randomAccess": !degraded,
-                        "doc": value["doc"],
-                        "pages": value["pages"],
-                        "pageSizes": value["pageSizes"],
+                        "doc": field("doc"),
+                        "pages": field("pages"),
+                        "pageSizes": field("pageSizes"),
                     }),
                 ))
             }
