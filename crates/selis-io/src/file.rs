@@ -108,8 +108,8 @@ impl FileSource {
         #[cfg(windows)]
         {
             use std::os::windows::fs::FileExt;
-            let mut buf_slice = buf;
-            FileExt::seek_read(&self.file, &mut buf_slice, off)
+            let buf_slice = buf;
+            FileExt::seek_read(&self.file, buf_slice, off)
         }
         #[cfg(not(any(unix, windows)))]
         {

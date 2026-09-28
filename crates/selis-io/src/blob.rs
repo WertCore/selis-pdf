@@ -121,6 +121,13 @@ impl DocSource for BlobSource {
 
 #[cfg(test)]
 mod tests {
+    // Every index in this module walks a `data()` literal the test itself
+    // owns, never a document-derived length, so `indexing_slicing` has
+    // nothing to protect here (03-CONVENTIONS.md §1 applies to untrusted
+    // input; this is the test's own fixture). Same shape as the test modules
+    // in `selis-raster` / `selis-io`.
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
 
     fn data() -> Vec<u8> {

@@ -165,6 +165,10 @@ impl DocSource for FsaSource {
 
 #[cfg(test)]
 mod tests {
+    // See `blob::tests`: the only indices here are into the test's own
+    // fixture literal, never a document-derived length (03-CONVENTIONS.md §1).
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
 
     fn data() -> Vec<u8> {
