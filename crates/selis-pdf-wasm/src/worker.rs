@@ -147,6 +147,11 @@ pub enum Stage {
     Text,
     /// Searching.
     Search,
+    /// Walking the document's navigation structures (outline, links, labels,
+    /// destinations). A separate stage from `Search` because a hostile outline
+    /// is a whole-tree walk and a shell watching the progress slot needs to be
+    /// able to tell "reading the document" from "looking for a word".
+    Navigate,
 }
 
 impl Stage {
@@ -159,6 +164,7 @@ impl Stage {
             Stage::Render => 2,
             Stage::Text => 3,
             Stage::Search => 4,
+            Stage::Navigate => 5,
         }
     }
 
@@ -171,6 +177,7 @@ impl Stage {
             Stage::Render => "render",
             Stage::Text => "text",
             Stage::Search => "search",
+            Stage::Navigate => "navigate",
         }
     }
 }
@@ -484,6 +491,10 @@ impl Worker {
             RequestOp::Text { doc, page, format } => self.op_text(id, doc, page, format, env),
             RequestOp::TextLayer { doc, page } => self.op_text_layer(id, doc, page, env),
             RequestOp::Search { doc, query, opts } => self.op_search(id, doc, query, opts, env),
+            RequestOp::Outline { doc } => self.op_outline(id, doc, env),
+            RequestOp::PageLabels { doc } => self.op_page_labels(id, doc, env),
+            RequestOp::Destinations { doc } => self.op_destinations(id, doc, env),
+            RequestOp::PageLinks { doc, page } => self.op_page_links(id, doc, page, env),
             RequestOp::RangeOpen {
                 url,
                 size,
@@ -1258,6 +1269,136 @@ impl Worker {
         ))
     }
 
+    // -- navigation (SL-3.DOC-NAV) -----------------------------------------
+    //
+    // Four ops, one structure each, all read-only and all reporting rather than
+    // deciding: the ADR-P0020 action-class policy is the viewer's, and a guest
+    // that filtered action classes would make "is the viewer refusing this?"
+    // unanswerable from the shell.
+
+    fn op_outline(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let budget = opened.budget;
+        let mut g = budget.guard_with(env.clock, env.cancel.clone());
+        env.progress.progress(id, Stage::Navigate, 0);
+        let tree = opened.session.outline(&budget, &mut g)?;
+        let items = tree
+            .items
+            .iter()
+            .map(outline_item_value)
+            .collect::<Vec<serde_json::Value>>();
+        env.progress.progress(id, Stage::Navigate, 10_000);
+        // `present` and `truncated` are the two flags the viewer's "this host
+        // cannot read the outline" state is built on: `present:false` is a
+        // document with no outline, `truncated:true` is an outline this engine
+        // could not read in full, and neither is a refusal (that is a typed
+        // error response, which `?` above already turned into one).
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "present": tree.present,
+                "truncated": tree.truncated,
+                "pruned": tree.pruned,
+                "items": items,
+            }),
+        ))
+    }
+
+    fn op_page_labels(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let budget = opened.budget;
+        let mut g = budget.guard_with(env.clock, env.cancel.clone());
+        env.progress.progress(id, Stage::Navigate, 0);
+        let labels = opened.session.page_labels(&budget, &mut g)?;
+        let ranges = labels
+            .iter()
+            .map(|label| {
+                serde_json::json!({
+                    "firstPage": label.page_index,
+                    // As **text**, not as a byte array. These are `Bytes`
+                    // upstream, and handing `as_slice()` to serde emits a JSON
+                    // array of numbers — which is not what the UI's
+                    // `PageLabelStyle`/`prefix` are, and would leave a shell
+                    // with `[114]` where it expected `"r"`. A lossy decode is
+                    // the right trade here because these are PDFDocEncoding
+                    // label strings, not document text: the alternative is a
+                    // shape no consumer can read.
+                    "style": label.style.as_deref().map(text_of),
+                    "prefix": label.prefix.as_deref().map(text_of),
+                    "firstValue": label.start,
+                })
+            })
+            .collect::<Vec<serde_json::Value>>();
+        env.progress.progress(id, Stage::Navigate, 10_000);
+        Ok(Outgoing::ok(id, serde_json::json!({ "ranges": ranges })))
+    }
+
+    fn op_destinations(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let budget = opened.budget;
+        let mut g = budget.guard_with(env.clock, env.cancel.clone());
+        env.progress.progress(id, Stage::Navigate, 0);
+        let named = opened.session.named_destinations(&budget, &mut g)?;
+        let destinations = named
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "name": entry.name,
+                    "target": target_value(&entry.target),
+                })
+            })
+            .collect::<Vec<serde_json::Value>>();
+        env.progress.progress(id, Stage::Navigate, 10_000);
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({ "destinations": destinations }),
+        ))
+    }
+
+    fn op_page_links(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        page: u32,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let idx = page_index(page);
+        // The range check is here, not left to the engine's empty-list answer:
+        // "page 9000 of a 3-page document has no links" and "this host cannot
+        // read links" must be distinguishable, and only a typed error says so.
+        if opened.session.page_size(idx).is_none() {
+            return Err(err!(Code::PageOutOfRange, during = "wasm-worker"));
+        }
+        let budget = opened.budget;
+        let mut g = budget.guard_with(env.clock, env.cancel.clone());
+        env.progress.progress(id, Stage::Navigate, 0);
+        let links = opened.session.page_links(idx, &budget, &mut g)?;
+        let items = links
+            .iter()
+            .map(|link| {
+                serde_json::json!({
+                    "index": link.index,
+                    "object": link.object,
+                    "rect": annot_rect_value(link.rect),
+                    "action": link.action.as_ref().map(action_value),
+                    "target": link.target.as_ref().map(target_value),
+                    "contents": link.contents,
+                })
+            })
+            .collect::<Vec<serde_json::Value>>();
+        env.progress.progress(id, Stage::Navigate, 10_000);
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({ "page": page, "links": items }),
+        ))
+    }
+
     // -- search ------------------------------------------------------------
 
     fn op_search(
@@ -1446,6 +1587,129 @@ fn bad_handle() -> Error {
 /// Zero-based page index for the engine's `usize` page numbers.
 fn page_index(page: u32) -> usize {
     usize::try_from(page).unwrap_or(usize::MAX)
+}
+
+// ---------------------------------------------------------------------------
+// The navigation wire shapes (SL-3.DOC-NAV)
+// ---------------------------------------------------------------------------
+//
+// Each is a *mapping*, not a translation: the engine's model already names
+// every action class and every destination, so the guest's job is to hand that
+// over with its own spelling intact. Two rules hold across all of them:
+//
+//  * an action class crosses as its own name, with the UI's `LinkActionKind`
+//    vocabulary as `kind` and the document's verbatim `/S` as `rawName`, so a
+//    class this build does not model is still distinguishable from a missing
+//    action; and
+//  * a target the document wrote but this engine cannot resolve crosses as
+//    `{"kind":"unresolved"}` — never as an absent `target`, which would read as
+//    "this link has no destination" rather than "this link's destination is
+//    missing".
+
+/// One outline item, with its subtree.
+fn outline_item_value(item: &selis_pdf_doc::OutlineItem) -> serde_json::Value {
+    serde_json::json!({
+        "title": item.title,
+        "target": item.target.as_ref().map(target_value),
+        "action": item.action.as_ref().map(action_value),
+        // `/Count` verbatim. The sign is the spec's "starts collapsed"
+        // convention (section 12.3.3) and the viewer owns the decision about
+        // what to do with it, so it is not normalised here.
+        "count": item.count,
+        "children": item
+            .children
+            .iter()
+            .map(outline_item_value)
+            .collect::<Vec<serde_json::Value>>(),
+    })
+}
+
+/// One action, by class.
+fn action_value(action: &selis_pdf_doc::Action) -> serde_json::Value {
+    serde_json::json!({
+        "kind": link_action_kind(&action.kind),
+        // The document's own `/S`, verbatim. This is the field that makes
+        // "the viewer refused a /Launch" distinguishable from "the engine has
+        // never heard of this action class" — the question ADR-P0020's split
+        // exists to keep answerable.
+        "rawName": String::from_utf8_lossy(action.kind.as_name()).to_string(),
+        "uri": action.uri,
+        "name": action.name,
+        "target": action.target.as_ref().map(target_value),
+        // Reported, never followed: a `/Next` chain is a second place a
+        // `/Launch` can hide, and the viewer is the layer that decides whether
+        // a chain is part of one activation.
+        "hasNext": action.has_next,
+    })
+}
+
+/// The UI's `LinkActionKind` vocabulary, mapped from the engine's classes.
+///
+/// This is a **naming** map and nothing else — no class is refused, reordered,
+/// or dropped here. A class outside the UI's list maps to `"unknown"` while
+/// `rawName` keeps the document's spelling, which is precisely the "report,
+/// don't decide" contract: the viewer still sees `/Rendition` as `/Rendition`.
+fn link_action_kind(kind: &selis_pdf_doc::ActionKind) -> &'static str {
+    use selis_pdf_doc::ActionKind as K;
+    match kind {
+        K::GoTo => "goTo",
+        K::Uri => "uri",
+        K::Launch => "launch",
+        K::GoToR => "goToR",
+        K::SubmitForm => "submitForm",
+        K::ImportData => "importData",
+        K::JavaScript => "javascript",
+        K::Named => "named",
+        _ => "unknown",
+    }
+}
+
+/// One destination.
+fn target_value(target: &selis_pdf_doc::NavTarget) -> serde_json::Value {
+    use selis_pdf_doc::NavTarget as T;
+    match target {
+        T::Page(page) => serde_json::json!({
+            "kind": "page",
+            "page": page.page,
+            // The spec's own spelling. A class outside the viewer's list is
+            // carried verbatim and the viewer maps it to a plain `xyz` hop,
+            // which is a loss of fidelity in the viewer, not an error here.
+            "destKind": String::from_utf8_lossy(page.kind.as_name()).to_string(),
+            "left": page.left,
+            "top": page.top,
+            "zoom": page.zoom,
+        }),
+        T::Named(name) => serde_json::json!({ "kind": "named", "name": name }),
+        T::Unresolved => serde_json::json!({ "kind": "unresolved" }),
+    }
+}
+
+/// A `Bytes` value as JSON text rather than as a byte array.
+///
+/// serde renders `&[u8]` as `[114, 105]`, which is a shape no consumer of a
+/// label string or a `/S` name can read. This is the one place the transport
+/// converts, and it is lossy on purpose: a `/PageLabels` style is one of five
+/// ASCII names and a prefix is a short display string, so a byte that is not
+/// valid UTF-8 is a document defect worth showing as U+FFFD rather than a
+/// reason to cross an unreadable shape.
+fn text_of(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).to_string()
+}
+
+/// A link annotation's `/Rect`, verbatim and unnormalised.
+///
+/// An inverted rectangle is a document defect a viewer may usefully normalise
+/// for hit-testing; the guest is not the layer that decides what "where" means,
+/// so the four numbers cross as written and an absent `/Rect` crosses as
+/// `null` rather than as a zero box that would silently swallow clicks in the
+/// corner.
+fn annot_rect_value(rect: Option<[f64; 4]>) -> serde_json::Value {
+    match rect {
+        Some([x0, y0, x1, y1]) => {
+            serde_json::json!({ "x0": x0, "y0": y0, "x1": x1, "y1": y1 })
+        }
+        None => serde_json::Value::Null,
+    }
 }
 
 /// Resolve the search page range: explicit `{from, to}` (from â‰¤ to, `to`

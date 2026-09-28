@@ -12,8 +12,11 @@ mod attachments;
 mod conformance;
 mod doc;
 mod doc_extra;
+mod links;
 mod metadata;
+mod nav;
 mod oc;
+mod outline;
 mod resolve;
 mod struct_tree;
 mod tree;
@@ -22,8 +25,14 @@ pub use attachments::{embedded_file_data, embedded_files, Attachment};
 pub use conformance::{evaluate, registry, Area, EvaluationCtx, Level, Profile, Rule, RuleResult};
 pub use doc::{Document, Page};
 pub use doc_extra::{article_threads, page_labels, Bead, PageLabel, ViewerPreferences};
+pub use links::{page_links, LinkAnnotation};
 pub use metadata::{FieldValue, Metadata};
+pub use nav::{
+    named_destinations, parse_action, parse_target, text_string, Action, ActionKind,
+    DestinationKind, NamedDestination, NavTarget, PageDestination, PageMap,
+};
 pub use oc::{OcConfig, OcGroup, OcMembership, OcProperties};
+pub use outline::{outline, OutlineItem, OutlineTree};
 pub use resolve::{encrypt_obj, Resolver};
 pub use struct_tree::{StructElement, StructKid, StructTree};
 pub use tree::{

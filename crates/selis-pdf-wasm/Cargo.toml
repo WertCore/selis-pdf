@@ -24,6 +24,13 @@ selis-error = { workspace = true }
 selis-geom = { workspace = true }
 selis-io = { workspace = true }
 selis-pdf-content = { workspace = true }
+# The navigation wire shapes (SL-3.DOC-NAV) name `selis-pdf-doc`'s action and
+# destination types directly rather than re-declaring them: a second
+# declaration of "what is a /Launch" in the bindings layer is exactly the place
+# the two would drift, and the whole point of the ADR-P0020 split is that one
+# vocabulary crosses the boundary. A strictly-downward L4 -> L2 edge, the same
+# one `selis-pdf-text` already is.
+selis-pdf-doc = { workspace = true }
 selis-pdf-engine = { workspace = true }
 selis-pdf-text = { workspace = true }
 selis-sandbox = { workspace = true }
