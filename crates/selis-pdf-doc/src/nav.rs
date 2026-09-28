@@ -30,7 +30,6 @@ use selis_error::Result;
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
-use crate::outline::resolve_lenient;
 use crate::{Page, Resolver};
 
 /// Object number to zero-based page index.
@@ -524,7 +523,19 @@ fn file_spec_text(
 }
 
 /// `/UF` with `/F` as the fallback, per the spec's file-specification order.
+///
+/// A file specification is a **string or a dictionary** (PDF 32000-2:2020
+/// section 7.11.2), and the bare string is the common spelling — `/Launch`
+/// with `/F (cmd.exe /c calc.exe)`, which is what most writers emit. Reading
+/// only the dictionary form left such a `/Launch` arriving as a `/Launch` with
+/// no target: the class survived, but the string the viewer would have to show
+/// a reason for did not, and "a `/Launch` I cannot read what it launches" is a
+/// state `links.ts` has no arm for. So the string form is read as the
+/// specification it is, rather than as a specification this build cannot parse.
 fn file_spec_dict_text(spec: &Obj) -> Option<String> {
+    if !matches!(spec, Obj::Dict(_)) {
+        return plain_text(spec);
+    }
     if let Some(text) = dict_get(spec, b"UF").and_then(plain_text) {
         return Some(text);
     }
@@ -636,9 +647,14 @@ pub fn named_destinations(
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<NamedDestination>> {
     let mut out = Vec::new();
-    if let Some(root) = dict_ref(catalog, b"Dests") {
-        if let Some(Obj::Dict(pairs)) = resolve_lenient(resolver, root, g)? {
-            for (key, value) in &pairs {
+    // The PDF 1.1 catalog `/Dests` dictionary, in either spelling: a writer may
+    // write it inline or indirect, and matching only the indirect form loses
+    // the destinations of every document that wrote it inline. Materialising
+    // first means one code path reads both.
+    if let Some(value) = dict_get(catalog, b"Dests") {
+        let root = materialise_value(resolver, value, g)?;
+        if let Obj::Dict(pairs) = &root {
+            for (key, value) in pairs {
                 g.tick()?;
                 out.push(NamedDestination {
                     name: String::from_utf8_lossy(key.as_slice()).to_string(),
@@ -648,8 +664,18 @@ pub fn named_destinations(
         }
         return Ok(out);
     }
-    let names = dict_get(catalog, b"Names").and_then(|n| dict_ref(n, b"Dests"));
-    let Some(names) = names else {
+    // `/Names` is itself very often an indirect object (`/Names 41 0 R`), and
+    // the `/Dests` key lives *inside* it. Reading the key out of the raw
+    // `/Names` value therefore finds nothing whenever that value is a reference
+    // — which is most real documents — and the viewer is handed an empty
+    // destination list for a document that has one. So the indirection is
+    // resolved first, and a `/Names` that does not resolve is "no
+    // destinations" rather than an error.
+    let names_value = match dict_get(catalog, b"Names") {
+        Some(value) => materialise_value(resolver, value, g)?,
+        None => return Ok(out),
+    };
+    let Some(names) = dict_ref(&names_value, b"Dests") else {
         return Ok(out);
     };
     let tree = crate::walk_name_tree(resolver, names, budget, g)?;
@@ -682,5 +708,143 @@ fn materialise_value(
     match value {
         Obj::Ref(r) => Ok(crate::outline::resolve_lenient(resolver, *r, g)?.unwrap_or(Obj::Null)),
         other => Ok(other.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
+    use super::*;
+    use selis_pdf_cos::XrefEntry;
+    use selis_sandbox::{CancelToken, FixedClock};
+
+    /// Assemble a single-revision document from `(object number, body)` pairs.
+    fn build(objects: &[(u32, &str)]) -> (selis_pdf_cos::Doc, Vec<u8>) {
+        let mut src = Vec::new();
+        let mut xref = std::collections::BTreeMap::new();
+        for (num, body) in objects {
+            let offset = u64::try_from(src.len()).unwrap_or(0);
+            src.extend_from_slice(format!("{num} 0 obj\n{body}\nendobj\n").as_bytes());
+            xref.insert(*num, XrefEntry::InUse { offset, gen: 0 });
+        }
+        let trailer = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"Root"),
+            Obj::Ref(Ref::new(1, 0)),
+        )];
+        (selis_pdf_cos::Doc::from_single_revision(xref, trailer), src)
+    }
+
+    /// Two pages: object 3 is page 0, object 4 is page 1.
+    fn two_pages() -> PageMap {
+        PageMap::new(&[
+            crate::Page {
+                num: 3,
+                media_box: None,
+                crop_box: None,
+                rotate: None,
+                resources: None,
+                contents: None,
+            },
+            crate::Page {
+                num: 4,
+                media_box: None,
+                crop_box: None,
+                rotate: None,
+                resources: None,
+                contents: None,
+            },
+        ])
+    }
+
+    /// Read `catalog`'s named destinations out of `objects`.
+    fn dests(objects: &[(u32, &str)]) -> Result<Vec<NamedDestination>> {
+        let budget = Budget::unlimited();
+        let (doc, src) = build(objects);
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let mut resolver = Resolver::new(&doc, &src, &budget);
+        let catalog = resolver.resolve(Ref::new(1, 0), &mut g)?;
+        named_destinations(&mut resolver, &catalog, &two_pages(), &budget, &mut g)
+    }
+
+    /// **The `/Names` name tree, reached through an indirect `/Names`.** This is
+    /// the shape almost every real writer emits, and reading `/Dests` out of the
+    /// *raw* `/Names` value finds nothing when that value is a reference — the
+    /// viewer is then handed an empty list for a document that has destinations,
+    /// and every named bookmark silently stops resolving.
+    #[test]
+    fn a_names_name_tree_behind_an_indirect_names_resolves() {
+        let found = dests(&[
+            (1, "<< /Type /Catalog /Names 41 0 R >>"),
+            (41, "<< /Dests 42 0 R >>"),
+            (
+                42,
+                "<< /Names [(chapter-one) [4 0 R /Fit] (page-two) 4 0 R] >>",
+            ),
+        ])
+        .expect("read");
+        assert_eq!(
+            found.len(),
+            2,
+            "an indirect /Names must not hide the name tree"
+        );
+        let first = found.first().expect("the first destination");
+        assert_eq!(first.name, "chapter-one");
+        assert_eq!(
+            first.target,
+            NavTarget::Page(PageDestination {
+                page: 1,
+                kind: DestinationKind::Fit,
+                left: None,
+                top: None,
+                zoom: None,
+            }),
+            "object 4 is the document's second page"
+        );
+    }
+
+    /// The same tree written with `/Names` inline, so the fix is not a special
+    /// case for the indirect form.
+    #[test]
+    fn an_inline_names_dictionary_resolves_too() {
+        let found = dests(&[
+            (1, "<< /Type /Catalog /Names << /Dests 42 0 R >> >>"),
+            (42, "<< /Names [(chapter-one) [4 0 R /Fit]] >>"),
+        ])
+        .expect("read");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found.first().map(|d| d.name.as_str()), Some("chapter-one"));
+    }
+
+    /// The PDF 1.1 catalog `/Dests` dictionary still works, and still wins when
+    /// a contradictory document carries both. Note the two forms are different
+    /// *shapes*: the PDF 1.1 dictionary is a flat name → destination map, while
+    /// the PDF 1.2+ `/Names /Dests` is a name tree carrying a `/Names` array.
+    /// Reading one as the other is a real bug — a flat dictionary walked as a
+    /// tree yields the key `"Names"` as though it were a destination name, which
+    /// is exactly what an earlier version of this test did.
+    #[test]
+    fn the_catalog_dests_dictionary_is_read_and_preferred() {
+        let found = dests(&[
+            (1, "<< /Type /Catalog /Dests 40 0 R /Names 41 0 R >>"),
+            (40, "<< /Old [3 0 R /Fit] >>"),
+            (41, "<< /Dests 42 0 R >>"),
+            (42, "<< /Names [(new) [4 0 R /Fit]] >>"),
+        ])
+        .expect("read");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found.first().map(|d| d.name.as_str()),
+            Some("Old"),
+            "the spec says a reader shall prefer the catalog dictionary"
+        );
+    }
+
+    /// A `/Names` naming an object the document does not contain is "no
+    /// destinations", not a failure: the rest of the document is unaffected.
+    #[test]
+    fn an_unresolvable_names_is_no_destinations_not_an_error() {
+        let found = dests(&[(1, "<< /Type /Catalog /Names 99 0 R >>")]).expect("read");
+        assert!(found.is_empty());
     }
 }
