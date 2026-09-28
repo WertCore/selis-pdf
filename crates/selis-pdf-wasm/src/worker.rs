@@ -1315,8 +1315,16 @@ impl Worker {
             .map(|label| {
                 serde_json::json!({
                     "firstPage": label.page_index,
-                    "style": label.style.as_ref().map(|s| s.as_slice()),
-                    "prefix": label.prefix.as_ref().map(|p| p.as_slice()),
+                    // As **text**, not as a byte array. These are `Bytes`
+                    // upstream, and handing `as_slice()` to serde emits a JSON
+                    // array of numbers — which is not what the UI's
+                    // `PageLabelStyle`/`prefix` are, and would leave a shell
+                    // with `[114]` where it expected `"r"`. A lossy decode is
+                    // the right trade here because these are PDFDocEncoding
+                    // label strings, not document text: the alternative is a
+                    // shape no consumer can read.
+                    "style": label.style.as_deref().map(text_of),
+                    "prefix": label.prefix.as_deref().map(text_of),
                     "firstValue": label.start,
                 })
             })
@@ -1674,6 +1682,18 @@ fn target_value(target: &selis_pdf_doc::NavTarget) -> serde_json::Value {
         T::Named(name) => serde_json::json!({ "kind": "named", "name": name }),
         T::Unresolved => serde_json::json!({ "kind": "unresolved" }),
     }
+}
+
+/// A `Bytes` value as JSON text rather than as a byte array.
+///
+/// serde renders `&[u8]` as `[114, 105]`, which is a shape no consumer of a
+/// label string or a `/S` name can read. This is the one place the transport
+/// converts, and it is lossy on purpose: a `/PageLabels` style is one of five
+/// ASCII names and a prefix is a short display string, so a byte that is not
+/// valid UTF-8 is a document defect worth showing as U+FFFD rather than a
+/// reason to cross an unreadable shape.
+fn text_of(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 /// A link annotation's `/Rect`, verbatim and unnormalised.
