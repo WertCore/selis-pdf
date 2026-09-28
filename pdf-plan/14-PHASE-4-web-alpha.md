@@ -1,4 +1,4 @@
-﻿# Phase 4 — Web app + Chrome extension (Weeks 24–30 · month 7) — FIRST SHIP
+# Phase 4 — Web app + Chrome extension (Weeks 24–30 · month 7) — FIRST SHIP
 
 **Gate G4 exit criteria:** web viewer + MV3 extension published · core WASM ≤ 3 MB brotli ·
 first page painted < 1.2 s p75 on a 5 MB linearised PDF over Fast 3G · 1 000 external users ·
@@ -234,10 +234,22 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     off-screen yields 0 (occluded windows throttle rAF). It therefore **cannot run in CI**, where
     there is no display — so this is a developer-machine measurement, not a merge gate. A CI-runnable
     form would need a compositor, not a browser.
-- [ ] **SL-4.UI.04 — Text layer, selection, and copy** · deps: SL-3.TEXT.05 · owner: AI+
+- [x] **SL-4.UI.04 — Text layer, selection, and copy** · deps: SL-3.TEXT.05 · owner: AI+
   - **Do:** A selectable, accessible text layer aligned to the rendered glyphs. Selection must
     survive zoom and be RTL-correct. Copy preserves reading order, not visual order.
   - **DoD:** Selection accuracy tested against known quads; copy output matches `selis extract`.
+  - **Shipped.** Geometry comes from the **engine's character quads**, deliberately not from the
+    compositor's tiles: the ladder presents a *previous* scale's bitmap during a zoom
+    (`DrawOp.provisional`), so tile-derived selection would be wrong exactly when it has to survive
+    zooming. 57 selection tests, every quad **hand-authored** (asserting against the mock's
+    `synthesiseTextLayer` would only prove the code agrees with a model). 237 tests in `apps/ui`.
+  - **The one multiplier is `PlacedPage.scale`** — *not* `SurfaceSize.scale` (the real backing-store
+    factor) and *not* `devicePixelRatio` (nominal). The layer is DOM in CSS pixels; a device ratio
+    would introduce proportional, plausible-looking drift. Asserted explicitly.
+  - **Limits recorded, not papered over:** direction is taken per line from the quads (not UAX #9),
+    so mixed-direction lines are a known limit; no live-region caret announcements; and under
+    ADR-P0021's no-jsdom rule selection is asserted **as data** — real glyph alignment,
+    find-in-page and screen-reader behaviour still need a manual browser pass.
 - [ ] **SL-4.UI.05 — Search UI** · deps: SL-3.TEXT.06 · owner: AI
   - **Do:** Incremental search with match count, highlight-all, next/previous, and progressive
     results as pages load.
@@ -383,7 +395,33 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.EXT.05 — Extension size budget** · deps: EXT.04, WASM.02 · owner: AI+
   - **Do:** The package carries the WASM. Tighter budget than the web app; CJK fonts are an
     optional post-install download into extension storage, not a bundled asset.
-- [ ] **SL-4.EXT.06 — Reuse `apps/web/ui` via the extension adapter** · deps: UI.01 · owner: AI
+- [x] **SL-4.EXT.06 — Reuse `apps/web/ui` via the extension adapter** · deps: UI.01 · owner: AI
+  - **Shipped**, and it found a real gate blind spot: the built `adapter.js` imported
+    `../../../ui/…`, which from inside the package resolves *above* it — a guaranteed 404 that the
+    bundled-only gate reported as **clean**, because its path normaliser folded the leading `..` away
+    onto a shipped filename. Both ends fixed, and `..` above the package root is now preserved and
+    reported. Verified falsifiable: a remote `<script src>`, a computed dynamic import, and an
+    escaping relative import all fail the gate.
+  - **MV3 arrangement:** `viewer.html` ⇄ `chrome.runtime` port ⇄ `offscreen.html`. The service worker
+    is killed after ~30 s and has no DOM; a page-spawned `Worker` dies with the page; the offscreen
+    document outlives both. Only the SW may call `createDocument`, so the page asks it to — with a
+    message carrying a verb, never bytes. The SW deliberately has **no** `onConnect` listener, so a
+    port carrying document bytes is never delivered to a context Chrome kills.
+  - **`host_permissions` remains `[]`.** Supplies engine, `files.pickOpen` (transient `<input>`, no
+    permission), `localStorage`, clipboard *write*, print, `openExternal` narrowed to http(s) per
+    ADR-P0020. Refuses `pickSave`, clipboard *read*, and deep links, each with a registry code.
+    Telemetry is supplied but **inert** — opt-in honoured, nothing recorded, no permission to reach
+    a sink.
+  - **Open items this task raised, deliberately not fixed here:**
+    1. It changed `apps/ui/src/platform/contract.ts` (~32 lines) to add a named `exempt` with a
+       required reason, because "any difference is a build failure" is wrong for a capability a host
+       *cannot* have. That is a cross-task change to UI.01's contract and warrants UI.01 sign-off.
+    2. **`EXT.02`'s auth story is affected by `host_permissions: []`.** `viewer-boot.ts` re-fetches
+       the document URL from an extension page, which cannot reach any document origin. The DNR
+       redirect preserves auth for the *navigation*, but the subsequent `fetch` may not. Decide
+       this before the interception path is trusted with SSO-gated PDFs.
+    3. `createWorkerSurface` ships uncalled (no bundler to tree-shake under ADR-P0021) — dead code in
+       a package EXT.05 must size-budget. Flagged in `apps/extension/REUSE.md`.
 - [ ] **SL-4.EXT.07 — Options page + first-run onboarding** · deps: EXT.06 · owner: AI
 - [ ] **SL-4.EXT.08 — Deep link into the web app for edit actions** · deps: EXT.06 · owner: AI+
   - **Do:** "Edit this" hands the document to the web app **locally** (OPFS handoff or a same-origin

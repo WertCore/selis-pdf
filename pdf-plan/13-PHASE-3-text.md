@@ -957,9 +957,44 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     tail row. This is a triage sweep, not a bug claim.
   - **DoD:** every `flat-misc` file carries a verdict record; the sweep gap list stops
     carrying them unlabelled; confirmed OurBug causes each file a task.
-- [ ] **SL-3.TEXT.26 — Text extraction ignores the page's visible region (Form XObject
+- [x] **SL-3.TEXT.26 — Text extraction ignores the page's visible region (Form XObject
   placement)** · deps: TEXT.04, CONT.04 · owner: AI+ · **filed 2026-09-27 (reclassified
   out of the CONF.03 `char-explosion` cluster, which was `issue7454`)**
+  - **Fixed and oracle-verified.** Root cause: `gather_glyphs` copied a text op's `at`/`tm` into the
+    glyph and **ignored `state.ctm` entirely**. A display-list text op records its glyphs in the
+    *drawing stream's* user space — for a Form XObject, Form space, with the placement parked in the
+    op's resolved CTM. The render path composed that CTM; the text path never did. So Form text was
+    reported at untransformed Form-space positions *and* nothing anywhere compared a glyph against
+    the page's visible region. Not a local special case: with positions in a coordinate system the
+    page does not have, no visibility test could exist.
+  - **Fix:** each glyph is carried through its op's CTM (`at' = ctm.apply(at)`, `tm' = tm.then(ctm)`,
+    the same chain the renderer builds), with lengths riding the CTM's stretch *along the axis each is
+    measured on*. A new `Session::page_visible_box` returns `MediaBox ∩ CropBox`, and a glyph whose
+    placed box does not overlap it is dropped; the op's `W`/`W*` clip stack narrows further by each
+    path's **bounding box** — a deliberate superset, so it can over-keep but never delete a painted
+    glyph. Two decisions are pinned by tests: a *partially* overlapping glyph is **kept** (half a
+    letter is visible; dropping it trades invisible-text for deleted-visible-text), and `None` clips
+    **nothing**. Identity CTM returns early, so ordinary pages are bit-identical.
+  - **Verified against the oracle:** selis and MuPDF 1.23.0 now return the identical string. Before
+    the fix, selis returned three lines where MuPDF returned one; `selis search` reported 3 hits with
+    off-page rects.
+  - **A regression the existing suite caught, worth propagating:** the first visibility predicate used
+    `Rect::intersect`, which answers *"does the overlap have **area**?"*. A code the font gives no
+    width for has `advance == 0`, collapsing the glyph box to a segment — so every such glyph read as
+    off-page and was **deleted**; `extract_fidelity.rs` (SL-3.TEXT.08) lost its `é`, `°` and a whole
+    line. Fixed with a closed-set overlap (`overlaps`). **Any other code filtering by rectangle
+    intersection has the same latent bug.**
+  - **Related defect found, reported, NOT fixed (out of scope — it is Phase 2):** `Matrix::then`'s doc
+    says it computes `other × self`; the code computes the other order, and the divergence from MuPDF
+    is **render-visible**. Content `10 0 0 10 100 0 cm 2 0 0 2 0 0 cm` + `0 0 10 10 re f` renders at
+    x∈[200,400) in selis, x∈[100,300) in MuPDF. It affects any scale-then-translate or a form
+    `/Matrix` over a scaled CTM. Also: text inside a Form XObject paints no ink in the raster.
+  - **Not verified:** `issue7454` itself. The pdf.js corpus is fetch-only and absent here, so the
+    four-engine cross-check was not re-run; the fixture reproduces the *mechanism* and matches the
+    oracle on it. The plan's own arithmetic for the two chained `cm`s is also internally
+    inconsistent (chaining them under selis's `Matrix::then` yields translate (-1.90, -62.39), not
+    the quoted (-19.01, -623.92)) — consistent with the `cm`-order finding above, and worth resolving
+    against the real file.
   - **Defect:** selis emits text a renderer would clip away, so invisible text is offered for
     search, selection and copy. The evidence file is `issue7454` (pdf.js corpus), where
     selis = pypdf = pdfminer.six = 3 448 chars and MuPDF = pdf.js = 217. Its page content

@@ -151,8 +151,33 @@ point you have 40 000 lines and no idea which of them are wrong.
   - **Note:** `pnpm-workspace.yaml` (apps/*, packages/*), `@selis/ui-kit` + `@selis/ui`
     (TS-strict via tsconfig.base.json), Vitest, **Biome** (recorded; `pnpm lint` green),
     `pnpm -r build`/`-r test`/`lint` all green.
-- [ ] **SL-0.WS.11 — Clear the hostile-input clippy debt (per-crate, not a sweep)** ·
+- [x] **SL-0.WS.11 — Clear the hostile-input clippy debt (per-crate, not a sweep)** ·
   deps: WS.07 · owner: AI+ · **filed 2026-09-27**
+  - **Done per crate, 17 commits, and the gate now passes at the STRICTER bar the task asked for:**
+    `cargo clippy --workspace --all-targets -- -D warnings` is clean, which is *stricter* than the
+    CI gate in the Defect note (the `[lints]` deny list, deliberately not `-D warnings`). Worth
+    reconciling: the note's DoD and the task's gate are different bars, and this satisfies the higher
+    one. No production blanket `allow`, no `--cap-lints`, no `clippy.toml` mass-allow: the only allows
+    added are function-scoped `too_many_arguments` and `#[cfg(test)]`-module `indexing_slicing`.
+    Verified falsifiable — a planted `v[0]` in `selis-color` made the gate fire.
+  - **The "~180 sites" figure could not be reproduced, and the masking is worse than described.**
+    `--keep-going` does *not* defeat it: a failing lib means dependents cannot be linted at all, so
+    the upper half of the workspace stays invisible. A census via `--force-warn` puts total lint debt
+    at **~3112 warning lines** (`expect_used` 1256, `indexing_slicing` 877,
+    `arithmetic_side_effects` 403, `panic` 137, …), and that is an *upper bound*, since
+    `--force-warn` overrides `clippy.toml`'s `allow-unwrap-in-tests`. A full count is unobtainable in
+    one pass by design. The per-file attributions in the Defect note do not match what was measured.
+  - **Test-code policy, decided deliberately:** `--all-targets` test findings are in scope but lower
+    priority than production. A test indexing its own fixture is not a crash primitive; the repo
+    already encodes this (`clippy.toml` `allow-unwrap-in-tests = true`, ~18 justified test-module
+    allows). So a narrow, commented module-level allow on a test's own fixture — never a production
+    one.
+  - **Remaining policy debt, deliberately not fixed here:** `apps/cli/src/write_gate.rs:28` carries a
+    file-level `#![allow(clippy::arithmetic_side_effects)]` in a **production** module. It predates
+    this task (verified on `e0558f1e`), and the spec's own note warns that clearing such sites is
+    per-site judgement that is unsafe to do mechanically. Same for pre-existing allows in
+    `selis-raster/src/render_params.rs:263`, `selis-pdf-engine/src/session.rs:3311` (+3 siblings) and
+    `selis-crypto/src/lib.rs`. **These contradict the spec and should be filed as a follow-up.**
   - **Defect:** the workspace lint gate has been red and *invisible*. CI runs
     `cargo clippy --workspace --all-targets` (xtask lint; the workspace `[lints]` deny list,
     deliberately **not** `-D warnings`), and the hostile-input set — `unwrap_used`,
