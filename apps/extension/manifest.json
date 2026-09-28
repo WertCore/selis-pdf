@@ -12,6 +12,7 @@
 		"service_worker": "service-worker.js",
 		"type": "module"
 	},
+	"options_page": "options.html",
 	"permissions": ["declarativeNetRequest", "offscreen", "storage"],
 	"host_permissions": [],
 	"content_security_policy": {

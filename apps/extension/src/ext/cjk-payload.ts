@@ -238,6 +238,58 @@ export const CJK_PAYLOAD_SOURCE: CjkSource = {
 		),
 };
 
+/**
+ * FONT.10-F1 / SL-4.EXT.07: the full CJK payload's resident size, as
+ * SL-3.FONT.10 measured it against Noto.
+ *
+ * Pinned as a constant, and pinned *here* rather than typed into a sentence in
+ * the options page, for the same reason the budget above is a constant: the UI
+ * fills `{resident}` from this number, and `cjk-payload.test.ts` reads
+ * `assets/cjk/manifest.json` and fails when the two disagree. When FONT.10
+ * re-measures, this constant, that test and the page's copy have to move
+ * together — and the test failing is what says so, rather than a support ticket
+ * from a user whose CJK PDF renders `.notdef`.
+ */
+export const CJK_PAYLOAD_RESIDENT_BYTES = 11_162_268;
+
+/** Whether the CJK payload would fit, and by how much it would not. */
+export interface CjkAvailability {
+	/** Would the complete set fit inside {@link CJK_STORAGE_BUDGET_BYTES}? */
+	readonly fitsBudget: boolean;
+	readonly residentBytes: number;
+	readonly budgetBytes: number;
+	/** How far over the budget the complete set is. Zero when it fits. */
+	readonly overBudgetBy: number;
+}
+
+/**
+ * Can the optional CJK packs be installed at all?
+ *
+ * **Not in this build, for two independent reasons, and the page says so.**
+ *
+ * 1. There is no producer: {@link CJK_PAYLOAD_SOURCE} refuses, and
+ *    `host_permissions` is `[]`, so there is no origin to fetch a payload from
+ *    even if there were one. That is WASM.07's row, not this package's.
+ * 2. Even with the bytes in hand, the complete set does not fit.
+ *    `installCjkChunk` refuses the install that would cross
+ *    {@link CJK_STORAGE_BUDGET_BYTES}, and with the FONT.10 numbers it always
+ *    would (FONT.10-F1).
+ *
+ * A parameterised argument rather than a bare constant so the arithmetic is
+ * testable without editing a number, and so a future payload that *does* fit is
+ * a call site changing, not a sentence in a UI quietly becoming wrong.
+ */
+export function cjkAvailability(
+	residentBytes: number = CJK_PAYLOAD_RESIDENT_BYTES,
+): CjkAvailability {
+	return {
+		fitsBudget: residentBytes <= CJK_STORAGE_BUDGET_BYTES,
+		residentBytes,
+		budgetBytes: CJK_STORAGE_BUDGET_BYTES,
+		overBudgetBy: Math.max(0, residentBytes - CJK_STORAGE_BUDGET_BYTES),
+	};
+}
+
 /** Lowercase hex SHA-256 of `bytes`, via the platform digest. */
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	const subtle = globalThis.crypto?.subtle;

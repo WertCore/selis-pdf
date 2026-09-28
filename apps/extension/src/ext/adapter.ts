@@ -60,12 +60,10 @@ import type {
 	SaveTarget,
 	TelemetryEvent,
 } from "../../../ui/src/platform/types.js";
+import { readSettings, writeTelemetryOptIn } from "../options-state.js";
 import { createEnginePort } from "./engine-client.js";
 import type { EngineLink } from "./engine-link.js";
 import type { HostEnv } from "./host-env.js";
-
-/** Where the adapter reads its settings and its opt-in flag. */
-const KEY_TELEMETRY = "selis.telemetry.enabled";
 
 /** The extension's capability set. Fixed for the session, as the contract says. */
 export const EXTENSION_CAPABILITIES: PlatformCapabilities = {
@@ -138,7 +136,10 @@ export function createExtensionAdapter(options: {
 		isEnabled: () => telemetryEnabled,
 		async setEnabled(enabled: boolean): Promise<void> {
 			telemetryEnabled = enabled;
-			await env.storage.set(KEY_TELEMETRY, enabled ? "1" : "0");
+			// SL-4.EXT.07: written through the options page's own writer, so the
+			// key and the meaning of "on" have one definition between the page
+			// that offers the choice and the adapter that honours it.
+			await writeTelemetryOptIn(env.storage, enabled);
 		},
 		record(_event: TelemetryEvent): void {
 			// Intentionally empty, enabled or not. See the module doc.
@@ -186,7 +187,8 @@ export async function restoreTelemetryPreference(options: {
 	env: HostEnv;
 	adapter: PlatformAdapter;
 }): Promise<void> {
-	if ((await options.env.storage.get(KEY_TELEMETRY)) === "1") {
+	const { telemetryOptIn } = await readSettings(options.env.storage);
+	if (telemetryOptIn) {
 		await options.adapter.telemetry.setEnabled(true);
 	}
 }

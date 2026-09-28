@@ -1,4 +1,4 @@
-/* Selis MV3 service worker (SL-4.EXT.01 + SL-4.EXT.02 + SL-4.EXT.06).
+/* Selis MV3 service worker (SL-4.EXT.01 + SL-4.EXT.02 + SL-4.EXT.06 + EXT.07).
  *
  * Event-driven, no DOM, no remote code (ADR-P0028). Document bytes never transit
  * this worker (24-BINDINGS-SPEC §5) - see the note on the message handler.
@@ -10,6 +10,7 @@
  * offscreen document listens instead (`offscreen.js`). */
 
 import { ENSURE_ENGINE_HOST } from "./extension/src/ext/engine-protocol.js";
+import { createOnboardingStore, planFirstRun } from "./extension/src/options-state.js";
 import { buildRedirectRules } from "./extension/src/permissions.js";
 
 /** The page that hosts the engine, and the one it is created for. */
@@ -90,9 +91,51 @@ async function ensureEngineHost() {
 	}
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-	// EXT.07 onboarding wires first-run here.
+/**
+ * SL-4.EXT.07: offer the welcome guide, once, on a fresh install.
+ *
+ * **`chrome.runtime.openOptionsPage()`, and nothing else.** It is the one way
+ * to reach this extension's own page that needs no permission at all, and it
+ * cannot be pointed anywhere: there is no URL to get wrong, no origin to
+ * mistype, and no `chrome.tabs` — which the EXT.01 review denied and which
+ * this task has no reason to reconsider. `chrome.tabs.create` would also have
+ * worked without the permission (that permission widens *reads* of tab
+ * properties, not tab creation), but `openOptionsPage` says what it means:
+ * "show the page this extension declared".
+ *
+ * The decision is `planFirstRun`'s, and the two ways this can go wrong are both
+ * covered there: a guide shown on every update is a nag, and a flag that fails
+ * closed hides the guide forever. Neither is repaired here, because this
+ * function has no opinion to have — it asks.
+ *
+ * The failure mode is silence with a log line, not a thrown install handler. A
+ * first-run guide is worth opening a tab for and is worth nothing at all next
+ * to a half-installed extension, so an unreadable store or a browser without
+ * `openOptionsPage` leaves the extension working.
+ */
+async function offerWelcomeGuide(details) {
+	try {
+		const { seen } = await createOnboardingStore().read();
+		const plan = planFirstRun({ reason: details.reason, seen });
+		if (!plan.show) {
+			console.info("selis: welcome guide not offered", plan.outcome);
+			return;
+		}
+		if (typeof chrome.runtime.openOptionsPage !== "function") {
+			console.warn(
+				"selis: this browser cannot open an options page; the guide is in the extension's options page",
+			);
+			return;
+		}
+		await chrome.runtime.openOptionsPage();
+	} catch (error) {
+		console.warn("selis: the welcome guide could not be offered", error);
+	}
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
 	void installInterception();
+	void offerWelcomeGuide(details);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

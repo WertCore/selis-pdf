@@ -25,6 +25,26 @@ Adding a module to the package therefore means adding a row to
 `PACKAGE_ENTRIES`, which is the moment somebody has to ask "is this remote
 code?".
 
+### The second page (SL-4.EXT.07)
+
+`options.html` and `options.css` are the only other root rows, and they are the
+first rows a *manifest field* points at besides the worker and the popup.
+`options_page` is in `PACKAGE_PATH_FIELDS`, so `findManifestViolations` resolves
+it against the ship list exactly as it resolves `default_popup`: a manifest
+naming a page this list forgot fails the gate instead of 404ing in the browser
+with every other gate green.
+
+`options.css` is a `root` row rather than a `shared-asset` because it is this
+package's own layout, not `@selis/ui-kit`'s. It may not hard-code a value the
+tokens define, and `options-page.test.ts` enforces both halves of that: no
+colour literal, and every `--selis-*` name it uses is one `tokens.css` defines.
+
+Three compiled rows came with the page (`options-boot.js`, `options-state.js`,
+`options-strings.js`). `options-state.js` is also imported by the service
+worker, so it is the one row two contexts load; it touches `chrome` only inside
+a factory, never at module scope, which is what lets a worker with no DOM
+import it.
+
 ### The one file nothing else implies (SL-4.EXT.03)
 
 `extension/src/ext/wasm-worker.js` is loaded by
