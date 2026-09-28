@@ -528,7 +528,7 @@ impl Worker {
                 chunk,
                 status,
                 len,
-            } => self.op_cjk_chunk(id, doc, CjkReport { id: chunk, status, len, body: payload }, env),
+            } => self.op_cjk_chunk(id, doc, CjkReport { id: chunk, status, len, body: payload.to_vec() }, env),
             RequestOp::CjkClose { doc, chunk } => self.op_cjk_close(id, doc, chunk),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
