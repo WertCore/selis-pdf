@@ -174,6 +174,12 @@ export interface FirstRunPlan {
 	readonly outcome: FirstRunOutcome;
 }
 
+/** What the page does with the flag: show the guide, and record that it did. */
+export interface WelcomePlan {
+	readonly show: boolean;
+	readonly record: boolean;
+}
+
 /**
  * Should this install event offer the welcome guide?
  *
@@ -190,6 +196,24 @@ export function planFirstRun(input: { reason: string; seen: boolean }): FirstRun
 	return input.seen
 		? { show: false, outcome: "already-seen" }
 		: { show: true, outcome: "fresh-install" };
+}
+
+/**
+ * What the options page does with the flag when it opens.
+ *
+ * The other half of the trigger: {@link planFirstRun} is the worker's decision
+ * to open the page, this is the page's decision to show the guide. They answer
+ * the same question from opposite ends, and the one that matters is the one a
+ * user sees — a page that shows the guide to somebody who has read it, or hides
+ * it from somebody who has not.
+ *
+ * `record` is separate from `show` on purpose: the flag is written when the
+ * guide is *rendered*, not when it is dismissed, which is what removes the nag
+ * loop. A caller that wanted the other behaviour would set `record: false`, and
+ * would be re-introducing the loop this exists to prevent.
+ */
+export function planWelcome(seen: boolean): WelcomePlan {
+	return seen ? { show: false, record: false } : { show: true, record: true };
 }
 
 /* ── The `chrome.storage.local` binding ───────────────────────────────────── */

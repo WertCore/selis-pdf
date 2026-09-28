@@ -136,8 +136,8 @@ budget), engine 4,135,676 raw / 1,326,454 brotli (66% of the engine budget),
 shell 192,505 raw (19%).
 
 Re-measured after SL-4.EXT.07 (the options page) and SL-3.FONT.10 (the bundled
-CJK core): **package 4,520,630 raw (56.5%), engine 4,279,475 raw / 1,357,411
-brotli (67.9% of the engine budget), shell 241,155 raw (24.1%)** — 31 files.
+CJK core): **package 4,520,632 raw (56.5%), engine 4,279,475 raw / 1,357,411
+brotli (67.9% of the engine budget), shell 241,157 raw (24.1%)** — 31 files.
 
 The two movements are different and are worth keeping apart:
 

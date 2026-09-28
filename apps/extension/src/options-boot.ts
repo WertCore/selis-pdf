@@ -34,6 +34,7 @@ import {
 	type OnboardingStore,
 	type SettingsStore,
 	createOnboardingStore,
+	planWelcome,
 	readSettings,
 	resetSettings,
 	writeTelemetryOptIn,
@@ -173,7 +174,7 @@ export async function bootOptions(root: Element, deps: OptionsDeps): Promise<voi
 }
 
 /**
- * Show the welcome guide when it has not been seen, and record that it was.
+ * Wire the welcome guide, and show it when it has not been seen.
  *
  * The recording is the anti-nag mechanism and it happens *here*, on render, not
  * on dismissal — see the module doc in `options-state.ts`. A store that cannot
@@ -181,6 +182,11 @@ export async function bootOptions(root: Element, deps: OptionsDeps): Promise<voi
  * direction: a user who has just been told what the extension does has been
  * told it. A store that cannot be written only means the next visit shows it
  * again, and the next visit is a page the user opened deliberately.
+ *
+ * **Replay is wired before the flag is read, and unconditionally.** That is the
+ * whole reason this function does not return early: a user who has already seen
+ * the guide is exactly the user who presses "Show the welcome guide", and
+ * wiring the button only on the first-run path left it dead for everyone else.
  */
 async function mountWelcome(
 	root: Element,
@@ -191,30 +197,7 @@ async function mountWelcome(
 	if (panel === null) {
 		return;
 	}
-	let seen = false;
-	try {
-		seen = (await deps.onboarding.read()).seen;
-	} catch {
-		seen = false;
-	}
-	if (seen) {
-		return;
-	}
-	panel.removeAttribute("hidden");
-	try {
-		await deps.onboarding.markSeen();
-	} catch {
-		// Nothing to do: the guide is on screen, which is the point of it.
-	}
-	// Focus the heading rather than the first button: a screen reader then
-	// announces where the user has arrived instead of a button's label, and the
-	// guide's own text is what a first run needs read.
 	const heading = root.ownerDocument.getElementById(IDS.welcomeHeading);
-	heading?.focus();
-	requireElement(root, IDS.welcomeDone).addEventListener("click", () => {
-		panel.setAttribute("hidden", "");
-		announce("options.status.saved");
-	});
 	// Replay is deliberately not a stored-state change. Rewriting the flag to
 	// "unseen" would let any later visit re-arm the first-run path, and that
 	// flag is the one piece of state deciding whether a user is ever told what
@@ -223,6 +206,32 @@ async function mountWelcome(
 		panel.removeAttribute("hidden");
 		heading?.focus();
 		announce("options.status.replayed");
+	});
+
+	let seen = false;
+	try {
+		seen = (await deps.onboarding.read()).seen;
+	} catch {
+		seen = false;
+	}
+	if (!planWelcome(seen).show) {
+		return;
+	}
+	panel.removeAttribute("hidden");
+	if (planWelcome(seen).record) {
+		try {
+			await deps.onboarding.markSeen();
+		} catch {
+			// Nothing to do: the guide is on screen, which is the point of it.
+		}
+	}
+	// Focus the heading rather than the first button: a screen reader then
+	// announces where the user has arrived instead of a button's label, and the
+	// guide's own text is what a first run needs read.
+	heading?.focus();
+	requireElement(root, IDS.welcomeDone).addEventListener("click", () => {
+		panel.setAttribute("hidden", "");
+		announce("options.status.saved");
 	});
 }
 

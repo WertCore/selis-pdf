@@ -35,6 +35,7 @@ import {
 	isTelemetryOptIn,
 	onboardingSeenFrom,
 	planFirstRun,
+	planWelcome,
 	readSettings,
 	resetSettings,
 	writeTelemetryOptIn,
@@ -179,6 +180,14 @@ describe("the first-run trigger (SL-4.EXT.07)", () => {
 		expect(planFirstRun({ reason: "install", seen: onboardingSeenFrom("nonsense") }).show).toBe(
 			true,
 		);
+	});
+
+	it("shows and records on the page's side, and neither once seen", () => {
+		// The other half of the same rule, in the page: `record` is true only on
+		// the render that shows the guide, which is what stops the nag without
+		// making dismissal load-bearing.
+		expect(planWelcome(false)).toEqual({ show: true, record: true });
+		expect(planWelcome(true)).toEqual({ show: false, record: false });
 	});
 });
 
