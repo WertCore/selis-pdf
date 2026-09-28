@@ -31,6 +31,7 @@ Node — the repo ships no jsdom, by ADR-P0021's zero-dependency rule.
 | `page-list.css` | Presentation, entirely token-driven. |
 | `text-layer.ts` | Where every character is, in CSS pixels inside a page box. Pure projection from the engine's user-space quads. |
 | `selection.ts` | Hit testing, caret movement, selection rectangles, and copy. Pure functions of a `TextLayerFrame`. |
+| `search.ts` | The search controller (SL-4.UI.05): consumes `EnginePort.search`'s batches, owns the query, the matches and the current one, and publishes highlights. |
 
 ## Using it
 
@@ -142,6 +143,92 @@ keyboard and announcement support UI.02 built:
 - **No live-region announcements for caret moves.** Caret position is a visual
   concept; announcing every arrow press would be noise. UI.02's page-level
   announcements are the ones that matter and they are unaffected.
+
+## Search (SL-4.UI.05)
+
+`createSearch` is a second controller beside the page list, and deliberately
+shaped like it: it owns a slice, reports facts, hands back one immutable
+`SearchState`, and paints nothing. The slice is the query, the modifiers, the
+matches and which one is current. The viewport is not in it — the shell reports
+what is on screen through `update({ currentPage, pages })`, the same way it
+reports geometry to the page list.
+
+```ts
+const search = createSearch({
+	adapter, doc,
+	// The only geometry input. `.scale` is CSS pixels per PDF point; nothing
+	// here knows about tiles, rungs or device pixels.
+	placePage: (page) => list.layout().pages.find((entry) => entry.page === page) ?? null,
+});
+
+search.update({ currentPage: list.state().currentPage, pages: list.state().tiles.map((t) => t.page) });
+search.setQuery("selis");            // one call per input event
+search.setModifiers({ caseSensitive: true });
+
+// Painting: `highlights[]` are boxes inside a page element, and `announcement`
+// is the polite live region. Scrolling is the shell's, and it is the page list's
+// job — `goToPage` and `scrollTopForPage` are the only two ways to move.
+if (state.currentMatch && state.currentMatch.page !== state.visiblePage) {
+	list.goToPage(state.currentMatch.page, "centre");
+}
+```
+
+### Four decisions, and the reasons are in `search.ts`
+
+1. **The state is the controller's, and that is a temporary answer.** ADR-P0035
+   puts search match state in `selis-viewmodel`, and that crate does not exist
+   yet. So the state is a plain object republished whole, and every question
+   about it is a pure function over plain data — the shape that makes moving it
+   across the language boundary a matter of calling these from Rust. The
+   alternative, a richer local store, is more code today and nothing to migrate
+   tomorrow.
+2. **Highlights come from the text layer, not from `SearchMatch.rects` and never
+   from the render ladder.** A match is a character range; the rectangles are
+   `selectionRects` over the same `TextLayerFrame` the text selection uses, so a
+   match highlight and a text selection cannot disagree, and a zoom re-projects
+   from the engine's scale-free points while the tile under it is still a
+   provisional bitmap from the previous scale.
+3. **A superseded search cannot repaint.** Every run has a monotonic id and its
+   own `AbortController`, and every mutation — batches applied, text layers
+   cached — sits behind the id check. `EnginePort.search` is an `AsyncIterable`,
+   so cancellation is only a promise the transport makes; the test proves the
+   guard against a transport that ignores the signal and keeps yielding.
+4. **The work is bounded by the window, not the document.** The count is
+   document-wide, but text layers are fetched only for pages the reader can see,
+   and only for pages that have matches. Per-batch cost is O(window) on a
+   2 000-page document.
+
+### Accessibility
+
+`Enter` and `F3` step to the next match, their shifted forms to the previous,
+and `Escape` closes search; `resolveSearchKey` returns `null` for everything
+else, and for *everything* when there is no query, so it never swallows a key the
+shell needs. The live-region sentence is chosen so a scan in progress never says
+"no matches" — it says how many so far — and the current match is announced only
+when it changes, so a 2 000-page scan does not interrupt itself once per page.
+The page in that sentence is worded by the *page list's* catalogue, passed in, so
+one page cannot be worded two ways.
+
+### Known limits, recorded rather than papered over
+
+- **`SearchMatch.rects` is deliberately unread.** It is optional, so no transport
+  must supply it, and the engine's own `SearchMatch` carries the **line's**
+  bounding rect rather than a per-match one — a transport that mapped it naively
+  would highlight the whole line. A second geometry source that can be absent and
+  that disagrees with the text layer when present is worse than none.
+- **A range that does not index the page's text has no rectangle.** The engine
+  normalises before searching (ligatures, soft hyphens, NFD), so an offset can
+  come back that does not address the page's own string. The match still counts
+  and still navigates; it simply has no box. Making the offsets authoritative
+  means changing the engine's search to report positions in the *original* text,
+  which is a TEXT.06 question, not a viewer one.
+- **No browser pass yet.** Every clause of the DoD is asserted as data — the
+  count, the boxes, the key map, the announcement — because the repo ships no
+  jsdom (ADR-P0021). Nothing here has been looked at on a screen.
+- **`state.highlights` is windowed, so a host that wants a per-page badge for
+  every page in the document needs UI.06's page model.** The breakdown the
+  viewer needs — a badge on each visible page — is complete; the breakdown a
+  search-results sidebar would need is not, and a sidebar is UI.06's.
 
 ## Adding the compositor
 
@@ -298,10 +385,14 @@ literal. It is a lint-style unit test, following the idiom
   `base.css`. It is a DOM layer over the canvas, which is why the canvas being
   `aria-hidden` and pointer-transparent matters: the text layer is where
   selection lives, and it is ordinary, selectable, focusable DOM.
-- **UI.05** (search): page numbers from `state.tiles` map straight onto
-  `SearchMatch.page`.
+- **UI.05** (search): shipped. `createSearch` beside the page list; the shell
+  wires `placePage` to the page list's layout and calls `goToPage` for the
+  current match. Highlights are DOM boxes inside the page element, positioned by
+  `--match-x`/`-y`/`-w`/`-h` exactly as a placed tile is, and they sit under the
+  text layer so the glyphs stay legible and the text stays selectable.
 - **UI.06** (navigation): `scrollTopFor(page)` and `goToPage(page)` are the only
-  two ways to move; do not compute offsets anywhere else.
+  two ways to move; do not compute offsets anywhere else. Search does not add a
+  third.
 - **UI.08** (print): `TileSurface` is not the print path. Print renders at print
   resolution to its own target (ADR-P0030's colour question and the
   `/PrintScaling` requirement both outrank reusing a screen compositor).

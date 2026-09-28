@@ -16,7 +16,19 @@
  *
  * The page list is the first component to need this, and the right place to
  * prove the shape, because the same catalogue has to carry the strings UI.05
- * (match counts) and UI.06 (outline, destinations) will add.
+ * (match counts) and UI.06 (outline, destinations) will add. UI.05 is in, below.
+ *
+ * ## Why search is a second key set and not more page-list keys
+ *
+ * `PAGE_LIST_MESSAGE_KEYS` is a *closed* union and `createPageListStrings`
+ * takes a `Partial` of it, which is what stops a new string appearing without an
+ * entry in the catalogue. Widening that union for search would have been cheaper
+ * and is the wrong shape: `PageListStrings` is the page list's *resolved*
+ * strings, and a search controller forced to accept them would be taking a
+ * dependency it does not have. So search gets its own closed key set, its own
+ * catalogue and its own factory, over the *same* `formatMessage` interpolation
+ * and the same overrides-merge-over-English rule. UI.06 adds a third the same
+ * way, and a `createViewerStrings` is the eventual place to assemble them.
  *
  * Placeholders are `{name}` and are substituted by name, not by position, so a
  * catalogue can reorder a sentence — which most languages need to do — without
@@ -136,3 +148,150 @@ export function createPageListStrings(overrides: Partial<PageListCatalogue> = {}
 
 /** The shared English instance, for callers that override nothing. */
 export const DEFAULT_STRINGS: PageListStrings = createPageListStrings();
+
+/**
+ * Every user-facing string search owns (SL-4.UI.05). Closed for the same
+ * reason {@link PAGE_LIST_MESSAGE_KEYS} is: a `Partial` of a known set is what a
+ * host can safely be handed.
+ */
+export const SEARCH_MESSAGE_KEYS = [
+	/** `aria-label` on the search input. */
+	"search.field.label",
+	/** The input's placeholder text. */
+	"search.field.placeholder",
+	/** The toolbar/search region's `aria-label`. */
+	"search.region.label",
+	/** Nothing typed yet: the field's own state, not a result. */
+	"search.status.idle",
+	/** Mid-scan, with the count so far. Placeholders: `{count}`. */
+	"search.status.scanning",
+	/** Scan finished with at least one match. Placeholders: `{count}`. */
+	"search.status.found",
+	/** Scan finished with none. */
+	"search.status.none",
+	/**
+	 * The current-match sentence, announced on every next/previous.
+	 * Placeholders: `{current}`, `{count}`, `{pageLabel}`.
+	 */
+	"search.status.match",
+	/** The scan could not be completed; the shell reports the reason. */
+	"search.status.failed",
+	/** `aria-label` on the next-match control. */
+	"search.button.next",
+	/** `aria-label` on the previous-match control. */
+	"search.button.previous",
+	/** `aria-label` on the control that closes search. */
+	"search.button.close",
+	/** The match-case modifier's label. */
+	"search.option.case",
+	/** The whole-word modifier's label. */
+	"search.option.word",
+] as const;
+
+/** A key into {@link SEARCH_MESSAGE_KEYS}. */
+export type SearchMessageKey = (typeof SEARCH_MESSAGE_KEYS)[number];
+
+/** A set of search templates keyed by message key. */
+export type SearchCatalogue = Readonly<Record<SearchMessageKey, string>>;
+
+/**
+ * English search catalogue.
+ *
+ * Three things here are worth a word, because they are the sentences a naive
+ * implementation gets wrong:
+ *
+ * - `search.status.scanning` and `search.status.found` are *different keys*, not
+ *   one template with a flag. "0 matches" while the scan is still running and
+ *   "0 matches" after it finished mean opposite things to a reader, and a live
+ *   region that says "No matches" at the first batch of a 2 000-page document is
+ *   a lie the UI then has to walk back.
+ * - `search.status.none` has no `{count}` in it, so a catalogue that pluralises
+ *   cannot accidentally render "No 0 matches".
+ * - "Match" is the countable noun and the page names where, so
+ *   `search.status.match` reads as a sentence. Assistive tech announces "3 slash
+ *   12"; it announces "Match 3 of 12, Page 7 of 900" as a sentence, which is
+ *   what the reader needs to hear.
+ */
+export const EN_SEARCH_CATALOGUE: SearchCatalogue = {
+	"search.field.label": "Find in document",
+	"search.field.placeholder": "Find",
+	"search.region.label": "Find in document",
+	"search.status.idle": "Type to search",
+	"search.status.scanning": "Searching, {count} so far",
+	"search.status.found": "{count} matches found",
+	"search.status.none": "No matches",
+	"search.status.match": "Match {current} of {count}, {pageLabel}",
+	"search.status.failed": "Search could not be completed",
+	"search.button.next": "Next match",
+	"search.button.previous": "Previous match",
+	"search.button.close": "Close search",
+	"search.option.case": "Match case",
+	"search.option.word": "Match whole word",
+};
+
+/**
+ * The resolved strings the search controller formats against.
+ *
+ * A distinct interface from {@link PageListStrings} because the two components
+ * genuinely share no sentence: nothing the page list says changes when a search
+ * is open, and nothing search says is about fit modes. The one string they do
+ * share, the page label, is *passed in* to {@link SearchStrings.match} rather
+ * than re-derived, so two catalogues cannot word the same page two ways.
+ */
+export interface SearchStrings {
+	/** `aria-label` for the search input. */
+	readonly fieldLabel: string;
+	/** Placeholder for the search input. */
+	readonly fieldPlaceholder: string;
+	/** `aria-label` for the region wrapping the search controls. */
+	readonly regionLabel: string;
+	/** Live-region text: nothing searched yet. */
+	idle(): string;
+	/** Live-region text: the scan is running, with the count so far. */
+	scanning(count: number): string;
+	/** Live-region text: the scan finished with at least one match. */
+	found(count: number): string;
+	/** Live-region text: the scan finished with no matches. */
+	none(): string;
+	/** Live-region text for a move to the current match. */
+	match(current: number, count: number, pageLabel: string): string;
+	/** Live-region text: the scan failed. */
+	failed(): string;
+	/** `aria-label` for the next-match control. */
+	readonly nextLabel: string;
+	/** `aria-label` for the previous-match control. */
+	readonly previousLabel: string;
+	/** `aria-label` for the close control. */
+	readonly closeLabel: string;
+	/** Label for the match-case modifier. */
+	readonly caseLabel: string;
+	/** Label for the whole-word modifier. */
+	readonly wordLabel: string;
+}
+
+/** Merge a partial search catalogue over English and bind the formatted strings. */
+export function createSearchStrings(overrides: Partial<SearchCatalogue> = {}): SearchStrings {
+	const catalogue: SearchCatalogue = { ...EN_SEARCH_CATALOGUE, ...overrides };
+	const format = (key: SearchMessageKey, values: PageListMessageValues): string =>
+		formatMessage(catalogue[key], values);
+	return {
+		fieldLabel: catalogue["search.field.label"],
+		fieldPlaceholder: catalogue["search.field.placeholder"],
+		regionLabel: catalogue["search.region.label"],
+		idle: () => format("search.status.idle", {}),
+		scanning: (count) => format("search.status.scanning", { count }),
+		found: (count) => format("search.status.found", { count }),
+		none: () => format("search.status.none", {}),
+		match: (current, count, pageLabel) =>
+			format("search.status.match", { current, count, pageLabel }),
+		failed: () => format("search.status.failed", {}),
+		nextLabel: catalogue["search.button.next"],
+		previousLabel: catalogue["search.button.previous"],
+		closeLabel: catalogue["search.button.close"],
+		caseLabel: catalogue["search.option.case"],
+		wordLabel: catalogue["search.option.word"],
+	};
+}
+
+/** The shared English search strings, for callers that override nothing. */
+export const DEFAULT_SEARCH_STRINGS: SearchStrings = createSearchStrings();

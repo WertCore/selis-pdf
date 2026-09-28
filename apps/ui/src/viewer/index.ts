@@ -143,16 +143,43 @@ export {
 } from "./selection.js";
 
 export type {
+	SearchCommand,
+	SearchCommandAction,
+	SearchKey,
+	SearchKeyContext,
+} from "./keyboard.js";
+export { resolveSearchKey } from "./keyboard.js";
+
+export type {
+	PageMatchCount,
+	SearchController,
+	SearchControllerOptions,
+	SearchHighlight,
+	SearchMatchRange,
+	SearchModifiers,
+	SearchState,
+	SearchStatus,
+	SearchWindow,
+} from "./search.js";
+export { caretAtTextIndex, createSearch, matchCarets } from "./search.js";
+
+export type {
 	PageListCatalogue,
 	PageListMessageKey,
 	PageListMessageValues,
 	PageListStrings,
+	SearchMessageKey,
+	SearchStrings,
 } from "./strings.js";
 export {
+	DEFAULT_SEARCH_STRINGS,
 	DEFAULT_STRINGS,
 	EN_PAGE_LIST_CATALOGUE,
+	EN_SEARCH_CATALOGUE,
 	PAGE_LIST_MESSAGE_KEYS,
+	SEARCH_MESSAGE_KEYS,
 	createPageListStrings,
+	createSearchStrings,
 	formatMessage,
 	modeKey,
 } from "./strings.js";

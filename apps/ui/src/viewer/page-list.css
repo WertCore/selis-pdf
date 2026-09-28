@@ -124,3 +124,58 @@
 	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
 	outline-offset: calc(-1 * var(--selis-border-thick));
 }
+
+/* Search highlights (SL-4.UI.05).
+ *
+ * These are positioned the way the text layer is: absolutely, inside the page
+ * tile, at CSS pixels relative to that tile's box. The geometry is projected
+ * from the engine's user-space quads at `PlacedPage.scale`, so it needs no
+ * device pixel ratio, no tile rung and no canvas - which is what lets a
+ * highlight stay exactly on the glyphs during a zoom, while the tile under it
+ * is still a provisional bitmap from the previous scale (see `DrawOp.
+ * provisional`). That is the whole reason these are DOM boxes and not canvas
+ * draw ops.
+ *
+ * The highlight sits *under* the text layer's own text so the glyphs stay
+ * legible; the text layer is transparent apart from its text, so a z-order
+ * here is enough and no opacity is invented.
+ *
+ * Geometry carriers follow the file's convention: `--match-*`, outside the
+ * `--selis-*` token namespace, because they are document data rather than
+ * design tokens. */
+.selis-search-highlight {
+	position: absolute;
+	inset-block-start: var(--match-y, 0px);
+	inset-inline-start: var(--match-x, 0px);
+	width: var(--match-w, 0px);
+	height: var(--match-h, 0px);
+	background: var(--selis-color-highlight-bg);
+	border-radius: var(--selis-radius-sm);
+	/* A highlight must never take a pointer event from the text layer above
+	 * it: clicking a match is selecting the words under it, and a transparent
+	 * overlay that swallowed the click would make the match unselectable. */
+	pointer-events: none;
+}
+
+/* The current match. A different token, not a different opacity, so it stays
+ * distinguishable in the high-contrast theme where alpha is not available. */
+.selis-search-highlight--current {
+	background: var(--selis-color-highlight-active-bg);
+}
+
+/* Forced colours: the highlight tokens are colours, and a reader in a
+ * high-contrast mode gets the system pair instead of ours. `Canvas` and
+ * `Highlight` are the system colours for exactly this, and using the same
+ * pair for both states is honest - the browser cannot express "more current"
+ * in forced-colours mode, and pretending otherwise would hide the current
+ * match. */
+@media (forced-colors: active) {
+	.selis-search-highlight {
+		background: Canvas;
+		border: var(--selis-border-hairline) solid Highlight;
+	}
+
+	.selis-search-highlight--current {
+		background: Highlight;
+	}
+}
