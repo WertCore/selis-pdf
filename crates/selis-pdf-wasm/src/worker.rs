@@ -528,7 +528,7 @@ impl Worker {
                 chunk,
                 status,
                 len,
-            } => self.op_cjk_chunk(id, doc, chunk, status, len, payload, env),
+            } => self.op_cjk_chunk(id, doc, CjkReport { id: chunk, status, len, body: payload }, env),
             RequestOp::CjkClose { doc, chunk } => self.op_cjk_close(id, doc, chunk),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
@@ -949,24 +949,20 @@ impl Worker {
     // `op_cjk_open` about the two copies.
 
     /// Deliver one chunk file and answer with the next request, or `done`.
+    ///
+    /// The wire fields arrive already bundled as a [`CjkReport`] — the same
+    /// value the loader's `accept` takes — so this does not take them apart
+    /// only to rebuild the struct one line later. That also keeps the
+    /// parameter list under the workspace's arity lint.
     fn op_cjk_chunk(
         &mut self,
         id: u64,
         doc: DocHandle,
-        chunk: String,
-        status: u16,
-        len: u64,
-        payload: &[u8],
+        report: CjkReport,
         env: &WorkerEnv<'_>,
     ) -> Result<Outgoing> {
         let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
         let loader = opened.cjk.as_mut().ok_or_else(bad_cjk_loader)?;
-        let report = CjkReport {
-            id: chunk,
-            status,
-            len,
-            body: payload.to_vec(),
-        };
         let mut g = opened.budget.guard_with(env.clock, env.cancel.clone());
         let step = loader.accept(&report, &mut g)?;
         // The next request is planned from the *post-adoption* state, so the
