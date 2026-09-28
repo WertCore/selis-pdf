@@ -216,8 +216,14 @@ export function caretFromPoint(frame: TextLayerFrame, x: number, y: number): Car
 	return { line: frame.lines.indexOf(line), offset: offsetAtX(line, x) };
 }
 
-/** The caret at the very start of the document. */
-export function documentStart(frame: TextLayerFrame): Caret {
+/**
+ * The caret at the very start of the document.
+ *
+ * The frame is taken so this is the exact dual of {@link documentEnd} and so a
+ * caller can move a caret to either end without special-casing the document
+ * start; it is not read, because line 0 offset 0 is the start of any frame.
+ */
+export function documentStart(_frame: TextLayerFrame): Caret {
 	return { line: 0, offset: 0 };
 }
 
@@ -227,6 +233,15 @@ export function documentEnd(frame: TextLayerFrame): Caret {
 	return last < 0 ? { line: 0, offset: 0 } : { line: last, offset: lineLength(frame, last) };
 }
 
+/**
+ * Put a range's ends in reading order.
+ *
+ * A drag can run backwards — up and to the right on a two-column page — and
+ * every consumer wants the same answer to "which end came first". Ordering is a
+ * compare on `(line, offset)`, and because the frame numbers its lines by
+ * *reading* order (SL-3.TEXT.04), that compare is the reading order and needs
+ * no geometry at all.
+ */
 export function orderedRange(range: SelectionRange): OrderedRange {
 	return compareCarets(range.anchor, range.head) <= 0
 		? { start: range.anchor, end: range.head }

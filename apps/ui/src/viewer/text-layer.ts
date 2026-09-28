@@ -53,7 +53,7 @@
  */
 
 import type { PlacedPage } from "./layout.js";
-import type { PageTextLayer, TextLayerChar, TextLayerLine } from "../platform/types.js";
+import type { PageTextLayer, TextLayerLine } from "../platform/types.js";
 
 /** A CSS-pixel box, origin at the top-left of the page element, y down. */
 export interface CharBox {
@@ -83,8 +83,6 @@ export interface LayerLineBox {
 	 */
 	readonly inked: readonly boolean[];
 }
-
-/** A page's text layer, positioned into one page box. */
 
 /**
  * Project a PDF-space rectangle into the page element's CSS-pixel box.
