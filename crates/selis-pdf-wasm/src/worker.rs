@@ -94,6 +94,10 @@ use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
 
+use crate::cjkchunk::{
+    ChunkClaim, ChunkReport as CjkReport, ChunkStep as CjkChunkStep, CjkChunkLoader,
+    CjkRequest,
+};
 use crate::httprange::{ChunkReport, ChunkStep, HttpRangeDriver, RangeRequest};
 use crate::memory::{MemoryStats, JS_DEFAULT_CAP_BYTES, WASM_MAX_BYTES};
 use crate::protocol::{
@@ -230,6 +234,15 @@ struct OpenDoc {
     budget: Budget,
     /// Source length, in bytes — the live-tally contribution released on `close`.
     src_len: u64,
+    /// The lazy CJK resident set, once `cjkOpen` has installed one (SL-4.WASM.07).
+    ///
+    /// `None` is the common case and is load-bearing: a document with no loader
+    /// attached renders through the plain [`Session::render_page`] path, which
+    /// is byte-for-byte what it has always been. Only a document whose shell
+    /// called `cjkOpen` takes [`Session::render_page_cjk`], so installing the
+    /// loader is the *only* thing that changes a render's behaviour — there is no
+    /// second code path that a shell can reach by accident.
+    cjk: Option<CjkChunkLoader>,
 }
 
 /// The binary attachment that leaves with a response.
@@ -503,6 +516,20 @@ impl Worker {
             } => self.op_range_open(id, url, size, chunk, budget, env),
             op @ RequestOp::RangeChunk { .. } => self.op_range_chunk(id, op, payload, env),
             RequestOp::RangeClose { transfer } => self.op_range_close(id, transfer),
+            RequestOp::CjkOpen {
+                doc,
+                claims,
+                unserved,
+                core_len,
+                budget,
+            } => self.op_cjk_open(id, doc, claims, unserved, core_len, budget, payload),
+            RequestOp::CjkChunk {
+                doc,
+                chunk,
+                status,
+                len,
+            } => self.op_cjk_chunk(id, doc, chunk, status, len, payload, env),
+            RequestOp::CjkClose { doc, chunk } => self.op_cjk_close(id, doc, chunk),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
             RequestOp::Cancel { target } => self.op_cancel(id, target),
@@ -559,6 +586,7 @@ impl Worker {
                 session,
                 budget,
                 src_len: len,
+                cjk: None,
             },
         );
         Ok(Outgoing::ok(
@@ -912,6 +940,73 @@ impl Worker {
         driver.accept(&report, &mut guard)
     }
 
+    // -- the lazy CJK chunk loader (SL-4.WASM.07) --------------------------
+    //
+    // The three ops below are the wire half of `crate::cjkchunk`. The split is
+    // the same one the range exchange uses and for the same reason: the guest
+    // names the chunk and judges the bytes, the shell only moves them. What is
+    // new here is *whose* memory the bytes land in — see the note on
+    // `op_cjk_open` about the two copies.
+
+    /// Deliver one chunk file and answer with the next request, or `done`.
+    fn op_cjk_chunk(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        chunk: String,
+        status: u16,
+        len: u64,
+        payload: &[u8],
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        let loader = opened.cjk.as_mut().ok_or_else(bad_cjk_loader)?;
+        let report = CjkReport {
+            id: chunk,
+            status,
+            len,
+            body: payload.to_vec(),
+        };
+        let mut g = opened.budget.guard_with(env.clock, env.cancel.clone());
+        let step = loader.accept(&report, &mut g)?;
+        // The next request is planned from the *post-adoption* state, so the
+        // response is the whole remaining plan in one message: a shell that has
+        // delivered a chunk learns what is still wanted without a second round
+        // trip, and one that has delivered everything is told `request: null`.
+        let adopted = matches!(step, CjkChunkStep::Adopted { .. });
+        let next = if adopted { loader.plan()? } else { None };
+        let mut value = cjk_state(loader);
+        if let Some(field) = value.as_object_mut() {
+            let _ = field.insert("adopted".to_owned(), serde_json::json!(adopted));
+            let _ = field.insert("request".to_owned(), cjk_request_value(next.as_ref()));
+        }
+        Ok(Outgoing::ok(id, value))
+    }
+
+    /// Release one resident chunk and report the new resident total.
+    fn op_cjk_close(&mut self, id: u64, doc: DocHandle, chunk: String) -> Result<Outgoing> {
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        let loader = opened.cjk.as_mut().ok_or_else(bad_cjk_loader)?;
+        let report = loader.close(&chunk);
+        let mut value = cjk_state(loader);
+        if let Some(field) = value.as_object_mut() {
+            match &report {
+                Some(r) => {
+                    let _ = field.insert("closed".to_owned(), serde_json::json!(true));
+                    let _ = field.insert("released".to_owned(), serde_json::json!(r.id));
+                    let _ = field.insert("releasedBytes".to_owned(), serde_json::json!(r.released));
+                }
+                // Not a repaint, and said so: `closed: false` with the revision
+                // unchanged is what stops a polling shell repainting the world
+                // because an eviction turned out to be a no-op.
+                None => {
+                    let _ = field.insert("closed".to_owned(), serde_json::json!(false));
+                }
+            }
+        }
+        Ok(Outgoing::ok(id, value))
+    }
+
     fn op_range_close(&mut self, id: u64, transfer: u64) -> Result<Outgoing> {
         // Also the abort path: a shell whose `AbortSignal` fires releases the
         // transfer here instead of abandoning a guest-side buffer.
@@ -922,6 +1017,102 @@ impl Worker {
             id,
             serde_json::json!({ "transfer": transfer, "closed": true }),
         ))
+    }
+
+    /// Install the resident set and name the first chunk the guest wants.
+    ///
+    /// The core subset arrives as this request's binary attachment. Everything
+    /// else about the payload — which ranges it can serve, what each file
+    /// weighs, what it hashes to — arrives as claims, and the loader checks
+    /// them rather than believing them (`CjkChunkLoader::new`).
+    ///
+    /// # The two copies, and why there are two
+    ///
+    /// After this op the bytes exist in **two** places: the guest's linear
+    /// memory (this set) and the shell's HTTP/Cache-API entry. They are not
+    /// shared, and cannot be. ADR-P0043 §3 gives the shell ownership of
+    /// transport, caching and quota precisely *because* the guest cannot reach
+    /// them: the guest has no `fetch` import, no `Cache` handle, and no
+    /// `storage` binding, and a wasm module cannot hand a host a pointer into
+    /// its own heap and expect the host to keep it valid across a repaint. So
+    /// the shell's copy is the durable one — the one that survives a reload and
+    /// answers the next `cjkOpen` from cache — and the guest's is the working
+    /// one, bounded by `CjkChunkLoader::resident_bytes` and giveable back
+    /// through `cjkClose`.
+    ///
+    /// That duplication is the cost of the boundary, and it is the honest reason
+    /// FONT.10-F1 cannot be solved by *not* storing things: both copies count
+    /// against the ceiling the shell is trying to stay under.
+    ///
+    /// # Malformed Input
+    ///
+    /// A stale `doc`, a `coreLen` that does not match the attachment, a claim
+    /// naming an unknown range, a claim with an unparseable digest, and a claim
+    /// with an absurd length are each `BINDING_BAD_ARGUMENT` and install
+    /// nothing. Re-opening over a live loader replaces it, which is how a shell
+    /// swaps payloads without closing the document.
+    #[allow(clippy::too_many_arguments)]
+    fn op_cjk_open(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        claims: Vec<crate::protocol::CjkClaimBody>,
+        unserved: Vec<String>,
+        core_len: u64,
+        budget: Option<BudgetProfile>,
+        payload: &[u8],
+    ) -> Result<Outgoing> {
+        let profile = budget.unwrap_or_default();
+        let limits = budget_from_profile(&profile)?;
+        let arrived = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+        if arrived != core_len {
+            return Err(err!(
+                Code::BindingBadArgument,
+                during = "wasm-worker",
+                detail = "CJK core length does not match its attachment"
+            ));
+        }
+        // The core is real resident memory, so it goes through the same memory
+        // gates as any other attachment: a shell cannot make the guest hold
+        // more than the tab cap allows by calling this op with a big core.
+        let projected = self.live_bytes.saturating_add(arrived);
+        crate::memory::check_inline_len(projected, limits.bytes, 0, JS_DEFAULT_CAP_BYTES)?;
+        // The wire's `id` is an untrusted `String`; the chunk table's is
+        // `&'static str`. Resolving through the table is what makes the claim
+        // checkable — and it means an unknown id is refused here rather than
+        // interned, so a shell cannot make the guest retain arbitrary strings
+        // for the life of the loader.
+        let mut resolved: Vec<ChunkClaim> = Vec::with_capacity(claims.len());
+        for c in claims {
+            let Some(chunk) = selis_font::cjk::chunk_by_id(&c.id) else {
+                return Err(err!(
+                    Code::BindingBadArgument,
+                    during = "wasm-worker",
+                    detail = "CJK claim names a range the chunk table does not carry"
+                ));
+            };
+            resolved.push(ChunkClaim {
+                id: chunk.id,
+                sha256: c.sha256,
+                raw_bytes: c.raw_bytes,
+                url: c.url,
+            });
+        }
+        let claims = resolved;
+        let mut loader =
+            CjkChunkLoader::new(selis_bytes::Bytes::copy_from_slice(payload), claims, limits)?;
+        let unserved: Vec<&str> = unserved.iter().map(String::as_str).collect();
+        loader.mark_unavailable(&unserved);
+        // The first request, so a shell learns what to fetch without having to
+        // render first. A document that has needed nothing yet gets `null`.
+        let first = loader.plan()?;
+        let mut value = cjk_state(&loader);
+        if let Some(field) = value.as_object_mut() {
+            let _ = field.insert("request".to_owned(), cjk_request_value(first.as_ref()));
+        }
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        opened.cjk = Some(loader);
+        Ok(Outgoing::ok(id, value))
     }
 
     fn mint_handle(&mut self) -> Result<DocHandle> {
@@ -1004,7 +1195,18 @@ impl Worker {
         params: RenderParams,
         env: &WorkerEnv<'_>,
     ) -> Result<Outgoing> {
-        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        // SL-4.WASM.07: a document with a CJK loader attached renders through
+        // `render_page_cjk`, which resolves `Uni…UCS2…` codes the document's own
+        // font cannot serve out of the resident set, paints `.notdef` for the
+        // rest, and **queues the chunks it wanted** — all without touching the
+        // network. A document with no loader takes the plain path, byte for byte
+        // what it has always been; installing the loader is the only thing that
+        // changes a render.
+        //
+        // The outcome travels back in the response (`cjk.needs` + `cjk.revision`)
+        // so a shell learns what to fetch and when to repaint without a second
+        // round trip. The fetch itself is the shell's; see `crate::cjkchunk`.
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
         let idx = page_index(page);
         if idx >= opened.session.len() {
             return Err(err!(Code::PageOutOfRange, during = "wasm-worker"));
@@ -1057,9 +1259,25 @@ impl Worker {
                 detail = "canvas allocation refused"
             )
         })?;
-        opened
-            .session
-            .render_page(idx, &mut backend, ctm, &budget, &mut g)?;
+        // The CJK branch. `render_page_cjk` is the *only* difference from the
+        // plain walk, and it is the engine's own entry point — the bindings layer
+        // does not reimplement glyph resolution, it just hands the set over.
+        let outcome = match opened.cjk.as_mut() {
+            Some(loader) => Some(opened.session.render_page_cjk(
+                idx,
+                &mut backend,
+                ctm,
+                &budget,
+                &mut g,
+                loader.set_mut(),
+            )?),
+            None => {
+                opened
+                    .session
+                    .render_page(idx, &mut backend, ctm, &budget, &mut g)?;
+                None
+            }
+        };
         let pixels = backend.pixmap().data().to_vec();
         drop(g);
 
@@ -1074,7 +1292,7 @@ impl Worker {
             None => (pixels, serde_json::Value::Null),
         };
         let len = u64::try_from(payload_bytes.len()).unwrap_or(u64::MAX);
-        let value = if tile_json.is_null() {
+        let mut value = if tile_json.is_null() {
             serde_json::json!({
                 "page": page,
                 "width": w,
@@ -1092,6 +1310,23 @@ impl Worker {
                 "tile": tile_json,
             })
         };
+        // SL-4.WASM.07: the CJK outcome rides along with the pixels, so the
+        // notdef→repaint sequence needs no second round trip. It is present
+        // **only** when a loader is installed — a document without one gets the
+        // exact response shape it has always got, which is what keeps every
+        // existing render leg (including the guest==native checksum) untouched.
+        if let (Some(outcome), Some(loader)) = (outcome.as_ref(), opened.cjk.as_ref()) {
+            if let Some(field) = value.as_object_mut() {
+                let _ = field.insert(
+                    "cjk".to_owned(),
+                    serde_json::json!({
+                        "needs": outcome.needs,
+                        "revision": outcome.revision,
+                        "residentBytes": loader.resident_bytes(),
+                    }),
+                );
+            }
+        }
         env.progress.progress(id, Stage::Render, 10_000);
         Ok(Outgoing {
             response: ResponseMessage::ok(PROTOCOL_VERSION, id, value),
@@ -1555,6 +1790,53 @@ fn bad_transfer() -> Error {
         during = "wasm-worker",
         detail = "unknown range transfer"
     )
+}
+
+/// A CJK chunk op against a document that has no loader installed (SL-4.WASM.07).
+///
+/// Distinct from [`bad_handle`]: the document is real, the shell simply never
+/// called `cjkOpen`. The distinction matters because "you have no CJK payload"
+/// and "that document is gone" are different bugs, and a shell that gets this
+/// wrong is a shell whose message to the user would be wrong.
+fn bad_cjk_loader() -> Error {
+    err!(
+        Code::BindingBadHandle,
+        during = "wasm-worker",
+        detail = "no CJK loader is installed for this document"
+    )
+}
+
+/// The loader's state as the wire reports it after every CJK op.
+///
+/// `revision` is the field a shell watches: **a change is the repaint signal**
+/// (ADR-P0043 §3). `needs` is the sticky queue a render fills, so a shell can
+/// tell "still loading" from "this payload has no Korean" (in `unavailable`) or
+/// "we gave up on this one" (`exhausted`) without parsing prose.
+fn cjk_state(loader: &CjkChunkLoader) -> serde_json::Value {
+    serde_json::json!({
+        "revision": loader.revision(),
+        "residentBytes": loader.resident_bytes(),
+        "loaded": loader.loaded_ids(),
+        "needs": loader.set().queued(),
+        "unavailable": loader.unavailable_ids(),
+        "exhausted": loader.exhausted_ids(),
+    })
+}
+
+/// The next chunk to fetch, or `null` when nothing is wanted.
+///
+/// `null` rather than an absent key so a shell's `if ("request" in value)`
+/// cannot be confused with a request it failed to read.
+fn cjk_request_value(req: Option<&CjkRequest>) -> serde_json::Value {
+    match req {
+        Some(r) => serde_json::json!({
+            "id": r.id,
+            "url": r.url,
+            "sha256": r.sha256,
+            "rawBytes": r.raw_bytes,
+        }),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// The page media sizes that travel with every document handle (SL-4.EXT.03).

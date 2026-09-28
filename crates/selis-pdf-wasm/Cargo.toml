@@ -22,6 +22,11 @@ workspace = true
 selis-bytes = { workspace = true }
 selis-error = { workspace = true }
 selis-geom = { workspace = true }
+# The lazy-CJK chunk loader (SL-4.WASM.07) drives the engine's resident set
+# (`CjkFontSet`) directly, so the bindings layer names the font crate the same
+# way it already names `selis-pdf-doc`'s navigation types. Strictly downward
+# L4 -> L2, and the chunk table is the compatibility surface ADR-P0043 makes it.
+selis-font = { workspace = true }
 selis-io = { workspace = true }
 selis-pdf-content = { workspace = true }
 # The navigation wire shapes (SL-3.DOC-NAV) name `selis-pdf-doc`'s action and
@@ -34,5 +39,9 @@ selis-pdf-doc = { workspace = true }
 selis-pdf-engine = { workspace = true }
 selis-pdf-text = { workspace = true }
 selis-sandbox = { workspace = true }
+# SHA-256 for the CJK chunk cache-poisoning guard (SL-4.WASM.07). Already
+# vendored via selis-crypto and used by the L1 crypto crate, so this adds no
+# supply-chain surface - the same reasoning xtask's dependency on it records.
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

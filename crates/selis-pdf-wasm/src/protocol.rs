@@ -284,6 +284,78 @@ pub enum RequestOp {
         /// The transfer to release.
         transfer: u64,
     },
+    /// Open the lazy CJK chunk loader and name the first chunk it wants
+    /// (SL-4.WASM.07).
+    ///
+    /// The `claims` are the manifest's record of what each chunk file *is* —
+    /// id, SHA-256, raw length, published path. The guest checks them, keeps
+    /// them, and answers with the first [`CjkRequestBody`] it wants (or none, if
+    /// the document has needed nothing yet). The guest plans and judges; the
+    /// shell only moves bytes (ADR-P0043 §3) — see `crate::cjkchunk`.
+    ///
+    /// `core` is the subsetted core's bytes, carried as the request's binary
+    /// attachment; it is loaded once and is never evictable. `unserved` are the
+    /// ranges the payload has **no file** for (`served_by: null`), so the guest
+    /// never asks for them and can tell a shell to say "this payload has no
+    /// Korean" rather than "still loading".
+    #[serde(rename_all = "camelCase")]
+    CjkOpen {
+        /// The document whose renders consult the set.
+        doc: DocHandle,
+        /// The manifest's per-chunk claims.
+        claims: Vec<CjkClaimBody>,
+        /// Ranges the payload cannot serve at all.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unserved: Vec<String>,
+        /// The core subset's length in bytes; must match the attachment.
+        core_len: u64,
+        /// Resource limits for this loader (ADR-P0006: the caller chooses).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<BudgetProfile>,
+    },
+    /// Deliver one chunk file, as the request's binary attachment.
+    ///
+    /// The attachment is the file and nothing else — there is no field to put a
+    /// request body in, which is how the no-upload invariant (ADR-P0016) holds
+    /// across the wire here too. The guest verifies the bytes against the claim
+    /// it holds, adopts or refuses them, and answers with the next request it
+    /// wants or with `done: true`.
+    ///
+    /// # Malformed Input
+    ///
+    /// A stale or unknown `doc`, a `len` that does not match the attachment, a
+    /// `chunk` the loader never claimed, and an unrecognised `status` are each a
+    /// typed error that leaves the loader untouched. A chunk whose bytes
+    /// contradict the manifest's digest is **not** an error — it is a counted
+    /// failed attempt, so the attempt bound (not the shell) decides when to stop
+    /// asking.
+    #[serde(rename_all = "camelCase")]
+    CjkChunk {
+        /// The document whose loader this answers.
+        doc: DocHandle,
+        /// The chunk id being delivered.
+        chunk: String,
+        /// The HTTP status, or `0` for "no response arrived" (network error, CORS
+        /// refusal, or an abort — the host cannot tell those apart).
+        status: u16,
+        /// The attachment's length in bytes; must match it exactly.
+        len: u64,
+    },
+    /// Release one resident CJK chunk's bytes (SL-4.WASM.07).
+    ///
+    /// The FONT.10-F1 lever: the shell decides its own storage pressure and
+    /// gives bytes back through here, rather than discovering the ceiling as a
+    /// quota exception. The response reports the new resident total and the set's
+    /// revision — **a revision change is the repaint signal** (ADR-P0043 §3). An
+    /// id that names nothing resident answers `closed: false` and does *not* move
+    /// the revision, so a polling shell never repaints for a no-op.
+    #[serde(rename_all = "camelCase")]
+    CjkClose {
+        /// The document whose loader releases the chunk.
+        doc: DocHandle,
+        /// The chunk id to release.
+        chunk: String,
+    },
     /// Apply a mutation journal (Phase 5). The envelope schema is versioned
     /// now; v1 engines validate the envelope and answer
     /// `BINDING_UNSUPPORTED_OP` for every body they cannot execute.
@@ -329,6 +401,25 @@ pub enum RequestOp {
         /// Pressure level (`0` low, `1` moderate, `2` critical).
         level: u32,
     },
+}
+
+/// One chunk file's manifest claim, as it crosses the wire (SL-4.WASM.07).
+///
+/// The wire form of [`crate::cjkchunk::ChunkClaim`]. `id` is a `String` here
+/// rather than the static table's `&'static str` because it is *untrusted*: the
+/// loader resolves it against the table and refuses anything it does not carry,
+/// which is the only way a manifest can be checked rather than believed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CjkClaimBody {
+    /// The chunk id (`cjk/<id>.ttf` in the manifest).
+    pub id: String,
+    /// Lowercase-hex SHA-256 of the raw file bytes.
+    pub sha256: String,
+    /// The raw file length in bytes.
+    pub raw_bytes: u64,
+    /// The path the manifest published the file at.
+    pub url: String,
 }
 
 /// Where a document's bytes come from (`24-BINDINGS-SPEC.md §2`).
