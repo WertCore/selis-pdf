@@ -14,7 +14,14 @@ use crate::alloc::vec::Vec;
 /// The overprint state from the graphics state.
 ///
 /// ExtGState keys: `/OP` (stroke), `/op` (fill), `/OPM` (mode).
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Default` is derived (SL-0.WS.11) rather than hand-written: the derived
+/// implementation produces field-for-field the same values the hand-written
+/// one did (`false`, `false`, `0` — the initial graphics state), so this is
+/// the same default, not a behaviour change. The derive is also the more
+/// honest statement: a new field cannot be added without the default moving
+/// with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OverprintParams {
     /// Overprint for stroking operations (`/OP`).
     pub stroke: bool,
@@ -22,16 +29,6 @@ pub struct OverprintParams {
     pub fill: bool,
     /// Overprint mode (`/OPM`): 0 or 1.
     pub mode: u8,
-}
-
-impl Default for OverprintParams {
-    fn default() -> Self {
-        Self {
-            stroke: false,
-            fill: false,
-            mode: 0,
-        }
-    }
 }
 
 impl OverprintParams {
