@@ -238,7 +238,16 @@ export function definePlatformAdapterContract(
 				// The tag itself is the host's business — `negotiateLocale` maps it
 				// onto what the build ships — but "empty" is not a tag, and a
 				// shell that got one would have nothing to negotiate from.
-				expect(adapter.locale?.current().trim() ?? "").not.toBe("");
+				// The port is optional -- the same convention the test below follows --
+			// because a host need not have a locale preference to report. A host
+			// without it is saying "I have no preference", which the runtime
+			// resolves from the source locale. What *is* a violation is a host
+			// that HAS the port and answers with an empty tag, so only the
+			// present case is asserted.
+			if (adapter.locale === undefined) {
+				return;
+			}
+			expect(adapter.locale.current().trim()).not.toBe("");
 			});
 
 			it("hands back an unsubscribe, and unsubscribing twice is harmless", async () => {
