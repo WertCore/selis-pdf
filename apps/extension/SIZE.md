@@ -136,8 +136,8 @@ budget), engine 4,135,676 raw / 1,326,454 brotli (66% of the engine budget),
 shell 192,505 raw (19%).
 
 Re-measured after SL-4.EXT.07 (the options page) and SL-3.FONT.10 (the bundled
-CJK core): **package 4,520,632 raw (56.5%), engine 4,279,475 raw / 1,357,411
-brotli (67.9% of the engine budget), shell 241,157 raw (24.1%)** — 31 files.
+CJK core): **package 4,523,037 raw (56.5%), engine 4,279,475 raw / 1,357,411
+brotli (67.9% of the engine budget), shell 243,562 raw (24.4%)** — 31 files.
 
 The two movements are different and are worth keeping apart:
 
@@ -147,7 +147,7 @@ The two movements are different and are worth keeping apart:
   which is why `cargo xtask size-check` fails on a clean tree and why the
   extension build has to be run after it (see "Where the artefact comes from").
   Re-baselining is FONT.10's or WASM's call, not this task's.
-- **The shell** grew by ~49 KB, all of it the options page: two root files
+- **The shell** grew by ~51 KB, all of it the options page: two root files
   (`options.html`, `options.css`) and three compiled modules
   (`options-boot.js`, `options-state.js`, `options-strings.js`). The gate did
   its job — a page that had quietly pulled in the viewer catalogue would have
