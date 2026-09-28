@@ -243,6 +243,139 @@ export interface SearchBatch {
 	readonly done: boolean;
 }
 
+/**
+ * ## Navigation vocabulary (SL-4.UI.06)
+ *
+ * Outline, page labels, destinations and link annotations. These are *read
+ * only* models: the viewer's navigation never mutates the document, so nothing
+ * here carries a `write` path. They mirror `selis-pdf-doc`'s own shapes
+ * (`page_labels`, `parse_destination`, the outline walk) so a transport is a
+ * mapping rather than a translation, and every page number crossing the seam
+ * is already **0-based** — the engine's `page_index` is 0-based too, and the
+ * conversion to a 1-based "page 3" happens once, in the strings catalogue.
+ */
+
+/**
+ * The numbering style of a `/PageLabels` range (PDF 32000-2:2020 §7.7.3.4,
+ * Table 164). The names are the spec's: `D` decimal, `R`/`r` upper/lower roman,
+ * `A`/`a` upper/lower alphabetic. A range with no `/S` is `D`.
+ */
+export type PageLabelStyle = "D" | "R" | "r" | "A" | "a";
+
+/**
+ * One `/PageLabels` number-tree entry: from `firstPage` onward, pages are
+ * labelled `prefix` + the sequence number in `style`, counting from
+ * `firstValue`. Absent members are the spec's defaults (`/St` 1, `/P` none,
+ * `/S` `D`), and this shape says so by omission rather than by inventing
+ * sentinel values a transport would have to special-case.
+ */
+export interface PageLabelRange {
+	/** 0-based first page of the range. */
+	readonly firstPage: number;
+	readonly style?: PageLabelStyle;
+	readonly prefix?: string;
+	/** `/St`, the sequence's first value. Defaults to 1. */
+	readonly firstValue?: number;
+}
+
+/**
+ * The destination kinds the viewer acts on (PDF 32000-2:2020 §12.3.2.2).
+ *
+ * `/XYZ`, `/Fit`, `/FitH`, `/FitV`, `/FitR` and `/FitB` all name a *page*, and
+ * the only thing the viewer does differently between them is where it places
+ * that page and — for `/XYZ` — which point of it to show. Anything the viewer
+ * does not recognise is carried as an `xyz` destination with no parameters,
+ * which navigates to the page and nothing more; that is a loss of fidelity, not
+ * an error, and it is recorded rather than guessed at.
+ */
+export type DestinationKind = "fit" | "fitH" | "fitV" | "fitR" | "fitB" | "xyz";
+
+/** A resolved destination: a page, and how to place it. */
+export interface PdfDestination {
+	/** 0-based page index. */
+	readonly page: number;
+	readonly kind?: DestinationKind;
+	/** `/XYZ left top zoom`; `left`/`top` are `null` when the author left them unset. */
+	readonly left?: number | null;
+	readonly top?: number | null;
+	readonly zoom?: number | null;
+}
+
+/** One outline (bookmark) item, recursively. PDF 32000-2:2020 §12.3.3. */
+export interface OutlineNode {
+	/** The `/Title` as the document wrote it. Never localised, never trimmed. */
+	readonly title: string;
+	readonly children?: readonly OutlineNode[];
+	/**
+	 * The resolved `/Dest`, when the item points at one. An item can instead
+	 * name a destination (`/Dest` as a name, or a `/A` `/GoTo` with a string),
+	 * in which case `namedDestination` carries the name and the viewer resolves
+	 * it against `NavigationPort.destinations`.
+	 */
+	readonly destination?: PdfDestination;
+	readonly namedDestination?: string;
+	/**
+	 * `/Count` when the document set it. **Negative means the subtree starts
+	 * collapsed**, which is the PDF convention (a positive count is the number
+	 * of visible descendants) and the reason the viewer's initial expansion is
+	 * a decision rather than a constant.
+	 */
+	readonly descendantCount?: number;
+}
+
+/** A `/Dests` name-tree entry: a name and the page it resolves to. */
+export interface NamedDestination {
+	readonly name: string;
+	readonly destination: PdfDestination;
+}
+
+/**
+ * The action classes a link annotation can carry (PDF 32000-2:2020 §12.6).
+ *
+ * The union is the whole vocabulary **including the classes ADR-P0020
+ * disables**, because the transport reports what the document says and the
+ * viewer decides what happens — a seam that dropped `/Launch` at the boundary
+ * would make "is the viewer refusing this, or does the engine not know about
+ * it?" unanswerable from the outside, which is exactly the question
+ * `links.test.ts` exists to answer.
+ */
+export type LinkActionKind =
+	| "goTo"
+	| "uri"
+	| "launch"
+	| "goToR"
+	| "submitForm"
+	| "importData"
+	| "javascript"
+	| "named"
+	| "none"
+	| "unknown";
+
+/** A link annotation's action, verbatim. */
+export interface LinkAction {
+	readonly kind: LinkActionKind;
+	/**
+	 * `/URI` for `uri`; the file specification for `launch`. Verbatim and
+	 * unparsed: the scheme check is the viewer's (ADR-P0020), and a transport
+	 * that normalised it first would hide what the document actually said.
+	 */
+	readonly uri?: string;
+	readonly destination?: PdfDestination;
+	/** The destination name for `named`, and for an outline item's `/Dest`. */
+	readonly name?: string;
+}
+
+/** One link annotation on a page, with its quad in PDF user space. */
+export interface LinkAnnotation {
+	/** Opaque, document-scoped id; unique within a page. */
+	readonly id: string;
+	/** The annotation's rectangle in PDF user space (points, y-up). */
+	readonly rect: Rect;
+	readonly action: LinkAction;
+	/** `/Contents` (the link's accessible name) when the document set one. */
+	readonly contents?: string;
+}
+
 /** Target for a future save (Phase 5); the read-only viewer never calls it. */
 export interface SaveTarget {
 	readonly name: string;

@@ -295,3 +295,202 @@ export function createSearchStrings(overrides: Partial<SearchCatalogue> = {}): S
 
 /** The shared English search strings, for callers that override nothing. */
 export const DEFAULT_SEARCH_STRINGS: SearchStrings = createSearchStrings();
+
+/**
+ * ## Why navigation is a third key set, and not a widening of either of these
+ *
+ * `PAGE_LIST_MESSAGE_KEYS` and `SEARCH_MESSAGE_KEYS` are both closed unions, and
+ * the argument for closing them (UI.05's section above) applies verbatim: a
+ * `Partial` of a known set is what a host can be handed safely. What does *not*
+ * apply is the "one catalogue, one factory" conclusion — the page list and search
+ * share no sentence, and navigation shares with both only the page label, which
+ * is *passed in* rather than re-derived so that "Page 7 of 900" cannot be worded
+ * two ways in two panels. So UI.06 gets its own closed set, its own catalogue and
+ * its own factory, over the same `formatMessage` and the same
+ * overrides-merge-over-English rule. `createViewerStrings` is the eventual place
+ * to assemble the three; until UI.11 it does not exist, and inventing it now
+ * would be a seam with no consumer.
+ *
+ * The link-refusal strings are the ones worth arguing about. There is one key
+ * per refusal reason, not one "link not available" string, because the reader is
+ * owed the difference between "this document tried to run a program" and "this
+ * link goes somewhere we do not follow", and a single sentence for both would say
+ * less than the product actually does.
+ */
+export const NAVIGATION_MESSAGE_KEYS = [
+	/** `aria-label` on the navigation region's wrapper. */
+	"navigation.region.label",
+	/** The outline panel's heading. */
+	"navigation.outline.label",
+	/** The outline loaded and the document has none. */
+	"navigation.outline.empty",
+	/**
+	 * The host cannot supply document navigation at all. Distinct from
+	 * "empty": one is a fact about the document, the other about the host.
+	 */
+	"navigation.outline.unavailable",
+	/** The outline is longer than the panel will show. Placeholders: `{shown}`, `{total}`. */
+	"navigation.outline.truncated",
+	/** One outline row's accessible name. Placeholders: `{title}`, `{pageLabel}`. */
+	"navigation.outline.row",
+	/** A row whose destination the document does not define. Placeholder: `{title}`. */
+	"navigation.outline.row.unresolved",
+	/** Polite announcement after following an outline item. Placeholder: `{pageLabel}`. */
+	"navigation.outline.moved",
+	/** The thumbnail rail's `aria-label`. */
+	"navigation.thumbnails.label",
+	/** One thumbnail's accessible name; the page label is passed in. */
+	"navigation.thumbnails.item",
+	/** The external-link prompt's title. */
+	"navigation.link.external.title",
+	/**
+	 * The external-link prompt's body. Placeholders: `{url}`, `{host}`.
+	 *
+	 * The **full** destination is in this string, not a shortened form of it: a
+	 * prompt that shows `example.com` for `https://example.com/redirect?to=…`
+	 * gets a click it did not earn.
+	 */
+	"navigation.link.external.body",
+	/** The prompt's confirm control. */
+	"navigation.link.external.confirm",
+	/** The prompt's cancel control. */
+	"navigation.link.external.cancel",
+	/** Refusal: `/Launch`. */
+	"navigation.link.blocked.launch",
+	/** Refusal: `/GoToR`. */
+	"navigation.link.blocked.remote",
+	/** Refusal: `/SubmitForm`. */
+	"navigation.link.blocked.submit",
+	/** Refusal: `/ImportData`. */
+	"navigation.link.blocked.import",
+	/** Refusal: document JavaScript. */
+	"navigation.link.blocked.javascript",
+	/** Refusal: a URI scheme the viewer does not open. Placeholder: `{url}`. */
+	"navigation.link.blocked.scheme",
+	/** Refusal: the named destination is not in the document's name tree. */
+	"navigation.link.blocked.missing",
+	/** Refusal: the annotation has no target to act on. */
+	"navigation.link.blocked.empty",
+	/** Refusal: an action class the viewer does not implement. */
+	"navigation.link.blocked.unsupported",
+] as const;
+
+/** A key into {@link NAVIGATION_MESSAGE_KEYS}. */
+export type NavigationMessageKey = (typeof NAVIGATION_MESSAGE_KEYS)[number];
+
+/** A set of navigation templates keyed by message key. */
+export type NavigationCatalogue = Readonly<Record<NavigationMessageKey, string>>;
+
+/**
+ * English navigation strings.
+ *
+ * Two of these are written the long way on purpose. `…blocked.launch` names the
+ * mechanism (a program or file the document asked to run) rather than saying
+ * "link blocked", because a reader told what the document tried to do can decide
+ * whether they need a different tool; a reader told "blocked" only learns the
+ * viewer said no. And `navigation.outline.unavailable` is a separate key from
+ * `navigation.outline.empty` for the same reason: "this document has no outline"
+ * and "this host cannot read outlines" are different facts, and one sentence for
+ * both lies about one of them.
+ */
+export const EN_NAVIGATION_CATALOGUE: NavigationCatalogue = {
+	"navigation.region.label": "Document navigation",
+	"navigation.outline.label": "Outline",
+	"navigation.outline.empty": "This document has no outline.",
+	"navigation.outline.unavailable": "This host cannot read the document's outline.",
+	"navigation.outline.truncated": "Showing {shown} of {total} outline items.",
+	"navigation.outline.row": "{title}, {pageLabel}",
+	"navigation.outline.row.unresolved": "{title}, destination not found",
+	"navigation.outline.moved": "Moved to {pageLabel}",
+	"navigation.thumbnails.label": "Page thumbnails",
+	"navigation.thumbnails.item": "Go to {pageLabel}",
+	"navigation.link.external.title": "Open an external link?",
+	"navigation.link.external.body": "This document links to {url} on {host}.",
+	"navigation.link.external.confirm": "Open link",
+	"navigation.link.external.cancel": "Cancel",
+	"navigation.link.blocked.launch":
+		"This document asked to launch a file or program. Selis does not run document content.",
+	"navigation.link.blocked.remote":
+		"This link points at another document. Selis does not open other documents from a link.",
+	"navigation.link.blocked.submit": "This document asked to submit a form. Selis is read-only.",
+	"navigation.link.blocked.import": "This document asked to import form data. Selis is read-only.",
+	"navigation.link.blocked.javascript":
+		"This document asked to run a script. Selis does not run document scripts.",
+	"navigation.link.blocked.scheme": "This link uses a kind of address Selis will not open: {url}",
+	"navigation.link.blocked.missing": "This link points at a place this document does not define.",
+	"navigation.link.blocked.empty": "This link has no destination.",
+	"navigation.link.blocked.unsupported": "This link does something Selis does not support.",
+};
+
+/** The resolved strings the navigation controller formats against. */
+export interface NavigationStrings {
+	readonly regionLabel: string;
+	readonly outlineLabel: string;
+	readonly empty: () => string;
+	readonly unavailable: () => string;
+	readonly truncated: (shown: number, total: number) => string;
+	/** A row's accessible name; `null` for a row with no destination. */
+	row(title: string, pageLabel: string | null): string;
+	readonly moved: (pageLabel: string) => string;
+	readonly thumbnailsLabel: string;
+	readonly thumbnailItem: (pageLabel: string) => string;
+	readonly externalTitle: string;
+	readonly externalBody: (url: string, host: string) => string;
+	readonly externalConfirm: string;
+	readonly externalCancel: string;
+	/** The sentence for one refusal reason; see `LinkRefusal` in `links.ts`. */
+	readonly refusal: (reason: string) => string;
+}
+
+/** Merge a partial navigation catalogue over English and bind the strings. */
+export function createNavigationStrings(
+	overrides: Partial<NavigationCatalogue> = {},
+): NavigationStrings {
+	const catalogue: NavigationCatalogue = { ...EN_NAVIGATION_CATALOGUE, ...overrides };
+	const format = (key: NavigationMessageKey, values: PageListMessageValues): string =>
+		formatMessage(catalogue[key], values);
+	// One table from a refusal reason to its key. A reason with no entry is a
+	// bug in `links.ts` rather than a runtime surprise, so the fallback is the
+	// generic refusal: a live region is never left blank.
+	const refusalKey: Readonly<Record<string, NavigationMessageKey>> = {
+		launch: "navigation.link.blocked.launch",
+		"remote-destination": "navigation.link.blocked.remote",
+		"submit-form": "navigation.link.blocked.submit",
+		"import-data": "navigation.link.blocked.import",
+		javascript: "navigation.link.blocked.javascript",
+		scheme: "navigation.link.blocked.scheme",
+		"missing-destination": "navigation.link.blocked.missing",
+		"no-target": "navigation.link.blocked.empty",
+		unsupported: "navigation.link.blocked.unsupported",
+	};
+	return {
+		regionLabel: catalogue["navigation.region.label"],
+		outlineLabel: catalogue["navigation.outline.label"],
+		empty: () => format("navigation.outline.empty", {}),
+		unavailable: () => format("navigation.outline.unavailable", {}),
+		truncated: (shown, total) => format("navigation.outline.truncated", { shown, total }),
+		row: (title, pageLabel) =>
+			pageLabel === null
+				? format("navigation.outline.row.unresolved", { title })
+				: format("navigation.outline.row", { title, pageLabel }),
+		moved: (pageLabel) => format("navigation.outline.moved", { pageLabel }),
+		thumbnailsLabel: catalogue["navigation.thumbnails.label"],
+		thumbnailItem: (pageLabel) => format("navigation.thumbnails.item", { pageLabel }),
+		externalTitle: catalogue["navigation.link.external.title"],
+		externalBody: (url, host) => format("navigation.link.external.body", { url, host }),
+		externalConfirm: catalogue["navigation.link.external.confirm"],
+		externalCancel: catalogue["navigation.link.external.cancel"],
+		refusal: (reason) => {
+			const key = refusalKey[reason] ?? "navigation.link.blocked.unsupported";
+			// Only the scheme refusal has a `{url}`; the rest take none. Passing
+			// the reason as the URL would print "scheme" in a sentence about an
+			// address, so the value is supplied for that one key alone.
+			return key === "navigation.link.blocked.scheme"
+				? format(key, { url: reason })
+				: format(key, {});
+		},
+	};
+}
+
+/** The shared English navigation strings, for callers that override nothing. */
+export const DEFAULT_NAVIGATION_STRINGS: NavigationStrings = createNavigationStrings();

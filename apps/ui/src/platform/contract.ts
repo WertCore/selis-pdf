@@ -214,5 +214,73 @@ export function definePlatformAdapterContract(
 			expect(adapter.telemetry.isEnabled()).toBe(true);
 			adapter.telemetry.record({ name: "session_start", metrics: { pages_shown: 3 } });
 		});
+
+		// SL-4.UI.06. `navigation` is optional by design (a host whose engine has
+		// no outline walk reports `undefined`), so the probes are conditional on
+		// its presence rather than skipped per host: a host that *does* declare
+		// the port is held to it, and a host that does not is not asked to
+		// pretend. The suite still asserts the shape of the absence, because
+		// "no navigation" and "navigation that throws" are different states and
+		// the viewer branches on the first.
+		describe("navigation port", () => {
+			it("is present or absent, never half-present", async () => {
+				const { adapter } = await createFixture();
+				const port = adapter.navigation;
+				if (port === undefined) {
+					return;
+				}
+				for (const method of ["outline", "pageLabels", "destinations", "pageLinks"] as const) {
+					expect(typeof port[method], method).toBe("function");
+				}
+			});
+
+			it("returns navigation data for a live handle", async () => {
+				const { adapter, doc } = await createFixture();
+				if (adapter.navigation === undefined) {
+					return;
+				}
+				const [outline, labels, destinations, links] = await Promise.all([
+					adapter.navigation.outline(doc),
+					adapter.navigation.pageLabels(doc),
+					adapter.navigation.destinations(doc),
+					adapter.navigation.pageLinks(doc, 0),
+				]);
+				// Shape, not content: the contract suite's fixture document has
+				// no outline, and a host must not invent one.
+				expect(Array.isArray(outline)).toBe(true);
+				expect(Array.isArray(labels)).toBe(true);
+				expect(Array.isArray(destinations)).toBe(true);
+				expect(Array.isArray(links)).toBe(true);
+			});
+
+			it("rejects out-of-range pages and closed handles on pageLinks", async () => {
+				const { adapter, descriptor, doc } = await createFixture();
+				if (adapter.navigation === undefined) {
+					return;
+				}
+				await expect(adapter.navigation.pageLinks(doc, doc.pageCount)).rejects.toMatchObject({
+					code: ErrorCode.BindingBadArgument,
+				});
+				await adapter.engine.close(doc);
+				await expect(adapter.navigation.outline(doc)).rejects.toMatchObject({
+					code: ErrorCode.BindingBadHandle,
+					docState: "Unchanged",
+				});
+				const reopened = await adapter.engine.open(descriptor);
+				expect(Array.isArray(await adapter.navigation.pageLabels(reopened))).toBe(true);
+			});
+
+			it("surfaces pre-aborted cancellation as CANCELLED / Unchanged", async () => {
+				const { adapter, doc } = await createFixture();
+				if (adapter.navigation === undefined) {
+					return;
+				}
+				const controller = new AbortController();
+				controller.abort();
+				await expect(
+					adapter.navigation.pageLinks(doc, 0, { signal: controller.signal }),
+				).rejects.toMatchObject({ code: ErrorCode.Cancelled, docState: "Unchanged" });
+			});
+		});
 	});
 }

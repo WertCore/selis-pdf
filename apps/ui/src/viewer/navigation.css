@@ -1,0 +1,259 @@
+/* Navigation surfaces (SL-4.UI.06) — outline panel and thumbnail rail.
+ *
+ * The same discipline as `page-list.css`, and the same reason: everything here
+ * is token-driven, every class stays under the `selis-` namespace, and
+ * `navigation.css.test.ts` checks all of it against the *generated* token set
+ * rather than against the committed file — so a token that exists only in the
+ * source does not pass.
+ *
+ * The two surfaces are in one file because they are one decision: the outline
+ * panel and the thumbnail rail are the two columns of a navigation sidebar, they
+ * share a background and a divider, and splitting them would mean a border
+ * colour defined twice.
+ *
+ * Geometry carriers (`--thumb-w`, `--row-indent`) are *document data*, not design
+ * tokens, and stay outside the `--selis-*` namespace exactly as `--tile-x` does
+ * in `page-list.css`: a pixel value computed from a document that picked up the
+ * token namespace is how a "temporary" value becomes a design decision by
+ * accident. Indentation is in `em` of the row's own text so it tracks the
+ * density and the reader's font size rather than a fixed number of pixels.
+ */
+
+/* The sidebar itself. `contain` keeps the outline's repaint off the document. */
+.selis-navigation {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	overflow: hidden;
+}
+
+.selis-navigation__section {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.selis-navigation__heading {
+	margin: 0;
+	padding: var(--selis-space-2) var(--selis-space-3);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+	font-weight: var(--selis-weight-medium);
+	text-transform: uppercase;
+	letter-spacing: var(--selis-leading-tight);
+}
+
+/* The outline tree. A `list` with `list-style: none`, not a `listbox`:
+ * bookmarks are not options, and a listbox would promise selection semantics the
+ * viewer does not have (the page list's own reasoning, applied unchanged). */
+.selis-outline {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	/* The scroller is the one element here that can be tall; bounding its layout
+	 * keeps a 2 000-row outline from costing the document a reflow. */
+	contain: layout paint;
+}
+
+.selis-outline__row {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-2);
+	padding-inline-start: calc(var(--selis-space-2) + var(--row-indent, 0em));
+	padding-inline-end: var(--selis-space-2);
+	min-height: var(--selis-density-row-height);
+	color: var(--selis-color-fg);
+	background: transparent;
+	border: 0;
+	font: inherit;
+	text-align: start;
+	cursor: pointer;
+}
+
+.selis-outline__row:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+/* The current page's bookmark. `outline` rather than `border` or `box-shadow`,
+ * for the same no-shift reason the page tile uses it. */
+.selis-outline__row--current {
+	color: var(--selis-color-accent);
+	outline: var(--selis-border-hairline) solid var(--selis-color-accent);
+	outline-offset: calc(-1 * var(--selis-border-hairline));
+}
+
+.selis-outline__row:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: calc(-1 * var(--selis-border-thick));
+}
+
+/* The expander. A button, not a glyph in a text node: it is a control, and a
+ * triangle drawn with borders would be invisible in forced-colours mode. */
+.selis-outline__expander {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--selis-space-5);
+	height: var(--selis-space-5);
+	padding: 0;
+	color: var(--selis-color-fg-muted);
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+}
+
+.selis-outline__expander--collapsed {
+	transform: rotate(0deg);
+}
+
+.selis-outline__expander--expanded {
+	transform: rotate(90deg);
+}
+
+.selis-outline__title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* A row pointing at a destination the document does not define. A muted colour
+ * rather than a strikethrough: the item is real, and a reader who cannot follow
+ * it deserves to see that it is there. */
+.selis-outline__row--unresolved .selis-outline__title {
+	color: var(--selis-color-fg-subtle);
+
+	/* The rail. Fixed width from the shell; the previews inside carry their own
+ * boxes, so nothing here can move a thumbnail when its bitmap lands. */
+	.selis-thumbnail-rail {
+		display: flex;
+		flex-direction: column;
+		gap: var(--selis-space-2);
+		padding: var(--selis-space-2);
+		margin: 0;
+		list-style: none;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		contain: layout paint;
+	}
+
+	.selis-thumbnail {
+		position: relative;
+		display: block;
+		width: var(--thumb-w, 0px);
+		height: var(--thumb-h, 0px);
+		padding: 0;
+		background: var(--selis-color-page-placeholder);
+		color: var(--selis-color-fg);
+		border: var(--selis-border-hairline) solid var(--selis-color-border);
+		border-radius: var(--selis-radius-sm);
+		/* Isolate each preview's layout and paint: a rail of a hundred boxes is cheap
+	 * to scroll only if each box is cheap to paint. */
+		contain: layout paint;
+		cursor: pointer;
+	}
+
+	/* The low-res rung: stretched pixels read as "not yet sharp", which is the honest
+ * signal. No filter — a blur radius is a value the tokens do not define, and
+ * inventing one in a component is what the token layer exists to prevent. */
+	.selis-thumbnail--lowres {
+		background: var(--selis-color-page-placeholder);
+	}
+
+	/* A preview that is not the current page. The border is stated rather than left
+ * to inheritance so both states are explicit: `--current` overrides it, and a
+ * reader who cannot see colour still has the outline to tell them apart. */
+	.selis-thumbnail--idle {
+		border-color: var(--selis-color-border);
+	}
+
+	.selis-thumbnail--current {
+		border-color: var(--selis-color-accent);
+		outline: var(--selis-border-thick) solid var(--selis-color-accent);
+		outline-offset: var(--selis-space-1);
+	}
+
+	.selis-thumbnail:focus-visible {
+		outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+		outline-offset: var(--selis-space-1);
+	}
+
+	/* The page number under a preview. Small and muted so it reads as a caption to
+ * the image rather than as a second heading. */
+	.selis-thumbnail__label {
+		position: absolute;
+		inset-block-end: var(--selis-space-1);
+		inset-inline: var(--selis-space-1);
+		color: var(--selis-color-fg-subtle);
+		font-size: var(--selis-text-xs);
+		text-align: center;
+	}
+
+	/* The prompt's backdrop. `z-dialog-backdrop` is the token for "above everything
+ * in the app"; inventing a number here would be a second z-ordering scheme. */
+	.selis-navigation__backdrop {
+		position: fixed;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--selis-space-6);
+		background: var(--selis-color-shadow);
+		z-index: var(--selis-z-dialog-backdrop);
+	}
+
+	.selis-navigation__dialog {
+		display: flex;
+		flex-direction: column;
+		gap: var(--selis-space-4);
+		max-width: var(--selis-space-12);
+		padding: var(--selis-space-6);
+		background: var(--selis-color-bg-raised);
+		color: var(--selis-color-fg);
+		border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+		border-radius: var(--selis-radius-md);
+		box-shadow: var(--selis-shadow-2);
+		z-index: var(--selis-z-dialog);
+	}
+
+	/* The destination, in full. A monospace face because a URL is an identifier:
+ * proportional fonts make `l` and `1`, and `.` and `,`, hard to tell apart — and
+ * this is the one string a reader is expected to *check*. `overflow-wrap:
+ * anywhere` because a URL has no spaces to break at, and without it the dialog
+ * scrolls sideways on a narrow window. */
+	.selis-navigation__url {
+		font-family: var(--selis-font-mono);
+		font-size: var(--selis-text-sm);
+		color: var(--selis-color-fg);
+		overflow-wrap: anywhere;
+	}
+
+	.selis-navigation__actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--selis-space-3);
+	}
+
+	/* Forced colours: the system pair replaces ours, and the focus outline is stated
+ * explicitly because forced-colours mode drops author `outline-color` in some
+ * engines — which would leave a keyboard reader with no visible focus at all. */
+	@media (forced-colors: active) {
+		.selis-outline__row--current,
+		.selis-thumbnail--current {
+			border-color: Highlight;
+		}
+
+		.selis-outline__row:focus-visible,
+		.selis-thumbnail:focus-visible {
+			outline: var(--selis-border-thick) solid CanvasText;
+		}
+
+		.selis-navigation__dialog {
+			border-color: CanvasText;
+		}
+	}
+}
