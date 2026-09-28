@@ -227,10 +227,12 @@ const BLOCK_CHARS = 8192;
 export function encodeBase64(bytes: Uint8Array): string {
 	const blocks: string[] = [];
 	let current = "";
-	for (let i = 0; i < bytes.length; i += 3) {
-		const b0 = bytes[i];
-		const b1 = bytes[i + 1];
-		const b2 = bytes[i + 2];
+	const length = bytes.length;
+	for (let i = 0; i < length; i += 3) {
+		const remaining = length - i;
+		const b0 = bytes[i] ?? 0;
+		const b1 = remaining > 1 ? (bytes[i + 1] ?? 0) : undefined;
+		const b2 = remaining > 2 ? (bytes[i + 2] ?? 0) : undefined;
 		current += ALPHABET[b0 >> 2];
 		current += ALPHABET[((b0 & 0x03) << 4) | ((b1 ?? 0) >> 4)];
 		current += b1 === undefined ? PAD : ALPHABET[((b1 & 0x0f) << 2) | ((b2 ?? 0) >> 6)];
@@ -272,7 +274,7 @@ export function decodeBase64(text: string): Uint8Array {
 				}
 				six = 0;
 			} else {
-				six = code < 128 ? DECODE[code] : -1;
+				six = code < 128 ? (DECODE[code] ?? -1) : -1;
 				if (six < 0) {
 					throw new Error(`base64 character at offset ${i + offset} is not in the alphabet`);
 				}

@@ -6,10 +6,5 @@
 		"lib": ["ES2022", "DOM", "DOM.Iterable"],
 		"types": ["node"]
 	},
-	"include": [
-		"src",
-		"../ui/src/platform/errors.ts",
-		"../ui/src/viewer/surface.ts",
-		"../ui/src/viewer/worker-surface.ts"
-	]
+	"include": ["src"]
 }
