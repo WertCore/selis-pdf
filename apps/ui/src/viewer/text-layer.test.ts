@@ -17,8 +17,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { PlacedPage } from "./layout.js";
 import type { PageTextLayer, Rect, TextLayerChar, TextLayerLine } from "../platform/types.js";
+import type { PlacedPage } from "./layout.js";
 import type { LayerLineBox, TextLayerFrame } from "./text-layer.js";
 import { buildTextLayer, caretX, lineLength } from "./text-layer.js";
 

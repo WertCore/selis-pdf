@@ -402,7 +402,6 @@ export function expandToWord(frame: TextLayerFrame, caret: Caret): OrderedRange 
 	};
 }
 
-
 /**
  * A caret movement, in the vocabulary a key handler produces.
  *
@@ -510,7 +509,7 @@ function stepWord(line: LayerLineBox, offset: number, towardsLeft: boolean): num
 			continue;
 		}
 		const x = boundaryX(line, candidate);
-		if ((x < here - EPSILON) !== towardsLeft) {
+		if (x < here - EPSILON !== towardsLeft) {
 			continue;
 		}
 		const distance = Math.abs(here - x);
@@ -598,4 +597,3 @@ export function moveRange(
 	const head = moveCaret(frame, from, move, goalX);
 	return { anchor: extend ? range.anchor : head, head };
 }
-

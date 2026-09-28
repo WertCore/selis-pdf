@@ -156,7 +156,12 @@ export function synthesiseTextLayer(
 		if (lineText.length === 0) {
 			// A drawn-but-unrecovered line still holds its reading-order slot with
 			// no characters, because `to_text` still emits its newline.
-			built.push({ text: "", rect: { x: 0, y: 0, width: 0, height: 0 }, direction: "ltr", chars: [] });
+			built.push({
+				text: "",
+				rect: { x: 0, y: 0, width: 0, height: 0 },
+				direction: "ltr",
+				chars: [],
+			});
 			return;
 		}
 		const baseline = SYNTH_TOP - lineIndex * SYNTH_LEADING;

@@ -52,8 +52,8 @@
  * as numbers rather than only as pixels on a screen nobody has.
  */
 
-import type { PlacedPage } from "./layout.js";
 import type { PageTextLayer, TextLayerLine } from "../platform/types.js";
+import type { PlacedPage } from "./layout.js";
 
 /** A CSS-pixel box, origin at the top-left of the page element, y down. */
 export interface CharBox {

@@ -36,10 +36,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { PlacedPage } from "./layout.js";
 import type { PageTextLayer, Rect, TextLayerChar, TextLayerLine } from "../platform/types.js";
-import type { TextLayerFrame } from "./text-layer.js";
-import { buildTextLayer } from "./text-layer.js";
+import type { PlacedPage } from "./layout.js";
 import type { Caret, SelectionRange } from "./selection.js";
 import {
 	caretFromPoint,
@@ -56,6 +54,8 @@ import {
 	selectedText,
 	selectionRects,
 } from "./selection.js";
+import type { TextLayerFrame } from "./text-layer.js";
+import { buildTextLayer } from "./text-layer.js";
 
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
@@ -142,7 +142,12 @@ function at(line: number, offset: number): Caret {
 	return { line, offset };
 }
 
-function range(anchorLine: number, anchorOffset: number, headLine: number, headOffset: number): SelectionRange {
+function range(
+	anchorLine: number,
+	anchorOffset: number,
+	headLine: number,
+	headOffset: number,
+): SelectionRange {
 	return { anchor: at(anchorLine, anchorOffset), head: at(headLine, headOffset) };
 }
 describe("hit testing against known quads", () => {
@@ -213,7 +218,9 @@ describe("selection rectangles", () => {
 	it("covers exactly the clicked characters, not the whole line", () => {
 		// "hello" is offsets 0..5, so [100,150). A highlight running the full
 		// line width would cover the rest of the line the reader did not select.
-		expect(selectionRects(frame, range(0, 0, 0, 5))).toEqual([{ x: 100, y: CSS_TOP, width: 50, height: 12 }]);
+		expect(selectionRects(frame, range(0, 0, 0, 5))).toEqual([
+			{ x: 100, y: CSS_TOP, width: 50, height: 12 },
+		]);
 	});
 
 	it("pads an interior word to both of its gaps", () => {
@@ -246,7 +253,9 @@ describe("selection rectangles", () => {
 	it("emits nothing for a collapsed range or a line touched only at its end", () => {
 		expect(selectionRects(frame, range(0, 2, 0, 2))).toEqual([]);
 		const two = frameOf([ltrLine("first", 100, 700), ltrLine("other", 100, 660)], "first\nother");
-		expect(selectionRects(two, range(0, 1, 1, 0))).toEqual([{ x: 110, y: CSS_TOP, width: 40, height: 12 }]);
+		expect(selectionRects(two, range(0, 1, 1, 0))).toEqual([
+			{ x: 110, y: CSS_TOP, width: 40, height: 12 },
+		]);
 	});
 
 	it("agrees with the hit test that produced it", () => {
@@ -332,9 +341,7 @@ describe("copy output matches selis extract", () => {
 			frameOf([ltrLine("Page two text", 72, 700)], "Page two text"),
 			frameOf([ltrLine("Page three", 72, 700)], "Page three"),
 		];
-		expect(copyText(pages, { kind: "document" })).toBe(
-			"Page one text\nPage two text\nPage three",
-		);
+		expect(copyText(pages, { kind: "document" })).toBe("Page one text\nPage two text\nPage three");
 	});
 
 	it("joins a single page with no separator, so one page is the same rule", () => {
