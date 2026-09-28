@@ -116,7 +116,6 @@ export interface PageMatchCount {
 	readonly count: number;
 }
 
-
 /**
  * One highlight to paint, inside a page element.
  *
@@ -192,7 +191,6 @@ export interface SearchState {
 	readonly wordLabel: string;
 }
 
-
 export interface SearchControllerOptions {
 	readonly adapter: PlatformAdapter;
 	readonly doc: DocHandle;
@@ -248,7 +246,6 @@ export interface SearchController {
 	/** Abort and release. Idempotent. */
 	dispose(): void;
 }
-
 
 /**
  * Locate a page-text offset as a caret in a projected text layer, or `null`.
@@ -334,7 +331,6 @@ function isCancellation(error: unknown): boolean {
 	return candidate.code === ErrorCode.Cancelled || candidate.name === "AbortError";
 }
 
-
 /**
  * Text layers kept in memory. Bounded because they are the only per-page
  * allocation search makes, and a reader who scrolls the whole document with a
@@ -413,7 +409,6 @@ export function createSearch(options: SearchControllerOptions): SearchController
 		}
 		return found;
 	}
-
 
 	/**
 	 * The highlights for the window, projected now, from the current scale.
@@ -509,7 +504,6 @@ export function createSearch(options: SearchControllerOptions): SearchController
 		}
 		return strings.scanning(matches.length);
 	}
-
 
 	function buildState(): SearchState {
 		return {
@@ -618,7 +612,6 @@ export function createSearch(options: SearchControllerOptions): SearchController
 				});
 		}
 	}
-
 
 	/**
 	 * Fold one batch in. Every early return here is the supersession guard: a
@@ -734,7 +727,6 @@ export function createSearch(options: SearchControllerOptions): SearchController
 		}
 	}
 
-
 	function startScan(nextQuery: string, nextModifiers: SearchModifiers): SearchState {
 		scan?.abort();
 		const run = ++runId;
@@ -840,7 +832,6 @@ export function createSearch(options: SearchControllerOptions): SearchController
 		return publish();
 	}
 
-
 	const controller: SearchController = {
 		setQuery(next, nextModifiers) {
 			const resolved = resolveModifiers(nextModifiers);
@@ -933,4 +924,3 @@ export function createSearch(options: SearchControllerOptions): SearchController
 
 	return controller;
 }
-

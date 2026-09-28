@@ -189,10 +189,7 @@ export interface SearchKeyContext {
  * "previous" — the same two commands on two conventions, which is what makes
  * both worth binding.
  */
-export function resolveSearchKey(
-	key: string,
-	context: SearchKeyContext,
-): SearchCommand | null {
+export function resolveSearchKey(key: string, context: SearchKeyContext): SearchCommand | null {
 	if (!context.hasQuery) {
 		return null;
 	}

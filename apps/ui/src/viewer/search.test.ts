@@ -259,7 +259,6 @@ function harness(options: {
 	};
 }
 
-
 /** A controller wired to a harness, with the states it published recorded. */
 function controllerFor(
 	h: Harness,
@@ -401,7 +400,11 @@ describe("incremental search (SL-4.UI.05)", () => {
 		const h = harness({ doc });
 		const { search } = controllerFor(h, doc);
 		search.setQuery("alpha");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 1, start: 0, end: 1 }], progress: 0.5, done: false });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 1, start: 0, end: 1 }],
+			progress: 0.5,
+			done: false,
+		});
 		await h.settle();
 		(h.scans[0] as PendingScan).close();
 		await h.settle();
@@ -410,7 +413,6 @@ describe("incremental search (SL-4.UI.05)", () => {
 		expect(h.errors).toEqual([]);
 	});
 });
-
 
 describe("highlight-all", () => {
 	it("highlights every match on a visible page, from the text layer's quads", async () => {
@@ -457,7 +459,11 @@ describe("highlight-all", () => {
 		search.setQuery("two");
 		// 3..10 is "two" plus the newline and "thr": a match that starts on one
 		// line and ends on the next.
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 3, end: 10 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 3, end: 10 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		const rects = search.state().highlights[0]?.rects ?? [];
 		expect(rects).toHaveLength(2);
@@ -476,11 +482,14 @@ describe("highlight-all", () => {
 		search.setQuery("\n");
 		// 2..4 is the newline and the first character of line 1; the highlight
 		// must stop at the end of line 0 rather than starting at line 1.
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 2, end: 4 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 2, end: 4 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(search.state().highlights[0]?.rects).toEqual([{ x: 20, y: 80, width: 10, height: 12 }]);
 	});
-
 
 	it("keeps a match counted and navigable when its range cannot be placed", async () => {
 		// The engine normalises text before searching (ligatures, soft hyphens,
@@ -492,7 +501,11 @@ describe("highlight-all", () => {
 		const { search } = controllerFor(h, doc);
 		search.update({ currentPage: 0, pages: [0] });
 		search.setQuery("abc");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 40, end: 43 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 40, end: 43 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(search.state().matchCount).toBe(1);
 		expect(search.state().highlights[0]?.rects).toEqual([]);
@@ -556,14 +569,17 @@ describe("highlight-all", () => {
 		const { search } = controllerFor(h, doc);
 		search.update({ currentPage: 0, pages: [0] });
 		search.setQuery("alpha");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 0, end: 5 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 0, end: 5 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(search.state().matchCount).toBe(1);
 		expect(search.state().highlights).toEqual([]);
 		expect(h.errors).toHaveLength(1);
 	});
 });
-
 
 describe("highlight geometry across a zoom", () => {
 	it("scales with the layout and never with a tile rung or a device ratio", async () => {
@@ -579,7 +595,11 @@ describe("highlight geometry across a zoom", () => {
 		const { search } = controllerFor(h, doc, { placePage: () => placedAt(scale) });
 		search.update({ currentPage: 0, pages: [0] });
 		search.setQuery("beta");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 6, end: 10 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 6, end: 10 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(search.state().highlights[0]?.rects).toEqual([{ x: 60, y: 80, width: 40, height: 12 }]);
 
@@ -600,7 +620,11 @@ describe("highlight geometry across a zoom", () => {
 		const { search } = controllerFor(h, doc, { placePage: () => placedAt(scale) });
 		search.update({ currentPage: 0, pages: [0] });
 		search.setQuery("beta");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 6, end: 10 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 6, end: 10 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		search.next();
 		scale = 3;
@@ -717,7 +741,6 @@ describe("next and previous", () => {
 	});
 });
 
-
 describe("cancellation", () => {
 	it("cannot repaint, even when the engine ignores the abort signal", async () => {
 		// The hostile transport. It is handed an AbortSignal and keeps yielding
@@ -782,7 +805,11 @@ describe("cancellation", () => {
 		const { search } = controllerFor(h, doc);
 		search.update({ currentPage: 0, pages: [0] });
 		search.setQuery("alpha");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 0, end: 5 }], progress: 0.5, done: false });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 0, end: 5 }],
+			progress: 0.5,
+			done: false,
+		});
 		await h.settle();
 		expect(search.state().matchCount).toBe(1);
 
@@ -796,7 +823,11 @@ describe("cancellation", () => {
 
 		// A batch already on its way when the reader closed search cannot
 		// resurrect it.
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 0, end: 5 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 0, end: 5 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(search.state().matchCount).toBe(0);
 		expect(search.state().status).toBe("idle");
@@ -823,12 +854,15 @@ describe("cancellation", () => {
 		await h.settle();
 		published.length = 0;
 		search.dispose();
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 0, start: 0, end: 5 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 0, start: 0, end: 5 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		expect(published).toEqual([]);
 	});
 });
-
 
 describe("keyboard and announcements", () => {
 	it("claims Enter, Shift+Enter, F3, Shift+F3 and Escape - and nothing else", () => {
@@ -899,7 +933,6 @@ describe("keyboard and announcements", () => {
 		expect(search.state().announcement).toBe("Match 2 of 2, Page 4 of 4");
 	});
 
-
 	it("words the page with the page list's catalogue, so one page is worded once", async () => {
 		const doc = documentOf(4);
 		const h = harness({ doc });
@@ -907,7 +940,11 @@ describe("keyboard and announcements", () => {
 			pageStrings: { "pageList.page.label": "Seite {page} von {total}" },
 		});
 		search.setQuery("alpha");
-		(h.scans[0] as PendingScan).push({ matches: [{ page: 2, start: 0, end: 5 }], progress: 1, done: true });
+		(h.scans[0] as PendingScan).push({
+			matches: [{ page: 2, start: 0, end: 5 }],
+			progress: 1,
+			done: true,
+		});
 		await h.settle();
 		search.next();
 		expect(search.state().announcement).toBe("Match 1 of 1, Seite 3 von 4");
@@ -995,10 +1032,12 @@ describe("per-batch cost", () => {
 	});
 });
 
-
 describe("the highlight stylesheet", () => {
 	const appCss = readFileSync(join(here, "page-list.css"), "utf8");
-	const baseCss = readFileSync(join(here, "..", "..", "..", "..", "packages", "ui-kit", "css", "base.css"), "utf8");
+	const baseCss = readFileSync(
+		join(here, "..", "..", "..", "..", "packages", "ui-kit", "css", "base.css"),
+		"utf8",
+	);
 	const controllerSource = readFileSync(join(here, "search.ts"), "utf8");
 
 	it("styles every class the controller emits", () => {
@@ -1072,4 +1111,3 @@ describe("the highlight stylesheet", () => {
 		expect(unknown, `unknown token references: ${unknown.join(", ")}`).toEqual([]);
 	});
 });
-
