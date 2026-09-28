@@ -39,9 +39,8 @@ import type {
 	DocumentSourceDescriptor,
 	SearchBatch,
 } from "../../../ui/src/platform/types.js";
-import type { EngineLink } from "./engine-link.js";
+import { type EngineLink, isEngineRequest } from "./engine-link.js";
 import {
-	ENGINE_PROTOCOL,
 	type EngineReply,
 	type EngineRequest,
 	type WireAck,
@@ -52,24 +51,6 @@ import {
 	decodeBase64,
 	encodeBase64,
 } from "./engine-protocol.js";
-
-/** Request operations the host implements; anything else is refused by name. */
-const KNOWN_OPS = new Set(["open", "close", "render", "text", "search", "cancel"]);
-
-/** Narrow an `unknown` off the port to a request this host will act on. */
-export function isEngineRequest(message: unknown): message is EngineRequest {
-	if (typeof message !== "object" || message === null) {
-		return false;
-	}
-	const candidate = message as Partial<EngineRequest>;
-	if (candidate.v !== ENGINE_PROTOCOL) {
-		return false;
-	}
-	if (typeof candidate.op !== "string" || !KNOWN_OPS.has(candidate.op)) {
-		return false;
-	}
-	return typeof candidate.id === "number" && Number.isInteger(candidate.id);
-}
 
 /**
  * Serve the engine half of `link`. The returned function tears it down.
@@ -149,7 +130,16 @@ export function serveEngineHost(options: {
 		);
 	});
 
-	return () => {
+	/**
+	 * Release everything this host is holding.
+	 *
+	 * Called both when the link is disposed deliberately and when the far end
+	 * disconnects, because the two mean the same thing here: the page that owned
+	 * the documents is gone, and nothing else is ever going to ask for them. An
+	 * engine holding a parsed document whose viewer has vanished is a leak that
+	 * only shows up as a memory ceiling some other document hits later.
+	 */
+	const release = (): void => {
 		off();
 		for (const controller of inFlight.values()) {
 			controller.abort();
@@ -162,6 +152,9 @@ export function serveEngineHost(options: {
 		}
 		documents.clear();
 	};
+
+	link.onDisconnect(release);
+	return release;
 }
 
 /** One non-streaming request. */
@@ -275,12 +268,11 @@ async function runSearch(
 function requireDoc(documents: Map<string, DocHandle>, id: string): DocHandle {
 	const doc = documents.get(id);
 	if (doc === undefined) {
-		throw new AdapterError({
-			code: ErrorCode.BindingBadHandle,
-			message: `the engine host has no open document '${id}'`,
-			docState: "NotLoaded",
-			retryable: false,
-		});
+		// `badHandle` and not a hand-built error: the shared contract suite
+		// asserts `Unchanged` here, because a handle the engine never issued
+		// means the document was never touched. `NotLoaded` would be a
+		// different - and wrong - claim about the same failure.
+		throw AdapterError.badHandle(`the engine host has no open document '${id}'`);
 	}
 	return doc;
 }

@@ -21,7 +21,7 @@
  */
 
 import type { EnginePort } from "../../../ui/src/platform/adapter.js";
-import { AdapterError } from "../../../ui/src/platform/errors.js";
+import { AdapterError, ErrorCode } from "../../../ui/src/platform/errors.js";
 import type {
 	AdapterRequestOptions,
 	DocHandle,
@@ -36,6 +36,7 @@ import type { EngineLink } from "./engine-link.js";
 import {
 	type EngineRequest,
 	type WireDoc,
+	type WireError,
 	type WirePageText,
 	type WireSearchBatch,
 	type WireTile,
@@ -132,7 +133,7 @@ export function createEnginePort(link: EngineLink): EnginePort {
 		}
 		if (!reply.ok) {
 			pending.delete(reply.id);
-			entry.reject?.(toAdapterError(reply.error?.code, reply.error?.message));
+			entry.reject?.(toAdapterError(reply.error));
 			return;
 		}
 		if (entry.queue !== undefined) {
@@ -333,21 +334,30 @@ export function createEnginePort(link: EngineLink): EnginePort {
 // Wire → UI. Every function here narrows an `unknown` that arrived off a port.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Turn a host-reported registry code into the typed error the UI expects. */
-function toAdapterError(code: number | undefined, message: string | undefined): AdapterError {
-	if (code === undefined) {
+/**
+ * Turn a host-reported failure into the typed error the UI expects.
+ *
+ * The host's `docState` is carried across verbatim rather than guessed at. It
+ * is the answer to "what happened to the user's document?", and the host is the
+ * only side that knows: a bad handle is `Unchanged` because the document was
+ * never touched, while a failed render mid-session is `Loaded`. Substituting a
+ * constant here would make every failure look like the same thing, which is
+ * exactly the flattening `docState` exists to prevent.
+ */
+function toAdapterError(wire: WireError | undefined): AdapterError {
+	if (wire === undefined) {
 		return new AdapterError({
-			code: 6000,
-			message: message ?? "the engine host reported a failure with no code",
+			code: ErrorCode.BindingBadHandle,
+			message: "the engine host reported a failure with no error detail",
 			docState: "Unchanged",
 			retryable: false,
 		});
 	}
 	return new AdapterError({
-		code,
-		message: message ?? `the engine host reported ${code}`,
-		docState: "Loaded",
-		retryable: false,
+		code: wire.code,
+		message: wire.message,
+		docState: wire.docState,
+		retryable: wire.retryable,
 	});
 }
 

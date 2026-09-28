@@ -29,11 +29,41 @@ export interface AdapterFixture {
 
 export const SAMPLE_TEXTS: readonly string[] = ["alpha beta", "gamma delta alpha", ""];
 
+/**
+ * A probe a host may be *provably unable* to run.
+ *
+ * The suite's rule is "a behavioural difference between hosts is a build
+ * failure", and that rule is right for everything the UI can observe. It is
+ * wrong for a capability the host cannot have at all, where "the host refuses"
+ * is the correct behaviour and the alternative is requesting a permission the
+ * product has decided against. Clipboard read is the case that forced this:
+ * the MV3 extension cannot have it without the `clipboardRead` permission, and
+ * the extension's approved permission set (SL-4.EXT.01, `host_permissions: []`)
+ * deliberately excludes it.
+ *
+ * Naming the exemption rather than editing the probe keeps the difference
+ * visible: a host that stops needing it has to delete the entry, which is a
+ * reviewable act, and the call site has to say why in words.
+ */
+export type ContractExemption = "clipboard-read";
+
+/** Per-host exemptions, each carrying the reason it was claimed. */
+export interface ContractOptions {
+	/**
+	 * `undefined` for an exemption the host claims. The value is the reason, and
+	 * it is required: a skip with no stated cause is indistinguishable from a
+	 * probe quietly deleted because it was inconvenient.
+	 */
+	readonly exempt?: Partial<Record<ContractExemption, string>>;
+}
+
 /** Register the contract suite for one adapter factory. */
 export function definePlatformAdapterContract(
 	name: string,
 	createFixture: () => Promise<AdapterFixture> | AdapterFixture,
+	options: ContractOptions = {},
 ): void {
+	const exempt = options.exempt ?? {};
 	describe(`${name} — platform-adapter contract`, () => {
 		it("advertises complete capability flags", async () => {
 			const { adapter } = await createFixture();
@@ -170,7 +200,7 @@ export function definePlatformAdapterContract(
 			await expect(adapter.storage.get("ui.theme")).resolves.toBeNull();
 		});
 
-		it("round-trips the clipboard", async () => {
+		it.skipIf(exempt["clipboard-read"] !== undefined)("round-trips the clipboard", async () => {
 			const { adapter } = await createFixture();
 			await adapter.clipboard.writeText("selected text");
 			await expect(adapter.clipboard.readText()).resolves.toBe("selected text");

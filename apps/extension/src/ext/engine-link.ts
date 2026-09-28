@@ -22,7 +22,7 @@
  * file that is in the package without one.
  */
 
-import type { EngineReply, EngineRequest } from "./engine-protocol.js";
+import { ENGINE_PROTOCOL, type EngineReply, type EngineRequest } from "./engine-protocol.js";
 import type { HostPort } from "./host-env.js";
 
 /**
@@ -37,6 +37,14 @@ export interface EngineLink {
 	post(message: EngineMessage): void;
 	/** Observe replies. Returns an unsubscribe. */
 	subscribe(listener: (reply: EngineReply) => void): () => void;
+	/**
+	 * The far end going away: the page closed, or the service worker was killed.
+	 *
+	 * Not decoration. The offscreen host keeps every open document in a table
+	 * precisely so it can release them here, when the page that owned them
+	 * no longer exists to ask. Returns an unsubscribe.
+	 */
+	onDisconnect(handler: () => void): () => void;
 	/** Close the link. Idempotent. */
 	close(): void;
 }
@@ -77,6 +85,31 @@ export function replyRejection(message: unknown): ReplyRejection | null {
 /** Narrow `unknown` to a validated {@link EngineReply}. */
 export function isEngineReply(message: unknown): message is EngineReply {
 	return replyRejection(message) === null;
+}
+
+/** Request operations the host acts on. Anything else is refused by name. */
+const KNOWN_OPS: ReadonlySet<string> = new Set([
+	"open",
+	"close",
+	"render",
+	"text",
+	"search",
+	"cancel",
+]);
+
+/** Narrow `unknown` to an {@link EngineRequest} this host will act on. */
+export function isEngineRequest(message: unknown): message is EngineRequest {
+	if (typeof message !== "object" || message === null) {
+		return false;
+	}
+	const candidate = message as Partial<EngineRequest>;
+	if (candidate.v !== ENGINE_PROTOCOL) {
+		return false;
+	}
+	if (typeof candidate.op !== "string" || !KNOWN_OPS.has(candidate.op)) {
+		return false;
+	}
+	return typeof candidate.id === "number" && Number.isInteger(candidate.id);
 }
 
 function isWireError(value: unknown): boolean {
@@ -124,10 +157,19 @@ export function createPortLink(port: HostPort): PortLink {
 	// A dead far end is not an error the caller can retry, so it surfaces as a
 	// normal close: the page's open document has already been released by the
 	// time this fires, and rethrowing would produce an unhandled rejection in a
-	// module the page has finished with.
+	// module the page has finished with. Handlers registered through
+	// `onDisconnect` are the ones that *do* have cleanup to do, so they run.
+	const disconnects = new Set<() => void>();
 	port.onDisconnect(() => {
+		if (closed) {
+			return;
+		}
 		closed = true;
 		listeners.clear();
+		for (const handler of disconnects) {
+			handler();
+		}
+		disconnects.clear();
 	});
 
 	return {
@@ -146,12 +188,23 @@ export function createPortLink(port: HostPort): PortLink {
 				listeners.delete(listener);
 			};
 		},
+		onDisconnect(handler) {
+			if (closed) {
+				handler();
+				return () => {};
+			}
+			disconnects.add(handler);
+			return () => {
+				disconnects.delete(handler);
+			};
+		},
 		close() {
 			if (closed) {
 				return;
 			}
 			closed = true;
 			listeners.clear();
+			disconnects.clear();
 			offMessage();
 			port.disconnect();
 		},
