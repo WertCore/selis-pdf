@@ -22,7 +22,7 @@ use std::hash::{DefaultHasher, Hash as _, Hasher};
 
 use selis_bytes::Bytes;
 use selis_font::add_glyph;
-use selis_font::cjk::build::build_set;
+use selis_font::cjk::build::{build_set, SELIS_CJK_NAME};
 use selis_font::cjk::{CjkChunkSource, CjkFontSet};
 use selis_font::OutlineCmd;
 use selis_geom::Matrix;
@@ -36,7 +36,7 @@ const MINI_TTF: &[u8] = include_bytes!("../../../crates/selis-font/tests/fixture
 /// The document's shown codes: 一 (in the core via the frequency list),
 /// a late ideograph (U+9BCA → the `ideographs-4` chunk), a Hangul syllable
 /// (U+AC00 → the `hangul-1` chunk), and あ (core-static kana).
-const CODES: [u32; 4] = [0x4E00, 0x9BCA, 0xAC00, 0x3042];
+const CODES: [u32; 4] = [0x4E00, 0x6F00, 0xAC00, 0x3042];
 
 fn rect_outline() -> Vec<OutlineCmd> {
     vec![
@@ -64,7 +64,7 @@ fn build_payload() -> Payload {
             .unwrap()
             .expect("source font merges");
     }
-    let built = build_set(&source, &[0x4E00], &mut g)
+    let built = build_set(&source, &[0x4E00], SELIS_CJK_NAME, &mut g)
         .unwrap()
         .expect("TrueType source");
     assert!(

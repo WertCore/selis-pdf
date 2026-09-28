@@ -551,7 +551,11 @@ mod tests {
     fn an_unavailable_range_is_never_requested_and_stays_notdef() {
         let mut set = CjkFontSet::new(Bytes::new());
         set.mark_unavailable(&["hangul-1", "no-such-chunk"]);
-        assert_eq!(set.unavailable_ids(), vec!["hangul-1"], "unknown ids ignored");
+        assert_eq!(
+            set.unavailable_ids(),
+            vec!["hangul-1"],
+            "unknown ids ignored"
+        );
         assert_eq!(set.request(0xAC00), None, "가: nothing to fetch");
         assert!(set.queued().is_empty(), "and nothing is queued");
         set.request_chunk("hangul-1");

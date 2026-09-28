@@ -176,7 +176,7 @@ pub fn build_set(
         let (gids, n) = range_gids(&map, chunk);
         if gids.is_empty() {
             continue; // nothing in this range in this source: no file (reported
-                     // in `unserved` — the range is addressable, just empty)
+                      // in `unserved` — the range is addressable, just empty)
         }
         if let Some(data) = subset_gids(source, &gids, name, g)? {
             chunks.push(CjkBuiltChunk {
@@ -353,11 +353,24 @@ mod tests {
     #[test]
     fn emitted_files_are_renamed_away_from_the_source_family() {
         let b = built();
-        assert_eq!(name_ids(&b.core), vec![(1u16, "Selis CJK".to_string()), (2u16, "Regular".to_string()), (4u16, "Selis CJK Regular".to_string()), (6u16, "SelisCJK-Regular".to_string())]);
+        assert_eq!(
+            name_ids(&b.core),
+            vec![
+                (1u16, "Selis CJK".to_string()),
+                (2u16, "Regular".to_string()),
+                (4u16, "Selis CJK Regular".to_string()),
+                (6u16, "SelisCJK-Regular".to_string())
+            ]
+        );
         for c in &b.chunks {
             assert_eq!(
                 name_ids(&c.data),
-                vec![(1u16, "Selis CJK".to_string()), (2u16, "Regular".to_string()), (4u16, "Selis CJK Regular".to_string()), (6u16, "SelisCJK-Regular".to_string())],
+                vec![
+                    (1u16, "Selis CJK".to_string()),
+                    (2u16, "Regular".to_string()),
+                    (4u16, "Selis CJK Regular".to_string()),
+                    (6u16, "SelisCJK-Regular".to_string())
+                ],
                 "chunk {}",
                 c.chunk.id
             );
@@ -377,10 +390,14 @@ mod tests {
     fn name_ids(bytes: &Bytes) -> Vec<(u16, String)> {
         fn be16(data: &[u8], off: usize) -> u16 {
             let pair = data.get(off..off.saturating_add(2)).unwrap_or(&[0, 0]);
-            u16::from_be_bytes([pair[0], pair[1]])
+            let hi = pair.first().copied().unwrap_or(0);
+            let lo = pair.get(1).copied().unwrap_or(0);
+            u16::from_be_bytes([hi, lo])
         }
         let font = FontRef::new(bytes.as_slice()).expect("parses");
-        let table = font.table_data(Tag::new(b"name")).expect("has a name table");
+        let table = font
+            .table_data(Tag::new(b"name"))
+            .expect("has a name table");
         let data = table.as_bytes();
         let count = usize::from(be16(data, 2));
         let storage = usize::from(be16(data, 4));
@@ -395,7 +412,11 @@ mod tests {
                     .get(start..start.saturating_add(len))
                     .unwrap_or_default()
                     .chunks_exact(2)
-                    .map(|p| u16::from_be_bytes([p[0], p[1]]))
+                    .map(|p| {
+                        let hi = p.first().copied().unwrap_or(0);
+                        let lo = p.get(1).copied().unwrap_or(0);
+                        u16::from_be_bytes([hi, lo])
+                    })
                     .collect();
                 (id, String::from_utf16_lossy(&units))
             })

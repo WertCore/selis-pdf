@@ -145,7 +145,7 @@ fn concat_static(a: &str, b: &str) -> &'static str {
         return Box::leak((a.to_owned() + b).into_boxed_str());
     };
     if let Some((_, leaked)) = guard.iter().find(|(k, _)| *k == key) {
-        return *leaked;
+        return leaked;
     }
     let joined = a.to_string() + b;
     let leaked: &'static str = Box::leak(joined.into_boxed_str());
