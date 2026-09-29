@@ -45,3 +45,6 @@ target-agent/
 # binaries in git buys nothing the manifest does not already pin. Same rule the
 # CJK payload follows: the manifest is committed, the chunks are built.
 assets/payload/fallback/*.ttf.br
+
+# Local agent scratch (build logs, probes, patches). Never committed.
+.kilo/
