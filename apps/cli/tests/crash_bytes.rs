@@ -167,7 +167,7 @@ fn a_crashing_parse_reports_no_document_bytes() {
     // is the exact thing a parser bug would interpolate.
     let canary = &doc[64..64 + 48];
     let session = open(doc);
-    assert!(session.len() >= 1, "a real session is live during the crash");
+    assert!(!session.is_empty(), "a real session is live during the crash");
 
     // The injected bug: a slice of the open document formatted into the panic
     // message, with the session still in scope.
