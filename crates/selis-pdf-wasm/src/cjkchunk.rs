@@ -741,8 +741,7 @@ mod tests {
             ..claim("ideographs-4", &bytes)
         };
         let e = CjkChunkLoader::new(Bytes::new(), vec![bad], budget())
-            .err()
-            .expect("refused");
+            .expect_err("refused");
         assert_eq!(e.code(), Code::BindingBadArgument);
     }
 
