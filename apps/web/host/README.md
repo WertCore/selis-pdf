@@ -86,18 +86,24 @@ Updates: `updateViaCache: "none"`, and the worker does **not** call
 an open document. `CACHE_VERSION` namespaces the caches; `activate` deletes our
 own previous names and nothing else.
 
-### Not proven in a browser
+### What is proven in a browser, and what is not
 
-A service worker cannot register under `file://`, and this package ships no
-browser harness (ADR-P0021 keeps the JS tree dependency-free), so the worker is
-driven in Node with real `Request`/`Response` objects and a Cache Storage double
-that implements `addAll` atomicity, `Vary`-aware `match`, and insertion-ordered
-`keys`. **Not** covered here, and to be confirmed at deploy or in a real
-browser: real `install`/`activate` event delivery, `clients.claim()`,
-browser-enforced `respondWith` semantics, real Cache Storage quota behaviour,
-and the DoD's manual airplane-mode pass (open a local PDF, view, search,
-print). The logic those tests assert is in this package; the browser's
-adherence to it is not.
+A service worker cannot register under `file://`, and ADR-P0021 keeps this JS tree
+dependency-free, so the worker is driven in Node with real `Request`/`Response` objects and a
+Cache Storage double that implements `addAll` atomicity, `Vary`-aware `match`, and
+insertion-ordered `keys`. That proves **this package's policy**.
+
+The **browser's** half is measured separately, by `cargo xtask browser-check`
+(`xtask/src/browser.rs`, pages in `xtask/browser/`). It serves a page on a loopback origin, drives
+a real Edge/Chrome/Chromium at it, and judges the JSON the page POSTs back. Its `service-worker`
+check proves the engine delivers `install`/`activate`, that `clients.claim()` really hands the page
+a controller, and that `respondWith` really returns the precached body — the three behaviours the
+Node double has to fake.
+
+**Not** covered by either, and still to be confirmed at deploy or in a real browser: this
+package's own `sw.js` running in a browser (the harness ships its own minimal worker, so as of
+this writing the built app is not the thing under test), real Cache Storage quota behaviour, and
+the DoD's manual airplane-mode pass (open a local PDF, view, search, print).
 
 ## Entry points (all local)
 

@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>selis browser harness — async wasm</title>
+  </head>
+  <body>
+    <pre id="verdict">PENDING</pre>
+    <script>
+      // The harness proving itself: the verdict below is only ever written
+      // after an awaited WebAssembly.instantiate of a module this repo
+      // assembled, plus a second instantiation that must fail to link.
+      //
+      // Both halves are load-bearing. The awaited path is what a `--dump-dom`
+      // snapshot would race (and, with a service worker in the other check,
+      // demonstrably does race — see xtask/src/browser.rs). The link error is
+      // the engine enforcing the module's import list, which is a property of
+      // the WebAssembly implementation and not of this page.
+      var RESULT_PATH = "/__selis_result";
+      var out = { schema: 1, check: "async-wasm", sum: null, linkError: null, fatal: null };
+
+      function report() {
+        var body = JSON.stringify(out);
+        document.getElementById("verdict").textContent = "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", RESULT_PATH, true);
+        xhr.send(body);
+      }
+
+      function fail(why) {
+        out.fatal = "" + why;
+        report();
+      }
+
+      function imports() {
+        // The module imports env.twice; supply it as a plain JS closure. The
+        // failure case below deliberately omits it.
+        return {
+          env: {
+            twice: function (x) {
+              return x * 2;
+            },
+          },
+        };
+      }
+
+      // `instantiateStreaming` rather than fetch-then-instantiate: it is the
+      // path a real app takes, and it only works if the origin serves the
+      // module as `application/wasm` — which the harness's MIME table does.
+      // If that ever regresses, this fails here rather than silently.
+      WebAssembly.instantiateStreaming(fetch("/probe.wasm"), imports())
+        .then(function (result) {
+          out.sum = result.instance.exports.selis_probe_add(20, 1);
+          // The link-failure leg needs the same bytes, so re-fetch rather than
+          // keeping a second copy of the module around.
+          return fetch("/probe.wasm")
+            .then(function (res) {
+              return res.arrayBuffer();
+            })
+            .then(function (body) {
+              // A *well-formed but empty* namespace, deliberately. An empty
+              // import object `{}` would prove nothing: the engine rejects that
+              // during argument validation, before it ever looks at the module,
+              // and reports a TypeError. A real (empty) `env` object is what
+              // forces the failure to happen at *link* time, which is the
+              // check worth making — and it is what a real engine reports as a
+              // LinkError.
+              return WebAssembly.instantiate(body, { env: {} }).then(
+                function () {
+                  out.linkError = "instantiation unexpectedly SUCCEEDED with an empty env";
+                },
+                function (error) {
+                  out.linkError = "" + error;
+                },
+              );
+            });
+        })
+        .then(function () {
+          report();
+        })
+        .catch(fail);
+    </script>
+  </body>
+</html>

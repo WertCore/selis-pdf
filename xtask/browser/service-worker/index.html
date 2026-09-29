@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>selis browser harness — service worker</title>
+  </head>
+  <body>
+    <!--
+      The verdict goes in a <pre> as well as over the wire. `--dump-dom` is not
+      how this check is read (the POST is; see xtask/src/browser.rs for why),
+      but a readable dump is what you want when a run goes red and the page
+      survived to be looked at.
+    -->
+    <pre id="verdict">PENDING</pre>
+    <script>
+      // WEB.02's browser half: does a real engine deliver worker lifecycle
+      // events, hand the page a controller, and enforce `respondWith`? The
+      // Node suite in apps/web/host asserts the *policy* against a Cache
+      // Storage double; nothing before this asserted the browser's half.
+      var RESULT_PATH = "/__selis_result";
+      var out = { schema: 1, check: "service-worker", scope: null, controlled: null, asset: null, fatal: null };
+
+      function report() {
+        var body = JSON.stringify(out);
+        document.getElementById("verdict").textContent = "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", RESULT_PATH, true);
+        xhr.send(body);
+      }
+
+      function fail(why) {
+        out.fatal = "" + why;
+        report();
+      }
+
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then(function (reg) {
+          out.scope = reg.scope;
+          // `ready` resolves once there is an *active* worker, which means the
+          // browser ran install and activate. If lifecycle events are not
+          // delivered, this never settles and the harness times the check out.
+          return navigator.serviceWorker.ready;
+        })
+        .then(function () {
+          // `clients.claim()` is called by the worker's activate handler, so
+          // this page only gets a controller if the claim actually took.
+          return new Promise(function (resolve) {
+            var waited = 0;
+            var tick = setInterval(function () {
+              if (navigator.serviceWorker.controller) {
+                clearInterval(tick);
+                resolve();
+              }
+              waited += 25;
+              if (waited > 10000) {
+                clearInterval(tick);
+                resolve();
+              }
+            }, 25);
+          });
+        })
+        .then(function () {
+          out.controlled = !!navigator.serviceWorker.controller;
+          // Served no-store by the harness, so the only thing that can answer
+          // with the precached body is the worker's own respondWith.
+          return fetch("/asset.txt", { cache: "no-store" });
+        })
+        .then(function (res) {
+          if (!res.ok) throw new Error("asset.txt came back " + res.status);
+          return res.text();
+        })
+        .then(function (text) {
+          out.asset = text.trim();
+          report();
+        })
+        .catch(fail);
+    </script>
+  </body>
+</html>

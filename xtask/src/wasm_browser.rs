@@ -381,7 +381,7 @@ fn native_page(doc: &[u8]) -> Native {
         hash: perf_wasm::checksum(pixels),
     })
 }
-/// The browser binaries this leg will accept, in probe order.
+/// The browser binaries the browser-backed legs will accept, in probe order.
 ///
 /// A deliberately short, explicit list -- never a bare `PATH` lookup of an
 /// unversioned `chrome`, because a determinism gate whose engine it cannot
@@ -393,7 +393,10 @@ fn native_page(doc: &[u8]) -> Native {
 /// no download step. Chrome and distro `chromium` remain accepted as
 /// alternates: this leg's claim is *V8-determinism vs the native engine*, and
 /// that holds on any Chromium build, so pinning Edge does not weaken it.
-fn browser_candidates() -> Vec<PathBuf> {
+///
+/// Shared with `xtask/src/browser.rs` (WEB.02's harness) so there is one list
+/// of where an engine may live, not two that can drift.
+pub(crate) fn browser_candidates() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(env) = std::env::var_os("SELIS_BROWSER") {
         out.push(PathBuf::from(env));
@@ -450,7 +453,7 @@ fn browser_candidates() -> Vec<PathBuf> {
 }
 
 /// A short name for the resolved browser, for the report and the log line.
-fn browser_name(browser: &Path) -> String {
+pub(crate) fn browser_name(browser: &Path) -> String {
     browser
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
