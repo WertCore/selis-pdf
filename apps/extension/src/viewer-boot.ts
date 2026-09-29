@@ -83,7 +83,6 @@ const IDS = {
 	localChoose: "selis-local-choose",
 	localForm: "selis-local-form",
 	localUrl: "selis-local-url",
-	localGo: "selis-local-go",
 } as const;
 
 /**
@@ -222,6 +221,11 @@ function report(container: HTMLElement, message: string): void {
 
 /** Fill every `data-i18n` key the page's skeleton declares. */
 function fill(root: Element): void {
+	// The cast is a boundary, not a shortcut: `viewer-page.test.ts` reads the
+	// *shipped* `viewer.html` and fails on any key this catalogue does not hold, so
+	// the only way an unknown key reaches here is a test that was not run. The
+	// runtime's own missing-message marker is the second line of defence, and it is
+	// visible on the page — which is the point of it.
 	for (const node of root.querySelectorAll<HTMLElement>("[data-i18n]")) {
 		const key = node.dataset.i18n as ViewerMessageKey;
 		node.textContent = viewerText(key, { toggle: TOGGLE_NAME });
@@ -275,14 +279,26 @@ function renderLocalState(
 	}
 }
 
-/** The panel, revealed. Every local-file state is this panel plus a line of text. */
-function showLocalPanel(root: Element): HTMLElement | null {
+/**
+ * The panel, revealed, with the heading focused and the address filled in.
+ *
+ * The focus is the same move `options-boot.ts` makes when it opens the welcome
+ * guide: a screen reader then announces where the reader has arrived rather than
+ * the label of whatever control the browser happened to focus. The address field
+ * is filled rather than left blank so the state on screen is the state in hand —
+ * a reader who reloaded this page can see *which* file the flow is about.
+ */
+function showLocalPanel(root: Element, localUrl: string): void {
 	const panel = root.querySelector<HTMLElement>(`#${IDS.local}`);
 	if (panel === null) {
-		return null;
+		return;
 	}
 	panel.hidden = false;
-	return panel;
+	const field = root.querySelector<HTMLInputElement>(`#${IDS.localUrl}`);
+	if (field !== null && field.value === "") {
+		field.value = localUrl;
+	}
+	root.querySelector<HTMLElement>(`#${IDS.localHeading}`)?.focus();
 }
 
 /** Open a local file the reader chose themselves. Needs no permission at all. */
@@ -326,6 +342,14 @@ function mountLocalPanel(deps: ViewerDeps, container: HTMLElement, localUrl: str
 		report(container, viewerText("viewer.status.starting"));
 		const state = await runLocalFlow(deps, localUrl);
 		if (state.outcome === "open" && localUrl !== "") {
+			// The panel has done its job. Leaving it up would put a form asking a
+			// reader to change a browser setting on top of the document they just
+			// opened, which is the same intrusion the `hidden` attribute exists to
+			// prevent on the web path.
+			const panel = container.querySelector<HTMLElement>(`#${IDS.local}`);
+			if (panel !== null) {
+				panel.hidden = true;
+			}
 			await openDocumentAt(deps, container, localUrl);
 			return;
 		}
@@ -454,7 +478,7 @@ export function bootViewer(container: HTMLElement, deps: ViewerDeps = browserDep
 		// reason on screen: for the first that panel is the whole answer, and for
 		// the other two the reader has something to correct. `missing-src` gets no
 		// line of its own — it is not a failure, it is what the toolbar button is.
-		showLocalPanel(container);
+		showLocalPanel(container, "");
 		if (error instanceof ViewerSourceError) {
 			const key = sourceErrorKey(error.reason);
 			if (key !== null) {
@@ -466,7 +490,7 @@ export function bootViewer(container: HTMLElement, deps: ViewerDeps = browserDep
 	}
 
 	if (source.kind === "local") {
-		showLocalPanel(container);
+		showLocalPanel(container, source.url);
 		mountLocalPanel(deps, container, source.url);
 		return;
 	}
