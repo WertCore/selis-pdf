@@ -626,7 +626,18 @@ pub struct CjkCloseReport {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+    // Fixture code only. `payload` and its siblings build a synthetic TTF in
+    // memory and assert the merge and subset steps produced something; an
+    // `expect` there is the assertion, not a crash primitive reached from
+    // untrusted input — the same reasoning that makes `unwrap_used` and
+    // `expect_used` deny lints in production and the same reasoning the repo
+    // uses for the arithmetic allows below. Deliberately scoped to this module:
+    // no production module in this file may widen it.
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::integer_division,
+        clippy::expect_used
+    )]
     use super::*;
     use selis_font::add_glyph;
     use selis_font::subset::{subset_ttf, GlyphSet};
