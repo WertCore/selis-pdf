@@ -697,7 +697,7 @@ fn verify(
                         Ok(Some(e)) => e,
                         Ok(None) => {
                             if let Ok(mut r) = results_ref.lock() {
-                                r.push((id.clone(), vec![format!("NO EXPECTATION")]));
+                                r.push((id.clone(), vec!["NO EXPECTATION".to_string()]));
                             }
                             continue;
                         }
@@ -714,7 +714,7 @@ fn verify(
                         || expected.code != actual.code
                         || expected.pages != actual.pages
                     {
-                        row_diffs.push(format!("open expected {:?} got {:?}", &expected, actual));
+                        row_diffs.push(format!("open expected {:?} got {:?}", expected, actual));
                     } else {
                         row_diffs = verify_golden(ctx_ref, &tmp_w, path, &expected);
                     }

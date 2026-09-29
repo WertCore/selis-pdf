@@ -3193,10 +3193,7 @@ fn parse_gouraud_shading(
             ),
         )
     };
-    loop {
-        let Some(flag) = r.read(bpf.max(1)) else {
-            break;
-        };
+    while let Some(flag) = r.read(bpf.max(1)) {
         let count = match flag {
             0 => 3,
             1 => 1,
@@ -3284,10 +3281,7 @@ fn parse_lattice_shading(
     use selis_raster::shading::{LatticeShading, ShadingPoint};
     let mut r = BitReader::new(data);
     let mut vertices: Vec<ShadingPoint> = Vec::new();
-    loop {
-        let Some(x_raw) = r.read(bpc.max(1)) else {
-            break;
-        };
+    while let Some(x_raw) = r.read(bpc.max(1)) {
         let Some(y_raw) = r.read(bpc.max(1)) else {
             break;
         };
@@ -3527,10 +3521,7 @@ fn parse_patch_shading(
     let per_patch = if is_tensor { 16 } else { 12 };
     let mut r = BitReader::new(data);
     let mut patches: Vec<Vec<ShadingPoint>> = Vec::new();
-    loop {
-        let Some(flag) = r.read(bpf.max(1)) else {
-            break;
-        };
+    while let Some(flag) = r.read(bpf.max(1)) {
         if flag != 0 {
             break; // patch-reuse flags are a refinement; skip the shading
         }

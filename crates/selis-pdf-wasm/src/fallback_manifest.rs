@@ -170,10 +170,24 @@ impl std::error::Error for ManifestError {}
 
 #[cfg(test)]
 mod tests {
+    // Fixture code only, and the same scoping the `cjkchunk` tests use: an
+    // `expect` here is the assertion, not a crash primitive reached from
+    // untrusted input. These tests build the manifest in memory precisely so
+    // the production validator - the code that does handle untrusted bytes -
+    // needs no such escape hatch. Deliberately scoped to this module.
+    #![allow(clippy::expect_used)]
     use super::*;
 
     fn good_digest() -> String {
         "a".repeat(64)
+    }
+
+    /// The first face, mutably. Indexes safely so these tests need no
+    /// `indexing_slicing` allow.
+    fn first(m: &mut FallbackManifest) -> &mut FallbackFace {
+        m.faces
+            .first_mut()
+            .expect("the fixture always has at least one face")
     }
 
     fn face(name: &str) -> FallbackFace {
@@ -242,7 +256,7 @@ mod tests {
     fn a_malformed_digest_is_refused() {
         for bad in ["", "abc", &"z".repeat(64), &"a".repeat(63), &"a".repeat(65)] {
             let mut m = manifest();
-            m.faces[0].sha256 = bad.to_string();
+            first(&mut m).sha256 = bad.to_string();
             assert!(
                 matches!(
                     FallbackManifest::parse(&json(&m)),
@@ -258,7 +272,7 @@ mod tests {
     #[test]
     fn a_zero_size_is_refused() {
         let mut m = manifest();
-        m.faces[0].raw_size = 0;
+        first(&mut m).raw_size = 0;
         assert!(matches!(
             FallbackManifest::parse(&json(&m)),
             Err(ManifestError::Size(_))
@@ -270,7 +284,7 @@ mod tests {
     #[test]
     fn a_transfer_larger_than_its_source_is_refused() {
         let mut m = manifest();
-        m.faces[0].transfer_size = 201;
+        first(&mut m).transfer_size = 201;
         assert!(matches!(
             FallbackManifest::parse(&json(&m)),
             Err(ManifestError::TransferLarger(_))

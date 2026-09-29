@@ -1,0 +1,141 @@
+warning: `C:\Users\Prasad\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling zeroize v1.9.0
+   Compiling cfg-if v1.0.4
+   Compiling serde v1.0.229
+   Compiling version_check v0.9.5
+   Compiling wasm-bindgen-shared v0.2.127
+   Compiling typenum v1.20.1
+   Compiling once_cell v1.21.4
+   Compiling rustversion v1.0.23
+   Compiling generic-array v0.14.7
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling winnow v0.7.15
+   Compiling toml_write v0.1.2
+   Compiling const-oid v0.9.6
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling indexmap v2.14.0
+   Compiling bumpalo v3.20.3
+   Compiling subtle v2.6.1
+   Compiling wasm-bindgen v0.2.127
+   Compiling futures-task v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.34
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling futures-util v0.3.34
+   Compiling digest v0.10.7
+   Compiling base64ct v1.8.3
+   Compiling zerocopy v0.8.56
+   Compiling autocfg v1.5.1
+   Compiling simd-adler32 v0.3.10
+   Compiling pem-rfc7468 v0.7.0
+   Compiling libm v0.2.16
+   Compiling der v0.7.10
+   Compiling num-traits v0.2.19
+   Compiling hmac v0.12.1
+   Compiling serde_derive v1.0.229
+   Compiling wasm-bindgen-macro-support v0.2.127
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.8.9
+   Compiling bytemuck_derive v1.12.0
+   Compiling spki v0.7.3
+   Compiling pkcs8 v0.10.2
+   Compiling base16ct v0.2.0
+   Compiling selis-bytes v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-bytes)
+   Compiling sec1 v0.7.3
+   Compiling bytemuck v1.25.2
+   Compiling hkdf v0.12.4
+   Compiling num-bigint-dig v0.8.6
+   Compiling spin v0.9.9
+   Compiling lazy_static v1.5.0
+   Compiling rfc6979 v0.4.0
+   Compiling num-integer v0.1.47
+   Compiling inout v0.1.4
+   Compiling zune-core v0.4.12
+   Compiling smallvec v1.16.0
+   Compiling crossbeam-utils v0.8.22
+   Compiling selis-geom v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-geom)
+   Compiling num-iter v0.1.46
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling zune-jpeg v0.4.21
+   Compiling cipher v0.4.4
+   Compiling toml_edit v0.22.27
+   Compiling pkcs1 v0.7.5
+   Compiling sha2 v0.10.9
+   Compiling crossbeam-epoch v0.9.20
+   Compiling crc32fast v1.5.1
+   Compiling wasm-bindgen-macro v0.2.127
+   Compiling aes v0.8.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling font-types v0.12.5
+   Compiling sha1 v0.10.7
+   Compiling toml v0.8.23
+   Compiling md-5 v0.10.6
+   Compiling crossbeam-deque v0.8.7
+   Compiling read-fonts v0.44.0
+   Compiling rayon-core v1.13.0
+   Compiling flate2 v1.1.9
+   Compiling fdeflate v0.3.7
+   Compiling strict-num v0.1.1
+   Compiling bitflags v1.3.2
+   Compiling arrayref v0.3.9
+   Compiling selis-log v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-log)
+   Compiling tiny-skia-path v0.11.4
+   Compiling js-sys v0.3.104
+   Compiling png v0.17.16
+   Compiling either v1.18.0
+   Compiling selis-error v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-error)
+   Compiling selis-sandbox v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-sandbox)
+   Compiling arrayvec v0.7.8
+   Compiling tinyvec_macros v0.1.1
+   Compiling log v0.4.34
+   Compiling zmij v1.0.23
+   Compiling tiny-skia v0.11.4
+   Compiling tinyvec v1.12.0
+   Compiling selis-io v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-io)
+   Compiling selis-color v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-color)
+   Compiling rayon v1.12.0
+   Compiling selis-pdf-filter v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-filter)
+   Compiling serde_json v1.0.151
+   Compiling selis-policy v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-policy)
+   Compiling selis-image v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-image)
+   Compiling selis-job v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-job)
+   Compiling unicode-normalization v0.1.25
+   Compiling skrifa v0.47.0
+   Compiling itoa v1.0.18
+   Compiling selis-raster v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-raster)
+   Compiling memchr v2.8.3
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling selis-font v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-font)
+   Compiling ff v0.13.1
+   Compiling group v0.13.0
+   Compiling crypto-bigint v0.5.5
+   Compiling signature v2.2.0
+   Compiling rand_chacha v0.3.1
+   Compiling selis-pdf-content v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-content)
+   Compiling rand v0.8.8
+   Compiling elliptic-curve v0.13.8
+   Compiling selis-pdf-text v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-text)
+   Compiling ecdsa v0.16.9
+   Compiling primeorder v0.13.6
+   Compiling p256 v0.13.2
+   Compiling rsa v0.9.10
+   Compiling selis-crypto v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-crypto)
+   Compiling selis-pdf-cos v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-cos)
+   Compiling selis-pdf-doc v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-doc)
+   Compiling selis-pdf-edit v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-edit)
+   Compiling selis-pdf-optimize v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-optimize)
+   Compiling selis-pdf-engine v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-engine)
+   Compiling selis-pdf-wasm v0.1.0 (D:\selis\.kilo\worktrees\uni-norm\crates\selis-pdf-wasm)
+    Finished `release` profile [optimized] target(s) in 2m 11s

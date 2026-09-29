@@ -148,7 +148,7 @@ mod tests {
         let rev = doc.revisions().last().expect("revision");
         // Count /Page objects among this revision's entries.
         let mut pages = 0usize;
-        for (&num, _) in rev.entries.iter() {
+        for &num in rev.entries.keys() {
             if let Ok(selis_pdf_cos::Obj::Dict(pairs)) = selis_pdf_cos::resolve_object(
                 bytes,
                 rev.entries
