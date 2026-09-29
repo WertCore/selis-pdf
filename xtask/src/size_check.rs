@@ -209,6 +209,60 @@ pub fn run(update_baseline: bool, strict: bool) -> Result<(), String> {
     }
 }
 
+/// The release-profile overrides that make the measured `.wasm` the one a
+/// browser would actually be served.
+///
+/// ## Why these are `--config` flags and not a `[profile]` entry in Cargo.toml
+///
+/// Both obvious alternatives were tried on this workspace and **neither
+/// worked**, silently, which is the part worth recording:
+///
+/// - `[profile.release.target.'cfg(target_arch = "wasm32")']` — cargo rejects
+///   the `cfg()` form outright: `warning: unused manifest key:
+///   profile.release.target`. The build then produces a thin-LTO artifact.
+/// - `[profile.release.target.wasm32-unknown-unknown]` — the `cfg()` warning
+///   disappears, cargo 1.94 accepts the key without complaint, and the build
+///   is *still* byte-for-byte identical to the thin-LTO artifact
+///   (5 534 846 B, the same as before). It reads as though it took effect.
+///
+/// That second one is the dangerous failure: a manifest that looks right,
+/// produces no warning, and quietly does nothing. The only reason it was
+/// caught is that the artifact size was compared against a known fat-LTO
+/// build (4 890 021 B) rather than assumed. **Verify a size claim against a
+/// number, not against the absence of an error.**
+///
+/// `--config` on the command line is the form that provably works: it takes
+/// the same `profile.*` values and cargo applies them for real. It is also
+/// the better shape regardless, because it scopes the expensive settings to
+/// the one command that measures a browser artifact.
+///
+/// ## Why fat LTO at all
+///
+/// `profile.release` is `lto = "thin"` and deliberately stays that way: a
+/// workspace-wide fat LTO measured 11m53s on this machine, most of it
+/// linking `xtask` against cranelift, and none of the native binaries are
+/// ever downloaded by a browser. The `.wasm` is a closed world — nothing is
+/// linked into it the engine does not call — so cross-crate inlining gets to
+/// see the whole program at once. Measured on the core module, thin → fat
+/// plus `codegen-units = 1`, after `wasm-opt -O3` and the custom-section
+/// strip:
+///
+///   raw    4 375 551 -> 3 985 067   (-8.9%)
+///   brotli 1 382 812 -> 1 308 009   (-5.4%, the number a user pays)
+///
+/// The `code` section alone drops 15.6%; the rest is inlining across the
+/// engine / font / filter boundaries.
+///
+/// `panic` is left inherited (`unwind`) and is NOT set to `abort`:
+/// SL-0.ERR.03's trampoline needs unwinding, which is why that size lever
+/// stays off the table.
+const FAT_LTO_ARGS: &[&str] = &[
+    "--config",
+    "profile.release.lto=\"fat\"",
+    "--config",
+    "profile.release.codegen-units=1",
+];
+
 /// Build every wasm-producing target and measure the brotli size of the
 /// optimised module of each resulting artifact. Returns artifact name →
 /// brotli bytes. SL-4.WASM.02: the 6-chunk split (core + jpx/cjk/ocr/convert/editor)
@@ -235,6 +289,9 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
                 "wasm32-unknown-unknown",
                 "--release",
             ])
+            // Fat LTO, scoped to *this* build only. See FAT_LTO_ARGS below for
+            // why it arrives as --config rather than a profile override.
+            .args(FAT_LTO_ARGS)
             .status()
             .map_err(|e| format!("cargo build -p {pkg} --target wasm32: {e}"))?;
         if !status.success() {
