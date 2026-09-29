@@ -321,10 +321,7 @@ fn resolve_object_bare(
     let mut lexer = Lexer::new(slice);
     let mut toks = Vec::new();
     let mut depth = 0u32;
-    loop {
-        let Some(tok) = lexer.next_token(g)? else {
-            break;
-        };
+    while let Some(tok) = lexer.next_token(g)? {
         match tok {
             crate::Token::ArrayStart | crate::Token::DictStart => {
                 depth = depth.saturating_add(1);

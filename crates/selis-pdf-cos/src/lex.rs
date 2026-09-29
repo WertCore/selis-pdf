@@ -354,10 +354,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos as u64;
         self.bump(); // consume `/`
         let mut out = Vec::new();
-        loop {
-            let Some(b) = self.peek() else {
-                break;
-            };
+        while let Some(b) = self.peek() {
             if is_ws(b) || is_delimiter(b) {
                 break;
             }
@@ -479,10 +476,7 @@ impl<'a> Lexer<'a> {
         self.bump(); // consume `<`
         let mut out = Vec::new();
         let mut nibble_hi: Option<u8> = None;
-        loop {
-            let Some(b) = self.peek() else {
-                break;
-            };
+        while let Some(b) = self.peek() {
             self.bump();
             match b {
                 b'>' => break,

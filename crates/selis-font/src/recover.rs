@@ -112,10 +112,8 @@ impl TextRecovery<'_> {
 fn uni_name_unicode(name: &str) -> Option<u32> {
     let hex = if let Some(rest) = name.strip_prefix("uni") {
         rest
-    } else if let Some(rest) = name.strip_prefix('u') {
-        rest
     } else {
-        return None;
+        name.strip_prefix('u')?
     };
     if hex.is_empty() || hex.len() > 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
