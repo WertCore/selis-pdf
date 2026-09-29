@@ -145,6 +145,24 @@ jobs:
           cache: true
       - run: cargo test --workspace
         timeout-minutes: 10
+      # The web feature configuration, which `--workspace` cannot reach.
+      #
+      # `apps/cli` requests `selis-pdf-engine/builtin-fallback-fonts` to keep
+      # the full twelve-face Liberation set built in for desktop. Cargo
+      # unifies features across a whole build, so in `cargo test --workspace`
+      # *every* test binary - including the engine's own - links all twelve
+      # faces. The web configuration, where only the subsetted Serif faces are
+      # embedded and the rest are fetched, is therefore never exercised there.
+      #
+      # That configuration is not a duplicate run: the tests gated on
+      # `not(feature = "builtin-fallback-fonts")` exist only in it, and they
+      # are the ones that prove a document naming a non-resident standard-14
+      # font reports it as missing rather than silently rendering blank. Run
+      # this leg and the coverage disappears; delete it and the workspace run
+      # stays green while nothing is left testing the delivery seam. See
+      # `crates/selis-pdf-engine/tests/fallback_lazy.rs`.
+      - run: cargo test -p selis-pdf-engine
+        timeout-minutes: 10
       # The Tier-2 codec sandbox (SL-0.SBX.06) is feature-gated
       # (`wasm-host`), so --workspace alone never compiles the wasmtime
       # embedding or its hostile-module containment tests. The feature is
