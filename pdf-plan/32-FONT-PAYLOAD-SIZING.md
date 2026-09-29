@@ -218,8 +218,39 @@ manifest that describes bytes nobody ships.
 Subsets regenerate deterministically: 209 glyphs each, and `--check` agrees
 with what is committed.
 
-**Core WASM is not re-measured yet.** The projected figures (~440 kB with Serif
-Regular+Bold built in, ~367 kB with all fonts lazy) remain estimates from the
-measured contribution of the embedded faces, not a `size-check` run. The
-baseline is still the pre-change 1 275 596 B and must be re-recorded only from a
-real measurement.
+## Measured
+
+`cargo xtask size-check`, custom sections stripped, brotli:
+
+| | before | after | delta |
+|---|---|---|---|
+| `selis_pdf_wasm` | 1 275 596 B | **653 912 B** | **-621 684 B (-48.7%)** |
+| raw module | - | 2 254 817 B | - |
+
+Better than the ~440 kB projected, and for a reason worth recording: the two
+remaining subsets are 114 440 B raw, which brotli brings to about 66 kB, and
+the 1 625 684 B of removed faces compressed to far less than the 908 348 B
+their share of the old brotli total implied. Font bytes compress well as a
+population but the 84.9%-of-rodata figure was raw, so the saving is not
+proportional to it.
+
+All seven budgets pass; the baseline is re-recorded from this measurement. The
+five add-on modules are byte-identical to before, which is the expected result
+- they are separate builds and none of them embeds a fallback face.
+
+### The canary caught a mistake in this very work
+
+The first run of this work made xtask depend on `selis-pdf-wasm`, so the
+generator could emit the manifest from the very type the web shell parses -
+which cannot emit a shape its own reader rejects. That made the xtask wasm32
+`engine-viewer` canary jump 185 845 B -> 769 997 B, over its 400 000 B budget.
+
+The canary is doing its job, so the dependency moved to `[dev-dependencies]`
+and the generator now restates the format. The guarantee is kept by a test
+rather than by the type system: `the_emitted_manifest_matches_what_the_reader_expects`
+parses the generated document with the real `FallbackManifest::parse`, so a
+renamed field or changed type still fails the build. The canary is back to
+187 220 B.
+
+Worth noting for the next person: reaching into a module for one struct is not
+free, and the size canary is the cheapest place in the repo to find that out.

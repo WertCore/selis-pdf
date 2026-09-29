@@ -29,8 +29,6 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use selis_pdf_wasm::fallback_manifest::{FallbackFace, FallbackManifest, MANIFEST_VERSION};
-
 /// The faces built into the web module.
 ///
 /// Serif because it is metric-compatible with Times New Roman — the base-14
@@ -105,6 +103,85 @@ fn builtin_glyph_ids(font: &selis_bytes::Bytes) -> Vec<u16> {
     gids
 }
 
+/// The manifest version this generator writes, matching
+/// `selis_pdf_wasm::fallback_manifest::MANIFEST_VERSION`.
+///
+/// **Duplicated on purpose, and that is a real trade-off.** Sharing the type
+/// would guarantee the generator cannot emit a shape its own reader rejects -
+/// which is why it was written that way first. But xtask's wasm32 build is the
+/// `engine-viewer` size canary, and depending on `selis-pdf-wasm` to reach one
+/// struct pulled the whole engine in: 185 845 B -> 769 997 B, over the
+/// 400 000 B budget. So the wire format is restated here and pinned by a test
+/// that parses it with the real reader, which catches drift where it matters
+/// without making the canary pay for the whole engine.
+const MANIFEST_VERSION: u32 = 1;
+
+/// One face entry, as written to the manifest.
+struct FallbackFace {
+    /// The `family + style` face name.
+    name: String,
+    /// Compressed transfer size, bytes.
+    transfer_size: u32,
+    /// Decompressed size, bytes.
+    raw_size: u32,
+    /// Lowercase hex SHA-256 of the decompressed font.
+    sha256: String,
+}
+
+/// The manifest, as written. Field order here is the JSON field order.
+struct FallbackManifest {
+    /// Format version.
+    version: u32,
+    /// The faces on offer, sorted by name.
+    faces: Vec<FallbackFace>,
+}
+
+impl FallbackManifest {
+    /// Render the `selis-fallback/1` document.
+    fn to_json(&self) -> String {
+        let mut out = String::from("{\n  \"version\": ");
+        out.push_str(&self.version.to_string());
+        out.push_str(",\n  \"faces\": [");
+        for (i, f) in self.faces.iter().enumerate() {
+            out.push_str(if i == 0 { "\n" } else { ",\n" });
+            out.push_str("    {\n      \"name\": ");
+            out.push_str(&json_string(&f.name));
+            out.push_str(",\n      \"transfer_size\": ");
+            out.push_str(&f.transfer_size.to_string());
+            out.push_str(",\n      \"raw_size\": ");
+            out.push_str(&f.raw_size.to_string());
+            out.push_str(",\n      \"sha256\": ");
+            out.push_str(&json_string(&f.sha256));
+            out.push_str("\n    }");
+        }
+        out.push_str(if self.faces.is_empty() {
+            "]\n}\n"
+        } else {
+            "\n  ]\n}\n"
+        });
+        out
+    }
+}
+
+/// A minimal JSON string escape, for the two string fields.
+///
+/// Face names are ASCII identifiers and digests are hex, so this is
+/// belt-and-braces rather than load-bearing - but a generator that can emit
+/// invalid JSON should be impossible rather than merely unlikely.
+fn json_string(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('"');
+    for c in v.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
 /// Generate the subsets and the manifest.
 pub fn run(src: &Path, out: &Path, check: bool) -> Result<(), String> {
     let subset_dir = src.join("subset");
@@ -177,7 +254,7 @@ pub fn run(src: &Path, out: &Path, check: bool) -> Result<(), String> {
         version: MANIFEST_VERSION,
         faces,
     };
-    let json = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+    let json = manifest.to_json().into_bytes();
     let mpath = lazy_dir.join("manifest.json");
     if check {
         let have = std::fs::read(&mpath).unwrap_or_default();
@@ -240,4 +317,68 @@ pub fn default_src() -> PathBuf {
         .join("..")
         .join("assets")
         .join("fonts")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn face(name: &str) -> FallbackFace {
+        FallbackFace {
+            name: name.to_string(),
+            transfer_size: 61_971,
+            raw_size: 105_460,
+            sha256: "ca7f64dc81567369a64998ef274f4dc97fae3f6367cc87b215421189e68c87b2".to_string(),
+        }
+    }
+
+    /// The drift guard that replaced the shared type.
+    ///
+    /// The generator restates the manifest format rather than importing it, so
+    /// this asserts the emitted document is what the *real* reader accepts. If
+    /// a field is renamed, retyped or reordered on either side this fails -
+    /// the guarantee the shared-type approach gave, without making the wasm32
+    /// size canary depend on the whole engine.
+    #[test]
+    fn the_emitted_manifest_matches_what_the_reader_expects() {
+        let m = FallbackManifest {
+            version: MANIFEST_VERSION,
+            faces: vec![face("LiberationMono-Bold"), face("LiberationSans-Regular")],
+        };
+        let parsed =
+            selis_pdf_wasm::fallback_manifest::FallbackManifest::parse(m.to_json().as_bytes())
+                .expect("the real reader must accept what we emit");
+
+        assert_eq!(parsed.version, MANIFEST_VERSION);
+        assert_eq!(parsed.faces.len(), 2);
+        let b = parsed.face("LiberationMono-Bold").expect("face present");
+        assert_eq!(b.transfer_size, 61_971);
+        assert_eq!(b.raw_size, 105_460);
+        // The digest must survive the round trip byte for byte, or the whole
+        // verification story is decorative.
+        assert_eq!(b.sha256, face("LiberationMono-Bold").sha256);
+    }
+
+    /// An empty manifest is still valid JSON, not a truncated fragment.
+    #[test]
+    fn an_empty_manifest_is_still_valid() {
+        let m = FallbackManifest {
+            version: MANIFEST_VERSION,
+            faces: Vec::new(),
+        };
+        let parsed =
+            selis_pdf_wasm::fallback_manifest::FallbackManifest::parse(m.to_json().as_bytes())
+                .expect("empty but valid");
+        assert!(parsed.faces.is_empty());
+    }
+
+    /// Strings containing a quote, a backslash or a control character must
+    /// not be able to produce invalid JSON.
+    #[test]
+    fn json_string_escapes_quote_backslash_and_control_characters() {
+        assert_eq!(json_string("plain"), r#""plain""#);
+        assert_eq!(json_string("q\"b"), r#""q\"b""#);
+        assert_eq!(json_string("b\\s"), r#""b\\s""#);
+        assert_eq!(json_string("n\nl"), r#""n\u000al""#);
+    }
 }

@@ -20,9 +20,6 @@ selis-pdf-cos = { workspace = true }
 # The render sweep decodes oracle-driver PNG output (PDFium/pdf.js) with the
 # shared flate filter — harness-side decode of oracle output only (ADR-P0009).
 selis-pdf-filter = { workspace = true }
-# SL-3.FONT.12: the fallback manifest is produced by the same type the web
-# shell parses, so the generator cannot emit a shape the reader rejects.
-selis-pdf-wasm = { path = "../crates/selis-pdf-wasm" }
 selis-pdf-engine = { workspace = true }
 selis-shape = { workspace = true }
 # xtask is a tool at the shell boundary: it supplies the real monotonic clock
@@ -58,3 +55,12 @@ p256 = { workspace = true }
 rsa = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# Dev-only, and deliberately NOT a normal dependency: depending on
+# `selis-pdf-wasm` from the build graph pulled the whole engine into xtask's
+# wasm32 `engine-viewer` size canary (185 845 B -> 769 997 B, over its
+# 400 000 B budget). The manifest format is restated in `fallback_assets.rs`
+# and this dep exists only so its test can parse our output with the real
+# reader and catch drift. See `fallback_assets::tests`.
+selis-pdf-wasm = { path = "../crates/selis-pdf-wasm" }
