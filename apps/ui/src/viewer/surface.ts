@@ -17,7 +17,7 @@
  * - **Tests**: an in-memory recorder that captures frames as plain data.
  *
  * All four are the same three operations, so the compositor names only these
- * interfaces. That is also what keeps `platform-globals.test.ts` green: this
+ * interfaces. That is also what keeps `../platform/platform-globals.test.ts` green: this
  * package still touches no `OffscreenCanvas`, no `Worker`, and no
  * `requestAnimationFrame` — the seam holds where UI.01 put it, and the
  * compositor does not become a second way around it.

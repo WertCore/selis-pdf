@@ -18,8 +18,8 @@
  * viewer's `PageFitMode`, the ui-kit's `VERSION`, a shared constant — and the
  * runtime starts dragging the viewer into a package with no viewer, which is
  * the exact regression `REUSE.md` documents. So the constraint is a test rather
- * than a review comment, in the same idiom as `platform-globals.test.ts` and
- * `viewer/strings.test.ts`.
+ * than a review comment, in the same idiom as
+ * `../platform/platform-globals.test.ts` and `viewer/strings.test.ts`.
  *
  * ## What is checked, and what is not
  *

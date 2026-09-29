@@ -27,7 +27,7 @@
  * Everything host-specific arrives as a parameter: `post` is
  * `worker.postMessage`, `transfer` is `(canvas) => canvas.transferControlToOffscreen()`,
  * and the clock is built from the frame requester. This module names none of
- * them, so `platform-globals.test.ts` stays green and the same code serves the
+ * them, so `../platform/platform-globals.test.ts` stays green and the same code serves the
  * web app, the MV3 offscreen document, and the tests.
  */
 

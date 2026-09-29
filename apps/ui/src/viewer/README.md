@@ -11,7 +11,8 @@ the controller hands the shell one immutable `PageListState`, the compositor
 hands its `TileSurface` a `CompositorFrame` of plain geometry, and the host
 paints both. That is what lets the same code run in the web app, the extension
 and the desktop shell (ADR-P0022), and what lets the whole thing be tested in
-Node — the repo ships no jsdom, by ADR-P0021's zero-dependency rule.
+Node — the repo ships no jsdom, and SL-4.UI.01's `platform-globals` gate is the
+half of that which is mechanically enforced rather than merely agreed.
 
 ## The pieces
 
@@ -79,8 +80,9 @@ Two rules for the shell:
 origin at the MediaBox's bottom-left) into a `TextLayerFrame` of CSS-pixel boxes
 inside one page element. `selection.ts` answers every selection question as a pure
 function of that frame. Neither paints; the host renders the frame as ordinary
-DOM, which is what keeps `platform-globals.test.ts` green and lets the whole thing
-be asserted in Node (the repo ships no jsdom, by ADR-P0021).
+DOM, which is what keeps `../platform/platform-globals.test.ts` green and lets the
+whole thing be asserted in Node (the repo ships no jsdom, and that gate is what
+stops a platform global creeping back in).
 
 ### Four decisions worth knowing before you touch this
 
@@ -230,7 +232,7 @@ one page cannot be worded two ways.
   which is a TEXT.06 question, not a viewer one.
 - **No browser pass yet.** Every clause of the DoD is asserted as data — the
   count, the boxes, the key map, the announcement — because the repo ships no
-  jsdom (ADR-P0021). Nothing here has been looked at on a screen.
+  jsdom. Nothing here has been looked at on a screen.
 - **`state.highlights` is windowed, so a host that wants a per-page badge for
   every page in the document needs UI.06's page model.** The breakdown the
   viewer needs — a badge on each visible page — is complete; the breakdown a
@@ -356,7 +358,7 @@ sentence — which most languages need to do. `SL-4.UI.11` owns the real runtime
 `strings.test.ts` is the gate: it fails the build if a user-facing English
 literal reappears beside the catalogue, or if an aria label is assigned from a
 literal. It is a lint-style unit test, following the idiom
-`platform-globals.test.ts` set for the host seam.
+`../platform/platform-globals.test.ts` set for the host seam.
 
 ## The DoD clauses, and where they are proved
 

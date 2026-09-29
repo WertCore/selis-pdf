@@ -4,7 +4,7 @@
  * The DoD is one line - *"incremental search with match count, highlight-all,
  * next/previous, and progressive results as pages load"* - and each of its four
  * clauses is asserted here as something a Node test can honestly assert. The
- * repo ships no jsdom (ADR-P0021), so there is no DOM to assert against; what
+ * repo ships no jsdom, so there is no DOM to assert against; what
  * the viewer is responsible for is a set of numbers and a key map, and that is
  * what these check. A browser pass is still owed for the painted result, and
  * the viewer README says so rather than implying otherwise.

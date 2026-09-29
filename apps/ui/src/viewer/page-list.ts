@@ -6,12 +6,14 @@
  * offset, the window, the tile scheduler and the current page, and that hands
  * the shell a plain, immutable {@link PageListState} describing exactly what
  * to paint. It renders nothing itself — that is the shell's job, and it is why
- * this package is testable without a DOM (the repo ships no jsdom, by
- * ADR-P0021's zero-dependency rule) and reusable verbatim by every host.
+ * this package is testable without a DOM (the repo ships no jsdom, and the
+ * host seam below is why there is nothing here to simulate) and reusable
+ * verbatim by every host.
  *
  * Seams, kept where the plan puts them:
  * - **Host seam** — the engine arrives as an injected `PlatformAdapter`; no
- *   globals, no sniffing (SL-4.UI.01, enforced by the `platform-globals` test).
+ *   globals, no sniffing (SL-4.UI.01, enforced by
+ *   `../platform/platform-globals.test.ts`).
  * - **Host-specific input** — viewport metrics (size, scroll offset, device
  *   pixel ratio) and the two density-derived pixel values are *passed in*, not
  *   measured. Measuring needs `getBoundingClientRect` and `devicePixelRatio`,

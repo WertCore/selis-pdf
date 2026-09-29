@@ -14,7 +14,7 @@
  *    document JavaScript have no route to `openExternal`, and this file is where
  *    that is demonstrated rather than asserted in prose.
  *
- * What is **not** proved, and cannot be under ADR-P0021: that a real browser
+ * What is **not** proved, and cannot be without a browser: that a real browser
  * shows a convincing dialog, and that a reader recognises the host in it. The
  * prompt's *content* is asserted — the full destination, verbatim, plus the host
  * — because that is the part this code owns. The dialog's chrome is the shell's

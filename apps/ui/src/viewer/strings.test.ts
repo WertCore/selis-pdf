@@ -6,7 +6,7 @@
  * about the *shape* of the code, so the second test here is a gate rather than a
  * behaviour test: it scans the viewer's production sources and fails if a
  * user-facing English literal creeps back in beside the catalogue. It follows
- * the idiom `platform-globals.test.ts` established for the host seam — a
+ * the idiom `../platform/platform-globals.test.ts` established for the host seam — a
  * lint-style unit test in the same `pnpm -r test` pass, because Biome has no
  * rule for this and a rule that is only written down is a rule that erodes.
  *
