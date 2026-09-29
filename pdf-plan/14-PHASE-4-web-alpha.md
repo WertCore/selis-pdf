@@ -147,7 +147,9 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     ADR-P0016/P0017). `errors.ts` uses only registry codes. `mock-adapter.ts` is a full in-process
     reference; `contract.ts` is the one suite every transport runs. The DoD "lint" is a unit-test
     scan (`platform-globals.test.ts`, no Biome restricted-globals rule) that fails on bare platform
-    globals in production code — passing.
+    globals in production code — passing. The rule that scan enforces is now written down as
+    **ADR-P0044** (no DOM in the viewer: 18 forbidden globals, `apps/ui` tests run in plain Node),
+    recorded 2026-09-29 — see the citation fix at the end of UI.06 below.
   - **Open (deferred to the shell + WASM.01 JS leg):** no concrete browser/extension/Tauri adapter
     ships yet; the WASM.01 Worker protocol exists in `selis-pdf-wasm` (Rust) and maps onto
     `DocumentSourceDescriptor` inside a future transport, not in the UI. `apps/web/host` still owns
@@ -328,6 +330,11 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     relying on — that the viewer package can be asserted in Node — would look like a
     documented constraint when it is in fact an enforced host seam plus a convention nobody
     has yet written down anywhere.
+    - **Closed 2026-09-29.** The rule is now **ADR-P0044** (no DOM in the viewer: `apps/ui` names
+      none of 18 platform globals, and the repo ships no jsdom, so the viewer package is asserted
+      in plain Node). It states the 18 globals, the scan scope, and the gate's own blind spots.
+      All 15 corrected sites now cite ADR-P0044 alongside SL-4.UI.01 rather than pointing at a
+      test path alone; the 39 genuine ADR-P0021 licence citations were not touched.
   - **Other limits:** a mid-page `/XYZ` destination lands on the top of the page (reduced to page plus
     alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
     appearance and prompt readability are all owed a manual pass; only the prompt's *content* is

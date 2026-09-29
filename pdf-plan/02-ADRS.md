@@ -869,3 +869,60 @@ is measured on code, not font payload. The uni…UCS2… gate means a Chinese do
 embedded an Identity-CMap subset still replays by CID exactly as before. Accepted, this ADR is the
 contract the WASM shell implements; rejected or revised, only the file/addressing layer changes —
 the set/provide/revision API is already engine-internal.
+
+## ADR-P0044 — No DOM in the viewer: `apps/ui` names no platform global, and its tests run in Node
+**Status:** Accepted (recorded 2026-09-29 at SL-4.UI.01; **retroactive** — the gate
+has shipped and run since UI.01, this ADR is the missing record, not a new constraint)
+**Decision:** Production TypeScript under `apps/ui/src` names **none of eighteen platform
+globals** as a bare identifier — `window`, `document`, `navigator`, `location`,
+`localStorage`, `sessionStorage`, `indexedDB`, `caches`, `fetch`, `alert`, `confirm`,
+`prompt`, `crypto`, `chrome`, `browser`, `Worker`, `SharedArrayBuffer`,
+`OffscreenCanvas`. Every host capability arrives through the injected
+`PlatformAdapter` (SL-4.UI.01's host seam), and the repo ships **no DOM shim at all** —
+no jsdom, no happy-dom, no test-environment global anywhere in the tree — so every
+`apps/ui` test runs in plain Node and asserts plain data. This is enforced rather than
+agreed: `apps/ui/src/platform/platform-globals.test.ts` is a lint-style Vitest gate in
+the ordinary `pnpm -r test` pass (Biome has no restricted-globals rule), and it scans
+the **31** non-test `.ts` files under `apps/ui/src` today.
+The scan is deliberately narrow and worth stating exactly, because the exemptions are
+the design: every `.ts` under `apps/ui/src` recursively, excluding `*.test.ts` and
+`*.d.ts`; comments and **all** string literals (single, double, template) stripped
+before matching; then a bare-use test — the name may not be preceded by a word
+character, `.`, `$`, `"` or `'`, and may not be followed by `:`. That last clause is
+the whole point: a property key (`window:`) and member access
+(`adapter.window.setTitle`) are the *port*, not the global, and stay legal.
+**Rationale:** This is one decision with two claims, and the second is a consequence of
+the first rather than a separate goal. The host-blindness is what makes ADR-P0022's
+single-UI-for-three-hosts real: the web app, the MV3 extension and the Tauri shell run
+the same bundle, and they run it because the bundle cannot tell them apart. The
+Node-testability is what that blindness buys — with no DOM to assert against, the
+viewer is forced to publish `PageListState`, `TextLayerFrame` and `CompositorFrame` as
+plain geometry that a host paints, so what the viewer is *responsible for* is exactly
+what a test can check. A DOM shim would collapse that: a passing test would no longer
+imply a host-agnostic module. The second reason this is a gate and not a review comment
+is recorded in the audit at `4e0b1fb5`, which found **15** places in this repository
+citing ADR-P0021 — the *dependency licence* policy, which says nothing about jsdom —
+for this rule. A convention with no ADR number behind it gets cited at whatever number
+is nearest; naming it closes that, and the gate is what stops it re-eroding.
+**Consequences:** Property keys and member access remain legal, so the port is readable
+at the call site (`adapter.window`) — the gate constrains how the global is *reached*,
+not what may be named. The list is a literal array in the test file rather than a
+config, so adding a capability is a one-line change with a reviewer attached. The blind
+spots are recorded rather than hidden: the scanner keeps skipping inside a template
+literal, so a global referenced only in a `${…}` interpolation is missed; `.tsx`, `.js`
+and `.mjs` under `apps/ui/src` are not scanned at all (there are none today, which is
+what makes the claim exact rather than aspirational); and the matcher is a regex, not a
+parser, so a renamed destructure (`const { document: d } = …`) passes. It is a guardrail
+against accidental global access, not a proof of purity. Test files and `.d.ts` are
+exempt by design — they set up the doubles production code is forbidden to have. The
+gate covers `apps/ui` only: `apps/extension`, `apps/web/host` and the desktop shell
+name these globals on purpose, because naming them *is* the host's job. "What can be
+asserted honestly here?" now has a number to cite, and the viewer README, the UI boxes
+in `14-PHASE-4-web-alpha.md` and the module docs cite this ADR rather than a licence
+policy.
+**Rejected alternative:** adding jsdom/happy-dom to `apps/ui`'s devDependencies and
+testing against a simulated DOM — rejected because it makes the seam optional (green
+no longer implies host-blind), because a shim is a second source of behaviour that
+differs from every real host, and because it would buy assertions about the *shim*.
+**Superseding:** introducing a DOM shim, or a second UI package with a different rule,
+is a superseding ADR — not a dependency bump.

@@ -48,7 +48,8 @@
  * It also paints nothing. Like `compositor.ts` handing a `CompositorFrame` to a
  * `TileSurface`, this produces a `TextLayerFrame` that the host renders as
  * ordinary DOM. That is what makes the DoD testable at all: the repo ships no
- * jsdom, and holding no platform global is what keeps it that way (SL-4.UI.01),
+ * jsdom, and holding no platform global is what keeps it that way
+ * (SL-4.UI.01 / ADR-P0044),
  * so the layer has to be assertable as numbers rather than only as pixels on a
  * screen nobody has.
  */

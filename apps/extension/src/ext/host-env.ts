@@ -5,7 +5,7 @@
  * ## Why this module exists
  *
  * `apps/ui` is forbidden from touching platform globals (the gate is
- * `apps/ui/src/platform/platform-globals.test.ts`), so somebody has to. In the
+ * `apps/ui/src/platform/platform-globals.test.ts` — ADR-P0044), so somebody has to. In the
  * web app that somebody is `apps/web/host`'s entry point; in the extension it
  * is this package. Putting the globals behind
  * {@link HostEnv} is what lets `adapter.ts` be constructed in a Node test with

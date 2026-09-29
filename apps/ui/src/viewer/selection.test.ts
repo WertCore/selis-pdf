@@ -30,7 +30,8 @@
  *  3. Every partial selection is a pure slice, so it cannot introduce a
  *     separator, a reordering, or a re-joining of its own.
  *
- * The repo ships no jsdom, so there is no DOM here to assert against; the
+ * The repo ships no jsdom (ADR-P0044), so there is no DOM here to assert
+ * against; the
  * layer and the range are plain data, which is the whole of what the host hands
  * to the browser.
  */

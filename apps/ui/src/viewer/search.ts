@@ -6,7 +6,8 @@
  * match, and the highlight rectangles to paint. It renders nothing, reads no
  * viewport, and reaches for no platform global, exactly as `page-list.ts` does
  * (SL-4.UI.02), which is also what lets it be tested in Node: it holds no
- * platform global (SL-4.UI.01) and there is no jsdom to assert against.
+ * platform global (SL-4.UI.01 / ADR-P0044) and there is no jsdom to assert
+ * against.
  *
  * ## Four decisions this file exists to record
  *

@@ -49,7 +49,7 @@ function link(action: LinkAction, overrides: Partial<LinkAnnotation> = {}): Link
 
 const PAGE_THREE: PdfDestination = { page: 3, kind: "fit" };
 
-describe("scheme parsing (no URL API, per the SL-4.UI.01 globals gate)", () => {
+describe("scheme parsing (no URL API, per the ADR-P0044 globals gate)", () => {
 	it("reads a scheme, lowercased", () => {
 		expect(schemeOf("https://example.com")).toBe("https:");
 		expect(schemeOf("HTTPS://example.com")).toBe("https:");
