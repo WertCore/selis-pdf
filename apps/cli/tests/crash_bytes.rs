@@ -167,7 +167,10 @@ fn a_crashing_parse_reports_no_document_bytes() {
     // is the exact thing a parser bug would interpolate.
     let canary = &doc[64..64 + 48];
     let session = open(doc);
-    assert!(!session.is_empty(), "a real session is live during the crash");
+    assert!(
+        !session.is_empty(),
+        "a real session is live during the crash"
+    );
 
     // The injected bug: a slice of the open document formatted into the panic
     // message, with the session still in scope.
@@ -190,7 +193,10 @@ fn a_crashing_parse_reports_no_document_bytes() {
 
     let reporter = Reporter::new(Consent::Granted);
     let facts = PanicFacts::new(err.code(), "cli-command", "src/xref.rs");
-    assert!(reporter.record(&facts), "consent granted: the report is kept");
+    assert!(
+        reporter.record(&facts),
+        "consent granted: the report is kept"
+    );
 
     let report = reporter.reports().remove(0);
     let channels = vec![
@@ -242,15 +248,18 @@ fn a_second_crashing_parse_also_reports_no_document_bytes() {
     });
 
     let reporter = Reporter::new(Consent::Granted);
-    assert!(reporter.record(&PanicFacts::new(
-        err.code(),
-        "cli-command",
-        "src/objstm.rs"
-    )));
+    assert!(reporter.record(&PanicFacts::new(err.code(), "cli-command", "src/objstm.rs")));
     let report = reporter.reports().remove(0);
-    let channels = vec![("render", report.render()), ("Debug", format!("{report:?}"))];
+    let channels = vec![
+        ("render", report.render()),
+        ("Debug", format!("{report:?}")),
+    ];
     assert_no_document_bytes(doc, &channels);
-    assert!(channels[0].1.contains("site=objstm.rs"), "{}", channels[0].1);
+    assert!(
+        channels[0].1.contains("site=objstm.rs"),
+        "{}",
+        channels[0].1
+    );
 }
 
 /// The gate on the *type*, at the level a future maintainer meets it: a caller

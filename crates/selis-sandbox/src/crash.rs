@@ -103,8 +103,8 @@
 //! allocation storm inside a process that is already unhealthy.
 
 use std::fmt;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use selis_error::{Code, DocState};
 
@@ -602,7 +602,10 @@ mod tests {
         assert!(!out.contains('\u{202e}'), "{out}");
         assert!(!out.contains(' '), "{out}");
         // The structural markers survive: they are what makes a report useful.
-        assert!(strip("/Title").contains("Title"), "a /Name stays recognisable");
+        assert!(
+            strip("/Title").contains("Title"),
+            "a /Name stays recognisable"
+        );
         assert!(strip("FlateDecode").contains("FlateDecode"));
         assert!(strip("%%EOF").contains("EOF"));
         // And the length is bounded, so a long value cannot become a channel.

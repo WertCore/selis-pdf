@@ -63,8 +63,14 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
 /// reason is obvious without reading this file.
 const BANNED_FIELD_TYPES: &[(&str, &str)] = &[
     ("&[u8]", "a byte slice is a document until proven otherwise"),
-    ("Vec<u8>", "a byte buffer is a document until proven otherwise"),
-    ("&str", "a borrowed runtime string can be built from a document"),
+    (
+        "Vec<u8>",
+        "a byte buffer is a document until proven otherwise",
+    ),
+    (
+        "&str",
+        "a borrowed runtime string can be built from a document",
+    ),
     ("Cow<str>", "a runtime string can be built from a document"),
     ("PathBuf", "a path names a person and a document"),
     ("Path", "a path names a person and a document"),
@@ -283,7 +289,9 @@ mod tests {
         let text = "pub struct Report {\n    excerpt: Vec<u8>,\n    seq: u64,\n}\n";
         let violations = check_field_types(text);
         assert!(
-            violations.iter().any(|v| v.contains("excerpt") && v.contains("Vec<u8>")),
+            violations
+                .iter()
+                .any(|v| v.contains("excerpt") && v.contains("Vec<u8>")),
             "a byte buffer on Report must be flagged: {violations:?}"
         );
     }
@@ -293,7 +301,9 @@ mod tests {
         let text = "pub struct PanicFacts {\n    document: PathBuf,\n}\n";
         let violations = check_field_types(text);
         assert!(
-            violations.iter().any(|v| v.contains("document") && v.contains("PathBuf")),
+            violations
+                .iter()
+                .any(|v| v.contains("document") && v.contains("PathBuf")),
             "a path on PanicFacts must be flagged: {violations:?}"
         );
     }
@@ -349,12 +359,16 @@ mod tests {
     /// wrong lines and the allowlist means nothing.
     #[test]
     fn struct_bodies_are_brace_matched() {
-        let text = "pub struct Report {\n    seq: u64,\n}\npub struct Other {\n    leaked: Vec<u8>,\n}\n";
+        let text =
+            "pub struct Report {\n    seq: u64,\n}\npub struct Other {\n    leaked: Vec<u8>,\n}\n";
         let found = structs(text);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].0, "Report");
         assert!(found[0].1.contains("seq"));
-        assert!(!found[0].1.contains("leaked"), "body bled into the next struct");
+        assert!(
+            !found[0].1.contains("leaked"),
+            "body bled into the next struct"
+        );
         let violations = check_field_types(text);
         assert!(
             violations.iter().any(|v| v.contains("leaked")),
@@ -362,5 +376,3 @@ mod tests {
         );
     }
 }
-
-
