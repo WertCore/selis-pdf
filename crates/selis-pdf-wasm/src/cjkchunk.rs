@@ -911,7 +911,7 @@ mod tests {
             },
             report("ideographs-4", 418, chunk.to_vec()), // unexpected status
         ] {
-            let e = loader.accept(&bad, &mut g).err().expect("typed refusal");
+            let e = loader.accept(&bad, &mut g).expect_err("typed refusal");
             assert!(
                 matches!(
                     e.code(),
@@ -974,8 +974,7 @@ mod tests {
         let mut g = guard();
         let e = loader
             .accept(&report("ideographs-4", 200, chunk.to_vec()), &mut g)
-            .err()
-            .expect("refused");
+            .expect_err("refused");
         assert_eq!(e.code(), Code::BudgetBytes);
         assert!(!loader.set().covers(0x6F00));
         assert_eq!(loader.resident_bytes(), 0, "nothing was kept");
