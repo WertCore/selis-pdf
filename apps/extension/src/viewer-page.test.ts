@@ -60,7 +60,6 @@ function moduleOf(...parts: string[]): string {
 	return maskJs(readFileSync(join(pkgRoot, ...parts), "utf8")).text;
 }
 
-
 describe("the manifest names a page that ships (SL-4.EXT.09)", () => {
 	it("declares default_popup, and it is a packaged file", () => {
 		expect(manifest.action).toMatchObject({ default_popup: "viewer.html" });
@@ -174,7 +173,10 @@ describe("the page itself (SL-4.EXT.09)", () => {
 			const template = EN_VIEWER_CATALOGUE[key as keyof typeof EN_VIEWER_CATALOGUE];
 			const text = typeof template === "string" ? template : (template?.other ?? "");
 			const placeholders = [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1] ?? "");
-			expect(placeholders.filter((name) => name !== "toggle"), key).toEqual([]);
+			expect(
+				placeholders.filter((name) => name !== "toggle"),
+				key,
+			).toEqual([]);
 		}
 	});
 
@@ -266,7 +268,9 @@ describe("the stylesheet (SL-4.EXT.09)", () => {
 			[...tokens.matchAll(/^\s*(--selis-[\w-]+)\s*:/gm)].map((match) => match[1] ?? ""),
 		);
 		expect(defined.size).toBeGreaterThan(50);
-		const used = [...stylesheet.matchAll(/var\((--selis-[\w-]+)\)/g)].map((match) => match[1] ?? "");
+		const used = [...stylesheet.matchAll(/var\((--selis-[\w-]+)\)/g)].map(
+			(match) => match[1] ?? "",
+		);
 		expect(used.length).toBeGreaterThan(10);
 		for (const name of used) {
 			expect(defined, `${name} is not defined by tokens.css`).toContain(name);

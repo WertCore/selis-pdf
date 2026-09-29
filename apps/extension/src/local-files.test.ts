@@ -13,7 +13,6 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ALLOWED_OPTIONAL_HOST_PERMISSIONS, DENIED_HOST_PATTERNS } from "./permissions.js";
 import {
 	EXTENSIONS_PAGE,
 	FILE_ACCESS_TOGGLE,
@@ -26,6 +25,7 @@ import {
 	planLocalFileAccess,
 	readLocalFile,
 } from "./local-files.js";
+import { ALLOWED_OPTIONAL_HOST_PERMISSIONS, DENIED_HOST_PATTERNS } from "./permissions.js";
 
 /** A reader that records whether it was called and refuses to succeed. */
 function spyReader(): { calls: string[]; read: (url: string) => Promise<ArrayBuffer> } {
@@ -84,7 +84,6 @@ describe("EXT.09 the extension details deep link", () => {
 		expect(isExtensionId("")).toBe(false);
 	});
 });
-
 
 describe("EXT.09 readLocalFile asks before it reads, and does not read without the grant", () => {
 	it("never calls the reader when the grant is withheld", async () => {
@@ -159,13 +158,16 @@ describe("EXT.09 planLocalFileAccess names the cause, and only the cause it know
 	});
 });
 
-
 describe("EXT.09 classifySourceUrl", () => {
 	it("separates web from local from refused", () => {
 		expect(classifySourceUrl("https://example.com/a.pdf")?.kind).toBe("web");
 		expect(classifySourceUrl("http://example.com/a.pdf")?.kind).toBe("web");
 		expect(classifySourceUrl("file:///C:/a.pdf")?.kind).toBe("local");
-		for (const url of ["data:application/pdf;base64,JVBER", "blob:https://x.test/1", "wss://x.test/a"]) {
+		for (const url of [
+			"data:application/pdf;base64,JVBER",
+			"blob:https://x.test/1",
+			"wss://x.test/a",
+		]) {
 			expect(classifySourceUrl(url)?.kind, url).toBe("unsupported");
 		}
 	});

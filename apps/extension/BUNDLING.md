@@ -45,6 +45,30 @@ worker, so it is the one row two contexts load; it touches `chrome` only inside
 a factory, never at module scope, which is what lets a worker with no DOM
 import it.
 
+### The local-file flow's four rows (SL-4.EXT.09)
+
+A second page stylesheet and three compiled modules, added the same way:
+
+| Row | Why it ships |
+|---|---|
+| `viewer.css` | The viewer's own layout, for the same reason and under the same rules as `options.css`. It styles one panel, and `viewer-page.test.ts` enforces the same two halves — no colour literal, every token real. |
+| `extension/src/local-files.js` | The `file://` flow's decisions, with no `chrome.*` and no DOM in it. Pure is what makes the whole state space of a permission flow testable without a browser. |
+| `extension/src/viewer-strings.js` | The viewer page's catalogue, registered against the shared runtime below. |
+| `ui/src/i18n/message.js`, `ui/src/i18n/runtime.js` | SL-4.UI.11's runtime, shipped **instead of** a third hand-rolled formatter. `apps/ui/src/i18n/i18n-boundary.test.ts` is the gate that keeps these two rows importable without dragging the viewer in, and it names this package as the consumer they were split for. They cost ~20 KB of the 1 MB shell budget and displace none of it. |
+
+Four new rows is four more chances to ship something remote, so the four plants
+below are re-run against them: a `url(https://…)` appended to `dist/viewer.css`
+fails as `remote-url-literal` (a sheet is neither a module, a page nor the
+manifest), a remote literal appended to `dist/ui/src/i18n/runtime.js` fails as
+`remote-url-literal` with the URL quoted, a `<link href="https://…">` appended
+to `dist/viewer.html` fails as `remote-resource-ref`, and deleting the
+`local-files.js` row from `PACKAGE_ENTRIES` makes the two modules that import it
+fail as `unresolved-import`. All four exit 1.
+
+The `local-files.js` case is the one worth having: it is a *structural* check
+firing on a real importer, which is the difference between "the gate read the
+new file" and "the gate read the file the new code depends on".
+
 ### The one file nothing else implies (SL-4.EXT.03)
 
 `extension/src/ext/wasm-worker.js` is loaded by

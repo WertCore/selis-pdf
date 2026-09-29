@@ -34,8 +34,8 @@
 
 import type { PickOpenOptions } from "../../../ui/src/platform/adapter.js";
 import type { DocumentSourceDescriptor } from "../../../ui/src/platform/types.js";
-import { ENSURE_ENGINE_HOST } from "./engine-protocol.js";
 import { type FileAccess, extensionDetailsUrl } from "../local-files.js";
+import { ENSURE_ENGINE_HOST } from "./engine-protocol.js";
 
 /** The subset of a `chrome.runtime` port this package uses. */
 export interface HostPort {

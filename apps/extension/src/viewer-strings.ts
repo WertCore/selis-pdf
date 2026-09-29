@@ -215,7 +215,10 @@ export function createViewerFormatter(options: ViewerRuntimeOptions = {}) {
  */
 let bound: ((key: MessageKey, values?: Record<string, string | number>) => string) | null = null;
 
-export function viewerText(key: ViewerMessageKey, values?: Record<string, string | number>): string {
+export function viewerText(
+	key: ViewerMessageKey,
+	values?: Record<string, string | number>,
+): string {
 	if (bound === null) {
 		bound = createViewerFormatter();
 	}
@@ -224,7 +227,6 @@ export function viewerText(key: ViewerMessageKey, values?: Record<string, string
 
 /** The browser's own name for the switch, for `{toggle}`. */
 export const TOGGLE_NAME = FILE_ACCESS_TOGGLE;
-
 
 /** The locale this package ships: English, resolved as a source catalogue like any other. */
 export const VIEWER_LOCALE = SOURCE_LOCALE;

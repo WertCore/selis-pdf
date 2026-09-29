@@ -316,7 +316,9 @@ export function hostAccessRows(
 		hosts.length === 0
 			? [{ pattern: "", key: "options.permissions.hosts.none" }]
 			: hosts.map((pattern) => ({ pattern, key: "options.permissions.host" }));
-	return rows.concat(optional.map((pattern) => ({ pattern, key: "options.permissions.host.optional" })));
+	return rows.concat(
+		optional.map((pattern) => ({ pattern, key: "options.permissions.host.optional" })),
+	);
 }
 
 const MEBIBYTE = 1024 * 1024;

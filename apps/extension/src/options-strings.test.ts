@@ -34,7 +34,11 @@ import {
 	hostAccessRows,
 	permissionMessageKeys,
 } from "./options-strings.js";
-import { ALLOWED_HOST_PERMISSIONS, ALLOWED_OPTIONAL_HOST_PERMISSIONS, ALLOWED_PERMISSIONS } from "./permissions.js";
+import {
+	ALLOWED_HOST_PERMISSIONS,
+	ALLOWED_OPTIONAL_HOST_PERMISSIONS,
+	ALLOWED_PERMISSIONS,
+} from "./permissions.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -190,9 +194,7 @@ describe("the capability list (SL-4.EXT.07)", () => {
 	it("still answers with the granted sentence alone when nothing is declared optional", () => {
 		// A host that passes no optional list gets exactly the pre-EXT.09 answer,
 		// rather than a stray empty row.
-		expect(hostAccessRows([])).toEqual([
-			{ pattern: "", key: "options.permissions.hosts.none" },
-		]);
+		expect(hostAccessRows([])).toEqual([{ pattern: "", key: "options.permissions.hosts.none" }]);
 	});
 });
 

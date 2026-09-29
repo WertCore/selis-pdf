@@ -98,15 +98,15 @@ review. `OPTIONS.md` records what the page does and does not say.
 
 ## Interception coverage (SL-4.EXT.02)
 
-`src/permissions.ts` holds `PATTERN_MATRIX`: 38 real-world PDF-serving patterns,
+`src/permissions.ts` holds `PATTERN_MATRIX`: 40 real-world PDF-serving patterns,
 each with a verdict and a reason. `src/manifest.test.ts` re-derives every
 verdict from the shipped ruleset, so the table cannot drift into fiction.
 
 | Verdict | Count | Meaning |
 |---|---|---|
-| `intercepted` | 22 | Redirected to `viewer.html?src=<url>` by URL shape. |
-| `not-matched` | 9 | Not redirected. Mostly deliberate: `main_frame`-only, so an app's own `fetch()` and an `<embed>` are untouched. |
-| `cannot-work` | 7 | No permission this extension holds could redirect them. Each names the capability required (host permissions for the origin, or a non-`http(s)` scheme). |
+| `intercepted` | 24 | Redirected to `viewer.html?src=<url>` by URL shape. Three of them are `file://`, and only once the reader has granted file access (SL-4.EXT.09). |
+| `not-matched` | 10 | Not redirected. Mostly deliberate: `main_frame`-only, so an app's own `fetch()` and an `<embed>` are untouched. |
+| `cannot-work` | 6 | No permission this extension holds could redirect them. Each names the capability required (host permissions for the origin, or a non-`http(s)` scheme). |
 
 The `cannot-work` set, by class:
 
@@ -116,15 +116,26 @@ The `cannot-work` set, by class:
   need host access.
 - **POST-produced PDF at an extensionless URL** — the browser does not
   re-navigate a POST response, so there is no navigation to intercept.
-- **`blob:`, `data:`, `wss:` and `file://`** — not main-frame navigations, or
-  outside the `^https?://` rule. `file://` additionally needs the user's
-  "Allow access to file URLs" toggle, which is SL-4.EXT.09's scope.
+- **`blob:`, `data:` and `wss:`** — not main-frame navigations, or outside the
+  `^https?://` rule.
+
+`file://` is no longer in this set. SL-4.EXT.09 moved it to `intercepted` and
+added the third rule, so the honest statement is narrower and more useful: a
+local `.pdf` navigation **is** redirected, and only once the reader has granted
+file access. Before that grant it is not that the extension cannot see the
+file — it is that nothing intercepts, nothing fails and no error is ever raised,
+which is why the flow detects the grant with
+`chrome.extension.isAllowedFileSchemeAccess()` instead of waiting for an
+interception that will not happen. The matrix says so on the row, and the
+`src/local-files.ts` module doc is the long version.
 
 Two classes are intercepted but worth naming in review: a `.pdf`-path URL that
 actually serves `text/html` (a soft 404) now shows a parse error in the viewer
 rather than the browser's page, and a `Content-Disposition: attachment` PDF is
 shown rather than downloaded. Both follow from matching on URL shape, and both
-are recorded in the matrix.
+are recorded in the matrix. A third joins them with EXT.09: with the toggle on,
+a local `.pdf` opens in this viewer rather than in Chrome's own, and a
+`file://` page that is not a PDF is still left to the browser.
 
 ## Notes for review
 

@@ -13,8 +13,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { viewerUrlFor } from "./permissions.js";
 import { createFakeHostEnv } from "./ext/fake-host-env.js";
+import { viewerUrlFor } from "./permissions.js";
 import {
 	ViewerSourceError,
 	documentUrlFromViewerLocation,

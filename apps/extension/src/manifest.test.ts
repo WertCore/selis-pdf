@@ -351,7 +351,10 @@ describe("the validator refuses a local-file pattern that has not been justified
 
 	it("passes when the optional list is exactly the approved one", () => {
 		expect(
-			validateManifest({ ...clean, optional_host_permissions: [...ALLOWED_OPTIONAL_HOST_PERMISSIONS] }),
+			validateManifest({
+				...clean,
+				optional_host_permissions: [...ALLOWED_OPTIONAL_HOST_PERMISSIONS],
+			}),
 		).toEqual([]);
 	});
 

@@ -35,6 +35,13 @@
  */
 
 import type { PlatformAdapter } from "../../ui/src/platform/adapter.js";
+import { type HostEnv, createBrowserHostEnv } from "./ext/host-env.js";
+import {
+	createBrowserViewerSession,
+	describeFailure,
+	openDocument,
+	sourceName,
+} from "./ext/viewer-session.js";
 import {
 	type ClassifiedSource,
 	type FileAccess,
@@ -44,13 +51,6 @@ import {
 	readLocalFile,
 } from "./local-files.js";
 import { SRC_PARAM } from "./permissions.js";
-import { type HostEnv, createBrowserHostEnv } from "./ext/host-env.js";
-import {
-	createBrowserViewerSession,
-	describeFailure,
-	openDocument,
-	sourceName,
-} from "./ext/viewer-session.js";
 import { TOGGLE_NAME, type ViewerMessageKey, viewerText } from "./viewer-strings.js";
 
 /** Why a viewer session has no document, for the SL-4.UI.12 error state.
@@ -85,7 +85,6 @@ const IDS = {
 	localUrl: "selis-local-url",
 	localGo: "selis-local-go",
 } as const;
-
 
 /**
  * The document URL this viewer session should open, classified.
@@ -160,7 +159,6 @@ export function fileNameFromUrl(documentUrl: string): string {
 	}
 }
 
-
 /** The sentence for one local-file state, as a catalogue key. */
 export function localStateKey(access: FileAccess): ViewerMessageKey {
 	if (access === "granted") {
@@ -181,7 +179,9 @@ export function sourceErrorKey(reason: ViewerSourceError["reason"]): ViewerMessa
 	if (reason === "missing-src") {
 		return null;
 	}
-	return reason === "invalid-src" ? "viewer.status.invalidSource" : "viewer.status.unsupportedScheme";
+	return reason === "invalid-src"
+		? "viewer.status.invalidSource"
+		: "viewer.status.unsupportedScheme";
 }
 
 /** The sentence for the outcome of a read, or `null` when the read succeeded. */
@@ -227,7 +227,6 @@ function fill(root: Element): void {
 		node.textContent = viewerText(key, { toggle: TOGGLE_NAME });
 	}
 }
-
 
 /**
  * The `file://` flow, as one function over the state space.
@@ -310,7 +309,6 @@ async function openChosenFile(deps: ViewerDeps, container: HTMLElement): Promise
 		);
 	}
 }
-
 
 /**
  * The panel's three controls, wired to the flow.
@@ -397,16 +395,22 @@ async function openDocumentAt(
 	try {
 		const bytes = await deps.read(url);
 		const adapter = await deps.session();
-		const { doc } = await openDocument(adapter, { kind: "bytes", bytes, name: fileNameFromUrl(url) });
+		const { doc } = await openDocument(adapter, {
+			kind: "bytes",
+			bytes,
+			name: fileNameFromUrl(url),
+		});
 		report(
 			container,
 			viewerText("viewer.status.opened", { name: fileNameFromUrl(url), pages: doc.pageCount }),
 		);
 	} catch (error) {
-		report(container, viewerText("viewer.status.failure", { reason: describeFailure(error).message }));
+		report(
+			container,
+			viewerText("viewer.status.failure", { reason: describeFailure(error).message }),
+		);
 	}
 }
-
 
 /** The dependencies the page actually runs with. */
 export function browserDeps(): ViewerDeps {

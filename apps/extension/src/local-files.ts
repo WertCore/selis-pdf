@@ -58,7 +58,6 @@
  * `ext/host-env.ts`, and the words are `viewer-strings.ts`.
  */
 
-
 /**
  * The one name the user sees for the switch, in the browser's own words.
  *
@@ -98,7 +97,6 @@ export function extensionDetailsUrl(extensionId: string): string {
 	const id = extensionId.trim();
 	return isExtensionId(id) ? `${EXTENSIONS_PAGE}?id=${id}` : "";
 }
-
 
 /**
  * Whether the user has granted the extension access to `file://` URLs.
@@ -188,7 +186,6 @@ export function planLocalFileAccess(access: FileAccess, read: LocalRead): LocalF
 	return access === "unknown" ? "unchecked" : "request";
 }
 
-
 /**
  * The one place a `file://` read is decided, and the place that makes the
  * "never touched it" claim enforceable.
@@ -222,7 +219,6 @@ export async function readLocalFile(
 		return "failed";
 	}
 }
-
 
 /** A `?src=` value, classified. */
 export type SourceKind = "web" | "local" | "unsupported";
