@@ -10,8 +10,8 @@
  *
  * Everything here is pure: ranges in, strings out. It is the same shape as
  * `layout.ts` — geometry with no knowledge of tiles, the shell, or the host —
- * and the reason is the same: it is testable in Node under ADR-P0021's
- * zero-dependency rule, with no jsdom and no engine.
+ * and the reason is the same: it is testable in Node, because it reaches for no
+ * platform global (SL-4.UI.01) and there is no jsdom and no engine here.
  *
  * ## The rules, and where each one comes from
  *

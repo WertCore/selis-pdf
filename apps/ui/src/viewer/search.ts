@@ -5,8 +5,8 @@
  * the shell one immutable {@link SearchState}: the match count, the current
  * match, and the highlight rectangles to paint. It renders nothing, reads no
  * viewport, and reaches for no platform global, exactly as `page-list.ts` does
- * (SL-4.UI.02), which is also what lets it be tested in Node under ADR-P0021's
- * zero-dependency rule with no jsdom to assert against.
+ * (SL-4.UI.02), which is also what lets it be tested in Node: it holds no
+ * platform global (SL-4.UI.01) and there is no jsdom to assert against.
  *
  * ## Four decisions this file exists to record
  *

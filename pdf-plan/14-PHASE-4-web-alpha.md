@@ -232,7 +232,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     fractional-DPR floor bug is handled and tested), and the provisional-scale-then-refine zoom
     path. The host-agnostic package still touches no `OffscreenCanvas`, no `Worker` and no
     `requestAnimationFrame` — those sit behind the injected `TileSurface`/`FrameClock` ports, so
-    `platform-globals.test.ts` stays green.
+    `apps/ui/src/platform/platform-globals.test.ts` stays green.
   - **This task had no `DoD:` line**, unlike its neighbours. The DoD it inherits is UI.02's 60 fps
     claim, which it is what finally measures for real — see the UI.02 note above and
     `xtask/bench/`. Noted rather than papered over: a benchmark is not a substitute for a stated
@@ -255,8 +255,8 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     factor) and *not* `devicePixelRatio` (nominal). The layer is DOM in CSS pixels; a device ratio
     would introduce proportional, plausible-looking drift. Asserted explicitly.
   - **Limits recorded, not papered over:** direction is taken per line from the quads (not UAX #9),
-    so mixed-direction lines are a known limit; no live-region caret announcements; and under
-    ADR-P0021's no-jsdom rule selection is asserted **as data** — real glyph alignment,
+    so mixed-direction lines are a known limit; no live-region caret announcements; and with no
+    jsdom in the tree selection is asserted **as data** — real glyph alignment,
     find-in-page and screen-reader behaviour still need a manual browser pass.
 - [x] **SL-4.UI.05 — Search UI** · deps: SL-3.TEXT.06 · owner: AI
   - **Do:** Incremental search with match count, highlight-all, next/previous, and progressive
@@ -281,7 +281,8 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     navigable match with **no** rectangle — the engine normalises (ligatures, soft hyphens, NFD)
     before searching, so offsets can be non-authoritative, and making them authoritative is a
     TEXT.06 question. The per-page breakdown is windowed, not document-wide; a results *sidebar*
-    would need UI.06's page model. And under ADR-P0021 nothing has been looked at on a screen.
+    would need UI.06's page model. And with no jsdom in the tree, nothing has been looked at on
+    screen.
 - [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
     the full destination shown, and `/Launch` is refused.  - **The UI is complete (7 commits, 5 240 lines, 156 new tests, 440 in `apps/ui`); the box stays open
@@ -315,12 +316,18 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     is about links - outline, thumbnails, page labels and destinations have **no stated acceptance
     criteria at all**, so the design decisions behind them (bijective base-26 labels, roman cap at
     3999, the row cap, two schedulers) are unrecorded judgement calls a reviewer cannot check. Also,
-    **ADR-P0021 is cited throughout for a rule it does not contain**: as written it is the *dependency
-    licence* policy (`deny.toml`/`cargo deny`), while the no-jsdom / zero-dependency convention
-    lives in `03-CONVENTIONS.md`. That mis-citation is pre-existing and widespread (it appears in
-    `page-list.ts`, `text-layer.ts`, `search.ts`, the viewer README and the plan itself), and it
-    makes the ADR trail misleading on exactly the question "what can be asserted headlessly". Worth
-    fixing centrally.
+    **ADR-P0021 was cited throughout for a rule it does not contain**: as written it is the
+    *dependency licence* policy (`deny.toml`/`cargo deny`), while the no-jsdom /
+    no-platform-globals convention it was cited for is SL-4.UI.01's host seam, enforced by
+    `apps/ui/src/platform/platform-globals.test.ts` — not by the ADR, and not by
+    `03-CONVENTIONS.md`, which has no such clause. That mis-citation was pre-existing and
+    widespread (it appeared in `page-list.ts`, `text-layer.ts`, `search.ts`, the viewer README
+    and the plan itself), and it made the ADR trail misleading on exactly the question
+    "what can be asserted headlessly": a reader who followed the citation through to the
+    licence allow-list would find nothing about jsdom, and the rule they were actually
+    relying on — that the viewer package can be asserted in Node — would look like a
+    documented constraint when it is in fact an enforced host seam plus a convention nobody
+    has yet written down anywhere.
   - **Other limits:** a mid-page `/XYZ` destination lands on the top of the page (reduced to page plus
     alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
     appearance and prompt readability are all owed a manual pass; only the prompt's *content* is

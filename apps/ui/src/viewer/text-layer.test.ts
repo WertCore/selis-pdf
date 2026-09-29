@@ -10,7 +10,7 @@
  * or its scale ever changes, these fail with a number rather than a diff.
  *
  * What a Node test can honestly assert is the layer's contract as data, which
- * is the whole of what a host consumes. The repo ships no jsdom (ADR-P0021), so
+ * is the whole of what a host consumes. The repo ships no jsdom, so
  * there is no DOM to assert against; the host paints `TextLayerFrame` and the
  * browser's own text layout is what puts the glyphs there. Asserting the boxes
  * is therefore asserting everything the viewer is responsible for.

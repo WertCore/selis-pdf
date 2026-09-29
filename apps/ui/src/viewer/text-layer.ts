@@ -44,12 +44,13 @@
  *
  * This module is pure arithmetic over plain data and touches no platform
  * global — no `OffscreenCanvas`, no `Worker`, no `requestAnimationFrame` — so it
- * lives in the host-agnostic package and `platform-globals.test.ts` stays green.
+ * lives in the host-agnostic package and `../platform/platform-globals.test.ts` stays green.
  * It also paints nothing. Like `compositor.ts` handing a `CompositorFrame` to a
  * `TileSurface`, this produces a `TextLayerFrame` that the host renders as
  * ordinary DOM. That is what makes the DoD testable at all: the repo ships no
- * jsdom (ADR-P0021's zero-dependency rule), so the layer has to be assertable
- * as numbers rather than only as pixels on a screen nobody has.
+ * jsdom, and holding no platform global is what keeps it that way (SL-4.UI.01),
+ * so the layer has to be assertable as numbers rather than only as pixels on a
+ * screen nobody has.
  */
 
 import type { PageTextLayer, TextLayerLine } from "../platform/types.js";
