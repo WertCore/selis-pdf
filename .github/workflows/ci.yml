@@ -81,6 +81,12 @@ jobs:
       # hides from the gate in dead-feature code. Same policy as `xtask lint`:
       # the workspace `[lints]` deny list, not `-D warnings`.
       - run: cargo clippy -p selis-sandbox -p selis-pdf-filter --features wasm-host --all-targets
+      # SL-4.SHIP.01, named as its own step so a failure says which policy
+      # broke rather than surfacing as a generic `xtask lint` failure. It also
+      # runs inside `xtask lint`; the duplicate is deliberate — a privacy gate
+      # that only fails as part of a six-gate run is a gate nobody notices.
+      - name: Crash-report hygiene (ADR-P0017)
+        run: cargo xtask check-crash-hygiene
 
   # ── build matrix (6 targets, 03-CONVENTIONS.md §9) ──────────────────────────
   build:
