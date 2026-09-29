@@ -22,9 +22,80 @@
 		-->
 		<link rel="stylesheet" href="./ui-kit/css/tokens.css" />
 		<link rel="stylesheet" href="./ui-kit/css/base.css" />
+		<link rel="stylesheet" href="./viewer.css" />
 		<script type="module" src="./extension/src/viewer-boot.js"></script>
 	</head>
 	<body class="selis-root">
-		<main id="selis-viewer" class="selis-doc-area"></main>
+		<main id="selis-viewer" class="selis-doc-area">
+			<!--
+				SL-4.EXT.09. Two rules govern everything below, and
+				`src/viewer-page.test.ts` is what keeps them true, exactly as
+				`options-page.test.ts` keeps them true for the options page:
+
+				1. **No text.** Not one visible character is written here. Every
+				   string is a `data-i18n` key resolved from `src/viewer-strings.ts`
+				   at boot, against the shared `apps/ui` i18n runtime, so a rename
+				   of anything on this page is a catalogue change rather than an
+				   edit to a shipped file.
+				2. **Same-extension-origin references only.** The three stylesheets
+				   are @selis/ui-kit's two and this package's own `viewer.css`,
+				   copied in rather than linked from a CDN (ADR-P0028 — a CDN
+				   would be remote code), and no inline script.
+
+				The panel is the whole of the `file://` flow and it is `hidden` in
+				the markup: a web PDF arriving from the DNR redirect must not also
+				show a reader a form asking them to switch a browser setting they
+				have no reason to touch. `bootViewer` reveals it only on a `file:`
+				source or on no source at all.
+			-->
+			<p id="selis-status" class="selis-viewer__status" role="status" aria-live="polite"></p>
+
+			<section
+				id="selis-local"
+				class="selis-viewer__local"
+				aria-labelledby="selis-local-heading"
+				hidden
+			>
+				<h1 id="selis-local-heading" class="selis-viewer__heading" tabindex="-1" data-i18n="viewer.local.heading"></h1>
+				<p class="selis-viewer__body" data-i18n="viewer.local.lede"></p>
+				<p id="selis-local-state" class="selis-viewer__body" role="status" aria-live="polite"></p>
+				<ol class="selis-viewer__steps">
+					<li id="selis-local-steps" data-i18n="viewer.local.steps"></li>
+				</ol>
+				<div class="selis-viewer__actions">
+					<!--
+						No `href` in the markup. The target is this extension's id
+						plus Chrome's own page, and the id is not known until the
+						page runs, so a literal here would be a link that either
+						goes nowhere or goes to a list of every extension. The boot
+						fills it, and leaves it absent when the id is not available
+						— the written steps above are the fallback, which is why
+						they are on screen whether or not the link works.
+					-->
+					<a id="selis-local-settings" class="selis-viewer__btn" data-i18n="viewer.local.openSettings"></a>
+					<button id="selis-local-check" class="selis-viewer__btn" type="button" data-i18n="viewer.local.check"></button>
+					<button id="selis-local-choose" class="selis-viewer__btn selis-viewer__btn--primary" type="button" data-i18n="viewer.local.choose"></button>
+				</div>
+				<p class="selis-viewer__body selis-viewer__body--quiet" data-i18n="viewer.local.chooseHelp"></p>
+				<p class="selis-viewer__body selis-viewer__body--quiet" data-i18n="viewer.local.privacy"></p>
+
+				<form id="selis-local-form" class="selis-viewer__address">
+					<label class="selis-viewer__label" for="selis-local-url" data-i18n="viewer.local.addressLabel"></label>
+					<div class="selis-viewer__address-row">
+						<input
+							id="selis-local-url"
+							class="selis-viewer__input"
+							type="text"
+							inputmode="url"
+							autocomplete="off"
+							spellcheck="false"
+							aria-describedby="selis-local-url-help"
+						/>
+						<button id="selis-local-go" class="selis-viewer__btn" type="submit" data-i18n="viewer.local.addressSubmit"></button>
+					</div>
+					<p id="selis-local-url-help" class="selis-viewer__body selis-viewer__body--quiet" data-i18n="viewer.local.addressHelp"></p>
+				</form>
+			</section>
+		</main>
 	</body>
 </html>

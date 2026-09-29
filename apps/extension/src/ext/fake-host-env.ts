@@ -16,6 +16,7 @@
 
 import type { PickOpenOptions } from "../../../ui/src/platform/adapter.js";
 import type { DocumentSourceDescriptor } from "../../../ui/src/platform/types.js";
+import type { FileAccess } from "../local-files.js";
 import type { HostEnv, HostPort, HostRuntime } from "./host-env.js";
 
 /** Everything the fake env was asked to do. */
@@ -27,6 +28,21 @@ export interface HostRecording {
 	readonly filePicks: PickOpenOptions[];
 	/** How many times the page asked the worker for an engine document. */
 	ensureEngineHostCalls: number;
+	/** How many times the page asked whether the `file://` grant is on. */
+	fileAccessCalls: number;
+	/** The last `file://` grant the page was told about. */
+	fileAccess: FileAccess;
+	/** How many times the page asked to open the browser's details page. */
+	settingsOpened: number;
+	/**
+	 * What `openExtensionSettings` hands back.
+	 *
+	 * `""` is a real case, not an error case: a browser that will not open
+	 * `chrome://extensions` — or an unpacked extension with no id — leaves the flow
+	 * to fall back on the written steps, and a test that cannot produce that state
+	 * cannot check the fallback.
+	 */
+	settingsUrl: string;
 }
 
 /** A fake env plus the ability to steer what a `connect` returns. */
@@ -39,6 +55,8 @@ export interface FakeHostEnv {
 	queueOpen(sources: readonly DocumentSourceDescriptor[]): void;
 	/** Make `ensureEngineHost` reject, as a worker that cannot create one would. */
 	failEngineHost(error: Error): void;
+	/** Make `fileAccess` reject, as a browser without the API would. */
+	failFileAccess(error: Error): void;
 }
 
 /** Build a fake env. */
@@ -50,11 +68,16 @@ export function createFakeHostEnv(): FakeHostEnv {
 		externalUrls: [],
 		filePicks: [],
 		ensureEngineHostCalls: 0,
+		fileAccessCalls: 0,
+		fileAccess: "withheld",
+		settingsOpened: 0,
+		settingsUrl: "chrome://extensions/?id=abcdefghijklmnopabcdefghijklmnop",
 	};
 	const store = new Map<string, string>();
 	let port: HostPort | null = null;
 	let queued: readonly DocumentSourceDescriptor[] = [];
 	let ensureFailure: Error | null = null;
+	let fileAccessFailure: Error | null = null;
 
 	const runtime: HostRuntime = {
 		connect() {
@@ -103,6 +126,20 @@ export function createFakeHostEnv(): FakeHostEnv {
 				throw ensureFailure;
 			}
 		},
+		async fileAccess() {
+			recording.fileAccessCalls += 1;
+			if (fileAccessFailure !== null) {
+				throw fileAccessFailure;
+			}
+			return recording.fileAccess;
+		},
+		openExtensionSettings() {
+			recording.settingsOpened += 1;
+			return recording.settingsUrl;
+		},
+		extensionSettingsUrl() {
+			return recording.settingsUrl;
+		},
 		now() {
 			return 0;
 		},
@@ -119,6 +156,9 @@ export function createFakeHostEnv(): FakeHostEnv {
 		},
 		failEngineHost(error) {
 			ensureFailure = error;
+		},
+		failFileAccess(error) {
+			fileAccessFailure = error;
 		},
 	};
 }

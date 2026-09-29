@@ -198,11 +198,21 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	// package's: it may not hard-code a value the ui-kit tokens define, and
 	// `options-page.test.ts` reads it to check exactly that.
 	{ out: "options.css", from: "root" },
+	// SL-4.EXT.09: the viewer's own stylesheet, for the same reason and under the
+	// same rules as the row above. A new page stylesheet is a new shipped file, so
+	// the ship list is where that decision is recorded — and the gate checks what
+	// this list names and nothing else.
+	{ out: "viewer.css", from: "root" },
 	{ out: "offscreen.html", from: "root" },
 	{ out: "service-worker.js", from: "root" },
 	{ out: "offscreen.js", from: "root" },
 	{ out: "extension/src/permissions.js", from: "build" },
 	{ out: "extension/src/viewer-boot.js", from: "build" },
+	// SL-4.EXT.09: the `file://` flow's decisions (no browser in them) and the
+	// viewer's string catalogue (registered against the shared `apps/ui` i18n
+	// runtime, which is what the two rows at the bottom of this list are for).
+	{ out: "extension/src/local-files.js", from: "build" },
+	{ out: "extension/src/viewer-strings.js", from: "build" },
 	// SL-4.EXT.07: the options page's entry, its state, and its strings. The
 	// state module is also the service worker's half of the first-run trigger,
 	// so one row serves two contexts; it holds no `chrome` access at module
@@ -233,6 +243,13 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "extension/src/ext/surface.js", from: "build" },
 	{ out: "extension/src/ext/viewer-session.js", from: "build" },
 	{ out: "ui/src/platform/errors.js", from: "shared-js" },
+	// SL-4.EXT.09: SL-4.UI.11's i18n runtime, shipped because the viewer page's
+	// strings are registered against it rather than against a third hand-rolled
+	// formatter. `apps/ui/src/i18n/i18n-boundary.test.ts` is the gate that keeps
+	// these two rows importable without dragging the viewer in, and it names this
+	// package as the consumer they were split for.
+	{ out: "ui/src/i18n/message.js", from: "shared-js" },
+	{ out: "ui/src/i18n/runtime.js", from: "shared-js" },
 	{ out: "ui/src/viewer/surface.js", from: "shared-js" },
 	{ out: "ui/src/viewer/worker-surface.js", from: "shared-js" },
 	// SL-4.EXT.05: the core WASM chunk. `wasm-worker.test.ts` already asserts

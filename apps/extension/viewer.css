@@ -1,0 +1,125 @@
+/* Selis viewer page (SL-4.EXT.09) — layout for the local-file panel only.
+ *
+ * `ui-kit/css/base.css` is the sanctioned consumer of the token file and this
+ * sheet consumes the same tokens; it may not define a value the tokens define,
+ * and it may not hard-code a colour at all. `src/viewer-page.test.ts` reads this
+ * file and checks exactly that — no hex, no `rgb(`, no `hsl(`, and every
+ * `--selis-*` name used here is one `tokens.css` actually defines — which is
+ * also what stops a renamed role from being written here and silently resolving
+ * to nothing.
+ *
+ * It is a `root` row in `PACKAGE_ENTRIES` rather than a `shared-asset` because it
+ * is this package's own layout, exactly as `options.css` is. It is not a second
+ * copy of `options.css`: the panel is the only styled surface in this page, so
+ * this sheet is the token-consuming rules for one form and its status lines, and
+ * the two sheets share a design language rather than a file.
+ *
+ * Class names stay under the `selis-` namespace, as UI.10 requires of the kit.
+ */
+
+.selis-viewer__status {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer__local {
+	display: flex;
+	flex-direction: column;
+	/* A narrower measure than the page's: this is a form with steps in it, and
+	 * the options page's 44rem is chosen for a column of settings, not prose. */
+	max-width: 40rem;
+	gap: var(--selis-space-4);
+	padding: var(--selis-space-6);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-lg);
+	background: var(--selis-color-bg-raised);
+}
+
+/*
+ * `hidden` has to beat this sheet's own `display`.
+ *
+ * The user-agent rule for `[hidden]` is `display: none`, and `.selis-viewer__local`
+ * is one class — so without this line the panel would be *visible* on a page
+ * showing a web PDF, and every reader of every web PDF would be shown a form
+ * asking them to switch a browser setting they have no reason to touch. Same
+ * rule, same reason, as `options.css`.
+ */
+.selis-viewer__local[hidden] {
+	display: none;
+}
+
+.selis-viewer__heading {
+	margin: 0;
+	font-size: var(--selis-text-xl);
+	font-weight: var(--selis-weight-semibold);
+	line-height: var(--selis-leading-tight);
+}
+
+.selis-viewer__body {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer__body--quiet {
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-sm);
+}
+
+/* The written steps. An ordered list, because they *are* steps and a reader who
+ * cannot use the deep link has to be able to count them. */
+.selis-viewer__steps {
+	margin: 0;
+	padding-inline-start: var(--selis-space-5);
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--selis-space-3);
+}
+
+.selis-viewer__btn {
+	display: inline-flex;
+	align-items: center;
+	padding: var(--selis-space-3) var(--selis-space-5);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font: inherit;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.selis-viewer__btn--primary {
+	border-color: var(--selis-color-accent);
+	background: var(--selis-color-accent);
+	color: var(--selis-color-accent-fg);
+}
+
+.selis-viewer__address {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-2);
+}
+
+.selis-viewer__label {
+	font-size: var(--selis-text-sm);
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer__address-row {
+	display: flex;
+	gap: var(--selis-space-3);
+}
+
+.selis-viewer__input {
+	flex: 1;
+	padding: var(--selis-space-3) var(--selis-space-4);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+}
