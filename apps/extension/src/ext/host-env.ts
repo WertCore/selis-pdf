@@ -34,6 +34,7 @@
 
 import type { PickOpenOptions } from "../../../ui/src/platform/adapter.js";
 import type { DocumentSourceDescriptor } from "../../../ui/src/platform/types.js";
+import { type FileAccess, extensionDetailsUrl } from "../local-files.js";
 import { ENSURE_ENGINE_HOST } from "./engine-protocol.js";
 
 /** The subset of a `chrome.runtime` port this package uses. */
@@ -92,6 +93,45 @@ export interface HostEnv {
 	 * answer it without racing itself.
 	 */
 	ensureEngineHost(): Promise<void>;
+	/**
+	 * Has the user granted this extension access to `file://` URLs?
+	 *
+	 * `chrome.extension.isAllowedFileSchemeAccess()` and nothing else — no
+	 * permission is required to *read* the grant, which is what makes this the
+	 * whole of SL-4.EXT.09's detection story. A rejection resolves to `unknown`
+	 * rather than throwing, and the viewer's copy for `unknown` is a different
+	 * sentence from the copy for `withheld`: a browser that could not answer is
+	 * not a browser that said no. See `src/local-files.ts`.
+	 */
+	fileAccess(): Promise<FileAccess>;
+	/**
+	 * The browser's details page for this extension, or `""` when there is not one
+	 * to name.
+	 *
+	 * Separate from {@link openExtensionSettings} because the page needs the URL
+	 * *before* any click: it is what turns the control into a real link rather
+	 * than a gesture with a label. A method that opened the page could not answer
+	 * that question without opening a tab to ask it.
+	 */
+	extensionSettingsUrl(): string;
+	/**
+	 * Open the browser's details page for this extension, where the
+	 * "Allow access to file URLs" switch is, and report the URL it opened.
+	 *
+	 * Returns `""` when there is no such page to open — an unpacked extension with
+	 * no `chrome.runtime.id`, or a browser that hides it. The caller needs to know
+	 * so it can suppress the browser's own navigation and leave the **written
+	 * steps** as the way through: a deep link that silently did nothing would be
+	 * worse than no deep link, because the reader would be told to look for a
+	 * switch with no way to reach it.
+	 *
+	 * `window.open` and **not** `chrome.tabs.create`, for the reason
+	 * {@link openExternal} gives: `tabs` is on the EXT.01 denied list, and a
+	 * reviewer's eye reads the API as a reach this extension does not have. The
+	 * URL is not a parameter — this is the only page the host will ever open, so
+	 * the host builds it and nothing can point it elsewhere.
+	 */
+	openExtensionSettings(): string;
 	/** Monotonic milliseconds, for diagnostics. */
 	now(): number;
 }
@@ -163,6 +203,43 @@ export function createBrowserHostEnv(): HostEnv {
 
 		async ensureEngineHost() {
 			await this.runtime.sendToServiceWorker({ type: ENSURE_ENGINE_HOST });
+		},
+
+		async fileAccess() {
+			// SL-4.EXT.09. `chrome.extension.isAllowedFileSchemeAccess` is the
+			// documented way to read the `file://` grant, it has existed since
+			// Chrome 99 (this extension's floor is 114), and reading it needs no
+			// permission — which is why the local-file flow detects the grant at
+			// all without asking for anything first.
+			//
+			// `unknown` on anything unexpected, including a browser with no
+			// `chrome.extension` at all. The viewer says something different about
+			// that than about a refusal, on purpose.
+			const api = (globalThis as { chrome?: { extension?: unknown } }).chrome?.extension as
+				| { isAllowedFileSchemeAccess?: () => Promise<boolean> }
+				| undefined;
+			if (typeof api?.isAllowedFileSchemeAccess !== "function") {
+				return "unknown";
+			}
+			try {
+				return (await api.isAllowedFileSchemeAccess()) ? "granted" : "withheld";
+			} catch {
+				return "unknown";
+			}
+		},
+
+		extensionSettingsUrl() {
+			const id = (globalThis as { chrome?: { runtime?: { id?: unknown } } }).chrome?.runtime?.id;
+			return extensionDetailsUrl(typeof id === "string" ? id : "");
+		},
+
+		openExtensionSettings() {
+			const url = this.extensionSettingsUrl();
+			if (url === "") {
+				return "";
+			}
+			globalThis.open(url, "_blank", "noopener,noreferrer");
+			return url;
 		},
 
 		now() {

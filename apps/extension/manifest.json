@@ -15,6 +15,7 @@
 	"options_page": "options.html",
 	"permissions": ["declarativeNetRequest", "offscreen", "storage"],
 	"host_permissions": [],
+	"optional_host_permissions": ["file:///"],
 	"content_security_policy": {
 		"extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
 	},

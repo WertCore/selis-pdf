@@ -34,7 +34,11 @@ import {
 	hostAccessRows,
 	permissionMessageKeys,
 } from "./options-strings.js";
-import { ALLOWED_HOST_PERMISSIONS, ALLOWED_PERMISSIONS } from "./permissions.js";
+import {
+	ALLOWED_HOST_PERMISSIONS,
+	ALLOWED_OPTIONAL_HOST_PERMISSIONS,
+	ALLOWED_PERMISSIONS,
+} from "./permissions.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -112,12 +116,23 @@ describe("the page tells the truth (SL-4.EXT.07)", () => {
 		}
 	});
 
-	it("does not promise editing, and says file:// is not opened", () => {
+	it("does not promise editing, and describes the local-file flow as it is", () => {
 		// The build is read-only and `file://` is EXT.09's scope. Copy that
 		// implies otherwise is a support ticket on day one.
+		//
+		// SL-4.EXT.09 changed this sentence, and the direction of the change is the
+		// point: EXT.07 said local files "are not opened by the extension … it has
+		// not shipped yet", which was true then and would have been a lie the moment
+		// the flow landed. It now says what is actually true — a conditional grant the
+		// reader controls, and a permission-free route that always works.
 		const welcome = OPTIONS_MESSAGE_KEYS.map((key) => EN_OPTIONS_CATALOGUE[key]).join(" ");
 		expect(welcome).toContain("cannot edit, sign, or save one back yet");
-		expect(welcome).toContain("not opened by the extension");
+		expect(welcome).toContain("asks for nothing until you turn it on");
+		expect(welcome).toContain("needs no permission at all");
+		// And it must not have become a promise the extension cannot keep.
+		for (const stale of ["not opened by the extension", "has not shipped yet"]) {
+			expect(welcome, stale).not.toContain(stale);
+		}
 	});
 });
 
@@ -154,6 +169,32 @@ describe("the capability list (SL-4.EXT.07)", () => {
 	it("renders one row per pattern if a future task adds a host permission", () => {
 		const rows = hostAccessRows(["https://example.com/*"]);
 		expect(rows).toEqual([{ pattern: "https://example.com/*", key: "options.permissions.host" }]);
+	});
+
+	it("gives a declared-but-ungranted pattern its own sentence (SL-4.EXT.09)", () => {
+		// The load-bearing honesty check: the page says what the browser has
+		// allowed, so the granted sentence must never be used for a pattern nobody
+		// has granted. And the "no website access" row stays, because an ungranted
+		// optional pattern is not access.
+		const rows = hostAccessRows(ALLOWED_HOST_PERMISSIONS, ALLOWED_OPTIONAL_HOST_PERMISSIONS);
+		expect(rows).toEqual([
+			{ pattern: "", key: "options.permissions.hosts.none" },
+			{ pattern: "file:///", key: "options.permissions.host.optional" },
+		]);
+		const format = createOptionsFormatter(EN_OPTIONS_CATALOGUE);
+		const optional = format("options.permissions.host.optional", { pattern: "file:///" });
+		expect(optional).toContain("Not granted");
+		expect(optional).toContain("file:///");
+		expect(optional).toContain("needs no permission at all");
+		// The two rows must not be the same sentence wearing different keys.
+		expect(optional).not.toBe(format("options.permissions.hosts.none"));
+		expect(format("options.permissions.hosts.none")).toContain("No website access at all");
+	});
+
+	it("still answers with the granted sentence alone when nothing is declared optional", () => {
+		// A host that passes no optional list gets exactly the pre-EXT.09 answer,
+		// rather than a stray empty row.
+		expect(hostAccessRows([])).toEqual([{ pattern: "", key: "options.permissions.hosts.none" }]);
 	});
 });
 

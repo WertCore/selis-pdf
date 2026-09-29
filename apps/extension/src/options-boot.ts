@@ -50,7 +50,7 @@ import {
 	hostAccessRows,
 	permissionMessageKeys,
 } from "./options-strings.js";
-import { ALLOWED_HOST_PERMISSIONS } from "./permissions.js";
+import { ALLOWED_HOST_PERMISSIONS, ALLOWED_OPTIONAL_HOST_PERMISSIONS } from "./permissions.js";
 
 /** The element ids the page's skeleton declares and this module drives. */
 const IDS = {
@@ -138,10 +138,19 @@ function renderCapabilities(list: Element, format: OptionsFormatter): void {
 	}
 }
 
-/** The rows describing website access: none today, one per pattern if that changes. */
+/**
+ * The rows describing website access: none granted today, one per granted pattern
+ * if that changes, and one per *declared but ungranted* optional pattern.
+ *
+ * The optional list is here (SL-4.EXT.09) because this page is where a reader
+ * goes to find out what the browser has allowed, and a declared pattern the
+ * browser has not allowed is part of that answer. It gets its own sentence rather
+ * than the granted one — see `hostAccessRows` — so the page never claims access it
+ * does not have.
+ */
 function renderHostAccess(list: Element, format: OptionsFormatter): void {
 	list.replaceChildren();
-	for (const row of hostAccessRows(ALLOWED_HOST_PERMISSIONS)) {
+	for (const row of hostAccessRows(ALLOWED_HOST_PERMISSIONS, ALLOWED_OPTIONAL_HOST_PERMISSIONS)) {
 		const item = list.ownerDocument.createElement("li");
 		item.className = "selis-fact";
 		item.textContent =

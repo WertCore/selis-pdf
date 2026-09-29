@@ -49,6 +49,32 @@ second implementation of a thing the plan says should have one. It is recorded
 here rather than hidden, because "we wrote it again" is exactly the kind of
 decision the next reader of this file needs to see.
 
+### And then the viewer adopted it, and the debt did not grow (SL-4.EXT.09)
+
+`src/viewer-strings.ts` registers the **viewer page's** catalogue against
+`apps/ui/src/i18n/runtime.ts`, so the package now ships two more `shared-js`
+rows, `i18n/message.js` and `i18n/runtime.js`, and the extension has one
+sanctioned runtime rather than two hand-rolled formatters. That is what UI.11's
+`i18n-boundary.test.ts` was split for: it names this package as the consumer the
+two files were separated out for, and that test is what keeps them importable
+here without dragging the viewer's catalogues in.
+
+What this task deliberately did **not** do is rewrite `options-strings.ts` onto
+that runtime. Its public surface is pinned by `options-strings.test.ts` and
+consumed by a shipped page, the change is a refactor of EXT.07's page rather than
+part of a permission flow, and doing it here would have put EXT.07's whole
+regression surface inside EXT.09's diff. The honest position is therefore: the
+debt is unchanged in size and unchanged in kind, one *new* implementation was not
+added, and the conversion is now a small job for whoever owns the options page.
+
+SL-4.EXT.09 did change one thing on that page, and it was not optional: the
+welcome guide said local files "are not opened by the extension ... it has not
+shipped yet", which the flow turned into a lie on the day it landed. The
+capability list also gained a row, for the same reason, in the opposite
+direction: a *declared but ungranted* `file:///` pattern now gets its own
+sentence rather than the "Website access: {pattern}" one, because a page whose
+job is saying what the browser has allowed must not claim access nobody granted.
+
 The one thing the page *does* share with the viewer is the settings key:
 `ext/adapter.ts` imports `SETTINGS_KEYS` from `src/options-state.ts` rather
 than repeating the string, so the switch on the page and the port in the

@@ -90,6 +90,11 @@ export const OPTIONS_MESSAGE_KEYS = [
 	"options.permissions.hosts.none",
 	/** One held website pattern; placeholders: `{pattern}`. */
 	"options.permissions.host",
+	/**
+	 * One **declared but ungranted** optional pattern (SL-4.EXT.09); placeholders:
+	 * `{pattern}`.
+	 */
+	"options.permissions.host.optional",
 	/** The CJK section's heading. */
 	"options.cjk.heading",
 	/**
@@ -165,7 +170,7 @@ export const EN_OPTIONS_CATALOGUE: OptionsCatalogue = {
 	"options.welcome.point.readonly":
 		"This version can open, search and print a PDF. It cannot edit, sign, or save one back yet.",
 	"options.welcome.localFiles":
-		"PDFs stored in a folder on this computer are not opened by the extension. That is a separate permission flow, and it has not shipped yet.",
+		"PDFs in a folder on this computer open in Selis only if you allow it, and only while you keep that allowed: your browser keeps that switch on the extension's own details page, and Selis asks for nothing until you turn it on. You can always open a local PDF by choosing the file yourself, which needs no permission at all.",
 	"options.welcome.done": "Start viewing PDFs",
 	"options.privacy.heading": "Privacy",
 	"options.privacy.summary":
@@ -184,6 +189,20 @@ export const EN_OPTIONS_CATALOGUE: OptionsCatalogue = {
 	"options.permissions.hosts.none":
 		"No website access at all: Selis can neither read nor change any site you visit, and it never runs a script inside one.",
 	"options.permissions.host": "Website access: {pattern}",
+	/**
+	 * A pattern the manifest *declares* but the browser has **not** granted.
+	 *
+	 * Its own string, and the reason is honesty rather than tidiness:
+	 * `options.permissions.host` says "Website access: {pattern}", which for a
+	 * pattern nobody has granted is a false claim on the one page whose whole job
+	 * is telling a reader what the browser has allowed. So the page says what the
+	 * state is, what it would mean, and what the reader can do instead — and the
+	 * "no website access" row above it stays true, because an ungranted optional
+	 * pattern is not access. See `ALLOWED_OPTIONAL_HOST_PERMISSIONS` and
+	 * PERMISSIONS.md's SL-4.EXT.09 row.
+	 */
+	"options.permissions.host.optional":
+		"Not granted, and only if you turn it on: {pattern}. Selis can open a PDF from your own disk only while you allow it in your browser's extension settings; you can also open any local PDF by choosing the file yourself, which needs no permission at all.",
 	"options.cjk.heading": "Chinese, Japanese and Korean text",
 	"options.cjk.status":
 		"The optional font packs are not available in this version. The complete set needs {resident} on your device, more than the {budget} Selis keeps there, so a full install is refused and there is nothing to switch on. Latin text is unaffected.",
@@ -271,18 +290,35 @@ export interface HostAccessRow {
 /**
  * How the page describes the extension's website access.
  *
- * The empty case is its own string and not a formatting of the general one: "no
+ * Two lists, and the split is the honesty of the page rather than its tidiness.
+ * `hosts` are patterns the browser has **granted**; `optional` are patterns the
+ * manifest *declares* and the reader has not. Rendering both with
+ * `options.permissions.host` — "Website access: {pattern}" — would put a claim of
+ * access on a line nobody has granted, on the one page whose entire job is
+ * telling a reader what the browser has allowed.
+ *
+ * The "none" case is its own string and not a formatting of the general one: "no
  * website access at all" is the sentence that makes ADR-P0016's privacy claim
  * checkable by a reader, and a version of it built by joining a pattern list
  * would be the sentence that quietly stops being true the day a pattern is
- * added. A future task that adds a host permission has to delete a line here on
- * purpose.
+ * granted. It is emitted whenever the *granted* list is empty — which, with
+ * `host_permissions: []`, it is — and an ungranted optional pattern does not
+ * make it false, because a pattern nobody granted is not access.
+ *
+ * `optional` defaults to `[]` so a caller that knows nothing of it (a test, a
+ * future host) gets the pre-EXT.09 answer rather than an empty second list.
  */
-export function hostAccessRows(hosts: readonly string[]): readonly HostAccessRow[] {
-	if (hosts.length === 0) {
-		return [{ pattern: "", key: "options.permissions.hosts.none" }];
-	}
-	return hosts.map((pattern) => ({ pattern, key: "options.permissions.host" }));
+export function hostAccessRows(
+	hosts: readonly string[],
+	optional: readonly string[] = [],
+): readonly HostAccessRow[] {
+	const rows: HostAccessRow[] =
+		hosts.length === 0
+			? [{ pattern: "", key: "options.permissions.hosts.none" }]
+			: hosts.map((pattern) => ({ pattern, key: "options.permissions.host" }));
+	return rows.concat(
+		optional.map((pattern) => ({ pattern, key: "options.permissions.host.optional" })),
+	);
 }
 
 const MEBIBYTE = 1024 * 1024;

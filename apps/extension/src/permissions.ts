@@ -21,8 +21,11 @@
  * 2. **The patterns that need a response signal cannot work here.** They are
  *    enumerated in the matrix as `cannot-work` with the exact capability that
  *    would be required, so the limitation is named in code rather than
- *    discovered by a user. `file://` is the other documented non-case
- *    (SL-4.EXT.09's toggle, deliberately not widened here).
+ *    discovered by a user. `file://` was the third documented non-case and
+ *    stopped being one at SL-4.EXT.09: the `file` rule below is inert until the
+ *    user grants file access, and the *detection* of that is the one thing this
+ *    module deliberately cannot do — it has no browser. `src/local-files.ts`
+ *    owns the grant, and `PERMISSIONS.md` carries the row.
  *
  * Nothing in this module widens permissions. If a pattern can only be served
  * by widening, it stays `cannot-work`.
@@ -47,6 +50,16 @@ export const RULE_ID = {
 	pdfPath: 1,
 	/** A URL that only *carries* a `.pdf` in its query string. */
 	pdfQuery: 2,
+	/**
+	 * A `file://` URL whose path ends in `.pdf` (SL-4.EXT.09).
+	 *
+	 * Its own id, and not a shared one, for two reasons a reviewer will ask
+	 * about: it is installed on the same schedule as the other two but is inert
+	 * until the user grants file access, and it is the one rule the service
+	 * worker is willing to drop if Chrome rejects the whole ruleset (see
+	 * `isFileRule` and `installInterception`).
+	 */
+	filePath: 3,
 } as const;
 
 /** A declarativeNetRequest redirect rule, in the shape the API accepts. */
@@ -148,7 +161,47 @@ export function buildRedirectRules(): RedirectRule[] {
 				resourceTypes: ["main_frame"],
 			},
 		},
+		{
+			id: RULE_ID.filePath,
+			priority: 1,
+			action: { type: "redirect", redirect: { extensionPath: VIEWER_PATH } },
+			condition: {
+				// SL-4.EXT.09. The same shape as the http(s) path rule, with the
+				// scheme fixed to `file:` and no authority to skip: a local URL
+				// is `file:///C:/…`, so the two characters after the scheme are
+				// slashes and the third begins the path.
+				//
+				// **This rule only fires once the user has granted file access.**
+				// DNR evaluates a rule only against a request the extension may
+				// already touch, so before the grant it matches nothing at all -
+				// which is the whole reason the local-file flow needs a detection
+				// of its own rather than an interception: nothing intercepts, so
+				// nothing can report having failed. `src/local-files.ts` owns the
+				// grant; `fileAccessState()` is what the viewer asks.
+				//
+				// The extension is on the *other* side of the redirect too, so
+				// this is not a case of the extension being unable to see a local
+				// file it is entitled to: with the toggle on, it opens them.
+				regexFilter: "^file://[^?#\\s]*(?i:\\.pdf)(?:[?#]\\S*)?$",
+				resourceTypes: ["main_frame"],
+			},
+		},
 	];
+}
+
+/**
+ * Is this the one rule that only fires with file access granted?
+ *
+ * Exported so the service worker's degraded install can drop exactly this rule
+ * and keep the two http(s) ones. That fallback exists because a rejected
+ * `updateDynamicRules` takes the *whole* call with it: if any Chrome build
+ * refuses the `file` rule while the grant is withheld, the rules that intercept
+ * every web PDF would go down with it, and a viewer that stopped working for
+ * web PDFs because of an optional local-file feature is a strictly worse
+ * product than one that never learns to open local files.
+ */
+export function isFileRule(rule: RedirectRule): boolean {
+	return rule.id === RULE_ID.filePath;
 }
 
 /**
@@ -375,9 +428,23 @@ export const PATTERN_MATRIX: readonly PatternVerdict[] = [
 	{
 		name: "file:// local PDF",
 		url: "file:///C:/Users/x/Documents/report.pdf",
-		outcome: "cannot-work",
+		outcome: "intercepted",
 		reason:
-			"the scheme is outside the rule, and interception needs the user's 'Allow access to file URLs' toggle — SL-4.EXT.09's scope, deliberately not widened here",
+			"SL-4.EXT.09: a dedicated file:// rule redirects it, but only once the user has granted 'Allow access to file URLs'. Until then the rule is inert and Chrome's own viewer shows the file - which is why the extension detects the grant with chrome.extension.isAllowedFileSchemeAccess() rather than waiting for an interception that will not happen",
+	},
+	{
+		name: "file:// local HTML page",
+		url: "file:///C:/Users/x/Documents/notes.html",
+		outcome: "not-matched",
+		reason:
+			"the file:// rule is .pdf-shaped on URL alone, exactly like the http(s) one, so a page on disk is left to the browser even with file access granted",
+	},
+	{
+		name: "file:// PDF with a query string",
+		url: "file:///C:/Users/x/Documents/report.pdf?page=14",
+		outcome: "intercepted",
+		reason:
+			"the file:// rule accepts the same optional [?#] tail the http(s) path rule does, and there is no file:// query rule because a local path has no query to carry a .pdf",
 	},
 	{
 		name: "WebSocket upgrade to a .pdf-named path",
@@ -492,11 +559,36 @@ export const ALLOWED_PERMISSIONS: readonly string[] = [
 ];
 
 /**
- * Host patterns EXT.01 approves. Empty on purpose: DNR interception targets
- * (SL-4.EXT.02) add narrow entries here with their own PERMISSIONS.md rows —
- * never a pre-emptive `<all_urls>`.
+ * Host patterns EXT.01 approves **at install**. Still empty, and still empty
+ * after SL-4.EXT.09.
+ *
+ * This is the load-bearing half of the local-file decision. `file:///` went into
+ * `optional_host_permissions` instead, which is what a match pattern in
+ * `host_permissions` would have cost: Chrome documents that "adding or changing
+ * match patterns in the `host_permissions` field will trigger a warning", and
+ * `file:///` is the pattern a reviewer reads as "reads your disk". Nothing is
+ * granted until the user acts, so a warning that says so before the user has
+ * asked for anything is the warning EXT.01 was written to avoid.
  */
 export const ALLOWED_HOST_PERMISSIONS: readonly string[] = [];
+
+/**
+ * Host patterns the extension may declare as **optional** (SL-4.EXT.09).
+ *
+ * One pattern, and the three-slash form is load-bearing. Chrome's match-pattern
+ * reference documents the local-file special case as `file:///` — "allows your
+ * extension to run on local files… this pattern requires the user to manually
+ * grant access" — and calls out that it "requires three slashes, not two". The
+ * two-slash spellings are in {@link DENIED_HOST_PATTERNS} and are not a narrower
+ * version of this one; they are a different and invalid pattern.
+ *
+ * Declaring it is not the same as holding it. `host_permissions` stays `[]`,
+ * `ALLOWED_PERMISSIONS` is unchanged, and until the user turns the toggle on
+ * this grants nothing — and the extension calls no permission API at all, so
+ * there is no prompt to dismiss and nothing to request. `PERMISSIONS.md` has the
+ * full argument and the store wording, and `src/local-files.ts` has the flow.
+ */
+export const ALLOWED_OPTIONAL_HOST_PERMISSIONS: readonly string[] = ["file:///"];
 
 /** Permissions that must never appear (broad interception / injection). */
 export const DENIED_PERMISSIONS: readonly string[] = [
@@ -512,7 +604,21 @@ export const DENIED_PERMISSIONS: readonly string[] = [
 	"privacy",
 ];
 
-/** Broad host patterns that always fail review without a wired rule. */
+/**
+ * Broad host patterns that always fail review without a wired rule.
+ *
+ * The two `file:` entries are the **two-slash** spellings, and they are here
+ * because they are a common mistake rather than a scope claim: Chrome's
+ * match-pattern reference is explicit that the local-file pattern "requires
+ * three slashes, not two", so the two spellings below are not narrow versions
+ * of the pattern this extension declares — they are a different, invalid
+ * pattern. (They are spelled here without their trailing wildcard, because
+ * writing the full form inside a block comment would close the comment.) The
+ * pattern the extension does declare is in
+ * {@link ALLOWED_OPTIONAL_HOST_PERMISSIONS}, it is optional, and
+ * `manifest.test.ts` asserts the two spellings never appear in the manifest
+ * beside it.
+ */
 export const DENIED_HOST_PATTERNS: readonly string[] = [
 	"<all_urls>",
 	"*://*/*",
@@ -527,6 +633,7 @@ export interface ExtensionManifestShape {
 	readonly manifest_version?: unknown;
 	readonly permissions?: unknown;
 	readonly host_permissions?: unknown;
+	readonly optional_host_permissions?: unknown;
 	readonly background?: { readonly service_worker?: unknown } | null;
 	readonly content_security_policy?: {
 		readonly extension_pages?: unknown;
@@ -603,6 +710,53 @@ export function validateManifest(manifest: ExtensionManifestShape): ManifestViol
 				violations.push({
 					field: "host_permissions",
 					reason: `'${pattern}' has no PERMISSIONS.md justification row — add one in review (EXT.02) or drop it`,
+				});
+			}
+		}
+	}
+	const optionalHostPermissions = Array.isArray(manifest.optional_host_permissions)
+		? manifest.optional_host_permissions
+		: null;
+	if (optionalHostPermissions === null) {
+		if (manifest.optional_host_permissions !== undefined) {
+			violations.push({
+				field: "optional_host_permissions",
+				reason: "must be an array when present",
+			});
+		}
+	} else {
+		// The same two checks as `host_permissions`, plus the requirement that
+		// the list is not merely *valid* but *complete*: an approved pattern that
+		// quietly stopped shipping would leave the viewer's local-file flow
+		// explaining a permission the extension no longer declares, and
+		// `local-files.test.ts` would still be green because the runtime object
+		// is a constant nobody re-derived from the manifest.
+		for (const pattern of optionalHostPermissions) {
+			if (typeof pattern !== "string") {
+				violations.push({
+					field: "optional_host_permissions",
+					reason: "every entry must be a string",
+				});
+				continue;
+			}
+			if (DENIED_HOST_PATTERNS.includes(pattern)) {
+				violations.push({
+					field: "optional_host_permissions",
+					reason: `'${pattern}' is a broad host pattern, and the two-slash file spellings are not patterns at all (Chrome: "requires three slashes, not two")`,
+				});
+			}
+			if (!ALLOWED_OPTIONAL_HOST_PERMISSIONS.includes(pattern)) {
+				violations.push({
+					field: "optional_host_permissions",
+					reason: `'${pattern}' has no PERMISSIONS.md justification row — add one in review (EXT.09) or drop it`,
+				});
+			}
+		}
+		for (const required of ALLOWED_OPTIONAL_HOST_PERMISSIONS) {
+			if (!optionalHostPermissions.includes(required)) {
+				violations.push({
+					field: "optional_host_permissions",
+					reason: `'${required}' is the declared local-file flow (SL-4.EXT.09); the viewer asks for it by name, so dropping it ships a page that asks for a grant it cannot offer`,
 				});
 			}
 		}

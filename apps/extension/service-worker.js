@@ -11,7 +11,7 @@
 
 import { ENSURE_ENGINE_HOST } from "./extension/src/ext/engine-protocol.js";
 import { createOnboardingStore, planFirstRun } from "./extension/src/options-state.js";
-import { buildRedirectRules } from "./extension/src/permissions.js";
+import { buildRedirectRules, isFileRule } from "./extension/src/permissions.js";
 
 /** The page that hosts the engine, and the one it is created for. */
 const OFFSCREEN_PATH = "offscreen.html";
@@ -25,16 +25,39 @@ const OFFSCREEN_PATH = "offscreen.html";
  * no redirect rules still works as a toolbar viewer, whereas a thrown install
  * leaves a half-installed extension. So the error is logged and swallowed
  * deliberately.
+ *
+ * **SL-4.EXT.09 adds a second attempt, and the reason is worth stating.** The
+ * ruleset now carries a `file://` rule that only fires once the user has granted
+ * access to local files. A rejected `updateDynamicRules` takes the whole call
+ * with it, so if any Chrome build refuses that rule while the grant is withheld,
+ * the two http(s) rules - the ones that intercept every web PDF, and the reason
+ * this extension exists - would go down with it. A viewer that stopped opening
+ * web PDFs because of an *optional* local-file feature is strictly worse than
+ * one that never learns to open local files, so the retry drops exactly the file
+ * rule and keeps the rest. The first error is logged either way, because a
+ * browser that needed the fallback is a browser someone should hear about.
  */
 async function installInterception() {
+	const rules = buildRedirectRules();
 	try {
-		const rules = buildRedirectRules();
 		await chrome.declarativeNetRequest.updateDynamicRules({
 			removeRuleIds: rules.map((rule) => rule.id),
 			addRules: rules,
 		});
 	} catch (error) {
 		console.warn("selis: PDF interception rules not installed", error);
+		const withoutFile = rules.filter((rule) => !isFileRule(rule));
+		try {
+			await chrome.declarativeNetRequest.updateDynamicRules({
+				removeRuleIds: rules.map((rule) => rule.id),
+				addRules: withoutFile,
+			});
+			console.warn(
+				"selis: installed the web-PDF interception rules without the local-file rule; local files will not open in the viewer until this is fixed",
+			);
+		} catch (retryError) {
+			console.warn("selis: no interception rules could be installed", retryError);
+		}
 	}
 }
 
