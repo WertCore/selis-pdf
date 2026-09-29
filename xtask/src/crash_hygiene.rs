@@ -81,12 +81,6 @@ const BANNED_FIELD_TYPES: &[(&str, &str)] = &[
 /// A local ring is the honest scope (ADR-P0016's cloud boundary does not exist
 /// yet, and there is no consent UI to gate an upload with). A sink appearing
 /// here is a design change, not a refactor, and it should cost a review.
-
-/// APIs that would give the reporter a way to send a report off the machine.
-///
-/// A local ring is the honest scope (ADR-P0016's cloud boundary does not exist
-/// yet, and there is no consent UI to gate an upload with). A sink appearing
-/// here is a design change, not a refactor, and it should cost a review.
 const SINK_MARKERS: &[&str] = &[
     "reqwest",
     "ureq",
