@@ -59,6 +59,34 @@ export const CHROME_STORAGE_LOCAL_QUOTA_BYTES = 10_485_760;
  * can never be the reason a user's settings fail to save, and far under the
  * ~100 MB a full Noto CJK subsets to — which is the whole reason the payload
  * is per-range and optional rather than bundled (ADR-P0043).
+ *
+ * ## Why chunks are stored COMPRESSED (SL-3.FONT.10's FONT.10-F1)
+ *
+ * This budget is denominated in what Chrome actually holds, and it is worth
+ * being precise about which number that is. The payload's *uncompressed* total
+ * is 11 162 268 B — over both this budget and Chrome's own 10 MiB
+ * `storage.local` quota — so a full install was refused partway through and
+ * `installCjkChunk` could hand a user a typed `cjk-over-budget` after they had
+ * already installed a dozen chunks.
+ *
+ * The fix is not a smaller font. It is that **`storage.local` holds what we
+ * give it**, and a subsetted TTF deflates to roughly half. Chunks are therefore
+ * stored `deflate-raw` and decompressed on read, and each install records the
+ * length it actually wrote so the budget sums measurements rather than a column
+ * describing a different encoding.
+ *
+ * Two consequences worth stating rather than leaving to be discovered:
+ *
+ * - **The engine is unaffected.** It receives the same decompressed bytes
+ *   through `CjkChunkSource`; only where they sit while idle changed. ADR-P0012's
+ *   determinism is a property of rasterisation, not of storage, and is
+ *   untouched.
+ * - **This is why system fonts are not the answer.** The engine rasterises every
+ *   glyph from font *bytes* (there is no `fillText` anywhere in the tree), so it
+ *   cannot borrow whatever the host machine happens to have installed — and
+ *   substituting a user's local font would make `render()` impure, breaking
+ *   ADR-P0012, the golden-PNG corpus, and the WASM.08 determinism gate. The
+ *   bytes have to come from the payload.
  */
 export const CJK_STORAGE_BUDGET_BYTES = 8 * 1024 * 1024;
 
@@ -144,6 +172,151 @@ export interface CjkStorage {
 /** Where an installed chunk's bytes live. Versioned, so a schema change is visible. */
 export function cjkStorageKey(id: string): string {
 	return `${CJK_KEY_PREFIX}${id}`;
+}
+
+/** Bytes of length prefix on a stored record; see {@link packCjkRecord}. */
+const CJK_RECORD_HEADER_BYTES = 4;
+
+/**
+ * Narrow a `Uint8Array` to what `WritableStreamDefaultWriter.write` accepts.
+ *
+ * The DOM lib types the parameter as `BufferSource`, which on a
+ * `Uint8Array<ArrayBufferLike>` — a view that may sit on a `SharedArrayBuffer`
+ * — is not assignable without this. The bytes are only read, never aliased
+ * into the stream's output, so handing over the exact view is safe.
+ */
+function toBufferSource(bytes: Uint8Array): BufferSource {
+	return bytes as unknown as BufferSource;
+}
+
+/**
+ * Wrap a compressed chunk in a self-describing record: its own stored length,
+ * little-endian, followed by the deflate stream.
+ *
+ * The length travels *with* the bytes rather than in a parallel key, so a
+ * record and the size charged for it cannot disagree — a second key could be
+ * left behind by a failed write, or survive a chunk it no longer describes, and
+ * either would make the budget drift away from what the store actually holds.
+ *
+ * It is a header and not a trailer because the budget is checked *before*
+ * anything is written: {@link storedCjkBytes} has to read the cost of a chunk
+ * that is not installed yet, from the bytes about to be installed.
+ */
+function packCjkRecord(stored: Uint8Array): Uint8Array {
+	const record = new Uint8Array(CJK_RECORD_HEADER_BYTES + stored.length);
+	new DataView(record.buffer).setUint32(0, stored.length, true);
+	record.set(stored, CJK_RECORD_HEADER_BYTES);
+	return record;
+}
+
+/** The compressed payload inside a record, with the header stripped. */
+function unpackCjkRecord(record: Uint8Array): Uint8Array {
+	return record.subarray(CJK_RECORD_HEADER_BYTES);
+}
+
+/** The stored length a record declares for itself. */
+function recordDeclaredLength(record: Uint8Array): number {
+	return new DataView(record.buffer, record.byteOffset, CJK_RECORD_HEADER_BYTES).getUint32(0, true);
+}
+
+/**
+ * What one chunk actually costs in extension storage right now.
+ *
+ * The length the chunk's own record declares, when it is installed. A chunk
+ * that is not installed yet has no record, and is charged its `raw_bytes` —
+ * the pessimistic direction, because a budget that under-counted the chunk it is
+ * about to write could admit an install that overflows.
+ */
+async function storedCjkBytes(storage: CjkStorage, candidate: CjkPayloadFile): Promise<number> {
+	const record = await storage.get(cjkStorageKey(candidate.id));
+	if (record === null || record.length < CJK_RECORD_HEADER_BYTES) {
+		return candidate.raw_bytes;
+	}
+	const declared = recordDeclaredLength(record);
+	// A record whose header disagrees with its own body is corrupt, and is
+	// charged the body — what is really held, rather than what it claims.
+	return CJK_RECORD_HEADER_BYTES + declared === record.length ? declared : record.length;
+}
+
+/**
+ * Compress a chunk for storage.
+ *
+ * **deflate-raw, not brotli**, and that is not a preference. The manifest's
+ * `brotli_bytes` column is a *wire* measurement, taken by `xtask cjk-build`
+ * with Node's `zlib.brotliCompressSync` — correct for how a payload is
+ * downloaded, and correct for nothing else. `CompressionStream` does not offer
+ * brotli in Chromium at all; measured in the Edge this extension ships to, it
+ * throws `Unsupported compression format: 'brotli'`. Storing what we cannot read
+ * back would be a chunk that installs and then fails on first use.
+ *
+ * `deflate-raw` is the zlib stream without a container, so no header is wasted
+ * and it is present in every target.
+ */
+async function deflateCompress(bytes: Uint8Array): Promise<Uint8Array> {
+	return throughDeflate(bytes, "compress");
+}
+
+/**
+ * Decompress a stored chunk.
+ *
+ * A record that does not decompress is a corrupt or foreign record, and is
+ * reported as such rather than returned as-is: handing the engine bytes that
+ * are not a font produces `.notdef` everywhere, which reads as "this document
+ * has no glyphs" rather than "this install is broken".
+ */
+async function deflateDecompress(stored: Uint8Array, id: string): Promise<Uint8Array> {
+	try {
+		return await throughDeflate(stored, "decompress");
+	} catch (cause) {
+		throw new CjkPayloadError(
+			"cjk-integrity",
+			`the stored bytes for CJK '${id}' are not a deflate record this build wrote; remove and reinstall the chunk`,
+		);
+	}
+}
+
+/**
+ * Run `bytes` through a deflate stream in `direction` and collect the result.
+ *
+ * `CompressionStream` and `DecompressionStream` are distinct types, not one type
+ * with a mode. Handing a compressed record to a `CompressionStream` does not
+ * inflate it — it re-deflates it, and the caller gets back something that looks
+ * like a font and is not. The two classes share the `writable`/`readable` shape
+ * used below, so the body is written once and the call sites choose the class.
+ */
+async function throughDeflate(
+	bytes: Uint8Array,
+	direction: "compress" | "decompress",
+): Promise<Uint8Array> {
+	const stream =
+		direction === "compress"
+			? new CompressionStream("deflate-raw")
+			: new DecompressionStream("deflate-raw");
+	const writer = stream.writable.getWriter();
+	void writer.write(toBufferSource(bytes));
+	void writer.close();
+	const parts: Uint8Array[] = [];
+	const reader = stream.readable.getReader();
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) {
+			break;
+		}
+		if (value !== undefined) {
+			parts.push(value as Uint8Array);
+		}
+	}
+	let total = 0;
+	for (const part of parts) {
+		total += part.length;
+	}
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const part of parts) {
+		out.set(part, at);
+		at += part.length;
+	}
+	return out;
 }
 
 /**
@@ -348,13 +521,25 @@ export async function installCjkChunk(options: {
 		);
 	}
 
-	// Declared sizes, not measured ones: every resident chunk was verified
-	// against its manifest row when it was installed, so the manifest is the
-	// authority on what is resident and this costs no reads.
+	// Resident cost is MEASURED, not read off the manifest.
+	//
+	// The manifest's `brotli_bytes` column describes the *wire* form; what
+	// `storage.local` holds is our own `deflate-raw` encoding, which is a
+	// different and smaller number again. Counting storage against the wire
+	// column would be counting a quantity nothing ever stores — and counting it
+	// against `raw_bytes`, as this did, is what made FONT.10-F1: an 11 162 268 B
+	// refusal for a payload that fits.
+	//
+	// So every install records the length it actually wrote, and the budget sums
+	// those. A store written by an older build has no size record and is counted
+	// as its own uncompressed length, which over-counts rather than under-counts.
 	const installed = await installedCjkIds(storage);
-	const resident = [manifest.core, ...manifest.chunks]
-		.filter((candidate) => candidate.id === id || installed.includes(candidate.id))
-		.reduce((sum, candidate) => sum + candidate.raw_bytes, 0);
+	let resident = 0;
+	for (const candidate of [manifest.core, ...manifest.chunks]) {
+		if (candidate.id === id || installed.includes(candidate.id)) {
+			resident += await storedCjkBytes(storage, candidate);
+		}
+	}
 	if (resident > CJK_STORAGE_BUDGET_BYTES) {
 		throw new CjkPayloadError(
 			"cjk-over-budget",
@@ -377,7 +562,13 @@ export async function installCjkChunk(options: {
 		);
 	}
 
-	await storage.set(cjkStorageKey(id), bytes);
+	// Stored COMPRESSED, and read back decompressed: `storage.local` keeps the
+	// bytes we hand it, so handing it a deflate stream is what brings the
+	// resident total down from 11 162 268 B by roughly half. The digest above is
+	// computed on the DECOMPRESSED bytes, because that is the payload the
+	// manifest describes and the bytes the engine will be handed — checking it
+	// on our own compressed form would verify a thing nothing else consumes.
+	await storage.set(cjkStorageKey(id), packCjkRecord(await deflateCompress(bytes)));
 	return { id, rawBytes: file.raw_bytes, brotliBytes: file.brotli_bytes, residentBytes: resident };
 }
 
@@ -392,14 +583,18 @@ export async function installedCjkIds(storage: CjkStorage): Promise<string[]> {
 
 /** Read one installed chunk's bytes, or refuse with the code that says why. */
 export async function readCjkChunk(storage: CjkStorage, id: string): Promise<Uint8Array> {
-	const bytes = await storage.get(cjkStorageKey(id));
-	if (bytes === null) {
+	const stored = await storage.get(cjkStorageKey(id));
+	if (stored === null) {
 		throw new CjkPayloadError(
 			"cjk-not-installed",
 			`CJK chunk '${id}' is not installed; CJK text renders .notdef until it is`,
 		);
 	}
-	return bytes;
+	// Chunks are stored as a self-describing record — a length header and a
+	// deflate stream (see {@link CJK_STORAGE_BUDGET_BYTES}) — so this is where the
+	// payload returns to the shape the engine expects. The engine is handed
+	// exactly the bytes the manifest pinned; only the idle storage form differs.
+	return deflateDecompress(unpackCjkRecord(stored), id);
 }
 
 /** Remove one installed chunk. Removing what is not there is the same refusal. */
@@ -407,6 +602,9 @@ export async function removeCjkChunk(storage: CjkStorage, id: string): Promise<v
 	if ((await storage.get(cjkStorageKey(id))) === null) {
 		throw new CjkPayloadError("cjk-not-installed", `CJK chunk '${id}' is not installed`);
 	}
+	// One key per chunk: the record carries its own size, so removing the record
+	// removes the charge with it and the budget cannot drift over repeated
+	// install/remove cycles.
 	await storage.remove(cjkStorageKey(id));
 }
 
