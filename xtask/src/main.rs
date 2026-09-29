@@ -14,6 +14,7 @@ mod codes;
 mod conformance;
 mod corpus;
 mod coverage;
+mod crash_hygiene;
 mod fixtures;
 mod fuzz;
 #[cfg(all(feature = "wasm-host", not(target_arch = "wasm32")))]
@@ -85,6 +86,9 @@ enum Command {
     /// Wild-corpus policy gates: CI excludes wild sources, expectations carry no
     /// document content (06-CORPUS-POLICY.md §7, SL-0.CORP.05).
     CheckWildHygiene,
+    /// Crash-report policy: the report type stays closed, the reporter has no
+    /// sink, and consent defaults to denied (ADR-P0017, SL-4.SHIP.01).
+    CheckCrashHygiene,
     /// WASM size budgets + 2% regression rule (SL-0.WS.09).
     SizeCheck {
         /// Record the fresh measurement as the new baseline instead of
@@ -581,6 +585,7 @@ fn main() -> ExitCode {
         Command::CheckAlloc => checks::check_alloc(),
         Command::CheckFlags => not_in_phase_0("check-flags"),
         Command::CheckWildHygiene => wild_hygiene::check(),
+        Command::CheckCrashHygiene => crash_hygiene::check(),
         Command::SizeCheck {
             update_baseline,
             strict,
@@ -848,6 +853,9 @@ fn lint() -> Result<(), String> {
     unsafe_check::check()?;
     checks::check_contracts()?;
     wild_hygiene::check()?;
+    // SL-4.SHIP.01 — a crash report is a diagnostic that leaves the machine, so
+    // its type is re-checked here rather than trusted to review.
+    crash_hygiene::check()?;
     // SL-0.WS.07 — supply-chain gates.
     run("cargo", &["deny", "check"])?;
     run("cargo", &["vet"])?;

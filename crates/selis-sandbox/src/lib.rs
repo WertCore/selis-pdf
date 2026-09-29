@@ -53,6 +53,7 @@ pub mod alloc;
 mod budget;
 mod cancel;
 mod clock;
+pub mod crash;
 mod depth;
 mod profiles;
 pub mod trampoline;
@@ -77,6 +78,7 @@ pub use clock::shell_clock;
 /// WASM shell injects its own `performance.now`-backed [`Clock`].
 #[cfg(all(feature = "instant-clock", not(target_arch = "wasm32")))]
 pub use clock::InstantClock;
+pub use crash::{Consent, PanicFacts, Report, Reporter};
 
 #[cfg(feature = "wasm-host")]
 pub use wasm_host::WasmCodec;
