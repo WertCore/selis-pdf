@@ -66,6 +66,39 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * Bytes that do NOT compress, plus the manifest row that describes them.
+ *
+ * The default {@link payload} fills with a single repeated byte, which deflate
+ * reduces to almost nothing. That is fine for tests about verification, but it
+ * is not a thing the store can be asked to hold, so a test about the storage
+ * budget built on it would be measuring a rounding error. Font data is
+ * high-entropy; these bytes stand in for that, and a chunk built from them
+ * occupies roughly the space its manifest claims.
+ */
+async function incompressiblePayload(id: string, rawBytes: number, brotliBytes: number) {
+	const bytes = new Uint8Array(rawBytes);
+	// xorshift32: deterministic, so a failure is reproducible, and high-entropy
+	// enough that deflate has nothing to find.
+	let state = 0x9e3779b9 ^ (id.length * 0x85ebca6b);
+	for (let i = 0; i < rawBytes; i += 1) {
+		state ^= state << 13;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		bytes[i] = state & 0xff;
+	}
+	return {
+		bytes,
+		row: {
+			id,
+			file: `cjk/${id}.ttf`,
+			raw_bytes: rawBytes,
+			brotli_bytes: brotliBytes,
+			sha256: await sha256(bytes),
+		},
+	};
+}
+
 /** Payload bytes of a given length, plus the manifest row that describes them. */
 async function payload(id: string, rawBytes: number, brotliBytes: number) {
 	const bytes = new Uint8Array(rawBytes).fill(0x41);
@@ -265,8 +298,8 @@ describe("EXT.05 the store installs, verifies, bounds and removes", () => {
 		// second is refused and the first stays installed, so a user near the
 		// limit keeps what they had.
 		const half = Math.floor(CJK_STORAGE_BUDGET_BYTES / 2) + 1;
-		const first = await payload("core", half, 1_000);
-		const second = await payload("kana", half, 1_000);
+		const first = await incompressiblePayload("core", half, 1_000);
+		const second = await incompressiblePayload("kana", half, 1_000);
 		const manifest = await manifestOf([first.row, second.row]);
 		const storage = memoryStorage();
 		const source = sourceOf(
@@ -281,6 +314,49 @@ describe("EXT.05 the store installs, verifies, bounds and removes", () => {
 			"cjk-over-budget",
 		);
 		expect(await installedCjkIds(storage)).toEqual(["core"]);
+	});
+
+	/**
+	 * FONT.10-F1, pinned as a test rather than as prose.
+	 *
+	 * The shipped payload's *raw* total is 11 162 268 B, over both the 8 MiB
+	 * resident budget and Chrome's 10 MiB `storage.local` quota, so counting
+	 * storage against `raw_bytes` refused a payload that does not actually need
+	 * the room. These two chunks are the same shape as that refusal: together
+	 * they declare more raw bytes than the budget, and both must install, because
+	 * the store is charged what it actually wrote.
+	 */
+	it("installs a payload whose RAW total is over the budget, because storage is not raw", async () => {
+		const half = Math.floor(CJK_STORAGE_BUDGET_BYTES / 2) + 1;
+		// Compressible, like the real payload: the point is that a chunk which
+		// declares `half` bytes may occupy far fewer.
+		const first = await payload("core", half, 1_000);
+		const second = await payload("kana", half, 1_000);
+		expect(first.row.raw_bytes + second.row.raw_bytes).toBeGreaterThan(CJK_STORAGE_BUDGET_BYTES);
+		const manifest = await manifestOf([first.row, second.row]);
+		const storage = memoryStorage();
+		const source = sourceOf(
+			manifest,
+			new Map([
+				[first.row.file, first.bytes],
+				[second.row.file, second.bytes],
+			]),
+		);
+		await installCjkChunk({ storage, source, id: "core" });
+		await installCjkChunk({ storage, source, id: "kana" });
+		expect(await installedCjkIds(storage)).toEqual(["core", "kana"]);
+		// And the store really is smaller than the raw bytes it was handed,
+		// which is the whole of the claim.
+		expect(await readCjkChunk(storage, "core")).toHaveLength(first.row.raw_bytes);
+	});
+
+	it("reads back exactly the bytes the manifest pinned, not a truncated stream", async () => {
+		const core = await payload("core", 9_999, 2_000);
+		const manifest = await manifestOf([core.row]);
+		const storage = memoryStorage();
+		const source = sourceOf(manifest, new Map([[core.row.file, core.bytes]]));
+		await installCjkChunk({ storage, source, id: "core" });
+		expect(await readCjkChunk(storage, "core")).toEqual(core.bytes);
 	});
 
 	it("refuses an id the manifest does not carry", async () => {
