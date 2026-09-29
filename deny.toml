@@ -50,65 +50,6 @@ ignore = [
     # public-key decryption as a service. Full argument and sign-off item:
     # pdf-plan/31-ENC03-DESIGN-NOTE.md §6.1. Re-review when `rsa` ships a fix.
     "RUSTSEC-2023-0071",
-    # RUSTSEC-2026-0315 / GHSA-m63x-6p34-q65x — `call_ref` and exception
-    # `catch` can drop *fuel* accounting, giving exponential fuel amplification
-    # (CVSS 5.7; availability only, no confidentiality or integrity impact).
-    #
-    # This one is NOT "we don't use the vulnerable feature" — the naive
-    # justification is wrong, and it is worth recording why. Fuel IS enabled
-    # and IS load-bearing here: `selis-sandbox/src/wasm_host.rs` calls
-    # `config.consume_fuel(true)` and derives the fuel allowance from
-    # `budget.wall`, so the wall deadline this sandbox enforces is a wasmtime
-    # fuel bound. A module able to drop that accounting could amplify past the
-    # limit and run unbounded, which is a host-availability DoS.
-    #
-    # What bounds the exposure, and why 48.x is still not the answer today:
-    #
-    #  1. The path is feature-gated and off by default. `selis-sandbox` ships
-    #     `default = []`; `wasm-host = ["dep:wasmtime"]` must be enabled
-    #     explicitly, and it exists so pure-kernel consumers and the wasm32
-    #     build never link Cranelift. It is native-only — wasmtime has no
-    #     wasm32 target, so none of this can reach a browser.
-    #  2. The hosted module is **our own**, compiled from `selis-pdf-filter`
-    #     (`jpx_gs`). This is not a case of running attacker-supplied wasm, so
-    #     the advisory's "malicious module" premise does not hold directly.
-    #  3. What an attacker *can* reach is the DATA: a hostile PDF's JPX stream
-    #     drives our codec. That is enough for a DoS if the amplified path is
-    #     data-reachable, so this is a real if narrow risk, not a non-issue —
-    #     and it is confined to the harness/tooling process, never a shipped
-    #     artifact. The browser's `.wasm` imports four symbols, all
-    #     wasm-bindgen placeholders; wasmtime is not in it.
-    #
-    # The fix is `>= 48.0.3`: a MAJOR bump from the pinned 47.0.0 across four
-    # consumers (`xtask` x2, `selis-sandbox`, `selis-pdf-filter`). That is an
-    # API-breaking change to a non-default native tooling path, taken to close
-    # an availability DoS that requires the non-default path, our own module,
-    # and a crafted JPX stream to line up. It should be scheduled, not done
-    # blind in a policy commit.
-    #
-    # Re-review triggers — any of these means take the 48.x upgrade now:
-    #   - `wasm-host` stops being opt-in, or any shipped artifact gains it;
-    #   - wasmtime is pointed at wasm this repo did not build;
-    #   - wasmtime fuel is used anywhere as a security bound rather than a
-    #     developer-tooling throttle.
-    # Issued 2026-09-29; recorded the same day.
-    "RUSTSEC-2026-0315",
-    # RUSTSEC-2026-0316 / GHSA-jqpg-j7w6-42pr — dynamic record lifting can
-    # allocate beyond the hostcall fuel limit. CVSS 1.0 (LOW): adjacent attack
-    # vector, high complexity, attack requirements present, user interaction
-    # passive, availability-only and Low. Same patched version (`>= 48.0.3`),
-    # same day, and the same fuel-metering area as the entry above.
-    #
-    # Accepted on the same grounds and for the same reason: the reachable path
-    # is the opt-in, native-only `wasm-host` sandbox described above, whose
-    # fuel bound is real but whose module is ours, and whose worst case is a
-    # slightly-over-budget allocation inside a tooling process.
-    #
-    # These two are the whole of the current wasmtime advisory set and both
-    # resolve on 48.x. Two same-day fuel-metering advisories is a reason to
-    # schedule that upgrade, not a reason to keep adding exceptions — if a
-    # third lands, stop suppressing and take the bump.
-    "RUSTSEC-2026-0316",
 ]
 
 [sources]
