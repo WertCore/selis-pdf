@@ -201,6 +201,15 @@ pub struct CjkRenderOutcome {
     pub revision: u64,
 }
 
+/// The result of one lazy-fallback render (SL-3.FONT.12).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FallbackRenderOutcome {
+    /// Face names the page needed that were not resident, sorted. The shell
+    /// fetches these, verifies each against the `selis-fallback/1` manifest
+    /// digest, `install`s them, and re-renders.
+    pub needs: Vec<&'static str>,
+}
+
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -873,7 +882,7 @@ impl Session {
         g: &mut BudgetGuard<'_>,
         stats: &mut crate::render::RenderStats,
     ) -> Result<()> {
-        self.render_page_walk(page_num, backend, page_ctm, budget, g, stats, None)
+        self.render_page_walk(page_num, backend, page_ctm, budget, g, stats, None, None)
     }
 
     /// Render a page with the lazy CJK fallback active (SL-3.FONT.10).
@@ -933,6 +942,7 @@ impl Session {
             g,
             stats,
             Some(&snapshot),
+            None,
         )?;
         for id in stats.cjk_pending.iter().copied() {
             cjk.request_chunk(id);
@@ -957,6 +967,7 @@ impl Session {
         g: &mut BudgetGuard<'_>,
         stats: &mut crate::render::RenderStats,
         cjk: Option<&selis_font::cjk::CjkSnapshot>,
+        fallbacks: Option<&selis_font::fallback_set::FallbackSnapshot>,
     ) -> Result<()> {
         let dl = self.page_display_list(page_num, budget, g)?;
         let budget_copy = *budget;
@@ -972,6 +983,20 @@ impl Session {
         // resolution too, instead of resetting at every closure.
         let clock = g.clock();
         let cjk_attach = cjk.cloned();
+        // The fallback snapshot is attached exactly like the CJK one: cloned
+        // once per walk, not once per glyph, and read-only thereafter so a
+        // concurrent `provide` cannot change the ground mid-render
+        // (ADR-P0012). `TextCache` already collapses the resolve count, so
+        // this clone is not per-run.
+        let fallback_attach = fallbacks.cloned();
+        // `render_display_list` takes the resolver as `Fn`, so the closure
+        // cannot hold a `&mut stats`. A `RefCell` is the same shape the CJK
+        // path uses from inside the walk (render.rs writes `stats.cjk_pending`
+        // there), and it keeps the common case free: nothing is pushed when the
+        // document's fonts are all resident or all built in.
+        let pending_rc: std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<&'static str>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+        let fallback_pending = std::rc::Rc::clone(&pending_rc);
         let font_data = move |font_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
@@ -981,8 +1006,13 @@ impl Session {
                 font_name,
                 &mut bg,
                 cjk_attach.clone(),
+                fallback_attach.clone(),
+                &fallback_pending,
             )
         };
+        // Shared handle for the drain, so the walk tail can read what the
+        // `move` closure above captured without a second mutable borrow.
+        let pending_shared = std::rc::Rc::clone(&pending_rc);
         let resolve_smask = move |key: &Bytes| -> Option<Mask> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
@@ -1039,6 +1069,11 @@ impl Session {
         // it holds instead of dropping it with the walk's scratch layer
         // (RAST.14). No-op when every group is balanced.
         backend.finish();
+        // Drain before returning: `stats` is the only channel out of the walk,
+        // and the caller reads `needs` immediately afterwards.
+        for name in pending_shared.borrow().iter().copied() {
+            stats.fallback_pending.insert(name);
+        }
         Ok(())
     }
 
@@ -1099,6 +1134,62 @@ impl Session {
         let annot_dl = self.page_annotation_display_list(page_num, budget, g)?;
         dl.ops.extend(annot_dl.ops);
         Ok(dl)
+    }
+
+    /// Render a page with the lazily-delivered fallback faces active
+    /// (SL-3.FONT.12).
+    ///
+    /// The mirror of [`Session::render_page_cjk`] for the non-CJK case: a document
+    /// that names a standard-14 font **without embedding a program** — which is
+    /// what LaTeX, ReportLab and most hand-rolled generators emit — resolves that
+    /// name to Liberation. Faces the shell has already delivered are used; the rest
+    /// are reported in [`FallbackRenderOutcome::needs`] for the shell to fetch.
+    ///
+    /// ## Blocking, unlike CJK
+    ///
+    /// A missing CJK *chunk* paints `.notdef` and repaints on arrival, because
+    /// chunks are large and arrive over several round trips. A missing *face* is
+    /// ~70 kB in one response, so the shell fetches it before rendering and this
+    /// call blocks on that. The trade is deliberate: blocking briefly is better
+    /// than painting a page whose text is in the wrong font and then reflowing it,
+    /// and a font swap changes metrics, so a post-paint correction would reflow
+    /// every line anyway.
+    ///
+    /// The walk still performs no I/O and holds no network handle. "Blocking" means
+    /// the *shell* awaited the fetch before calling this; the engine's determinism
+    /// (ADR-P0012) is unchanged, because pixels depend only on the snapshot passed
+    /// in.
+    pub fn render_page_fallbacks(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        fallbacks: &mut selis_font::fallback_set::FallbackFontSet,
+    ) -> Result<FallbackRenderOutcome> {
+        let snapshot = fallbacks.snapshot();
+        // A private counter, not the caller's `RenderStats`: this entry point
+        // reports everything it found in `needs`, so a caller has no reason to
+        // thread a stats object through for it — and accepting one would make
+        // this an eight-argument function for no gain.
+        let mut stats = crate::render::RenderStats::default();
+        self.render_page_walk(
+            page_num,
+            backend,
+            page_ctm,
+            budget,
+            g,
+            &mut stats,
+            None,
+            Some(&snapshot),
+        )?;
+        for name in stats.fallback_pending.iter().copied() {
+            fallbacks.request(name);
+        }
+        Ok(FallbackRenderOutcome {
+            needs: stats.fallback_pending.iter().copied().collect(),
+        })
     }
 }
 
@@ -1710,6 +1801,8 @@ fn font_data_inner(
     font_name: &Bytes,
     g: &mut BudgetGuard<'_>,
     cjk: Option<selis_font::cjk::CjkSnapshot>,
+    fallbacks: Option<selis_font::fallback_set::FallbackSnapshot>,
+    pending: &std::cell::RefCell<std::collections::BTreeSet<&'static str>>,
 ) -> Option<crate::render::ResolvedFontProgram> {
     use crate::render::ResolvedFontProgram;
     // Prefer the embedded font program (a Type0 wrapper carries it on the
@@ -1722,8 +1815,19 @@ fn font_data_inner(
         Some(fd) => fd,
         None => {
             let name = std::str::from_utf8(font_name.as_slice()).ok()?;
-            return selis_font::fallback::fallback_bytes(name)
-                .map(|bytes| ResolvedFontProgram::simple(bytes.to_vec()));
+            return match selis_font::fallback_set::resolve_face(name, fallbacks.as_ref()) {
+                Some(bytes) => Some(ResolvedFontProgram::simple(bytes)),
+                None => {
+                    // Name what we wanted, so the shell can fetch exactly this
+                    // face rather than guessing. `substitute` maps a name to a
+                    // face name without consulting residency, which is what
+                    // makes this reportable at all.
+                    if let Some(face) = selis_font::fallback::substitute_for(name) {
+                        pending.borrow_mut().insert(face);
+                    }
+                    None
+                }
+            };
         }
     };
     let mapping = mapping_of(&font_dict);
@@ -1755,12 +1859,20 @@ fn font_data_inner(
     // font (SL-0.LEAD.07), keyed by the /BaseFont name — carrying its
     // `/Encoding` so a `/Differences` on a non-embedded font still resolves
     // (RAST.14).
-    if let Some(bytes) = selis_font::fallback::fallback_bytes(&font_dict.base_font) {
+    if let Some(bytes) =
+        selis_font::fallback_set::resolve_face(&font_dict.base_font, fallbacks.as_ref())
+    {
         return Some(ResolvedFontProgram {
-            bytes: bytes.to_vec(),
+            bytes,
             mapping,
             cjk: attached,
         });
+    }
+    // A standard-14 name whose face is neither built in nor delivered. Record
+    // it; the shell fetches it and re-renders. This is the branch that made a
+    // Helvetica document paint nothing on the web build.
+    if let Some(face) = selis_font::fallback::substitute_for(&font_dict.base_font) {
+        pending.borrow_mut().insert(face);
     }
     // An unembedded `Uni…UCS2…` Type0 font (STSong-Light, the classic
     // Adobe-CJK case) has no program at all: with a lazy-CJK set active it

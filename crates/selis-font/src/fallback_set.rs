@@ -112,6 +112,72 @@ impl FallbackFontSet {
     }
 }
 
+/// An immutable view of the resident faces, taken for one render walk.
+///
+/// The mirror of `cjk::CjkSnapshot`, and for the same reason: the walk must
+/// see a fixed set of bytes so that rendering the same page twice produces
+/// identical pixels (ADR-P0012), and so a concurrent `provide` cannot change
+/// the ground under a render in progress.
+///
+/// The request queue is deliberately **not** carried. A render is a pure
+/// reader; it asks for nothing and mutates nothing, so handing it the queue
+/// would only invite a write from a read-only path.
+#[derive(Debug, Clone, Default)]
+pub struct FallbackSnapshot {
+    faces: BTreeMap<&'static str, Bytes>,
+}
+
+impl FallbackSnapshot {
+    /// The bytes for a face, or `None` when it is not resident.
+    #[must_use]
+    pub fn face(&self, name: &str) -> Option<&Bytes> {
+        self.faces.get(name)
+    }
+
+    /// Whether a face is resident right now.
+    #[must_use]
+    pub fn has(&self, name: &str) -> bool {
+        self.faces.contains_key(name)
+    }
+}
+
+impl FallbackFontSet {
+    /// An immutable view of the faces resident right now, for a render walk.
+    #[must_use]
+    pub fn snapshot(&self) -> FallbackSnapshot {
+        FallbackSnapshot {
+            faces: self.faces.clone(),
+        }
+    }
+}
+
+/// The font program to render a standard-14 name with: the built-in face when
+/// this build embeds one, otherwise the delivered face.
+///
+/// **This is the whole delivery seam, and it is one function on purpose.** The
+/// name a document asks for is decided by `fallback::substitute`, identically
+/// on every target; *where the bytes come from* is the only thing that varies,
+/// so it varies in exactly one place. Getting the order wrong is the bug worth
+/// naming: the built-in subset must win, because it is already parsed, already
+/// warm in the cache, and already what the previous build shipped. A delivered
+/// full face for the same name must not displace it — that would silently
+/// change which glyphs render (the subset covers Latin-1 plus typographic
+/// punctuation; the full face covers more) and therefore the metrics.
+#[must_use]
+pub fn resolve_face(name: &str, resident: Option<&FallbackSnapshot>) -> Option<Vec<u8>> {
+    if let Some(b) = crate::fallback::fallback_bytes(name) {
+        return Some(b.to_vec());
+    }
+    // The snapshot is keyed by *face* name (`LiberationSans-Regular`), but the
+    // caller has a PDF *font* name (`Helvetica`, possibly subset-tagged). Those
+    // are different namespaces, and looking one up in the other is a silent
+    // miss that reads as "the face was never delivered".
+    let face = crate::fallback::substitute_for(name)?;
+    resident
+        .and_then(|r| r.face(face))
+        .map(|b| b.as_ref().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

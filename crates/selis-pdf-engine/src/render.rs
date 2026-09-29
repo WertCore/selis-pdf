@@ -73,6 +73,16 @@ pub struct RenderStats {
     /// [`selis_font::cjk::CjkFontSet`] queue after the walk). Empty unless a
     /// lazy CJK snapshot was attached.
     pub cjk_pending: std::collections::BTreeSet<&'static str>,
+
+    /// Standard-14 fallback faces the walk wanted that were not resident.
+    ///
+    /// Recorded rather than fetched, exactly like `cjk_pending`: the walk has
+    /// no network handle, so it reports the need and the shell supplies the
+    /// face. A `None` here means the walk had no fallback snapshot attached,
+    /// which is the plain `render_page` path — a standard-14 document renders
+    /// blank there on a build that does not embed every face, so a caller that
+    /// cares should use `render_page_fallbacks`.
+    pub fallback_pending: std::collections::BTreeSet<&'static str>,
 }
 
 /// Bound on distinct font programs cached per walk (hostile-input guard: a

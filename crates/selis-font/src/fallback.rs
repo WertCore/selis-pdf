@@ -66,6 +66,19 @@ fn resolve_family(font_name: &str) -> Option<&'static str> {
     substitute(base, &style_hints(tagged))
 }
 
+/// The face name a standard-14 base font name substitutes to, **without
+/// consulting what is resident**.
+///
+/// This is the function that makes lazy loading reportable. `fallback_bytes`
+/// answers "can I render this now?", which is `None` both for a name that is
+/// not standard-14 and for a standard-14 name whose face has not arrived — and
+/// the engine must tell those apart, because the second is "fetch this" and the
+/// first is "this document has no substitute". Only this one can.
+#[must_use]
+pub fn substitute_for(font_name: &str) -> Option<&'static str> {
+    resolve_family(font_name)
+}
+
 /// The Liberation font bytes for a standard-14 base font name, or `None` when
 /// the name is not a standard-14 font **or** the face it needs is not built
 /// into this build.
