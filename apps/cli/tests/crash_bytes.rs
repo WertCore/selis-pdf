@@ -57,6 +57,12 @@
         clippy::arithmetic_side_effects,
         clippy::unwrap_used,
         clippy::expect_used,
+        // Fixture arithmetic only: the canary windows below are laid out by
+        // dividing a span across N windows, and the truncation is irrelevant to
+        // what the test asserts. Deliberately scoped to this integration test,
+        // matching how the unit tests in `selis-sandbox::crash` scope theirs.
+        // No production module may widen this.
+        clippy::integer_division,
         clippy::panic
     )
 )]
