@@ -399,11 +399,28 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Code shipped, but the box stays open: the DoD is a manual browser test and no browser was
     involved.** A service worker cannot register under `file://` and the repo ships no browser
     harness, so real event delivery, `clients.claim()`, browser-enforced `respondWith`, quota
-    behaviour, and the DoD's own airplane-mode pass are all unverified. The logic is asserted through
+    behaviour, and the DoD's own airplane-mode pass were all unverified. The logic is asserted through
     a Cache Storage double that implements `addAll` atomicity, `Vary`-aware `match` and
     insertion-ordered `keys` — 72 new tests — and the gates are proven falsifiable (dropping the
     `Range` rule fails 3 tests; widening paths and making `application/pdf` storable fails 4, including
     the crux case at `sw.test.ts:476`).
+  - **Harness landed; the browser's half is now measured, the DoD's own pass is still not.**
+    `cargo xtask browser-check` (`xtask/src/browser.rs`, checks in `xtask/browser/`) serves a page
+    on a loopback origin, drives a real Edge/Chrome/Chromium at it, and judges the JSON the page
+    POSTs back. Two committed checks, both verified against real Microsoft Edge on the development
+    machine: `service-worker` proves the browser delivers `install`/`activate`, that
+    `clients.claim()` actually hands the page a controller, and that `respondWith` returns the
+    body the worker precached — the three items this note previously called unverified. `async-wasm`
+    proves the harness itself: a verdict written only after an awaited
+    `WebAssembly.instantiateStreaming`, plus a genuine `LinkError` from an unsatisfied import. The
+    engine is an external tool found at runtime (no new dependency of any kind); no engine is a
+    loud, recorded *skip* rather than a pass or a failure.
+    **Still not done, deliberately:** the checks assert *browser behaviour*, not
+    `apps/web/host/public/sw.js`. They ship their own minimal worker, because rebuilding the app
+    would test the build, and the Node suite already covers that policy. The next step is pointing
+    the harness at the built web app under WEB.01's COOP/COEP headers, which is what the actual
+    DoD (open a local PDF, view, search, print, with the network gone) needs. The box stays unticked
+    until that runs.
   - **Caching policy:** precache is only `/`, `/index.html`, `/assets/style.css`, `/assets/boot.js` —
     the core WASM is ≤3 MB brotli (§12), so installing it for every visitor is wrong; it is fetched
     once on demand into the runtime cache. Runtime cache is `/assets/…` and `/wasm/…`, capped at

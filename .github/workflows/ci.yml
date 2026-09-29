@@ -10,6 +10,9 @@
 # wasm-threads   | every PR  | required (SL-4.WASM.03: the no-COOP/COEP extension path)
 # wasm-browser   | every PR  | required (SL-4.WASM.08: the corpus rendered in a real
 #                |          | headless browser, hash-matched against the native render)
+# browser-check  | every PR  | reported (WEB.02: the real-browser harness — the
+#                |          | service-worker lifecycle in a real engine. Skips,
+#                |          | loudly, where no engine is installed)
 # determinism    | every PR  | required (job pending)
 # write05-oracle | every PR  | required (qpdf --check on 100% of tool outputs)
 # write06-kill   | every PR  | required (crash-atomicity, 500 points x 3 ops)
@@ -286,6 +289,42 @@ jobs:
         with:
           name: wasm-browser-report
           path: target/wasm-browser/report.json
+          if-no-files-found: error
+
+  # ── WEB.02: the real-browser harness ────────────────────────────────────
+  # Proves the *browser's* half of the offline story: that a real engine
+  # delivers service-worker install/activate, hands the page a controller via
+  # clients.claim(), and enforces respondWith. apps/web/host proves the policy
+  # in Node against a Cache Storage double; nothing proved the browser.
+  #
+  # This job is allowed to be a no-op on a machine with no engine — that is
+  # what the harness's skip is for, and it is recorded as "skipped": true in
+  # the report rather than as a pass. `--strict` is deliberately NOT set here:
+  # a self-hosted runner without Edge should not turn the whole pipeline red
+  # over a DoD that is honestly still open.
+  browser-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Name the engine under test
+        run: |
+          browser="$(command -v microsoft-edge || command -v chromium || command -v google-chrome || true)"
+          if [ -n "$browser" ]; then
+            echo "engine under test: $browser ($("$browser" --version))"
+          else
+            echo "no chromium-family browser on this runner - the harness will SKIP, and say so"
+          fi
+      - run: cargo xtask browser-check --out target/browser-check/report.json
+        timeout-minutes: 10
+      - name: Upload the per-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-check-report
+          path: target/browser-check/report.json
           if-no-files-found: error
 
   # ── WRITE.05: qpdf --check over 100% of tool outputs (structural oracle) ───

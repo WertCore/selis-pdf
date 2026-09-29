@@ -7,6 +7,8 @@
 //! that lies is worse than no gate.
 
 mod bench;
+#[cfg(not(target_arch = "wasm32"))]
+mod browser;
 mod checks;
 mod cjk_assets;
 mod cjk_source;
@@ -255,6 +257,43 @@ enum Command {
         /// Keep the generated harness directory for inspection.
         #[arg(long)]
         keep: bool,
+    },
+    /// The real-browser harness (WEB.02): serve a page on a loopback origin,
+    /// drive a real Chrome/Chromium/Edge binary at it, and judge the JSON it
+    /// POSTs back.
+    ///
+    /// The committed checks assert the *browser's* half of the service-worker
+    /// story — real `install`/`activate` delivery, `clients.claim()`, and
+    /// browser-enforced `respondWith` — which nothing in the repo could
+    /// assert before. Adds no dependency: the engine is an external tool found
+    /// on the machine, like `qpdf`. Skips cleanly when no engine is present
+    /// (`--strict` makes that a failure instead). `--page <dir|file>` runs any
+    /// page that POSTs its JSON to `/__selis_result` and prints what came
+    /// back. Native-only (it launches a process).
+    #[cfg(not(target_arch = "wasm32"))]
+    BrowserCheck {
+        /// Headless engine binary (else `$SELIS_BROWSER`, else the
+        /// well-known Chrome/Chromium/Edge install locations).
+        #[arg(long)]
+        browser: Option<std::path::PathBuf>,
+        /// Run this page or directory instead of the committed checks.
+        #[arg(long)]
+        page: Option<std::path::PathBuf>,
+        /// Run only this committed check id.
+        #[arg(long)]
+        only: Option<String>,
+        /// Wall-clock milliseconds to wait for a page to report.
+        #[arg(long, default_value_t = browser::DEFAULT_TIMEOUT_MS)]
+        timeout_ms: u64,
+        /// Report JSON output (also the CI artifact).
+        #[arg(long, default_value = "target/browser-check/report.json")]
+        out: std::path::PathBuf,
+        /// Keep the served directory and the engine profile for inspection.
+        #[arg(long)]
+        keep: bool,
+        /// Fail instead of skipping when no engine is found.
+        #[arg(long)]
+        strict: bool,
     },
     /// Generate the deterministic render benchmark set (SL-2.PERF.02).
     RenderSet {
@@ -796,6 +835,24 @@ fn main() -> ExitCode {
             corpus,
             out,
             keep,
+        }),
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::BrowserCheck {
+            browser,
+            page,
+            only,
+            timeout_ms,
+            out,
+            keep,
+            strict,
+        } => browser::run(&browser::Config {
+            browser,
+            page,
+            only,
+            timeout_ms,
+            out,
+            keep,
+            strict,
         }),
         Command::PerfRender {
             set,
