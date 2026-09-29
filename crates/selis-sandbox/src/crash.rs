@@ -435,6 +435,13 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
+    // Fixture code only. These tests index their own freshly-built report
+    // vectors and compare lengths to zero or one; none of it is reachable from
+    // untrusted input, which is why `indexing_slicing` and `len_zero` are deny
+    // lints in production. Deliberately scoped to this module — the reporter
+    // itself below is unlinted-exempt.
+    #![allow(clippy::indexing_slicing, clippy::len_zero)]
+
     use super::*;
 
     /// A realistic `file!()` from a Windows CI checkout — the directory prefix is
