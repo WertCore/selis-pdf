@@ -226,10 +226,7 @@ impl<'a> Lexer<'a> {
         self.bump(); // consume `(`
         let mut out = Vec::new();
         let mut depth = 0u32;
-        loop {
-            let Some(b) = self.peek() else {
-                break; // truncated at EOF: emit the partial string
-            };
+        while let Some(b) = self.peek() {
             self.bump();
             match b {
                 b'(' => {
@@ -336,10 +333,7 @@ impl<'a> Lexer<'a> {
         let mut out = Vec::new();
 
         let mut hi: Option<u8> = None;
-        loop {
-            let Some(b) = self.peek() else {
-                break;
-            };
+        while let Some(b) = self.peek() {
             self.bump();
             match b {
                 b'>' => break,

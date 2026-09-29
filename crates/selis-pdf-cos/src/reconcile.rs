@@ -313,7 +313,7 @@ pub fn merge_number_trees(inputs: &[(Vec<(i64, Obj)>, i64)]) -> Obj {
             all.push((k.saturating_add(*offset), v.clone()));
         }
     }
-    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all.sort_by_key(|a| a.0);
     // Grows incrementally over already-resident pairs: no budget guard is
     // available on this `#[must_use]` assembly helper.
     let mut nums: Vec<Obj> = Vec::new();

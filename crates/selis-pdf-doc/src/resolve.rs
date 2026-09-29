@@ -327,10 +327,7 @@ fn parse_value_at(
     let mut toks = Vec::new();
     let mut depth = 0u32;
     let mut pending_ref_nums = 0u32;
-    loop {
-        let Some(tok) = lexer.next_token(g)? else {
-            break;
-        };
+    while let Some(tok) = lexer.next_token(g)? {
         g.charge_one(selis_sandbox::Resource::Objects)?;
         match tok {
             selis_pdf_cos::Token::ArrayStart | selis_pdf_cos::Token::DictStart => {
