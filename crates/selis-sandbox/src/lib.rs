@@ -53,7 +53,7 @@ pub mod alloc;
 mod budget;
 mod cancel;
 mod clock;
-mod crash;
+pub mod crash;
 mod depth;
 mod profiles;
 pub mod trampoline;
