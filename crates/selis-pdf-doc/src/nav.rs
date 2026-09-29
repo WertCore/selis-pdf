@@ -107,6 +107,23 @@ pub enum DestinationKind {
 
 impl DestinationKind {
     /// Classify a destination type keyword.
+    ///
+    /// # Budget
+    ///
+    /// O(1) for the six known keywords, which compare against literals. The
+    /// `Other` arm copies `name` once, so the cost is bounded by the length of
+    /// the name already present in the document — this adds no unbounded
+    /// allocation of its own and consumes no budget from a `Budget`.
+    ///
+    /// # Malformed Input
+    ///
+    /// `name` is a bare keyword, not a length-delimited token, so there is
+    /// nothing here to be truncated or over-read. Any byte string that is not
+    /// one of the six known spellings is classified as
+    /// [`DestinationKind::Other`] carrying the bytes verbatim; a name with
+    /// invalid UTF-8, embedded NULs, or a length of zero is preserved as-is
+    /// rather than rejected, because an unrecognised destination type is a
+    /// thing a viewer should decline, not a reason to fail the document.
     #[must_use]
     pub fn from_name(name: &[u8]) -> Self {
         match name {
@@ -121,6 +138,19 @@ impl DestinationKind {
     }
 
     /// The class's own name, for a transport that speaks names.
+    ///
+    /// # Budget
+    ///
+    /// O(1), and it allocates nothing: the six known arms return `&'static`
+    /// literals, and `Other` returns a borrow of bytes this value already
+    /// owns. The returned slice borrows `self` and so cannot outlive it.
+    ///
+    /// # Malformed Input
+    ///
+    /// None to reject. `Other` hands back whatever bytes were classified, so a
+    /// name that was not valid UTF-8 — or not a name at all — is returned
+    /// unchanged. Callers writing it onto the wire are responsible for the
+    /// escaping; this function reports what it holds and does not sanitise.
     #[must_use]
     pub fn as_name(&self) -> &[u8] {
         match self {
@@ -302,6 +332,23 @@ impl ActionKind {
     /// of, in either direction. `/JS` is accepted as the older spelling of
     /// `/JavaScript` and maps to the same class, which is the one aliasing the
     /// spec itself sanctions.
+    ///
+    /// # Budget
+    ///
+    /// A linear match over the fixed keyword set, so O(1) in the number of
+    /// classes. The `Other` arm copies `name` once, bounded by the length of a
+    /// name already present in the document; no budget from a `Budget` is
+    /// drawn, and nothing here scales with document size.
+    ///
+    /// # Malformed Input
+    ///
+    /// `name` is a bare keyword, so there is no length prefix to be truncated
+    /// or over-read. Anything not matching a known spelling — including an
+    /// empty slice, invalid UTF-8, or embedded NULs — becomes
+    /// [`ActionKind::Other`] with the bytes preserved verbatim. A hostile
+    /// document can therefore reach the `Other` arm with any bytes at all; it
+    /// cannot reach a known class except by spelling that class exactly, which
+    /// is the case-sensitivity the note above is about.
     #[must_use]
     pub fn from_name(name: &[u8]) -> Self {
         match name {
@@ -329,6 +376,18 @@ impl ActionKind {
     }
 
     /// The class's own name, for a transport that speaks names.
+    ///
+    /// # Budget
+    ///
+    /// O(1), allocating nothing: the modelled arms return `&'static` literals
+    /// and `Other` borrows bytes the value already owns. The result borrows
+    /// `self` and cannot outlive it.
+    ///
+    /// # Malformed Input
+    ///
+    /// None to reject. `Other` returns whatever bytes were classified, so an
+    /// unrecognised or non-UTF-8 name comes back unchanged; wire escaping is
+    /// the caller's job, not this function's.
     #[must_use]
     pub fn as_name(&self) -> &[u8] {
         match self {
@@ -554,6 +613,32 @@ fn file_spec_dict_text(spec: &Obj) -> Option<String> {
 /// hidden**: closing it means a sideways L2 edge to `selis-font`, which owns
 /// the table, and `xtask/layers.toml` is explicit that adding one needs review
 /// rather than a drive-by.
+///
+/// # Budget
+///
+/// Linear in `bytes`, and it allocates in proportion to what it is given: the
+/// UTF-16 path builds one `u16` per code unit and then a `String`, the
+/// PDFDocEncoding path allocates the lossy copy directly. The caller is the
+/// one that should hold this against a budget — this is called per outline
+/// title, so an unbounded `/Title` is a per-node cost and the navigation walk
+/// that drives it is what bounds the total. Nothing here allocates a fixed
+/// size independent of the input.
+///
+/// # Malformed Input
+///
+/// Never fails and never panics; every input yields a `String`.
+///
+/// - No UTF-16 BOM: read as PDFDocEncoding, lossily, per the fidelity note.
+/// - UTF-16 with an **odd trailing byte**: the incomplete unit is dropped.
+/// - UTF-16 with an **unpaired surrogate**: becomes U+FFFD, via
+///   `from_utf16_lossy` in [`decode_utf16be`].
+/// - Invalid UTF-8 in the non-BOM branch: U+FFFD per byte, not an error.
+/// - Empty input: the empty string.
+///
+/// The two BOM bytes are consumed, not emitted. Note that the UTF-16 branch is
+/// only entered on a `0xFE 0xFF` prefix; a little-endian BOM is *not*
+/// recognised and falls through to the lossy byte reading, which is a
+/// deliberate limitation rather than an oversight.
 #[must_use]
 pub fn text_string(bytes: &[u8]) -> String {
     const BOM: [u8; 2] = [0xFE, 0xFF];
@@ -591,6 +676,27 @@ pub(crate) fn obj_f64(obj: &Obj) -> Option<f64> {
 }
 
 /// Look up a key in a dictionary object.
+///
+/// # Budget
+///
+/// O(pairs) — a linear scan of the dictionary, comparing each key against
+/// `key`. It allocates nothing, and `key` is a caller-held slice, so the only
+/// cost is comparisons proportional to the dictionary's size. The
+/// dictionaries this is called on are per-object (`/F`, `/UF`, `/D`, …) and
+/// small; a document cannot inflate one of these without the budget for the
+/// surrounding parse already bounding it.
+///
+/// # Malformed Input
+///
+/// Returns `None` for every input that does not yield a value, and never
+/// panics:
+///
+/// - `dict` is not [`Obj::Dict`] — an array, name, or scalar has no keys, so
+///   the answer is `None` rather than a type error.
+/// - Key absent, or present with a different case — PDF keys are
+///   case-sensitive, and a near-miss is simply not found.
+/// - A dictionary with duplicate keys returns the **first** match; the
+///   behaviour is whatever the parse produced, not a re-resolution.
 pub(crate) fn dict_get<'a>(dict: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
     match dict {
         Obj::Dict(pairs) => pairs
@@ -602,6 +708,25 @@ pub(crate) fn dict_get<'a>(dict: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
 }
 
 /// Look up a key whose value must be a reference.
+///
+/// # Budget
+///
+/// Whatever [`dict_get`] costs: one linear scan of the dictionary, no
+/// allocation, and the result is a copied [`Ref`] rather than a borrow. Same
+/// bound as the lookup it wraps.
+///
+/// # Malformed Input
+///
+/// `None` for every input that does not yield a reference, on top of
+/// [`dict_get`]'s cases:
+///
+/// - Key absent, or `dict` not a dictionary.
+/// - **Key present but not a reference** — a direct object, a number, a
+///   string, a stream. This is the case that matters: a `/Dests` or `/A`
+///   entry written as a direct dictionary is structurally legal in a
+///   document but is not a `Ref`, so it is reported as absent rather than
+///   dereferenced. The `Ref` this returns has not been resolved, so a
+///   dangling object number surfaces at resolution, not here.
 pub(crate) fn dict_ref(dict: &Obj, key: &[u8]) -> Option<Ref> {
     match dict_get(dict, key) {
         Some(Obj::Ref(r)) => Some(*r),
