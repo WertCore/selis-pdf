@@ -40,6 +40,10 @@ pub struct FallbackFontSet {
     /// re-requested forever. Distinct from `requested`: that is "not yet",
     /// this is "never".
     unavailable: std::collections::BTreeSet<&'static str>,
+    /// The invalidation counter. **A change is the repaint signal**
+    /// (ADR-P0043 §3), mirroring `CjkFontSet::revision`. Named `rev` so the
+    /// `revision()` accessor does not collide with the field it reads.
+    rev: u64,
 }
 
 impl FallbackFontSet {
@@ -95,14 +99,40 @@ impl FallbackFontSet {
     pub fn install(&mut self, name: &'static str, bytes: Bytes) {
         self.faces.insert(name, bytes);
         self.requested.remove(name);
-        self.unavailable.remove(name);
+        // Adopting a face always changes the picture: either a new face becomes
+        // resident, or an existing one is replaced, or a face previously marked
+        // permanently missing turns out to be available. Bumping unconditionally
+        // is therefore correct, and cheaper to reason about than proving
+        // "nothing changed" — a redundant repaint is a wasted frame, a missed
+        // one is a stale page.
+        let _ = self.unavailable.remove(name);
+        self.rev = self.rev.saturating_add(1);
     }
 
     /// Record that a face will never arrive, so it stops being requested.
     pub fn mark_unavailable(&mut self, name: &'static str) {
-        self.faces.remove(name);
+        // Evicting resident bytes *is* a pixel change, so that bumps the
+        // revision. Merely recording a face that was never here is not a change
+        // in the picture, and must not signal a repaint — otherwise every
+        // render of a document naming a face this payload lacks would repaint
+        // the world for nothing.
+        if self.faces.remove(name).is_some() {
+            self.rev = self.rev.saturating_add(1);
+        }
         self.requested.remove(name);
-        self.unavailable.insert(name);
+        let _ = self.unavailable.insert(name);
+    }
+
+    /// The set's invalidation revision. A change is the repaint signal.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.rev
+    }
+
+    /// The faces the payload will never carry, sorted.
+    #[must_use]
+    pub fn unavailable(&self) -> Vec<&'static str> {
+        self.unavailable.iter().copied().collect()
     }
 
     /// Whether a face is known to be unobtainable.

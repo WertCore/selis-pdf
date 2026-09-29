@@ -204,10 +204,14 @@ pub enum ChunkStep {
 
 /// Parse a lowercase-hex SHA-256 into its 32 bytes.
 ///
+/// `pub(crate)` because the fallback loader verifies faces by the same rule; one
+/// digest implementation is the only way "verified" can mean the same thing in
+/// both payloads.
+///
 /// `None` for anything that is not exactly 64 lowercase hex characters. A claim
 /// with an unparseable digest is a claim the loader cannot check, and a claim it
 /// cannot check is one it refuses — which is the whole point of checking.
-fn parse_digest(hex: &str) -> Option<[u8; 32]> {
+pub(crate) fn parse_digest(hex: &str) -> Option<[u8; 32]> {
     let bytes = hex.as_bytes();
     if bytes.len() != 64 {
         return None;
@@ -232,7 +236,7 @@ fn hex_val(c: &u8) -> Option<u8> {
 }
 
 /// The SHA-256 of `bytes`, lowercase hex.
-fn digest_hex(bytes: &[u8]) -> String {
+pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(64);
     for b in digest.iter() {
