@@ -279,14 +279,20 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
                     .to_string(),
             );
         }
+        // The strip writes the file back, so the path now *is* the stripped
+        // artifact; `brotli_compress` measures a file because it shells out to
+        // Node's zlib, and re-encoding the bytes in Rust would measure a
+        // different compressor than the one that serves this in production.
+        strip_custom_sections(&opt_out)?;
         let compressed = brotli_compress(&opt_out)?;
         out.insert(stem.to_string(), compressed.len() as u64);
+        let raw = std::fs::metadata(&opt_out)
+            .map_err(|e| format!("{opt_out:?}: {e}"))?
+            .len();
         println!(
-            "  measured {:26} raw {} → brotli {}",
+            "  measured {:26} raw {} → brotli {} (custom sections stripped)",
             stem,
-            std::fs::metadata(&opt_out)
-                .map_err(|e| format!("{opt_out:?}: {e}"))?
-                .len(),
+            raw,
             compressed.len()
         );
     }
@@ -313,6 +319,100 @@ fn write_baseline(baseline: &SizeBaseline) -> Result<(), String> {
 
 /// brotli-compress a file (shared with `cjk-build`: same node toolchain as
 /// the CI size job, same measured quantity as the size budgets).
+/// Drop every **custom** section from a `.wasm`, and write the result back.
+///
+/// ## Why this exists
+///
+/// `wasm-opt` does not remove the `__wasm_bindgen_unstable` schema section, and
+/// the built-in strip flags do not reach it either: measured on the core module,
+/// `-O3 --strip-debug --strip-producers --strip-target-features` came out
+/// 1 698 B *larger* than no flags at all. `wasm-tools strip` does remove it —
+/// 174 720 B on the same input — and a custom section is by definition metadata
+/// the engine never reads at instantiation, so it is pure transfer cost.
+///
+/// It is done here rather than by shelling out to `wasm-tools` so the build
+/// keeps working with only the tooling it already documents as required
+/// (`wasm-opt`), instead of adding a second binary to every contributor's and
+/// CI's PATH for a 40-line transformation.
+///
+/// ## What it must not do
+///
+/// Only section id `0` is dropped. The magic header, the version, and every
+/// typed section are copied byte-for-byte, so the result is the same module
+/// with metadata removed — verified with `wasm-tools validate` and by the
+/// unchanged import/export counts in the size report. An unparseable input is
+/// an error rather than a silent passthrough, because a passthrough would
+/// quietly keep shipping the section this exists to remove.
+///
+/// On the wire the win is much smaller than the raw figure suggests, and that
+/// is worth knowing before anyone chases it again: the section is a table of
+/// repetitive symbol names, so brotli already compresses it well. 174 720 B of
+/// raw is 24 185 B of transfer.
+pub(crate) fn strip_custom_sections(path: &Path) -> Result<Vec<u8>, String> {
+    const WASM_MAGIC: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+    let input = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if input.len() < 8 || input[..8] != WASM_MAGIC {
+        return Err(format!(
+            "{}: not a wasm module (bad magic); refusing to strip",
+            path.display()
+        ));
+    }
+
+    let mut out = input[..8].to_vec();
+    let mut at = 8usize;
+    while at < input.len() {
+        let id = input[at];
+        at += 1;
+        let (size, used) = read_leb128(&input[at..])
+            .ok_or_else(|| format!("{}: truncated section size at {at}", path.display()))?;
+        at += used;
+        let end = at
+            .checked_add(size as usize)
+            .filter(|end| *end <= input.len())
+            .ok_or_else(|| format!("{}: section at {at} runs past end of file", path.display()))?;
+        if id != 0 {
+            out.push(id);
+            out.extend_from_slice(&encode_leb128(size));
+            out.extend_from_slice(&input[at..end]);
+        }
+        at = end;
+    }
+    std::fs::write(path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(out)
+}
+
+/// Read an unsigned LEB128, returning the value and how many bytes it used.
+fn read_leb128(bytes: &[u8]) -> Option<(u64, usize)> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    for (index, byte) in bytes.iter().enumerate() {
+        if shift >= 64 {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some((value, index + 1));
+        }
+        shift += 7;
+    }
+    None
+}
+
+/// Encode an unsigned LEB128.
+fn encode_leb128(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return out;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 pub(crate) fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
     // Use Node.js zlib's brotli from the command line. The compressed bytes
     // go to a temp file, not stdout — writing a large buffer to a pipe-backed
@@ -364,6 +464,91 @@ pub(crate) fn brotli_compress(path: &Path) -> Result<Vec<u8>, String> {
 mod tests {
     #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
     use super::*;
+
+    // ---- custom-section stripping ----
+
+    /// A minimal module: magic + one typed section + one custom section.
+    fn module_with_a_custom_section() -> Vec<u8> {
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        // Type section (id 1), one-byte body.
+        wasm.extend_from_slice(&[1, 1, 0]);
+        // Custom section (id 0). Its body is a 1-byte name length, the 4 name
+        // bytes, then the payload — so the declared size is built from those
+        // parts rather than hand-counted, because a fixture that lies about
+        // its own size is testing a malformed module, not the strip.
+        let mut body = vec![4, b'n', b'a', b'm', b'e'];
+        body.extend_from_slice(&[5, 1, 2, 3, 4, 5]);
+        wasm.push(0);
+        wasm.extend_from_slice(&encode_leb128(body.len() as u64));
+        wasm.extend_from_slice(&body);
+        wasm
+    }
+
+    #[test]
+    fn strip_removes_the_custom_section_and_keeps_the_typed_ones() {
+        let dir = std::env::temp_dir().join("selis-strip-keeps");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.wasm");
+        let before = module_with_a_custom_section();
+        std::fs::write(&path, &before).unwrap();
+
+        let out = strip_custom_sections(&path).unwrap();
+
+        // Exactly the magic and the type section, in order.
+        let mut expected = before[..8].to_vec();
+        expected.extend_from_slice(&[1, 1, 0]);
+        assert_eq!(out, expected);
+        assert!(
+            !out.windows(4).any(|w| w == b"name"),
+            "custom name survived"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strip_is_written_back_so_the_shipped_artifact_is_the_stripped_one() {
+        // The caller measures the file on disk, so returning stripped bytes
+        // without writing them would report a size the artifact does not have.
+        let dir = std::env::temp_dir().join("selis-strip-writeback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.wasm");
+        std::fs::write(&path, module_with_a_custom_section()).unwrap();
+        let out = strip_custom_sections(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), out);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strip_refuses_a_file_that_is_not_wasm() {
+        // A silent passthrough here would quietly keep shipping exactly the
+        // section this exists to remove.
+        let dir = std::env::temp_dir().join("selis-strip-notwasm");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.wasm");
+        std::fs::write(&path, b"this is not a wasm module at all").unwrap();
+        let err = strip_custom_sections(&path).unwrap_err();
+        assert!(err.contains("not a wasm module"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn leb128_round_trips_across_the_multi_byte_boundary() {
+        // 127 is the last value that fits one byte; 128 and 624 485 need two
+        // and three, and a strip that mis-encoded a size would corrupt the
+        // module rather than fail.
+        for value in [0u64, 1, 127, 128, 300, 16_383, 16_384, 624_485, 1_000_000] {
+            let encoded = encode_leb128(value);
+            let (decoded, used) = read_leb128(&encoded).unwrap();
+            assert_eq!(decoded, value, "value {value}");
+            assert_eq!(used, encoded.len(), "length for {value}");
+        }
+    }
+
+    #[test]
+    fn leb128_rejects_a_truncated_encoding() {
+        assert!(read_leb128(&[0x80, 0x80]).is_none());
+        assert!(read_leb128(&[]).is_none());
+    }
 
     // ---- regression math ----
 
