@@ -95,8 +95,7 @@ use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
 
 use crate::cjkchunk::{
-    ChunkClaim, ChunkReport as CjkReport, ChunkStep as CjkChunkStep, CjkChunkLoader,
-    CjkRequest,
+    ChunkClaim, ChunkReport as CjkReport, ChunkStep as CjkChunkStep, CjkChunkLoader, CjkRequest,
 };
 use crate::httprange::{ChunkReport, ChunkStep, HttpRangeDriver, RangeRequest};
 use crate::memory::{MemoryStats, JS_DEFAULT_CAP_BYTES, WASM_MAX_BYTES};
@@ -528,7 +527,17 @@ impl Worker {
                 chunk,
                 status,
                 len,
-            } => self.op_cjk_chunk(id, doc, CjkReport { id: chunk, status, len, body: payload.to_vec() }, env),
+            } => self.op_cjk_chunk(
+                id,
+                doc,
+                CjkReport {
+                    id: chunk,
+                    status,
+                    len,
+                    body: payload.to_vec(),
+                },
+                env,
+            ),
             RequestOp::CjkClose { doc, chunk } => self.op_cjk_close(id, doc, chunk),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),

@@ -669,7 +669,10 @@ mod tests {
         assert!(full > 0);
         let rev = set.revision();
 
-        assert!(set.evict("ideographs-4"), "bytes were held, so they are released");
+        assert!(
+            set.evict("ideographs-4"),
+            "bytes were held, so they are released"
+        );
         assert!(
             set.resident_bytes() < full,
             "the chunk's bytes are gone: {full} -> {}",

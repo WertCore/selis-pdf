@@ -256,7 +256,6 @@ fn table_order(ids: &[&'static str]) -> Vec<&'static str> {
         .collect()
 }
 
-
 /// The guest-side CJK chunk loader: the resident set plus the claims, attempts
 /// and exhaustion state that turn a render's `needs` list into fetches.
 ///
@@ -410,7 +409,6 @@ impl CjkChunkLoader {
         self.set.mark_unavailable(ids);
     }
 
-
     /// The next chunk to fetch, or `None` when nothing is wanted.
     ///
     /// The order is the set's own sticky `needs` queue in chunk-table order, so
@@ -467,7 +465,6 @@ impl CjkChunkLoader {
         }
         Ok(None)
     }
-
 
     /// Judge one delivered chunk and advance the loader.
     ///
@@ -564,7 +561,6 @@ impl CjkChunkLoader {
         })
     }
 
-
     /// One failure for `id`: retry while the attempt bound allows, then exhaust.
     ///
     /// The exhaustion is what makes the failure *reportable* rather than a loop,
@@ -622,7 +618,6 @@ pub struct CjkCloseReport {
     /// The set's revision after the eviction. **A change is the repaint signal.**
     pub revision: u64,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -740,8 +735,7 @@ mod tests {
             id: "no-such-chunk",
             ..claim("ideographs-4", &bytes)
         };
-        let e = CjkChunkLoader::new(Bytes::new(), vec![bad], budget())
-            .expect_err("refused");
+        let e = CjkChunkLoader::new(Bytes::new(), vec![bad], budget()).expect_err("refused");
         assert_eq!(e.code(), Code::BindingBadArgument);
     }
 
@@ -773,7 +767,6 @@ mod tests {
         }
     }
 
-
     /// The happy path: a render queues the chunk, the loader plans it, the
     /// shell delivers exactly what the manifest promised, the set adopts it, and
     /// the revision is the repaint signal.
@@ -784,7 +777,10 @@ mod tests {
         let req = loader.plan().expect("bounded").expect("planned");
         assert_eq!(req.id, "ideographs-4");
         assert_eq!(req.url, "cjk/ideographs-4.ttf");
-        assert_eq!(req.raw_bytes, u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        assert_eq!(
+            req.raw_bytes,
+            u64::try_from(chunk.len()).unwrap_or(u64::MAX)
+        );
         assert_eq!(req.sha256, digest_hex(chunk.as_slice()));
 
         let mut g = guard();
@@ -870,7 +866,6 @@ mod tests {
         assert_eq!(loader.plan().expect("bounded"), None);
     }
 
-
     /// A range the payload has no file for is never requested and never retried
     /// — the "this payload has no Korean" outcome, distinct from a failure.
     #[test]
@@ -913,17 +908,13 @@ mod tests {
         ] {
             let e = loader.accept(&bad, &mut g).expect_err("typed refusal");
             assert!(
-                matches!(
-                    e.code(),
-                    Code::BindingBadArgument | Code::IoReadFailed
-                ),
+                matches!(e.code(), Code::BindingBadArgument | Code::IoReadFailed),
                 "unexpected code for {bad:?}: {e:?}"
             );
         }
         assert_eq!(loader.revision(), before_rev, "no pixel changed");
         assert_eq!(loader.resident_bytes(), before_bytes, "no bytes kept");
     }
-
 
     /// Eviction is the FONT.10-F1 lever, and it reports the new resident total
     /// so the shell can measure against its own budget.
@@ -987,8 +978,7 @@ mod tests {
         let a = payload(&[0x4E00]);
         let b = payload(&[0x6F00]);
         let claims = vec![claim("ideographs-4", &b), claim("ideographs-1", &a)];
-        let mut loader =
-            CjkChunkLoader::new(Bytes::new(), claims, budget()).expect("claims parse");
+        let mut loader = CjkChunkLoader::new(Bytes::new(), claims, budget()).expect("claims parse");
         // Queue both, in the wrong order on purpose.
         let _ = loader.set_mut().request(0x6F00);
         let _ = loader.set_mut().request(0x4E00);
@@ -1017,7 +1007,10 @@ mod tests {
         let _ = loader
             .accept(&report("ideographs-4", 200, chunk.to_vec()), &mut g)
             .expect("adopt");
-        assert_eq!(loader.plan().expect("bounded"), None, "and now it is resident");
+        assert_eq!(
+            loader.plan().expect("bounded"),
+            None,
+            "and now it is resident"
+        );
     }
 }
-
