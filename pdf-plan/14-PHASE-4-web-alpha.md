@@ -117,7 +117,7 @@ proves the engine in the harshest environment, and it costs nothing to distribut
   - **What this reuses rather than reimplements:** `SL-0.IO.04`'s `HttpRangeSource` already existed
     at the IO layer, so this task is the fetch driver that drives it — 2 226 lines across
     `httprange.rs` (1 347), the guest surface, `protocol.rs`, `worker.rs` and the harness.
-- [ ] **SL-4.WASM.07 — Lazy font chunk loading** · deps: SL-3.FONT.10, WASM.02 · owner: AI+
+- [x] **SL-4.WASM.07 — Lazy font chunk loading** · deps: SL-3.FONT.10, WASM.02 · owner: AI+
 - [x] **SL-4.WASM.08 — Deterministic-render CI on WASM** · deps: WASM.03 · owner: AI
   - **DoD:** Headless-browser render of the corpus hash-matches the native render.
   - `cargo xtask wasm-browser` renders the corpus in a real V8 (headless Microsoft Edge, a
@@ -348,7 +348,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     gates: role completeness + distinctness, WCAG 2.x contrast over declared fg/bg pairs in all
     four themes (4.5 body / 3 non-text / 7 high-contrast), variable-reference + class-namespace
     integrity, TS↔CSS sync. Usage documented in `packages/ui-kit/README.md` for UI.02+.
-- [ ] **SL-4.UI.11 — i18n scaffolding** · deps: SL-0.ERR.04 · owner: AI
+- [x] **SL-4.UI.11 — i18n scaffolding** · deps: SL-0.ERR.04 · owner: AI
   - **Do:** Every string a key from day 1 (ADR-P0034). Ship English; wire pseudo-locale into CI.
 - [ ] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
   - **Do:** Every `Code` maps to a user-facing state with a recovery action. A damaged file shows
@@ -596,7 +596,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.EXT.08 — Deep link into the web app for edit actions** · deps: EXT.06 · owner: AI+
   - **Do:** "Edit this" hands the document to the web app **locally** (OPFS handoff or a same-origin
     transfer), never by uploading. The funnel from free viewer to paid editor is this button.
-- [ ] **SL-4.EXT.09 — `file://` access permission flow** · deps: EXT.02 · owner: AI+
+- [x] **SL-4.EXT.09 — `file://` access permission flow** · deps: EXT.02 · owner: AI+
   - **Do:** Detect that "Allow access to file URLs" is off, explain why it is needed in plain
     language, and deep-link to the toggle. Do not silently fail on local PDFs.
 - [ ] **SL-4.EXT.10 — Firefox and Safari ports** · deps: EXT.06 · owner: AI
@@ -611,7 +611,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 
 ## 4.SHIP — Launch readiness
 
-- [ ] **SL-4.SHIP.01 — Crash reporting with document-byte stripping** · deps: SL-0.ERR.03 · owner: AI+
+- [x] **SL-4.SHIP.01 — Crash reporting with document-byte stripping** · deps: SL-0.ERR.03 · owner: AI+
   - **DoD:** A test proving no document bytes appear in a report from a deliberately crashing parse.
 - [ ] **SL-4.SHIP.02 — Feature flags + staged rollout** · deps: SL-0.WS.02 · owner: AI
 - [ ] **SL-4.SHIP.03 — Support: docs, FAQ, "report a rendering bug" flow** · owner: HUMAN
