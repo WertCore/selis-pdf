@@ -330,7 +330,11 @@ mod tests {
         let text = "fn upload() {\n    let s = std::net::TcpStream::connect(\"h\");\n}\n";
         let violations = check_no_sink(text);
         assert!(!violations.is_empty(), "a real socket must be flagged");
-        assert!(violations[0].contains("std::net"), "{violations:?}");
+        // The finding names the banned API and the line it is on -- the two
+        // things a reviewer needs to act on it. It does not echo the full
+        // module path, because the marker set is what matched.
+        assert!(violations[0].contains("TcpStream"), "{violations:?}");
+        assert!(violations[0].contains(":2:"), "{violations:?}");
     }
 
     #[test]
