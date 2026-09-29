@@ -3,10 +3,10 @@
 The one seam between the Selis UI and whatever hosts it: the web app
 (`apps/web/host`, SL-4.WEB.01+), the MV3 extension (SL-4.EXT.06), the desktop
 shell (SL-6.SHELL.01), and the CLI/test harness. UI code in `apps/ui` receives
-an adapter at startup and touches **no platform globals** — a lint-style test
-in this directory fails the build if `window`, `document`, `fetch`,
-`localStorage`, `chrome`, etc. appear in production code, so the same bundle
-runs behind every host (ADR-P0022).
+an adapter at startup and touches **no platform globals** (ADR-P0044) — a
+lint-style test in this directory fails the build if `window`, `document`, `fetch`,
+`localStorage`, `chrome`, etc. appear in production code, so the same bundle runs
+behind every host (ADR-P0022).
 
 ## The three seams (keep them distinct)
 

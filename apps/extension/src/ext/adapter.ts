@@ -3,7 +3,8 @@
  *
  * This is the object that lets `apps/ui` run inside the MV3 viewer unchanged.
  * The UI asks for an adapter at startup and never touches a platform global
- * (`apps/ui/src/platform/platform-globals.test.ts`); everything host-specific is
+ * (`apps/ui/src/platform/platform-globals.test.ts`, ADR-P0044); everything
+ * host-specific is
  * a decision made here, once, where it can be read.
  *
  * ## What the extension supplies, and what it refuses

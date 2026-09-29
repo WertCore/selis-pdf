@@ -4,7 +4,7 @@
  * The claim under test is the one the viewer README makes: **a thumbnail is the
  * page list's ladder at a fixed width**. So the tests here are not "do the
  * thumbnails look right" — nothing is looked at, there being no jsdom here and
- * no platform global to reach for (SL-4.UI.01) — but three things that can be
+ * no platform global to reach for (SL-4.UI.01 / ADR-P0044) — but three things that can be
  * asserted honestly about a rasterisation path:
  *
  * 1. It asks the engine for *whole pages* at the rail's scale, through

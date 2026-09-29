@@ -12,7 +12,7 @@
  *
  * Seams, kept where the plan puts them:
  * - **Host seam** — the engine arrives as an injected `PlatformAdapter`; no
- *   globals, no sniffing (SL-4.UI.01, enforced by
+ *   globals, no sniffing (SL-4.UI.01 / ADR-P0044, enforced by
  *   `../platform/platform-globals.test.ts`).
  * - **Host-specific input** — viewport metrics (size, scroll offset, device
  *   pixel ratio) and the two density-derived pixel values are *passed in*, not

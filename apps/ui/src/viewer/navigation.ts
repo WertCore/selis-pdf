@@ -5,8 +5,8 @@
  * page labels, its named destinations, and the state of a link the reader
  * clicked. It renders nothing, reads no viewport and reaches for no platform
  * global — the same contract `page-list.ts` and `search.ts` keep, and the
- * reason all three are testable in Node with no DOM (SL-4.UI.01 — no platform
- * globals, and the repo ships no jsdom to simulate them).
+ * reason all three are testable in Node with no DOM (ADR-P0044; SL-4.UI.01 puts
+ * the seam — no platform globals, and the repo ships no jsdom to simulate them).
  *
  * ## What it does *not* do
  *

@@ -11,7 +11,7 @@ the controller hands the shell one immutable `PageListState`, the compositor
 hands its `TileSurface` a `CompositorFrame` of plain geometry, and the host
 paints both. That is what lets the same code run in the web app, the extension
 and the desktop shell (ADR-P0022), and what lets the whole thing be tested in
-Node — the repo ships no jsdom, and SL-4.UI.01's `platform-globals` gate is the
+Node — the repo ships no jsdom, and ADR-P0044's `platform-globals` gate is the
 half of that which is mechanically enforced rather than merely agreed.
 
 ## The pieces
