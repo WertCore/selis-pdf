@@ -90,7 +90,7 @@ clap        = { version = "4", features = ["derive"] }
 # Maintenance: Bytecode Alliance is a foundation-backed upstream with a
 # security-response process and monthly releases; cargo-vet imports its
 # audits (supply-chain/config.toml [imports.bytecodealliance]).
-wasmtime = { version = "47.0.0", default-features = false, features = ["cranelift", "runtime", "wat"] }
+wasmtime = { version = "48.0.3", default-features = false, features = ["cranelift", "runtime", "wat"] }
 
 # Test-only
 proptest    = "1"
