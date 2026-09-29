@@ -201,6 +201,34 @@ pub struct CjkRenderOutcome {
     pub revision: u64,
 }
 
+/// The lazy resident sets one render may consult.
+///
+/// **One struct rather than two more entry points.** A document can
+/// legitimately have both a CJK set and a fallback-face set — a Chinese report
+/// that names Helvetica for its Latin text is the ordinary case, not an edge
+/// case — and separate `render_page_cjk` / `render_page_fallbacks` calls cannot
+/// express that: taking one means silently dropping the other.
+///
+/// The lifetimes are independent (`'c` for CJK, `'f` for faces) so a caller can
+/// borrow two different loaders mutably at once, which is what a worker holding
+/// both in one `OpenDoc` has to do.
+#[derive(Default)]
+pub struct LazyFonts<'c, 'f> {
+    /// The lazy CJK set, when a loader is attached.
+    pub cjk: Option<&'c mut selis_font::cjk::CjkFontSet>,
+    /// The lazily-delivered fallback faces, when a loader is attached.
+    pub fallbacks: Option<&'f mut selis_font::fallback_set::FallbackFontSet>,
+}
+
+/// What one lazy render found missing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LazyRenderOutcome {
+    /// CJK chunks the render queued (the CJK half of `CjkRenderOutcome`).
+    pub cjk: Option<CjkRenderOutcome>,
+    /// Fallback faces the render wanted that were not resident.
+    pub fallbacks: Vec<&'static str>,
+}
+
 /// The result of one lazy-fallback render (SL-3.FONT.12).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FallbackRenderOutcome {
@@ -1134,6 +1162,58 @@ impl Session {
         let annot_dl = self.page_annotation_display_list(page_num, budget, g)?;
         dl.ops.extend(annot_dl.ops);
         Ok(dl)
+    }
+
+    /// Render a page consulting whichever lazy sets are attached.
+    ///
+    /// The composable form of [`Session::render_page_cjk`] and
+    /// [`Session::render_page_fallbacks`], and what a worker with a loader for
+    /// either payload calls. With both fields `None` this is the plain
+    /// [`Session::render_page`] walk, byte for byte — so "no loader" stays a
+    /// real state rather than a slower path.
+    pub fn render_page_lazy(
+        &self,
+        page_num: usize,
+        backend: &mut TinySkiaBackend,
+        page_ctm: selis_geom::Matrix,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+        lazy: &mut LazyFonts<'_, '_>,
+    ) -> Result<LazyRenderOutcome> {
+        let mut stats = crate::render::RenderStats::default();
+        let cjk_snapshot = lazy.cjk.as_ref().map(|c| c.snapshot());
+        let fallback_snapshot = lazy.fallbacks.as_ref().map(|f| f.snapshot());
+        // With neither set attached, take the plain walk: it is the historical
+        // path and the only one a document that has never needed lazy fonts
+        // should pay for.
+        if cjk_snapshot.is_none() && fallback_snapshot.is_none() {
+            self.render_page(page_num, backend, page_ctm, budget, g)?;
+            return Ok(LazyRenderOutcome::default());
+        }
+        self.render_page_walk(
+            page_num,
+            backend,
+            page_ctm,
+            budget,
+            g,
+            &mut stats,
+            cjk_snapshot.as_ref(),
+            fallback_snapshot.as_ref(),
+        )?;
+        let mut cjk_outcome = None;
+        if let Some(set) = lazy.cjk.as_mut() {
+            for id in stats.cjk_pending.iter().copied() {
+                set.request_chunk(id);
+            }
+            cjk_outcome = Some(CjkRenderOutcome {
+                needs: stats.cjk_pending.iter().copied().collect(),
+                revision: set.revision(),
+            });
+        }
+        Ok(LazyRenderOutcome {
+            cjk: cjk_outcome,
+            fallbacks: stats.fallback_pending.iter().copied().collect(),
+        })
     }
 
     /// Render a page with the lazily-delivered fallback faces active

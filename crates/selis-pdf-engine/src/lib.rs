@@ -20,5 +20,8 @@ pub use render::{
     ResolvedFontProgram,
 };
 pub use selis_raster::TinySkiaBackend;
-pub use session::{CjkRenderOutcome, PublicKeyReceipt, Session};
+pub use session::{
+    CjkRenderOutcome, FallbackRenderOutcome, LazyFonts, LazyRenderOutcome, PublicKeyReceipt,
+    Session,
+};
 pub use tiled::{TiledRender, DEFAULT_OVERLAP, DEFAULT_TILE};

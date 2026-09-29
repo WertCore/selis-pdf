@@ -356,6 +356,57 @@ pub enum RequestOp {
         /// The chunk id to release.
         chunk: String,
     },
+    /// Install the lazy-fallback face loader and answer with the first face the
+    /// document wants (SL-3.FONT.12).
+    ///
+    /// The `claims` are the `selis-fallback/1` manifest's record of what each
+    /// face file *is* - name, SHA-256, decompressed length, published path. The
+    /// guest checks them and keeps them; the shell only moves bytes.
+    ///
+    /// **There is no core attachment here, unlike `cjkOpen`.** The two faces the
+    /// web module embeds are already inside the wasm binary, so there are no
+    /// built-in bytes to hand over - the loader starts empty and everything it
+    /// holds was fetched and digest-checked.
+    #[serde(rename_all = "camelCase")]
+    FallbackOpen {
+        /// The document whose renders consult the set.
+        doc: DocHandle,
+        /// The manifest's per-face claims.
+        claims: Vec<FaceClaimBody>,
+        /// Faces the payload carries no file for, so the guest never asks.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unavailable: Vec<String>,
+        /// Resource limits for this loader (ADR-P0006: the caller chooses).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<BudgetProfile>,
+    },
+    /// Deliver one fallback face, as the request's binary attachment.
+    ///
+    /// The attachment is the font and nothing else - there is no field to put a
+    /// request body in, which is how the no-upload invariant (ADR-P0016) holds
+    /// across the wire here too. The guest verifies the bytes against the claim
+    /// it holds, adopts or refuses them, and answers with the next face it wants
+    /// or with `done: true`.
+    ///
+    /// # Malformed Input
+    ///
+    /// A stale or unknown `doc`, a `len` that does not match the attachment, a
+    /// face the loader never claimed, and an unrecognised `status` are each a
+    /// typed error that leaves the loader untouched. A face whose bytes
+    /// contradict the manifest's digest is **not** an error - it is a counted
+    /// failed attempt, so the attempt bound (not the shell) decides when to stop
+    /// asking.
+    #[serde(rename_all = "camelCase")]
+    FallbackFace {
+        /// The document whose loader this answers.
+        doc: DocHandle,
+        /// The face name being delivered.
+        face: String,
+        /// The HTTP status, or `0` for "no response arrived".
+        status: u16,
+        /// The attachment's length in bytes; must match it exactly.
+        len: u64,
+    },
     /// Apply a mutation journal (Phase 5). The envelope schema is versioned
     /// now; v1 engines validate the envelope and answer
     /// `BINDING_UNSUPPORTED_OP` for every body they cannot execute.
@@ -417,6 +468,25 @@ pub struct CjkClaimBody {
     /// Lowercase-hex SHA-256 of the raw file bytes.
     pub sha256: String,
     /// The raw file length in bytes.
+    pub raw_bytes: u64,
+    /// The path the manifest published the file at.
+    pub url: String,
+}
+
+/// One fallback face's manifest claim, as it crosses the wire (SL-3.FONT.12).
+///
+/// The wire form of [`crate::fallbackchunk::FaceClaim`]. `name` is a `String`
+/// because it is *untrusted*: the loader resolves it against its closed table
+/// of twelve and refuses anything else, which is what makes a claim checkable
+/// rather than merely carried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceClaimBody {
+    /// The face name (`LiberationSans-Regular`).
+    pub name: String,
+    /// Lowercase-hex SHA-256 of the decompressed font bytes.
+    pub sha256: String,
+    /// The decompressed length in bytes.
     pub raw_bytes: u64,
     /// The path the manifest published the file at.
     pub url: String,

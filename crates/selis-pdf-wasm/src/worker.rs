@@ -90,13 +90,14 @@ use std::collections::BTreeMap;
 use selis_error::{err, Code, Error, Result};
 use selis_geom::Matrix;
 use selis_io::Availability;
-use selis_pdf_engine::{Session, TinySkiaBackend};
+use selis_pdf_engine::{LazyFonts, Session, TinySkiaBackend};
 use selis_pdf_text::{LineWithMcid, TextLine};
 use selis_sandbox::{Budget, BudgetGuard, CancelToken, Clock, Resource, Surface};
 
 use crate::cjkchunk::{
     ChunkClaim, ChunkReport as CjkReport, ChunkStep as CjkChunkStep, CjkChunkLoader, CjkRequest,
 };
+use crate::fallbackchunk::{FaceClaim, FaceReport, FaceRequest, FaceStep, FallbackFaceLoader};
 use crate::httprange::{ChunkReport, ChunkStep, HttpRangeDriver, RangeRequest};
 use crate::memory::{MemoryStats, JS_DEFAULT_CAP_BYTES, WASM_MAX_BYTES};
 use crate::protocol::{
@@ -242,6 +243,13 @@ struct OpenDoc {
     /// loader is the *only* thing that changes a render's behaviour — there is no
     /// second code path that a shell can reach by accident.
     cjk: Option<CjkChunkLoader>,
+    /// The lazy-fallback face loader, once `fallbackOpen` has installed one.
+    ///
+    /// Same `None`-is-load-bearing rule as `cjk`: a document with no loader
+    /// renders through the plain [`Session::render_page`] path, byte for byte.
+    /// Installing the loader is the only thing that changes a render's
+    /// behaviour, so there is no second path a shell can reach by accident.
+    fallbacks: Option<FallbackFaceLoader>,
 }
 
 /// The binary attachment that leaves with a response.
@@ -539,6 +547,28 @@ impl Worker {
                 env,
             ),
             RequestOp::CjkClose { doc, chunk } => self.op_cjk_close(id, doc, chunk),
+            RequestOp::FallbackOpen {
+                doc,
+                claims,
+                unavailable,
+                budget,
+            } => self.op_fallback_open(id, doc, claims, unavailable, budget),
+            RequestOp::FallbackFace {
+                doc,
+                face,
+                status,
+                len,
+            } => self.op_fallback_face(
+                id,
+                doc,
+                FaceReport {
+                    name: face,
+                    status,
+                    len,
+                    body: payload.to_vec(),
+                },
+                env,
+            ),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
             RequestOp::Cancel { target } => self.op_cancel(id, target),
@@ -596,6 +626,7 @@ impl Worker {
                 budget,
                 src_len: len,
                 cjk: None,
+                fallbacks: None,
             },
         );
         Ok(Outgoing::ok(
@@ -1120,6 +1151,91 @@ impl Worker {
         Ok(Outgoing::ok(id, value))
     }
 
+    /// Install the lazy-fallback face loader and answer with the first face the
+    /// document wants.
+    ///
+    /// # Malformed Input
+    ///
+    /// A stale or unknown `doc`, a claim naming a face outside the closed table,
+    /// a claim with an unparseable digest and a claim with an absurd length are
+    /// each `BINDING_BAD_ARGUMENT` and install nothing. Re-opening over a live
+    /// loader replaces it, which is how a shell swaps payloads without closing
+    /// the document.
+    ///
+    /// Unlike `op_cjk_open` there is no attachment: the two faces the web module
+    /// embeds are already inside the wasm binary, so the loader starts empty.
+    fn op_fallback_open(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        claims: Vec<crate::protocol::FaceClaimBody>,
+        unavailable: Vec<String>,
+        budget: Option<BudgetProfile>,
+    ) -> Result<Outgoing> {
+        let profile = budget.unwrap_or_default();
+        let limits = budget_from_profile(&profile)?;
+        // The wire's `name` is an untrusted `String`; the table's is
+        // `&'static str`. Resolving through the table is what makes the claim
+        // checkable - and it means an unknown name is refused here rather than
+        // interned, so a shell cannot make the guest retain arbitrary strings
+        // for the life of the loader.
+        let mut resolved: Vec<FaceClaim> = Vec::with_capacity(claims.len());
+        for c in claims {
+            let Some(name) = crate::fallbackchunk::intern(&c.name) else {
+                return Err(err!(
+                    Code::BindingBadArgument,
+                    during = "wasm-worker",
+                    detail = "fallback claim names a face this build does not know"
+                ));
+            };
+            resolved.push(FaceClaim {
+                name,
+                sha256: c.sha256,
+                raw_bytes: c.raw_bytes,
+                url: c.url,
+            });
+        }
+        let mut loader = FallbackFaceLoader::new(resolved, limits)?;
+        let names: Vec<&str> = unavailable.iter().map(String::as_str).collect();
+        loader.mark_unavailable(&names);
+        let first = loader.plan()?;
+        let mut value = fallback_state(&loader);
+        if let Some(field) = value.as_object_mut() {
+            let _ = field.insert("request".to_owned(), fallback_request_value(first.as_ref()));
+        }
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        opened.fallbacks = Some(loader);
+        Ok(Outgoing::ok(id, value))
+    }
+
+    /// Deliver one fallback face and answer with the next request, or `done`.
+    ///
+    /// The wire fields arrive already bundled as a [`FaceReport`] - the same
+    /// value the loader's `accept` takes - so they are not taken apart only to
+    /// be rebuilt one line later, and the arity lint stays satisfied.
+    fn op_fallback_face(
+        &mut self,
+        id: u64,
+        doc: DocHandle,
+        report: FaceReport,
+        env: &WorkerEnv<'_>,
+    ) -> Result<Outgoing> {
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        let loader = opened.fallbacks.as_mut().ok_or_else(bad_fallback_loader)?;
+        let mut g = opened.budget.guard_with(env.clock, env.cancel.clone());
+        let step = loader.accept(&report, &mut g)?;
+        // As for CJK, the next request is planned from the *post-adoption*
+        // state, so one delivery carries the whole remaining plan.
+        let adopted = matches!(step, FaceStep::Adopted { .. });
+        let next = if adopted { loader.plan()? } else { None };
+        let mut value = fallback_state(loader);
+        if let Some(field) = value.as_object_mut() {
+            let _ = field.insert("adopted".to_owned(), serde_json::json!(adopted));
+            let _ = field.insert("request".to_owned(), fallback_request_value(next.as_ref()));
+        }
+        Ok(Outgoing::ok(id, value))
+    }
+
     fn mint_handle(&mut self) -> Result<DocHandle> {
         let raw = self.next_handle;
         self.next_handle = raw.checked_add(1).ok_or_else(|| {
@@ -1264,25 +1380,35 @@ impl Worker {
                 detail = "canvas allocation refused"
             )
         })?;
-        // The CJK branch. `render_page_cjk` is the *only* difference from the
+        // The lazy branch. `render_page_lazy` is the *only* difference from the
         // plain walk, and it is the engine's own entry point — the bindings layer
-        // does not reimplement glyph resolution, it just hands the set over.
-        let outcome = match opened.cjk.as_mut() {
-            Some(loader) => Some(opened.session.render_page_cjk(
-                idx,
-                &mut backend,
-                ctm,
-                &budget,
-                &mut g,
-                loader.set_mut(),
-            )?),
-            None => {
-                opened
-                    .session
-                    .render_page(idx, &mut backend, ctm, &budget, &mut g)?;
-                None
+        // does not reimplement glyph resolution, it just hands the sets over.
+        //
+        // One composable call rather than an if/else between the CJK and
+        // fallback entry points: a document may legitimately have both (a
+        // Chinese report naming Helvetica for its Latin text), and choosing
+        // between them would silently drop one. `LazyFonts` carries whichever
+        // sets are attached, and a document with neither takes the plain walk.
+        let mut lazy = LazyFonts::default();
+        if let Some(loader) = opened.cjk.as_mut() {
+            lazy.cjk = Some(loader.set_mut());
+        }
+        if let Some(loader) = opened.fallbacks.as_mut() {
+            lazy.fallbacks = Some(loader.set_mut());
+        }
+        let lazy_outcome =
+            opened
+                .session
+                .render_page_lazy(idx, &mut backend, ctm, &budget, &mut g, &mut lazy)?;
+        // The faces a render found missing, fed back to the loader so its
+        // `needs` reflects what the document actually asked for. A shell reads
+        // that after the render and fetches before the next one.
+        if let Some(loader) = opened.fallbacks.as_mut() {
+            for name in &lazy_outcome.fallbacks {
+                loader.set_mut().request(name);
             }
-        };
+        }
+        let outcome = lazy_outcome.cjk;
         let pixels = backend.pixmap().data().to_vec();
         drop(g);
 
@@ -1803,6 +1929,14 @@ fn bad_transfer() -> Error {
 /// called `cjkOpen`. The distinction matters because "you have no CJK payload"
 /// and "that document is gone" are different bugs, and a shell that gets this
 /// wrong is a shell whose message to the user would be wrong.
+fn bad_fallback_loader() -> Error {
+    err!(
+        Code::BindingBadArgument,
+        during = "wasm-worker",
+        detail = "no fallback loader on this document; call fallbackOpen first"
+    )
+}
+
 fn bad_cjk_loader() -> Error {
     err!(
         Code::BindingBadHandle,
@@ -1817,6 +1951,39 @@ fn bad_cjk_loader() -> Error {
 /// (ADR-P0043 §3). `needs` is the sticky queue a render fills, so a shell can
 /// tell "still loading" from "this payload has no Korean" (in `unavailable`) or
 /// "we gave up on this one" (`exhausted`) without parsing prose.
+/// The fallback loader's observable state.
+///
+/// `needs` is the face the *next* render would ask for, which is what lets a
+/// shell fetch before it renders rather than painting a page whose text is
+/// in the wrong font and correcting it afterwards.
+fn fallback_state(loader: &FallbackFaceLoader) -> serde_json::Value {
+    serde_json::json!({
+        "revision": loader.revision(),
+        "residentBytes": loader.resident_bytes(),
+        "loaded": loader.loaded(),
+        "needs": loader.needs(),
+        "unavailable": loader.unavailable(),
+        "exhausted": loader.exhausted(),
+    })
+}
+
+/// The next face to fetch, or `null` when nothing is wanted.
+///
+/// `null` rather than an absent key, for the same reason as CJK: a shell's
+/// `"request" in value` test must not be confusable with a request it failed
+/// to read.
+fn fallback_request_value(req: Option<&FaceRequest>) -> serde_json::Value {
+    match req {
+        Some(r) => serde_json::json!({
+            "name": r.name,
+            "url": r.url,
+            "sha256": r.sha256,
+            "rawBytes": r.raw_bytes,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 fn cjk_state(loader: &CjkChunkLoader) -> serde_json::Value {
     serde_json::json!({
         "revision": loader.revision(),

@@ -123,3 +123,71 @@ fn a_delivered_face_paints_and_needs_nothing() {
         inked(&backend)
     );
 }
+
+/// The composable entry point must not drop a payload it was handed.
+///
+/// A document can legitimately have both a CJK set and a fallback-face set \u2014 a
+/// Chinese report naming Helvetica for its Latin text is the ordinary case. Two
+/// separate entry points cannot express that, which is what `render_page_lazy`
+/// exists to fix, so this pins the composition rather than either feature alone.
+///
+/// It asserts *composition*, not pixels: that attaching only a fallback set
+/// still takes the lazy walk (rather than silently reverting to the plain one)
+/// is what a caller would otherwise have to take on trust.
+///
+/// Gated for the same reason as `an_absent_face_is_reported_not_silently_blank`:
+/// under `cargo test --workspace` the CLI's `builtin-fallback-fonts` unifies
+/// across the graph, so Helvetica is built in and there is no missing face to
+/// observe. Reachable via `cargo test -p selis-pdf-engine`.
+#[cfg(not(feature = "builtin-fallback-fonts"))]
+#[test]
+fn the_lazy_entry_point_composes_both_payloads() {
+    use selis_pdf_engine::LazyFonts;
+    let session = open();
+    let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut backend = TinySkiaBackend::new(612, 792).expect("pixmap");
+    let mut set = selis_font::fallback_set::FallbackFontSet::new();
+    let mut lazy = LazyFonts {
+        cjk: None,
+        fallbacks: Some(&mut set),
+    };
+    let out = session
+        .render_page_lazy(
+            0,
+            &mut backend,
+            Matrix::IDENTITY,
+            &budget,
+            &mut g,
+            &mut lazy,
+        )
+        .expect("render");
+    assert!(
+        out.fallbacks.contains(&"LiberationSans-Regular"),
+        "the lazy walk must report the face it wanted, got {:?}",
+        out.fallbacks
+    );
+}
+
+/// With neither set attached the lazy entry point is the plain walk, byte for
+/// byte. "No loader" has to stay a real state and not merely a slower path.
+#[test]
+fn no_loaders_is_the_plain_walk() {
+    use selis_pdf_engine::LazyFonts;
+    let session = open();
+    let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    let mut lazy = LazyFonts::default();
+    let out = session
+        .render_page_lazy(
+            0,
+            &mut TinySkiaBackend::new(612, 792).expect("pixmap"),
+            Matrix::IDENTITY,
+            &budget,
+            &mut g,
+            &mut lazy,
+        )
+        .expect("render");
+    assert!(out.fallbacks.is_empty());
+    assert!(out.cjk.is_none());
+}

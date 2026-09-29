@@ -197,6 +197,15 @@ impl FallbackFaceLoader {
         &mut self.set
     }
 
+    /// The faces a render has asked for that are not resident yet.
+    ///
+    /// The fetch-then-render lever: a shell reads this, fetches, and only then
+    /// renders. Read-only, because reporting a need is not a mutation.
+    #[must_use]
+    pub fn needs(&self) -> Vec<&'static str> {
+        self.set.pending()
+    }
+
     /// The set's revision. A change is the repaint signal.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -446,9 +455,13 @@ const KNOWN_FACES: [&str; 12] = [
 
 /// Map a runtime string to the `&'static str` face name it names, or `None`.
 ///
+/// `pub` because the worker resolves the wire's untrusted `String` through the
+/// same table the loader uses, so the two cannot disagree about which names
+/// exist.
+///
 /// Returning `None` also refuses a name the *engine* would never substitute for,
 /// so a manifest cannot introduce a face that no document could request.
-fn intern(name: &str) -> Option<&'static str> {
+pub fn intern(name: &str) -> Option<&'static str> {
     KNOWN_FACES.iter().copied().find(|f| *f == name)
 }
 
