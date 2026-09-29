@@ -16,6 +16,16 @@ workspace = true
 # deviation instead.
 wasm-host = ["selis-pdf-filter/wasm-host"]
 
+# Fallback-font delivery, forwarded so a downstream target can choose it
+# without depending on selis-font directly. Desktop (the CLI) turns this on to
+# get all twelve Liberation faces built in and render fully offline; the web
+# module leaves it off and ships only the subsetted Serif faces, fetching the
+# rest at runtime (SL-3.FONT.12).
+#
+# It changes only which bytes are resident, never which face substitutes for a
+# given name, so turning it on cannot alter layout.
+builtin-fallback-fonts = ["selis-font/builtin-fallback-fonts"]
+
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }

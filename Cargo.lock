@@ -2800,6 +2800,7 @@ dependencies = [
  "selis-pdf-cos",
  "selis-pdf-engine",
  "selis-pdf-filter",
+ "selis-pdf-wasm",
  "selis-sandbox",
  "selis-shape",
  "serde",

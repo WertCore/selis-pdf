@@ -1969,7 +1969,22 @@ fn resolve_font_dict(
     // metric font rather than dropping the text — key the substitute by the
     // name itself so paint, widths, and CID detection all agree.
     let name = std::str::from_utf8(font_name.as_slice()).ok()?;
-    selis_font::fallback::fallback_bytes(name)?;
+    // `is_standard14`, NOT `fallback_bytes(name).is_some()`.
+    //
+    // The two are not interchangeable, and the difference is the whole reason
+    // this build can ship fewer embedded faces. `fallback_bytes` returns `None`
+    // for a standard-14 name whose *face* is not resident in this build, so
+    // asking it this question makes the answer depend on what we happened to
+    // compile in: a web build that dropped the Sans faces would stop
+    // recognising `/Helvetica` as a standard-14 name here, take the
+    // no-resource path, and drop the text — the exact opposite of the
+    // "substitute rather than drop" behaviour this branch exists to provide.
+    //
+    // The policy question and the delivery question are separate functions for
+    // exactly this reason. See `selis_font::fallback::is_standard14`.
+    if !selis_font::fallback::is_standard14(name) {
+        return None;
+    }
     let mut fd = selis_font::FontDict::simple(selis_font::FontSubtype::Type1);
     fd.base_font = name.to_string();
     Some(fd)
@@ -3696,7 +3711,10 @@ fn is_standard14_fallback(name: &Bytes) -> bool {
         Ok(v) => v,
         Err(_) => return false,
     };
-    selis_font::fallback::fallback_bytes(s).is_some()
+    // Policy, not delivery: whether a *name* is standard-14 is a fact about
+    // the spec and must not change with which faces this build embeds. See
+    // `selis_font::fallback::is_standard14`.
+    selis_font::fallback::is_standard14(s)
 }
 
 /// A 6-element `/Matrix` array as a `Matrix`.
@@ -3877,7 +3895,7 @@ mod tests {
         let mut builder = DocumentBuilder::new();
         let content = ContentBuilder::new()
             .begin_text()
-            .set_font("Helvetica", 48.0)
+            .set_font("Times-Roman", 48.0)
             .text_at(50.0, 300.0)
             .show_text("Hello")
             .end_text()

@@ -454,6 +454,15 @@ mod tests {
     /// RAST.14 regression: the encoding-model chain — `/Differences` names
     /// win over the raw byte, a named base encoding resolves through its
     /// table, and built-in encoding reduces to the legacy cmap mapping.
+    ///
+    /// Uses the desktop build's built-in Sans face, because this test needs
+    /// glyphs outside the web build's built-in code-point set — `Scaron`
+    /// (U+0160) is Latin Extended-A, which the Serif subset deliberately does
+    /// not carry. The encoding model has nothing to do with which faces a
+    /// build ships, so gating the test to the configuration that has the
+    /// coverage it needs keeps it honest rather than making the assertion
+    /// pass on a weaker font.
+    #[cfg(feature = "builtin-fallback-fonts")]
     #[test]
     fn simple_codes_resolve_through_the_encoding_model() {
         use crate::encoding::{BaseEncoding, FontEncoding};

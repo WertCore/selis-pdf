@@ -17,6 +17,7 @@ mod conformance;
 mod corpus;
 mod coverage;
 mod crash_hygiene;
+mod fallback_assets;
 mod fixtures;
 mod fuzz;
 #[cfg(all(feature = "wasm-host", not(target_arch = "wasm32")))]
@@ -101,6 +102,25 @@ enum Command {
         /// report loudly but pass).
         #[arg(long)]
         strict: bool,
+    },
+    /// Build the fallback-font payload (SL-3.FONT.12): regenerate the
+    /// subsetted Serif faces that are built into the web module, and emit the
+    /// lazy payload - every other Liberation face, brotli-compressed, plus the
+    /// size- and digest-pinned `fallback/manifest.json` (ADR-P0043).
+    ///
+    /// `--check` verifies the committed assets instead of rewriting them, so a
+    /// Liberation update that did not regenerate the payload fails the gate
+    /// instead of leaving a manifest describing bytes nobody ships.
+    FallbackAssets {
+        /// Directory holding the twelve upstream Liberation faces.
+        #[arg(long)]
+        src: Option<PathBuf>,
+        /// Output directory (the manifest and payloads land under `<out>/fallback/`).
+        #[arg(long)]
+        out: PathBuf,
+        /// Verify the committed assets rather than regenerating them.
+        #[arg(long)]
+        check: bool,
     },
     /// Build the lazy-CJK asset payload from a TrueType CJK source font:
     /// `cjk/core.ttf`, one `cjk/<id>.ttf` per covered chunk range, and the
@@ -629,6 +649,11 @@ fn main() -> ExitCode {
             update_baseline,
             strict,
         } => size_check::run(update_baseline, strict),
+        Command::FallbackAssets { src, out, check } => fallback_assets::run(
+            &src.unwrap_or_else(fallback_assets::default_src),
+            &out,
+            check,
+        ),
         Command::CjkBuild {
             source,
             out,

@@ -21,3 +21,18 @@ skrifa = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[features]
+# Which standard-14 fallback faces are compiled into the module.
+#
+# OFF for the web/extension build: the embedded faces were the dominant share
+# of the shipped module (1 625 684 B of 1 914 752 B of rodata before this), and
+# only the Serif subset stays built in. The rest are fetched at runtime through
+# `FallbackFontSet`.
+#
+# ON for desktop, which ships all twelve and can afford them.
+#
+# Either way `fallback::substitute` - the name-to-face policy - is identical.
+# Only *delivery* differs, which is the whole point: see `fallback.rs`.
+default = []
+builtin-fallback-fonts = []

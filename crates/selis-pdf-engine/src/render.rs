@@ -1850,11 +1850,18 @@ mod tests {
         assert_eq!(&data[centre..centre + 3], &[255, 0, 0], "shading fills red");
     }
 
-    /// The fallback font resolves through the test stub (LiberationSans for
-    /// Helvetica), so the cache tests below exercise the real font pipeline.
+    /// The fallback font resolves through the test stub, so the cache tests
+    /// below exercise the real font pipeline.
+    ///
+    /// Asks for Times rather than Helvetica because Times is the one family
+    /// resident in **every** build: the web module embeds only the subsetted
+    /// Serif faces, so a helper reaching for Helvetica would pass in isolation
+    /// and fail the moment it met the web configuration. The name through the
+    /// stub is arbitrary; what matters is that it resolves to real, parseable
+    /// font bytes.
     fn fallback_font(name: &selis_bytes::Bytes) -> Option<ResolvedFontProgram> {
         if name.as_slice() == b"F1" {
-            selis_font::fallback::fallback_bytes("Helvetica")
+            selis_font::fallback::fallback_bytes("Times-Roman")
                 .map(|b| ResolvedFontProgram::simple(b.to_vec()))
         } else {
             None
@@ -1884,7 +1891,7 @@ mod tests {
         assert_eq!(stats.font_cache_hits, 1);
 
         // The cmap entry for 'A' resolves once, then hits.
-        let fb = selis_font::fallback::fallback_bytes("Helvetica").expect("fallback");
+        let fb = selis_font::fallback::fallback_bytes("Times-Roman").expect("fallback");
         let fb = selis_bytes::Bytes::copy_from_slice(fb);
         {
             let mut view = cache

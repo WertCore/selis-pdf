@@ -30,7 +30,11 @@ selis-pdf-doc = { workspace = true }
 selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-content = { workspace = true }
-selis-pdf-engine = { workspace = true }
+# Desktop target: ship the full twelve-face Liberation fallback set, so a
+# document naming Helvetica with no embedded font renders offline and
+# offline-only, with no lazy fetch. The web module leaves this OFF and
+# keeps only the subsetted Serif faces (SL-3.FONT.12).
+selis-pdf-engine = { workspace = true, features = ["builtin-fallback-fonts"] }
 selis-pdf-text = { workspace = true }
 selis-policy = { workspace = true }
 selis-job = { workspace = true }

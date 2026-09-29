@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "faces": [
+    {
+      "name": "LiberationMono-Bold",
+      "transfer_size": 61971,
+      "raw_size": 105460,
+      "sha256": "ca7f64dc81567369a64998ef274f4dc97fae3f6367cc87b215421189e68c87b2"
+    },
+    {
+      "name": "LiberationMono-BoldItalic",
+      "transfer_size": 70299,
+      "raw_size": 118296,
+      "sha256": "7ddfdc5df14be249545d5ed27aeb8fa3aa44360c468af61b2bf211b76ceb6ce8"
+    },
+    {
+      "name": "LiberationMono-Italic",
+      "transfer_size": 73591,
+      "raw_size": 124012,
+      "sha256": "6f48e60e98ab52016a77f2371c803be7c6d135e06a8a60f55e6ddef6cb085853"
+    },
+    {
+      "name": "LiberationMono-Regular",
+      "transfer_size": 63820,
+      "raw_size": 108172,
+      "sha256": "25e6a04d8729a2b65028fbf411feb20abbd39cd75cb2c4d071d689347db85f05"
+    },
+    {
+      "name": "LiberationSans-Bold",
+      "transfer_size": 72851,
+      "raw_size": 137052,
+      "sha256": "f34b689c5b470255befac51b4f1c829b773e48b46b2ffeb1fafc9a89499ab8e0"
+    },
+    {
+      "name": "LiberationSans-BoldItalic",
+      "transfer_size": 72270,
+      "raw_size": 135124,
+      "sha256": "50a51e567566cf89e551eadcbc150704c91cf134686e478e5d33c04d1ad3b962"
+    },
+    {
+      "name": "LiberationSans-Italic",
+      "transfer_size": 83544,
+      "raw_size": 162036,
+      "sha256": "232de85495248d66f239802991eb7aa8271fa4f6f64cf388b290946d78bee1fd"
+    },
+    {
+      "name": "LiberationSans-Regular",
+      "transfer_size": 78454,
+      "raw_size": 139512,
+      "sha256": "784836c044d2f6a515b7e08f2c8d2a0317afb2b83d8471d1b02f6e0bcb7b14c1"
+    },
+    {
+      "name": "LiberationSerif-BoldItalic",
+      "transfer_size": 83484,
+      "raw_size": 151452,
+      "sha256": "d7546acbefac7a05ba92f849232788f376cf9a285a5ca7c335066cebeb0ba11f"
+    },
+    {
+      "name": "LiberationSerif-Italic",
+      "transfer_size": 80646,
+      "raw_size": 145028,
+      "sha256": "18513957cb1003206b97bcc6f0cbf6e39892bd1f6795212398752791395b8ffb"
+    }
+  ]
+}

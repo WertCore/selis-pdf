@@ -39,3 +39,9 @@ node_modules/
 dist/
 target-agent/
 /target-ci
+# Lazy fallback-font payloads (SL-3.FONT.12): the 10 non-built-in Liberation
+# faces, brotli-compressed. Regenerable byte-for-byte from the committed
+# sources in assets/fonts/ by cargo xtask fallback-assets, and ~0.7 MB of
+# binaries in git buys nothing the manifest does not already pin. Same rule the
+# CJK payload follows: the manifest is committed, the chunks are built.
+assets/payload/fallback/*.ttf.br

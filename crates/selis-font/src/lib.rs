@@ -35,6 +35,7 @@ pub mod cmap;
 pub mod cmapfile;
 pub mod encoding;
 pub mod fallback;
+pub mod fallback_set;
 pub mod justify;
 pub mod model;
 pub mod outline;
@@ -60,7 +61,10 @@ pub use cmapfile::{parse_cmap, BfRange, CMap, CidRange};
 pub use encoding::{
     expand_differences, resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding,
 };
-pub use fallback::{can_render, fallback_order, match_substitute, substitute, FontMatchHints};
+pub use fallback::{
+    can_render, fallback_order, is_standard14, match_substitute, substitute, FontMatchHints,
+};
+pub use fallback_set::FallbackFontSet;
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{
