@@ -57,6 +57,19 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
     // because it is a source path reduced to a bare file name — never a
     // document path — and the DoD test asserts both halves of that claim.
     "String",
+    // The reporter's own bookkeeping, decided here rather than waved through.
+    // None of these can carry a document byte, which is the question the gate
+    // asks before any name goes on this list:
+    //   Consent     an enum of unit variants, so it holds no payload at all;
+    //               whether it defaults to Granted is a separate, checked
+    //               property (check_consent_default).
+    //   AtomicU64   a monotonic counter for report sequence numbers.
+    //   Mutex<..>   a lock, not a payload: it wraps Vec<Report>, and Report is
+    //               itself field-checked, so the recursion terminates in types
+    //               already on this list.
+    "Consent",
+    "AtomicU64",
+    "Mutex<Vec<Report>>",
 ];
 
 /// Field types that are banned outright, named in the failure message so the
