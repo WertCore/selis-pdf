@@ -1881,6 +1881,7 @@ version = "0.1.0"
 dependencies = [
  "selis-bytes",
  "selis-error",
+ "selis-font",
  "selis-geom",
  "selis-io",
  "selis-pdf-content",
@@ -1890,6 +1891,7 @@ dependencies = [
  "selis-sandbox",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

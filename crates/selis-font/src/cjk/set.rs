@@ -227,6 +227,60 @@ impl CjkFontSet {
         true
     }
 
+    /// Release a resident chunk's bytes, keeping the core.
+    ///
+    /// This is the resident-set half of **FONT.10-F1** (see
+    /// `assets/cjk/PROVENANCE.md`): the whole CJK payload is 11 162 268 B raw,
+    /// which is over both the extension store's 8 MiB budget and Chrome's
+    /// 10 MiB `storage.local` quota, so "install every range" is not a legal
+    /// operation. Lazy loading reduces the *common* case — a document needs the
+    /// core plus one or two chunks — but a document that genuinely ranges
+    /// across the whole payload still needs a bound, and this is it: the shell
+    /// keeps the least recently used chunk out of the resident set and re-requests
+    /// it if a later render wants it again.
+    ///
+    /// Returns whether bytes were actually released. The **core is never
+    /// evictable** ([`CORE_ID`](super::CORE_ID) is not a chunk id, so it cannot
+    /// name one): a set with no core cannot answer a single code, and
+    /// re-fetching 1.3 MB to paint one glyph is the trade this method exists to
+    /// avoid.
+    ///
+    /// Eviction **bumps the revision** like [`provide`](Self::provide) does,
+    /// and for the same reason: the pixels a render produces from this set have
+    /// changed, so a repaint is owed. An id that is queued is left queued — the
+    /// render that needs it again re-marks it, and the shell's next drain asks
+    /// for it. A set with nothing to release returns `false` and does **not**
+    /// bump the revision, so "nothing to evict" is not a repaint.
+    pub fn evict(&mut self, id: &str) -> bool {
+        let Some(chunk) = chunk_by_id(id) else {
+            return false;
+        };
+        if self.resident.chunks.remove(chunk.id).is_none() {
+            return false;
+        }
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    /// The raw bytes this set holds resident: the core plus every loaded chunk.
+    ///
+    /// The number FONT.10-F1 is about. It is reported rather than enforced here
+    /// because the ceiling belongs to whoever owns storage (ADR-P0043 §3: the
+    /// shell owns transport, caching and quota; the engine owns the resident
+    /// set) — a shell drives [`evict`](Self::evict) against its own budget, and
+    /// this is how it measures what it is holding.
+    #[must_use]
+    pub fn resident_bytes(&self) -> u64 {
+        let core = u64::try_from(self.resident.core.len()).unwrap_or(u64::MAX);
+        let chunks: u64 = self
+            .resident
+            .chunks
+            .values()
+            .map(|b| u64::try_from(b.len()).unwrap_or(u64::MAX))
+            .fold(0u64, |acc, n| acc.saturating_add(n));
+        core.saturating_add(chunks)
+    }
+
     /// The immutable view one render walk consumes.
     #[must_use]
     pub fn snapshot(&self) -> CjkSnapshot {
@@ -431,6 +485,21 @@ mod tests {
             .expect("ttf subset")
     }
 
+    /// A [`CjkChunkSource`] over an in-memory map, counting fetches. Stands in
+    /// for the shell's loader: it can serve the same id as often as asked, which
+    /// is what makes the evict-then-refetch round trip testable at all.
+    struct RepeatSource {
+        map: BTreeMap<&'static str, Bytes>,
+        fetches: usize,
+    }
+
+    impl CjkChunkSource for RepeatSource {
+        fn fetch(&mut self, chunk_id: &str) -> Option<Bytes> {
+            self.fetches = self.fetches.saturating_add(1);
+            self.map.get(chunk_id).cloned()
+        }
+    }
+
     #[test]
     fn core_only_set_resolves_core_codes_only() {
         let source = source_font(&[0x3042, 0x4E00, 0x6F00]);
@@ -583,6 +652,96 @@ mod tests {
             Vec::<&'static str>::new(),
             "a queue entry for an impossible chunk is not a fetch"
         );
+    }
+
+    /// The resident-set bound (SL-4.WASM.07). FONT.10-F1 is not solvable by
+    /// lazy loading alone — the payload is 11 162 268 B raw, over both the
+    /// 8 MiB store budget and Chrome's 10 MiB quota — so a session that ranges
+    /// across the whole payload needs a way to *give bytes back*.
+    #[test]
+    fn eviction_releases_bytes_and_owes_a_repaint() {
+        let source = source_font(&[0x6F00, 0x4E00]);
+        let core = subset_of(&source, &[0x4E00]);
+        let mut set = CjkFontSet::new(core);
+        let chunk = subset_of(&source, &[0x6F00]);
+        assert!(set.provide("ideographs-4", chunk));
+        let full = set.resident_bytes();
+        assert!(full > 0);
+        let rev = set.revision();
+
+        assert!(
+            set.evict("ideographs-4"),
+            "bytes were held, so they are released"
+        );
+        assert!(
+            set.resident_bytes() < full,
+            "the chunk's bytes are gone: {full} -> {}",
+            set.resident_bytes()
+        );
+        assert_eq!(set.revision(), rev + 1, "eviction is a pixel change");
+        assert!(!set.covers(0x6F00), "and the code falls back to notdef");
+        assert!(set.chunk("ideographs-4").is_none());
+
+        // Idempotent, and "nothing to release" is not a repaint.
+        let rev = set.revision();
+        assert!(!set.evict("ideographs-4"), "already gone");
+        assert!(!set.evict("no-such-chunk"), "unknown id");
+        assert!(!set.evict(CORE_ID), "the core is not a chunk id");
+        assert_eq!(set.revision(), rev, "a no-op eviction owes no repaint");
+    }
+
+    /// An evicted chunk is re-requestable, and re-providing it restores the
+    /// exact pixels the first load produced. This is the round trip lazy
+    /// loading depends on: bytes may leave and come back, and arrival order
+    /// still cannot change the answer (ADR-P0012).
+    #[test]
+    fn an_evicted_chunk_can_be_fetched_again_and_paints_the_same() {
+        let source = source_font(&[0x6F00]);
+        let chunk = subset_of(&source, &[0x6F00]);
+        let mut set = CjkFontSet::new(Bytes::new());
+        let mut src = RepeatSource {
+            map: std::collections::BTreeMap::from([("ideographs-4", chunk.clone())]),
+            fetches: 0,
+        };
+
+        assert_eq!(set.request(0x6F00), Some("ideographs-4"));
+        assert_eq!(set.drain_requested(&mut src), 1);
+        assert!(set.covers(0x6F00));
+        let first = set.resolve(0x6F00).expect("resident").gid;
+
+        assert!(set.evict("ideographs-4"));
+        assert!(!set.covers(0x6F00));
+        // The walk re-marks it; the shell asks again and the bytes come back.
+        assert_eq!(set.request(0x6F00), Some("ideographs-4"));
+        assert_eq!(set.drain_requested(&mut src), 1);
+        assert_eq!(src.fetches, 2, "a second fetch, not a cached one");
+        let second = set.resolve(0x6F00).expect("resident again").gid;
+        assert_eq!(first, second, "same bytes, same glyph id, same pixels");
+    }
+
+    /// The core is not evictable: a set with no core answers nothing, so
+    /// releasing 1.3 MB to paint one glyph would be the wrong trade.
+    #[test]
+    fn the_core_is_never_evictable() {
+        let core = subset_of(&source_font(&[0x4E00]), &[0x4E00]);
+        let mut set = CjkFontSet::new(core.clone());
+        assert!(!set.evict(CORE_ID), "core is not a chunk id at all");
+        assert!(!set.evict("core"), "nor under its cache key");
+        assert!(set.covers(0x4E00), "the core is still resident");
+        assert!(set.resident_bytes() > 0);
+        assert_eq!(set.core().as_slice(), core.as_slice());
+    }
+
+    /// An id the payload marked unavailable stays un-fetchable across an
+    /// eviction cycle — eviction must not resurrect a range the manifest says
+    /// does not exist, or every eviction would produce a fresh 404.
+    #[test]
+    fn eviction_does_not_unmark_an_unavailable_range() {
+        let mut set = CjkFontSet::new(Bytes::new());
+        set.mark_unavailable(&["hangul-1"]);
+        assert!(!set.evict("hangul-1"), "nothing was resident");
+        assert_eq!(set.request(0xAC00), None, "still nothing to fetch");
+        assert!(!set.covers(0xAC00));
     }
 
     #[test]

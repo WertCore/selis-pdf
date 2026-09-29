@@ -64,6 +64,7 @@ use selis_pdf_engine::{Session, TinySkiaBackend};
 use selis_sandbox::{CancelToken, Clock, Nanos};
 
 pub mod chunks;
+pub mod cjkchunk;
 pub mod httprange;
 pub mod memory;
 pub mod protocol;
