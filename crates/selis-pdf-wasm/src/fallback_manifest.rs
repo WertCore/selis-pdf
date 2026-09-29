@@ -101,7 +101,19 @@ impl FallbackManifest {
                 // name means the two faces disagree about what the font is.
                 return Err(ManifestError::Duplicate(f.name.clone()));
             }
-            if f.sha256.len() != 64 || !f.sha256.bytes().all(|c| c.is_ascii_hexdigit()) {
+            // **Lowercase only**, matching what the guest will actually accept.
+            // `is_ascii_hexdigit` also admits A-F, so an uppercase digest would
+            // pass this validator and then be refused at `fallbackOpen`, where
+            // `parse_digest` matches only `0-9a-f`. A build-time manifest that
+            // validates and then fails at load is the worst of both: the error
+            // surfaces far from its cause, in the browser, with no way to fix
+            // it from the build log.
+            if f.sha256.len() != 64
+                || !f
+                    .sha256
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
                 return Err(ManifestError::Digest(f.name.clone()));
             }
             if f.raw_size == 0 || f.transfer_size == 0 {
@@ -254,7 +266,17 @@ mod tests {
     /// passed.
     #[test]
     fn a_malformed_digest_is_refused() {
-        for bad in ["", "abc", &"z".repeat(64), &"a".repeat(63), &"a".repeat(65)] {
+        // Uppercase is included deliberately: the guest's digest parser accepts
+        // only `0-9a-f`, so a manifest that admitted A-F would build cleanly and
+        // then be refused when the browser opened it.
+        for bad in [
+            "",
+            "abc",
+            &"z".repeat(64),
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"A".repeat(64),
+        ] {
             let mut m = manifest();
             first(&mut m).sha256 = bad.to_string();
             assert!(

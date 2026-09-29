@@ -1409,6 +1409,7 @@ impl Worker {
             }
         }
         let outcome = lazy_outcome.cjk;
+        let fallback_needs = lazy_outcome.fallbacks;
         let pixels = backend.pixmap().data().to_vec();
         drop(g);
 
@@ -1456,6 +1457,26 @@ impl Worker {
                         "residentBytes": loader.resident_bytes(),
                     }),
                 );
+            }
+        }
+        // The fallback needs ride along with the pixels for the same reason
+        // the CJK outcome does: the shell cannot learn them any other way.
+        // Re-reading the loader's queue would clobber the set, and a second
+        // round trip for state the guest already has is the round trip this
+        // field exists to avoid. Present **only** when a loader is installed, so
+        // a document without one gets the exact response shape it always got.
+        if let Some(loader) = opened.fallbacks.as_ref() {
+            if !fallback_needs.is_empty() || loader.loaded().len() > 1 {
+                if let Some(field) = value.as_object_mut() {
+                    let _ = field.insert(
+                        "fallbacks".to_owned(),
+                        serde_json::json!({
+                            "needs": fallback_needs,
+                            "revision": loader.revision(),
+                            "residentBytes": loader.resident_bytes(),
+                        }),
+                    );
+                }
             }
         }
         env.progress.progress(id, Stage::Render, 10_000);
