@@ -55,10 +55,29 @@
         windowedPages: null,
         appError: null,
         fatal: null,
+        // The result of opening a REAL PDF through the app's own document path
+        // (`__selisOpen`). Null means the check never got that far.
+        open: null,
         // Populated by `report()` from `networkTrace()`. It is the difference
         // between "the import failed" and "the browser never asked for it".
         trace: null,
       };
+
+      /**
+       * A 446-byte, one-page PDF with a byte-exact xref, carrying two filled
+       * rectangles and no text.
+       *
+       * Self-contained on purpose. `corpus/pdfs/` is gitignored - the corpus is
+       * FETCHED - and this check runs on every PR, so it cannot read it. And the
+       * content is geometry rather than text because a `BaseFont /Helvetica` with
+       * no embedded font file draws nothing in this build: a text-only page
+       * renders uniformly white and would pass while proving nothing about the
+       * rasteriser. Two rectangles mean the expected ink is a known, exact
+       * number - 200x100 - so the assertion can be "the engine drew exactly the
+       * rectangle the document asked for" rather than "some pixels appeared".
+       */
+      var FIXTURE_PDF_B64 =
+        "JVBERi0xLjcKJeLjz9MKPDwgL1R5cGUgL0NhdGFsb2cgL1BhZ2VzIDIgMCBSID4+Cjw8IC9UeXBlIC9QYWdlcyAvS2lkcyBbMyAwIFJdIC9Db3VudCAxID4+Cjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCA+PiAvQ29udGVudHMgNCAwIFIgPj4KPDwgL0xlbmd0aCA1NSA+PgpzdHJlYW0KMC44NSAwLjIgMC4xIHJnIDcyIDYyMCAyMDAgMTAwIHJlIGYKMC4xIDAuMyAwLjggcmcgNzIgNDgwIDMwMCA2MCByZSBmCmVuZHN0cmVhbQp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA0OSAwMDAwMCBuIAowMDAwMDAwMDkxIDAwMDAwIG4gCjAwMDAwMDAxODAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA1IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgoxNQolJUVPRgo=";
 
       function report() {
         // Attached on every report, pass or fail: the trace is what a reader
@@ -151,6 +170,13 @@
           out.engineExports = app.engine ? app.engine.exports : null;
           out.engineDispatch = app.engine ? app.engine.hasDispatch : null;
           out.windowedPages = app.windowing ? app.windowing.pages : null;
+
+          // 1b. Open a REAL PDF through the app's own document path. This is the
+          //     step that needs the engine to WORK rather than merely load: the
+          //     engine is handed actual document bytes and must return rendered
+          //     pixels. Everything before this proves the machinery is present;
+          //     this proves it does the DoD's first verb.
+          out.open = globalThis.__selisOpen(FIXTURE_PDF_B64);
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

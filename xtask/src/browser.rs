@@ -693,6 +693,43 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
             ));
         }
     }
+    // The engine must OPEN A DOCUMENT and return rendered pixels. Everything
+    // above proves the machinery is present; this is the DoD's first verb, and
+    // it is the only assertion here an engine cannot satisfy by merely loading.
+    // An engine that instantiates and then refuses every document passes all of
+    // the assertions above.
+    let open = report
+        .get("open")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "the app never reported an open result (open = None)".to_string())?;
+    if open.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "the app could not open the fixture PDF through the engine (open = {open:?}) -- \
+             the engine is present but does not open documents"
+        ));
+    }
+
+    // A rendered page must have INK, and here the count is EXACT rather than a
+    // threshold. A page can render successfully and come back entirely white,
+    // which is the most dangerous shape this check has to catch: measured on 60
+    // real PDFs from a local Downloads folder, 43 opened and 17 of those
+    // rendered with zero non-white pixels. `status: ok` alone is explicitly not
+    // enough. The fixture is a single 200x100 filled rectangle, so the engine
+    // drawing exactly 20000 pixels means it drew the geometry the document asked
+    // for, and any other number means it drew something else.
+    const EXPECTED_INK: u64 = 200 * 100;
+    match open.get("ink").and_then(Json::as_u64) {
+        Some(ink) if ink == EXPECTED_INK => {}
+        Some(ink) => {
+            return Err(format!(
+                "the engine rendered the page with {ink} non-white pixels, expected exactly \
+                 {EXPECTED_INK} - the fixture's 200x100 rectangle. A close but unequal \
+                 count means something was drawn that the document did not ask for; a \
+                 count of 0 is a blank page."
+            ));
+        }
+        None => return Err("the app reported no `ink` for the rendered page".to_string()),
+    }
 
     Ok(())
 }
@@ -1027,21 +1064,14 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
 
 /// Serve one connection: either the verdict POST, or a file out of `root`.
 ///
-/// **Keep-alive is load-bearing, not an optimisation.** The app's module graph
-/// is ~40 files, and a browser fetches those over a handful of connections in
-/// parallel. This used to answer every file with `Connection: close`, so each of
-/// the 40 needed a fresh TCP connection — and under that load the browser
-/// *cancelled* some of them outright. A cancelled request is visible in
-/// `performance` as `responseStatus: 0` with a zero-byte body, which the
-/// dynamic `import()` reports as an undifferentiated
-/// `TypeError: Failed to fetch dynamically imported module`. The app was
-/// therefore flaky at roughly one run in two, on a machine where every file was
-/// present and served correctly by an ordinary `fetch` of the same URL.
-///
-/// Reusing the connection removes the contention rather than papering over it,
-/// and every response already carries an exact `Content-Length`, so framing is
-/// unambiguous. The loop ends when the client goes away, which surfaces as the
-/// read timeout or a reset rather than as a hang.
+/// One request per connection, and the response says so with
+/// `Connection: close`. Keeping the connection open was tried here and
+/// **reverted**, and the reason is worth keeping: it did not fix the app-shell
+/// flake (the app importing ~35 modules at once did — see `boot.js`), and on
+/// Windows it broke `the_origin_serves_files_and_collects_a_verdict` with
+/// `ConnectionAborted` on a connection the server had answered and left open.
+/// Spending risk on a change that is not load-bearing is how a gate stops being
+/// trustworthy, so the simpler behaviour stayed.
 fn handle_connection(
     stream: &TcpStream,
     root: &Path,
@@ -1050,10 +1080,21 @@ fn handle_connection(
 ) -> std::io::Result<()> {
     // A socket the browser opened and then abandoned must not hold a thread
     // for the length of the run.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    //
+    // The window is short on purpose. Chrome opens speculative and preconnect
+    // sockets that it may never write to, and the browser's own per-host
+    // connection cap means a thread parked on one of those for the full run
+    // competes with the requests that actually carry modules. A long timeout
+    // therefore shows up as modules the browser ABORTED — `responseStatus: 0`,
+    // a zero-byte body, ~2 ms — which `import()` reports as an opaque
+    // `TypeError: Failed to fetch dynamically imported module`.
+    //
+    // 1.5 s is far longer than a local loopback request needs and far shorter
+    // than the run, so an idle socket is released before it can matter.
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
     let mut reader = stream.try_clone()?;
 
-    loop {
+    {
         let mut head = Vec::new();
         let mut byte = [0u8; 1];
         // Read through the blank line that ends the request head. One byte at a
@@ -1066,8 +1107,7 @@ fn handle_connection(
                 Ok(_) => head.push(byte[0]),
                 // A socket the browser opened, never wrote to, and then abandoned
                 // is the normal case, not an error worth printing: a speculative
-                // or preconnect socket always ends this way. On a kept-alive
-                // connection this is also how the browser says it is done.
+                // or preconnect socket always ends this way.
                 Err(e) if is_idle(&e) => return Ok(()),
                 Err(e) => return Err(e),
             }
@@ -1099,31 +1139,18 @@ fn handle_connection(
         }
 
         let Some(path) = resolve(root, &target) else {
-            respond(stream, "403 Forbidden", "text/plain", b"forbidden")?;
-            continue;
+            return respond(stream, "403 Forbidden", "text/plain", b"forbidden");
         };
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let kind = content_type(&path);
                 respond(stream, "200 OK", kind, &bytes)?;
+                let _ = stream.shutdown(Shutdown::Write);
+                Ok(())
             }
-            Err(_) => respond(stream, "404 Not Found", "text/plain", b"not found")?,
-        }
-        // No shutdown: the next request on this connection is the browser
-        // reusing it, which is the whole point.
-        if wants_close(&head) {
-            let _ = stream.shutdown(Shutdown::Write);
-            return Ok(());
+            Err(_) => respond(stream, "404 Not Found", "text/plain", b"not found"),
         }
     }
-}
-
-/// Whether the client asked for the connection to be closed after this response.
-fn wants_close(head: &str) -> bool {
-    head.lines().any(|line| {
-        let lower = line.to_ascii_lowercase();
-        lower.starts_with("connection:") && lower.contains("close")
-    })
 }
 
 /// Whether an I/O error just means "this socket went idle", rather than a
@@ -1249,21 +1276,18 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Write one complete response.
+/// Write one complete response and close it.
 ///
-/// The response is NOT framed with `Connection: close` any more: the browser
-/// reuses the connection for the next module, which is what keeps a ~40-file
-/// module graph from being cancelled mid-load (see [`handle_connection`]).
-/// `Content-Length` is always exact, so the client knows where each response
-/// ends and where the next request begins.
-///
-/// `Cache-Control: no-store` stays, because the point of the worker check is
-/// that the *worker's* cache answers, and a served HTTP cache answering first
-/// would prove nothing.
+/// `Connection: close` because the engine is about to be killed and a
+/// half-open keep-alive socket would only delay that. Keeping the connection
+/// open was tried and reverted; `handle_connection` says why.
+/// `Cache-Control: no-store` because the whole point of the worker check is that
+/// the *worker's* cache answers, and a served HTTP cache answering first would
+/// prove nothing.
 fn respond(stream: &TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\n\r\n",
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let mut writer = stream.try_clone()?;

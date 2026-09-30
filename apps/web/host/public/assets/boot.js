@@ -81,6 +81,8 @@ function importObjectFor(module) {
 // ── the viewer, loaded and exercised ───────────────────────────────────────
 
 const state = { mounted: false, engine: null, error: null };
+/** The live engine instance, once instantiated; null before or after failure. */
+let engineInstance = null;
 
 /**
  * Import the viewer, and on failure say WHY with the evidence rather than
@@ -167,6 +169,7 @@ try {
 	// shims have to be built from the compiled module's own import list, the
 	// two-step form is the correct one, and its result is used directly.
 	const instance = await WebAssembly.instantiate(wasmModule, importObjectFor(wasmModule));
+	engineInstance = instance;
 
 	state.engine = {
 		exports: Object.keys(instance.exports).length,
@@ -194,6 +197,88 @@ try {
 } catch (error) {
 	state.error = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
+
+// ── opening a document ─────────────────────────────────────────────────────
+
+/**
+ * Open a PDF and render its first page, returning what the engine produced.
+ *
+ * This is the app's actual document path, and it is the first DoD verb that
+ * needs the engine to WORK rather than merely LOAD. The call sequence is the
+ * one `xtask/src/wasm_browser.rs` already proves against a real corpus:
+ * `selis_input_alloc` the input, copy the bytes in, `selis_input_alloc` three
+ * out-words, then `selis_render_page` writes w/h/len through them.
+ *
+ * Two details that are easy to get wrong and were both hit while building this:
+ *
+ *  - **The out-words are read AFTER the call.** Rendering grows linear memory,
+ *    which DETACHES every typed-array view taken beforehand; reading them
+ *    earlier yields zeros, or worse, whatever the allocator has since reused.
+ *  - **`selis_free` returns the blocks to the allocator immediately**, so the
+ *    pixels must be counted before the frees, not after.
+ *
+ * `ink` is the count of non-white pixels. It is reported rather than assumed
+ * because a page can render successfully and be BLANK — measured on 60 real
+ * PDFs from this machine's Downloads folder, 43 opened and 17 of those came
+ * back with no ink at all. A `status: "ok"` with `ink: 0` is a failure the
+ * caller must be able to see, which is why the two are separate fields.
+ *
+ * @param {{ length: number, buffer: ArrayBuffer }} bytes the document
+ * @returns {{ status: string, w?: number, h?: number, ink?: number, detail?: string }}
+ */
+function openDocument(bytes) {
+	if (engineInstance === null) {
+		return { status: "no engine", detail: "the engine has not been instantiated" };
+	}
+	const ex = engineInstance.exports;
+	const inPtr = ex.selis_input_alloc(bytes.length);
+	if (!inPtr) return { status: "refused", detail: "selis_input_alloc returned null" };
+	new Uint8Array(ex.memory.buffer, inPtr, bytes.length).set(
+		new Uint8Array(bytes.buffer ?? bytes, bytes.byteOffset ?? 0, bytes.length),
+	);
+
+	const words = ex.selis_input_alloc(12);
+	if (!words) {
+		ex.selis_free(inPtr, bytes.length);
+		return { status: "refused", detail: "out-word alloc returned null" };
+	}
+	const pix = ex.selis_render_page(inPtr, bytes.length, 0, words, words + 4, words + 8);
+	if (!pix) {
+		ex.selis_free(inPtr, bytes.length);
+		ex.selis_free(words, 12);
+		return { status: "refused", detail: "selis_render_page returned null" };
+	}
+
+	const view = new DataView(ex.memory.buffer);
+	const w = view.getUint32(words, true);
+	const h = view.getUint32(words + 4, true);
+	const len = view.getUint32(words + 8, true);
+	const pixels = new Uint8Array(ex.memory.buffer, pix, len);
+	let ink = 0;
+	for (let i = 0; i < pixels.length; i += 4) {
+		if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) ink++;
+	}
+	ex.selis_free(pix, len);
+	ex.selis_free(words, 12);
+	ex.selis_free(inPtr, bytes.length);
+	return { status: "ok", w, h, ink };
+}
+
+/**
+ * The same thing from base64, which is how the browser check hands a document
+ * over. A real user's bytes arrive from a File, not from base64; this exists so
+ * the check can drive the identical code path without a file picker.
+ */
+globalThis.__selisOpen = function (base64) {
+	try {
+		const binary = atob(base64);
+		const buf = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+		return openDocument(buf);
+	} catch (error) {
+		return { status: "threw", detail: error instanceof Error ? error.message : String(error) };
+	}
+};
 
 // Exposed for the browser check and for support. No document data, no URL —
 // nothing here could identify a file (ADR-P0017).
