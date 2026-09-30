@@ -87,6 +87,21 @@ const workspaceRoot = resolve(pkgRoot, "../../..");
 const ESM_ROOTS = [
 	{ from: join(workspaceRoot, "apps/ui/dist"), to: "assets/ui" },
 	{ from: join(workspaceRoot, "packages/ui-kit/dist"), to: "assets/ui-kit" },
+	// The web host's OWN modules, for the same reason and under the same prefix:
+	// `print.js` and `print-pdf.js` are the print path's decision and assembly
+	// layers (UI.08), and `boot.js` imports them exactly as it imports the viewer
+	// modules. Keeping them as host TypeScript rather than inlining them into
+	// boot.js is what keeps them unit-testable - the print plan has 14 tests and
+	// the writer 13, none of which could exist if the logic lived in one long
+	// script.
+	//
+	// The entry is `page.js`, NOT `index.js`. The host's index is the service
+	// worker's source generator; walking from it would drag the whole worker
+	// (sw, headers, no-upload, worker-glue) onto the page origin for no reason.
+	// Because the walk follows IMPORTS, `page.ts` re-exporting only the print
+	// modules ships exactly those two and nothing else - and test files, maps
+	// and declarations are excluded automatically because nothing imports them.
+	{ from: join(workspaceRoot, "apps/web/host/dist"), to: "assets/host", entry: "page.js" },
 ];
 
 /** The engine filename inside a cargo target dir, optimised first. */
@@ -260,10 +275,10 @@ for (const root of ESM_ROOTS) {
 		);
 		process.exit(1);
 	}
-	const entry = join(root.from, "index.js");
+	const entry = join(root.from, root.entry ?? "index.js");
 	if (!existsSync(entry)) {
 		console.error(
-			`place-assets: no index.js in ${relative(workspaceRoot, root.from)} - run ` +
+			`place-assets: no ${root.entry ?? "index.js"} in ${relative(workspaceRoot, root.from)} - run ` +
 				"`tsc -p tsconfig.json` there first.",
 		);
 		process.exit(1);
