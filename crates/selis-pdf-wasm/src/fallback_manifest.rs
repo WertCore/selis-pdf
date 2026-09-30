@@ -13,6 +13,22 @@
 //! regenerates it; it also regenerates the subsets, so a font update cannot
 //! leave the digests describing bytes that are no longer shipped.
 //!
+//! ## Why every face carries its own `url`
+//!
+//! `selis-fallback/1` named each face and pinned its digest, but said nothing
+//! about *where the bytes are*. The shell reconstructed `fallback/<name>.ttf.br`
+//! from a convention duplicated in TypeScript, which meant a build that published
+//! the payload anywhere else - under a CDN prefix, a version segment, a different
+//! extension - fetched nothing and failed silently, while nothing detected the
+//! generator and the reader disagreeing. The `url` field makes the generator's
+//! actual path the one thing both sides read.
+//!
+//! It is **relative**, resolved by the caller against the base the manifest
+//! itself was served from. An absolute URL baked into a build artifact would
+//! break the moment the same artifact was promoted from staging to production,
+//! and would let a manifest point the fetcher at another origin; both are
+//! reasons the field is a path and not a location.
+//!
 //! ## Why the manifest is not enough on its own
 //!
 //! A matching digest means the bytes are the ones we shipped. It does not mean
@@ -35,10 +51,21 @@ use serde::{Deserialize, Serialize};
 
 /// Format version. Bump on any incompatible manifest change; readers reject
 /// versions they do not know rather than guessing at a partial parse.
-pub const MANIFEST_VERSION: u32 = 1;
+///
+/// **2** added the per-face `url`. A 1 document has no `url`, so it fails to
+/// deserialise - it is refused, never read with a reconstructed path.
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// The manifest's media type, as served.
 pub const MANIFEST_MIME: &str = "application/vnd.selis.fallback+json";
+
+/// The suffix every `url` must end in, because it says how the bytes are
+/// encoded: brotli-compressed TrueType.
+///
+/// The generator writes this and this validator requires it, so a manifest
+/// cannot claim a payload the transport would decode wrongly. Pinned in
+/// `fallback-manifest.ts` for the same reason.
+pub const FACE_SUFFIX: &str = ".ttf.br";
 
 /// One lazily-fetched fallback face.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +85,14 @@ pub struct FallbackFace {
     /// the parser consumes, so that is what must be verified. The compression
     /// layer is covered by whatever protects the transfer itself.
     pub sha256: String,
+    /// Where the compressed file is published, relative to the base the
+    /// manifest itself was served from - e.g. `fallback/LiberationSans-Regular.ttf.br`.
+    ///
+    /// Relative, never absolute: the same artifact is promoted from staging to
+    /// production, and an absolute URL would break on the move and would let a
+    /// manifest send the fetcher to another origin. Checked by
+    /// [`url_problem`] before anything here is used to fetch anything.
+    pub url: String,
 }
 
 /// The whole lazy payload: every fallback face this build does not embed, with
@@ -82,8 +117,17 @@ impl FallbackManifest {
     /// Returns `Err` rather than a partially-valid manifest, because every
     /// caller of a bad manifest has the same reaction: stop and load nothing.
     pub fn parse(raw: &[u8]) -> Result<Self, ManifestError> {
-        let m: Self =
-            serde_json::from_slice(raw).map_err(|e| ManifestError::Parse(e.to_string()))?;
+        let m: Self = serde_json::from_slice(raw)
+            // The hint is on the *parse* failure because that is where a
+            // document from an older format lands: it deserialises into
+            // everything except the field that format did not have. "missing
+            // field `url`" is technically true and practically useless, so the
+            // version this build reads is named alongside it.
+            .map_err(|e| {
+                ManifestError::Parse(format!(
+                    "{e} (this build reads selis-fallback/{MANIFEST_VERSION})"
+                ))
+            })?;
         m.validate()?;
         Ok(m)
     }
@@ -125,6 +169,11 @@ impl FallbackManifest {
                 // fiction.
                 return Err(ManifestError::TransferLarger(f.name.clone()));
             }
+            // Last, so the cheaper "this face is not what it says it is" rules
+            // still report first for a face that is wrong in several ways.
+            if let Some(why) = url_problem(&f.url) {
+                return Err(ManifestError::Url(f.name.clone(), why));
+            }
         }
         Ok(())
     }
@@ -153,6 +202,10 @@ pub enum ManifestError {
     /// A face claimed to transfer larger than it stores, so its stated budget
     /// is not describing anything real.
     TransferLarger(String),
+    /// A face's `url` was not a plain relative path to a compressed face.
+    /// Carries the face and the reason, because "the url is wrong" is not
+    /// actionable and "the url for `X` is absolute" is.
+    Url(String, &'static str),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -174,11 +227,134 @@ impl std::fmt::Display for ManifestError {
                     "fallback manifest says {n} transfers larger than it stores"
                 )
             }
+            Self::Url(n, why) => {
+                write!(f, "fallback manifest url for {n} is unusable: {why}")
+            }
         }
     }
 }
 
 impl std::error::Error for ManifestError {}
+
+/// Why a `url` cannot be used, or `None` if it can.
+///
+/// The rule is one sentence: a face's `url` is a **plain relative path** to a
+/// brotli-compressed font. Everything refused here is a way of being something
+/// other than that.
+///
+/// ## Why the string is checked raw, not decoded
+///
+/// A `..` check that ran on the *decoded* path would be defeated by the same
+/// path written `%2e%2e`, which is what an attacker writes when a raw check is
+/// in the way - the URL layer decodes it and the fetcher walks up a directory.
+/// So the traversal test decodes the one escape that can spell a dot and asks
+/// what the segment would *become*, while the empty-segment and encoded-
+/// separator tests look at the characters actually present. Checking only one
+/// of the two forms is how a validator ends up rejecting `%2e%2e` and admitting
+/// `..`, or the reverse.
+fn url_problem(url: &str) -> Option<&'static str> {
+    if url.is_empty() {
+        return Some("it is empty");
+    }
+    // A backslash is a separator to some URL layers and a literal character to
+    // others, so a path containing one means two different things depending on
+    // who reads it. There is no legitimate face name that needs it.
+    if url.contains('\\') {
+        return Some("it contains a backslash");
+    }
+    // `//host/path` is a *network-path reference*: it inherits the scheme and
+    // points at another host, which is the one thing a relative field must not
+    // be able to do.
+    if url.starts_with("//") {
+        return Some("it is protocol-relative and would leave the payload origin");
+    }
+    if has_scheme(url) {
+        return Some("it is absolute rather than relative to the manifest base");
+    }
+    if !url.ends_with(FACE_SUFFIX) {
+        return Some("it does not end in the suffix the transport decodes");
+    }
+    for seg in url.split('/') {
+        if seg.is_empty() {
+            return Some("it has an empty path segment");
+        }
+        if is_dot_segment(seg) {
+            return Some("it has a `.` or `..` path segment");
+        }
+        if has_encoded_separator(seg) {
+            return Some("it hides a path separator inside a percent-escape");
+        }
+    }
+    None
+}
+
+/// Does this path start with something that reads as a URL scheme?
+///
+/// `fallback/x.ttf.br` must not be mistaken for one: the first character is a
+/// letter, but the run stops at the `/` without reaching a `:`, so it is a
+/// relative path. Written as a scan rather than a split so the answer does not
+/// depend on a library's URL parser and its idea of what is special.
+fn has_scheme(url: &str) -> bool {
+    let mut chars = url.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for c in chars {
+        if c == ':' {
+            return true;
+        }
+        if !(c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+            return false;
+        }
+    }
+    false
+}
+
+/// Is this segment `.` or `..`, written either plainly or percent-encoded?
+fn is_dot_segment(seg: &str) -> bool {
+    let decoded = decode_dot_escapes(seg);
+    decoded == "." || decoded == ".."
+}
+
+/// Percent-decode **only** the escape that can spell a dot (`%2e`, either
+/// case), leaving every other escape exactly as written.
+///
+/// Deliberately not a general decoder: decoding `%25` first would let
+/// `%252e%252e` become `%2e%2e` and then be mistaken for a real dot, and a
+/// decoder that handled the full grammar would be a second URL parser to keep
+/// in step with the first. Face names are ASCII identifiers, so the only
+/// escapes that can appear are the ones a generator would never write - which
+/// is exactly why they have to be understood to be refused.
+fn decode_dot_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let escape: String = it.clone().take(2).collect();
+        if escape.len() == 2 && escape.eq_ignore_ascii_case("2e") {
+            out.push('.');
+            for _ in escape.chars() {
+                let _ = it.next();
+            }
+        } else {
+            out.push('%');
+        }
+    }
+    out
+}
+
+/// Does this segment percent-encode a `/` or a `\`, the two separators?
+///
+/// A `%2f` inside a segment is a separator the segment check cannot see, which
+/// is the same smuggling trick as `%2e%2e` one level up.
+fn has_encoded_separator(seg: &str) -> bool {
+    let lower = seg.to_ascii_lowercase();
+    lower.contains("%2f") || lower.contains("%5c")
+}
 
 #[cfg(test)]
 mod tests {
@@ -208,6 +384,7 @@ mod tests {
             transfer_size: 100,
             raw_size: 200,
             sha256: good_digest(),
+            url: format!("fallback/{name}{FACE_SUFFIX}"),
         }
     }
 
@@ -313,6 +490,120 @@ mod tests {
         ));
     }
 
+    /// A `url` is only useful if it is a plain relative path. Every other shape
+    /// is refused, and the reason is carried alongside the face so the failure
+    /// says which entry was wrong and how.
+    ///
+    /// The list is deliberately exhaustive over the ways a relative path can
+    /// stop being one: it can name another origin (absolute, protocol-relative),
+    /// it can leave the payload directory (`..`), it can mean two different
+    /// things to two readers (backslash, encoded separator), and it can name a
+    /// file the transport would decode wrongly (wrong suffix).
+    #[test]
+    fn a_url_that_is_not_a_plain_relative_path_is_refused() {
+        for (bad, why) in [
+            // Absolute, in every spelling a generator or an attacker might use.
+            ("https://cdn.example.test/fallback/x.ttf.br", "absolute"),
+            ("http://cdn.example.test/x.ttf.br", "absolute"),
+            ("file:///etc/passwd.ttf.br", "absolute"),
+            ("HTTPS://CDN.EXAMPLE.TEST/x.ttf.br", "absolute"),
+            ("data:font/ttf;base64,AAAA.ttf.br", "absolute"),
+            // Inherits the scheme and names a host: the same escape, quieter.
+            ("//cdn.example.test/fallback/x.ttf.br", "protocol-relative"),
+            // Traversal, plainly and percent-encoded.
+            ("../x.ttf.br", "`..`"),
+            ("fallback/../../x.ttf.br", "`..`"),
+            ("fallback/%2e%2e/x.ttf.br", "`..`"),
+            ("fallback/%2E%2E/x.ttf.br", "`..`"),
+            ("fallback/%2e./x.ttf.br", "`..`"),
+            ("./x.ttf.br", "`..`"),
+            // A backslash is a separator to some URL layers and a literal to
+            // others, so the path means two different files depending on who
+            // fetches it.
+            ("fallback\\x.ttf.br", "backslash"),
+            ("..\\..\\x.ttf.br", "backslash"),
+            // Empty segments: a leading slash, a doubled one, a trailing one.
+            ("/fallback/x.ttf.br", "empty path segment"),
+            ("fallback//x.ttf.br", "empty path segment"),
+            ("fallback/", "suffix"),
+            // A separator smuggled through an escape the segment split cannot
+            // see - the same trick as `%2e%2e`, one level up.
+            ("fallback%2fx.ttf.br", "percent-escape"),
+            ("fallback%2Fx.ttf.br", "percent-escape"),
+            ("fallback%5cx.ttf.br", "percent-escape"),
+            // The transport decodes brotli-compressed TrueType; anything else is
+            // a claim about bytes nobody published that way.
+            ("fallback/x.ttf", "suffix"),
+            ("fallback/x.TTF.BR", "suffix"),
+            ("fallback/x.ttf.gz", "suffix"),
+            ("", "empty"),
+        ] {
+            let mut m = manifest();
+            first(&mut m).url = bad.to_string();
+            let got = FallbackManifest::parse(&json(&m));
+            assert!(
+                matches!(&got, Err(ManifestError::Url(_, reason)) if reason.contains(why)),
+                "url {bad:?} should be refused as {why:?}, got {got:?}"
+            );
+        }
+    }
+
+    /// The list of refused shapes must not quietly become the list of *accepted*
+    /// ones: a validator that refuses everything passes the test above. These
+    /// are the shapes a generator may legitimately emit, including a layout that
+    /// is not the one the shell used to reconstruct.
+    #[test]
+    fn a_plain_relative_url_is_accepted_whatever_the_layout() {
+        for good in [
+            "fallback/LiberationSans-Regular.ttf.br",
+            "LiberationSans-Regular.ttf.br",
+            "v2/fallback/LiberationSans-Regular.ttf.br",
+            "custom/place/face.ttf.br",
+            // A percent-escape that cannot spell a dot or a separator is left
+            // alone rather than refused: this reader is not a second URL parser.
+            "fallback/Liberation%20Sans.ttf.br",
+        ] {
+            let mut m = manifest();
+            first(&mut m).url = good.to_string();
+            assert!(
+                FallbackManifest::parse(&json(&m)).is_ok(),
+                "url {good:?} should be accepted"
+            );
+        }
+    }
+
+    /// A `selis-fallback/1` document has no `url`, and this build must refuse it
+    /// rather than fall back to reconstructing the path it used to guess - a
+    /// reader that quietly filled the field in would reintroduce exactly the
+    /// silent-404 hole the field was added to close.
+    #[test]
+    fn an_old_format_manifest_is_refused_not_reconstructed() {
+        let v1 = br#"{
+          "version": 1,
+          "faces": [
+            {
+              "name": "LiberationSans-Regular",
+              "transfer_size": 100,
+              "raw_size": 200,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }"#;
+        let err = FallbackManifest::parse(v1).expect_err("a v1 document is not this format");
+        assert!(
+            matches!(err, ManifestError::Parse(_)),
+            "expected a parse refusal, got {err:?}"
+        );
+        // The message has to name the version, because "missing field `url`" is
+        // what serde says and it explains nothing about which formats are
+        // readable.
+        let text = err.to_string();
+        assert!(
+            text.contains("url") && text.contains(&MANIFEST_VERSION.to_string()),
+            "the refusal should name the missing field and the format, got: {text}"
+        );
+    }
+
     /// Garbage in, `Err` out — never a panic, because this parses bytes from
     /// the network and a panic there is a denial of service.
     #[test]
@@ -322,7 +613,7 @@ mod tests {
             b"not json",
             b"[]",
             b"{}",
-            b"{\"version\":1,\"faces\":\"not an array\"}",
+            b"{\"version\":2,\"faces\":\"not an array\"}",
         ] {
             assert!(
                 FallbackManifest::parse(bad).is_err(),
