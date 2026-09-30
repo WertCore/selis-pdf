@@ -410,6 +410,81 @@
           out.offlineEngineBytes = bodies[2].length;
           out.offlineLayoutReal = bodies[0].indexOf("layoutPages") >= 0;
           out.offlineWindowingReal = bodies[1].indexOf("visibleWindow") >= 0;
+        })
+        // THE CUT, armed LAST. Armed earlier it takes the origin away from the
+        // checks still to come, those fetches fail, and the verdict chain dies
+        // without posting - which reads as a hung browser and says nothing.
+        .then(function () {
+          return fetch("/__selis_offline", { method: "POST", cache: "no-store" }).then(
+            function (r) {
+              out.offlineArmed = r.status === 204;
+            },
+            function () {
+              out.offlineArmed = false;
+            },
+          );
+        })
+        .then(function () {
+          // Negative control: a path the worker does not cache must now fail.
+          return fetch("/__selis_uncached_" + performance.now(), {
+            cache: "no-store",
+          }).then(
+            function (r) {
+              out.originRefuses = r.status === 503;
+            },
+            function () {
+              out.originRefuses = true;
+            },
+          );
+        })
+        .then(function () {
+          // A rejection becomes a recorded false, never a thrown chain: a check
+          // that dies on the failure it exists to catch reports nothing.
+          function probe(path) {
+            return fetch(path, { cache: "no-store" }).then(
+              function (r) {
+                return r;
+              },
+              function () {
+                return { ok: false };
+              },
+            );
+          }
+          return Promise.all([
+            probe("/"),
+            probe("/index.html"),
+            probe("/assets/style.css"),
+            probe("/assets/boot.js"),
+            probe("/assets/ui/viewer/layout.js"),
+            probe("/assets/ui/viewer/windowing.js"),
+            probe("/wasm/selis_pdf_wasm.wasm"),
+          ]).then(function (responses) {
+            out.offlineCutAssets = responses.map(function (r) {
+              return r.ok;
+            });
+            return responses[6]
+              .arrayBuffer()
+              .catch(function () {
+                return { byteLength: 0 };
+              });
+          });
+        })
+        .then(function (engine) {
+          out.offlineCutEngineBytes = engine.byteLength;
+          var view = globalThis.__selisView(FIXTURE_PDF_B64);
+          out.offlineCutView = view.painted === undefined ? null : view.painted;
+          out.offlineCutSearch = globalThis.__selisSearch(TEXT_PDF_B64, "search");
+          out.offlineCutMiss = globalThis.__selisSearch(TEXT_PDF_B64, "zzzznotpresent");
+          var real = window.print;
+          var n = 0;
+          window.print = function () {
+            n++;
+          };
+          document.getElementById("selis-print").click();
+          window.print = real;
+          out.offlineCutPrintCalls = n;
+        })
+        .then(function () {
           report();
         })
         .catch(fail);

@@ -100,6 +100,9 @@ use crate::wasm_browser::{browser_candidates, browser_name};
 /// filesystem is consulted, so a check can never be mistaken for a result.
 const RESULT_PATH: &str = "/__selis_result";
 
+/// Control endpoint that flips the origin into its offline state.
+const OFFLINE_PATH: &str = "/__selis_offline";
+
 /// How long to wait for one check's page to report, unless `--timeout-ms` says
 /// otherwise. Also the subcommand's `--timeout-ms` default, so the number is
 /// written once.
@@ -957,6 +960,73 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         );
     }
 
+    // THE CUT: origin refusing, worker answering, DoD's sentence re-run.
+    if report.get("originRefuses").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "with the cut armed an uncached path still succeeded -- not an offline run".into(),
+        );
+    }
+    let cut = report
+        .get("offlineCutAssets")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "offlineCutAssets = None".to_string())?;
+    let names = [
+        "the precached shell",
+        "the precached index",
+        "the precached stylesheet",
+        "the precached boot",
+        "layout.js",
+        "windowing.js",
+        "the engine",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        if cut.get(i).and_then(Json::as_bool) != Some(true) {
+            return Err(format!("{name} is not served with the origin refusing"));
+        }
+    }
+    let bytes = report
+        .get("offlineCutEngineBytes")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if bytes < 1_000_000 {
+        return Err(format!(
+            "offline the engine came back as {bytes} bytes, expected ~2.8 MB"
+        ));
+    }
+    let ink = report
+        .get("offlineCutView")
+        .and_then(|v| v.get("screenInk"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    let expected = report
+        .get("open")
+        .and_then(|o| o.get("ink"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if ink == 0 || ink != expected {
+        return Err(format!(
+            "offline the canvas shows {ink} ink pixels, expected {expected}"
+        ));
+    }
+    let hit = report
+        .get("offlineCutSearch")
+        .and_then(|r| r.get("total"))
+        .and_then(Json::as_u64)
+        .unwrap_or(u64::MAX);
+    let miss = report
+        .get("offlineCutMiss")
+        .and_then(|r| r.get("total"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if hit != 1 || miss != 0 {
+        return Err(format!(
+            "offline search returned {hit} / {miss}, expected 1 / 0"
+        ));
+    }
+    if report.get("offlineCutPrintCalls").and_then(Json::as_u64) != Some(1) {
+        return Err("offline the Print control did not reach window.print".into());
+    }
+
     Ok(())
 }
 
@@ -1242,6 +1312,7 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
         .set_nonblocking(true)
         .map_err(|e| format!("cannot poll the listener: {e}"))?;
     let stop = Arc::new(AtomicBool::new(false));
+    let offline = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<String>();
     let root = Arc::new(root.to_path_buf());
     let flag = Arc::clone(&stop);
@@ -1258,10 +1329,13 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
                     let root = Arc::clone(&root);
                     let tx = tx.clone();
                     let reported = Arc::clone(&reported);
+                    let offline = Arc::clone(&offline);
                     let _ = std::thread::Builder::new()
                         .name("selis-browser-origin".to_string())
                         .spawn(move || {
-                            if let Err(e) = handle_connection(&stream, &root, &tx, &reported) {
+                            if let Err(e) =
+                                handle_connection(&stream, &root, &tx, &reported, &offline)
+                            {
                                 // A browser resets idle sockets routinely; that
                                 // is not the harness's problem.
                                 eprintln!("browser-check: origin: {e}");
@@ -1303,6 +1377,7 @@ fn handle_connection(
     root: &Path,
     tx: &mpsc::Sender<String>,
     reported: &AtomicBool,
+    offline: &AtomicBool,
 ) -> std::io::Result<()> {
     // A socket the browser opened and then abandoned must not hold a thread
     // for the length of the run.
@@ -1364,6 +1439,14 @@ fn handle_connection(
             return Ok(());
         }
 
+        if method == "POST" && target == OFFLINE_PATH {
+            let _ = reader.read_exact(&mut vec![0u8; content_length(&head)]);
+            offline.store(true, Ordering::SeqCst);
+            return respond(stream, "204 No Content", "text/plain", b"");
+        }
+        if offline.load(Ordering::SeqCst) {
+            return respond(stream, "503 Service Unavailable", "text/plain", b"offline");
+        }
         let Some(path) = resolve(root, &target) else {
             return respond(stream, "403 Forbidden", "text/plain", b"forbidden");
         };
@@ -1513,7 +1596,7 @@ fn content_type(path: &Path) -> &'static str {
 fn respond(stream: &TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+         Cache-Control: max-age=0, must-revalidate\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let mut writer = stream.try_clone()?;

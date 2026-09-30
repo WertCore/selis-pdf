@@ -534,6 +534,40 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     using `visibility` instead of `display`.
 
     **Still open, and it is one thing, not four.** The DoD says "with no network
+    --- FIXED 2026-09-30. The origin was the bug, and the worker was right. ---
+
+    The runtime cache was never broken. The app worker was **correctly**
+    refusing to store the responses it was being given, because the harness
+    origin sent `Cache-Control: no-store` on EVERY response:
+
+        if (cacheControl.includes("no-store") || cacheControl.includes("private"))
+            return { store: false, ... }
+
+    That is right behaviour - a worker that cached a `no-store` response would
+    be the defect. The header was there to keep each harness run hermetic, and
+    it had the side effect of making runtime caching impossible, so the offline
+    claim could never have been true. It is now `max-age=0, must-revalidate`:
+    still revalidated every time, still no stale HTTP-cache reuse, but storable
+    by a worker, which is what a real static server sends.
+
+    Measured afterwards, with the origin refusing every path (503):
+
+        offlineCutAssets = [true, true, true, true, true, true, true]
+        offlineCutEngineBytes = 2868774      (the exact shipped engine)
+        originRefuses = true (503)
+
+    and open / view / search / print all re-run and all still passing with the
+    network down. The cut is now a committed part of `app-shell`.
+
+    A wrong theory got most of the way here and is worth recording. The
+    surviving `False, False, False` looked like the 32-entry runtime cap
+    evicting a 35-module closure, so the cap was raised to 128. That was wrong:
+    the cap was never reached, and the change was reverted rather than left in
+    with a justification that had been disproven. The signal that gave it away
+    was the engine reading back as **7 bytes** - the length of the 503 body,
+    not a truncated module - which said "the worker never had this at all"
+    rather than "the worker had it and threw it away".
+    **Still open, and it is one thing, not four.** The DoD says "with no network
 
     --- FOUND 2026-09-30, by the cut itself. The runtime cache does not work. ---
 
