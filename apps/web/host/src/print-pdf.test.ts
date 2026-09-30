@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type RasterPage, buildPrintPdf } from "./print-pdf.js";
+import { type RasterPage, buildPrintPdf, rgbaToRgb } from "./print-pdf.js";
 
 /** A solid-colour page, so the embedded bytes can be found exactly. */
 function page(widthPx: number, heightPx: number, fill = 7): RasterPage {
@@ -26,6 +26,74 @@ function text(bytes: Uint8Array): string {
 function xrefOffsets(body: string): number[] {
 	return [...body.matchAll(/(\d{10}) 00000 n /g)].map((m) => Number(m[1]));
 }
+
+describe("rgbaToRgb", () => {
+	/** One RGBA pixel as a 4-byte buffer. */
+	const one = (r: number, g: number, b: number, a: number): Uint8Array =>
+		Uint8Array.from([r, g, b, a]);
+
+	it("passes an opaque pixel through unchanged", () => {
+		// The common case must be EXACT, not approximately: compositing an opaque
+		// pixel over white should be the identity, and any drift here would show
+		// up as every printed colour being subtly wrong.
+		expect([...rgbaToRgb(one(10, 20, 30, 255), 1)]).toEqual([10, 20, 30]);
+		expect([...rgbaToRgb(one(255, 255, 255, 255), 1)]).toEqual([255, 255, 255]);
+		expect([...rgbaToRgb(one(0, 0, 0, 255), 1)]).toEqual([0, 0, 0]);
+	});
+
+	it("composites a fully transparent pixel to paper white", () => {
+		// Transparent is "no ink laid down". Dropping the alpha byte instead
+		// would leave whatever colour was underneath, which on a blank page is
+		// not white and prints as a grey sheet.
+		expect([...rgbaToRgb(one(0, 0, 0, 0), 1)]).toEqual([255, 255, 255]);
+		expect([...rgbaToRgb(one(255, 0, 255, 0), 1)]).toEqual([255, 255, 255]);
+	});
+
+	it("blends a half-transparent pixel halfway to white", () => {
+		// Black at 50% over white is mid grey. Getting this wrong in either
+		// direction is the classic alpha bug.
+		expect([...rgbaToRgb(one(0, 0, 0, 128), 1)]).toEqual([127, 127, 127]);
+		// A saturated colour keeps its own hue while washing toward paper.
+		const [r, g, b] = rgbaToRgb(one(255, 0, 0, 128), 1);
+		expect(r).toBe(255);
+		expect(g).toBe(127);
+		expect(b).toBe(127);
+	});
+
+	it("rounds rather than truncates, so blended edges do not go dark", () => {
+		// (10,20,30) at alpha 127/255 over white works out to 132.98, 137.96
+		// and 142.94. Truncating would give 132, 137, 142 - every blended pixel
+		// a full step darker. Across a page of antialiased glyph edges that
+		// reads as a grey halo, and it gets blamed on the rasteriser rather
+		// than on this loop.
+		expect([...rgbaToRgb(one(10, 20, 30, 127), 1)]).toEqual([133, 138, 143]);
+	});
+
+	it("keeps channels in order and advances exactly 3 bytes per pixel", () => {
+		// A stride bug shows up as a colour-fringed page, and it is invisible
+		// on a single pixel - so the multi-pixel case is the one that matters.
+		const two = Uint8Array.from([255, 0, 0, 255, 0, 255, 0, 255]);
+		expect([...rgbaToRgb(two, 2)]).toEqual([255, 0, 0, 0, 255, 0]);
+	});
+
+	it("refuses a buffer that contradicts the pixel count", () => {
+		// Reading past the end would produce an RGB tail full of zeros, which
+		// is a strip of black rather than an error.
+		expect(() => rgbaToRgb(Uint8Array.from([1, 2, 3, 4]), 2)).toThrow(RangeError);
+	});
+
+	it("feeds the writer directly, so the whole chain composes", () => {
+		// The converter is only worth having if its output is what the writer
+		// accepts; this is the test that would catch the two drifting apart.
+		const rgb = rgbaToRgb(one(12, 34, 56, 255), 1);
+		const pdf = buildPrintPdf([{ widthPx: 1, heightPx: 1, rgb }], {
+			dpi: 300,
+			pageSizesPt: [{ widthPt: 72, heightPt: 72 }],
+		});
+		const start = text(pdf).indexOf("stream\n") + "stream\n".length;
+		expect([...pdf.slice(start, start + 3)]).toEqual([12, 34, 56]);
+	});
+});
 
 describe("buildPrintPdf", () => {
 	it("writes a well-formed file envelope", () => {

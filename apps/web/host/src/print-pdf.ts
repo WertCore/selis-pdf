@@ -107,6 +107,48 @@ class ByteWriter {
 	}
 }
 /**
+ * Convert the engine's RGBA8 output to the RGB the writer needs.
+ *
+ * Not a cast: PDF's DeviceRGB has no alpha channel, so alpha has to be
+ * RESOLVED rather than dropped. Simply discarding the alpha byte would let any
+ * semi-transparent content print as whatever colour happened to be underneath,
+ * and the engine's rasteriser emits alpha for exactly the fills where getting
+ * this wrong is visible.
+ *
+ * Alpha is therefore COMPOSITED over white, because white is paper. That is the
+ * one background a print job can assume: a transparent region is not "the
+ * colour of the printer", it is "no ink laid down", which on paper is the sheet.
+ *
+ * @param rgba packed RGBA8, 4 bytes per pixel, row-major, no padding
+ * @param pixelCount how many pixels the buffer holds
+ * @returns packed RGB, 3 bytes per pixel
+ */
+export function rgbaToRgb(rgba: Uint8Array, pixelCount: number): Uint8Array {
+	const expected = pixelCount * 4;
+	if (rgba.length !== expected) {
+		throw new RangeError(
+			`${pixelCount} RGBA pixel(s) need ${expected} bytes, got ${rgba.length}`,
+		);
+	}
+	const rgb = new Uint8Array(pixelCount * 3);
+	for (let p = 0; p < pixelCount; p++) {
+		const i = p * 4;
+		const alpha = (rgba[i + 3] as number) / 255;
+		// Composite over white: out = src*a + paper*(1-a).
+		//
+		// Rounded rather than truncated. Truncating biases every blended edge
+		// one step darker, and on a page that is mostly antialiased glyph edges
+		// that shows as a faint grey halo around the text - the sort of defect
+		// that gets blamed on the rasteriser rather than on this loop.
+		const paper = 255;
+		rgb[p * 3] = Math.round((rgba[i] as number) * alpha + paper * (1 - alpha));
+		rgb[p * 3 + 1] = Math.round((rgba[i + 1] as number) * alpha + paper * (1 - alpha));
+		rgb[p * 3 + 2] = Math.round((rgba[i + 2] as number) * alpha + paper * (1 - alpha));
+	}
+	return rgb;
+}
+
+/**
  * Assemble a print-ready PDF from pages already rasterised to print size.
  *
  * Every object offset is MEASURED as the object is written, never predicted.
