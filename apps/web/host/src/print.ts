@@ -169,4 +169,28 @@ export function planPrint(
  *  - The plan's `scale` is expressed in points-to-device, so it composes with
  *    the `Render` matrix directly: matrix scale = `plan.scale / (dpi / 72)` for
  *    the fit, and the device raster is `plan.scale` overall.
+*
+ * CONFIRMED: the JSON protocol's `Render` op carries `RenderParams`, whose
+ * first field is `dpi: f64`, documented as "render resolution in dots per inch
+ * (72 = 1 pt per px)". The engine can therefore already rasterise at print
+ * resolution, deriving the page-to-device matrix from `dpi` while honouring
+ * `/Rotate` - which matters for print, since a rotated page has to come out
+ * rotated or a landscape scan prints portrait.
+ *
+ * The join between this module and the engine, exactly:
+ *
+ *     RenderParams { dpi: plan.dpi }   ->  points-to-device scale
+ *     plan.scale / (plan.dpi / 72)     ->  the FIT, if any
+ *     (box.widthPt, box.heightPt)      ->  the MediaBox the writer writes
+ *
+ * `plan.dpi` is therefore not advisory: it is the number the engine is asked for,
+ * and `buildPrintPdf` writes the same boxes it was derived from. If a rasteriser
+ * ever takes its DPI from anywhere else, the printed page is the wrong physical
+ * size and nothing downstream notices - the MediaBox and the pixels disagree
+ * quietly, which is the most expensive kind of print bug.
+ *
+ * `RenderParams` also has an optional `tile`. Not needed yet, but it is the
+ * escape hatch for large pages: a 300 DPI Letter page is 33 MB of RGBA, and a
+ * tile could be rendered and freed a strip at a time rather than all at once.
+ * Worth knowing the option exists before designing around a bigger buffer.
  */
