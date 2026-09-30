@@ -326,6 +326,26 @@
             return /#selis-page/.test(t) && /display:\s*block/.test(t);
           });
         })
+        // 1e. PRINT, as a generated PDF (UI.08). The Do: explicitly rules out
+        //     the browser's own PDF printing, so this asserts a real artifact:
+        //     a %PDF- header and a raster rendered at PRINT resolution rather
+        //     than the screen's 72.
+        .then(function () {
+          return globalThis.__selisPrint(FIXTURE_PDF_B64).then(function (printed) {
+            out.print = {
+              status: printed.status,
+              dpi: printed.dpi,
+              bytes: printed.bytes,
+              header: printed.header,
+              detail: printed.detail,
+            };
+            // The generated PDF must survive serialisation as a real blob; a
+            // summary object is not an artifact and would pass a size check.
+            if (printed.pdf !== undefined) {
+              out.printBlob = printed.pdf.byteLength;
+            }
+          });
+        })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;
           out.registration = reg && reg.registered ? "registered" : reg && reg.reason;

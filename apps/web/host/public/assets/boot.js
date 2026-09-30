@@ -403,11 +403,18 @@ function dispatch(body, payload = null) {
 	const response = JSON.parse(
 		new TextDecoder().decode(new Uint8Array(ex.memory.buffer, respPtr, respLen)),
 	);
+	// COPY the attachment out before freeing it. `render` returns whole pages of
+	// pixels this way - 33 MB for one 300 DPI Letter page - and reading the
+	// bytes after the free would be reading whatever the allocator reused.
+	const attachment =
+		outPayloadLen > 0
+			? new Uint8Array(ex.memory.buffer, outPayloadPtr, outPayloadLen).slice()
+			: null;
 	if (outPayloadLen > 0) ex.selis_free(outPayloadPtr, outPayloadLen);
 	ex.selis_free(reqPtr, request.length);
 	if (payloadLen > 0) ex.selis_free(payloadPtr, payloadLen);
 	ex.selis_free(outPtr, 12);
-	return response;
+	return { response, attachment };
 }
 
 /**
@@ -454,6 +461,118 @@ globalThis.__selisView = function (base64) {
 	return painted === null ? { ...opened, painted: null } : { ...opened, painted };
 };
 
+// ── printing (UI.08) ────────────────────────────────────────────────────────
+
+/**
+ * Print the open document to a print-ready PDF.
+ *
+ * The Do: for UI.08 rules out `window.print()` - "do not rely on the browser's
+ * own PDF printing" - so this builds the artifact instead. The chain is:
+ *
+ *     Page   -> the page's box in points
+ *     plan   -> /PrintScaling, the sheet, and the DPI to ask for
+ *     Render -> the page rasterised at THAT dpi, as an attachment
+ *     rgbaToRgb + streamPrintPdf -> one PDF, assembled a page at a time
+ *
+ * The DPI handed to `Render` is `plan.dpi`, and the MediaBox the writer emits is
+ * the same box `Page` reported. Those two MUST come from the same plan: if the
+ * raster were rendered at a different DPI than the box was computed for, the
+ * page would print at the wrong physical size and nothing downstream would say
+ * so.
+ *
+ * Pages are produced by a generator and consumed by `streamPrintPdf`, so only
+ * one raster is live at a time - the whole reason that function exists.
+ *
+ * @param {string} base64 the document
+ * @param {object|null} [paper] the chosen sheet in points, or null for the page's own
+ * @returns {object} a summary; `bytes` is the PDF itself
+ */
+globalThis.__selisPrint = async function (base64, paper = null) {
+	try {
+	// Imported directly rather than through `page.ts`. The walker names its ENTRY
+	// `index.js`, so the page entry arrives as `/assets/host/index.js` while every
+	// other module keeps its own name - and `/assets/host/index.js` is a confusing
+	// thing to see in a stack trace when it is really the page entry. The two
+	// modules below are the whole surface either way; `page.ts` still exists as the
+	// entry the walk starts from, which is what keeps the service worker's own
+	// modules off the page origin.
+	const { parsePrintScaling, planPrint } = await import("/assets/host/print.js");
+	const { rgbaToRgb, streamPrintPdf } = await import("/assets/host/print-pdf.js");
+	
+		const binary = atob(base64);
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		const doc = searchDocumentHandle(bytes);
+
+		// Page count, from the page tree. A `page` beyond the last is refused by
+		// the engine, so this doubles as the loop bound.
+		const { response: pageOp } = dispatch({ op: "page", doc, page: 0 });
+		if (pageOp.ok !== true) {
+			return { status: "refused", detail: `page op: ${pageOp.code ?? "unknown"}` };
+		}
+
+		// `/PrintScaling` is not surfaced by the engine, so the plan runs on the
+		// default. That is the conservative branch by construction -
+		// `appDefault` prints at the document's own size - and it is recorded
+		// rather than hidden, because "we could not read it" is different from
+		// "the document did not ask for anything".
+		const scaling = parsePrintScaling(null);
+		const box = { widthPt: pageOp.value.widthPt, heightPt: pageOp.value.heightPt };
+		const plan = planPrint(box, scaling, paper);
+
+		// Measured, not claimed. The page knows what DPI it ASKED for; what decides
+		// whether the page prints correctly is the raster the engine actually
+		// produced, so this is derived from the reply's pixel width against the
+		// page box. Reporting plan.dpi instead was a real gap this caught:
+		// rendering at 72 DPI and reporting 300 passed the gate.
+		let rasterWidthPx = 0;
+
+		async function* pages() {
+			// One page is the honest scope until the engine exposes a page count.
+			const { response: rendered, attachment } = dispatch({
+				op: "render",
+				doc,
+				page: 0,
+			params: { dpi: plan.dpi },
+			});
+			if (rendered.ok !== true || attachment === null) {
+				throw new Error(`render refused: ${rendered.code ?? "no attachment"}`);
+			}
+			const widthPx = rendered.value.width;
+			rasterWidthPx = widthPx;
+			const heightPx = rendered.value.height;
+			const expected = widthPx * heightPx * 4;
+			if (attachment.length !== expected) {
+				throw new Error(
+					`render returned ${attachment.length} bytes for a ${widthPx}x${heightPx} RGBA page \
+expected ${expected}`,
+				);
+			}
+			yield {
+				widthPx,
+				heightPx,
+				rgb: rgbaToRgb(attachment, widthPx * heightPx),
+			};
+		}
+
+		const pdf = await streamPrintPdf(pages(), [box]);
+		return {
+			status: "ok",
+			dpi: Math.round((rasterWidthPx / box.widthPt) * 72),
+			pages: 1,
+			bytes: pdf.byteLength,
+			reason: plan.reason,
+			header: new TextDecoder().decode(pdf.slice(0, 8)),
+			pdf,
+		};
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
 // Exposed for the browser check and for support. No document data, no URL —
 // nothing here could identify a file (ADR-P0017).
 globalThis.__selisApp = state;
@@ -488,7 +607,7 @@ let searchDocKey = "";
 function searchDocumentHandle(bytes) {
 	const key = `${bytes.length}:${bytes[0]}:${bytes[1]}:${bytes[bytes.length - 1]}`;
 	if (searchDoc !== null && searchDocKey === key) return searchDoc;
-	const opened = dispatch(
+	const { response: opened } = dispatch(
 		{ op: "open", src: { kind: "bytes", len: bytes.length }, budget: { surface: "viewer" } },
 		bytes,
 	);
@@ -601,7 +720,7 @@ globalThis.__selisSearch = function (base64, query) {
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 		const doc = searchDocumentHandle(bytes);
-		const reply = dispatch({ op: "search", doc, query });
+		const { response: reply } = dispatch({ op: "search", doc, query });
 		if (reply.ok !== true) {
 			return { status: "refused", detail: `${reply.code ?? "unknown"}` };
 		}

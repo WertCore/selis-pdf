@@ -1027,8 +1027,52 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         return Err("offline the Print control did not reach window.print".into());
     }
 
+    // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
+    // PDF printing - the Do: rules the latter out explicitly. Asserting the
+    // artifact exists is the point; `window.print()` cannot produce one.
+    let printed = report
+        .get("print")
+        .ok_or_else(|| "the app produced no print artifact (print = None)".to_string())?;
+    if printed.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!("printing did not produce a PDF: {printed}"));
+    }
+    // A real PDF header. This is what separates an artifact from a summary
+    // object, and it is the cheapest check that the writer actually ran.
+    let header = printed.get("header").and_then(Json::as_str).unwrap_or("");
+    if !header.starts_with("%PDF-") {
+        return Err(format!(
+            "the print output is not a PDF: header was {header:?}"
+        ));
+    }
+    // PRINT resolution, not the screen's 72. This is the leg that catches a
+    // rasteriser quietly falling back to the raw ABI, which cannot scale: the
+    // output would still be a valid PDF, just soft and the wrong physical size.
+    let dpi = printed.get("dpi").and_then(Json::as_u64).unwrap_or(0);
+    if dpi < PRINT_DPI_FLOOR {
+        return Err(format!(
+            "the print raster was {dpi} DPI, below the {PRINT_DPI_FLOOR} floor -- that is a screen \
+             render, not a print one"
+        ));
+    }
+    // A stub - an empty page, or a page object with no image - is a few hundred
+    // bytes. One 300 DPI Letter page is ~25 MB uncompressed, so anything under a
+    // megabyte means the raster never reached the writer.
+    let bytes = printed.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if bytes < 1_000_000 {
+        return Err(format!(
+            "the print output is only {bytes} bytes; a {PRINT_DPI_FLOOR} DPI page carries its \
+             raster, so this did not"
+        ));
+    }
+
     Ok(())
 }
+
+/// The DPI floor the print plan enforces. Mirrored here rather than imported:
+/// the Rust verdict is the gate, so it states its own threshold instead of
+/// trusting a value the page also uses - if the two drift, a green gate would
+/// mean only that the page agreed with itself.
+const PRINT_DPI_FLOOR: u64 = 300;
 
 fn app_public_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../apps/web/host/public")
