@@ -580,8 +580,6 @@ fn stage(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Instantiate `bytes` with the `env.twice` import the page supplies, and call
-/// the export. Test-only.
 /// Where `pnpm build` in `apps/web/host` leaves the servable app.
 ///
 /// Not committed, and deliberately not built by this xtask: a Rust harness
@@ -753,6 +751,8 @@ mod app_shell_tests {
     }
 }
 
+/// Instantiate `bytes` with the `env.twice` import the page supplies, and call
+/// the export. Test-only.
 #[cfg(test)]
 fn call_probe(bytes: &[u8]) -> i32 {
     let engine = wasmtime::Engine::default();
