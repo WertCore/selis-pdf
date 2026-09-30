@@ -116,6 +116,28 @@ impl FallbackManifest {
     ///
     /// Returns `Err` rather than a partially-valid manifest, because every
     /// caller of a bad manifest has the same reaction: stop and load nothing.
+    ///
+    /// # Budget
+    ///
+    /// None taken, deliberately: this runs on a manifest the shell fetched, not
+    /// on a document the engine is rendering, and it is reached before the
+    /// session's budget exists. The input is one manifest — kilobytes, and
+    /// bounded by the shell's own fetch limits — and the parsed form is
+    /// smaller than the bytes it came from. Charging it against a render budget
+    /// would make a font manifest able to fail a page render.
+    ///
+    /// # Malformed Input
+    ///
+    /// `raw` is entirely untrusted: it is a JSON body from the network, and the
+    /// module docs are the argument for treating it that way. Every way it can
+    /// be wrong is a typed [`ManifestError`], never a panic and never a partial
+    /// manifest — not JSON (`Parse`), a `version` this build does not read
+    /// (`Version`), the same face name twice (`Duplicate`), a `sha256` that is
+    /// not 64 **lowercase** hex digits (`Digest`), a zero `raw_size` or
+    /// `transfer_size` (`Size`), a `transfer_size` larger than `raw_size`
+    /// (`TransferLarger`), or a `url` [`url_problem`](url_problem) rejects
+    /// (`Url`). See [`validate`](Self::validate) for the order, which is chosen
+    /// so the cheapest and most damning rule reports first.
     pub fn parse(raw: &[u8]) -> Result<Self, ManifestError> {
         let m: Self = serde_json::from_slice(raw)
             // The hint is on the *parse* failure because that is where a

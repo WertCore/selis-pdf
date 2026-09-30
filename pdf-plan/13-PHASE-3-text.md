@@ -76,38 +76,117 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     lazy-load additional ranges as separate chunks on demand, and cache them. Native bundles more.
   - **DoD:** A Chinese document renders correctly on the web with a measured incremental download;
     the viewer never blocks on a font fetch (renders notdef, then repaints).
-  - **Status:** Engine side landed 2026-09-14 — the web DoD half stays open
-    (no shell yet), so this box stays unchecked. `selis_font::cjk` now owns
-    the real strategy: a 31-range Unicode→chunk table (main Ideographs and
-    Hangul syllables quartered; 11 ranges marked core-static and never
-    emitted as files), `CjkFontSet` (injected resident set — `provide`
-    validates id + SFNT parse, sticky pending queue in table order,
-    `revision` invalidation counter, `drain_requested` over an injected
-    `CjkChunkSource`), and `build::build_set`, which runs the FONT.11
-    subsetter over one source font to emit the subsetted core file plus one
-    range-pure SFNT chunk file per covered range. Engine:
-    `Session::render_page_cjk`/`render_page_cjk_with_stats` resolve
-    `Uni…UCS2…` runs nothing-resident codes against the walk's immutable
-    snapshot; uncovered CJK codes paint a `.notdef` box and queue their
-    chunk; the render itself performs zero I/O. Proven by
-    `cjk_lazy::lazy_cjk_renders_notdef_then_repaints_after_in_memory_fetch`
-    (pass1: `needs=[ideographs-4, hangul-1]`, tofu inked, 0 source fetches;
-    drain→provide bumps revision to 2; repaint: real glyphs, more ink,
-    `needs` empty; next repaint byte-identical) and
-    `arrival_order_does_not_change_pixels` (lazy == pre-provided == reverse
-    arrival, ADR-P0012); `plain_render_path_is_unchanged` pins the legacy
-    path. `xtask cjk-build --source <noto-ttf> --out <dir>` writes
-    `cjk/core.ttf`, `cjk/<id>.ttf`, and a manifest pinning raw/brotli sizes
-    + sha256 per file with budget gates (defaults core ≤ 1 200 000 /
-    chunk ≤ 1 500 000 brotli). Measured sizes so far are the synthetic
-    fixture only (core 484 B raw / 235 B brotli; per-code-point chunk
-    436 B raw / ~220 B brotli); real Noto numbers land at the first
-    release `cjk-build` run. The fetch/caching
-    contract for the shell (chunk URL layout, immutable files,
-    id+sha256 cache key, revision-driven repaint) is ADR-P0043 (DRAFT,
-    pending human sign-off). Still open here: the web-side *measured
-    incremental download* and live notdef→repaint under the WASM shell —
-    SL-4.WASM.07.
+  - **Status (re-checked 2026-09-30 — box still deliberately unchecked, and the
+    stated reason has changed):** the previous note said the web half was open
+    "no shell yet". That is no longer the accurate blocker, and it would be
+    wrong to close the box on the strength of the new client alone, so here is
+    what is real, measured, and what is still missing.
+
+    **Half 1 — "renders correctly with a measured incremental download" — is now
+    MEASURED on the engine side, with the real payload, and it passes.** Built
+    from the pinned source (`cjk-fetch noto-sans-sc`, SHA-256
+    `a3041811…af0da`, 17 772 300 B) and reproduced byte-for-byte against
+    `assets/cjk/manifest.json`: 16 files, **11 162 268 B raw / 5 204 258 B
+    brotli**, core **1 290 100 B raw / 641 043 B brotli** (5 013 codes).
+    `crates/selis-pdf-engine/tests/cjk_real_payload.rs` (new, `#[ignore]`d —
+    it finds `target/cjk` itself, so there is nothing to configure) renders a
+    synthetic unembedded `/UniGB-UCS2-H` Type0 Chinese document through
+    `render_page_cjk`:
+
+    | | ordinary paragraph (70 chars) | 13 chars spread over 9 ranges |
+    |---|---|---|
+    | resolved by the core before any fetch | **70 / 70** (`core#gid` each) | 2 / 13 |
+    | `needs` after pass 1 | `[]` | 9 ids (7 with files + `hangul-1`/`hangul-4`) |
+    | fetches during the render | **0** | **0** |
+    | chunk files adopted on drain | **0** | 7 |
+    | **incremental download** | **0 B** (core only, 641 043 B brotli) | **3 794 142 B brotli**; 4 435 185 B with the core |
+    | inked pixels, pass 1 → pass 2 | 1 326 → 1 326 (`needs` empty, nothing to fetch) | 550 → 583 (+6.0 %) |
+    | page hash, pass 1 → pass 2 | `992e02d3e36f1bce` → unchanged | `c165e4ff815b02ec` → `9a725f9fe36ba755` |
+    | `needs` after repaint | `[]` | `["hangul-1","hangul-4"]` — the two ranges this payload has no file for |
+
+    The glyphs genuinely appeared, not merely "something drew": after the drain,
+    8 previously-unresolved codes resolve to real gids in five distinct chunks
+    (`ideographs-1#257`, `-2#1268`, `-3#1133`, `-4#1738`, `-6#3254`, `-7#851`,
+    `#2222`, `#4043`, `ext-a#1`), and the settled set re-renders byte-identical
+    on a third pass. `xtask cjk-measure` agrees independently on the same
+    payload: 70/70 in the core → 0 chunks → 641 043 B; the rare sample → 7
+    chunks → 3 775 170 B with `hangul-1, hangul-4` named as unserved. The
+    corpus has no Chinese document (`corpus/pdfs/` is gitignored and absent
+    here, 06-CORPUS-POLICY §2), so **both documents are synthetic and labelled
+    as such** — a hand-built `UniGB-UCS2-H` Type0 page, not a corpus file.
+
+    **Half 2 — "the viewer never blocks on a font fetch" — the non-blocking
+    property is real and verified in the code, but there is no viewer to
+    observe it in.** What is true: `render_page_cjk`
+    (`crates/selis-pdf-engine/src/session.rs:932-982`) snapshots the set, runs
+    the walk, and returns `CjkRenderOutcome { needs, revision }` — it performs
+    no I/O and cannot await anything; an uncovered code paints `.notdef` and
+    queues its chunk (`session.rs:1961-1966`). `worker.rs:op_render` (1349+) is
+    synchronous for the same reason and returns `cjk.needs`/`cjk.revision` in
+    the render response, so the shell learns what to fetch without a second
+    round trip. `LazyPayloadClient.drainCjk`
+    (`packages/wasm-loader/src/lazy-payload.ts:665-667`) is
+    **render-then-fetch** — it takes a render outcome the caller already has
+    and only moves bytes afterwards, which is exactly the DoD's
+    "renders notdef, then repaints". The DoD wording is therefore *not* stale
+    for CJK: the fetch-then-render ordering belongs to the **fallback faces**
+    (`primeFallbacks`, `lazy-payload.ts:704-714`), where a font swap changes
+    advance widths, and that is FONT.12's row, not this one.
+
+    **Why the box therefore stays open — three concrete gaps, not "no shell
+    yet":**
+
+    1. **The client has zero production callers.** `LazyPayloadClient` is
+       referenced only by `packages/wasm-loader/src/lazy-payload.test.ts` and
+       `fallback-manifest.test.ts`. No app imports `lazy-payload.js`; the only
+       non-test mention of `packages/wasm-loader` outside the package is a
+       comment in `apps/extension/src/ext/wasm-worker.ts` and three size/SRI
+       checks that read `src/manifest.ts`. Every test drives a **fake
+       transport and a fake byte source**, never the real guest. The wire ops
+       (`cjkOpen`/`cjkChunk`/`cjkClose`) are tested in Rust against the real
+       guest, and `cargo xtask wasm-protocol` has a conformance leg for the
+       *range* exchange but **none for the CJK ops** — so the TS client and
+       the guest it addresses have never spoken to each other, in any harness.
+    2. **No browser harness exercises the path.** `cargo xtask wasm-browser`
+       (headless Edge, SL-4.WASM.08) renders the corpus through the real guest
+       ABI, and is the natural place for this — but it contains no `cjk`
+       reference at all and drives no lazy-payload op. A headless pass is
+       therefore the missing evidence, not a missing idea.
+    3. **The Do's caching half has no implementation.** `LazyByteSource`
+       (`lazy-payload.ts:183`) is an injected port; there is **no**
+       Cache Storage / HTTP-cache adapter anywhere in the repo, and
+       `apps/web/host/src/sw.ts` caches the shell and the wasm binary only.
+       "cache them" is a design in ADR-P0043 §3 and a `payloadCacheKey` helper,
+       not code that stores a chunk. "Native bundles more" is likewise still
+       ahead of the desktop app (`apps/` has cli, extension, ui, web).
+
+    **What would close it, specifically:** (a) one production caller wiring
+    `drainCjk` into a real render loop with a Cache Storage `LazyByteSource`;
+    (b) a `wasm-browser` leg that opens a CJK document, asserts pass 1 paints
+    tofu *before* any network request is issued, and reports the bytes actually
+    fetched — the measured download, on the web, from a real browser; (c) a
+    corpus or synthetic-corpus Chinese document so "a Chinese document" stops
+    meaning a fixture this task wrote. Until (a) and (b) exist, the honest
+    statement is: **the payload, the engine, the protocol and the client are
+    real and measured; the web half is unbuilt.**
+
+    **A defect found and fixed while measuring**, in
+    `assets/cjk/PROVENANCE.md`: the documented build command there omitted
+    `--core-list assets/cjk/core-list.txt`, so following it produced a
+    *different* payload that still verifies clean and still passes every
+    budget gate (core 295 080 B instead of 1 290 100 B; 10 167 248 B instead
+    of 11 162 268 B). The flag and the measurement are now in that file.
+
+    **One ADR consequence worth recording:** the `Uni…UCS2…` gate is stricter
+    than it looks. A `/UniGB-UCS2-H` CMap's codes are 2 bytes, so a
+    supplementary-plane character (Ext-B and above, U+20000+) **cannot be
+    encoded as one code at all** — writing U+20000 into a UCS2 string yields
+    two meaningless codes, not a deferred glyph and not a queued chunk. Ext-B…
+    Ext-F are therefore unreachable through the document shape this payload
+    targets; they need `UniGB-UTF16-H`. The chunk table ships them anyway
+    (**49 661 B brotli over five files**, plus `ext-sup` at 861 B), and no
+    `Uni…UCS2…` document can ask for any of them.
+
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds

@@ -15,9 +15,15 @@ sections; every entry states what changed and what it means for the user.
   blocking a render on a font fetch. `Session::render_page_cjk` reports
   which chunks the page needs and carries the revision counter the shell
   repaints on; `xtask cjk-build` produces the payload
-  (`cjk/core.ttf`, `cjk/<id>.ttf`, size-pinned `cjk/manifest.json`). The
-  web-side download and repaint wiring arrives with the WASM shell
-  (SL-4.WASM.07); the contract is drafted in ADR-P0043 pending sign-off.
+  (`cjk/core.ttf`, `cjk/<id>.ttf`, size-pinned `cjk/manifest.json`).
+  **Not yet on the web.** The payload, the engine, the `cjkOpen`/`cjkChunk`/
+  `cjkClose` protocol and the `LazyPayloadClient` that drives it all exist and
+  are measured — an ordinary 70-character Chinese page costs **0 B** of chunk
+  download because the 641 043 B brotli core answers all of it, and a page
+  spread across nine ranges costs **3 794 142 B** over seven chunk files — but
+  nothing in a browser calls that client yet, and there is no cache
+  implementation behind its byte source. The box stays open; the contract is
+  drafted in ADR-P0043 pending sign-off.
 - A page whose display list drew glyphs but from which no character could be
   recovered now reports a visible low-confidence marker in every `selis extract`
   format (text, JSON — via `low_confidence` in the `selis-extract/1` schema —,
