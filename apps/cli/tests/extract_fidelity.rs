@@ -65,6 +65,23 @@ fn extract(path: &PathBuf, format: &str, page: Option<usize>) -> (i32, String, S
     )
 }
 
+/// `selis search` on one page. The query is positional, after the path.
+fn search(path: &PathBuf, query: &str, page: usize) -> (i32, String, String) {
+    let out = Command::new(selis_bin())
+        .arg("search")
+        .arg("--page")
+        .arg(page.to_string())
+        .arg(path)
+        .arg(query)
+        .output()
+        .expect("run selis search");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 /// SL-3.TEXT.08: é (U+00E9), degree (U+00B0) and CJK (U+4E8C, U+6B21) — shown
 /// through WinAnsi, MacRoman, `/Differences` and `/ToUnicode` respectively —
 /// come out as literal UTF-8 in all four formats. The defect emitted the
@@ -217,5 +234,63 @@ fn text10_marker_instead_of_silence_and_font_survives_bt() {
     assert!(
         !blank.contains("low-confidence"),
         "blank page (no text ops) must NOT be flagged: {blank}"
+    );
+}
+
+/// SL-3.TEXT.10 on the search path, which is the second place the verdict used
+/// to be discarded.
+///
+/// `extract` already emitted the marker, but `search` destructured the same
+/// tuple into an unnamed `_` and answered every query with "no matches". To a
+/// caller — or to a script checking the exit code — that is indistinguishable
+/// from a document that genuinely does not contain the query, and it is the
+/// more dangerous of the two: a search that cannot read the page should not
+/// report a negative result, it should decline to answer.
+///
+/// So the three states must stay distinguishable, and this pins all three:
+/// unreadable page fails loudly, a page that merely lacks the query succeeds
+/// with no matches, and a page that does contain it succeeds with a hit.
+#[test]
+fn text10_search_declines_rather_than_reporting_no_matches() {
+    let path = write_fixture("text10-search.pdf", TEXT10);
+
+    // Page 0 drew text and recovered none of it. The query cannot be answered,
+    // so this must NOT exit 0 with an empty result set.
+    let (code, out, err) = search(&path, "Survived", 0);
+    assert_ne!(
+        code, 0,
+        "an unreadable page must not exit 0 as if the query were absent: {out}"
+    );
+    assert!(
+        out.contains(selis_pdf_text::LOW_CONFIDENCE_MARKER),
+        "the marker must reach stdout so the caller can tell why: {out}"
+    );
+    assert!(
+        err.to_lowercase().contains("cannot be searched"),
+        "the error must say the query is unanswerable, not merely that it found          nothing: {err}"
+    );
+
+    // Page 1 extracts cleanly, so a query it does not contain is a real,
+    // successful negative. This is the case the previous behaviour was
+    // indistinguishable from, and it is why the fix cannot be "always fail".
+    let (code, out, err) = search(&path, "Absent", 1);
+    assert_eq!(code, 0, "a clean page with no match is a success: {err}");
+    assert!(
+        !out.contains(selis_pdf_text::LOW_CONFIDENCE_MARKER),
+        "a real negative must not be flagged low-confidence: {out}"
+    );
+    assert!(
+        !out.to_lowercase().contains("cannot be searched"),
+        "a real negative must not be reported as unanswerable: {out}"
+    );
+
+    // And the positive control: the query is there, so it is found.
+    let (code, out, err) = search(&path, "Survived", 1);
+    assert_eq!(code, 0, "a hit must succeed: {err}");
+    // The match line carries the source text as extracted, which is lowercased
+    // here, so this asserts the match exists rather than its exact casing.
+    assert!(
+        out.to_lowercase().contains("survived"),
+        "the hit must be reported: {out}"
     );
 }

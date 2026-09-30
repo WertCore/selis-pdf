@@ -10,9 +10,16 @@ use selis_sandbox::{Budget, Surface};
 
 /// Search a page's text for a query.
 ///
+/// A page that drew text but recovered none of it (SL-3.TEXT.10) prints
+/// [`selis_pdf_text::LOW_CONFIDENCE_MARKER`] and exits non-zero instead of
+/// reporting "no matches": a query that cannot be answered is not a query that
+/// found nothing.
+///
 /// # Errors
 ///
-/// `IO_READ_FAILED` when the PDF cannot be read.
+/// `IO_READ_FAILED` when the PDF cannot be read, and a non-zero exit when the
+/// page is low-confidence (text drawn, nothing recovered) and the query
+/// therefore cannot be answered.
 pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
@@ -34,9 +41,24 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
         .mcid_order(&budget, &mut g)
         .ok()
         .filter(|v| !v.is_empty());
-    let (lines, line_texts, _) =
+    let (lines, line_texts, low_confidence) =
         page_lines(&session, page, &budget, &dl, mcid_order.as_deref(), &mut g)?;
     let matches = selis_pdf_text::search_lines(&lines, &line_texts, query);
+    // SL-3.TEXT.10: a page that **drew** text but recovered none of it answers
+    // every query with "no matches" — indistinguishable, to a caller, from a
+    // page that genuinely has no text. The verdict already exists (the same
+    // one `extract` turns into `LOW_CONFIDENCE_MARKER`); discarding it here,
+    // as an unnamed `_`, is precisely the silent-absence defect this task
+    // exists to close. So the marker line is printed and the command reports
+    // failure: "not found" and "we could not read the page" are different
+    // answers, and only one of them is a search result.
+    if low_confidence {
+        println!("{}", selis_pdf_text::LOW_CONFIDENCE_MARKER);
+        return Err(CliError(format!(
+            "page {page} drew text but none of it could be recovered, so `{query}` \
+             cannot be searched (see the marker line above)"
+        )));
+    }
     if matches.is_empty() {
         return Ok(());
     }
