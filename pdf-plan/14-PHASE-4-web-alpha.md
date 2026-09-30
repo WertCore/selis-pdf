@@ -534,6 +534,59 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     using `visibility` instead of `display`.
 
     **Still open, and it is one thing, not four.** The DoD says "with no network
+
+    --- FOUND 2026-09-30, by the cut itself. The runtime cache does not work. ---
+
+    The gap above was closed far enough to *find a real defect*, which is worth
+    more than the closure. The harness origin gained an arming endpoint: once
+    the page has warmed the caches it POSTs `/__selis_offline`, after which the
+    origin answers **503 to every path except the verdict POST**.
+
+    Two things about how the cut must be built, both learned by breaking it:
+
+    - **It has to be armed last.** Arming it any earlier - the first attempt
+      armed it right after the print leg - takes the origin away from every
+      check still to come, those fetches fail, the verdict chain dies on them
+      and the page never posts. The harness then reports "0 of 1 measured": no
+      diagnosis, indistinguishable from a hung browser. An origin cut that cuts
+      the measurement in half is worse than no cut.
+    - **Every fetch after the cut must convert a rejection into a recorded
+      false.** A check that dies on the failure it was written to catch reports
+      nothing at all.
+
+    And then the result, on real Edge, with the origin measurably dark
+    (`originRefuses: true`, status 503):
+
+        offlineCutAssets = [true, true, true, true, FALSE, FALSE, FALSE]
+
+    The four **precached** assets (`/`, `/index.html`, `/assets/style.css`,
+    `/assets/boot.js`) come back from the worker. The three **runtime** assets
+    the app actually needs - `layout.js`, `windowing.js` and the 2.8 MB engine -
+    do not, and the engine reads back as 21 bytes.
+
+    **So the "offline" claim this entry has been making was wrong.**
+    `offlineAssets` asserted the worker answered with `cache: "no-store"`, but
+    the origin was live and healthy, so a 200 could equally have come from the
+    network. The check could not tell the two apart - that was the standing
+    doubt - and it was in fact the network answering. The four verbs kept
+    working offline only because the engine was already instantiated in memory:
+    the cut proved the app can be *used* offline, and disproved that it can be
+    *loaded* offline.
+
+    The policy already claims runtime caching for `/assets/…` and `/wasm/…`
+    (`RUNTIME_PATH_PREFIXES`, 12 MB/entry, 32 entries), so the defect is that
+    the shipped worker does not honour it for these requests - most likely
+    because ESM module imports are not populating the runtime cache the way
+    ordinary navigations do. The next step is to find which of the two it is,
+    and the cut is the instrument for it: a correct worker goes green on all
+    seven, and the per-asset `false` already says which ones it does not.
+
+    The cut is **not committed**, because with the defect present it is a red
+    gate and this entry is not the place to break the build. It is reproducible
+    in one run: add the 503 refusal after the `RESULT_PATH` handler in
+    `handle_connection`, arm it after the last online check, and re-read
+    `offlineCutAssets`.
+    **Still open, and it is one thing, not four.** The DoD says "with no network
     at all". What is proven is that the worker *answers* from its own cache
     **while the origin is still up**. The harness drives `--headless=new
     --dump-dom` and holds **no CDP connection**, so
