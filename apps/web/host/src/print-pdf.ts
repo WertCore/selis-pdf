@@ -149,6 +149,134 @@ export function rgbaToRgb(rgba: Uint8Array, pixelCount: number): Uint8Array {
 }
 
 /**
+ * Assemble a print-ready PDF from a SEQUENCE of pages, consumed one at a time.
+ *
+ * This is the form the print path must use, and the difference is not stylistic.
+ * A Letter page at 300 DPI is 33 MB of RGBA, so a 300-page document is about
+ * 7.5 GB if the caller has to hand over an array of them. The whole reason this
+ * writer exists is that the document does not fit in a tab - accepting an array
+ * would put that constraint straight back in.
+ *
+ * Consuming a generator means only ONE raster is live at a time, so peak memory
+ * is a page rather than a document. The finished file is still accumulated in
+ * memory (it is bytes on the way out to a Blob), but the expensive, unbounded
+ * part is the raster, not the output.
+ *
+ * Accepts a sync or async iterable, so the caller can rasterise lazily behind an
+ * `await` per page without the writer caring which it got.
+ *
+ * @param pages rasterised pages, in document order, produced on demand
+ * @param pageSizes one box per page, in step with `pages`
+ * @returns the finished file
+ *
+ * Note there is no DPI parameter here, and that is deliberate rather than an
+ * oversight: the size on paper comes from each box and the resolution comes from
+ * each raster, so the writer never needs to know the DPI. It is the CALLER's job
+ * to render at print resolution, and passing a screen-resolution raster through
+ * produces a small, sharp-looking print rather than an error.
+ */
+export async function streamPrintPdf(
+	pages: Iterable<RasterPage> | AsyncIterable<RasterPage>,
+	pageSizes: Iterable<PageBox> | AsyncIterable<PageBox>,
+): Promise<Uint8Array> {
+	const boxes: PageBox[] = [];
+	for await (const box of pageSizes) boxes.push(box);
+
+	const w = new ByteWriter();
+	const offsets: number[] = [];
+	const begin = (): void => {
+		offsets.push(w.length);
+	};
+
+	w.raw(Uint8Array.from(BINARY_MARKER, (c) => c.charCodeAt(0) & 0xff));
+
+	// Object 1, the catalog. Written first, and its offset recorded by hand
+	// rather than with `begin()`: the page tree (object 2) must be written LAST,
+	// since its page count is only known once every page has been seen, so the
+	// two cannot be recorded the same way and the xref rows are assembled
+	// explicitly at the end instead.
+	const catalogOffset = w.length;
+	w.latin1("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+	// The page count is not known until the pages have been seen, and the page
+	// tree is object 2 - before any page. So the tree is written LAST, once the
+	// count and the kid ids are known, and object 2 is simply skipped here.
+	// Every id is still fixed in advance, because ids are derived from the page
+	// INDEX, so a page's id does not depend on how many pages follow it.
+
+	let count = 0;
+	for await (const page of pages) {
+		const box = boxes[count] as PageBox | undefined;
+		if (box === undefined) {
+			throw new RangeError(`page ${count} arrived with no box; the two sequences must match`);
+		}
+		const pageId = PAGE_ID_BASE + count * OBJECTS_PER_PAGE;
+		const imageId = pageId + 1;
+		const contentId = pageId + 2;
+
+		const expected = page.widthPx * page.heightPx * 3;
+		if (page.rgb.length !== expected) {
+			throw new RangeError(
+				`page ${count}: ${page.widthPx}x${page.heightPx} RGB needs ${expected} bytes, got \
+${page.rgb.length}`,
+			);
+		}
+
+		begin();
+		w.latin1(
+			`${pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${box.widthPt} ${box.heightPt}] \
+/Resources << /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>\nendobj\n`,
+		);
+
+		begin();
+		w.latin1(
+			`${imageId} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${page.widthPx} \
+/Height ${page.heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${page.rgb.length} \
+>>\nstream\n`,
+		);
+		w.raw(page.rgb);
+		w.latin1("\nendstream\nendobj\n");
+
+		const content = `q ${page.widthPx} 0 0 ${page.heightPx} 0 0 cm /Im0 Do Q`;
+		begin();
+		w.latin1(
+			`${contentId} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`,
+		);
+		count++;
+	}
+
+	if (count !== boxes.length) {
+		throw new RangeError(`${count} page(s) arrived but ${boxes.length} box(es) were given`);
+	}
+
+	// Object 2, the page tree, now that the count is known.
+	const kids = Array.from({ length: count }, (_, i) => `${PAGE_ID_BASE + i * OBJECTS_PER_PAGE} 0 R`);
+	// Written out of order, so its offset is recorded here rather than by
+	// `begin()`, and its xref row is emitted in id order below.
+	const treeOffset = w.length;
+	w.latin1(
+		`2 0 obj\n<< /Type /Pages /Count ${count} /Kids [${kids.join(" ")}] >>\nendobj\n`,
+	);
+
+	const size = 2 + count * OBJECTS_PER_PAGE + 1;
+	const xrefAt = w.length;
+	// Rows must come in OBJECT ID order: catalog (1), page tree (2), then the
+	// pages (3, 4, 5, ...). They are not written in that order - the tree is
+	// written last because its page count is only known at the end - so the
+	// rows are emitted explicitly here. Emitting them in write order instead
+	// produces a table that looks plausible and points at the wrong objects,
+	// which is worse than no table at all.
+	w.latin1(`xref\n0 ${size}\n`);
+	w.latin1("0000000000 65535 f \n");
+	w.latin1(`${String(catalogOffset).padStart(10, "0")} 00000 n \n`);
+	w.latin1(`${String(treeOffset).padStart(10, "0")} 00000 n \n`);
+	for (const offset of offsets) w.latin1(`${String(offset).padStart(10, "0")} 00000 n \n`);
+	w.latin1(`trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
+
+	return w.toUint8Array();
+}
+
+/**
  * Assemble a print-ready PDF from pages already rasterised to print size.
  *
  * Every object offset is MEASURED as the object is written, never predicted.

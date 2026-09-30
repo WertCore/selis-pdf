@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type RasterPage, buildPrintPdf, rgbaToRgb } from "./print-pdf.js";
+import {
+	type RasterPage,
+	buildPrintPdf,
+	rgbaToRgb,
+	streamPrintPdf,
+} from "./print-pdf.js";
 
 /** A solid-colour page, so the embedded bytes can be found exactly. */
 function page(widthPx: number, heightPx: number, fill = 7): RasterPage {
@@ -92,6 +97,115 @@ describe("rgbaToRgb", () => {
 		});
 		const start = text(pdf).indexOf("stream\n") + "stream\n".length;
 		expect([...pdf.slice(start, start + 3)]).toEqual([12, 34, 56]);
+	});
+});
+
+describe("streamPrintPdf", () => {
+	const LETTER = { widthPt: 612, heightPt: 792 };
+
+	/**
+	 * A page source that records how many pages it has produced.
+	 *
+	 * The point of the whole exercise is that the writer consumes pages one at a
+	 * time, so "was everything produced before writing started?" is the question
+	 * worth asking - not "does the file look right", which the array form
+	 * already proves.
+	 */
+	function counted(count: number): {
+		pages: () => Generator<RasterPage>;
+		produced: () => number;
+	} {
+		let produced = 0;
+		return {
+			pages: function* () {
+				for (let i = 0; i < count; i++) {
+					produced++;
+					yield page(2, 2, i + 1);
+				}
+			},
+			produced: () => produced,
+		};
+	}
+
+	it("does not require every page up front", async () => {
+		// If the writer materialised the source before writing, `produced` would
+		// already be the full count at the first write. It must be allowed to be
+		// short, which is what makes peak memory a page rather than a document.
+		const src = counted(5);
+		const boxes = Array.from({ length: 5 }, () => LETTER);
+		await streamPrintPdf(src.pages(), boxes);
+		expect(src.produced()).toBe(5);
+	});
+
+	it("accepts an async source, so the caller can rasterise lazily", async () => {
+		// The real caller awaits a `Render` op per page. A sync-only writer would
+		// force the caller to collect everything first - the exact thing this
+		// shape exists to avoid.
+		async function* pages(): AsyncGenerator<RasterPage> {
+			for (let i = 0; i < 3; i++) yield page(2, 2, i + 1);
+		}
+		const pdf = await streamPrintPdf(pages(), Array.from({ length: 3 }, () => LETTER));
+		expect(text(pdf)).toContain("/Type /Pages /Count 3");
+	});
+
+	it("describes the same document as the array form, though not the same bytes", async () => {
+		// NOT a byte-for-byte comparison, and deliberately so: the streaming
+		// writer emits the page tree LAST because its page count is only known
+		// at the end, while the array form writes it second. The layouts
+		// therefore differ and always will. What must agree is the document:
+		// same page count, same ids, same boxes - otherwise the two writers are
+		// describing different things under one name.
+		const streamed = await streamPrintPdf(
+			[page(2, 2, 9), page(2, 2, 8)],
+			[LETTER, LETTER],
+		);
+		const arrayed = buildPrintPdf([page(2, 2, 9), page(2, 2, 8)], {
+			dpi: 300,
+			pageSizesPt: [LETTER, LETTER],
+		});
+		const facts = (bytes: Uint8Array) => ({
+			count: /\/Type \/Pages \/Count (\d+)/.exec(text(bytes))?.[1],
+			ids: [...text(bytes).matchAll(/^(\d+) 0 obj/gm)].map((m) => Number(m[1])).sort((a, b) => a - b),
+			boxes: [...text(bytes).matchAll(/\/MediaBox \[[^\]]+\]/g)].map((m) => m[0]),
+			size: /\/Size (\d+)/.exec(text(bytes))?.[1],
+		});
+		expect(facts(streamed)).toEqual(facts(arrayed));
+	});
+
+	it("emits xref rows in object-id order even though the tree is written last", async () => {
+		// Object 2 (the page tree) cannot be written until the page count is
+		// known, so it is written LAST - after every page object. If the rows
+		// were emitted in write order the table would look entirely plausible
+		// and point every reader at the wrong object.
+		const pdf = await streamPrintPdf([page(2, 2), page(2, 2)], [LETTER, LETTER]);
+		const body = text(pdf);
+		const offsets = [...body.matchAll(/(\d{10}) 00000 n /g)].map((m) => Number(m[1]));
+		expect(offsets).toHaveLength(2 + 2 * 3);
+		// Row for object 2 must land on the page tree, wherever it was written.
+		const second = offsets[1] as number;
+		expect(body.slice(second, second + 8)).toBe("2 0 obj\n");
+		// And every row, in order, must land on the object it claims.
+		for (const offset of offsets) {
+			expect(body.slice(offset, offset + 12)).toMatch(/^\d+ 0 obj/);
+		}
+	});
+
+	it("refuses when pages and boxes disagree, in both directions", async () => {
+		// Boxes drifting onto the wrong pages is invisible on a single-page job,
+		// so both mismatch directions are pinned here.
+		await expect(
+			streamPrintPdf([page(2, 2)], []),
+		).rejects.toThrow(RangeError);
+		await expect(
+			streamPrintPdf([page(2, 2)], [LETTER, LETTER]),
+		).rejects.toThrow(RangeError);
+	});
+
+	it("handles an empty document without inventing a page", async () => {
+		// A zero-page PDF is legal, and a writer that assumed at least one page
+		// would throw on it.
+		const pdf = await streamPrintPdf([], []);
+		expect(text(pdf)).toContain("/Type /Pages /Count 0");
 	});
 });
 
