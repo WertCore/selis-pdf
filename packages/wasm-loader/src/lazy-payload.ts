@@ -260,6 +260,19 @@ export interface PayloadDescriptor {
 	/** `cjkChunk` or `fallbackFace`. */
 	readonly deliverOp: string;
 	/**
+	 * `cjkClose` or `fallbackClose`.
+	 *
+	 * The eviction op, and the reason it is a name like the other two: the
+	 * identity travels in the same field as a delivery, so one op name plus one
+	 * field name covers the whole exchange. There is no behavioural branch for
+	 * "which payload is this" anywhere in the client, and a close that needed
+	 * one would be the first place a payload started behaving differently for
+	 * a reason that is not a difference in *ordering* — which the two flows
+	 * ({@link LazyPayloadClient.drainCjk} and
+	 * {@link LazyPayloadClient.primeFallbacks}) already own.
+	 */
+	readonly closeOp: string;
+	/**
 	 * The identity field inside a claim and inside a `request` value: `id` for
 	 * CJK, `name` for fallback. The same name in both places, which is why one
 	 * field is enough.
@@ -282,6 +295,7 @@ export const CJK_DESCRIPTOR: PayloadDescriptor = {
 	kind: "cjk",
 	openOp: "cjkOpen",
 	deliverOp: "cjkChunk",
+	closeOp: "cjkClose",
 	claimKey: "id",
 	deliverKey: "chunk",
 	absentKey: "unserved",
@@ -311,6 +325,7 @@ export const FALLBACK_DESCRIPTOR: PayloadDescriptor = {
 	kind: "fallback",
 	openOp: "fallbackOpen",
 	deliverOp: "fallbackFace",
+	closeOp: "fallbackClose",
 	claimKey: "name",
 	deliverKey: "face",
 	absentKey: "unavailable",
@@ -329,6 +344,12 @@ export const FALLBACK_DESCRIPTOR: PayloadDescriptor = {
  * a missing `needs` to `[]` concludes "nothing is missing" and paints a page
  * that is wrong. `lazy-fallback-unreported` is the same instinct made specific
  * to the fetch-then-render flow; see {@link LazyPayloadClient.primeFallbacks}.
+ *
+ * There is deliberately **no** "this op does not exist" code. Every op both
+ * payloads need is on the wire, and a client that refused a call the protocol
+ * defines would be trading a real, fixable leak for a tidy error message: the
+ * ten fallback faces are a bounded payload, and "bounded" is an argument about
+ * download size, not about whether a resident face can be given back.
  */
 export type LazyPayloadErrorCode =
 	/** A response `value` did not have the shape the protocol pins. */
@@ -340,9 +361,7 @@ export type LazyPayloadErrorCode =
 	/** The guest did not report what a probe render wanted, so we cannot prime. */
 	| "lazy-fallback-unreported"
 	/** The delivery loop exceeded its guard; the guest's own bound should stop it. */
-	| "lazy-runaway-loop"
-	/** The op this payload needs does not exist on the wire. */
-	| "lazy-unsupported-op";
+	| "lazy-runaway-loop";
 
 /** A typed refusal, carrying a code so a caller can branch without parsing prose. */
 export class LazyPayloadError extends Error {
@@ -695,27 +714,56 @@ export class LazyPayloadClient<Id extends string> {
 	}
 
 	/**
-	 * Release one resident file's bytes — the FONT.10-F1 lever.
+	 * Release one resident file's bytes — the FONT.10-F1 lever, for both
+	 * payloads.
 	 *
-	 * CJK only: `cjkClose` exists on the wire and there is no `fallbackClose`
-	 * counterpart, so a fallback client refuses rather than sending an op a v1
-	 * guest answers `BINDING_UNSUPPORTED_OP`. The faces are small and bounded,
-	 * which is the whole argument for the asymmetry.
+	 * The shell decides its own storage pressure and gives bytes back through
+	 * here, rather than discovering the ceiling as a quota exception. A face is
+	 * ~140 kB and there are ten of them, so a document that ranged over several
+	 * plus repeated navigation accumulates real memory; before `fallbackClose`
+	 * existed a fallback client could not give any of it back, and refusing
+	 * rather than sending an op the wire did not have only meant the leak was
+	 * permanent.
 	 *
 	 * A close that released nothing answers `closed: false` with the revision
 	 * unchanged, and returns that faithfully — a polling shell must not repaint
 	 * the world because an eviction turned out to be a no-op.
+	 *
+	 * ## What this means for a session that has already rendered
+	 *
+	 * **The guest evicts and stays armed.** `fallbackClose` releases the bytes
+	 * and puts the face back on `needs`; the loader is not detached, and the
+	 * claim is not dropped. That is deliberate, and it is the one place where a
+	 * face is not interchangeable with a chunk:
+	 *
+	 * * A missing **chunk** is missing ink in the right place. The render
+	 *   reports `cjk.needs` on every render, so an eviction is self-announcing
+	 *   and the shell re-renders.
+	 * * A missing **face** is not missing ink — substituting a font changes
+	 *   every advance width on the line. So a session that lost a face and
+	 *   could not name it again would render silently wrong text. Hence the
+	 *   re-arm: the response is `residentBytes: 0` *and* `needs: [face]`, an
+	 *   honest "I no longer have it and I still want it", and
+	 *   {@link LazyPayloadClient.primeFallbacks} re-fetches it before the next
+	 *   real render. The `revision` moves too, which is the repaint signal.
+	 *
+	 * The caller does not have to do anything clever to stay correct, and that
+	 * is the point: `revision` tells it a repaint is owed, and `needs` tells it
+	 * what to fetch first.
+	 *
+	 * ## A failed close changes nothing here
+	 *
+	 * The transport's rejection propagates ({@link LazyTransport} owns the
+	 * error mapping, and this client never swallows one) and the cached
+	 * {@link state} is left as it was. That matters more than it looks: a client
+	 * that recorded the intent to close before the guest confirmed it would
+	 * report a face as gone while the guest still held it — the mirror of the
+	 * leak this op exists to fix.
 	 */
 	async close(doc: number, id: Id): Promise<LazyState<Id>> {
-		if (this.#descriptor.kind !== "cjk") {
-			throw new LazyPayloadError(
-				"lazy-unsupported-op",
-				"there is no fallbackClose op; the wire has cjkClose only, and the ten fallback faces are a bounded payload",
-			);
-		}
 		const value = await this.#transport.call(
-			"cjkClose",
-			{ doc, [CJK_DESCRIPTOR.deliverKey]: id },
+			this.#descriptor.closeOp,
+			{ doc, [this.#descriptor.deliverKey]: id },
 			null,
 		);
 		this.#last = readState<Id>(value, this.#descriptor.claimKey);

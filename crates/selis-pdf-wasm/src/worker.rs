@@ -569,6 +569,7 @@ impl Worker {
                 },
                 env,
             ),
+            RequestOp::FallbackClose { doc, face } => self.op_fallback_close(id, doc, face),
             RequestOp::Mutate { doc, mutation } => self.op_mutate(doc, mutation),
             RequestOp::Save { doc, mode } => self.op_save(doc, mode),
             RequestOp::Cancel { target } => self.op_cancel(id, target),
@@ -1232,6 +1233,43 @@ impl Worker {
         if let Some(field) = value.as_object_mut() {
             let _ = field.insert("adopted".to_owned(), serde_json::json!(adopted));
             let _ = field.insert("request".to_owned(), fallback_request_value(next.as_ref()));
+        }
+        Ok(Outgoing::ok(id, value))
+    }
+
+    /// Release one resident fallback face and report the new resident total.
+    ///
+    /// The mirror of [`Self::op_cjk_close`], field for field, so a shell reads
+    /// the two the same way: `closed` says whether bytes actually went back,
+    /// `released` is the claim's size (what the shell's own cache should drop),
+    /// and the revision is the repaint signal. A close that released nothing
+    /// answers `closed: false` and leaves the revision alone, so a polling
+    /// shell does not repaint the world for a no-op.
+    ///
+    /// What this does **not** do is the load-bearing part: the loader stays
+    /// installed on the document, and the released face goes back on `needs`.
+    /// Detaching it instead would send the next render down the plain
+    /// `Session::render_page` path, which reports no face queue — so a session
+    /// that had already rendered with the face would go on painting wrong
+    /// metrics with nothing to tell it why. The reasoning is argued in full on
+    /// [`RequestOp::FallbackClose`]; this is the same rule at the boundary.
+    fn op_fallback_close(&mut self, id: u64, doc: DocHandle, face: String) -> Result<Outgoing> {
+        let opened = self.docs.get_mut(&doc.raw).ok_or_else(bad_handle)?;
+        let loader = opened.fallbacks.as_mut().ok_or_else(bad_fallback_loader)?;
+        let report = loader.close(&face);
+        let mut value = fallback_state(loader);
+        if let Some(field) = value.as_object_mut() {
+            match &report {
+                Some(r) => {
+                    let _ = field.insert("closed".to_owned(), serde_json::json!(true));
+                    let _ = field.insert("released".to_owned(), serde_json::json!(r.name));
+                    let _ = field.insert("releasedBytes".to_owned(), serde_json::json!(r.released));
+                }
+                // Not a repaint, and said so, for the same reason as CJK.
+                None => {
+                    let _ = field.insert("closed".to_owned(), serde_json::json!(false));
+                }
+            }
         }
         Ok(Outgoing::ok(id, value))
     }
@@ -1944,12 +1982,13 @@ fn bad_transfer() -> Error {
     )
 }
 
-/// A CJK chunk op against a document that has no loader installed (SL-4.WASM.07).
+/// A fallback-face op against a document that has no loader installed
+/// (SL-3.FONT.12).
 ///
 /// Distinct from [`bad_handle`]: the document is real, the shell simply never
-/// called `cjkOpen`. The distinction matters because "you have no CJK payload"
-/// and "that document is gone" are different bugs, and a shell that gets this
-/// wrong is a shell whose message to the user would be wrong.
+/// called `fallbackOpen`. The distinction matters because "you have no fallback
+/// payload" and "that document is gone" are different bugs, and a shell that
+/// gets this wrong is a shell whose message to the user would be wrong.
 fn bad_fallback_loader() -> Error {
     err!(
         Code::BindingBadArgument,
@@ -2450,4 +2489,321 @@ fn line_text(line: &TextLine) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    // These tests drive the real `Worker::handle` entry over the real wire, so
+    // the `expect`s below are the assertions rather than crash primitives
+    // reached from untrusted input — the same scope-and-reasoning the sibling
+    // loader tests use. The engine's production paths keep every deny lint, and
+    // no production module in this file widens anything.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
+
+    use super::*;
+
+    /// A real one-page document that sets `/Helvetica` with no embedded font
+    /// program — the same fixture `selis-pdf-engine`'s `fallback_lazy` test
+    /// uses, borrowed rather than duplicated so there is one copy of this class
+    /// of file in the repo.
+    const HELVETICA_NO_EMBED: &[u8] =
+        include_bytes!("../../../apps/cli/tests/fixtures/text11_tm_scaled.pdf");
+
+    /// The face that fixture substitutes to, as real bytes: the cache-poisoning
+    /// guard digests them, so a constant would make the guard vacuous.
+    const SANS: &[u8] = include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf");
+    const SANS_NAME: &str = "LiberationSans-Regular";
+
+    fn worker_env<'a>(
+        clock: &'a selis_sandbox::FixedClock,
+        cancel: &'a CancelToken,
+    ) -> WorkerEnv<'a> {
+        WorkerEnv {
+            clock,
+            cancel: cancel.clone(),
+            progress: &NullProgress,
+        }
+    }
+
+    /// Dispatch one request with no attachment and return its `value`.
+    fn call(
+        w: &mut Worker,
+        clock: &selis_sandbox::FixedClock,
+        cancel: &CancelToken,
+        raw: &serde_json::Value,
+    ) -> serde_json::Value {
+        let e = worker_env(clock, cancel);
+        let out = w.handle(&serde_json::to_vec(raw).expect("serialise"), &[], &e);
+        assert!(
+            out.response.code.is_none(),
+            "unexpected error: {:?}",
+            out.response
+        );
+        out.response.value.expect("a typed value")
+    }
+
+    /// The one claim every test opens the loader with: a real digest over real
+    /// bytes, so nothing here is a constant that could make the guard vacuous.
+    fn claim() -> serde_json::Value {
+        serde_json::json!({
+            "name": SANS_NAME,
+            "sha256": crate::cjkchunk::digest_hex(SANS),
+            "rawBytes": SANS.len(),
+            "url": format!("fallback/{SANS_NAME}.ttf.br"),
+        })
+    }
+
+    /// Open the fixture and answer with its handle.
+    fn open_fixture(
+        w: &mut Worker,
+        clock: &selis_sandbox::FixedClock,
+        cancel: &CancelToken,
+    ) -> u64 {
+        let raw = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "id": 1,
+            "op": "open",
+            "src": { "kind": "bytes", "len": HELVETICA_NO_EMBED.len() },
+        });
+        let e = worker_env(clock, cancel);
+        let out = w.handle(
+            &serde_json::to_vec(&raw).expect("serialise"),
+            HELVETICA_NO_EMBED,
+            &e,
+        );
+        out.response
+            .value
+            .expect("an open reply")
+            .get("doc")
+            .and_then(serde_json::Value::as_u64)
+            .expect("a document handle")
+    }
+
+    /// Open a fallback loader on `doc` holding one real claim.
+    fn open_fallback(
+        w: &mut Worker,
+        clock: &selis_sandbox::FixedClock,
+        cancel: &CancelToken,
+        doc: u64,
+    ) -> serde_json::Value {
+        let raw = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "id": 2,
+            "op": "fallbackOpen",
+            "doc": doc,
+            "claims": [claim()],
+        });
+        call(w, clock, cancel, &raw)
+    }
+
+    /// Deliver the real face bytes as `fallbackFace`'s attachment.
+    fn deliver_face(
+        w: &mut Worker,
+        clock: &selis_sandbox::FixedClock,
+        cancel: &CancelToken,
+        doc: u64,
+        id: u64,
+    ) -> serde_json::Value {
+        let raw = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "id": id,
+            "op": "fallbackFace",
+            "doc": doc,
+            "face": SANS_NAME,
+            "status": 200,
+            "len": SANS.len(),
+        });
+        let e = worker_env(clock, cancel);
+        let out = w.handle(&serde_json::to_vec(&raw).expect("serialise"), SANS, &e);
+        out.response.value.expect("a delivery reply")
+    }
+
+    /// Send `fallbackClose` and answer with its value.
+    fn close_face(
+        w: &mut Worker,
+        clock: &selis_sandbox::FixedClock,
+        cancel: &CancelToken,
+        doc: u64,
+        face: &str,
+    ) -> serde_json::Value {
+        let raw = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "id": 3,
+            "op": "fallbackClose",
+            "doc": doc,
+            "face": face,
+        });
+        call(w, clock, cancel, &raw)
+    }
+
+    fn strings(v: &serde_json::Value, key: &str) -> Vec<String> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("{key} is a list"))
+            .iter()
+            .filter_map(|e| e.as_str().map(str::to_owned))
+            .collect()
+    }
+
+    fn number(v: &serde_json::Value, key: &str) -> u64 {
+        v.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("{key} is a number"))
+    }
+
+    /// The whole point of the op, over the wire: a delivered face goes back, and
+    /// every field a shell reads says so.
+    #[test]
+    fn fallback_close_gives_the_face_back_and_reports_it() {
+        let clock = selis_sandbox::FixedClock(0);
+        let cancel = CancelToken::new();
+        let mut w = Worker::new();
+        let doc = open_fixture(&mut w, &clock, &cancel);
+        open_fallback(&mut w, &clock, &cancel, doc);
+        let held = deliver_face(&mut w, &clock, &cancel, doc, 2);
+        assert_eq!(held.get("adopted"), Some(&serde_json::json!(true)));
+        assert_eq!(strings(&held, "loaded"), vec![SANS_NAME.to_owned()]);
+        assert!(number(&held, "residentBytes") > 0);
+
+        let before = number(&held, "revision");
+        let out = close_face(&mut w, &clock, &cancel, doc, SANS_NAME);
+        assert_eq!(out.get("closed"), Some(&serde_json::json!(true)));
+        assert_eq!(out.get("released"), Some(&serde_json::json!(SANS_NAME)));
+        assert_eq!(
+            out.get("releasedBytes").and_then(serde_json::Value::as_u64),
+            Some(u64::try_from(SANS.len()).unwrap_or(u64::MAX))
+        );
+        // **The leak assertion.** Nothing resident, and reported that way.
+        assert_eq!(number(&out, "residentBytes"), 0, "the bytes are gone");
+        assert!(strings(&out, "loaded").is_empty(), "no face is resident");
+        assert!(number(&out, "revision") > before, "a repaint is owed");
+
+        // And the no-op answer, for a shell that polls.
+        let noop = close_face(&mut w, &clock, &cancel, doc, SANS_NAME);
+        assert_eq!(noop.get("closed"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            number(&noop, "revision"),
+            number(&out, "revision"),
+            "still no repaint owed"
+        );
+    }
+
+    /// **The stranding guard, over the wire.** After the close the same document
+    /// must still be able to take the same face back with no second
+    /// `fallbackOpen` — that is what "the loader stays installed" buys, and a
+    /// teardown that detached it could not do this. The response also names the
+    /// face in `needs`, so a shell cannot read "evicted" as "nothing wanted".
+    #[test]
+    fn a_closed_face_is_still_owed_and_the_loader_stays_installed() {
+        let clock = selis_sandbox::FixedClock(0);
+        let cancel = CancelToken::new();
+        let mut w = Worker::new();
+        let doc = open_fixture(&mut w, &clock, &cancel);
+        open_fallback(&mut w, &clock, &cancel, doc);
+        let _ = deliver_face(&mut w, &clock, &cancel, doc, 2);
+
+        let out = close_face(&mut w, &clock, &cancel, doc, SANS_NAME);
+        assert_eq!(
+            strings(&out, "needs"),
+            vec![SANS_NAME.to_owned()],
+            "an evicted face is 'not here yet', and the shell is told so"
+        );
+        assert!(
+            strings(&out, "unavailable").is_empty(),
+            "and it is not 'never arrives' either"
+        );
+
+        // The same op delivers it again: no re-open, no new claim.
+        let again = deliver_face(&mut w, &clock, &cancel, doc, 4);
+        assert_eq!(
+            again.get("adopted"),
+            Some(&serde_json::json!(true)),
+            "the loader is still armed: a closed face is re-acquirable"
+        );
+        assert_eq!(strings(&again, "loaded"), vec![SANS_NAME.to_owned()]);
+        assert!(number(&again, "residentBytes") > 0);
+    }
+
+    /// A close with nothing delivered is a no-op, not an error: a shell evicting
+    /// speculatively must not get a typed failure for evicting nothing.
+    #[test]
+    fn closing_before_anything_was_delivered_is_a_no_op() {
+        let clock = selis_sandbox::FixedClock(0);
+        let cancel = CancelToken::new();
+        let mut w = Worker::new();
+        let doc = open_fixture(&mut w, &clock, &cancel);
+        let opened = open_fallback(&mut w, &clock, &cancel, doc);
+        let out = close_face(&mut w, &clock, &cancel, doc, SANS_NAME);
+        assert_eq!(out.get("closed"), Some(&serde_json::json!(false)));
+        assert_eq!(number(&out, "residentBytes"), 0);
+        assert_eq!(
+            number(&out, "revision"),
+            number(&opened, "revision"),
+            "nothing changed, so nothing is owed"
+        );
+    }
+
+    /// The two ways a close can be wrong about *where*, and both are typed.
+    /// "That document is gone" and "you never called `fallbackOpen`" are
+    /// different bugs, and a shell that confuses them shows the wrong message.
+    #[test]
+    fn a_close_against_a_stale_doc_or_a_loaderless_doc_is_typed() {
+        let clock = selis_sandbox::FixedClock(0);
+        let cancel = CancelToken::new();
+        let mut w = Worker::new();
+        let doc = open_fixture(&mut w, &clock, &cancel);
+        let e = worker_env(&clock, &cancel);
+
+        let stale = serde_json::json!({
+            "v": PROTOCOL_VERSION, "id": 3, "op": "fallbackClose",
+            "doc": doc + 999, "face": SANS_NAME,
+        });
+        let out = w.handle(&serde_json::to_vec(&stale).expect("serialise"), &[], &e);
+        assert_eq!(
+            out.response.code,
+            Some(Code::BindingBadHandle.id()),
+            "BINDING_BAD_HANDLE"
+        );
+
+        let loaderless = serde_json::json!({
+            "v": PROTOCOL_VERSION, "id": 3, "op": "fallbackClose",
+            "doc": doc, "face": SANS_NAME,
+        });
+        let out = w.handle(
+            &serde_json::to_vec(&loaderless).expect("serialise"),
+            &[],
+            &e,
+        );
+        assert_eq!(
+            out.response.code,
+            Some(Code::BindingBadArgument.id()),
+            "BINDING_BAD_ARGUMENT"
+        );
+        let detail = out.response.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("fallbackOpen"),
+            "the detail names the op that was never called; got {detail:?}"
+        );
+    }
+
+    /// A face name no build knows is refused through the interning table rather
+    /// than interned, so a close cannot be used to make the guest retain an
+    /// arbitrary string for the life of the loader. It is a no-op, not an error,
+    /// because it names nothing resident.
+    #[test]
+    fn closing_an_unknown_face_name_releases_nothing() {
+        let clock = selis_sandbox::FixedClock(0);
+        let cancel = CancelToken::new();
+        let mut w = Worker::new();
+        let doc = open_fixture(&mut w, &clock, &cancel);
+        open_fallback(&mut w, &clock, &cancel, doc);
+        let out = close_face(&mut w, &clock, &cancel, doc, "Comic Sans");
+        assert_eq!(out.get("closed"), Some(&serde_json::json!(false)));
+        assert!(strings(&out, "loaded").is_empty());
+    }
 }
