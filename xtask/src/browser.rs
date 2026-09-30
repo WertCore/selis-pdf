@@ -188,7 +188,7 @@ struct Check {
 /// `WebAssembly.instantiate` of a module committed beside it, run by a
 /// different code generator than the native engine. It costs a second or two,
 /// so unlike SL-4.WASM.08's 25-minute leg it can run on every commit.
-const CHECKS: [Check; 2] = [
+const CHECKS: [Check; 3] = [
     Check {
         id: "service-worker",
         dir: "service-worker",
@@ -198,6 +198,15 @@ const CHECKS: [Check; 2] = [
         id: "async-wasm",
         dir: "async-wasm",
         verdict: verdict_async_wasm,
+    },
+    // WEB.02's remaining step, and the one that needed the real app: the check
+    // above proves the ENGINE, this proves the APP'S OWN worker. Run last,
+    // because it is the only check that needs `apps/web/host` to have been
+    // built (see `stage_app_shell`).
+    Check {
+        id: "app-shell",
+        dir: "app-shell",
+        verdict: verdict_app_shell,
     },
 ];
 
@@ -430,6 +439,43 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
     if let Err(e) = stage(&check_root().join(check.dir), &served) {
         return failed(check.id, format!("cannot stage the check: {e}"));
     }
+    // `app-shell` drives the app's OWN worker, so the built app has to sit on
+    // the same origin as the page.
+    if check.id == "app-shell" {
+        if let Err(e) = stage_app(&app_public_dir(), &served) {
+            return failed(check.id, format!("cannot stage the built web app: {e}"));
+        }
+        // The app ships its OWN index.html, and `copy_tree` copies in file
+        // order, so staging the app after the check OVERWRITES the page that
+        // reports the verdict. Found by running it: the browser loaded the app
+        // shell, the harness script never executed, and the check timed out
+        // looking like a harness fault. The page has to win, so it is re-staged
+        // last and then verified to be the page that is actually on disk.
+        if let Err(e) = stage(&check_root().join(check.dir), &served) {
+            return failed(check.id, format!("cannot re-stage the check page: {e}"));
+        }
+        let page = served.join("index.html");
+        // `run_check` returns a `Row`, not a `Result`, so this read cannot use
+        // `?`; an unreadable staged page is a failed check, not a propagated
+        // error, and a row in the report is more useful than an abort.
+        let text = match std::fs::read_to_string(&page) {
+            Ok(t) => t,
+            Err(e) => {
+                return failed(
+                    check.id,
+                    format!("cannot read the staged page {}: {e}", page.display()),
+                )
+            }
+        };
+        if !text.contains("@@SELIS-RESULT@@") {
+            return failed(
+                check.id,
+                "the staged index.html is not the harness page - the app's own \
+                 index.html shadowed it, so nothing would report a verdict"
+                    .to_string(),
+            );
+        }
+    }
     let profile = unique_profile(scratch, check.id);
     println!("browser-check: {} ...", check.id);
     match measure(browser, &served, &profile, cfg.timeout_ms) {
@@ -536,6 +582,177 @@ fn stage(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Instantiate `bytes` with the `env.twice` import the page supplies, and call
 /// the export. Test-only.
+/// Where `pnpm build` in `apps/web/host` leaves the servable app.
+///
+/// Not committed, and deliberately not built by this xtask: a Rust harness
+/// shelling out to a Node toolchain would make the browser gate depend on pnpm
+/// being present, and the point of this check is the browser, not the build. CI
+/// builds the host first; a developer runs `pnpm build` in the host once.
+/// What `xtask/browser/app-shell/index.html` must show for WEB.02's app-level
+/// half to count as proven.
+///
+/// The split with `verdict_service_worker` is deliberate and is the whole
+/// reason this second check exists. That one proves the ENGINE: that a real
+/// browser delivers install/activate, hands over a controller, and enforces
+/// `respondWith`. This one proves the APP'S OWN WORKER does those things, with
+/// the app's real precache list, against the app's real policy module - and
+/// that the shell's own boot path is what registered it.
+///
+/// The failure this catches is one the engine check cannot see by construction:
+/// a precache list naming a path the build does not produce. `addAll` is
+/// atomic, so install fails as a whole, the app stays permanently online-only,
+/// and nothing anywhere reports an error - the app simply works, online, forever.
+fn verdict_app_shell(report: &Json) -> Result<(), String> {
+    well_formed(report)?;
+
+    // The page must have run the APP's boot module, not a stand-in. If this is
+    // null the page never loaded /assets/boot.js, and every field below would be
+    // about the harness rather than about the app.
+    if string_field(report, "boot")? != "web-host" {
+        return Err(format!(
+            "the page did not run the app's own boot module (boot = {:?}) -- this \
+             check is driving the harness, not apps/web/host",
+            report.get("boot")
+        ));
+    }
+
+    // Registration must have SUCCEEDED, and the page must say so in the app's own
+    // vocabulary. `sw-register.js` reports a refusal reason rather than
+    // throwing, so a refusal here is a real, nameable condition.
+    if string_field(report, "registration")? != "registered" {
+        return Err(format!(
+            "the app's own registration path reported {:?}, not `registered`",
+            report.get("registration")
+        ));
+    }
+
+    // A controller means clients.claim() ran in the APP worker, not just in the
+    // harness's stand-in.
+    if report.get("controlled").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the app worker never claimed the page (controlled = {:?}) -- \
+             clients.claim() in apps/web/host/public/sw.js did not take effect",
+            report.get("controlled")
+        ));
+    }
+
+    // The precached shell asset came back from the worker's respondWith, and it
+    // is the app's boot module. A 404 here is the atomic-addAll failure above.
+    if string_field(report, "shellAsset")? != "app-boot" {
+        return Err(format!(
+            "the worker served a shell asset that is not the app's boot module \
+             (shellAsset = {:?})",
+            report.get("shellAsset")
+        ));
+    }
+
+    // The second precached path, asked for the way the DoD cares about. This is
+    // the closest machine-checkable form of "airplane mode" available without a
+    // network-interception harness: a no-store request for a path the worker
+    // precached, which only the worker's own cache can answer.
+    if report.get("precacheHit").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the app worker did not answer for a precached asset (precacheHit = \
+             {:?}) -- the shell is not offline-capable",
+            report.get("precacheHit")
+        ));
+    }
+
+    Ok(())
+}
+
+fn app_public_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../apps/web/host/public")
+}
+
+/// Copy the built app onto the harness origin, recursively.
+///
+/// Separate from `stage` because that one is flat **on purpose** - the committed
+/// checks are a page, a worker and an asset, and a recursive copier there would
+/// quietly let a check grow a tree nobody notices. This one is explicit about
+/// being recursive because the app genuinely is a tree, and because silently
+/// skipping `assets/` would produce a check that passes against an app with no
+/// boot script - a green gate for a broken build, which is worse than no gate.
+fn stage_app(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.is_dir() {
+        return Err(format!(
+            "{} does not exist - build the web host first (`pnpm build` in apps/web/host)",
+            from.display()
+        ));
+    }
+    copy_tree(from, to)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dest = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_tree(&src, &dest)?;
+        } else if src.is_file() {
+            std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod app_shell_tests {
+    use super::*;
+
+    /// The bug this pins, found by running the check rather than by reading it:
+    /// the app ships its own `index.html`, so staging the built app AFTER the
+    /// check page silently replaced the page that reports the verdict. The
+    /// browser then loaded the app shell, the harness script never ran, and the
+    /// check timed out looking like a harness fault.
+    ///
+    /// A test cannot assert the whole ordering through `run_check` (it needs a
+    /// browser), but it can assert the property that made the bug possible and
+    /// fixable: the app tree is copied RECURSIVELY, so a missing `assets/`
+    /// directory is a loud error rather than a silently-skipped copy. A flat
+    /// copier here would have produced a check that passes against an app with
+    /// no boot script — a green gate for a broken build, which is worse than no
+    /// gate at all.
+    #[test]
+    fn stage_app_copies_nested_directories() {
+        let tmp = std::env::temp_dir().join(format!("selis-app-stage-{}", std::process::id()));
+        let from = tmp.join("public");
+        let to = tmp.join("served");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(from.join("assets")).unwrap();
+        std::fs::write(from.join("sw.js"), b"worker").unwrap();
+        std::fs::write(from.join("assets/boot.js"), b"boot").unwrap();
+
+        stage_app(&from, &to).expect("staging a tree");
+
+        assert_eq!(std::fs::read(to.join("sw.js")).unwrap(), b"worker");
+        assert_eq!(
+            std::fs::read(to.join("assets").join("boot.js")).unwrap(),
+            b"boot",
+            "the nested asset must be copied: skipping assets/ would let the \
+             check pass against an app with no boot module"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A missing build is a FAILURE with a nameable cause, not a skip and not a
+    /// pass. The whole value of this check is that "the app is offline-ready"
+    /// is a measured claim; if the app is simply absent, the honest answer is
+    /// "you did not build it".
+    #[test]
+    fn stage_app_refuses_a_missing_build() {
+        let missing = std::env::temp_dir().join("selis-no-such-app-build-dir");
+        let err = stage_app(&missing, &std::env::temp_dir().join("unused"))
+            .expect_err("a missing build must not stage");
+        assert!(
+            err.contains("build the web host first"),
+            "the error must say what to do, got: {err}"
+        );
+    }
+}
+
 #[cfg(test)]
 fn call_probe(bytes: &[u8]) -> i32 {
     let engine = wasmtime::Engine::default();

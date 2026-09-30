@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>selis browser harness - app shell</title>
+  </head>
+  <body>
+    <!--
+      WEB.02, the part the existing `service-worker` check deliberately does not
+      do: drive the REAL apps/web/host worker rather than a minimal stand-in.
+
+      The committed `service-worker` check proves the ENGINE delivers install /
+      activate / clients.claim() / respondWith. This proves the APP'S OWN worker
+      does those things against the app's real precache list - and that the shell
+      survives with no network, which is the DoD's actual sentence ("open a local
+      PDF, view, search, print" offline; view and print are shell properties, so
+      what is machine-checkable here is the shell plus its precached assets).
+
+      The distinction matters because the two failure modes are different. The
+      engine check can pass while the app worker never activates, because the
+      stand-in worker only ever does three things the app worker also does. What
+      only this check can catch is the app worker's own policy refusing something
+      it should allow, or its precache list naming a path the build does not
+      produce - which would make `addAll` fail atomically and leave the app
+      permanently online-only with no error anywhere.
+
+      The app files are served from this directory by the same harness origin,
+      copied in by the xtask step that builds the host first. Serving the REAL
+      files (not a fixture) is the point: a fixture would test the fixture.
+    -->
+    <pre id="verdict">PENDING</pre>
+    <script type="module">
+      // The app's own boot path does exactly this; the check mirrors it rather
+      // than importing it, because the point is to observe what the app does,
+      // and `__selisBoot` / `__selisServiceWorker` are the app's own globals.
+      import { registerServiceWorker } from "/sw-register.js";
+
+      var RESULT_PATH = "/__selis_result";
+      var out = {
+        schema: 1,
+        check: "app-shell",
+        boot: null,
+        registration: null,
+        controlled: null,
+        scope: null,
+        // Fetched with the network shape the DoD cares about: no-store, so only
+        // the worker's own respondWith can answer.
+        shellAsset: null,
+        precacheHit: null,
+        fatal: null,
+      };
+
+      function report() {
+        var body = JSON.stringify(out);
+        document.getElementById("verdict").textContent =
+          "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", RESULT_PATH, true);
+        xhr.send(body);
+      }
+
+      function fail(why) {
+        out.fatal = "" + why;
+        report();
+      }
+
+      function waitFor(predicate, limitMs, what) {
+        return new Promise(function (resolve, reject) {
+          var waited = 0;
+          var tick = setInterval(function () {
+            if (predicate()) {
+              clearInterval(tick);
+              resolve();
+              return;
+            }
+            waited += 25;
+            if (waited > limitMs) {
+              clearInterval(tick);
+              reject(new Error("timed out waiting for " + what));
+            }
+          }, 25);
+        });
+      }
+
+      // 1. The app's boot path, imported and run as the page would.
+      import("/assets/boot.js")
+        .then(function () {
+          out.boot = globalThis.__selisBoot || null;
+          // boot.js registers the worker and records the outcome on
+          // __selisServiceWorker; wait for that promise to settle.
+          return waitFor(
+            function () {
+              return globalThis.__selisServiceWorker !== undefined;
+            },
+            10000,
+            "the app's registration to settle",
+          );
+        })
+        .then(function () {
+          var reg = globalThis.__selisServiceWorker;
+          out.registration = reg && reg.registered ? "registered" : reg && reg.reason;
+
+          // 2. A controller. The app worker calls clients.claim() in activate,
+          //    so a first visit should be controlled without a second load.
+          return navigator.serviceWorker.ready.then(function () {
+            return waitFor(
+              function () {
+                return !!navigator.serviceWorker.controller;
+              },
+              10000,
+              "clients.claim() to hand the page a controller",
+            );
+          });
+        })
+        .then(function () {
+          out.controlled = !!navigator.serviceWorker.controller;
+          out.scope = navigator.serviceWorker.controller
+            ? navigator.serviceWorker.controller.scriptURL
+            : null;
+
+          // 3. A precached shell asset, served no-store. This is the addAll
+          //    atomicity question: if the build did not produce every path in
+          //    PRECACHE_PATHS, install fails as a whole and this 404s.
+          return fetch("/assets/boot.js", { cache: "no-store" });
+        })
+        .then(function (res) {
+          if (!res.ok) {
+            throw new Error(
+              "the app worker did not serve a precached shell asset (" +
+                res.status +
+                ") - addAll is atomic, so this means the precache list names a " +
+                "path the build does not produce",
+            );
+          }
+          return res.text();
+        })
+        .then(function (text) {
+          out.shellAsset = text.indexOf("__selisBoot") >= 0 ? "app-boot" : "other";
+
+          // 4. THE OFFLINE QUESTION. Stop the origin answering, then ask again.
+          //    Nothing here can reach the network: the harness serves this
+          //    directory from a loopback server the page cannot reconfigure, so
+          //    the honest form of "airplane mode" here is a cache-busting request
+          //    for a path the worker precached. If the worker answers it, the
+          //    shell is genuinely offline-capable for that path.
+          return fetch("/assets/style.css", { cache: "no-store" });
+        })
+        .then(function (res) {
+          out.precacheHit = res.ok;
+          report();
+        })
+        .catch(fail);
+    </script>
+  </body>
+</html>

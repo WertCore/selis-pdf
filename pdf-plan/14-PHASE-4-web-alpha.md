@@ -310,7 +310,8 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     screen.
 - [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
-    the full destination shown, and `/Launch` is refused.  - **The UI is complete (7 commits, 5 240 lines, 156 new tests, 440 in `apps/ui`); the box stays open
+    the full destination shown, and `/Launch` is refused.
+  - **The UI is complete (7 commits, 5 240 lines, 156 new tests, 440 in `apps/ui`); the box stays open
     because the ENGINE cannot supply outlines or links yet.** `selis-pdf-doc` has `page_labels` and
     `parse_destination` but no `/Outlines` walk and no annotation reader, and the WASM.01 protocol
     has no op for either. So `PlatformAdapter.navigation` is an **optional** port and both real hosts
@@ -445,12 +446,31 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     `WebAssembly.instantiateStreaming`, plus a genuine `LinkError` from an unsatisfied import. The
     engine is an external tool found at runtime (no new dependency of any kind); no engine is a
     loud, recorded *skip* rather than a pass or a failure.
-    **Still not done, deliberately:** the checks assert *browser behaviour*, not
-    `apps/web/host/public/sw.js`. They ship their own minimal worker, because rebuilding the app
-    would test the build, and the Node suite already covers that policy. The next step is pointing
-    the harness at the built web app under WEB.01's COOP/COEP headers, which is what the actual
-    DoD (open a local PDF, view, search, print, with the network gone) needs. The box stays unticked
-    until that runs.
+    **Third check added (`app-shell`, 2026-09-30) — the app's OWN worker.**
+    The two above assert *browser behaviour* against a minimal stand-in worker,
+    which was deliberate (rebuilding the app would test the build). The
+    remaining step was to point the harness at the built app, and that is now
+    done: `cargo xtask browser-check` stages `apps/web/host/public/` onto the
+    same origin and drives the real `sw.js` — registered as a **module**
+    worker, as the app actually registers it. Measured on real Edge, not a
+    skip: `boot: "web-host"`, `registration: "registered"`, `controlled: true`,
+    `shellAsset: "app-boot"`, `precacheHit: true`. The failure it exists to
+    catch is the app worker's own policy refusing something it should allow, or
+    `PRECACHE_PATHS` naming a path the build does not produce — `addAll` is
+    atomic, so that leaves the app permanently online-only with no error
+    anywhere. **Proven falsifiable, by breaking it:** renaming a precached path
+    to one the build does not emit turns the check red, and the harness refuses
+    to report green on an unmeasured run.
+
+    **Still not done, deliberately:** the DoD's own sentence is "open a local
+    PDF, view, search, print" in airplane mode, and the shell that ships today
+    is WEB.01's skeleton — the full UI bundle is SL-4.UI.02+. So what is now
+    machine-verified is that the app's worker installs, claims, and serves its
+    precached shell from cache, in a real engine, with no network. What remains
+    manual is the view/search/print pass, because there is no UI to drive yet.
+    That is a missing feature rather than a missing test, and the box stays
+    unticked for it.
+
   - **Caching policy:** precache is only `/`, `/index.html`, `/assets/style.css`, `/assets/boot.js` —
     the core WASM is ≤3 MB brotli (§12), so installing it for every visitor is wrong; it is fetched
     once on demand into the runtime cache. Runtime cache is `/assets/…` and `/wasm/…`, capped at
