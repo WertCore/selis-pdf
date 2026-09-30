@@ -203,6 +203,40 @@ every user on every page.
     font-stack fidelity); a `/Redact` annot without `/AP` needs default appearance
     synthesis (the two `6-3-3-t01-fail-b` files).
 
+    **Residual blank class found on real documents, 2026-09-30 — still open.**
+    RAST.13 closed the corpus's `blank_selis` cluster (25 → 2), but the corpus
+    does not cover ordinary user documents, and those have their own blanks.
+    Measured by driving the engine's own protocol (`selis_dispatch` → `open`
+    then `text`) over 60 real PDFs from a local Downloads folder, comparing
+    extracted text against rendered ink:
+
+    | outcome | count | reading |
+    |---|---|---|
+    | blank render, **no** text extracted | 10 | scans / image-only — a white page is the honest answer, not a defect |
+    | blank render, **text extracted** | **3** | **silent no-draw with content present — a real bug** |
+    | ink drawn, text extracted | 28 | correct |
+    | ink drawn, no text | 12 | image/vector-only pages, worth a look but not defects |
+
+    The three are named and reproducible: `BECOB233_Implementation_Lab_Assignment`
+    (1 661 chars) and `BECOC360_Implementation_Lab_Assignment` (10 617 chars, two
+    copies). Each extracts text perfectly and renders a **fully white** page —
+    exactly RAST.13's "a silent no-draw is a correctness bug" shape, and exactly
+    what its DoD ("either renders non-blank or reports a typed deviation")
+    forbids. Neither carries a typed deviation today, which is the specific gap.
+
+    Two things this measurement corrected, both worth not re-deriving:
+
+    - **Ink alone is not evidence.** A first pass reported "17 of 60 render
+      blank", which reads as a 28% defect rate. Only 3 are defects. Counting
+      non-white pixels tells you *that* nothing was drawn; only asking the engine
+      whether the document had text to draw tells you whether that was wrong.
+    - **Scanning raw bytes for `/Font` or `/Image` is void** here: both the
+      blank and the non-blank groups scored zero, because these documents use
+      compressed object streams. The engine's `text` op is the working probe.
+
+    This is also what the exact-ink assertion in WEB.02's `app-shell` check
+    exists to catch: `ink: 0` is a *shape* to classify, not a verdict.
+
 - [x] **SL-2.RAST.14 — 1–2% band fidelity excess (CONF.03 calibration)** · deps: RAST.09 · owner: AI
   - **Do:** Close selis's ~36pp excess in the 1–2% differing-pixels band (42pp of pages vs the
     oracle pairs' ~6pp; CONF.01 p50 = 1.68 vs oracle pairs' p50 = 0.06). One mechanical signature
