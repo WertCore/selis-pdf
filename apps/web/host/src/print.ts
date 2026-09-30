@@ -1,0 +1,145 @@
+﻿/**
+ * SL-4.UI.08 - print planning.
+ *
+ * The Do: line is explicit that print must NOT be the browser's own PDF
+ * printing: "Render at print resolution to a print-specific canvas or a
+ * generated print-ready PDF; honour `/PrintScaling` and page size; do not rely
+ * on the browser's own PDF printing." Calling `window.print()` - which is what
+ * the shell's Print button does today - hands the decision to a print pipeline
+ * we neither control nor test, and cannot meet that Do:.
+ *
+ * This module is the part of that which is a DECISION rather than a side
+ * effect, kept pure so it is testable without a browser or a PDF writer: what
+ * `/PrintScaling` means for this page, at what resolution the page has to be
+ * rasterised to be "print resolution", and what paper the result is fitted to.
+ *
+ * PDF assembly consumes this plan; it must not re-derive any of it. That split
+ * matters: these are the numbers a wrong print would be judged on, so they need
+ * to be checkable on their own.
+ */
+
+/** `/PrintScaling` - how the page asks to be scaled onto paper. */
+export type PrintScaling = "none" | "appDefault" | "shrinkToFit";
+
+/** A page box in PDF points (1/72 inch), as `/MediaBox` declares it. */
+export interface PageBox {
+	readonly widthPt: number;
+	readonly heightPt: number;
+}
+
+/** What the print pipeline will do, and why. */
+export interface PrintPlan {
+	/** Device pixels per inch to rasterise at. */
+	readonly dpi: number;
+	/** Scale from PDF points to device pixels. */
+	readonly scale: number;
+	/**
+	 * Size to put on paper, in points, or `null` for the page's own size - which
+	 * is the common case and must be the DEFAULT: a viewer that silently
+	 * re-papers a document is altering the document.
+	 */
+	readonly paper: PageBox | null;
+	/** Fit-to-page, or print at the document's own size. */
+	readonly fitToPage: boolean;
+	/** Why this plan, for the record and for the UI to say out loud. */
+	readonly reason: string;
+}
+
+/** Points per inch. */
+export const POINTS_PER_INCH = 72;
+
+/**
+ * The minimum DPI this project will call print resolution. Below roughly 240
+ * glyph stems and the rasteriser's own antialiasing visibly break up, so a
+ * "print resolution" that prints softer than a decent screen is not one.
+ */
+export const MIN_PRINT_DPI = 300;
+
+/**
+ * Parse a raw `/PrintScaling` name.
+ *
+ * Unknown values fall back to `appDefault` rather than throwing. A malformed
+ * entry must not stop the page printing: the spec calls for an unknown value to
+ * be ignored, and "ignored" means the viewer's own behaviour applies.
+ *
+ * @param raw the name as it appears in the page dictionary
+ * @returns the parsed scaling
+ */
+export function parsePrintScaling(raw: string | null | undefined): PrintScaling {
+	switch (raw) {
+		case "None":
+			return "none";
+		case "shrinkToFit":
+			return "shrinkToFit";
+		// `AppDefault` is the PDF 1.7 spelling and `appDefault` is what several
+		// real producers write. Both are accepted: a viewer honouring only the
+		// spec spelling silently mis-prints documents that spell it the other way.
+		case "AppDefault":
+		case "appDefault":
+			return "appDefault";
+		default:
+			return "appDefault";
+	}
+}
+
+/**
+ * Decide how to print one page.
+ *
+ * The three values are genuinely different intentions and are NOT collapsed:
+ *
+ *  - `none` - the author sized this page for this paper. No fitting, no scaling.
+ *  - `shrinkToFit` - the author asks to be fitted onto the chosen paper.
+ *    Fitting is allowed; ENLARGING is not, which is why the fit is clamped.
+ *  - `appDefault` - the author expressed no preference, so the viewer decides.
+ *    This project prints at the document's own size, the conservative choice:
+ *    a document printed on paper other than it was designed for is a different
+ *    document.
+ *
+ * @param page the page's own box, in points
+ * @param scaling the page's `/PrintScaling`
+ * @param paper the selected paper, in points; `null` to use the page's own size
+ * @returns the plan
+ */
+export function planPrint(
+	page: PageBox,
+	scaling: PrintScaling,
+	paper: PageBox | null,
+): PrintPlan {
+	// Guarded first. A zero or negative box makes the fit infinite or negative
+	// and yields a silently absurd DPI, so it is rejected at the boundary rather
+	// than deep in the arithmetic where it would look like a plausible number.
+	if (!(page.widthPt > 0) || !(page.heightPt > 0)) {
+		throw new RangeError(
+			`cannot print a page of ${page.widthPt}x${page.heightPt} points: the box is not positive`,
+		);
+	}
+
+	const wantsFit = scaling === "shrinkToFit" && paper !== null;
+	const target: PageBox = wantsFit && paper !== null ? paper : page;
+
+	// Fit by the SMALLER relative dimension, and never above 1:1. Both matter.
+	// Fitting by one axis only stretches a page whose aspect ratio differs from
+	// the paper's; scaling above 1 to fill a smaller sheet magnifies a document
+	// the author sized down on purpose, and `shrinkToFit` says shrink.
+	const fit = Math.min(target.widthPt / page.widthPt, target.heightPt / page.heightPt);
+	const scale = wantsFit && fit < 1 ? fit : 1;
+
+	// The floor is applied by scaling UP to reach it, never by honouring a lower
+	// request: at 150 DPI the text is already too soft, and the fix for that is
+	// more samples, not fewer.
+	const dpi = MIN_PRINT_DPI;
+
+	return {
+		dpi,
+		scale: (scale * dpi) / POINTS_PER_INCH,
+		paper: wantsFit && paper !== null ? paper : null,
+		fitToPage: scale < 1,
+		reason: wantsFit
+			? scale < 1
+				? `/PrintScaling /shrinkToFit: fitted to ${paper?.widthPt}x${paper?.heightPt}pt`
+				: "/PrintScaling /shrinkToFit: the page already fits, printed at its own size"
+			: scaling === "none"
+				? "/PrintScaling /None: printed at the page's own size, unfitted"
+				: "/PrintScaling /AppDefault: the document expressed no preference, so it is printed at its own size",
+	};
+}
