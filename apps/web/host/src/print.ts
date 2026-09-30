@@ -143,3 +143,30 @@ export function planPrint(
 				: "/PrintScaling /AppDefault: the document expressed no preference, so it is printed at its own size",
 	};
 }
+
+/**
+ * WHY THIS IS SEPARATE FROM RENDERING - read before implementing the raster.
+ *
+ * `selis_render_page(pdf, len, page, &w, &h, &len)` takes **no scale**. It
+ * always renders one point to one pixel, which is why every page this project
+ * has measured comes back at exactly its `/MediaBox` size (612x792). There is no
+ * way to ask it for 300 DPI, and no argument to add: ADR-P0041 freezes that raw
+ * ABI as the perf harness's measured surface, so widening it is closed by
+ * design rather than by oversight.
+ *
+ * The only route to a print-resolution raster is the JSON protocol's `Render`
+ * op, which takes `RenderParams` - the same "canvas and tile selection" the
+ * tile path uses (ADR-P0011). The shell's `boot.js` currently speaks ONLY the
+ * raw ABI, so print is also the first thing that will need it to speak the
+ * message protocol for rendering as well as for search.
+ *
+ * Two consequences worth stating before anyone builds on this:
+ *
+ *  - A Letter page at 300 DPI is 2550x3300, which is 33 MB of RGBA for ONE
+ *    page. A whole document printed that way does not fit in a tab, so the
+ *    print path has to be page-at-a-time and streaming into the PDF writer -
+ *    it cannot "render everything then assemble".
+ *  - The plan's `scale` is expressed in points-to-device, so it composes with
+ *    the `Render` matrix directly: matrix scale = `plan.scale / (dpi / 72)` for
+ *    the fit, and the device raster is `plan.scale` overall.
+ */
