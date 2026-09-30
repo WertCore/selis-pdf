@@ -25,6 +25,18 @@
 //!    is no range table to resolve an id against \u2014 but there *is* a real risk of
 //!    asking for all ten on a document that only needed one, so the request
 //!    bound is per-face as well as in total.
+//!
+//! Four wire ops, mirroring `rangeOpen`/`rangeChunk`/`rangeClose` and
+//! [`crate::cjkchunk`]'s `cjkOpen`/`cjkChunk`/`cjkClose`:
+//!
+//! | op | what the guest does | what the shell does |
+//! |---|---|---|
+//! | `fallbackOpen` | checks the manifest's **claims** and answers with the first face it wants, or `null` | — |
+//! | `fallbackFace` | verifies the attachment against the claim, adopts it, answers with the next face or `null` | fetches the bytes and hands them over |
+//! | `fallbackClose` | `release`s one resident face, re-arms the request for it, and reports the new resident total | frees its cache entry |
+//!
+//! **The guest names the face; the host only moves bytes** — the same
+//! invariant, for the same reason, as its CJK twin.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -405,6 +417,74 @@ impl FallbackFaceLoader {
             raw_bytes: claim.raw_bytes,
         })
     }
+
+    /// Release one resident face's bytes, re-arm the request for it, and report
+    /// the new resident total.
+    ///
+    /// The FONT.10-F1 lever for faces, and the twin of
+    /// [`CjkChunkLoader::close`](super::cjkchunk::CjkChunkLoader::close). A face
+    /// is ~140 kB and there are ten of them, so a document that ranges over
+    /// several plus repeated navigation accumulates what nothing would
+    /// otherwise give back.
+    ///
+    /// # This is an eviction, not a teardown
+    ///
+    /// The loader stays installed and the claim stays held, so the same
+    /// document can fetch the same face again without a second `fallbackOpen`.
+    /// That is the whole design, and it is not the CJK design for a good
+    /// reason: a missing chunk is missing ink in the right place, whereas a
+    /// missing face changes every advance width on the line. A session that
+    /// lost a face and could not name it again would render silently wrong text
+    /// — so a released face goes back on `needs`, and the next render re-asks
+    /// for it. (See [`FallbackFontSet::release`], which is where the re-arm
+    /// lives, and where the alternative — marking it *unavailable*, i.e.
+    /// "never" — is called out as the bug it would be.)
+    ///
+    /// # What close deliberately does not do
+    ///
+    /// * It does not detach the loader, which would make the next render take
+    ///   the plain `Session::render_page` path — one that reports no face queue
+    ///   at all, so the shell would never learn the font was gone. That is the
+    ///   stranding failure this method exists to make impossible.
+    /// * It does not refund [`MAX_FACE_REQUESTS`]. The re-fetch is a real
+    ///   network request and is counted as one, so `close` cannot be used to
+    ///   walk past the bound; it buys memory, not free bytes.
+    /// * It does not clear `in_flight`. A resident face is never in flight —
+    ///   [`accept`](Self::accept) clears the mark as it adopts — so there is
+    ///   nothing to clear, and a close that released nothing changes nothing at
+    ///   all.
+    ///
+    /// Returns `None` when the name is not a resident face, which is **not** a
+    /// repaint (the revision is unchanged) — a shell polling this must not
+    /// repaint the world because an eviction turned out to be a no-op. An
+    /// unknown name is refused through the interning table rather than
+    /// interned, so a close is not a way to make the guest retain arbitrary
+    /// strings.
+    pub fn close(&mut self, name: &str) -> Option<FaceCloseReport> {
+        let interned = intern(name)?;
+        if !self.set.release(interned) {
+            return None;
+        }
+        Some(FaceCloseReport {
+            name: interned,
+            released: self.claims.get(interned).map_or(0, |c| c.raw_bytes),
+            resident_bytes: self.resident_bytes(),
+            revision: self.set.revision(),
+        })
+    }
+}
+
+/// What [`FallbackFaceLoader::close`] reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceCloseReport {
+    /// The face that was released.
+    pub name: &'static str,
+    /// The manifest's claimed size for it — what the shell's cache should drop.
+    pub released: u64,
+    /// Raw bytes still resident across the whole set.
+    pub resident_bytes: u64,
+    /// The set's revision after the eviction. **A change is the repaint signal.**
+    pub revision: u64,
 }
 
 /// The SFNT version tags a TrueType file starts with.
@@ -750,6 +830,168 @@ mod tests {
         assert!(
             planned <= usize::try_from(MAX_FACE_REQUESTS).unwrap_or(0),
             "planned {planned} requests, past the bound of {MAX_FACE_REQUESTS}"
+        );
+    }
+
+    // --- eviction (FONT.10-F1) ---------------------------------------------
+
+    /// Adopt a face through the real path (request → plan → accept), so the
+    /// eviction below is tested against a loader that genuinely holds bytes.
+    fn loader_holding_a_face() -> (FallbackFaceLoader, Vec<u8>) {
+        let body = sfnt();
+        let mut l = loader();
+        l.set_mut().request(NAME);
+        assert!(l.plan().expect("planned").is_some(), "a request is named");
+        let mut g = guard();
+        assert!(matches!(
+            l.accept(&report(NAME, 200, body.clone()), &mut g)
+                .expect("adopt decides"),
+            FaceStep::Adopted { .. }
+        ));
+        (l, body)
+    }
+
+    /// The test that would have caught the original leak: after a close the
+    /// loader holds **nothing**, and says so.
+    ///
+    /// Before `fallbackClose` existed there was no way to give a delivered face
+    /// back at all, so a document that needed several of them accumulated ~140
+    /// kB each for the life of the session with no lever to pull. `loaded()`
+    /// being empty and `resident_bytes()` being zero *is* the leak assertion —
+    /// a loader that still reported the face here is still leaking it.
+    #[test]
+    fn closing_a_face_releases_its_bytes() {
+        let (mut l, body) = loader_holding_a_face();
+        let held = l.resident_bytes();
+        assert_eq!(held, u64::try_from(body.len()).unwrap_or(u64::MAX));
+        assert_eq!(l.loaded(), vec![NAME]);
+
+        let out = l.close(NAME).expect("bytes were held");
+        assert_eq!(out.name, NAME);
+        assert_eq!(out.released, u64::try_from(body.len()).unwrap_or(u64::MAX));
+        assert_eq!(out.resident_bytes, 0, "the face's bytes are gone");
+        assert_eq!(
+            l.resident_bytes(),
+            0,
+            "the loader must report zero resident faces after a close"
+        );
+        assert!(l.loaded().is_empty(), "no face is still resident");
+        assert_eq!(out.revision, 2, "adopt then evict: two pixel changes");
+    }
+
+    /// **The stranding test.** A session that has already rendered with a face
+    /// must still be able to name it as owed after giving the bytes back,
+    /// because a face's absence changes every advance width on the line.
+    ///
+    /// This is the property a "just detach the loader" teardown breaks: with no
+    /// loader the next render takes the plain `Session::render_page` path, which
+    /// reports no face queue at all, and the document is silently wrong forever.
+    /// So the loader stays armed, the released face is back on `needs`, and it
+    /// can be fetched and adopted again with no second `fallbackOpen`.
+    #[test]
+    fn a_closed_face_is_owed_again_and_can_be_reacquired() {
+        let (mut l, body) = loader_holding_a_face();
+        let _ = l.close(NAME).expect("released");
+        assert_eq!(
+            l.needs(),
+            vec![NAME],
+            "a released face is 'not here yet' — the shell must be told so"
+        );
+        assert!(
+            !l.unavailable().contains(&NAME),
+            "a released face is not a face that will never arrive"
+        );
+
+        // The round trip a stranded session cannot make: plan again from the
+        // *same* loader, and adopt the same claim.
+        let again = l.plan().expect("re-planned").expect("a request is named");
+        assert_eq!(again.name, NAME);
+        assert_eq!(again.sha256, digest_hex(&body));
+        let mut g = guard();
+        assert!(matches!(
+            l.accept(&report(NAME, 200, body), &mut g)
+                .expect("re-adopt decides"),
+            FaceStep::Adopted { .. }
+        ));
+        assert_eq!(l.loaded(), vec![NAME], "resident again, with no re-open");
+    }
+
+    /// A close that released nothing is a no-op, not an error, and does not move
+    /// the revision — a polling shell must not repaint the world because an
+    /// eviction turned out to be a no-op.
+    #[test]
+    fn closing_a_face_that_is_not_resident_is_a_no_op() {
+        let (mut l, _) = loader_holding_a_face();
+        let rev = l.revision();
+        let _ = l.close(NAME).expect("released once");
+        let after = l.revision();
+        assert!(after > rev, "the first close was a real change");
+
+        assert!(l.close(NAME).is_none(), "already given back");
+        assert!(l.close("LiberationSerif-Italic").is_none(), "never fetched");
+        assert!(l.close("Comic Sans").is_none(), "not a face at all");
+        assert_eq!(l.revision(), after, "still no repaint owed");
+        assert_eq!(l.resident_bytes(), 0, "and still nothing resident");
+    }
+
+    /// A face the payload has no file for is "never", and a close must not turn
+    /// that into "not here yet" — which would start a fetch loop for something
+    /// the payload will never serve.
+    #[test]
+    fn closing_does_not_revive_a_face_the_payload_never_carried() {
+        let mut l = loader();
+        l.mark_unavailable(&[NAME]);
+        assert!(
+            l.close(NAME).is_none(),
+            "there was never anything to release"
+        );
+        assert!(l.needs().is_empty(), "an unavailable face is not owed");
+    }
+
+    /// The re-fetch after a close is a real network request and is counted as
+    /// one. If `close` refunded the budget, evicting and re-delivering would be
+    /// a way to walk past [`MAX_FACE_REQUESTS`] for ever.
+    #[test]
+    fn a_re_fetch_after_a_close_still_costs_a_request() {
+        let body = sfnt();
+        let claims: Vec<FaceClaim> = KNOWN_FACES
+            .iter()
+            .map(|n| FaceClaim {
+                name: n,
+                sha256: digest_hex(&body),
+                raw_bytes: u64::try_from(body.len()).unwrap_or(0),
+                url: format!("fallback/{n}.ttf.br"),
+            })
+            .collect();
+        let mut l = FallbackFaceLoader::new(claims, Budget::unlimited()).expect("claims valid");
+        // Every face the engine could ask for, so `plan` has the whole table to
+        // walk — the bound is only reachable when the document needs the payload.
+        for n in KNOWN_FACES {
+            l.set_mut().request(n);
+        }
+        let mut g = guard();
+        let _ = l
+            .accept(&report(NAME, 200, body.clone()), &mut g)
+            .expect("adopt");
+        let _ = l.close(NAME).expect("released");
+        // The re-fetch put NAME back on the queue without spending a request.
+        assert!(l.needs().contains(&NAME));
+
+        let mut planned = 0;
+        loop {
+            match l.plan() {
+                Ok(Some(_)) => planned += 1,
+                Ok(None) => break,
+                Err(e) => {
+                    assert!(matches!(e.code(), Code::BudgetBytes));
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            planned,
+            usize::try_from(MAX_FACE_REQUESTS).unwrap_or(0),
+            "the bound is the whole payload; a close must not have refunded any of it"
         );
     }
 }

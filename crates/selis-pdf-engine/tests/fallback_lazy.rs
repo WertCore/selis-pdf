@@ -191,3 +191,70 @@ fn no_loaders_is_the_plain_walk() {
     assert!(out.fallbacks.is_empty());
     assert!(out.cjk.is_none());
 }
+
+/// **The stranding guard, at the only level that can see pixels.** A session
+/// that has already rendered with a face and then gives the bytes back (the
+/// `fallbackClose` eviction) must get the *same* answer from the next render as
+/// one that never had the face: the face back in `needs`, and nothing painted.
+///
+/// This is the property that makes eviction safe at all, and it is the reason
+/// `FallbackFontSet::release` re-arms the request instead of leaving the queue
+/// alone (as `CjkFontSet::evict` does). A missing chunk is missing ink in the
+/// right place; a missing *face* changes every advance width on the line. So if
+/// a release could leave a rendered document that no longer named the face it
+/// needs, the next render would come out with the wrong metrics and no report
+/// that anything was missing — a silent, permanent wrongness rather than a
+/// temporary one.
+///
+/// Gated for the same reason as `an_absent_face_is_reported_not_silently_blank`:
+/// under `cargo test --workspace` the CLI's `builtin-fallback-fonts` unifies
+/// across the graph, so Helvetica is built in, the release is a no-op and there
+/// is no missing face to observe. Reachable via `cargo test -p selis-pdf-engine`.
+#[cfg(not(feature = "builtin-fallback-fonts"))]
+#[test]
+fn a_released_face_is_reported_again_by_the_next_render() {
+    let session = open();
+    let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+    let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+    // The session that has already rendered: the face is delivered, and the page
+    // was laid out with it. This is the state `fallbackClose` is called from.
+    let mut set = selis_font::fallback_set::FallbackFontSet::new();
+    set.install(
+        "LiberationSans-Regular",
+        selis_bytes::Bytes::from(
+            include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf").to_vec(),
+        ),
+    );
+    let mut first = TinySkiaBackend::new(612, 792).expect("pixmap");
+    let out = session
+        .render_page_fallbacks(0, &mut first, Matrix::IDENTITY, &budget, &mut g, &mut set)
+        .expect("render");
+    assert!(
+        out.needs.is_empty(),
+        "with the face resident there is nothing to want, got {:?}",
+        out.needs
+    );
+    assert!(inked(&first) > 20, "and the page is laid out with it");
+
+    // The eviction: bytes given back, and the face owed again.
+    assert!(set.release("LiberationSans-Regular"), "bytes were held");
+    assert!(!set.has("LiberationSans-Regular"), "the bytes are gone");
+    assert!(set.loaded().is_empty(), "no face is still resident");
+
+    // The next render, same session, same document.
+    let mut second = TinySkiaBackend::new(612, 792).expect("pixmap");
+    let out = session
+        .render_page_fallbacks(0, &mut second, Matrix::IDENTITY, &budget, &mut g, &mut set)
+        .expect("render");
+    assert!(
+        out.needs.contains(&"LiberationSans-Regular"),
+        "a released face must be reported again, or the session is stranded \
+         with the wrong metrics and nothing to tell it so; got {:?}",
+        out.needs
+    );
+    assert_eq!(
+        inked(&second),
+        0,
+        "and it must not be painted from a face the guest no longer holds"
+    );
+}

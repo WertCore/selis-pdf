@@ -314,6 +314,7 @@ describe("SL-4.WASM.07 / SL-3.FONT.12 — the shared lazy-payload client", () =>
 			kind: "cjk",
 			openOp: "cjkOpen",
 			deliverOp: "cjkChunk",
+			closeOp: "cjkClose",
 			claimKey: "id",
 			deliverKey: "chunk",
 			absentKey: "unserved",
@@ -322,17 +323,20 @@ describe("SL-4.WASM.07 / SL-3.FONT.12 — the shared lazy-payload client", () =>
 			kind: "fallback",
 			openOp: "fallbackOpen",
 			deliverOp: "fallbackFace",
+			closeOp: "fallbackClose",
 			claimKey: "name",
 			deliverKey: "face",
 			absentKey: "unavailable",
 		});
 		// The absence of a behavioural flag is the load-bearing part: a
 		// descriptor that could be configured to change *ordering* would be the
-		// exact bug this design exists to make impossible.
+		// exact bug this design exists to make impossible. `closeOp` is a name,
+		// so it belongs here and not as a branch inside `close`.
 		for (const d of [CJK_DESCRIPTOR, FALLBACK_DESCRIPTOR]) {
 			expect(Object.keys(d).sort()).toEqual([
 				"absentKey",
 				"claimKey",
+				"closeOp",
 				"deliverKey",
 				"deliverOp",
 				"extras",
@@ -829,17 +833,116 @@ describe("SL-4.WASM.07 / SL-3.FONT.12 — the shared lazy-payload client", () =>
 	});
 
 	/**
-	 * There is no `fallbackClose` on the wire. Sending one would earn
-	 * `BINDING_UNSUPPORTED_OP` from a v1 guest, and a shell that discovered
-	 * that by trying would have moved bytes for nothing — the faces are a
-	 * bounded ten-face payload, which is the whole argument for the asymmetry.
+	 * `fallbackClose` is the same lever for faces, and the reason a fallback
+	 * client no longer refuses: without it there was *no* way to give a
+	 * delivered face back, so a document that needed several of them accumulated
+	 * ~140 kB each for the life of the session with nothing to pull. The
+	 * identity travels in the same field as a delivery (`face`), so the whole
+	 * exchange stays descriptor-driven with no branch on the payload kind.
+	 *
+	 * The response is the guest's honest post-eviction state: `residentBytes: 0`
+	 * *and* the face back on `needs`. That pairing is the contract — "I no longer
+	 * have it and I still want it" — and a shell that saw only the first half
+	 * would read an evicted face as a document that needs nothing.
 	 */
-	it("refuses a fallback close rather than sending an op the wire does not have", async () => {
-		const guest = fakeGuest([{ op: "fallbackOpen", value: state() }]);
+	it("fallbackClose releases a face and leaves it named as still owed", async () => {
+		const guest = fakeGuest([
+			{ op: "fallbackOpen", value: state() },
+			{
+				op: "fallbackFace",
+				value: state({ adopted: true, residentBytes: 140_000, loaded: [FACE_CLAIM.id] }),
+			},
+			{
+				op: "fallbackClose",
+				value: state({
+					revision: 2,
+					residentBytes: 0,
+					loaded: [],
+					needs: [FACE_CLAIM.id],
+					closed: true,
+					releasedBytes: 140_000,
+				}),
+			},
+			{ op: "fallbackClose", value: state({ revision: 2, needs: [FACE_CLAIM.id], closed: false }) },
+		]);
 		const client = new LazyPayloadClient(FALLBACK_DESCRIPTOR, guest, fakeSource());
 		await client.open(2, [FACE_CLAIM]);
-		await expect(client.close(2, FACE_CLAIM.id)).rejects.toThrow(/no fallbackClose op/);
-		expect(guest.calls).toHaveLength(1);
+		await client.serve(2, FACE_CLAIM);
+		const released = await client.close(2, FACE_CLAIM.id);
+		expect(released.closed).toBe(true);
+		expect(released.residentBytes).toBe(0);
+		expect(released.loaded).toEqual([]);
+		// The half that keeps a rendered session honest: still owed, so
+		// `primeFallbacks` re-fetches it before the next real render.
+		expect(released.needs).toEqual([FACE_CLAIM.id]);
+		expect(released.revision).toBe(2);
+
+		const noop = await client.close(2, FACE_CLAIM.id);
+		expect(noop.closed).toBe(false);
+		expect(noop.revision).toBe(2);
+
+		expect(guest.calls[2]?.op).toBe("fallbackClose");
+		expect(guest.calls[2]?.body).toEqual({ doc: 2, face: FACE_CLAIM.id });
+		expect(guest.calls[2]?.attachment).toBeNull();
+	});
+
+	/**
+	 * A close the guest rejects must surface, and must not leave the client
+	 * believing the face is gone.
+	 *
+	 * The state is the client's only record of what the guest holds. A client
+	 * that cleared it on the way out — or swallowed the rejection — would report
+	 * a released face while the guest still had the bytes, which is the mirror
+	 * of the leak this op exists to fix: a payload the shell thinks it can drop
+	 * and cannot. So the transport's error propagates untouched (the transport
+	 * owns the error mapping) and `state` still describes reality.
+	 */
+	it("a rejected close propagates and leaves the cached state alone", async () => {
+		const opened = state({ revision: 3, residentBytes: 140_000, loaded: [FACE_CLAIM.id] });
+		const boom = new Error("BINDING_BAD_HANDLE");
+		const calls: string[] = [];
+		const guest: LazyTransport = {
+			// eslint-disable-next-line @typescript-eslint/require-await
+			async call(op) {
+				calls.push(op);
+				if (op === "fallbackClose") throw boom;
+				return opened;
+			},
+		};
+		const client = new LazyPayloadClient(FALLBACK_DESCRIPTOR, guest, fakeSource());
+		await client.open(2, [FACE_CLAIM]);
+		expect(client.state?.residentBytes).toBe(140_000);
+
+		await expect(client.close(2, FACE_CLAIM.id)).rejects.toBe(boom);
+		expect(calls).toEqual(["fallbackOpen", "fallbackClose"]);
+		expect(client.state?.residentBytes).toBe(140_000);
+		expect(client.state?.loaded).toEqual([FACE_CLAIM.id]);
+	});
+
+	/**
+	 * One method, two payloads, and the op each one names — the point of putting
+	 * `closeOp` on the descriptor rather than branching on `kind`. A shell that
+	 * sends `cjkClose` for a face (or vice versa) would get a typed error from
+	 * the guest and no eviction at all, so this asserts the op name directly
+	 * rather than inferring it from a body.
+	 *
+	 * There is deliberately no "unsupported op" refusal left in this client:
+	 * every op both payloads need is on the wire, and refusing one the protocol
+	 * defines would trade a real, fixable leak for a tidy error message.
+	 */
+	it("one close method, and each payload names its own op", async () => {
+		expect(CJK_DESCRIPTOR.closeOp).toBe("cjkClose");
+		expect(FALLBACK_DESCRIPTOR.closeOp).toBe("fallbackClose");
+
+		const cjk = fakeGuest([{ op: "cjkClose", value: state({ closed: true }) }]);
+		await new LazyPayloadClient(CJK_DESCRIPTOR, cjk, fakeSource()).close(0, "kanji");
+		expect(cjk.calls.at(-1)?.op).toBe("cjkClose");
+		expect(cjk.calls.at(-1)?.body).toEqual({ doc: 0, chunk: "kanji" });
+
+		const faces = fakeGuest([{ op: "fallbackClose", value: state({ closed: true }) }]);
+		await new LazyPayloadClient(FALLBACK_DESCRIPTOR, faces, fakeSource()).close(0, FACE_CLAIM.id);
+		expect(faces.calls.at(-1)?.op).toBe("fallbackClose");
+		expect(faces.calls.at(-1)?.body).toEqual({ doc: 0, face: FACE_CLAIM.id });
 	});
 
 	// --- reading a response -------------------------------------------------

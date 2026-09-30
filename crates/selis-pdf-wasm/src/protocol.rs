@@ -45,6 +45,28 @@
 //! misbehaviour. The Phase 5 edit surface extends `mutate`/`save` bodies
 //! behind their own envelope schemas (`selis-mutate/1`); this module pins
 //! those envelopes now so the schema does not move when the ops arrive.
+//!
+//! # Adding an op does not bump `v`
+//!
+//! Every op to date has been added additively at `v: 1` — `cjkOpen`/`cjkChunk`/
+//! `cjkClose` and `fallbackOpen`/`fallbackFace`/`fallbackClose` all landed that
+//! way, and none of them moved [`PROTOCOL_VERSION`]. The rule that follows:
+//!
+//! * **Adding an op is a minor, backward-compatible change.** A newer shell
+//!   against an older guest is the only broken pairing, and it degrades into a
+//!   typed error rather than silence.
+//! * **Changing or removing an existing op's shape is a major change** and
+//!   takes `v: 2`. So is re-purposing a field or an op name.
+//!
+//! The degraded pairing is worth being precise about, because the module docs
+//! used to overstate it: an unknown `op` tag is a *deserialisation* failure
+//! (`RequestOp` is `#[serde(tag = "op")]` with no `#[serde(other)]` arm), so it
+//! answers `BINDING_BAD_ARGUMENT` (6001) with id 0, not
+//! `BINDING_UNSUPPORTED_OP` (6017) — which is reserved for a *version*
+//! mismatch and for the deliberately deferred surfaces (`mutate`, `save`,
+//! `open` with a `http-range` descriptor). `xtask wasm-protocol` pins that
+//! 6001, so this is a documented behaviour, not an accident to be tidied away
+//! in a change that is about something else.
 
 use serde::{Deserialize, Serialize};
 
@@ -406,6 +428,43 @@ pub enum RequestOp {
         status: u16,
         /// The attachment's length in bytes; must match it exactly.
         len: u64,
+    },
+    /// Release one resident fallback face's bytes (SL-3.FONT.12).
+    ///
+    /// The mirror of [`CjkClose`], and the same FONT.10-F1 lever: a face is
+    /// ~140 kB and there are ten of them, so a document that ranges over
+    /// several plus repeated navigation accumulates what nothing else would
+    /// give back. The response reports the new resident total and the set's
+    /// revision — **a revision change is the repaint signal** (ADR-P0043 §3). A
+    /// face that names nothing resident answers `closed: false` and does *not*
+    /// move the revision, so a polling shell never repaints for a no-op.
+    ///
+    /// # An eviction, not a teardown — and for a face that is the whole design
+    ///
+    /// A missing chunk is missing ink in the right place. A missing *face* is
+    /// not: substituting a font changes every advance width on the line, so a
+    /// session that had already rendered with a face and then lost it without
+    /// being able to name it again would render silently wrong text. So this op
+    /// **keeps the loader installed and the claim held**, and puts the released
+    /// face back on `needs`: the response says `residentBytes: 0` *and*
+    /// `needs: [face]`, which is an honest "I no longer have it and I still want
+    /// it" rather than the empty, healthy-looking state a detach would produce.
+    /// The next render re-asks for it, and the same document re-acquires it
+    /// with no second `fallbackOpen`.
+    ///
+    /// The two implementations this deliberately refuses are worth naming,
+    /// because both are one line and both are wrong: detaching the loader
+    /// (`fallbacks: None`) makes the next render take the plain
+    /// `Session::render_page` path, which reports no face queue at all, so the
+    /// shell never learns the font is gone; and routing the release through
+    /// `mark_unavailable` turns "not here yet" into "never arrives", which is
+    /// permanent, silent text corruption.
+    #[serde(rename_all = "camelCase")]
+    FallbackClose {
+        /// The document whose loader releases the face.
+        doc: DocHandle,
+        /// The face name to release.
+        face: String,
     },
     /// Apply a mutation journal (Phase 5). The envelope schema is versioned
     /// now; v1 engines validate the envelope and answer
@@ -891,6 +950,7 @@ mod tests {
             r#"{"v":1,"id":26,"op":"rangeChunk","transfer":1,"start":0,"status":206,"contentRange":"bytes 0-422/423","contentLength":423,"len":423}"#,
             r#"{"v":1,"id":27,"op":"rangeChunk","transfer":1,"start":0,"status":0,"len":0}"#,
             r#"{"v":1,"id":28,"op":"rangeClose","transfer":1}"#,
+            r#"{"v":1,"id":29,"op":"fallbackClose","doc":1,"face":"LiberationSans-Regular"}"#,
         ];
         for s in msgs {
             let msg: RequestMessage =

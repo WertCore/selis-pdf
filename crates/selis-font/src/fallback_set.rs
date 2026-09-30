@@ -123,6 +123,47 @@ impl FallbackFontSet {
         let _ = self.unavailable.insert(name);
     }
 
+    /// Release a resident face's bytes and put it back on the request queue.
+    ///
+    /// The resident-set half of the eviction lever, and the mirror of
+    /// [`CjkFontSet::evict`](crate::CjkFontSet::evict) — with **one deliberate
+    /// difference, and it is the difference between a face and a chunk.**
+    ///
+    /// A missing chunk is missing *ink* at the right place, so a CJK eviction
+    /// can leave the queue alone and let the next render re-mark it. A missing
+    /// face is not missing ink: `resolve_face` falls through to a substitution
+    /// or to nothing, and substituting a font changes every advance width on
+    /// the line. So a face that was released goes straight back onto
+    /// [`requested`](Self::pending), and the state a shell reads afterwards
+    /// names it as still owed rather than looking like a payload that needs
+    /// nothing. Without that, "evicted" and "this document needs no fallback at
+    /// all" are the same wire value, and a shell that reads it as the latter
+    /// paints a wrong-metrics page and never finds out why.
+    ///
+    /// The one thing it must **not** do is call
+    /// [`mark_unavailable`](Self::mark_unavailable): a face that is not here
+    /// yet and a face that will never arrive are different states, and
+    /// collapsing them turns a recoverable eviction into permanent, silent
+    /// text corruption.
+    ///
+    /// Eviction **bumps the revision**, exactly as [`install`](Self::install)
+    /// does, and for the same reason: the pixels a render produces from this set
+    /// have changed, so a repaint is owed. A face that is not resident returns
+    /// `false` and does **not** bump it, so "nothing to release" is not a
+    /// repaint.
+    pub fn release(&mut self, name: &'static str) -> bool {
+        if self.faces.remove(name).is_none() {
+            return false;
+        }
+        self.rev = self.rev.saturating_add(1);
+        // Inserted directly rather than through `request`: that one is a no-op
+        // for a resident face, and this face is by definition not resident any
+        // more. `unavailable` cannot contain it — `mark_unavailable` evicts, so
+        // an unavailable face was never here to release.
+        self.requested.insert(name);
+        true
+    }
+
     /// The set's invalidation revision. A change is the repaint signal.
     #[must_use]
     pub const fn revision(&self) -> u64 {
@@ -328,5 +369,66 @@ mod tests {
         set.mark_unavailable("LiberationSans-Regular");
         assert!(!set.has("LiberationSans-Regular"));
         assert!(set.loaded().is_empty());
+    }
+
+    /// A released face is gone from the resident set and owed again, and the
+    /// revision moved because the pixels a render would produce have changed.
+    ///
+    /// **The re-arm is the load-bearing half.** Leaving the face off the queue
+    /// would make "evicted" and "this document needs no fallback at all" the
+    /// same wire value, and a shell reading it as the latter paints a page in
+    /// the wrong metrics and never learns why.
+    #[test]
+    fn a_released_face_is_gone_and_owed_again() {
+        let mut set = FallbackFontSet::new();
+        set.install("LiberationSans-Regular", bytes(1));
+        let before = set.revision();
+
+        assert!(set.release("LiberationSans-Regular"));
+        assert!(!set.has("LiberationSans-Regular"));
+        assert!(set.face("LiberationSans-Regular").is_none());
+        assert!(set.loaded().is_empty(), "the bytes are given back");
+        assert_eq!(
+            set.pending(),
+            vec!["LiberationSans-Regular"],
+            "a released face is 'not here yet', not 'never'"
+        );
+        assert!(!set.is_unavailable("LiberationSans-Regular"));
+        assert!(
+            set.revision() > before,
+            "a repaint is owed: the set changed under the renderer"
+        );
+    }
+
+    /// A release that released nothing is not a change, so it must not move the
+    /// revision — a polling shell would otherwise repaint the world every time
+    /// it asked about a face that was not there.
+    #[test]
+    fn releasing_a_face_that_is_not_resident_is_a_no_op() {
+        let mut set = FallbackFontSet::new();
+        set.request("LiberationSans-Regular");
+        let before = set.revision();
+        assert!(!set.release("LiberationSans-Regular"), "nothing was held");
+        assert!(!set.release("LiberationSerif-Italic"), "no such face");
+        assert_eq!(set.revision(), before, "still no repaint owed");
+        assert_eq!(
+            set.pending(),
+            vec!["LiberationSans-Regular"],
+            "a queued face stays queued, and is not doubled"
+        );
+    }
+
+    /// Eviction must be a round trip, not a one-way door: the same face can be
+    /// installed again afterwards, which is what "the session is still armed"
+    /// means at this level.
+    #[test]
+    fn a_released_face_can_be_installed_again() {
+        let mut set = FallbackFontSet::new();
+        set.install("LiberationSans-Regular", bytes(1));
+        let _ = set.release("LiberationSans-Regular");
+        set.install("LiberationSans-Regular", bytes(9));
+        assert!(set.has("LiberationSans-Regular"));
+        assert_eq!(set.face("LiberationSans-Regular"), Some(&bytes(9)));
+        assert!(set.pending().is_empty(), "installing clears the request");
     }
 }
