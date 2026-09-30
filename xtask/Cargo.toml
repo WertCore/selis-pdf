@@ -63,4 +63,9 @@ sha2 = { workspace = true }
 # 400 000 B budget). The manifest format is restated in `fallback_assets.rs`
 # and this dep exists only so its test can parse our output with the real
 # reader and catch drift. See `fallback_assets::tests`.
-selis-pdf-wasm = { path = "../crates/selis-pdf-wasm" }
+#
+# `version` is stated even though this is a path dep: `deny.toml` sets
+# `wildcards = "deny"`, and an unversioned path dependency is a wildcard. The
+# version is a floor, not a pin - it stops the dependency silently tracking a
+# future major bump, which is the failure the rule exists to catch.
+selis-pdf-wasm = { path = "../crates/selis-pdf-wasm", version = "0.1.0" }
