@@ -463,13 +463,40 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     to report green on an unmeasured run.
 
     **Still not done, deliberately:** the DoD's own sentence is "open a local
-    PDF, view, search, print" in airplane mode, and the shell that ships today
-    is WEB.01's skeleton — the full UI bundle is SL-4.UI.02+. So what is now
-    machine-verified is that the app's worker installs, claims, and serves its
-    precached shell from cache, in a real engine, with no network. What remains
-    manual is the view/search/print pass, because there is no UI to drive yet.
-    That is a missing feature rather than a missing test, and the box stays
-    unticked for it.
+    PDF, view, search, print" in airplane mode. **What remains is now measured,
+    and it is not what this note previously said.** An earlier revision claimed
+    "there is no UI to drive yet" because "the full UI bundle is SL-4.UI.02+".
+    That is stale and it was the reason this box sat idle: **UI.02, UI.03, UI.04
+    and UI.05 are all shipped and ticked** — `apps/ui/src/viewer/` holds the
+    virtualised page list, the compositor, the text layer and the search UI
+    (440 tests), and `apps/ui/dist` builds.
+
+    The real blockers are narrower, and two of them were not written down here:
+
+    1. **No engine is shipped.** `apps/web/host/public/` contains **no `.wasm`
+       at all** — the only built engine in the tree is the extension's. So
+       "open a local PDF" cannot happen even with a mounted viewer: there is no
+       engine to open it with. `wasm32-unknown-unknown` is installed, so this
+       is a missing build step, not a missing capability.
+    2. **The viewer is never mounted.** `@selis/ui` is imported **zero** times
+       across `apps/web/host/src/*.ts`, the host has no dependency on it, and
+       `public/index.html` still renders only a placeholder `<p>` that
+       `assets/boot.js` (which registers the worker and does nothing else) never
+       replaces. The shipped UI is unreachable from any host.
+    3. **No bundler exists anywhere in the repo** — no vite, rollup, esbuild or
+       webpack — and the host is bare `tsc`. This is the cost of (2), and it
+       needs a decision rather than a patch: `tools/place-sw.mjs` deliberately
+       refuses any bare or remote specifier in the **worker** (ADR-P0016,
+       ADR-P0028), and that rule is correct there. The **page** is a different
+       subject and the two must not be conflated, or the obvious reading of the
+       existing rule makes (2) unbuildable.
+    4. **Print is genuinely unimplemented** — SL-4.UI.08 has a `Do:` line and no
+       code, unlike (1)–(3), which are plumbing over shipped or buildable parts.
+
+    What *is* machine-verified is unchanged and still holds: the app's worker
+    installs, claims, and serves its precached shell from cache, in a real
+    engine, with no network. The gap between that and the DoD is the four items
+    above, none of which needs a human decision to start.
 
   - **Caching policy:** precache is only `/`, `/index.html`, `/assets/style.css`, `/assets/boot.js` —
     the core WASM is ≤3 MB brotli (§12), so installing it for every visitor is wrong; it is fetched
