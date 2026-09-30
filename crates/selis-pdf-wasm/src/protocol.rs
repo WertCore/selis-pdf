@@ -381,7 +381,7 @@ pub enum RequestOp {
     /// Install the lazy-fallback face loader and answer with the first face the
     /// document wants (SL-3.FONT.12).
     ///
-    /// The `claims` are the `selis-fallback/1` manifest's record of what each
+    /// The `claims` are the `selis-fallback/2` manifest's record of what each
     /// face file *is* - name, SHA-256, decompressed length, published path. The
     /// guest checks them and keeps them; the shell only moves bytes.
     ///

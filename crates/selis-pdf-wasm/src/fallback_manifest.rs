@@ -1,4 +1,4 @@
-//! The `selis-fallback/1` manifest: the lazily-fetched fallback faces.
+//! The `selis-fallback/2` manifest: the lazily-fetched fallback faces.
 //!
 //! **A font from the network is not a font from the build.** A TTF is a
 //! structured binary that a parser reads, and a parser that reads attacker-
@@ -90,8 +90,8 @@ pub struct FallbackFace {
     ///
     /// Relative, never absolute: the same artifact is promoted from staging to
     /// production, and an absolute URL would break on the move and would let a
-    /// manifest send the fetcher to another origin. Checked by
-    /// [`url_problem`] before anything here is used to fetch anything.
+    /// manifest send the fetcher to another origin. Validated on parse, before
+    /// anything here is used to fetch anything.
     pub url: String,
 }
 
