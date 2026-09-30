@@ -241,6 +241,13 @@ export interface SearchBatch {
 	readonly progress: number;
 	/** True only for the final batch. */
 	readonly done: boolean;
+	/**
+	 * SL-3.TEXT.10: pages whose display list drew text but recovered none of it.
+	 * They contribute no matches, so a non-empty list means `matches.length === 0`
+	 * is *not* a clean "not found" — the query could not be answered on those
+	 * pages, which is a different answer and must not be shown as one.
+	 */
+	readonly lowConfidencePages?: readonly number[];
 }
 
 /**

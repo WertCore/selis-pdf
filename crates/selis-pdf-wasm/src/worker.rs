@@ -1859,6 +1859,12 @@ impl Worker {
         let mut matches: Vec<serde_json::Value> = Vec::new();
         let mut total: u64 = 0;
         let mut truncated = false;
+        // SL-3.TEXT.10: pages whose display list drew text but recovered none of
+        // it. They contribute no matches, so a reply of `total: 0` would read
+        // as "this document does not contain the query" when the truth is "we
+        // could not read these pages". The page list makes the difference
+        // checkable by the caller instead of indistinguishable.
+        let mut low_confidence_pages: Vec<u32> = Vec::new();
         let span = u64::from(to)
             .saturating_sub(u64::from(from))
             .saturating_add(1);
@@ -1876,6 +1882,9 @@ impl Worker {
                 .ok()
                 .filter(|v| !v.is_empty());
             let assembled = page_text(&opened.session, idx, &budget, &dl, mcid.as_deref(), &mut g)?;
+            if assembled.low_confidence {
+                low_confidence_pages.push(p);
+            }
             for m in selis_pdf_text::search_lines(&assembled.lines, &assembled.line_texts, &query) {
                 total = total.saturating_add(1);
                 if (matches.len() as u64) < u64::from(max_matches) {
@@ -1908,6 +1917,9 @@ impl Worker {
                 "query": query,
                 "total": total,
                 "truncated": truncated,
+                // SL-3.TEXT.10: pages that drew text and recovered none of it.
+                // Non-empty means `total: 0` is not a clean "not found".
+                "lowConfidencePages": low_confidence_pages,
                 "matches": matches,
             }),
         ))
