@@ -493,11 +493,58 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     4. **Print is genuinely unimplemented** — SL-4.UI.08 has a `Do:` line and no
        code, unlike (1)–(3), which are plumbing over shipped or buildable parts.
 
-    What *is* machine-verified is unchanged and still holds: the app's worker
-    installs, claims, and serves its precached shell from cache, in a real
-    engine, with no network. The gap between that and the DoD is the four items
-    above, none of which needs a human decision to start.
+    What *is* machine-verified has grown a great deal, and the four blockers
+    above are now **all four closed**:
 
+    1. ~~No engine is shipped~~ - the optimised 2,868,774-byte engine now builds
+       into the host and is mounted at `/wasm/`.
+    2. ~~The viewer is never mounted~~ - 35 native ESM modules under `/assets/`;
+       `boot.js` instantiates the engine, dispatches, and renders.
+    3. ~~No bundler~~ - decided *for*: native ESM, no bundler, with a declared
+       ESM closure copied by `tools/place-assets.mjs`. Only `@selis/ui-kit`
+       needed a relative rewrite.
+    4. ~~Print is genuinely unimplemented~~ - a real Print control plus the
+       `@media print` stylesheet that decides the output.
+
+    **All four DoD verbs are now implemented and machine-checked against real
+    documents in real Edge** (`app-shell`, `cargo xtask browser-check`), each
+    driven through the app's own UI rather than a function the check calls:
+
+    - **open** - a real PDF through the engine's own document path;
+      `status ok, 612x792, ink 20000`.
+    - **view** - engine RGBA onto a real `<canvas>` at the page's own size, read
+      back with `getImageData`; `screenInk 20000` must **equal** the engine's
+      `ink`, not merely exceed zero.
+    - **search** - the real `Search` op on a real text layer, through a real
+      `<input type="search">`. Three legs: a word present once returns exactly 1,
+      a word absent returns 0, and case folding works. The **absent** leg is the
+      one that discriminates - without it, an implementation that ignored its
+      query entirely would pass.
+    - **print** - the button is clicked and `window.print` reached exactly once;
+      the stylesheet is read through the **CSSOM** so a sheet that failed to load
+      cannot pass, and must both hide the chrome and keep the page visible.
+    - **offline** - the app's OWN runtime-cached assets (`layout.js`,
+      `windowing.js`, and 2 853 766 bytes of engine) answer from the worker with
+      `no-store`, so an answer can only have come from its own cache, and the
+      module bodies are byte-verified rather than merely 200.
+
+    Every one of those verdicts was **proven falsifiable by breaking it**, and
+    several broke the check *for real*: no `#selis-app` mount; one whitened pixel
+    (`19999` vs `20000`); a stub answering "found" to every query; a print rule
+    using `visibility` instead of `display`.
+
+    **Still open, and it is one thing, not four.** The DoD says "with no network
+    at all". What is proven is that the worker *answers* from its own cache
+    **while the origin is still up**. The harness drives `--headless=new
+    --dump-dom` and holds **no CDP connection**, so
+    `Network.emulateNetworkConditions` is not available without rebuilding the
+    browser layer. The achievable version of this last step is an
+    **origin-refusal second phase** - no CDP needed: warm the runtime cache by
+    loading the app normally, then make the harness origin refuse every request,
+    reload, and repeat open/view/search/print. That converts "the worker has it
+    cached" into "the network being down changes nothing", which is the DoD's
+    actual sentence. It is not written yet, and the box stays unticked until it
+    is.
   - **Caching policy:** precache is only `/`, `/index.html`, `/assets/style.css`, `/assets/boot.js` —
     the core WASM is ≤3 MB brotli (§12), so installing it for every visitor is wrong; it is fetched
     once on demand into the runtime cache. Runtime cache is `/assets/…` and `/wasm/…`, capped at
