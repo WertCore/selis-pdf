@@ -47,6 +47,12 @@
         // the worker's own respondWith can answer.
         shellAsset: null,
         precacheHit: null,
+        // Whether the app's OWN runtime-cached assets answer from the worker:
+        // [layout.js, windowing.js, the engine].
+        offlineAssets: null,
+        offlineEngineBytes: null,
+        offlineLayoutReal: null,
+        offlineWindowingReal: null,
         // Whether the app actually MOUNTED the viewer and the engine, from the
         // app's own `__selisApp`. Null means boot.js never got that far.
         appMounted: null,
@@ -229,6 +235,39 @@
         })
         .then(function (res) {
           out.precacheHit = res.ok;
+
+          // 5. THE OFFLINE QUESTION, for the app's OWN assets rather than the
+          //    shell's. Everything above proves the PRECACHE list is served from
+          //    cache, but the precache list is only the four shell files. The
+          //    viewer modules and the engine the app actually needs are
+          //    RUNTIME-cached, and those are what "open a local PDF offline"
+          //    depends on. If the worker cannot answer these, the app works
+          //    online and fails in airplane mode - the one failure the DoD names.
+          //
+          //    `no-store` is the same discipline as above: it bypasses the HTTP
+          //    cache, so an answer can only have come from the worker's own.
+          return Promise.all([
+            fetch("/assets/ui/viewer/layout.js", { cache: "no-store" }),
+            fetch("/assets/ui/viewer/windowing.js", { cache: "no-store" }),
+            fetch("/wasm/selis_pdf_wasm.wasm", { cache: "no-store" }),
+          ]);
+        })
+        .then(function (responses) {
+          out.offlineAssets = responses.map(function (r) {
+            return r.ok;
+          });
+          return Promise.all(
+            responses.map(function (r) {
+              return r.text();
+            }),
+          );
+        })
+        .then(function (bodies) {
+          // Not just "200": the bytes must be the real ones, or the worker is
+          // answering with something that merely has the right length.
+          out.offlineEngineBytes = bodies[2].length;
+          out.offlineLayoutReal = bodies[0].indexOf("layoutPages") >= 0;
+          out.offlineWindowingReal = bodies[1].indexOf("visibleWindow") >= 0;
           report();
         })
         .catch(fail);

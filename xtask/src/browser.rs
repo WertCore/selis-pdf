@@ -731,6 +731,51 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         None => return Err("the app reported no `ink` for the rendered page".to_string()),
     }
 
+    // The app's OWN assets must answer from the worker's cache, not just the
+    // precached shell. `PRECACHE_PATHS` is four shell files; the viewer modules
+    // and the engine the app actually needs are RUNTIME-cached, and those are
+    // what "open a local PDF in airplane mode" depends on. Without this the
+    // check passes on an app that works online and 503s offline — the exact
+    // failure the DoD names.
+    let offline = report.get("offlineAssets").and_then(|value| value.as_array()).ok_or_else(
+		|| "the app never reported which of its own assets the worker served (offlineAssets = None)"
+			.to_string(),
+	)?;
+    let names = ["viewer/layout.js", "viewer/windowing.js", "the engine"];
+    for (index, name) in names.iter().enumerate() {
+        if offline.get(index).and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "the worker did not serve {name} from its cache -- the app runs online and \
+                 fails with the network cut, which is the DoD's own failure mode"
+            ));
+        }
+    }
+
+    // Not merely a 200: the bytes have to be the real ones. A worker answering
+    // with the right length and the wrong content would pass a status-only
+    // check, which is the shape of a green gate that proves nothing.
+    if report.get("offlineLayoutReal").and_then(Json::as_bool) != Some(true)
+        || report.get("offlineWindowingReal").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(
+            "the worker served the viewer modules from cache but the bytes are not the real \
+             modules"
+                .to_string(),
+        );
+    }
+    // The optimised engine is ~2.8 MB, so the order of magnitude is itself the
+    // assertion: a stub or a truncated body is far smaller.
+    let engine_bytes = report
+        .get("offlineEngineBytes")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if engine_bytes < 1_000_000 {
+        return Err(format!(
+            "the worker served only {engine_bytes} bytes of engine from cache, expected the \
+             ~2.8 MB optimised module"
+        ));
+    }
+
     Ok(())
 }
 
