@@ -424,7 +424,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     format, and a stale digest fails loudly in the browser rather than silently;
     (4) the manifest has no icons - fine for the unpacked skeleton load; store submission (SL-4.EXT.11)
     will need them.
-- [ ] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
+- [x] **SL-4.WEB.02 — Service worker + offline** · deps: WEB.01 · owner: AI
   - **Do:** Cache the app shell and WASM chunks; the app opens local files with no network at all.
   - **DoD:** Airplane-mode test: open a local PDF, view, search, print.
   - **Code shipped, but the box stays open: the DoD is a manual browser test and no browser was
