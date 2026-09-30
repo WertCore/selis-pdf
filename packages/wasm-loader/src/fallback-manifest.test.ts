@@ -6,17 +6,30 @@ import {
 	FALLBACK_MANIFEST_VERSION,
 	FallbackManifestError,
 	fallbackClaims,
-	fallbackFacePath,
 	parseFallbackManifest,
 } from "./fallback-manifest.js";
+import {
+	type ClaimBody,
+	FALLBACK_DESCRIPTOR,
+	LazyPayloadClient,
+	type LazyTransport,
+	type PayloadDelivery,
+} from "./lazy-payload.js";
 
-/** One valid manifest row, so a test can break exactly the field it names. */
+/**
+ * One valid manifest row, so a test can break exactly the field it names.
+ *
+ * The `url` is the generator's own value. A test that wants a different layout
+ * overrides it, because that is the point: the reader takes the path from here
+ * and nowhere else.
+ */
 function face(name = "LiberationSans-Regular"): Record<string, unknown> {
 	return {
 		name,
 		transfer_size: 78454,
 		raw_size: 139512,
 		sha256: "784836c044d2f6a515b7e08f2c8d2a0317afb2b83d8471d1b02f6e0bcb7b14c1",
+		url: `fallback/${name}.ttf.br`,
 	};
 }
 
@@ -36,7 +49,23 @@ function codeOf(run: () => unknown): string {
 	throw new Error("expected a FallbackManifestError, nothing was thrown");
 }
 
-describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
+/**
+ * The prose of a refusal, for the cases where the *reason* is the thing under
+ * test — a url refused for being absolute is a different bug from one refused
+ * for smuggling a separator through a percent-escape, and both carry the same
+ * code.
+ */
+function messageOf(run: () => unknown): string {
+	try {
+		run();
+	} catch (e) {
+		if (e instanceof FallbackManifestError) return e.message;
+		throw e;
+	}
+	throw new Error("expected a FallbackManifestError, nothing was thrown");
+}
+
+describe("SL-3.FONT.12 — the selis-fallback/2 manifest reader", () => {
 	/**
 	 * A reader that accepts the format the generator writes. Everything else in
 	 * this file is a refusal, so a reader that refused everything would pass
@@ -62,11 +91,20 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 
 	/**
 	 * The version is the schema gate, and an unknown version is refused rather
-	 * than partially read — a v2 manifest that happens to keep `faces` would
+	 * than partially read — a v3 manifest that happens to keep `faces` would
 	 * otherwise be served with this build's meaning.
+	 *
+	 * **Both directions matter now that the version moved.** Version 2 is this
+	 * build's, and version 1 is handled by its own test below because it fails
+	 * earlier, on the missing `url`. A reader that had simply bumped the
+	 * constant without noticing would start refusing real manifests; one that
+	 * kept 1 would start accepting manifests it cannot read.
 	 */
 	it("refuses a version this build does not know", () => {
-		expect(codeOf(() => parseFallbackManifest({ ...manifest(), version: 2 }))).toBe(
+		expect(codeOf(() => parseFallbackManifest({ ...manifest(), version: 3 }))).toBe(
+			"fallback-manifest-version",
+		);
+		expect(codeOf(() => parseFallbackManifest({ ...manifest(), version: 99 }))).toBe(
 			"fallback-manifest-version",
 		);
 		expect(codeOf(() => parseFallbackManifest({ ...manifest(), version: 0 }))).toBe(
@@ -77,6 +115,42 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 		expect(codeOf(() => parseFallbackManifest({ faces: [face()] }))).toBe(
 			"fallback-manifest-version",
 		);
+	});
+
+	/**
+	 * **A `selis-fallback/1` document is refused, not reconstructed.**
+	 *
+	 * Version 1 has no `url`, and the failure lands as a *parse* refusal — which
+	 * is exactly where the Rust reader puts it, because serde fails to
+	 * deserialise a face that is missing a field before `validate()` ever runs.
+	 * The message must therefore name the missing field and the format this
+	 * build reads: "has no url" is true and explains nothing about which
+	 * documents are loadable, and a reader that quietly filled the field in
+	 * would reintroduce the silent-404 hole `url` was added to close.
+	 *
+	 * Mirrors `an_old_format_manifest_is_refused_not_reconstructed`.
+	 */
+	it("refuses a v1 manifest with a message naming the field and the format", () => {
+		const v1 = {
+			version: 1,
+			faces: [
+				{
+					name: "LiberationSans-Regular",
+					transfer_size: 78454,
+					raw_size: 139512,
+					sha256: "784836c044d2f6a515b7e08f2c8d2a0317afb2b83d8471d1b02f6e0bcb7b14c1",
+				},
+			],
+		};
+		expect(codeOf(() => parseFallbackManifest(v1))).toBe("fallback-manifest-invalid");
+		let message = "";
+		try {
+			parseFallbackManifest(v1);
+		} catch (e) {
+			message = (e as Error).message;
+		}
+		expect(message).toContain("url");
+		expect(message).toContain(`selis-fallback/${FALLBACK_MANIFEST_VERSION}`);
 	});
 
 	/**
@@ -104,16 +178,15 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 	});
 
 	/**
-	 * **The one place this reader is deliberately stricter than the Rust
-	 * validator, and the reason matters.** `fallback_manifest.rs` checks the
-	 * digest with `is_ascii_hexdigit`, which accepts uppercase; the guest does
-	 * not — `cjkchunk::parse_digest` matches `0-9a-f` only, so an uppercase
-	 * digest yields a claim `FallbackFaceLoader::new` refuses at `fallbackOpen`.
-	 * The Rust reader therefore accepts a manifest the engine rejects. This
-	 * reader refuses it too, because the alternative is a parser that hands
-	 * back claims guaranteed to be thrown away.
+	 * **The digest rule both readers now share, and why it must not drift.**
+	 * The guest's `cjkchunk::parse_digest` matches `0-9a-f` only, so an uppercase
+	 * digest yields a claim `FallbackFaceLoader::new` refuses at `fallbackOpen` —
+	 * the error surfacing in a browser, far from a build log that said the
+	 * manifest was fine. The TypeScript reader has always been strict here; the
+	 * Rust validator used `is_ascii_hexdigit`, which also admits A-F, and has been
+	 * tightened to match. Both sides now pin the rule, so neither can drift back.
 	 */
-	it("refuses an uppercase digest, which the Rust validator would accept and the guest would not", () => {
+	it("refuses an uppercase digest, which the guest's digest parser also refuses", () => {
 		const upper = String(face().sha256).toUpperCase();
 		expect(codeOf(() => parseFallbackManifest(manifest([{ ...face(), sha256: upper }])))).toBe(
 			"fallback-manifest-digest",
@@ -246,20 +319,102 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 	 * parser expecting a different version.
 	 */
 	it("pins the version and media type the Rust module pins", () => {
-		expect(FALLBACK_MANIFEST_VERSION).toBe(1);
+		expect(FALLBACK_MANIFEST_VERSION).toBe(2);
 		expect(FALLBACK_MANIFEST_MIME).toBe("application/vnd.selis.fallback+json");
 	});
 
 	/**
-	 * The manifest carries no URL, so the path comes from the generator's naming
-	 * convention — pinned here rather than assumed, because a build publishing
-	 * the payload elsewhere would otherwise silently fetch nothing.
+	 * The suffix is what the transport decodes, and both readers require it —
+	 * a manifest must not be able to claim a payload the shell would unpack
+	 * wrongly. Pinned here because the value is duplicated across the language
+	 * boundary rather than shared, and duplication needs a test.
 	 */
-	it("derives the face path from the generator's convention", () => {
+	it("pins the suffix the Rust generator writes", () => {
 		expect(FALLBACK_FACE_SUFFIX).toBe(".ttf.br");
-		expect(fallbackFacePath("LiberationSerif-Regular")).toBe(
-			"fallback/LiberationSerif-Regular.ttf.br",
-		);
+	});
+
+	/**
+	 * A `url` is only useful if it is a plain relative path. Every other shape
+	 * is refused, and the reason is carried alongside the face so the failure
+	 * says which entry was wrong and how.
+	 *
+	 * The list is exhaustive over the ways a relative path can stop being one:
+	 * it can name another origin (absolute, protocol-relative), it can leave the
+	 * payload directory (`..`), it can mean two different things to two readers
+	 * (backslash, encoded separator), and it can name a file the transport would
+	 * decode wrongly (wrong suffix). Mirrors
+	 * `a_url_that_is_not_a_plain_relative_path_is_refused` case for case.
+	 */
+	it("refuses a url that is not a plain relative path", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			// Absolute, in every spelling a generator or an attacker might use.
+			["https://cdn.example.test/fallback/x.ttf.br", "absolute"],
+			["http://cdn.example.test/x.ttf.br", "absolute"],
+			["file:///etc/passwd.ttf.br", "absolute"],
+			["HTTPS://CDN.EXAMPLE.TEST/x.ttf.br", "absolute"],
+			["data:font/ttf;base64,AAAA.ttf.br", "absolute"],
+			// Inherits the scheme and names a host: the same escape, quieter.
+			["//cdn.example.test/fallback/x.ttf.br", "protocol-relative"],
+			// Traversal, plainly and percent-encoded. The encoded forms are the
+			// ones that matter: a check that decoded first would let `%2e%2e`
+			// through a `..` test and then walk up a directory.
+			["../x.ttf.br", "`..`"],
+			["fallback/../../x.ttf.br", "`..`"],
+			["fallback/%2e%2e/x.ttf.br", "`..`"],
+			["fallback/%2E%2E/x.ttf.br", "`..`"],
+			["fallback/%2e./x.ttf.br", "`..`"],
+			["./x.ttf.br", "`..`"],
+			// A backslash is a separator to some URL layers and a literal to
+			// others, so the path means two different files depending on who
+			// fetches it.
+			["fallback\\x.ttf.br", "backslash"],
+			["..\\..\\x.ttf.br", "backslash"],
+			// Empty segments: a leading slash, a doubled one, a trailing one.
+			["/fallback/x.ttf.br", "empty path segment"],
+			["fallback//x.ttf.br", "empty path segment"],
+			["fallback/", "suffix"],
+			// A separator smuggled through an escape the segment split cannot
+			// see — the same trick as `%2e%2e`, one level up.
+			["fallback%2fx.ttf.br", "percent-escape"],
+			["fallback%2Fx.ttf.br", "percent-escape"],
+			["fallback%5cx.ttf.br", "percent-escape"],
+			// The transport decodes brotli-compressed TrueType; anything else is
+			// a claim about bytes nobody published that way. Case counts.
+			["fallback/x.ttf", "suffix"],
+			["fallback/x.TTF.BR", "suffix"],
+			["fallback/x.ttf.gz", "suffix"],
+			["", "empty"],
+		];
+		for (const [url, why] of cases) {
+			const row = { ...face(), url };
+			expect(codeOf(() => parseFallbackManifest(manifest([row])))).toBe("fallback-manifest-url");
+			// The reason is asserted too, because a reader that refused every
+			// url for the same uninformative reason would pass the code check.
+			expect(messageOf(() => parseFallbackManifest(manifest([row])))).toContain(why);
+		}
+	});
+
+	/**
+	 * The list of refused shapes must not quietly become the list of *accepted*
+	 * ones: a validator that refuses everything passes the test above. These are
+	 * the shapes a generator may legitimately emit — **including a layout that
+	 * is not the one the shell used to reconstruct**, which is the whole reason
+	 * the manifest carries the path. Mirrors
+	 * `a_plain_relative_url_is_accepted_whatever_the_layout`.
+	 */
+	it("accepts a plain relative url whatever the layout", () => {
+		for (const url of [
+			"fallback/LiberationSans-Regular.ttf.br",
+			"LiberationSans-Regular.ttf.br",
+			"v2/fallback/LiberationSans-Regular.ttf.br",
+			"custom/place/face.ttf.br",
+			// A percent-escape that cannot spell a dot or a separator is left
+			// alone rather than refused: this reader is not a second URL parser.
+			"fallback/LiberationSans%20Regular.ttf.br",
+		]) {
+			const row = { ...face(), url };
+			expect(parseFallbackManifest(manifest([row])).faces[0]?.url).toBe(url);
+		}
 	});
 
 	/**
@@ -294,7 +449,88 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 		expect(withoutSlash).toBe("https://x.test/p/fallback/LiberationSans-Regular.ttf.br");
 	});
 
+	/**
+	 * **The test that says the reconstruction is gone.**
+	 *
+	 * Everything above exercises the reader in isolation. This one runs the whole
+	 * path a real fetch takes — manifest to claims, claims into a
+	 * {@link LazyPayloadClient}, client to the {@link LazyByteSource} that moves
+	 * the bytes — with a manifest whose face is published somewhere the old
+	 * convention would never have guessed, and asserts the source was asked for
+	 * *exactly* that path.
+	 *
+	 * It is deliberately not a unit test of `joinBase`. The bug being closed was
+	 * not a bad join; it was a good join onto a path that had been made up. The
+	 * only place that can be observed is the url the byte source is finally
+	 * handed, so that is what is asserted.
+	 */
+	it("fetches from the manifest's own url, never a reconstructed one", async () => {
+		const parsed = parseFallbackManifest(
+			manifest([{ ...face(), url: "custom/place/face.ttf.br" }]),
+		);
+		const claims = fallbackClaims(parsed, "https://cdn.example.test/payload");
+		const claim = claims[0] as ClaimBody<string>;
+		const source = recordingSource();
+		const client = new LazyPayloadClient(FALLBACK_DESCRIPTOR, silentGuest(), source);
+
+		await client.open(1, claims);
+		await client.serve(1, claim);
+
+		expect(source.urls).toEqual(["https://cdn.example.test/payload/custom/place/face.ttf.br"]);
+		// Spelled out as its own assertion because the failure it guards against
+		// is silent: a source pointed at the wrong path simply 404s.
+		expect(source.urls[0]).not.toContain("fallback/LiberationSans-Regular.ttf.br");
+	});
+
 	// --- the committed artifact --------------------------------------------
+
+	/**
+	 * The state a fallback payload reports: nothing resident, nothing wanted.
+	 *
+	 * `request: null` is the guest's own signal that it wants nothing yet, and it
+	 * is load-bearing — the client reads an absent key as a malformed response.
+	 */
+	function guestState(): Record<string, unknown> {
+		return {
+			revision: 0,
+			residentBytes: 0,
+			loaded: [],
+			needs: [],
+			unavailable: [],
+			exhausted: [],
+			request: null,
+		};
+	}
+
+	/** A guest that opens, adopts the delivery, and asks for nothing further. */
+	function silentGuest(): LazyTransport {
+		return {
+			async call() {
+				return { ...guestState(), adopted: true };
+			},
+		};
+	}
+
+	/**
+	 * A byte source that records the url it was handed, verbatim.
+	 *
+	 * Recording rather than serving is the point: what this test reads is the
+	 * address the client *chose*, before any transport could normalise or
+	 * redirect it, which is the only place a reconstructed path is still visible.
+	 */
+	function recordingSource(): {
+		load: (request: ClaimBody<string>, key: string) => Promise<PayloadDelivery>;
+		urls: string[];
+	} {
+		const urls: string[] = [];
+		return {
+			urls,
+			async load(request) {
+				urls.push(request.url);
+				return { status: 200, bytes: new Uint8Array([1, 2, 3]) };
+			},
+		};
+	}
 
 	/**
 	 * The committed manifest must satisfy the reader the runtime trusts it with.
@@ -313,5 +549,14 @@ describe("SL-3.FONT.12 — the selis-fallback/1 manifest reader", () => {
 		// And every face turns into a claim, so a path convention that has
 		// drifted from the generator's would surface here too.
 		expect(fallbackClaims(parsed, "")).toHaveLength(parsed.faces.length);
+		// The committed urls are the *generator's* paths. This is no longer a
+		// convention the reader assumes — it is data, and it is the one thing a
+		// rename in `fallback_assets.rs` would change without any code change
+		// here. Asserting the shape keeps the two ends talking about the same
+		// directory, and `cargo xtask fallback-assets --check` is the gate that
+		// actually keeps them equal.
+		for (const f of parsed.faces) {
+			expect(f.url).toBe(`fallback/${f.name}${FALLBACK_FACE_SUFFIX}`);
+		}
 	});
 });

@@ -7,8 +7,9 @@
 //!    reduced to the built-in code-point set. These are the only fallback
 //!    faces compiled into the web module; see `selis_font::fallback`.
 //! 2. **The lazy payload** (`<out>/fallback/`) — every *other* face, brotli-
-//!    compressed, plus `manifest.json` in the `selis-fallback/1` format with the
-//!    size and SHA-256 of each. This is what the web shell fetches on demand.
+//!    compressed, plus `manifest.json` in the `selis-fallback/2` format with the
+//!    size, SHA-256 and published `url` of each. This is what the web shell
+//!    fetches on demand.
 //!
 //! ## Why the subsets are generated here and not by a font tool
 //!
@@ -114,7 +115,21 @@ fn builtin_glyph_ids(font: &selis_bytes::Bytes) -> Vec<u16> {
 /// 400 000 B budget. So the wire format is restated here and pinned by a test
 /// that parses it with the real reader, which catches drift where it matters
 /// without making the canary pay for the whole engine.
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
+
+/// The directory the lazy payload is published under, relative to the payload
+/// root the shell resolves the manifest's `url` against.
+///
+/// One constant because it is written in two places that must agree: the file
+/// is written here, and the `url` recorded in the manifest is the path *to* that
+/// file. Splitting them would let a future rename update one and not the other,
+/// which is precisely the drift the `url` field exists to prevent.
+const LAZY_DIR: &str = "fallback";
+
+/// The extension `xtask fallback-assets` publishes each compressed face under,
+/// and the suffix every recorded `url` must end in. The reader requires it,
+/// because it is what says the bytes are brotli-compressed TrueType.
+const FACE_SUFFIX: &str = ".ttf.br";
 
 /// One face entry, as written to the manifest.
 struct FallbackFace {
@@ -126,6 +141,10 @@ struct FallbackFace {
     raw_size: u32,
     /// Lowercase hex SHA-256 of the decompressed font.
     sha256: String,
+    /// The path the compressed file was published at, relative to the payload
+    /// root. **Relative, always** - see `fallback_manifest::FACE_SUFFIX` and the
+    /// module docs for why an absolute URL is not an option here.
+    url: String,
 }
 
 /// The manifest, as written. Field order here is the JSON field order.
@@ -137,7 +156,7 @@ struct FallbackManifest {
 }
 
 impl FallbackManifest {
-    /// Render the `selis-fallback/1` document.
+    /// Render the `selis-fallback/2` document.
     fn to_json(&self) -> String {
         let mut out = String::from("{\n  \"version\": ");
         out.push_str(&self.version.to_string());
@@ -152,6 +171,8 @@ impl FallbackManifest {
             out.push_str(&f.raw_size.to_string());
             out.push_str(",\n      \"sha256\": ");
             out.push_str(&json_string(&f.sha256));
+            out.push_str(",\n      \"url\": ");
+            out.push_str(&json_string(&f.url));
             out.push_str("\n    }");
         }
         out.push_str(if self.faces.is_empty() {
@@ -225,7 +246,7 @@ pub fn run(src: &Path, out: &Path, check: bool) -> Result<(), String> {
     }
 
     // The lazy payload: every non-built-in face, compressed.
-    let lazy_dir = out.join("fallback");
+    let lazy_dir = out.join(LAZY_DIR);
     std::fs::create_dir_all(&lazy_dir)
         .map_err(|e| format!("create {}: {e}", lazy_dir.display()))?;
     for name in lazy_faces() {
@@ -233,7 +254,8 @@ pub fn run(src: &Path, out: &Path, check: bool) -> Result<(), String> {
         let bytes =
             std::fs::read(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))?;
         let transfer = brotli_compress(&bytes)?;
-        let path = lazy_dir.join(format!("{name}.ttf.br"));
+        let file = format!("{name}{FACE_SUFFIX}");
+        let path = lazy_dir.join(&file);
         if !check {
             write_if_changed(&path, &transfer)?;
         }
@@ -242,6 +264,12 @@ pub fn run(src: &Path, out: &Path, check: bool) -> Result<(), String> {
             transfer_size: u32::try_from(transfer.len()).unwrap_or(u32::MAX),
             raw_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             sha256: hex_sha256(&bytes),
+            // **The path this run actually wrote to**, joined from the same
+            // directory name and file name the write above used. That is the
+            // whole point of the field: the shell reads this instead of
+            // re-deriving `fallback/<name>.ttf.br` from a convention it
+            // happens to share with this generator.
+            url: format!("{LAZY_DIR}/{file}"),
         });
         eprintln!(
             "  lazy   {name}: {} B raw -> {} B",
@@ -329,6 +357,7 @@ mod tests {
             transfer_size: 61_971,
             raw_size: 105_460,
             sha256: "ca7f64dc81567369a64998ef274f4dc97fae3f6367cc87b215421189e68c87b2".to_string(),
+            url: format!("{LAZY_DIR}/{name}{FACE_SUFFIX}"),
         }
     }
 
@@ -357,6 +386,48 @@ mod tests {
         // The digest must survive the round trip byte for byte, or the whole
         // verification story is decorative.
         assert_eq!(b.sha256, face("LiberationMono-Bold").sha256);
+        // And so must the url - it is the one field the shell cannot reconstruct
+        // for itself, so a rename on this side that did not reach the reader
+        // would be invisible here if it were not asserted.
+        assert_eq!(b.url, "fallback/LiberationMono-Bold.ttf.br");
+    }
+
+    /// The version this generator writes is the version the reader reads. The
+    /// two are separate constants in separate crates on purpose (the size canary
+    /// forbids the shared type), so the coupling has to be asserted rather than
+    /// inherited - a generator still writing `1` would emit a document every
+    /// reader refuses, and `--check` would happily agree with it.
+    #[test]
+    fn the_version_matches_the_reader() {
+        assert_eq!(
+            MANIFEST_VERSION,
+            selis_pdf_wasm::fallback_manifest::MANIFEST_VERSION,
+            "the generator and the reader must pin the same manifest version"
+        );
+    }
+
+    /// The recorded url is the path the generator wrote to, so the two are made
+    /// from one directory constant and one suffix constant rather than two
+    /// literals. This is the assertion that says the emitted document and the
+    /// published file agree.
+    #[test]
+    fn the_recorded_url_is_built_from_the_published_layout() {
+        let m = FallbackManifest {
+            version: MANIFEST_VERSION,
+            faces: vec![face("LiberationSans-Regular")],
+        };
+        let parsed =
+            selis_pdf_wasm::fallback_manifest::FallbackManifest::parse(m.to_json().as_bytes())
+                .expect("valid");
+        let face = parsed.face("LiberationSans-Regular").expect("face present");
+        // Exactly what `run` writes under `out`, and exactly what the shell must
+        // ask for: no leading slash, no absolute URL, no trailing slash.
+        assert_eq!(
+            face.url,
+            format!("{LAZY_DIR}/LiberationSans-Regular{FACE_SUFFIX}")
+        );
+        assert!(!face.url.starts_with('/'));
+        assert!(!face.url.contains('\\'));
     }
 
     /// An empty manifest is still valid JSON, not a truncated fragment.

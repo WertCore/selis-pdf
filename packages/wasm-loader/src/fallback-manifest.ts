@@ -1,5 +1,5 @@
 /**
- * The `selis-fallback/1` manifest: the lazily-fetched fallback faces.
+ * The `selis-fallback/2` manifest: the lazily-fetched fallback faces.
  *
  * Mirrors `crates/selis-pdf-wasm/src/fallback_manifest.rs` validator for
  * validator, because the two readers guard the same trust boundary from
@@ -24,18 +24,30 @@
 
 import type { ClaimBody } from "./lazy-payload.js";
 
-/** Format version, matching `fallback_manifest::MANIFEST_VERSION`. */
-export const FALLBACK_MANIFEST_VERSION = 1;
+/**
+ * Format version, matching `fallback_manifest::MANIFEST_VERSION`.
+ *
+ * **2** added the per-face `url`. A 1 document has no `url`, so it is refused
+ * with a message that names the missing field and the format — never read with a
+ * reconstructed path, which would reintroduce exactly the silent-404 hole the
+ * field was added to close.
+ */
+export const FALLBACK_MANIFEST_VERSION = 2;
 
 /** The manifest's media type, as served. */
 export const FALLBACK_MANIFEST_MIME = "application/vnd.selis.fallback+json";
 
 /**
- * The compressed file's extension, as `xtask fallback-assets` writes it:
- * `<out>/fallback/<name>.ttf.br`.
+ * The suffix every `url` must end in, because it says how the bytes are
+ * encoded: brotli-compressed TrueType.
  *
- * The manifest deliberately carries no URL — see {@link parseFallbackManifest}
- * for why that is a hole worth reporting rather than a design.
+ * The generator writes this and this reader requires it, so a manifest cannot
+ * claim a payload the transport would decode wrongly. Mirrors
+ * `fallback_manifest::FACE_SUFFIX`, which is asserted equal to it by
+ * `xtask`'s `the_recorded_url_is_built_from_the_published_layout`.
+ *
+ * The manifest now **records** where each face is published; this constant is
+ * only the check that the recorded value is plausible, not a source of paths.
  */
 export const FALLBACK_FACE_SUFFIX = ".ttf.br";
 
@@ -49,6 +61,16 @@ export interface FallbackFace {
 	readonly raw_size: number;
 	/** Lowercase hex SHA-256 of the **decompressed** bytes. */
 	readonly sha256: string;
+	/**
+	 * Where this face's compressed file is published, relative to the base the
+	 * manifest itself was served from.
+	 *
+	 * **Relative, never absolute.** An absolute URL baked into a build artifact
+	 * breaks the moment the same artifact is promoted from staging to
+	 * production, and it would let a manifest point the fetcher at another
+	 * origin. Checked by `urlProblem` before it is used to fetch anything.
+	 */
+	readonly url: string;
 }
 
 /** The whole lazy payload: every face this build does not embed. */
@@ -75,7 +97,9 @@ export type FallbackManifestErrorCode =
 	/** A face declared a zero size. */
 	| "fallback-manifest-size"
 	/** A face claims to transfer larger than it stores. */
-	| "fallback-manifest-transfer-larger";
+	| "fallback-manifest-transfer-larger"
+	/** A face's `url` was not a plain relative path to a compressed face. */
+	| "fallback-manifest-url";
 
 /** A typed refusal, carrying a code so a caller can branch without parsing prose. */
 export class FallbackManifestError extends Error {
@@ -116,30 +140,47 @@ const U32_MAX = 0xffff_ffff;
  * different reasons for the same bytes is how a real bug gets argued away as a
  * message mismatch.
  *
- * ## One place this is deliberately stricter than the Rust validator
+ * ## The digest rule, and why both readers are strict about it
  *
- * Rust checks the digest with `is_ascii_hexdigit`, which **accepts uppercase**.
- * The guest does not: `cjkchunk::parse_digest` matches `0-9a-f` only, so an
- * uppercase digest produces a claim that `FallbackFaceLoader::new` refuses at
- * `fallbackOpen` — a manifest the Rust reader accepts and the engine rejects.
- * This reader is strict, matching the guest (and `parseCjkManifest`'s existing
- * rule), because the alternative is a parser that hands back claims guaranteed
- * to be thrown away. `fallback-manifest.test.ts` pins the behaviour either way.
+ * Both readers admit only `0-9a-f`. This is not an arbitrary tightening: the
+ * guest's `cjkchunk::parse_digest` matches `0-9a-f` only, so an uppercase
+ * digest produces a claim `FallbackFaceLoader::new` refuses at `fallbackOpen`.
+ * A reader that accepted one would hand back claims guaranteed to be thrown
+ * away, and a build whose manifest validated and then failed in the browser is
+ * the worst of both — the error surfaces far from its cause, with no way to fix
+ * it from the build log.
  *
- * ## The URL is not in here, and that is a real gap
+ * (The Rust validator originally used `is_ascii_hexdigit`, which also admits
+ * A-F, and the TypeScript half was the strict one. The Rust half has since been
+ * tightened to match; `fallback-manifest.test.ts` and
+ * `a_malformed_digest_is_refused` pin the rule from both sides so it cannot
+ * drift back.)
  *
- * A `fallbackOpen` claim needs `{ name, sha256, rawBytes, url }` and this
- * manifest has no `url` field — the Rust `FallbackFace` does not have one
- * either, although `fallbackchunk::FaceClaim` documents one. The shell has to
- * reconstruct it from the generator's naming convention, which is pinned by
- * {@link fallbackFacePath} rather than read from the manifest. A build that
- * published faces anywhere else would silently fetch nothing.
+ * ## Why the `url` is read, and never reconstructed
+ *
+ * A `fallbackOpen` claim needs `{ name, sha256, rawBytes, url }`. `selis-fallback/1`
+ * named the face and pinned its digest but said nothing about *where the bytes
+ * are*, so the shell rebuilt the path from a convention duplicated here from the
+ * generator — and a build publishing the payload under a CDN prefix, a version
+ * segment, or a different extension silently fetched nothing while nothing
+ * detected the two sides disagreeing. `selis-fallback/2` records the generator's
+ * actual path per face, and this reader uses that value and nothing else.
+ *
+ * Because the value now arrives from the network, it is *validated* rather than
+ * trusted: see {@link urlProblem} for the one rule and the shapes it refuses.
+ * Checking it before use is the whole point of moving it out of a literal.
  */
 export function parseFallbackManifest(value: unknown): FallbackManifest {
 	const bad = (why: string): never => {
 		throw new FallbackManifestError(
 			"fallback-manifest-invalid",
-			`fallback manifest rejected: ${why}`,
+			// The format hint rides on the *parse* failure because that is where
+			// a document from an older format lands: it deserialises into
+			// everything except the field that format did not have. "has no
+			// url" is technically true and practically useless, so the version
+			// this build reads is named alongside it — the same thing the Rust
+			// reader does when serde reports a missing `url`.
+			`fallback manifest rejected: ${why} (this build reads selis-fallback/${FALLBACK_MANIFEST_VERSION})`,
 		);
 	};
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -177,6 +218,12 @@ function readFace(entry: unknown, index: number, bad: (why: string) => never): F
 	if (typeof row.sha256 !== "string") {
 		return bad(`'${row.name}' has no sha256`);
 	}
+	// A v1 document has no `url`, and it is refused here rather than later. This
+	// is the branch that turns a stale manifest into a clear message instead of
+	// a silently-reconstructed path; the hint on `bad` names the format.
+	if (typeof row.url !== "string") {
+		return bad(`'${row.name}' has no url`);
+	}
 	// serde's `u32` refuses a negative, a fractional, and anything above the
 	// ceiling — all three are parse failures, not size failures.
 	for (const key of ["transfer_size", "raw_size"] as const) {
@@ -190,6 +237,7 @@ function readFace(entry: unknown, index: number, bad: (why: string) => never): F
 		transfer_size: row.transfer_size as number,
 		raw_size: row.raw_size as number,
 		sha256: row.sha256,
+		url: row.url,
 	};
 }
 
@@ -230,24 +278,155 @@ function validate(faces: readonly FallbackFace[]): void {
 				`fallback manifest says ${f.name} transfers larger than it stores`,
 			);
 		}
+		// Last, so the cheaper "this face is not what it says it is" rules still
+		// report first for a face that is wrong in several ways — the Rust loop's
+		// order, for the reason the reader's doc comment gives.
+		const why = urlProblem(f.url);
+		if (why !== null) {
+			throw new FallbackManifestError(
+				"fallback-manifest-url",
+				`fallback manifest url for ${f.name} is unusable: ${why}`,
+			);
+		}
 	}
 }
 
 /**
- * The path the generator published one face's compressed file at, relative to
- * the payload root: `fallback/<name>.ttf.br`.
+ * Why a `url` cannot be used, or `null` if it can.
  *
- * Present because {@link parseFallbackManifest} cannot supply it — the manifest
- * has no URL field. Pinned here so a build that publishes the payload somewhere
- * else has exactly one line to change, and so the convention the Rust
- * `FaceClaim` documents is asserted in a test rather than assumed.
+ * The rule is one sentence: a face's `url` is a **plain relative path** to a
+ * brotli-compressed font. Everything refused here is a way of being something
+ * other than that.
+ *
+ * ## Why the string is checked raw, not decoded
+ *
+ * A `..` check that ran on the *decoded* path would be defeated by the same
+ * path written `%2e%2e`, which is what an attacker writes when a raw check is in
+ * the way — the URL layer decodes it and the fetcher walks up a directory. So
+ * the traversal test decodes the one escape that can spell a dot and asks what
+ * the segment would *become*, while the empty-segment and encoded-separator
+ * tests look at the characters actually present. Checking only one of the two
+ * forms is how a validator ends up rejecting `%2e%2e` and admitting `..`, or
+ * the reverse.
+ *
+ * Mirrors `fallback_manifest::url_problem` rule for rule, and returns the
+ * *same* reason strings, so a manifest refused here and a manifest refused
+ * there fail with one message.
  */
-export function fallbackFacePath(name: string): string {
-	return `fallback/${name}${FALLBACK_FACE_SUFFIX}`;
+function urlProblem(url: string): string | null {
+	if (url === "") {
+		return "it is empty";
+	}
+	// A backslash is a separator to some URL layers and a literal character to
+	// others, so a path containing one means two different things depending on
+	// who reads it. There is no legitimate face name that needs it.
+	if (url.includes("\\")) {
+		return "it contains a backslash";
+	}
+	// `//host/path` is a *network-path reference*: it inherits the scheme and
+	// points at another host, which is the one thing a relative field must not
+	// be able to do.
+	if (url.startsWith("//")) {
+		return "it is protocol-relative and would leave the payload origin";
+	}
+	if (hasScheme(url)) {
+		return "it is absolute rather than relative to the manifest base";
+	}
+	if (!url.endsWith(FALLBACK_FACE_SUFFIX)) {
+		return "it does not end in the suffix the transport decodes";
+	}
+	for (const seg of url.split("/")) {
+		if (seg === "") {
+			return "it has an empty path segment";
+		}
+		if (isDotSegment(seg)) {
+			return "it has a `.` or `..` path segment";
+		}
+		if (hasEncodedSeparator(seg)) {
+			return "it hides a path separator inside a percent-escape";
+		}
+	}
+	return null;
+}
+
+/**
+ * Does this path start with something that reads as a URL scheme?
+ *
+ * `fallback/x.ttf.br` must not be mistaken for one: the first character is a
+ * letter, but the run stops at the `/` without reaching a `:`, so it is a
+ * relative path. Written as a scan rather than a split so the answer does not
+ * depend on a library's URL parser and its idea of what is special.
+ */
+function hasScheme(url: string): boolean {
+	if (!/^[A-Za-z]/.test(url)) {
+		return false;
+	}
+	for (const c of url.slice(1)) {
+		if (c === ":") {
+			return true;
+		}
+		if (!/[A-Za-z0-9+\-.]/.test(c)) {
+			return false;
+		}
+	}
+	return false;
+}
+
+/** Is this segment `.` or `..`, written either plainly or percent-encoded? */
+function isDotSegment(seg: string): boolean {
+	const decoded = decodeDotEscapes(seg);
+	return decoded === "." || decoded === "..";
+}
+
+/**
+ * Percent-decode **only** the escape that can spell a dot (`%2e`, either case),
+ * leaving every other escape exactly as written.
+ *
+ * Deliberately not a general decoder: decoding `%25` first would let
+ * `%252e%252e` become `%2e%2e` and then be mistaken for a real dot, and a
+ * decoder that handled the full grammar would be a second URL parser to keep in
+ * step with the first. Face names are ASCII identifiers, so the only escapes
+ * that can appear are the ones a generator would never write — which is exactly
+ * why they have to be understood to be refused.
+ */
+function decodeDotEscapes(s: string): string {
+	let out = "";
+	for (let i = 0; i < s.length; i += 1) {
+		const c = s[i] as string;
+		if (c !== "%") {
+			out += c;
+			continue;
+		}
+		const hex = s.slice(i + 1, i + 3);
+		if (hex.length === 2 && hex.toLowerCase() === "2e") {
+			out += ".";
+			i += 2;
+		} else {
+			out += "%";
+		}
+	}
+	return out;
+}
+
+/**
+ * Does this segment percent-encode a `/` or a `\`, the two separators?
+ *
+ * A `%2f` inside a segment is a separator the segment check cannot see, which
+ * is the same smuggling trick as `%2e%2e` one level up.
+ */
+function hasEncodedSeparator(seg: string): boolean {
+	const lower = seg.toLowerCase();
+	return lower.includes("%2f") || lower.includes("%5c");
 }
 
 /**
  * Every face in the manifest as a `fallbackOpen` claim, against a payload base.
+ *
+ * The claim's `url` is **the manifest's own value**, joined to `base`. Nothing
+ * here derives a path from the face name: the generator recorded where it
+ * published the file, and that is the only thing that says so. Rebuilding
+ * `fallback/<name>.ttf.br` is precisely what made a build publishing the
+ * payload elsewhere fetch nothing, in silence.
  *
  * The claim's `rawBytes` and `sha256` are the **decompressed** font's, which is
  * what the guest verifies; the file on the wire is the brotli-compressed one and
@@ -267,7 +446,7 @@ export function fallbackClaims(
 		id: f.name,
 		sha256: f.sha256,
 		rawBytes: f.raw_size,
-		url: joinBase(base, fallbackFacePath(f.name)),
+		url: joinBase(base, f.url),
 	}));
 }
 
