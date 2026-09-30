@@ -2,3 +2,49 @@
 :root {
 	color-scheme: light dark;
 }
+
+/*
+ * PRINT. What is printed is the PAGE, not the application.
+ *
+ * Without this, printing from the shell emits the search box, the result line
+ * and the status text as well as the document - which is exactly what a user
+ * gets if nobody writes these rules, and the reason a viewer that "supports
+ * print" is not the same as one that prints correctly.
+ *
+ * Three things have to be true of the output, and each has a rule:
+ *   - the document is visible;             (`#selis-page` kept)
+ *   - the shell's own chrome is not;       (everything else hidden)
+ *   - the page is not cropped or shrunk.   (`@page` margin 0, size left alone)
+ */
+@media print {
+	/* Hide every part of the shell that is not the document. The status line
+	 * goes too: it reports the engine's export count, which is a developer
+	 * fact and does not belong on paper. `display:none` rather than
+	 * `visibility:hidden` so the chrome takes no room in the printed flow. */
+	#selis-app > *:not(#selis-page) {
+		display: none !important;
+	}
+
+	/* The page itself, full-bleed and unscaled. The canvas is already at the
+	 * document's own pixel size; a print stylesheet that sized it would put a
+	 * resampled document on paper where the screen showed a crisp one. */
+	#selis-page {
+		display: block !important;
+		width: auto !important;
+		height: auto !important;
+		margin: 0 !important;
+		box-shadow: none !important;
+		border: 0 !important;
+	}
+
+	/* No page furniture. */
+	@page {
+		margin: 0;
+	}
+
+	/* Force the document's own light scheme. A page printed from a dark-mode
+	 * shell should still be a page, not a dark rectangle. */
+	:root {
+		color-scheme: light;
+	}
+}

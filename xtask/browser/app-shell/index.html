@@ -3,6 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <title>selis browser harness - app shell</title>
+    <!--
+      The app's own stylesheet, linked for the same reason `#selis-app` is
+      present below. The printed output is decided by this file, so a harness
+      that loads boot.js but not style.css can test the Print button and find
+      no print rules at all - which is what happened, and it looked exactly
+      like "the app ships no print stylesheet".
+    -->
+    <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
     <!--
@@ -258,6 +266,65 @@
           // What the user actually sees on screen.
           out.searchReadout =
             (document.getElementById("selis-search-result") || {}).textContent || null;
+
+          // 1d. PRINT. Driven through the app's real Print button.
+          //
+          //     `window.print` is REPLACED for the duration, so a click that
+          //     reaches it is observable. Without the stub the click would open
+          //     a native dialog and block the run, which is also why headless
+          //     cannot verify what actually lands on paper - see the note below.
+          var printCalls = 0;
+          var realPrint = window.print;
+          window.print = function () { printCalls++; };
+          var printButton = document.getElementById("selis-print");
+          if (!printButton) throw new Error("the app exposed no Print button");
+          printButton.click();
+          window.print = realPrint;
+          out.printCalls = printCalls;
+
+          // The print STYLESHEET, read through the CSSOM rather than grepped
+          // from the file. This asks what the browser actually parsed, so a
+          // stylesheet that failed to load, was truncated, or was overridden
+          // later cannot pass.
+          //
+          //     What matters is that printing shows the page and hides the
+          //     shell; a stylesheet that exists but does neither is the common
+          //     way "supports print" turns out to mean something else.
+          var printRules = [];
+          for (var s = 0; s < document.styleSheets.length; s++) {
+            var sheet;
+            try { sheet = document.styleSheets[s]; } catch (e) { continue; }
+            var rules;
+            try { rules = sheet.cssRules; } catch (e) { continue; }
+            for (var r = 0; r < rules.length; r++) {
+              var rule = rules[r];
+              if (rule.type === CSSRule.MEDIA_RULE &&
+                  String(rule.conditionText || rule.media.mediaText).indexOf("print") !== -1) {
+                for (var q = 0; q < rule.cssRules.length; q++) {
+                  printRules.push(rule.cssRules[q].cssText);
+                }
+              }
+            }
+          }
+          out.printRuleCount = printRules.length;
+          // The rules themselves, on every report. Two reasons: a mismatch
+          // here is unfixable without knowing how the browser SERIALISES the
+          // selector back, and it keeps a failure legible in the trace instead
+          // of collapsing to a boolean.
+          out.printRules = printRules;
+          out.printHidesChrome = printRules.some(function (t) {
+            // The `(\*\s*)?` is not decoration: the browser DROPS the universal
+            // selector when it serialises a rule back, so the authored
+            // `#selis-app > *:not(#selis-page)` comes back as
+            // `#selis-app > :not(#selis-page)`. Matching what was written
+            // rather than what was parsed is how this reported "no print rules
+            // hide the chrome" about a stylesheet that plainly does.
+            return /#selis-app\s*>\s*(\*\s*)?:not\(#selis-page\)/.test(t) &&
+              /display:\s*none/.test(t);
+          });
+          out.printKeepsPage = printRules.some(function (t) {
+            return /#selis-page/.test(t) && /display:\s*block/.test(t);
+          });
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

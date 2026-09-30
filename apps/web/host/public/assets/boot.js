@@ -503,11 +503,34 @@ function searchDocumentHandle(bytes) {
 }
 
 /**
- * The search box and its result line.
+ * Hand the document to the browser's print pipeline.
+ *
+ * `window.print()` is the whole mechanism - there is no print job to build here
+ * - so what this function owns is the failure. A user who presses Print and
+ * sees nothing has been told nothing, and the most common cause is not a bug
+ * at all: no page is displayed yet, so the browser would print an empty shell.
+ * That is refused out loud instead of printing a blank page.
+ *
+ * @returns {boolean} whether the print was handed off
+ */
+function requestPrint() {
+	const canvas = document.getElementById("selis-page");
+	if (canvas === null) {
+		if (searchUi.readout !== null) {
+			searchUi.readout.textContent = "Nothing to print - open a document first.";
+		}
+		return false;
+	}
+	window.print();
+	return true;
+}
+
+/**
+ * The search box, its result line, and the Print control.
  *
  * A real `<input type="search">` with a label, not a function the check calls:
  * the DoD names a user verb, and a user types into a field. The check drives
- * this element, so it verifies the same path a person's keystrokes take.
+ * these elements, so it verifies the same path a person's keystrokes take.
  */
 function searchControls() {
 	if (searchUi.input !== null) return searchUi;
@@ -525,6 +548,15 @@ function searchControls() {
 	root.appendChild(label);
 	root.appendChild(input);
 	root.appendChild(readout);
+	// The print control is built with the viewer, for the same reason the
+	// search field is: a user has to be able to see the button to press it.
+	const print = document.createElement("button");
+	print.type = "button";
+	print.id = "selis-print";
+	print.textContent = "Print";
+	print.addEventListener("click", requestPrint);
+	root.appendChild(print);
+
 	searchUi.input = input;
 	searchUi.readout = readout;
 	return searchUi;

@@ -915,6 +915,48 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // The DoD's fourth verb: print. The control is reached, and the stylesheet
+    // that decides the printed output is the real one.
+    let calls = report
+        .get("printCalls")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "the app never reported a print (printCalls = None)".to_string())?;
+    if calls != 1 {
+        return Err(format!(
+            "pressing Print called window.print {calls} time(s), expected 1 -- the button is not \
+             wired to the browser's print pipeline"
+        ));
+    }
+
+    // Read through the CSSOM, not by grepping the file: this asks what the
+    // browser actually parsed, so a stylesheet that failed to load or was
+    // overridden later cannot pass.
+    let rules = report
+        .get("printRuleCount")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if rules == 0 {
+        return Err(
+            "the app served no @media print rules -- printing would emit the search box, the \
+             result line and the status text along with the page"
+                .to_string(),
+        );
+    }
+    if report.get("printHidesChrome").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "the print stylesheet never hides the shell's own controls -- a printed page would \
+             carry the search box and the status line"
+                .to_string(),
+        );
+    }
+    if report.get("printKeepsPage").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "the print stylesheet does not keep the page visible at its own size -- printing \
+             would emit a blank sheet"
+                .to_string(),
+        );
+    }
+
     Ok(())
 }
 
