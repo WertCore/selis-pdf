@@ -48,3 +48,23 @@ assets/payload/fallback/*.ttf.br
 
 # Local agent scratch (build logs, probes, patches). Never committed.
 .kilo/
+
+# The web app's generated deployment root (SL-4.WEB.02). The COMMITTED parts of
+# `apps/web/host/public/` are the hand-written shell — index.html, _headers,
+# assets/boot.js, assets/style.css — plus whatever `tools/place-sw.mjs` emits
+# (sw.js and the modules it imports). What `tools/place-assets.mjs` emits is
+# build output copied out of other packages' dist/ and the cargo target dir:
+#
+#   assets/ui/**, assets/ui-kit/**  the viewer, copied from apps/ui/dist and
+#                                   packages/ui-kit/dist by an import walk
+#   wasm/selis_pdf_wasm.wasm        the engine, copied from the cargo target dir
+#   app-manifest.json               the list of what was copied
+#
+# None of it is authored here, and committing it would put a 2.8 MB binary and
+# 35 copied modules in the tree that a reviewer cannot meaningfully read and
+# that silently goes stale against its source. The extension already follows
+# this rule (SL-0.LEGAL.04): artefacts are built and manifested, not committed.
+apps/web/host/public/assets/ui/
+apps/web/host/public/assets/ui-kit/
+apps/web/host/public/wasm/
+apps/web/host/public/app-manifest.json

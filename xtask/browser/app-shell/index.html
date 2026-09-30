@@ -47,6 +47,13 @@
         // the worker's own respondWith can answer.
         shellAsset: null,
         precacheHit: null,
+        // Whether the app actually MOUNTED the viewer and the engine, from the
+        // app's own `__selisApp`. Null means boot.js never got that far.
+        appMounted: null,
+        engineExports: null,
+        engineDispatch: null,
+        windowedPages: null,
+        appError: null,
         fatal: null,
       };
 
@@ -86,15 +93,28 @@
       import("/assets/boot.js")
         .then(function () {
           out.boot = globalThis.__selisBoot || null;
-          // boot.js registers the worker and records the outcome on
-          // __selisServiceWorker; wait for that promise to settle.
+          // boot.js mounts the viewer and loads the engine before it registers
+          // the worker, so wait for BOTH globals, not just the registration.
           return waitFor(
             function () {
-              return globalThis.__selisServiceWorker !== undefined;
+              return (
+                globalThis.__selisApp !== undefined &&
+                globalThis.__selisServiceWorker !== undefined
+              );
             },
-            10000,
-            "the app's registration to settle",
+            20000,
+            "the app's mount and registration to settle",
           );
+        })
+        .then(function () {
+          // The app's own report of what it managed to load. This is the
+          // difference between "the shell booted" and "the viewer is wired".
+          var app = globalThis.__selisApp || {};
+          out.appMounted = app.mounted === true;
+          out.appError = app.error || null;
+          out.engineExports = app.engine ? app.engine.exports : null;
+          out.engineDispatch = app.engine ? app.engine.hasDispatch : null;
+          out.windowedPages = app.windowing ? app.windowing.pages : null;
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

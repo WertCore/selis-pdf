@@ -656,6 +656,44 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // The viewer must be MOUNTED, not merely shipped. This is the assertion
+    // that WEB.02's blocker 2 is closed: until now `@selis/ui` was copied into
+    // the deployment and imported by nobody, so the app booted, registered its
+    // worker, served its precached shell and rendered a placeholder. Every
+    // assertion above would have passed on that app.
+    if report.get("appMounted").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the app never mounted the viewer (appMounted = {:?}, appError = {:?}) -- \
+             the engine and UI are shipped into public/ but nothing loads them, \
+             so the page is a shell with a placeholder",
+            report.get("appMounted"),
+            report.get("appError")
+        ));
+    }
+
+    // The engine must be a real engine carrying the entry point the app calls.
+    // An export count alone would pass on a stub module.
+    if report.get("engineDispatch").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the mounted engine has no `selis_dispatch` export (engineDispatch = \
+             {:?}, exports = {:?}) -- the app cannot open a PDF with it",
+            report.get("engineDispatch"),
+            report.get("engineExports")
+        ));
+    }
+
+    // The viewer's own logic must have produced something. Zero pages means the
+    // module graph imported but is not usable.
+    match report.get("windowedPages").and_then(Json::as_u64) {
+        Some(pages) if pages > 0 => {}
+        other => {
+            return Err(format!(
+                "the viewer's windowing produced no pages (windowedPages = {other:?}) -- \
+                 the UI modules loaded but are not usable"
+            ));
+        }
+    }
+
     Ok(())
 }
 
