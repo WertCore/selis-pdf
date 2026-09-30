@@ -29,6 +29,23 @@
       files (not a fixture) is the point: a fixture would test the fixture.
     -->
     <pre id="verdict">PENDING</pre>
+
+    <!--
+      The app mounts into `#selis-app`; that is the app's contract, declared by
+      apps/web/host/public/index.html. This harness page has to carry the same
+      mount or the app has nowhere to draw, and the view check fails with a
+      blank canvas.
+
+      That failure is not hypothetical: this element was missing when the view
+      check was first written, and the check went red with "the painted page
+      reported no screen ink" while every other verdict stayed green. The app
+      was right to refuse to paint into a page with no mount - the check was
+      asking the app to display a document somewhere it had not been given.
+    -->
+    <main id="selis-app" aria-busy="true">
+      <p>Loading Selis PDF Viewer…</p>
+    </main>
+
     <script type="module">
       // The app's own boot path does exactly this; the check mirrors it rather
       // than importing it, because the point is to observe what the app does,
@@ -53,6 +70,9 @@
         offlineEngineBytes: null,
         offlineLayoutReal: null,
         offlineWindowingReal: null,
+        // The DoD's second verb: a real <canvas> in the document, read back
+        // from the browser. Null means the page was never painted.
+        view: null,
         // Whether the app actually MOUNTED the viewer and the engine, from the
         // app's own `__selisApp`. Null means boot.js never got that far.
         appMounted: null,
@@ -177,12 +197,25 @@
           out.engineDispatch = app.engine ? app.engine.hasDispatch : null;
           out.windowedPages = app.windowing ? app.windowing.pages : null;
 
-          // 1b. Open a REAL PDF through the app's own document path. This is the
-          //     step that needs the engine to WORK rather than merely load: the
-          //     engine is handed actual document bytes and must return rendered
-          //     pixels. Everything before this proves the machinery is present;
-          //     this proves it does the DoD's first verb.
-          out.open = globalThis.__selisOpen(FIXTURE_PDF_B64);
+          // 1b. Open a REAL PDF through the app's own document path, then PAINT
+          //     it. This is the step that needs the engine to WORK rather than
+          //     merely load: the engine is handed actual document bytes and must
+          //     return rendered pixels that reach a canvas in the document.
+          //     Everything before this proves the machinery is present; this
+          //     proves the DoD's first two verbs.
+          //
+          //     `__selisView` is the app's own open+display path, not something
+          //     invented here, so this is the code a user would run.
+          var view = globalThis.__selisView(FIXTURE_PDF_B64);
+          out.open = {
+            status: view.status,
+            w: view.w,
+            h: view.h,
+            ink: view.ink,
+          };
+          // What the browser itself holds on the canvas after the upload. If
+          // this is null the page never got shown no matter what `ink` said.
+          out.view = view.painted === undefined ? null : view.painted;
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

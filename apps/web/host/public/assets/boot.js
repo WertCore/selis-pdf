@@ -253,15 +253,22 @@ function openDocument(bytes) {
 	const w = view.getUint32(words, true);
 	const h = view.getUint32(words + 4, true);
 	const len = view.getUint32(words + 8, true);
-	const pixels = new Uint8Array(ex.memory.buffer, pix, len);
+	// COPY the pixels out before freeing. `selis_free` hands the block straight
+	// back to the allocator, so a view kept past this point would read whatever
+	// the next allocation writes there. `slice()` is the copy.
+	const rgba = new Uint8ClampedArray(
+		new Uint8Array(ex.memory.buffer, pix, len).slice().buffer,
+	);
 	let ink = 0;
-	for (let i = 0; i < pixels.length; i += 4) {
-		if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) ink++;
+	for (let i = 0; i < rgba.length; i += 4) {
+		if (rgba[i] < 250 || rgba[i + 1] < 250 || rgba[i + 2] < 250) ink++;
 	}
 	ex.selis_free(pix, len);
 	ex.selis_free(words, 12);
 	ex.selis_free(inPtr, bytes.length);
-	return { status: "ok", w, h, ink };
+	// RGBA8, 4 bytes per pixel. `rgba` is what the canvas is painted from, so
+	// the pixels that were measured are the pixels that are displayed.
+	return { status: "ok", w, h, ink, rgba };
 }
 
 /**
@@ -280,6 +287,61 @@ globalThis.__selisOpen = function (base64) {
 	}
 };
 
+// ── viewing: the rendered page on a canvas ─────────────────────────────────
+
+/**
+ * Paint a rendered page into the document.
+ *
+ * This is the DoD's "view", and it is deliberately the smallest thing that is
+ * honestly a viewer rather than a number: the engine's RGBA output is put on a
+ * real `<canvas>` in the document, sized to the page. What it is NOT is the
+ * full UI.02/UI.03 host wiring — no tile ladder, no windowing, no scroll
+ * position, no zoom, no `OffscreenCanvas` in a worker. Those are the
+ * compositor's job and they consume the same engine output this proves.
+ *
+ * What it DOES prove, which nothing before it did: the engine's pixels reach
+ * the screen through the browser's own compositor. A page that renders in
+ * linear memory and stops is not a viewer, however good the ink count is.
+ *
+ * The canvas is read back with `getImageData` and re-counted, so what is
+ * asserted is the browser's own copy of what is on screen, not the buffer
+ * handed to `putImageData`. Those are the same array today; a browser that
+ * silently dropped or reordered the upload would fail here.
+ *
+ * @param {{ w: number, h: number, rgba: Uint8ClampedArray }} page
+ * @param {HTMLElement|null} mount
+ * @returns {{ w: number, h: number, screenInk: number } | null}
+ */
+function paintPage(page, mount) {
+	if (page.status !== "ok" || mount === null || !(mount instanceof HTMLElement)) {
+		return null;
+	}
+	const canvas = document.createElement("canvas");
+	// The backing store is the page's own size in device pixels; nothing is
+	// scaled, so a wrong `w`/`h` shows up as a stretched or clipped page rather
+	// than passing silently.
+	canvas.width = page.w;
+	canvas.height = page.h;
+	canvas.style.width = `${page.w}px`;
+	canvas.style.height = `${page.h}px`;
+	canvas.id = "selis-page";
+	canvas.setAttribute("role", "img");
+	canvas.setAttribute("aria-label", "Rendered page 1");
+
+	const context = canvas.getContext("2d");
+	if (context === null) return null;
+	context.putImageData(new ImageData(page.rgba, page.w, page.h), 0, 0);
+	mount.appendChild(canvas);
+
+	// Read back what the browser actually holds.
+	const shown = context.getImageData(0, 0, page.w, page.h).data;
+	let screenInk = 0;
+	for (let i = 0; i < shown.length; i += 4) {
+		if (shown[i] < 250 || shown[i + 1] < 250 || shown[i + 2] < 250) screenInk++;
+	}
+	return { w: canvas.width, h: canvas.height, screenInk };
+}
+
 // Exposed for the browser check and for support. No document data, no URL —
 // nothing here could identify a file (ADR-P0017).
 globalThis.__selisApp = state;
@@ -289,12 +351,28 @@ if (root !== null) {
 	root.removeAttribute("aria-busy");
 	if (state.mounted) {
 		root.textContent =
-			`Selis is ready. Viewer mounted (${state.engine?.exports ?? 0} engine exports). ` +
-			"Page rendering lands with the UI host wiring.";
+			`Selis is ready. Viewer mounted (${state.engine?.exports ?? 0} engine exports).`;
 	} else {
 		root.textContent = `Selis failed to start: ${state.error ?? "unknown"}`;
 	}
 }
+
+/**
+ * Open a document and show it — the DoD's first two verbs in one call, so the
+ * browser check drives the same path a user does rather than a reduced one.
+ *
+ * @param {string} base64 the document
+ * @returns {object} the open result, with `painted` when the page was shown
+ */
+globalThis.__selisView = function (base64) {
+	const opened = globalThis.__selisOpen(base64);
+	if (opened.status !== "ok") return opened;
+	const painted = paintPage(opened, root);
+	// The RGBA buffer is ~1.9 MB of document pixels. It is not put on any
+	// global and not reported back, so nothing retains it after painting.
+	delete opened.rgba;
+	return painted === null ? { ...opened, painted: null } : { ...opened, painted };
+};
 
 // ── the offline layer ──────────────────────────────────────────────────────
 

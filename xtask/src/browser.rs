@@ -776,6 +776,66 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // The DoD's second verb, and the one that was missing until now. Every
+    // previous check could be satisfied by an app that rendered into linear
+    // memory and stopped: `ink` counts the ENGINE's buffer, which says nothing
+    // about whether a user ever saw a page. So the page must now be on a canvas
+    // in the document, and the browser's own readback must match the engine's
+    // output exactly.
+    let view = report
+        .get("view")
+        .ok_or_else(|| "the app never reported a painted page (view = None)".to_string())?;
+    let screen_ink = view
+        .get("screenInk")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "the painted page reported no screen ink".to_string())?;
+    if screen_ink == 0 {
+        return Err(
+            "the page was painted but the canvas is blank -- the engine drew ink and the screen \
+             does not show it"
+                .to_string(),
+        );
+    }
+    // Equality, not "> 0". A canvas showing one stray pixel would satisfy a
+    // presence check; matching the engine's own count is what ties the screen to
+    // the render, and it is the assertion that fails if `putImageData` is ever
+    // given the wrong stride or row order.
+    let engine_ink = report
+        .get("open")
+        .and_then(|open| open.get("ink"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if screen_ink != engine_ink {
+        return Err(format!(
+            "the canvas shows {screen_ink} ink pixels but the engine rendered {engine_ink} -- the \
+             page on screen is not the page the engine drew"
+        ));
+    }
+    // The canvas must be the page's real size. A viewer that silently scaled the
+    // page to fit would look right and measure wrong.
+    let (Some(cw), Some(ch)) = (
+        view.get("w").and_then(Json::as_u64),
+        view.get("h").and_then(Json::as_u64),
+    ) else {
+        return Err("the painted page reported no dimensions".to_string());
+    };
+    let page_w = report
+        .get("open")
+        .and_then(|open| open.get("w"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    let page_h = report
+        .get("open")
+        .and_then(|open| open.get("h"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if cw != page_w || ch != page_h {
+        return Err(format!(
+            "the canvas is {cw}x{ch} but the page is {page_w}x{page_h} -- the page is not shown at \
+             its own size"
+        ));
+    }
+
     Ok(())
 }
 
@@ -1678,7 +1738,20 @@ mod tests {
             browser: None,
             page: None,
             only: None,
-            timeout_ms: DEFAULT_TIMEOUT_MS,
+            // NOT `DEFAULT_TIMEOUT_MS`, and the difference is deliberate.
+            //
+            // The default is a product choice for an interactive run: fail fast
+            // on a hung browser. This test runs a real Edge, a real WASM engine
+            // build and the real origin, on every check, while 171 sibling
+            // tests compete for the same cores - so it legitimately takes
+            // longer than an interactive run would, and it has twice failed
+            // `app-shell` at 30s (`[unmeasured]: the page did not report within
+            // 30000ms`) while passing standalone. A timeout that fires under
+            // load and not at rest is measuring the machine, not the app.
+            //
+            // Raised only HERE, deliberately: the interactive default stays
+            // tight, so a developer still gets a fast failure on a real hang.
+            timeout_ms: 120_000,
             out: dir.join("report.json"),
             keep: false,
             strict: true,
