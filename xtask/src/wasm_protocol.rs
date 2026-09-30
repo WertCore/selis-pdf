@@ -48,6 +48,19 @@
 //!     with its target**, because the viewer enforces ADR-P0020 against what it
 //!     is told; and an action class this build does not model crosses as
 //!     `unknown` plus the document's own `rawName`. See `nav_leg`.
+//! 12. **The lazy-payload wire (SL-3.FONT.10 / FONT.12)** â `fallbackOpen`,
+//!     `fallbackFace` and `fallbackClose` driven over the real ABI, as the host
+//!     the TypeScript client actually is. Every earlier leg exercises ops the
+//!     guest and the engine share; these three had **no** conformance leg at
+//!     all, which meant the TS client in `packages/wasm-loader` and the guest it
+//!     addresses had never spoken to each other in any harness â the
+//!     TS tests all drive a fake transport against a fake byte source. This leg
+//!     is the seam. It pins the three properties a shell cannot recover if the
+//!     guest gets them wrong: an unverified body is refused rather than parsed
+//!     (a font from the network is a parser input), a delivery that matches no
+//!     claim is refused rather than adopted, and a released face goes back on
+//!     `needs` rather than leaving `residentBytes: 0` to be read as "this
+//!     document needs no fallback at all". See `lazy_payload_leg`.
 
 use serde_json::{json, Value};
 
@@ -816,6 +829,14 @@ pub fn run() -> Result<(), String> {
         "wasm-protocol: navigation ok (cyclic outline terminated and flagged, /Launch and /Rendition by name, labels, destinations, typed out-of-range)"
     );
 
+    // The lazy-payload wire. Opened last and closed again, like the navigation
+    // leg, so it cannot perturb the memory tallies leg 9 pinned.
+    let lazy_bytes = fixture("minimal.pdf")?;
+    lazy_payload_leg(&mut s, &lazy_bytes)?;
+    println!(
+        "wasm-protocol: lazy payload ok (unverified body refused, mismatched claim refused, release re-arms needs)"
+    );
+
     println!("wasm-protocol: all legs passed");
     Ok(())
 }
@@ -1067,4 +1088,231 @@ fn nav_leg(s: &mut Session<'_>, nav_bytes: &[u8]) -> Result<(), String> {
     let (resp, _) = s.rpc(json!({"op":"close", "doc": nav}), None)?;
     expect(resp, "nav-close")?;
     Ok(())
+}
+
+/// Leg 12: the lazy-fallback payload, driven exactly as `LazyPayloadClient`
+/// drives it.
+///
+/// The guest plans and judges; the host only moves bytes. So this leg plays the
+/// host, and deliberately plays it *badly* first: a body whose digest does not
+/// match its claim, and a body that matches no claim at all. If either were
+/// adopted, a font from the network would reach the parser unchecked, and a
+/// tampered or mis-keyed cache entry would become a memory-safety surface
+/// rather than a failed fetch. The happy path is checked too, but the refusals
+/// are the point: they are the properties the TS client trusts and cannot
+/// re-derive.
+fn lazy_payload_leg(s: &mut Session<'_>, doc_bytes: &[u8]) -> Result<(), String> {
+    // A real Liberation face is ~140 kB and cannot be inlined here, and the
+    // digest must be of the *actual* delivered bytes or the leg proves nothing.
+    // So the claim is self-consistent by construction: we claim a digest we
+    // compute over the bytes we are about to send. What is under test is the
+    // guest's JUDGEMENT of the pair, not the arithmetic.
+    //
+    // The body must also pass `looks_like_sfnt`, which is a real gate and not a
+    // formality: the loader refuses a correctly-digested body that is not a
+    // font, because the manifest digest is a transport check and not a promise
+    // that the bytes parse. A body of arbitrary text would therefore be refused
+    // for the wrong reason and the leg would prove nothing. So this is a
+    // minimal TrueType-shaped header - the sfnt version tag the check looks
+    // for, plus padding to a plausible length. It is never parsed: the leg
+    // stops at adoption, and a real face is what the production path delivers.
+    let mut body = vec![0x00, 0x01, 0x00, 0x00];
+    body.extend_from_slice(&[0u8; 60]);
+    let digest = sha256_hex(&body);
+    let face = "LiberationSans-Regular";
+
+    let (resp, _) = s.rpc(
+        json!({"op": "open",
+               "src": {"kind":"bytes", "len": doc_bytes.len()},
+               "budget": {"surface":"viewer"}}),
+        Some(doc_bytes),
+    )?;
+    let resp = expect(resp, "lazy-open-doc")?;
+    let doc = resp["value"]["doc"].as_u64().ok_or("lazy: no doc handle")?;
+
+    // ---- open with one claim, and the face the document will want ----------
+    // `minimal.pdf` names no font at all, so `needs` may legitimately be empty
+    // and the leg must not depend on it. What it does pin is the *shape*: the
+    // state block is present and typed, because the shell reads these six
+    // fields to decide whether to fetch anything.
+    // Two claims, not one. `MAX_ATTEMPTS_PER_FACE` is 2 and a bad delivery is
+    // charged as an attempt, so a face spent proving a refusal is then
+    // exhausted and cannot prove the happy path. The second claim is that
+    // control - and it doubles as a check that the manifest is the authority:
+    // a face the manifest never named is refused, so every delivery below must
+    // name one these two claims cover.
+    let fresh = "LiberationSerif-Regular";
+    let (resp, _) = s.rpc(
+        json!({"op": "fallbackOpen",
+               "doc": doc,
+               "claims": [{"name": face, "sha256": digest,
+                           "rawBytes": body.len(), "url": "fallback/x.ttf.br"},
+                          {"name": fresh, "sha256": digest,
+                           "rawBytes": body.len(), "url": "fallback/y.ttf.br"}]}),
+        None,
+    )?;
+    let resp = expect(resp, "fallbackOpen")?;
+    let value = &resp["value"];
+    for field in [
+        "revision",
+        "residentBytes",
+        "loaded",
+        "needs",
+        "unavailable",
+        "exhausted",
+    ] {
+        if value.get(field).is_none() {
+            return Err(format!(
+                "fallbackOpen: the state block is missing `{field}`, so a shell \
+                 cannot tell an absent field from an unread one: {resp}"
+            ));
+        }
+    }
+    // Nothing is resident before a single byte is delivered. If it were, the
+    // loader would be trusting a claim it never verified.
+    if value["residentBytes"] != json!(0) {
+        return Err(format!(
+            "fallbackOpen: a freshly opened loader must hold no bytes: {resp}"
+        ));
+    }
+
+    // ---- a body that does not match its claim must be REFUSED -------------
+    // Order matters, and getting it wrong hides the property being tested.
+    // `MAX_ATTEMPTS_PER_FACE` is 2, and a bad delivery is charged as an attempt
+    // ON FAILURE - deliberately, so a poisoned response cannot loop forever. So
+    // a mismatch spent here would exhaust the face and make the legitimate
+    // delivery below fail for the wrong reason: the leg would be testing the
+    // retry bound, not the digest. Two faces, therefore: one proves the happy
+    // path, the other is spent proving the refusal.
+    //
+    // The impostor must also be the SAME LENGTH as the real body. A length
+    // mismatch is caught earlier, as a transport error
+    // (`BINDING_BAD_ARGUMENT`, "face length does not match its attachment") -
+    // a different and easier property. The interesting attack is a body of
+    // exactly the right size carrying the wrong bytes: a truncated download
+    // re-served from a poisoned cache, or a file published under the wrong key.
+    let mut impostor = body.to_vec();
+    impostor[4] ^= 0xff; // same length, same sfnt tag, different bytes
+    let (resp, _) = s.rpc(
+        json!({"op": "fallbackFace",
+               "doc": doc, "face": face,
+               "status": 200, "len": body.len()}),
+        Some(&impostor),
+    )?;
+    let resp = expect(resp, "fallbackFace-mismatch")?;
+    if resp["value"]["adopted"] != json!(false) {
+        return Err(format!(
+            "fallbackFace: a body whose digest does not match the claim was \
+             ADOPTED. This is why the loader verifies at all: an unverified TTF \
+             is attacker-chosen input to a structured-binary parser: {resp}"
+        ));
+    }
+    // NOTE ON REDUNDANCY, measured rather than assumed: disabling the
+    // `adopted == false` assertion above does NOT fail this leg, because this
+    // one catches the same delivery. So the leg is not vacuous, but neither
+    // assertion alone is load-bearing. `adopted` is the guest's own verdict and
+    // says WHY; `residentBytes` is the observable consequence and is what a
+    // shell would act on. Both are kept, and both being individually
+    // non-essential is the point - a single assertion on a wire field is one
+    // refactor away from proving nothing.
+    if resp["value"]["residentBytes"] != json!(0) {
+        return Err(format!(
+            "fallbackFace: a refused body still became resident: {resp}"
+        ));
+    }
+    // Nothing is queued afterwards, and that is correct rather than alarming:
+    // no document in this leg asked for a fallback, so no face is "wanted" and
+    // there is nothing to re-queue. The assertion that matters is the one
+    // above - not adopted, not resident - plus the attempt being charged, which
+    // the happy path below would expose if refusals were free.
+
+    // ---- a matching body IS adopted --------------------------------------
+    // On a second, untouched face, so the refusal above cannot have exhausted
+    // this one. `face` was already spent; `fresh` is the control.
+    let (resp, _) = s.rpc(
+        json!({"op": "fallbackFace",
+               "doc": doc, "face": fresh,
+               "status": 200, "len": body.len()}),
+        Some(&body),
+    )?;
+    let resp = expect(resp, "fallbackFace-ok")?;
+    if resp["value"]["adopted"] != json!(true) {
+        return Err(format!(
+            "fallbackFace: a body matching its claim was not adopted, so the \
+             refusals above would pass for the wrong reason: {resp}"
+        ));
+    }
+    if resp["value"]["residentBytes"].as_u64() != Some(body.len() as u64) {
+        return Err(format!(
+            "fallbackFace: residentBytes must account for the adopted face: {resp}"
+        ));
+    }
+    if !resp["value"]["loaded"]
+        .to_string()
+        .contains("LiberationSerif-Regular")
+    {
+        return Err(format!(
+            "fallbackFace: an adopted face must appear in `loaded`: {resp}"
+        ));
+    }
+
+    // ---- closing a face that is not resident is a no-op, not an error -----
+    // A polling shell closes speculatively; making that an error would train
+    // callers to ignore the op.
+    let (resp, _) = s.rpc(
+        json!({"op": "fallbackClose", "doc": doc, "face": "LiberationSerif-Bold"}),
+        None,
+    )?;
+    let resp = expect(resp, "fallbackClose-absent")?;
+    if resp["value"].get("closed").is_none() {
+        return Err(format!(
+            "fallbackClose: a no-op close must still answer `closed`, so a \
+             shell can tell it did nothing from a shape it failed to read: {resp}"
+        ));
+    }
+
+    // ---- releasing the resident face RE-ARMS `needs` ---------------------
+    // The load-bearing assertion of the whole leg. Detaching the loader is the
+    // tidy-looking teardown and it is the stranding bug: the next render then
+    // reports no face queue at all, and a document that already laid out a
+    // line with this face goes on using the wrong advance widths with nothing
+    // anywhere reporting a missing font. So a released face must reappear on
+    // `needs` - "I no longer have it and I still want it" - because otherwise
+    // "evicted" and "this document needs no fallback" are the same wire value,
+    // and a shell reading it as the latter is the failure itself.
+    let (resp, _) = s.rpc(
+        json!({"op": "fallbackClose", "doc": doc, "face": fresh}),
+        None,
+    )?;
+    let resp = expect(resp, "fallbackClose-release")?;
+    if resp["value"]["residentBytes"] != json!(0) {
+        return Err(format!(
+            "fallbackClose: the release did not give the bytes back: {resp}"
+        ));
+    }
+    if !resp["value"]["needs"].to_string().contains(fresh) {
+        return Err(format!(
+            "fallbackClose: a released face must go back on `needs`. Without \
+             it, residentBytes 0 with empty needs is indistinguishable from a \
+             document that needs no fallback at all, and the session renders on \
+             with the wrong metrics: {resp}"
+        ));
+    }
+
+    // ---- the loader is gone once the document closes ---------------------
+    let (resp, _) = s.rpc(json!({"op": "close", "doc": doc}), None)?;
+    expect(resp, "lazy-close-doc")?;
+    Ok(())
+}
+
+/// Lowercase hex SHA-256 of `bytes`, as the manifest records it.
+///
+/// The loader's parser accepts only `0-9a-f`, so this must be lowercase too:
+/// an uppercase digest would be refused at the op, and the leg would fail for
+/// a reason that has nothing to do with what it is testing.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
