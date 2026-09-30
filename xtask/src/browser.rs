@@ -1026,6 +1026,22 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
 }
 
 /// Serve one connection: either the verdict POST, or a file out of `root`.
+///
+/// **Keep-alive is load-bearing, not an optimisation.** The app's module graph
+/// is ~40 files, and a browser fetches those over a handful of connections in
+/// parallel. This used to answer every file with `Connection: close`, so each of
+/// the 40 needed a fresh TCP connection — and under that load the browser
+/// *cancelled* some of them outright. A cancelled request is visible in
+/// `performance` as `responseStatus: 0` with a zero-byte body, which the
+/// dynamic `import()` reports as an undifferentiated
+/// `TypeError: Failed to fetch dynamically imported module`. The app was
+/// therefore flaky at roughly one run in two, on a machine where every file was
+/// present and served correctly by an ordinary `fetch` of the same URL.
+///
+/// Reusing the connection removes the contention rather than papering over it,
+/// and every response already carries an exact `Content-Length`, so framing is
+/// unambiguous. The loop ends when the client goes away, which surfaces as the
+/// read timeout or a reset rather than as a hang.
 fn handle_connection(
     stream: &TcpStream,
     root: &Path,
@@ -1036,59 +1052,78 @@ fn handle_connection(
     // for the length of the run.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut reader = stream.try_clone()?;
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    // Read through the blank line that ends the request head. One byte at a
-    // time is not a performance concern for a harness that serves a handful of
-    // files to one local browser, and it needs no buffering assumptions about
-    // what the browser packs into the first packet.
-    while !head.ends_with(b"\r\n\r\n") {
-        match reader.read(&mut byte) {
-            Ok(0) => return Ok(()),
-            Ok(_) => head.push(byte[0]),
-            // A socket the browser opened, never wrote to, and then abandoned
-            // is the normal case, not an error worth printing: a speculative
-            // or preconnect socket always ends this way.
-            Err(e) if is_idle(&e) => return Ok(()),
-            Err(e) => return Err(e),
-        }
-        if head.len() > MAX_REQUEST_HEAD {
-            return respond(
-                stream,
-                "431 Request Header Fields Too Large",
-                "text/plain",
-                b"",
-            );
-        }
-    }
-    let head = String::from_utf8_lossy(&head).to_string();
-    let mut parts = head.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let target = parts.next().unwrap_or_default().to_string();
 
-    if method == "POST" && target == RESULT_PATH {
-        let mut body = vec![0u8; content_length(&head)];
-        reader.read_exact(&mut body)?;
-        respond(stream, "204 No Content", "text/plain", b"")?;
-        let _ = stream.shutdown(Shutdown::Write);
-        if !reported.swap(true, Ordering::SeqCst) {
-            let _ = tx.send(String::from_utf8_lossy(&body).to_string());
+    loop {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        // Read through the blank line that ends the request head. One byte at a
+        // time is not a performance concern for a harness that serves a handful of
+        // files to one local browser, and it needs no buffering assumptions about
+        // what the browser packs into the first packet.
+        while !head.ends_with(b"\r\n\r\n") {
+            match reader.read(&mut byte) {
+                Ok(0) => return Ok(()),
+                Ok(_) => head.push(byte[0]),
+                // A socket the browser opened, never wrote to, and then abandoned
+                // is the normal case, not an error worth printing: a speculative
+                // or preconnect socket always ends this way. On a kept-alive
+                // connection this is also how the browser says it is done.
+                Err(e) if is_idle(&e) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+            if head.len() > MAX_REQUEST_HEAD {
+                return respond(
+                    stream,
+                    "431 Request Header Fields Too Large",
+                    "text/plain",
+                    b"",
+                );
+            }
         }
-        return Ok(());
-    }
+        let head = String::from_utf8_lossy(&head).to_string();
+        let mut parts = head.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_string();
+        let target = parts.next().unwrap_or_default().to_string();
 
-    let Some(path) = resolve(root, &target) else {
-        return respond(stream, "403 Forbidden", "text/plain", b"forbidden");
-    };
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let kind = content_type(&path);
-            respond(stream, "200 OK", kind, &bytes)?;
+        // The verdict POST is the last thing a run does, so the connection is
+        // finished here rather than left open for a request that never comes.
+        if method == "POST" && target == RESULT_PATH {
+            let mut body = vec![0u8; content_length(&head)];
+            reader.read_exact(&mut body)?;
+            respond(stream, "204 No Content", "text/plain", b"")?;
             let _ = stream.shutdown(Shutdown::Write);
-            Ok(())
+            if !reported.swap(true, Ordering::SeqCst) {
+                let _ = tx.send(String::from_utf8_lossy(&body).to_string());
+            }
+            return Ok(());
         }
-        Err(_) => respond(stream, "404 Not Found", "text/plain", b"not found"),
+
+        let Some(path) = resolve(root, &target) else {
+            respond(stream, "403 Forbidden", "text/plain", b"forbidden")?;
+            continue;
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let kind = content_type(&path);
+                respond(stream, "200 OK", kind, &bytes)?;
+            }
+            Err(_) => respond(stream, "404 Not Found", "text/plain", b"not found")?,
+        }
+        // No shutdown: the next request on this connection is the browser
+        // reusing it, which is the whole point.
+        if wants_close(&head) {
+            let _ = stream.shutdown(Shutdown::Write);
+            return Ok(());
+        }
     }
+}
+
+/// Whether the client asked for the connection to be closed after this response.
+fn wants_close(head: &str) -> bool {
+    head.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("connection:") && lower.contains("close")
+    })
 }
 
 /// Whether an I/O error just means "this socket went idle", rather than a
@@ -1214,16 +1249,21 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Write one complete response and close it.
+/// Write one complete response.
 ///
-/// `Connection: close` because the engine is about to be killed and a
-/// half-open keep-alive socket would only delay that. `Cache-Control: no-store`
-/// because the whole point of the worker check is that the *worker's* cache
-/// answers, and a served HTTP cache answering first would prove nothing.
+/// The response is NOT framed with `Connection: close` any more: the browser
+/// reuses the connection for the next module, which is what keeps a ~40-file
+/// module graph from being cancelled mid-load (see [`handle_connection`]).
+/// `Content-Length` is always exact, so the client knows where each response
+/// ends and where the next request begins.
+///
+/// `Cache-Control: no-store` stays, because the point of the worker check is
+/// that the *worker's* cache answers, and a served HTTP cache answering first
+/// would prove nothing.
 fn respond(stream: &TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+         Cache-Control: no-store\r\n\r\n",
         body.len()
     );
     let mut writer = stream.try_clone()?;

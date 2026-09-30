@@ -55,9 +55,19 @@
         windowedPages: null,
         appError: null,
         fatal: null,
+        // Populated by `report()` from `networkTrace()`. It is the difference
+        // between "the import failed" and "the browser never asked for it".
+        trace: null,
       };
 
       function report() {
+        // Attached on every report, pass or fail: the trace is what a reader
+        // needs when this goes red, and it costs nothing when it does not.
+        try {
+          out.trace = networkTrace();
+        } catch (e) {
+          out.trace = null;
+        }
         var body = JSON.stringify(out);
         document.getElementById("verdict").textContent =
           "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
@@ -89,7 +99,33 @@
         });
       }
 
-      // 1. The app's boot path, imported and run as the page would.
+      /**
+       * What the browser actually fetched, for the report.
+       *
+       * A dynamic-import failure says only "Failed to fetch dynamically
+       * imported module", which is the same message for a 404, a wrong MIME
+       * type and a request the browser ABORTED. Those have very different
+       * causes, and the third is invisible unless you look: an aborted request
+       * appears here as `status: 0` with a zero-byte body and a duration of a
+       * couple of milliseconds, while every other module in the same run
+       * returns 200. That is precisely how the ~35-module parallel load was
+       * caught, and it is why this is reported rather than left in a console.
+       */
+      function networkTrace() {
+        var entries = performance.getEntriesByType("resource");
+        var rows = [];
+        for (var i = 0; i < entries.length; i++) {
+          var e = entries[i];
+          rows.push({
+            name: e.name.replace(location.origin, ""),
+            status: e.responseStatus === undefined ? null : e.responseStatus,
+            decoded: e.decodedBodySize,
+            ms: Math.round(e.duration),
+          });
+        }
+        return rows;
+      }
+
       import("/assets/boot.js")
         .then(function () {
           out.boot = globalThis.__selisBoot || null;

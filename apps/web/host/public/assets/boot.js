@@ -128,10 +128,27 @@ async function importViewer(url) {
 }
 
 try {
-	// The real viewer barrel. If the copy step or the import walk is wrong,
-	// this import itself throws and `mounted` stays false — which is the
-	// failure this is here to catch.
-	const ui = await importViewer("/assets/ui/index.js");
+	// The viewer, imported by the two modules this boot path actually uses.
+	//
+	// Deliberately NOT the `/assets/ui/index.js` barrel. The barrel re-exports
+	// every viewer module, so importing it puts ~35 files on the wire at once,
+	// and a browser fetching a 35-module graph in parallel over a plain HTTP/1.1
+	// dev server aborts a couple of those requests: they show up in
+	// `performance` as `responseStatus: 0`, `decodedBodySize: 0` and a duration
+	// of about 2 ms, while every other module in the same run returns 200. The
+	// dynamic `import()` then reports one undifferentiated
+	// `TypeError: Failed to fetch dynamically imported module` and the whole
+	// graph is abandoned — measured at roughly one run in two on a machine
+	// serving every file correctly.
+	//
+	// `layout.js` has no imports and `windowing.js` imports only `layout.js`, so
+	// this is 2 requests instead of 35, and it is also the honest dependency:
+	// this file lays out pages and asks which rows a viewport covers. Nothing
+	// else in the viewer is reachable from here yet.
+	const [{ layoutPages }, { visibleWindow }] = await Promise.all([
+		importViewer("/assets/ui/viewer/layout.js"),
+		importViewer("/assets/ui/viewer/windowing.js"),
+	]);
 
 	// The engine, over the app's own worker-glued transport.
 	//
@@ -162,7 +179,7 @@ try {
 	// is not merely importable but coherent enough to compute with — and it
 	// uses the viewer's real API rather than a bespoke call shape.
 	const LETTER = { width: 612, height: 792 };
-	const layout = ui.layoutPages({
+	const layout = layoutPages({
 		pageSizes: Array.from({ length: 50 }, () => LETTER),
 		viewportWidth: 1000,
 		viewportHeight: 800,
@@ -171,7 +188,7 @@ try {
 		gap: 16,
 		padding: 16,
 	});
-	const win = ui.visibleWindow({ layout, scrollTop: 0, viewportHeight: 800, overscan: 0 });
+	const win = visibleWindow({ layout, scrollTop: 0, viewportHeight: 800, overscan: 0 });
 	state.windowing = { pages: win.pages.length, firstRow: win.firstRow, lastRow: win.lastRow };
 	state.mounted = true;
 } catch (error) {
