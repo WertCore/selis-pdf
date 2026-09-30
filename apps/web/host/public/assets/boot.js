@@ -342,9 +342,83 @@ function paintPage(page, mount) {
 	return { w: canvas.width, h: canvas.height, screenInk };
 }
 
-// Exposed for the browser check and for support. No document data, no URL —
-// nothing here could identify a file (ADR-P0017).
-globalThis.__selisApp = state;
+// ── searching ───────────────────────────────────────────────────────────────
+
+/** Correlation id for the JSON protocol. Monotonic; responses repeat it. */
+let nextRequestId = 1;
+
+/**
+ * One JSON-protocol round trip to the engine.
+ *
+ * `selis_render_page` is the raw perf ABI; `search` only exists on the versioned
+ * message protocol, so this speaks the wire format directly. Three things the
+ * ABI makes easy to get wrong, all consequences of the same fact:
+ *
+ *  - **Out-words are read AFTER the dispatch.** The call grows linear memory,
+ *    which detaches every typed-array view taken beforehand. Reading `resp_len`
+ *    first yields zero, and zero silently reads as "empty response".
+ *  - **The request is a copy**, freed as soon as the call returns.
+ *  - **The response block is the GUEST's.** `selis_dispatch` returns a pointer
+ *    into memory the engine owns and reuses; freeing it here is a double-free.
+ *    The attachment pointer, when one comes back, IS the host's to free. That
+ *    asymmetry is taken from the harness's `send()` in
+ *    `xtask/src/wasm_protocol.rs`, which is where this shape is proven.
+ *
+ * @param {object} body the op body; `v` and `id` are filled in here
+ * @param {Uint8Array|null} [payload] an optional binary attachment
+ * @returns {object} the parsed response
+ */
+function dispatch(body, payload = null) {
+	const ex = engineInstance.exports;
+	const request = new TextEncoder().encode(
+		JSON.stringify({ v: 1, id: nextRequestId++, ...body }),
+	);
+	const reqPtr = ex.selis_input_alloc(request.length);
+	if (!reqPtr) throw new Error("selis_input_alloc refused the request");
+	new Uint8Array(ex.memory.buffer, reqPtr, request.length).set(request);
+
+	let payloadPtr = 0;
+	let payloadLen = 0;
+	if (payload !== null && payload.length > 0) {
+		payloadLen = payload.length;
+		payloadPtr = ex.selis_input_alloc(payloadLen);
+		if (!payloadPtr) {
+			ex.selis_free(reqPtr, request.length);
+			throw new Error("selis_input_alloc refused the attachment");
+		}
+		new Uint8Array(ex.memory.buffer, payloadPtr, payloadLen).set(payload);
+	}
+
+	const outPtr = ex.selis_input_alloc(12);
+	if (!outPtr) throw new Error("selis_input_alloc refused the out-block");
+	const respPtr = ex.selis_dispatch(reqPtr, request.length, payloadPtr, payloadLen, outPtr);
+
+	const view = new DataView(ex.memory.buffer);
+	const respLen = view.getUint32(outPtr, true);
+	const outPayloadPtr = view.getUint32(outPtr + 4, true);
+	const outPayloadLen = view.getUint32(outPtr + 8, true);
+
+	// The guest's response block is NOT freed here; only our own inputs and the
+	// attachment it handed back are ours to release.
+	const response = JSON.parse(
+		new TextDecoder().decode(new Uint8Array(ex.memory.buffer, respPtr, respLen)),
+	);
+	if (outPayloadLen > 0) ex.selis_free(outPayloadPtr, outPayloadLen);
+	ex.selis_free(reqPtr, request.length);
+	if (payloadLen > 0) ex.selis_free(payloadPtr, payloadLen);
+	ex.selis_free(outPtr, 12);
+	return response;
+}
+
+/**
+ * The search field and its result line, or `null` until `searchControls` builds
+ * them.
+ *
+ * Declared here, above the mount, rather than beside `searchControls` further
+ * down: the mount calls `searchControls()`, and a `const` declared after that
+ * point is still in its temporal dead zone when the call runs.
+ */
+const searchUi = { input: null, readout: null };
 
 const root = document.getElementById("selis-app");
 if (root !== null) {
@@ -352,6 +426,12 @@ if (root !== null) {
 	if (state.mounted) {
 		root.textContent =
 			`Selis is ready. Viewer mounted (${state.engine?.exports ?? 0} engine exports).`;
+		// The search field is part of the VIEWER, not something built on first
+		// use. Building it lazily inside `reportSearch` meant it did not exist
+		// until a search had already run, which is the wrong order: a user has
+		// to be able to see the box to type in it, and the browser check failed
+		// with "the app exposed no search field" for exactly this reason.
+		searchControls();
 	} else {
 		root.textContent = `Selis failed to start: ${state.error ?? "unknown"}`;
 	}
@@ -374,6 +454,10 @@ globalThis.__selisView = function (base64) {
 	return painted === null ? { ...opened, painted: null } : { ...opened, painted };
 };
 
+// Exposed for the browser check and for support. No document data, no URL —
+// nothing here could identify a file (ADR-P0017).
+globalThis.__selisApp = state;
+
 // ── the offline layer ──────────────────────────────────────────────────────
 
 registerServiceWorker().then((result) => {
@@ -383,3 +467,139 @@ registerServiceWorker().then((result) => {
 		? { registered: true, scope: result.scope }
 		: { registered: false, reason: result.reason };
 });
+
+// ── searching ───────────────────────────────────────────────────────────────
+
+/** The open document for search, as the engine's handle, or `null`. */
+let searchDoc = null;
+
+/** Which document `searchDoc` holds, so a different one reopens it. */
+let searchDocKey = "";
+
+/**
+ * Open `bytes` for searching unless it is already the open document.
+ *
+ * Opened once and kept, because a shell that reports every keystroke must not
+ * re-parse the document per character.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {number} the document handle
+ */
+function searchDocumentHandle(bytes) {
+	const key = `${bytes.length}:${bytes[0]}:${bytes[1]}:${bytes[bytes.length - 1]}`;
+	if (searchDoc !== null && searchDocKey === key) return searchDoc;
+	const opened = dispatch(
+		{ op: "open", src: { kind: "bytes", len: bytes.length }, budget: { surface: "viewer" } },
+		bytes,
+	);
+	if (opened.ok !== true) {
+		searchDoc = null;
+		searchDocKey = "";
+		throw new Error(`open refused: ${opened.code ?? "unknown"} ${opened.message ?? ""}`.trim());
+	}
+	searchDoc = opened.value.doc;
+	searchDocKey = key;
+	return searchDoc;
+}
+
+/**
+ * The search box and its result line.
+ *
+ * A real `<input type="search">` with a label, not a function the check calls:
+ * the DoD names a user verb, and a user types into a field. The check drives
+ * this element, so it verifies the same path a person's keystrokes take.
+ */
+function searchControls() {
+	if (searchUi.input !== null) return searchUi;
+	if (root === null) return null;
+	const input = document.createElement("input");
+	input.type = "search";
+	input.id = "selis-search";
+	const label = document.createElement("label");
+	label.htmlFor = "selis-search";
+	label.textContent = "Find in document";
+	const readout = document.createElement("p");
+	readout.id = "selis-search-result";
+	readout.setAttribute("role", "status");
+	readout.setAttribute("aria-live", "polite");
+	root.appendChild(label);
+	root.appendChild(input);
+	root.appendChild(readout);
+	searchUi.input = input;
+	searchUi.readout = readout;
+	return searchUi;
+}
+
+/**
+ * Show the outcome in words a user can act on.
+ *
+ * The cases are worded differently on purpose, and `lowConfidencePages` gets
+ * its own clause rather than being folded into the count: "0 results" when the
+ * engine could not read a page is a lie the user has no way to detect.
+ */
+function reportSearch(query, total, lowConfidence, matches) {
+	const ui = searchControls();
+	if (ui === null) return;
+	if (query === "") {
+		ui.readout.textContent = "";
+		return;
+	}
+	const noun = total === 1 ? "result" : "results";
+	ui.readout.textContent =
+		`${total} ${noun} for "${query}"` +
+		(lowConfidence > 0 ? ` (${lowConfidence} page(s) could not be read)` : "") +
+		(matches.length > 0 ? `: ${matches[0].text}` : "");
+}
+
+/**
+ * Search a document and report the outcome in the UI.
+ *
+ * The engine's counts are returned rather than a boolean, because "not found"
+ * and "found nothing because a page could not be read" are different answers
+ * to the same question, and the caller has to be able to tell them apart
+ * (SL-3.TEXT.10).
+ *
+ * @param {string} base64 the document
+ * @param {string} query what to look for
+ * @returns {object} `{status, total, truncated, lowConfidencePages, matches}`
+ */
+globalThis.__selisSearch = function (base64, query) {
+	try {
+		const binary = atob(base64);
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		const doc = searchDocumentHandle(bytes);
+		const reply = dispatch({ op: "search", doc, query });
+		if (reply.ok !== true) {
+			return { status: "refused", detail: `${reply.code ?? "unknown"}` };
+		}
+		// A `search` reply is `{ok:true, value:{...}}`. Anything else is a wire
+		// shape the app does not understand, and saying so beats a TypeError
+		// three frames deeper with no hint what actually arrived.
+		const value = reply.value;
+		if (value === undefined || value === null) {
+			throw new Error(`the search reply carried no value: ${JSON.stringify(reply)}`);
+		}
+		if (!Array.isArray(value.matches)) {
+			throw new Error(`the search reply carried no matches: ${JSON.stringify(reply)}`);
+		}
+		const matches = value.matches.map((m) => ({
+			page: m.page,
+			text: m.text,
+			// The engine's own rectangle, in PDF points, carried through
+			// untouched. A shell that recomputed geometry from its own layout
+			// would be measuring itself rather than the engine.
+			rect: m.rect,
+		}));
+		reportSearch(query, value.total, (value.lowConfidencePages ?? []).length, matches);
+		return {
+			status: "ok",
+			total: value.total,
+			truncated: value.truncated,
+			lowConfidencePages: value.lowConfidencePages ?? [],
+			matches,
+		};
+	} catch (error) {
+		return { status: "threw", detail: error instanceof Error ? error.message : String(error) };
+	}
+};

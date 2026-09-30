@@ -43,7 +43,7 @@
       asking the app to display a document somewhere it had not been given.
     -->
     <main id="selis-app" aria-busy="true">
-      <p>Loading Selis PDF Viewer…</p>
+      <p>Loading Selis PDF Viewerâ€¦</p>
     </main>
 
     <script type="module">
@@ -105,6 +105,19 @@
       var FIXTURE_PDF_B64 =
         "JVBERi0xLjcKJeLjz9MKPDwgL1R5cGUgL0NhdGFsb2cgL1BhZ2VzIDIgMCBSID4+Cjw8IC9UeXBlIC9QYWdlcyAvS2lkcyBbMyAwIFJdIC9Db3VudCAxID4+Cjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCA+PiAvQ29udGVudHMgNCAwIFIgPj4KPDwgL0xlbmd0aCA1NSA+PgpzdHJlYW0KMC44NSAwLjIgMC4xIHJnIDcyIDYyMCAyMDAgMTAwIHJlIGYKMC4xIDAuMyAwLjggcmcgNzIgNDgwIDMwMCA2MCByZSBmCmVuZHN0cmVhbQp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA0OSAwMDAwMCBuIAowMDAwMDAwMDkxIDAwMDAwIG4gCjAwMDAwMDAxODAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA1IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgoxNQolJUVPRgo=";
 
+
+      // A SECOND fixture, with TEXT. The rectangles above are the right choice
+      // for the render assertion - two rectangles make the expected ink an
+      // exact number - but they contain no glyphs at all, so searching them
+      // would return zero and pass while proving nothing. Searching is only
+      // meaningful against a document the engine can actually read.
+      //
+      // This one draws exactly the words "Selis search probe" once, with
+      // Helvetica, so the expected answer is a known exact number rather than
+      // "some results appeared". Verified to extract as that exact string
+      // before being committed here.
+      var TEXT_PDF_B64 =
+        "JVBERi0xLjcKJeLjz9MKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTAgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA3MDAgVGQgKFNlbGlzIHNlYXJjaCBwcm9iZSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDM0NCAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQ0MwolJUVPRgo=";
       function report() {
         // Attached on every report, pass or fail: the trace is what a reader
         // needs when this goes red, and it costs nothing when it does not.
@@ -216,6 +229,35 @@
           // What the browser itself holds on the canvas after the upload. If
           // this is null the page never got shown no matter what `ink` said.
           out.view = view.painted === undefined ? null : view.painted;
+
+          // 1c. SEARCH, driven through the real input element.
+          //
+          //     The field is the app's own `<input type="search">`; the value
+          //     is set and an `input` event dispatched, so this is the path a
+          //     person's keystrokes take, not a function the check calls.
+          var field = document.getElementById("selis-search");
+          if (!field) throw new Error("the app exposed no search field");
+          field.value = "search";
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+
+          // A query the document DOES contain. The expected answer is a known
+          // exact number - one occurrence of one word - not "some results".
+          out.searchHit = globalThis.__selisSearch(TEXT_PDF_B64, "search");
+
+          // A query the document does NOT contain. Without this leg the check
+          // cannot tell a real search from a stub that always answers "found":
+          // an implementation that ignored the query entirely would pass on
+          // the hit alone. This is the leg that discriminates.
+          out.searchMiss = globalThis.__selisSearch(TEXT_PDF_B64, "zzzznotpresent");
+
+          // Case-insensitivity is the engine's documented default (matched
+          // after normalisation, case-insensitive unless matchCase), so an
+          // uppercase spelling of a word present in lowercase must also hit.
+          out.searchCase = globalThis.__selisSearch(TEXT_PDF_B64, "SELIS");
+
+          // What the user actually sees on screen.
+          out.searchReadout =
+            (document.getElementById("selis-search-result") || {}).textContent || null;
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

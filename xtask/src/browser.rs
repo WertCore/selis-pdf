@@ -836,6 +836,85 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // The DoD's third verb: search, against a document that actually contains
+    // text. Three legs, and each is here to stop a specific way of faking it.
+    //
+    // The hit must be the EXACT known count. This fixture draws one word once,
+    // so "at least one result" would pass on an implementation that matched
+    // everything.
+    let hit = report
+        .get("searchHit")
+        .ok_or_else(|| "the app never ran a search (searchHit = None)".to_string())?;
+    let hit_total = hit
+        .get("total")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "the search reported no total".to_string())?;
+    if hit.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!("the search did not run: {hit}"));
+    }
+    if hit_total != 1 {
+        return Err(format!(
+            "searching for a word the document contains once returned {hit_total} results, \
+             expected exactly 1 -- the query is not reaching the text layer"
+        ));
+    }
+    // The match must carry the document's own words back, not just a count.
+    // A stub could satisfy the count and return nothing to highlight.
+    let matched = hit
+        .get("matches")
+        .and_then(Json::as_array)
+        .and_then(|matches| matches.first())
+        .and_then(|m| m.get("text"))
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !matched.contains("search") {
+        return Err(format!(
+            "the search found {hit_total} result(s) but the matched text is {matched:?} -- a count \
+             with nothing behind it"
+        ));
+    }
+
+    // The discriminating leg: a word that is NOT in the document must come back
+    // empty. Without this the whole search verdict is satisfiable by an
+    // implementation that ignores its query and always answers "found".
+    let miss = report
+        .get("searchMiss")
+        .ok_or_else(|| "the app never ran the control search (searchMiss = None)".to_string())?;
+    let miss_total = miss.get("total").and_then(Json::as_u64).unwrap_or(u64::MAX);
+    if miss_total != 0 {
+        return Err(format!(
+            "searching for a word the document does NOT contain returned {miss_total} results -- \
+             the search answers \"found\" regardless of the query"
+        ));
+    }
+
+    // Case-insensitivity is the engine's documented default; if it silently
+    // became case-sensitive this is where it shows.
+    let upper = report
+        .get("searchCase")
+        .and_then(|reply| reply.get("total"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if upper != 1 {
+        return Err(format!(
+            "an uppercase spelling of a word present in lowercase returned {upper} results, \
+             expected 1 -- case folding is not working"
+        ));
+    }
+
+    // The verdict is not a return value the user never sees: the result line
+    // must actually say what happened, or this is an API and not a search.
+    let readout = report
+        .get("searchReadout")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !readout.contains("1 result") {
+        return Err(format!(
+            "the search worked but the page shows {readout:?} -- a user would not learn that \
+             their query was found"
+        ));
+    }
+
     Ok(())
 }
 
