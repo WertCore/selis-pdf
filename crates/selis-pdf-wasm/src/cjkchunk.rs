@@ -236,6 +236,21 @@ fn hex_val(c: &u8) -> Option<u8> {
 }
 
 /// The SHA-256 of `bytes`, lowercase hex.
+///
+/// # Budget
+///
+/// None, and none is needed: the digest is a single pass over the caller's
+/// bytes into a fixed 32-byte hash, and the only allocation is the 64-byte
+/// `String` returned. Nothing here scales with `bytes.len()`, so there is no
+/// document-derived length to charge — the *caller* has already charged the
+/// attachment against its `BudgetGuard` before these bytes exist.
+///
+/// # Malformed Input
+///
+/// None is possible: every byte string has exactly one SHA-256, and this
+/// returns it. Rejecting bad bytes is [`CjkChunkLoader::accept`]'s job, by
+/// comparing the result against the claim; a helper that could fail would only
+/// give that comparison a second way to be wrong.
 pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(64);

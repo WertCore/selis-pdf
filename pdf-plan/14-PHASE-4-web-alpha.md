@@ -118,6 +118,29 @@ proves the engine in the harshest environment, and it costs nothing to distribut
     at the IO layer, so this task is the fetch driver that drives it — 2 226 lines across
     `httprange.rs` (1 347), the guest surface, `protocol.rs`, `worker.rs` and the harness.
 - [x] **SL-4.WASM.07 — Lazy font chunk loading** · deps: SL-3.FONT.10, WASM.02 · owner: AI+
+  - **Status (annotated 2026-09-30 by the SL-3.FONT.10 DoD re-check — the tick
+    stands, but this box has carried no `Do`/`DoD` text at all, and the honest
+    split is worth writing down):** what shipped is the **protocol and the two
+    ends of it, not a shell**. On the guest side, `cjkchunk.rs` (SHA-256
+    verification, bounded attempts, SFNT re-parse, `unavailable` vs `exhausted`
+    vs `refused`, `cjkClose` eviction) and the mirror-image `fallbackchunk.rs`,
+    wired as `cjkOpen`/`cjkChunk`/`cjkClose` and
+    `fallbackOpen`/`fallbackFace`/`fallbackClose` in `worker.rs`, with
+    `render_page_lazy` composing both walks. On the shell side,
+    `packages/wasm-loader/src/lazy-payload.ts` — one `LazyPayloadClient` over
+    both payloads, with the CJK render-then-fetch and fallback
+    fetch-then-render orderings kept deliberately separate.
+    **What does not exist is a caller.** `LazyPayloadClient` is imported by
+    nothing outside its own two test files; there is no Cache Storage /
+    HTTP-cache `LazyByteSource` implementation anywhere; and
+    `cargo xtask wasm-protocol`, which does carry a conformance leg for the
+    range exchange, has **no leg for the CJK or fallback ops**, so the
+    TypeScript client and the guest it addresses have never been run against
+    each other by any harness, in Node or in a browser. The client is also
+    name-blind by design (ADR-P0044), so it must be *wired* to a host rather
+    than reach for `caches` itself — which is precisely the work this tick
+    currently stands in for. The web-visible consequence is tracked on
+    SL-3.FONT.10, whose DoD is the thing that needs a real browser.
 - [x] **SL-4.WASM.08 — Deterministic-render CI on WASM** · deps: WASM.03 · owner: AI
   - **DoD:** Headless-browser render of the corpus hash-matches the native render.
   - `cargo xtask wasm-browser` renders the corpus in a real V8 (headless Microsoft Edge, a

@@ -143,15 +143,50 @@ the finding cannot be quietly forgotten when someone re-chunks it.
 ```sh
 cargo xtask cjk-fetch noto-sans-sc target/cjk-src
 cargo xtask cjk-build target/cjk-src/NotoSansSC-wght.ttf \
-    --out target/cjk --source-id noto-sans-sc
+    --out target/cjk --source-id noto-sans-sc --core-list assets/cjk/core-list.txt
 cargo xtask cjk-verify target/cjk --scope full
 cargo xtask cjk-verify assets --scope manifest   # the record in this repo
 ```
 
-The build is deterministic: the same source bytes produce the same payload
-bytes, and `manifest.json`'s SHA-256s are therefore stable across machines and
-runs (`cjk-verify --scope full` is what proves a *published* payload is the one
-this pipeline produces).
+> **`--core-list` is not optional, and omitting it silently produces a
+> different payload.** Measured 2026-09-30 (SL-3.FONT.10 DoD re-check): the
+> command *as previously written here* — no `--core-list` — verifies clean and
+> passes every budget gate, but builds a **295 080 B raw / 135 699 B brotli**
+> core and a **10 167 248 B / 4 698 914 B** payload, against this record's
+> **1 290 100 / 641 043** and **11 162 268 / 5 204 258**. The core comes out
+> 4.4x smaller, and the same 15 chunk ids are emitted with different contents
+> and different sizes — the core list decides which code points are lifted out
+> of each range before the remainder is chunked, so every digest in the manifest
+> moves with it. `cjk-verify` cannot catch this: it re-derives the claims of
+> whatever manifest sits beside the files, so a payload built the wrong way
+> verifies the wrong way. The flag is now in the command above for that reason.
+
+The build is deterministic: the same source bytes **and the same core list**
+produce the same payload bytes, and `manifest.json`'s SHA-256s are therefore
+stable across machines and runs (`cjk-verify --scope full` is what proves a
+*published* payload is the one this pipeline produces). The core list is part
+of the input, not a convenience: it decides which code points are resident
+before any chunk is fetched, so it is a compatibility surface exactly as much
+as the chunk table is.
+
+### Measuring a document against a built payload
+
+```sh
+cargo xtask cjk-measure target/cjk path/to/document.txt
+```
+
+`cjk-measure` reads the **core file's own cmap**, not the range table, to decide
+what the core already answers — a common character often also lives in a chunk
+range, and asking at range level over-reports badly. It therefore needs `cjk/core.ttf` beside the
+manifest; without it, it warns and falls back to the range-level answer. For
+the render-level measurement — which chunks a page actually requests, what
+resolves to a real glyph, and what the notdef-then-repaint sequence costs in
+ink and bytes — see `crates/selis-pdf-engine/tests/cjk_real_payload.rs`, which
+is `#[ignore]`d (it needs this payload) and finds `target/cjk` on its own:
+
+```sh
+cargo test -p selis-pdf-engine --test cjk_real_payload -- --ignored --nocapture
+```
 
 ## What a consumer is expected to do with it
 
