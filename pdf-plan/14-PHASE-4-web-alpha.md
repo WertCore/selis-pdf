@@ -408,9 +408,55 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       paired generator produces an unmeasurable run. Multi-page is gated on a TWO-page fixture
       (small pages, ~4 MB) because a one-page document cannot distinguish a document-wide print from
       "render page 0 and stop" - which is a perfectly green way to drop 99% of a document.
-- [ ] **SL-4.UI.09 — Document health panel** · deps: SL-1.COS.11 · owner: AI
+- [x] **SL-4.UI.09 — Document health panel** · deps: SL-1.COS.11 · owner: AI
   - **Do:** Surface deviations, conformance claims, encryption state, signature presence, and
     tagging status. Honest reporting as a feature.
+  - **Note:** Every row the panel shows is MEASURED, and the module is organised around what it
+    is forbidden to say — which is the only honest reading of "honest reporting as a feature".
+      1. **A signature is never `ok`.** Nothing in this codebase verifies a signature (no CMS
+         check, no chain, no revocation), so there is no input that can produce a verified
+         state and the enum has no such variant. The wire value is the STRING `"absent"` /
+         `"present"`, not a boolean, so a shell cannot read `true` as validity; presence comes
+         from the AcroForm's `/SigFlags` bit 1 (ISO 32000-2 §12.7.3.2), which is a declaration
+         by the producing application and says nothing about the signature itself.
+      2. **Untagged is a `notice`, never a `warn`.** Most PDFs are untagged; warning on the
+         commonest fact in the format trains a reader to ignore the row that matters.
+      3. **A gap is a ROW, not a blank.** An omitted row and a clean row look identical on screen
+         and only one of them is true. A clear document therefore reports `permissions: null` —
+         absent because there was no grant — rather than a synthesised all-permissions object,
+         which would read as "this document is unrestricted".
+    Conformance rule results are deliberately NOT in the panel: they can fail, they are a
+    separate evaluation (`Session::conformance`), and a report a panel might refuse is a report
+    it cannot render.
+    - **The deviation list is the part that needed real work, and the tests found it twice.**
+      The first version lexed the whole file and reported **11 `unknown-word`** for a clean
+      document (content-stream operators are bare words the COS lexer does not know); after
+      filtering those, a REAL clean document reported **70+** — 68 `invalid-hex-digit` and a tail
+      of string, paren and delimiter errors, every one of them a byte of one of the fixture's
+      two embedded font programs. Most of a PDF is opaque binary, so a whole-file lex counts
+      embedded DATA rather than document defects, and a panel saying "70 deviations" about a
+      clean file has taught its reader to ignore the number. Fixed structurally:
+      `Lexer::skip_stream_body` moves past stream bodies, and the residual `unknown-word` set is
+      then small and fully enumerated — exactly the 7 file-structure keywords (`xref`,
+      `trailer`, `startxref`, `n`, `f`) no conforming PDF can avoid. A test pins that count at 7
+      so the filter cannot quietly widen into "remove everything" and pass a zero assertion.
+    - **Two limits recorded rather than hidden.** A body containing a syntactically valid
+      `\nendstream\n` is genuinely ambiguous and the skip ends early; the consequence is bounded
+      and safe (spurious entries, never a lost deviation, never a crash). And
+      `Session::deviations` re-lexes on demand rather than reading a retained list, because
+      threading a sink through every object-resolution path in the engine is a wide change to a
+      hot path bought for a report the user asks for explicitly.
+    - **The i18n gate caught the panel writing prose inline**, which is the rule ADR-P0034 exists
+      for and the reason it matters here: every sentence is something a reader will act on. The
+      words moved to `strings.ts` (`EN_HEALTH_CATALOGUE` + `createHealthStrings`), the panel keeps
+      the decisions and takes the words as an argument. The signed string keeps "not verified"
+      inside the string itself so a translator cannot drop the qualifier and leave a bare
+      "Signed".
+    - **Measured in real Edge**, through the app's own button: `pages` ok, `encrypted` ok,
+      `tagged` **notice** (rule 2, end to end in a browser rather than a unit test), `signature`
+      ok, `deviations` ok. The Rust verdict checks rows individually — a signed document reported
+      `ok` fails, an untagged document warned about fails, and a clean fixture reporting
+      structural problems fails.
 - [x] **SL-4.UI.10 — Design system + theming** · owner: AI
   - **Do:** `packages/ui-kit`, light/dark, high contrast, reduced motion, and a density setting.
   - **Note:** Token data is the single source of truth in `packages/ui-kit/src/tokens/`
