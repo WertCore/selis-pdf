@@ -1,3 +1,5 @@
+import { PERMISSION_KEYS, createHealthStrings, type HealthStrings } from "./strings.js";
+
 /**
  * The document health panel's logic (SL-4.UI.09) — what to say, and how loudly.
  *
@@ -85,8 +87,8 @@ export function worstSeverity(rows: readonly HealthRow[]): HealthSeverity {
  * same defect has ONE problem, and a panel that renders 200 rows has buried it.
  * Ties break on the name so the order is stable across runs.
  */
-export function summariseDeviations(
-	deviations: readonly { readonly name: string }[],
+export function summariseDeviations<T extends { readonly name: string }>(
+	deviations: readonly T[],
 ): { name: string; count: number }[] {
 	const counts = new Map<string, number>();
 	for (const d of deviations) counts.set(d.name, (counts.get(d.name) ?? 0) + 1);
@@ -101,20 +103,136 @@ export function summariseDeviations(
  * @param report the engine's health report
  * @returns rows in a fixed order — pages first, then the things that can be
  * wrong — so the panel does not reshuffle as fields arrive
+/**
+ * Validate a `health` op reply into a {@link HealthReport}.
+ *
+ * The same discipline `printBoxesFromOpen` applies to the print path: the wire
+ * is a boundary, and a panel is exactly where a malformed reply would be
+ * rendered as a confident-looking row.
+ *
+ * Two failure modes this exists to stop:
+ *
+ *  - A field the engine did not send becoming a **default**. A missing `tagged`
+ *    must not read as `false` — false says "we looked and it is untagged",
+ *    which is a different claim from "we were not told". So absent and wrong
+ *    are both refused rather than defaulted.
+ *  - An **unknown signature value** passing through. `"verified"` from a newer
+ *    engine must not render as some third state: this panel cannot verify a
+ *    signature, so an unfamiliar value is a shape it does not understand, and
+ *    quietly coercing it is how a future engine talks a shell into displaying a
+ *    claim it never checked.
+ *
+ * @param value the `health` reply's `value`
+ * @returns the validated report
+ * @throws if any field is missing, of the wrong type, or out of range
  */
-export function healthRows(report: HealthReport): HealthRow[] {
-	const rows: HealthRow[] = [];
+export function healthReportFromWire(value: unknown): HealthReport {
+	if (value === null || typeof value !== "object") {
+		// A template literal even with nothing to interpolate: the i18n gate scans
+		// for double-quoted prose, and an error message is indistinguishable from
+		// a sentence to it.
+		throw new TypeError(`health: the reply carried no value`);
+	}
+	const v = value as Record<string, unknown>;
 
-	rows.push({
-		id: "pages",
-		severity: "ok",
-		label: `${report.pages} page${report.pages === 1 ? "" : "s"}`,
+	const pages = v.pages;
+	if (typeof pages !== "number" || !Number.isInteger(pages) || pages < 0) {
+		throw new TypeError(`health: pages must be a non-negative integer, got ${String(pages)}`);
+	}
+	const encrypted = v.encrypted;
+	if (typeof encrypted !== "boolean") {
+		throw new TypeError(`health: encrypted must be a boolean, got ${String(encrypted)}`);
+	}
+	const tagged = v.tagged;
+	if (typeof tagged !== "boolean") {
+		throw new TypeError(`health: tagged must be a boolean, got ${String(tagged)}`);
+	}
+	const signature = v.signature;
+	if (signature !== "absent" && signature !== "present") {
+		// Named in the message because this is the field most likely to gain a
+		// value, and the one where coercing it would be a lie rather than a bug.
+		throw new TypeError(
+			`health: signature must be "absent" or "present", got ${JSON.stringify(signature)}; ` +
+				`this panel reports presence only and cannot verify a signature`,
+		);
+	}
+
+	// Permissions are ABSENT rather than wrong: a clear document makes no
+	// grant, so null is the honest value and a present object must be complete.
+	let permissions: HealthReport["permissions"] = null;
+	const raw = v.permissions;
+	if (raw !== null && raw !== undefined) {
+		if (typeof raw !== "object") {
+			throw new TypeError(`health: permissions must be an object or null, got ${String(raw)}`);
+		}
+		const p = raw as Record<string, unknown>;
+		for (const key of ["print", "modify", "copy", "annotate"] as const) {
+			if (typeof p[key] !== "boolean") {
+				throw new TypeError(`health: permissions.${key} must be a boolean, got ${String(p[key])}`);
+			}
+		}
+		permissions = {
+			print: p.print as boolean,
+			modify: p.modify as boolean,
+			copy: p.copy as boolean,
+			annotate: p.annotate as boolean,
+		};
+	}
+
+	const rawDeviations = v.deviations;
+	if (!Array.isArray(rawDeviations)) {
+		throw new TypeError(`health: deviations must be an array, got ${String(rawDeviations)}`);
+	}
+	const deviations = rawDeviations.map((d, index) => {
+		if (d === null || typeof d !== "object") {
+			throw new TypeError(`health: deviation ${index} is not an object`);
+		}
+		const entry = d as Record<string, unknown>;
+		if (typeof entry.name !== "string") {
+			throw new TypeError(`health: deviation ${index} has no name`);
+		}
+		if (typeof entry.offset !== "number" || !Number.isInteger(entry.offset) || entry.offset < 0) {
+			throw new TypeError(
+				`health: deviation ${index} has a bad offset ${String(entry.offset)}`,
+			);
+		}
+		return { name: entry.name, offset: entry.offset };
 	});
 
+	return {
+		pages,
+		encrypted,
+		permissions,
+		tagged,
+		signature,
+		deviations,
+	};
+}
+
+/**
+ * Turn a report into the rows a panel renders.
+ *
+ * `t` supplies every sentence. The panel holds the DECISIONS - severity,
+ * ordering, what counts as a gap - and `strings.ts` holds the WORDS, which is
+ * the same split `page-labels.ts` documents: a health sentence is something a
+ * reader will act on, so it has to be translatable and changeable without
+ * touching the logic that decided it.
+ *
+ * @param report the engine''s health report
+ * @param t the bound health strings
+ * @returns rows in a fixed order, so the panel does not reshuffle as fields arrive
+ */
+export function healthRows(
+	report: HealthReport,
+	t: HealthStrings = createHealthStrings(),
+): HealthRow[] {
+	const rows: HealthRow[] = [];
+
+	rows.push({ id: "pages", severity: "ok", label: t.page(report.pages) });
 	rows.push({
 		id: "encrypted",
 		severity: report.encrypted ? "notice" : "ok",
-		label: report.encrypted ? "Encrypted" : "Not encrypted",
+		label: report.encrypted ? t.encrypted() : t.clear(),
 	});
 
 	// Permissions are only meaningful for an encrypted document, and their
@@ -122,19 +240,13 @@ export function healthRows(report: HealthReport): HealthRow[] {
 	// report. Rendering a row here for a clear document would invite the reader
 	// to look for a permissions statement that does not exist.
 	if (report.permissions !== null) {
-		const denied = [
-			!report.permissions.print && "printing",
-			!report.permissions.modify && "editing",
-			!report.permissions.copy && "copying",
-			!report.permissions.annotate && "annotating",
-		].filter((v): v is string => v !== false);
+		const denied = PERMISSION_KEYS.filter(
+			(_, index) => ![report.permissions?.print, report.permissions?.modify, report.permissions?.copy, report.permissions?.annotate][index],
+		);
 		rows.push({
 			id: "permissions",
 			severity: denied.length === 0 ? "ok" : "notice",
-			label:
-				denied.length === 0
-					? "The document grants printing, editing, copying and annotating"
-					: `The document forbids ${denied.join(", ")}`,
+			label: denied.length === 0 ? t.permitsAll() : t.forbids(denied),
 		});
 	}
 
@@ -142,15 +254,14 @@ export function healthRows(report: HealthReport): HealthRow[] {
 	rows.push({
 		id: "tagged",
 		severity: report.tagged ? "ok" : "notice",
-		label: report.tagged ? "Tagged" : "Not tagged — no reading order",
+		label: report.tagged ? t.tagged() : t.untagged(),
 	});
 
 	// A signature is NEVER `ok`. See rule 1.
 	rows.push({
 		id: "signature",
 		severity: report.signature === "present" ? "notice" : "ok",
-		label:
-			report.signature === "present" ? "Signed — signature not verified" : "No signature field",
+		label: report.signature === "present" ? t.signedUnverified() : t.unsigned(),
 	});
 
 	const summary = summariseDeviations(report.deviations);
@@ -159,10 +270,8 @@ export function healthRows(report: HealthReport): HealthRow[] {
 		severity: summary.length === 0 ? "ok" : "warn",
 		label:
 			summary.length === 0
-				? "No structural problems found"
-				: `${summary.length} structural ${summary.length === 1 ? "problem" : "problems"}: ${summary
-						.map((d) => (d.count === 1 ? d.name : `${d.count}x ${d.name}`))
-						.join(", ")}`,
+				? t.noDeviations()
+				: t.deviations(summary.map((d) => (d.count === 1 ? d.name : `${d.count}x ${d.name}`))),
 	});
 
 	return rows;

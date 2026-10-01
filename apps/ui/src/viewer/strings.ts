@@ -414,6 +414,106 @@ export const NAVIGATION_MESSAGE_KEYS = [
 
 /** A key into {@link NAVIGATION_MESSAGE_KEYS}. */
 export type NavigationMessageKey = (typeof NAVIGATION_MESSAGE_KEYS)[number];
+/**
+ * A set of document-health templates keyed by message key (SL-4.UI.09).
+ *
+ * The health panel is the module where this rule bites hardest, and the reason
+ * is not tidiness. A health report exists to tell a reader whether a document is
+ * sound, and every sentence in it is something a reader will act on: "Signed -
+ * signature not verified" is a decision, not decoration. Inline literals would
+ * make those sentences untranslatable and, worse, unversionable - a wording
+ * change to a claim about a document would be a code change in the middle of
+ * logic that has nothing to do with wording.
+ *
+ * So the panel holds the *decisions* (severity, ordering, what counts as a gap)
+ * and this file holds the *words*. `healthRows` takes the catalogue as an
+ * argument, which is also what makes it testable without a DOM.
+ */
+export type HealthCatalogue = Readonly<Record<string, string>>;
+
+/** The health panel's bound strings. */
+export interface HealthStrings {
+	/** Row text for the page count. */
+	page(count: number): string;
+	/** Row text when the document is encrypted. */
+	encrypted(): string;
+	/** Row text when the document is clear. */
+	clear(): string;
+	/** Row text naming everything the document forbids. */
+	permitsAll(): string;
+	/** Row text naming what the document forbids. */
+	forbids(what: readonly string[]): string;
+	/** Row text for a tagged document. */
+	tagged(): string;
+	/** Row text for an untagged document. */
+	untagged(): string;
+	/** Row text for a document with no signature field. */
+	unsigned(): string;
+	/**
+	 * Row text for a document with a signature field.
+	 *
+	 * Says "not verified" in the string itself rather than leaving it to the
+	 * panel, so a translator cannot drop the qualifier and leave a bare
+	 * "Signed", which is the single most misleading string this feature could
+	 * ship.
+	 */
+	signedUnverified(): string;
+	/** Row text when the object syntax is clean. */
+	noDeviations(): string;
+	/** Row text naming the structural problems found. */
+	deviations(what: readonly string[]): string;
+	/** Row text when the report itself could not be read. */
+	unavailable(why: string): string;
+}
+
+/** English health catalogue. */
+export const EN_HEALTH_CATALOGUE: HealthCatalogue = {
+	"health.page": "{count} pages",
+	"health.encrypted": "Encrypted",
+	"health.clear": "Not encrypted",
+	"health.permits.all": "The document grants printing, editing, copying and annotating",
+	"health.forbids": "The document forbids {what}",
+	"health.tagged": "Tagged",
+	"health.untagged": "Not tagged, no reading order",
+	"health.unsigned": "No signature field",
+	"health.signed.unverified": "Signed, signature not verified",
+	"health.deviations.none": "No structural problems found",
+	"health.deviations.some": "{count} structural problems: {what}",
+	"health.unavailable": "Health unavailable: {why}",
+};
+
+/** The permission names the report uses, in the order the panel lists them. */
+export const PERMISSION_KEYS = ["printing", "editing", "copying", "annotating"] as const;
+
+/**
+ * Bind health's strings over a catalogue, defaulting to English.
+ *
+ * The same shape as {@link createSearchStrings}: a factory taking partial
+ * overrides, so a shell can reword one claim without rebuilding the whole
+ * catalogue, and a test can assert on one sentence in isolation.
+ */
+export function createHealthStrings(overrides: Partial<HealthCatalogue> = {}): HealthStrings {
+	const t = (key: string, values?: Record<string, string | number>) =>
+		(overrides[key] ?? EN_HEALTH_CATALOGUE[key] ?? "").replace(
+			/\{(\w+)\}/g,
+			(_match, name: string) => String(values?.[name] ?? ""),
+		);
+	return {
+		page: (count) => t("health.page", { count }),
+		encrypted: () => t("health.encrypted"),
+		clear: () => t("health.clear"),
+		permitsAll: () => t("health.permits.all"),
+		forbids: (what) => t("health.forbids", { what: what.join(", ") }),
+		tagged: () => t("health.tagged"),
+		untagged: () => t("health.untagged"),
+		unsigned: () => t("health.unsigned"),
+		signedUnverified: () => t("health.signed.unverified"),
+		noDeviations: () => t("health.deviations.none"),
+		deviations: (what) =>
+			t("health.deviations.some", { count: what.length, what: what.join(", ") }),
+		unavailable: (why) => t("health.unavailable", { why }),
+	};
+}
 
 /** A set of navigation templates keyed by message key. */
 export type NavigationCatalogue = Readonly<Record<NavigationMessageKey, string>>;

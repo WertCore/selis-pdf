@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type HealthReport,
 	type HealthRow,
+	healthReportFromWire,
 	healthRows,
 	summariseDeviations,
 	worstSeverity,
@@ -157,5 +158,94 @@ describe("worstSeverity", () => {
 		).toBe("notice");
 		expect(worstSeverity([])).toBe("ok");
 		expect(worstSeverity([{ id: "a", severity: "ok", label: "" }])).toBe("ok");
+	});
+});
+
+describe("healthReportFromWire", () => {
+	/** A well-formed reply, so each test can break exactly one field. */
+	function wire(over: Record<string, unknown> = {}): Record<string, unknown> {
+		return {
+			pages: 1,
+			encrypted: false,
+			permissions: null,
+			tagged: false,
+			signature: "absent",
+			deviations: [],
+			...over,
+		};
+	}
+
+	it("accepts a well-formed reply unchanged", () => {
+		expect(healthReportFromWire(wire())).toEqual({
+			pages: 1,
+			encrypted: false,
+			permissions: null,
+			tagged: false,
+			signature: "absent",
+			deviations: [],
+		});
+	});
+
+	it("REFUSES a missing field rather than defaulting it", () => {
+		// The leg that matters. A missing `tagged` read as `false` would say
+		// "we looked and it is untagged" - a different claim from "we were not
+		// told", and the one a reader would act on.
+		for (const key of ["pages", "encrypted", "tagged", "signature", "deviations"]) {
+			const broken = wire();
+			delete broken[key];
+			expect(() => healthReportFromWire(broken), `missing ${key}`).toThrow();
+		}
+	});
+
+	it("REFUSES an unknown signature value instead of coercing it", () => {
+		// A newer engine sending "verified" must not render as some third state:
+		// this panel cannot verify a signature, so quietly accepting the word
+		// would display a claim nobody checked.
+		for (const value of ["verified", "valid", "invalid", true, 1, null]) {
+			expect(
+				() => healthReportFromWire(wire({ signature: value })),
+				`signature ${JSON.stringify(value)}`,
+			).toThrow(/cannot verify|absent.*present/);
+		}
+	});
+
+	it("refuses a field of the wrong type", () => {
+		expect(() => healthReportFromWire(wire({ pages: "1" }))).toThrow(/non-negative integer/);
+		expect(() => healthReportFromWire(wire({ pages: -1 }))).toThrow(/non-negative integer/);
+		expect(() => healthReportFromWire(wire({ pages: 1.5 }))).toThrow(/non-negative integer/);
+		expect(() => healthReportFromWire(wire({ encrypted: "no" }))).toThrow(/boolean/);
+		expect(() => healthReportFromWire(wire({ tagged: 0 }))).toThrow(/boolean/);
+		expect(() => healthReportFromWire(wire({ deviations: "none" }))).toThrow(/array/);
+	});
+
+	it("treats ABSENT permissions as null, not as an empty grant", () => {
+		// `null` means the document made no grant to report. Coercing it to four
+		// `false`es would render as "the document forbids everything", which is
+		// the opposite of the truth for a clear document.
+		expect(healthReportFromWire(wire({ permissions: null })).permissions).toBeNull();
+		expect(healthReportFromWire(wire({ permissions: undefined })).permissions).toBeNull();
+	});
+
+	it("refuses a PARTIAL permissions object rather than filling the gaps", () => {
+		// A missing `copy` defaulting to false would say the document forbids
+		// copying, which is a claim the engine never made.
+		expect(() =>
+			healthReportFromWire(wire({ permissions: { print: true, modify: true, copy: true } })),
+		).toThrow(/annotate/);
+	});
+
+	it("validates each deviation rather than trusting the array", () => {
+		expect(() => healthReportFromWire(wire({ deviations: [{ name: "x" }] }))).toThrow(/offset/);
+		expect(() => healthReportFromWire(wire({ deviations: [{ offset: 1 }] }))).toThrow(/name/);
+		expect(() => healthReportFromWire(wire({ deviations: ["x"] }))).toThrow(/not an object/);
+		expect(
+			healthReportFromWire(wire({ deviations: [{ name: "odd-length-hex", offset: 42 }] }))
+				.deviations,
+		).toEqual([{ name: "odd-length-hex", offset: 42 }]);
+	});
+
+	it("refuses a reply that is not an object at all", () => {
+		expect(() => healthReportFromWire(null)).toThrow(/carried no value/);
+		expect(() => healthReportFromWire("ok")).toThrow(/carried no value/);
 	});
 });

@@ -174,6 +174,8 @@ export type {
 export { DEFAULT_METRICS, createPageList } from "./page-list.js";
 
 export type { NormalisedLabelRange } from "./page-labels.js";
+export type { HealthReport, HealthRow, HealthSeverity } from "./health.js";
+export { healthReportFromWire, healthRows, summariseDeviations, worstSeverity } from "./health.js";
 export {
 	DEFAULT_LABEL_STYLE,
 	MAX_ROMAN,

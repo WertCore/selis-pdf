@@ -436,6 +436,34 @@
             }
           });
         })
+        // 1g. DOCUMENT HEALTH (UI.09), through the app''s own control.
+        //
+        //     Driven by clicking the button and reading the DOM it produced,
+        //     because the Do: for UI.09 is "honest reporting as a feature" and
+        //     the claim under test is that the panel says true things. Every
+        //     row is recorded with its severity, so the Rust verdict checks
+        //     specific claims rather than a boolean the app chose itself.
+        .then(function () {
+          var healthButton = document.getElementById("selis-health");
+          if (!healthButton) throw new Error("the app exposed no health control");
+          healthButton.click();
+          return waitFor(
+            function () {
+              var list = document.getElementById("selis-health-rows");
+              return !!list && list.querySelectorAll("li").length > 0;
+            },
+            20000,
+            "the health panel to render its rows",
+          ).then(function () {
+            out.health = {
+              rows: [].slice
+                .call(document.querySelectorAll("#selis-health-rows li"))
+                .map(function (li) {
+                  return { id: li.dataset.row, severity: li.dataset.severity, label: li.textContent };
+                }),
+            };
+          });
+        })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;
           out.registration = reg && reg.registered ? "registered" : reg && reg.reason;

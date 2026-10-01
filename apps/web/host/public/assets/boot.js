@@ -658,6 +658,72 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 
 // Exposed for the browser check and for support. No document data, no URL —
 // nothing here could identify a file (ADR-P0017).
+/**
+ * The document health report (SL-4.UI.09), validated and turned into rows.
+ *
+ * The decision of WHAT to say lives in `apps/ui`'s `health.js`, which is pure
+ * and tested there. What lives here is only the two things a shell owns: making
+ * the engine call, and refusing to render anything it did not understand.
+ *
+ * That refusal is the point. `healthReportFromWire` throws on a field it does
+ * not recognise rather than defaulting it, because a panel that renders a
+ * confident row from a malformed reply is exactly the dishonesty the item says
+ * honest reporting exists to prevent - and the report has no way to say "I could
+ * not read this" once a default has been substituted.
+ *
+ * @returns {Promise<object>} `{status, rows}` or `{status, detail}`
+ */
+globalThis.__selisHealth = async function () {
+	try {
+		if (openDocumentSource === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const { healthReportFromWire, healthRows } = await import("/assets/ui/viewer/health.js");
+		const binary = atob(openDocumentSource());
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		const doc = openDocumentOnce(bytes).doc;
+		const { response } = dispatch({ op: "health", doc });
+		if (response.ok !== true) {
+			return { status: "refused", detail: `${response.code ?? "unknown"}` };
+		}
+		return { status: "ok", rows: healthRows(healthReportFromWire(response.value)) };
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * Paint a health report into the panel, or say why it could not be painted.
+ *
+ * The failure path is deliberately visible. A panel that silently keeps its
+ * previous contents after an error is showing a reader stale facts about a
+ * document, which is worse than showing nothing.
+ *
+ * @param {object} report what `__selisHealth` returned
+ */
+function renderHealthPanel(report) {
+	const list = document.getElementById("selis-health-rows");
+	if (list === null) return;
+	list.textContent = "";
+	if (report.status !== "ok") {
+		const item = document.createElement("li");
+		item.textContent = `Health unavailable: ${report.detail ?? report.status}`;
+		list.appendChild(item);
+		return;
+	}
+	for (const row of report.rows) {
+		const item = document.createElement("li");
+		item.dataset.severity = row.severity;
+		item.dataset.row = row.id;
+		item.textContent = row.label;
+		list.appendChild(item);
+	}
+}
+
 globalThis.__selisApp = state;
 
 // ── the offline layer ──────────────────────────────────────────────────────
@@ -881,6 +947,21 @@ function searchControls() {
 				};
 			});
 	});
+	root.appendChild(print);
+	// The health control, built with the viewer for the same reason as the print
+	// control: a user has to be able to see the button to press it.
+	const health = document.createElement("button");
+	health.type = "button";
+	health.id = "selis-health";
+	health.textContent = "Document health";
+	health.addEventListener("click", () => {
+		globalThis.__selisHealth().then(renderHealthPanel);
+	});
+	root.appendChild(health);
+	const healthOut = document.createElement("ul");
+	healthOut.id = "selis-health-rows";
+	healthOut.setAttribute("aria-live", "polite");
+	root.appendChild(healthOut);
 	root.appendChild(print);
 
 	searchUi.input = input;

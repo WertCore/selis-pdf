@@ -1043,6 +1043,70 @@ the browser's print pipeline decides the paper, the margins and the resolution"
         .get("offlineCutPrint")
         .ok_or_else(|| "the app's Print button reported nothing offline".to_string())?;
     assert_print_artifact(offline, "the offline Print button")?;
+    // UI.09: the health panel, asserted ROW BY ROW rather than as a boolean.
+    //
+    // The app chose every severity, so a verdict that only checked "the panel
+    // rendered" would be checking that the app agreed with itself. Each leg
+    // below is a specific claim the Do: calls honest reporting.
+    let health = report
+        .get("health")
+        .and_then(|h| h.get("rows"))
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the app produced no health rows (health = None)".to_string())?;
+    let row = |id: &str| -> Result<&Json, String> {
+        health
+            .iter()
+            .find(|r| r.get("id").and_then(Json::as_str) == Some(id))
+            .ok_or_else(|| format!("the health panel has no {id} row"))
+    };
+    let severity = |id: &str| -> Result<&str, String> {
+        Ok(row(id)?
+            .get("severity")
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("health row {id} carries no severity"))?)
+    };
+
+    // The signature row is the one the Do: leans on hardest. A signed document
+    // must never read as `ok`, because nothing in this project verifies a
+    // signature and a green tick would be the one false thing the panel can say.
+    if severity("signature")? == "ok"
+        && row("signature")?
+            .get("label")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .contains("Signed")
+    {
+        return Err(
+            "the health panel reported a signed document as OK -- nothing here verifies a \
+signature, so that is a claim the project cannot support"
+                .into(),
+        );
+    }
+    // Untagged is a `notice`, never a `warn`: most PDFs are untagged, and a
+    // warning on the commonest fact in the format trains a reader to ignore the
+    // row that matters.
+    if severity("tagged")? == "warn" {
+        return Err(
+            "the health panel warned about an untagged document; that is a fact, not a defect"
+                .into(),
+        );
+    }
+    // The panel must have measured something, not rendered an empty list.
+    severity("pages")?;
+    severity("deviations")?;
+    // And the fixture is a clean, ordinary document, so its deviations row must
+    // be `ok` -- which is the whole point of the deviation pass that skips stream
+    // bodies. A clean file reporting structural problems here would be the
+    // 70-phantom-rows failure arriving through the UI.
+    if severity("deviations")? != "ok" {
+        return Err(format!(
+            "the health panel reported structural problems in a clean document: {}",
+            row("deviations")?
+                .get("label")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+        ));
+    }
 
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
