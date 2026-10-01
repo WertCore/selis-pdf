@@ -190,6 +190,17 @@ export {
 } from "./errors.js";
 export type { FailurePanel, FailureStrings } from "./error-panel.js";
 export { failurePanel, failurePanelFromWire } from "./error-panel.js";
+
+export type { OperationState, Phase, SlotReport } from "./progress.js";
+export {
+	applyReport,
+	beginOperation,
+	confirmCancelled,
+	fail,
+	finish,
+	idle,
+	requestCancel,
+} from "./progress.js";
 export {
 	DEFAULT_LABEL_STYLE,
 	MAX_ROMAN,
