@@ -40,6 +40,31 @@ import { registerServiceWorker } from "/sw-register.js";
 globalThis.__selisBoot = "web-host";
 
 /**
+ * `failurePanelFromWire`, held once the boot import has resolved; `null` until
+ * then, and permanently `null` if the boot never got that far.
+ *
+ * The failure path reads this instead of importing on demand, because the one
+ * thing a failure panel must never do is fail to load itself. See the import
+ * site below for how that actually happened.
+ */
+let failurePanel = null;
+
+/**
+ * How far this module's own evaluation got.
+ *
+ * `__selisApp` and `__selisServiceWorker` are assigned near the END of this
+ * file, hundreds of lines after the top-level `await` that loads the engine.
+ * When something between those points breaks, the browser check can only see
+ * that the globals never appeared - and an exception inside a module's own
+ * evaluation is not an uncaught error and not an unhandled rejection, so it
+ * leaves no trace at all. The page then reports a bare timeout.
+ *
+ * So this records the stage directly. Cheap, and it turns "never settled" into
+ * a line number.
+ */
+globalThis.__selisBootStage = "start";
+
+/**
  * Build the import object for the engine from the module's OWN import list.
  *
  * The engine is a `wasm-bindgen --target web` build, so it declares four
@@ -197,6 +222,38 @@ try {
 } catch (error) {
 	state.error = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
+globalThis.__selisBootStage = "engine-settled";
+
+// Preload the failure panel (SL-4.UI.12), deliberately AFTER the boot's own
+// try/catch and deliberately NOT awaited.
+//
+// Two constraints, and they pull in opposite directions:
+//
+//  - The failure path must not depend on a request it has to make. It was
+//    doing `await import("/assets/ui/viewer/error-panel.js")` at the moment it
+//    was needed, and that request intermittently came back "Failed to fetch
+//    dynamically imported module" - the same HTTP/1.1 flake the comment above
+//    this function describes. So the panel silently never appeared, which is
+//    the worst way for it to fail: no explanation AND no way forward, exactly
+//    the dead end SL-4.UI.12 exists to remove.
+//
+//  - Boot must not depend on it either. Adding it to the `Promise.all` above
+//    was tried and is wrong: one flaky request for a module the happy path
+//    never touches then fails the whole boot, and the viewer does not mount at
+//    all. Trading a rarely-used panel for a viewer that usually works is a bad
+//    trade.
+//
+// So it is fetched here, in the background, where a failure costs nothing and
+// is caught. `showFailure` falls back to importing on demand if this has not
+// landed, so the worst case is the original behaviour and never worse.
+import("/assets/ui/viewer/error-panel.js")
+	.then((module) => {
+		failurePanel = module.failurePanelFromWire;
+	})
+	.catch(() => {
+		// Deliberately silent. The panel degrades to a dynamic import at the
+		// moment it is needed; it does not get to break the page.
+	});
 
 // ── opening a document ─────────────────────────────────────────────────────
 
@@ -427,6 +484,179 @@ function dispatch(body, payload = null) {
  */
 const searchUi = { input: null, readout: null };
 
+/**
+ * Show a failure as a panel with a recovery action (SL-4.UI.12).
+ *
+ * ## What this replaces
+ *
+ * Three messages in this file used to END a failure - `Selis failed to
+ * start: ...`, `Health unavailable: ...`, `Could not print: ...` - and every
+ * one of them was a dead end. They name what went wrong, say nothing about the
+ * user's document, and offer nothing to do.
+ *
+ * ## What it does instead
+ *
+ * The DECISION of what to show is `apps/ui`'s pure `error-panel.js`, tested
+ * there; this function owns only the DOM. The engine's sentence is rendered
+ * verbatim - the registry authors it once, in `codes.toml`, and a paraphrase
+ * here would be a second phrasing that drifts.
+ *
+ * ## Placement, which is load-bearing
+ *
+ * This block sits ABOVE the mount, and above that sits the module's top-level
+ * `await` that loads the engine. `FAILURE_STRINGS` is a `const`, so a call to
+ * `showFailure` that runs before this point would hit its temporal dead zone;
+ * `searchUi` above it already documents the same trap. If boot fails, the mount
+ * block's `else` calls straight into here.
+ *
+ * @param {object} wire the engine failure: `{code, message, docState}`
+ * @param {string} what which operation failed, for the panel's own label
+ * @returns {Promise<object|null>} the rendered panel, for the browser check
+ */
+async function showFailure(wire, what) {
+	const host = document.getElementById("selis-failure");
+	if (host === null) return null;
+	// Already loaded by the boot import. The fallback exists only for the boot
+	// FAILED case, where the import never ran and a second try is better than
+	// no explanation at all.
+	const build =
+		failurePanel ?? (await import("/assets/ui/viewer/error-panel.js")).failurePanelFromWire;
+	const panel = build(wire, FAILURE_STRINGS);
+
+	host.textContent = "";
+	host.dataset.severity = panel.severity;
+	host.dataset.code = panel.code === null ? "" : String(panel.code);
+	host.dataset.action = panel.action;
+	host.dataset.state = panel.docState;
+	host.dataset.operation = what;
+
+	const heading = document.createElement("p");
+	heading.dataset.role = "what";
+	// A known code whose sentence went missing is left visibly short rather
+	// than replaced with a generic phrase: a blank panel means the shell
+	// dropped a field, and it should LOOK broken rather than look fine.
+	heading.textContent = panel.message === "" ? `${what} failed` : panel.message;
+	host.appendChild(heading);
+
+	// What happened to the document. Always present, and never inferred.
+	const fate = document.createElement("p");
+	fate.dataset.role = "docstate";
+	fate.textContent = FAILURE_STRINGS.docStateLabel(panel.docState);
+	host.appendChild(fate);
+
+	if (panel.showCode) {
+		// Only for a code the registry does not know, because that number is
+		// the only route between "it went wrong" and a bug report.
+		const code = document.createElement("p");
+		code.dataset.role = "code";
+		code.textContent = FAILURE_STRINGS.unknownCode(panel.code);
+		host.appendChild(code);
+	}
+
+	const action = document.createElement("button");
+	action.type = "button";
+	action.dataset.role = "action";
+	action.textContent = panel.actionLabel;
+	action.disabled = !panel.actionable;
+	action.addEventListener("click", () => {
+		runRecovery(panel.action);
+	});
+	host.appendChild(action);
+
+	globalThis.__selisLastFailure = {
+		code: panel.code,
+		name: panel.name,
+		source: panel.source,
+		severity: panel.severity,
+		action: panel.action,
+		actionable: panel.actionable,
+		docState: panel.docState,
+		operation: what,
+	};
+	return panel;
+}
+
+/**
+ * Do what the panel offered, or say plainly that this shell cannot.
+ *
+ * `open-another` and `close-and-retry` are real here: the shell owns the
+ * document handle. `grant-access` and `report` are not wired to anything yet,
+ * so they say so rather than pretending.
+ */
+function runRecovery(action) {
+	switch (action) {
+		case "open-another":
+			openDocumentSource = null;
+			clearFailure();
+			return globalThis.__selisOpen?.();
+		case "close-and-retry":
+			openDocumentSource = null;
+			clearFailure();
+			return undefined;
+		case "retry":
+			clearFailure();
+			return globalThis.__selisView?.(openDocumentSource);
+		default:
+			globalThis.__selisLastFailure = {
+				...globalThis.__selisLastFailure,
+				actionOutcome: "unsupported-by-this-shell",
+			};
+			return undefined;
+	}
+}
+
+/** Remove the panel. Used by every recovery path that made progress. */
+function clearFailure() {
+	const host = document.getElementById("selis-failure");
+	if (host !== null) {
+		host.textContent = "";
+		delete host.dataset.severity;
+		delete host.dataset.code;
+		delete host.dataset.action;
+		delete host.dataset.state;
+	}
+	globalThis.__selisLastFailure = null;
+}
+
+/**
+ * The chrome around a failure. The SENTENCES are the engine's; these are the
+ * shell's, and they live here rather than in `apps/ui` because `apps/ui` is
+ * headless by rule (ADR-P0044) and owns no DOM.
+ */
+const FAILURE_STRINGS = {
+	docStateLabel(docState) {
+		switch (docState) {
+			case "NotLoaded":
+				return "Your document could not be opened. Nothing was changed.";
+			case "PartiallyLoaded":
+				return "Your document opened with damage. What did load is shown.";
+			case "Loaded":
+				return "Your document is open and unchanged.";
+			case "Modified":
+				return "Your document has unsaved changes.";
+			default:
+				return "Your document was not changed.";
+		}
+	},
+	actionLabel(action) {
+		switch (action) {
+			case "retry":
+				return "Try again";
+			case "open-another":
+				return "Open another file";
+			case "close-and-retry":
+				return "Close this document";
+			case "grant-access":
+				return "Grant access";
+			default:
+				return "Report this";
+		}
+	},
+	unknownCode(code) {
+		return `Unrecognised error code ${code}.`;
+	},
+};
+
 const root = document.getElementById("selis-app");
 if (root !== null) {
 	root.removeAttribute("aria-busy");
@@ -440,7 +670,13 @@ if (root !== null) {
 		// with "the app exposed no search field" for exactly this reason.
 		searchControls();
 	} else {
-		root.textContent = `Selis failed to start: ${state.error ?? "unknown"}`;
+		// A boot that failed is the one failure with no registry code behind it:
+		// the engine never ran. The panel shows what the shell actually knows
+		// plus the one action that can still help - opening another document.
+		// Deliberately NOT awaited: the mount block is synchronous and `root` is
+		// reassigned below; blocking here would strand the page mid-boot.
+		showFailure({ code: null, message: state.error ?? "unknown" }, "startup");
+		root.textContent = "Selis could not start.";
 	}
 }
 
@@ -472,7 +708,15 @@ globalThis.__selisView = function (source) {
 	openDocumentSource = typeof source === "function" ? source : () => source;
 	const base64 = openDocumentSource();
 	const opened = globalThis.__selisOpen(base64);
-	if (opened.status !== "ok") return opened;
+	if (opened.status !== "ok") {
+		// Opening is the failure a reader meets FIRST and most often, so it is
+		// the one that most needs a way forward. The C-ABI path refuses with no
+		// registry code at all, so the panel shows the shell's own account of it
+		// and offers "open another file" - which is always real.
+		showFailure({ message: opened.detail ?? opened.status }, "opening the document");
+		return opened;
+	}
+	clearFailure();
 	const painted = paintPage(opened, root);
 	// The RGBA buffer is ~1.9 MB of document pixels. It is not put on any
 	// global and not reported back, so nothing retains it after painting.
@@ -605,7 +849,15 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 					params: { dpi: plans[i].dpi },
 				});
 				if (rendered.ok !== true || attachment === null) {
-					throw new Error(`render of page ${i} refused: ${rendered.code ?? "no attachment"}`);
+					// The reply's sentence and document state ride along on the
+					// error, so the catch below can hand them to the panel.
+					// Without them a refused render reaches the reader as the
+					// word "refused" and a number, which is not an explanation.
+					const failure = new Error(
+						`render of page ${i} refused: ${rendered.code ?? "no attachment"}`,
+					);
+					failure.wire = rendered;
+					throw failure;
 				}
 				const widthPx = rendered.value.width;
 				const heightPx = rendered.value.height;
@@ -650,6 +902,10 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 		};
 	} catch (error) {
 		return {
+			// Carried when the failure came from the engine, so the panel can show
+			// the registry's sentence and the document's fate rather than an
+			// Error's `.message`, which is written for a log file.
+			wire: error?.wire ?? undefined,
 			status: "threw",
 			detail: error instanceof Error ? error.message : String(error),
 		};
@@ -685,7 +941,12 @@ globalThis.__selisHealth = async function () {
 		const doc = openDocumentOnce(bytes).doc;
 		const { response } = dispatch({ op: "health", doc });
 		if (response.ok !== true) {
-			return { status: "refused", detail: `${response.code ?? "unknown"}` };
+			// The whole wire failure used to collapse to a bare code in
+			// `detail`, which threw away the registry's sentence and the
+			// document state - leaving the reader a number and nothing to do
+			// about it. Carrying the reply through is what lets UI.12 decide
+			// what it means.
+			return { status: "refused", wire: response };
 		}
 		return { status: "ok", rows: healthRows(healthReportFromWire(response.value)) };
 	} catch (error) {
@@ -710,11 +971,23 @@ function renderHealthPanel(report) {
 	if (list === null) return;
 	list.textContent = "";
 	if (report.status !== "ok") {
+		// The list keeps its place so it never shows stale findings, but the
+		// sentence, the document's fate and the recovery action come from the
+		// shared failure panel rather than from a one-line notice.
 		const item = document.createElement("li");
+		item.dataset.role = "failure";
+		item.dataset.severity = "blocked";
 		item.textContent = `Health unavailable: ${report.detail ?? report.status}`;
 		list.appendChild(item);
+		showFailure(
+			report.wire ?? {
+				message: `Health unavailable: ${report.detail ?? report.status}`,
+			},
+			"document health",
+		);
 		return;
 	}
+	clearFailure();
 	for (const row of report.rows) {
 		const item = document.createElement("li");
 		item.dataset.severity = row.severity;
@@ -725,6 +998,7 @@ function renderHealthPanel(report) {
 }
 
 globalThis.__selisApp = state;
+globalThis.__selisBootStage = "app-assigned";
 
 // ── the offline layer ──────────────────────────────────────────────────────
 
@@ -868,7 +1142,17 @@ async function requestPrint() {
 	// The thunk, not a retained copy: see `openDocumentSource`.
 	const printed = await globalThis.__selisPrint(openDocumentSource());
 	if (printed.status !== "ok") {
+		// The readout keeps the short form it always had - it is a transient
+		// status line - but the panel beside it carries the registry's sentence,
+		// the document's fate and an action, which is what a reader needs when
+		// printing did not work.
 		say(`Could not print: ${printed.detail ?? printed.status}`);
+		showFailure(
+			printed.wire ?? {
+				message: `Could not print: ${printed.detail ?? printed.status}`,
+			},
+			"printing",
+		);
 		return printed;
 	}
 	const blob = new Blob([printed.pdf], { type: "application/pdf" });
@@ -1010,7 +1294,9 @@ globalThis.__selisSearch = function (base64, query) {
 		const doc = openDocumentOnce(bytes).doc;
 		const { response: reply } = dispatch({ op: "search", doc, query });
 		if (reply.ok !== true) {
-			return { status: "refused", detail: `${reply.code ?? "unknown"}` };
+			// Carried whole, for the same reason as the health path: a bare code
+			// in `detail` left the failure with a number and no sentence.
+			return { status: "refused", wire: reply };
 		}
 		// A `search` reply is `{ok:true, value:{...}}`. Anything else is a wire
 		// shape the app does not understand, and saying so beats a TypeError

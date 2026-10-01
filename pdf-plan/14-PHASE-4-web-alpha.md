@@ -470,32 +470,32 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     integrity, TS↔CSS sync. Usage documented in `packages/ui-kit/README.md` for UI.02+.
 - [x] **SL-4.UI.11 — i18n scaffolding** · deps: SL-0.ERR.04 · owner: AI
   - **Do:** Every string a key from day 1 (ADR-P0034). Ship English; wire pseudo-locale into CI.
-- [ ] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
+- [x] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
   - **Do:** Every `Code` maps to a user-facing state with a recovery action. A damaged file shows
     what we recovered, not a dead end.
-  - **Partially landed; NOT done.** The model half is complete and green
-    (`4f4fa96d`, `48c8d0d1`, `dd1da042`): `error-codes.ts` is GENERATED from
-    `crates/selis-error/codes.toml` with a drift gate, `errors.ts` turns every
-    code into severity + recovery action, and `error-panel.ts` builds the panel's
-    content without a DOM. 561 UI tests; the gates were falsified by deleting a
-    generated row, by making a Budget code offer `retry`, and by conflating a
-    shell failure with an unregistered code.
-  - **The host half is NOT landed.** `boot.js` gained a failure panel, but
-    wiring it in stopped the app from booting: the app-shell check reported
-    "the app's mount and registration to settle" with no error and no rejection
-    anywhere on the page. `boot.js` was restored to its working state rather than
-    shipped broken, so **the three dead ends the item exists to remove are still
-    in `boot.js`**: `Selis failed to start: …`, `Health unavailable: …`, and
-    `Could not print: …`. `__selisHealth` and `__selisSearch` also still collapse
-    a wire failure to `detail: ${code ?? "unknown"}`, discarding the registry's
-    sentence and the document state that the panel needs.
-  - **Known lead, not yet chased.** With the panel wired, `__selisApp` was
-    *absent* at the instant `import("/assets/boot.js")` resolved, with no thrown
-    error. The first 130 lines of the edited `boot.js` are byte-identical to
-    HEAD, so the top-level-await boot path is intact; the divergence is later in
-    the file. The app-shell now records `bootError`, `firstRejection` and which
-    global is missing, so the next attempt starts with the answer rather than
-    with a bare timeout.
+  - **The model.** `error-codes.ts` is GENERATED from `crates/selis-error/codes.toml` with a
+    drift gate, because a hand-written table covers the codes someone remembered and the gap is
+    invisible. `errors.ts` turns every code into severity + recovery action, derived from `kind`
+    first and `retryable` second, so a non-retryable failure is never shown a retry button.
+    `error-panel.ts` builds the panel's content without a DOM and carries **no prose**: the
+    registry authors one sentence per code and the engine sends it back, so a second copy in the
+    viewer would drift. UI.02's i18n lint gate caught that first draft and was right.
+  - **The host.** All four dead ends are gone: boot, open, health and print now route through
+    one `#selis-failure` panel carrying the sentence, the document's fate, and an enabled
+    recovery action. `__selisHealth` and `__selisSearch` carry the whole wire failure instead of
+    collapsing it to `detail: ${code}`, which is what made the panel possible at all.
+  - **Two things worth keeping from the debugging.** The app-shell harness now records
+    `bootError`, `firstRejection`, `bootStage`, `appError`, which boot global is missing, and
+    `chainMs`, plus a watchdog that posts partial state when the chain stalls. Before that, a
+    boot failure reported only "the page did not report within 30000ms" — no error, no
+    rejection, no data. And the failure panel is preloaded in the BACKGROUND rather than imported
+    on demand, because the one request it must never lose is its own: as a lazy import it hit
+    the same HTTP/1.1 flake the file's own comment describes, and the panel silently never
+    appeared. Making it part of the boot's `Promise.all` was also wrong — one flaky request for a
+    module the happy path never touches then stops the viewer mounting at all.
+  - **Verified.** 561 UI tests, 204 host tests, browser-check 3/3 in real Edge. The browser gate
+    was falsified twice independently: removing the panel call, and rendering the action
+    disabled.
 - [ ] **SL-4.UI.13 — Large-file handling UX (web)** · deps: SL-0.SBX.05, SL-1A.UI.06 · owner: AI+
   - **Do:** The web surface of SL-1A.UI.06, deferred from Phase 1A: progress and cancellation in
     the tab for long operations, and the honest budget-exhaustion state (which budget, the measured

@@ -1108,6 +1108,91 @@ signature, so that is a claim the project cannot support"
         ));
     }
 
+    // UI.12: a document that will not open must not become a dead end.
+    //
+    //     The Do: says every `Code` maps to a user-facing state WITH a recovery
+    //     action. Three separate claims are asserted, and each was a real gap in
+    //     the shell that preceded this:
+    //
+    //       1. there is a sentence, and it is the registry's / the shell's own
+    //          account of a failure the engine never classified;
+    //       2. the panel says what happened to the user's DOCUMENT, which the
+    //          old one-line notice never did;
+    //       3. there is a control that does something.
+    //
+    //     Asserting only "an error appeared" would be satisfied by the old
+    //     behaviour and so would prove nothing.
+    let failure = report.get("failure").ok_or_else(|| {
+        "the app recorded no failure state for a document that would not open".to_string()
+    })?;
+    if failure.is_null() {
+        return Err(
+            "the app never rendered its failure panel for a document that would not open -- the \
+shell answered this case with one line of text and nothing to do about it"
+                .into(),
+        );
+    }
+    let what = failure
+        .get("message")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "the failure panel carries no sentence".to_string())?;
+    if what.trim().is_empty() {
+        return Err("the failure panel rendered an empty sentence".into());
+    }
+    // The document's fate. A panel that says what went wrong without saying
+    // whether the file survived is half an answer, and the half that matters
+    // most to someone who was in the middle of an edit.
+    if failure
+        .get("docState")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        return Err(format!(
+            "the failure panel never said what happened to the document: {what}"
+        ));
+    }
+    // A document that did not open has NOT loaded, and must not be reported as
+    // anything else. `PartiallyLoaded` here would be a claim the engine never
+    // made.
+    if failure.get("state").and_then(Json::as_str) != Some("NotLoaded") {
+        return Err(format!(
+            "a document that would not open was reported as {:?}, not NotLoaded",
+            failure.get("state").and_then(Json::as_str)
+        ));
+    }
+    if failure.get("severity").and_then(Json::as_str) != Some("blocked") {
+        return Err(format!(
+            "a document that would not open was shown at severity {:?}, not blocked -- the \
+severity has to track whether anything is readable",
+            failure.get("severity").and_then(Json::as_str)
+        ));
+    }
+    // The recovery action, and a control that is not disabled. A dead end
+    // wearing a button is worse than no button, because it looks like progress.
+    let action = failure
+        .get("action")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "the failure panel offers no recovery action".to_string())?;
+    if action.is_empty() {
+        return Err("the failure panel offers an empty recovery action".into());
+    }
+    if failure.get("actionDisabled").and_then(Json::as_bool) != Some(false) {
+        return Err(format!(
+            "the failure panel offered `{action}` but rendered it disabled"
+        ));
+    }
+    if failure
+        .get("actionLabel")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        return Err("the failure panel rendered no label for its recovery action".into());
+    }
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.

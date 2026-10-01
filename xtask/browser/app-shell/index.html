@@ -54,6 +54,18 @@
       <p>Loading Selis PDF Viewerâ€¦</p>
     </main>
 
+    <!--
+      The app's failure panel (SL-4.UI.12), declared by
+      apps/web/host/public/index.html. This harness page REPLACES that file -
+      `stage` copies the check over the app's own index.html, deliberately, so
+      the page that reports the verdict is the one on disk - so it has to carry
+      the panel too, exactly as it has to carry `#selis-app` above.
+
+      It is a SIBLING of `#selis-app`, not a child, and that is load-bearing:
+      boot.js rewrites `#selis-app`'s textContent when it mounts, so a panel
+      inside it would be erased by the very write that precedes most failures.
+    -->
+    <section id="selis-failure" role="alert" aria-live="assertive" data-severity=""></section>
 
     <script type="module">
       // The app's own boot path does exactly this; the check mirrors it rather
@@ -109,6 +121,14 @@
         //     message, and nothing on screen or in the report said why.
         bootError: null,
         swRegistration: null,
+        bootStage: null,
+        watchdog: null,
+        watchdogStage: null,
+        watchdogApp: null,
+        watchdogSw: null,
+        chainMs: null,
+        failure: null,
+        damagedOpen: null,
         firstRejection: null,
         fatal: null,
         // The result of opening a REAL PDF through the app's own document path
@@ -140,6 +160,41 @@
         }
       });
 
+      // A WATCHDOG that posts whatever is known if the chain below has not
+      // finished.
+      //
+      //     Without it, a chain that stops RESOLVING - rather than rejecting -
+      //     posts nothing at all, and the harness reports only "the page did not
+      //     report within 30000ms". That is the one failure shape with no
+      //     evidence in it: no error, no rejection, no partial report.
+      //
+      //     The threshold is deliberately close to the harness's own 30s
+      //     deadline (DEFAULT_TIMEOUT_MS), not to this page's fastest observed
+      //     run. The chain legitimately takes well over ten seconds - it opens
+      //     a document, rasterises pages at print resolution and arms an
+      //     offline cut - so an early watchdog is not a safety net, it is a
+      //     second deadline that fires during healthy runs and reports a
+      //     failure that did not happen. It should only fire when the harness
+      //     is about to give up anyway.
+      //
+      //     `chainMs` records how long the chain actually took, so the next
+      //     person to retune this threshold does not have to guess.
+      var chainStartedAt = Date.now();
+      var reported = false;
+      setTimeout(function () {
+        if (reported) return;
+        out.fatal = out.fatal || "the page did not finish its chain before the watchdog";
+        out.watchdog = true;
+        // Snapshot the globals NOW: by the time the harness reads the report
+        // they may have settled, and the question is what they were at the
+        // moment the chain stalled.
+        out.watchdogStage = globalThis.__selisBootStage || "absent";
+        out.watchdogApp = globalThis.__selisApp ? "present" : "absent";
+        out.watchdogSw = globalThis.__selisServiceWorker === undefined ? "absent" : "present";
+        out.chainMs = Date.now() - chainStartedAt;
+        report();
+      }, 26000);
+
       /**
        * A 446-byte, one-page PDF with a byte-exact xref, carrying two filled
        * rectangles and no text.
@@ -157,6 +212,18 @@
         "JVBERi0xLjcKJeLjz9MKPDwgL1R5cGUgL0NhdGFsb2cgL1BhZ2VzIDIgMCBSID4+Cjw8IC9UeXBlIC9QYWdlcyAvS2lkcyBbMyAwIFJdIC9Db3VudCAxID4+Cjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCA+PiAvQ29udGVudHMgNCAwIFIgPj4KPDwgL0xlbmd0aCA1NSA+PgpzdHJlYW0KMC44NSAwLjIgMC4xIHJnIDcyIDYyMCAyMDAgMTAwIHJlIGYKMC4xIDAuMyAwLjggcmcgNzIgNDgwIDMwMCA2MCByZSBmCmVuZHN0cmVhbQp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA0OSAwMDAwMCBuIAowMDAwMDAwMDkxIDAwMDAwIG4gCjAwMDAwMDAxODAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA1IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgoxNQolJUVPRgo=";
 
 
+
+      // A THIRD fixture, and the only one that is deliberately NOT a PDF: the
+      // bytes of a plain-text file. It exists for UI.12, because a document that
+      // will not open is the commonest failure a reader meets, and the shell
+      // that preceded this answered it with a single line of text and no way
+      // forward.
+      //
+      //     Plain text rather than a truncated PDF on purpose. A truncated PDF
+      //     can sometimes be recovered, and this leg must not depend on which;
+      //     "not a PDF at all" has exactly one right presentation, so a passing
+      //     check cannot be explained away.
+      var GARBAGE_B64 = "bm90IGEgcGRmIGF0IGFsbCwganVzdCB0ZXh0Lgo=";
 
       // A SECOND fixture, with TEXT. The rectangles above are the right choice
       // for the render assertion - two rectangles make the expected ink an
@@ -204,6 +271,13 @@
         } catch (e) {
           out.trace = null;
         }
+        // Latches the watchdog off. Set BEFORE the post, because the post is
+        // asynchronous and a watchdog firing during it would double-report.
+        reported = true;
+        // How long the chain really took. Recorded on the healthy path too, so
+        // the watchdog's threshold can be set from evidence rather than from a
+        // guess about what "slow" means.
+        out.chainMs = Date.now() - chainStartedAt;
         var body = JSON.stringify(out);
         document.getElementById("verdict").textContent =
           "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
@@ -271,8 +345,16 @@
           // boot.js that finished evaluating without exporting `__selisApp`
           // looks identical from the outside to one still loading.
           out.appMounted = globalThis.__selisApp ? globalThis.__selisApp.mounted : "absent";
+          // Why boot failed, when it did. `state.error` is the engine's own
+          // account - import failure, WASM compile error - and without it a
+          // failed mount is just `false`, which says nothing about which of the
+          // boot's several steps gave up.
+          out.appError = globalThis.__selisApp ? globalThis.__selisApp.error || null : null;
           out.swRegistration =
             globalThis.__selisServiceWorker === undefined ? "absent" : "present";
+          // How far boot.js's own evaluation got. Without this, "neither global
+          // appeared" has to be guessed at; with it, the answer is a stage name.
+          out.bootStage = globalThis.__selisBootStage || "absent";
           // boot.js mounts the viewer and loads the engine before it registers
           // the worker, so wait for BOTH globals, not just the registration.
           return waitFor(
@@ -507,6 +589,45 @@
                 }),
             };
           });
+        })
+        // 1h. A FAILURE that must not be a dead end (UI.12).
+        //
+        //     Driven through the app's own `__selisView`, with bytes that are
+        //     not a PDF at all. What is recorded is not "an error appeared" but
+        //     the three things the Do: calls for: a real sentence, a statement
+        //     of what happened to the user's document, and a control that does
+        //     something. The shell that preceded this answered the same case
+        //     with one line of text and no way forward.
+        //
+        //     Recorded rather than thrown: a leg that dies on the failure it
+        //     exists to catch reports nothing, which reads as a hung browser.
+        .then(function () {
+          out.damagedOpen = globalThis.__selisView(GARBAGE_B64);
+          return waitFor(
+            function () {
+              return !!document.querySelector("#selis-failure [data-role=what]");
+            },
+            3000,
+            "the failure panel to render for a document that would not open",
+          ).then(
+            function () {
+              var host = document.getElementById("selis-failure");
+              var action = host.querySelector("[data-role=action]");
+              out.failure = {
+                severity: host.dataset.severity,
+                state: host.dataset.state,
+                action: host.dataset.action,
+                operation: host.dataset.operation,
+                message: (host.querySelector("[data-role=what]") || {}).textContent || null,
+                docState: (host.querySelector("[data-role=docstate]") || {}).textContent || null,
+                actionLabel: action ? action.textContent : null,
+                actionDisabled: action ? action.disabled : null,
+              };
+            },
+            function () {
+              out.failure = null;
+            },
+          );
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;
