@@ -473,6 +473,29 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.UI.12 — Error and empty states** · deps: SL-0.ERR.01 · owner: AI
   - **Do:** Every `Code` maps to a user-facing state with a recovery action. A damaged file shows
     what we recovered, not a dead end.
+  - **Partially landed; NOT done.** The model half is complete and green
+    (`4f4fa96d`, `48c8d0d1`, `dd1da042`): `error-codes.ts` is GENERATED from
+    `crates/selis-error/codes.toml` with a drift gate, `errors.ts` turns every
+    code into severity + recovery action, and `error-panel.ts` builds the panel's
+    content without a DOM. 561 UI tests; the gates were falsified by deleting a
+    generated row, by making a Budget code offer `retry`, and by conflating a
+    shell failure with an unregistered code.
+  - **The host half is NOT landed.** `boot.js` gained a failure panel, but
+    wiring it in stopped the app from booting: the app-shell check reported
+    "the app's mount and registration to settle" with no error and no rejection
+    anywhere on the page. `boot.js` was restored to its working state rather than
+    shipped broken, so **the three dead ends the item exists to remove are still
+    in `boot.js`**: `Selis failed to start: …`, `Health unavailable: …`, and
+    `Could not print: …`. `__selisHealth` and `__selisSearch` also still collapse
+    a wire failure to `detail: ${code ?? "unknown"}`, discarding the registry's
+    sentence and the document state that the panel needs.
+  - **Known lead, not yet chased.** With the panel wired, `__selisApp` was
+    *absent* at the instant `import("/assets/boot.js")` resolved, with no thrown
+    error. The first 130 lines of the edited `boot.js` are byte-identical to
+    HEAD, so the top-level-await boot path is intact; the divergence is later in
+    the file. The app-shell now records `bootError`, `firstRejection` and which
+    global is missing, so the next attempt starts with the answer rather than
+    with a bare timeout.
 - [ ] **SL-4.UI.13 — Large-file handling UX (web)** · deps: SL-0.SBX.05, SL-1A.UI.06 · owner: AI+
   - **Do:** The web surface of SL-1A.UI.06, deferred from Phase 1A: progress and cancellation in
     the tab for long operations, and the honest budget-exhaustion state (which budget, the measured
