@@ -181,6 +181,8 @@ export type { ErrorKind, RegistryCode } from "./error-codes.js";
 export { REGISTRY, REGISTRY_SIZE } from "./error-codes.js";
 export type { ErrorSeverity, ErrorState, RecoveryAction } from "./errors.js";
 export { codesByKind, errorState, everyErrorState, recoveryFor, severityFor } from "./errors.js";
+export type { FailurePanel, FailureStrings } from "./error-panel.js";
+export { failurePanel, failurePanelFromWire } from "./error-panel.js";
 export {
 	DEFAULT_LABEL_STYLE,
 	MAX_ROMAN,
