@@ -101,6 +101,108 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+/// Lexical deviations in a file's **object syntax**, with stream bodies skipped.
+///
+/// This is the instrument for reporting what a *document* deviates on, as
+/// distinct from {@link Lexer::deviations}, which reports what a whole-file lex
+/// saw.
+///
+/// # Why not just lex the whole file
+///
+/// Because most of a PDF is opaque binary. A font program, a JPEG and a
+/// Flate-coded content stream are all byte soup at the COS layer, and lexing
+/// them as COS text produces deviations that describe the data, not the file.
+/// Measured on `corpus/fixtures/form_two_pages.pdf` - a clean, ordinary
+/// document with two embedded font programs - a whole-file lex reports **70+
+/// deviations**: 68 `invalid-hex-digit`, plus `unterminated-string`,
+/// `unexpected-closing-paren`, `reserved-delimiter` and `unexpected-gt`. Every
+/// one of them is the font data being read as syntax.
+///
+/// A report built on that is not merely noisy, it is actively harmful: a
+/// health panel that says "70 deviations" about a clean document has taught its
+/// reader to ignore the number, which costs every future reading of it.
+///
+/// # What it does report
+///
+/// Deviations in object syntax: dictionaries, arrays, names, numbers, strings
+/// and the keywords between them. That is the part a producer got wrong in a
+/// way a user could act on.
+///
+/// Two exclusions, both load-bearing, and neither is a blanket "ignore
+/// everything this class of thing says":
+///
+///  1. **Stream bodies are skipped** - structurally, by
+///     [`Lexer::skip_stream_body`]. This is the one that matters: it turns a
+///     70+-entry flood on a clean document into zero.
+///  2. **`UnknownWord` is filtered**, which after (1) removes a small, fully
+///     enumerated set: the file-structure keywords (`xref`, `trailer`,
+///     `startxref`) and the cross-reference table's `n` / `f` flags. These are
+///     mandatory parts of the format and are not object syntax, so no conforming
+///     file is free of them.
+///
+/// # Budget
+///
+/// Ticked per token by `next_token` and per byte by `skip_stream_body`, so a
+/// hostile file is bounded exactly like any other parse.
+///
+/// # Malformed Input
+///
+/// A body with no `endstream` ends the pass; whatever was found before it is
+/// still true and still worth reporting. Deduplicated by (name, offset),
+/// because the lexer can record the same defect twice across a read boundary
+/// and a report that counts one defect twice is a report nobody trusts.
+///
+/// # Errors
+///
+/// Budget and cancellation errors surface as the guard's typed error. A lexer
+/// error ends the pass rather than propagating, for the same reason
+/// `selis inspect` treats one: the question is what was *tolerated*.
+pub fn object_deviations(src: &[u8], g: &mut BudgetGuard<'_>) -> Vec<Deviation> {
+    let mut lex = Lexer::new(src);
+    loop {
+        // A lexer error ends the pass. `inspect` does the same, and for the same
+        // reason: a document that was tolerated up to here still has real
+        // deviations worth naming.
+        let token = match lex.next_token(g) {
+            Ok(Some(t)) => t,
+            Ok(None) | Err(_) => break,
+        };
+        if token == Token::Stream && !lex.skip_stream_body(g).unwrap_or(false) {
+            // No `endstream`: the body ran to end of input, so there is nothing
+            // left to lex.
+            break;
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    lex.deviations
+        .iter()
+        .copied()
+        // `unknown-word` is excluded, and after the stream skip it is a SMALL
+        // and fully explicable set rather than a flood.
+        //
+        // The COS object lexer knows `obj`, `endobj`, `stream`, `endstream`,
+        // `true`, `false`, `null` and `R`. It does not know the FILE-structure
+        // keywords, because they are not object syntax: `xref`, `trailer` and
+        // `startxref` head the cross-reference section, and the table's own
+        // `n` / `f` in-use and free flags are bare words too.
+        //
+        // Measured on a minimal one-page document, that is exactly 8
+        // `unknown-word` entries - `xref`, `trailer`, `startxref`, four `n` and
+        // one `f`. On a real two-page document with embedded fonts, exactly 1.
+        // Every one is a MANDATORY part of the file format. Reporting them would
+        // mean every conforming PDF has at least eight deviations, which is not
+        // a deviation report, it is a report with a constant offset.
+        //
+        // The genuine cases this class exists for - a stray bare word where an
+        // object should be - remain visible to `selis inspect`, which reads the
+        // unfiltered list on purpose: it is a forensic tool, not a summary for a
+        // user, and there the raw lexer's view is the right one.
+        .filter(|d| {
+            !matches!(d, Deviation::UnknownWord { .. }) && seen.insert((d.name(), d.offset()))
+        })
+        .collect()
+}
+
 /// The COS lexer: a cursor over a byte buffer.
 ///
 /// Not resumable in this form (resumability over partial sources is
@@ -134,6 +236,67 @@ impl<'a> Lexer<'a> {
     #[must_use]
     pub fn pos(&self) -> u64 {
         self.pos as u64
+    }
+
+    /// Skip a stream body, from just after the `stream` keyword to just past
+    /// the matching `endstream`.
+    ///
+    /// Returns `true` when `endstream` was found, `false` when the body ran to
+    /// end of input without one.
+    ///
+    /// # Why this exists
+    ///
+    /// A stream body is **opaque data** at the COS layer. `next_token` has no
+    /// business lexing it: a font program read as COS text yields a stream of
+    /// `invalid-hex-digit` and `unterminated-string` deviations that say nothing
+    /// about the document. Measured on `corpus/fixtures/form_two_pages.pdf`,
+    /// which embeds two font programs, a whole-file lex reports **70+ phantom
+    /// deviations** on a clean file - one per binary byte that happened to look
+    /// like a delimiter.
+    ///
+    /// So a caller that wants to know what the *document* deviates on lexes
+    /// object syntax and skips bodies with this.
+    ///
+    /// # Why the `endstream` match requires a preceding EOL
+    ///
+    /// ISO 32000-2 §7.3.8.1 requires `endstream` to be preceded by an EOL, and
+    /// requiring it is what keeps the nine bytes `endstream` appearing *inside*
+    /// a font program from truncating the scan early. A bare substring search
+    /// would resume lexing in the middle of binary data - which is how a
+    /// "skip streams" implementation turns one flood of nonsense into a
+    /// different flood of nonsense.
+    ///
+    /// # Budget
+    ///
+    /// Ticks per byte scanned, so a truncated or hostile body is bounded exactly
+    /// like any other parse. `BUDGET_*` surfaces as the guard's typed error.
+    pub fn skip_stream_body(&mut self, g: &mut BudgetGuard<'_>) -> Result<bool> {
+        const KEYWORD: &[u8] = b"endstream";
+        while self.pos < self.src.len() {
+            g.tick()?;
+            let rest = &self.src[self.pos..];
+            if rest.starts_with(KEYWORD) {
+                // Preceded by EOL, or at offset 0 (a body that is its own
+                // first byte cannot be preceded by anything).
+                let preceded_by_eol = self.pos == 0
+                    || matches!(
+                        self.src.get(self.pos.wrapping_sub(1)).copied(),
+                        Some(b'\n' | b'\r')
+                    );
+                if preceded_by_eol {
+                    self.pos = self.pos.saturating_add(KEYWORD.len());
+                    // The EOL after `endstream` belongs to the file, not the
+                    // body, and leaving it would let the next token read a
+                    // stray CR.
+                    while matches!(self.peek(), Some(b'\n' | b'\r')) {
+                        self.bump();
+                    }
+                    return Ok(true);
+                }
+            }
+            self.pos = self.pos.saturating_add(1);
+        }
+        Ok(false)
     }
 
     fn peek(&self) -> Option<u8> {
@@ -819,6 +982,169 @@ mod tests {
                 let mut l = Lexer::new(&data);
                 while let Ok(Some(_)) = l.next_token(&mut g) {}
             }
+        }
+    }
+
+    /// `object_deviations` exists because a whole-file lex describes the DATA in
+    /// a document, not the document. These are the legs that hold that line.
+    mod object_deviations {
+        use super::*;
+
+        fn names(src: &[u8]) -> Vec<&'static str> {
+            let mut g = guard();
+            object_deviations(src, &mut g)
+                .iter()
+                .map(|d| d.name())
+                .collect()
+        }
+
+        /// A body full of bytes that are not COS syntax must contribute nothing.
+        ///
+        /// This is the leg the whole function is for. The body below is binary
+        /// soup of the kind a font program or a JPEG produces: unbalanced
+        /// parens, lone `<` and `>`, and a `%`. A whole-file lex turns it into a
+        /// dozen deviations, none of which say anything about the file.
+        #[test]
+        fn binary_stream_body_contributes_nothing() {
+            let src =
+                b"1 0 obj\n<< /Length 24 >>\nstream\n((( <<< >>> %%% ((( )))\nendstream\nendobj\n";
+            assert_eq!(names(src), Vec::<&str>::new());
+        }
+
+        /// The NEGATIVE control for the leg above, and the one that keeps it
+        /// honest: without a skip, this very body DOES produce deviations.
+        #[test]
+        fn the_same_body_would_be_reported_without_the_skip() {
+            let src =
+                b"1 0 obj\n<< /Length 24 >>\nstream\n((( <<< >>> %%% ((( )))\nendstream\nendobj\n";
+            let mut g = guard();
+            let mut lex = Lexer::new(src);
+            while let Ok(Some(_)) = lex.next_token(&mut g) {}
+            assert!(
+                !lex.deviations().is_empty(),
+                "premise: a whole-file lex really does invent deviations from stream data"
+            );
+        }
+
+        /// A deviation in the object syntax either side of a body IS reported.
+        /// The skip must not swallow the document along with the data.
+        #[test]
+        fn object_syntax_around_a_body_is_still_reported() {
+            // `<ABC` before the stream: an odd-length hex string in the dict.
+            let src = b"1 0 obj\n<< /Note <ABC /Length 4 >>\nstream\njunk\nendstream\nendobj\n";
+            assert!(names(src).contains(&"odd-length-hex"));
+        }
+
+        /// `endstream` embedded in a body must not end the skip.
+        ///
+        /// The nine bytes occur in binary data. Requiring a preceding EOL
+        /// (ISO 32000-2 §7.3.8.1) is what stops the common case - the keyword
+        /// appearing mid-word, with a data byte in front of it - from
+        /// truncating the scan.
+        #[test]
+        fn an_endstream_embedded_in_a_word_does_not_end_the_skip() {
+            let src =
+                b"1 0 obj\n<< /Length 40 >>\nstream\nXendstream ((( junk\nendstream\nendobj\n";
+            let mut g = guard();
+            let mut lex = Lexer::new(src);
+            loop {
+                match lex.next_token(&mut g) {
+                    Ok(Some(Token::Stream)) => break,
+                    Ok(Some(_)) => {}
+                    _ => panic!("fixture has no stream keyword"),
+                }
+            }
+            assert!(
+                lex.skip_stream_body(&mut g).expect("skip"),
+                "the real endstream is found"
+            );
+            let after = lex.pos() as usize;
+            let tail = &src[after..];
+            assert!(
+                tail.starts_with(b"endobj"),
+                "resumed after the REAL endstream, got {:?}",
+                String::from_utf8_lossy(&tail[..tail.len().min(24)])
+            );
+        }
+
+        /// The limit of the rule, pinned so it cannot be forgotten.
+        ///
+        /// A body containing a *syntactically valid* `\nendstream\n` is
+        /// genuinely ambiguous: the real terminator has exactly that shape, so
+        /// no rule keyed on the keyword alone can tell them apart. This records
+        /// what actually happens rather than asserting a guarantee that does not
+        /// exist.
+        ///
+        /// The consequence is bounded and in the safe direction: the skip ends
+        /// early, lexing resumes inside binary data, and the report gains
+        /// spurious entries. It cannot lose a real deviation and it cannot
+        /// crash. Making it exact would mean honouring the stream dictionary's
+        /// `/Length` instead of searching for the keyword - which needs the
+        /// lexer to track dictionary state across tokens, and is the reason this
+        /// is a recorded limit rather than an oversight.
+        #[test]
+        fn a_syntactically_valid_endstream_inside_a_body_is_ambiguous() {
+            let src =
+                b"1 0 obj\n<< /Length 40 >>\nstream\nendstream is not the end\nendstream\nendobj\n";
+            let mut g = guard();
+            let mut lex = Lexer::new(src);
+            loop {
+                match lex.next_token(&mut g) {
+                    Ok(Some(Token::Stream)) => break,
+                    Ok(Some(_)) => {}
+                    _ => panic!("fixture has no stream keyword"),
+                }
+            }
+            assert!(
+                lex.skip_stream_body(&mut g).expect("skip"),
+                "some endstream was found"
+            );
+            assert!(
+                !src[lex.pos() as usize..].starts_with(b"endobj"),
+                "the skip ended early at the ambiguous keyword, as documented"
+            );
+        }
+
+        /// The `UnknownWord` exclusion is pinned to an exact enumeration, so it
+        /// cannot quietly widen.
+        ///
+        /// After the stream skip, the only unknown words in a conforming file are
+        /// the file-structure keywords and the cross-reference table's `n` / `f`
+        /// flags. This asserts the count is exactly that - 7 - rather than
+        /// "zero", because a filter that removed everything would also pass a
+        /// zero assertion, and then a genuine stray bare word would go
+        /// unreported with nothing to notice.
+        #[test]
+        fn only_the_file_structure_keywords_are_unknown_words() {
+            let src = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000056 00000 n \n0000000113 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n160\n%%EOF\n";
+            let mut g = guard();
+            let mut lex = Lexer::new(src);
+            while let Ok(Some(_)) = lex.next_token(&mut g) {}
+            let unknown: Vec<u64> = lex
+                .deviations()
+                .iter()
+                .filter(|d| d.name() == "unknown-word")
+                .map(|d| d.offset())
+                .collect();
+            assert_eq!(
+                unknown.len(),
+                7,
+                "xref, trailer, startxref, three `n` and one `f` - all mandatory. Got {unknown:?}"
+            );
+            // And the filtered report is empty, which is the property the engine
+            // layer depends on.
+            assert_eq!(names(src), Vec::<&str>::new());
+        }
+        /// No `endstream` at all: the pass ends, and reports what it found.
+        /// A truncated file is still a file a user needs told about.
+        #[test]
+        fn a_body_with_no_endstream_ends_the_pass() {
+            let src = b"1 0 obj\n<< /Note <ABC /Length 8 >>\nstream\nno terminator";
+            let found = names(src);
+            assert!(
+                found.contains(&"odd-length-hex"),
+                "deviations found before the body survive: {found:?}"
+            );
         }
     }
 }

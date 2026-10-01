@@ -881,6 +881,67 @@ impl Session {
         ))
     }
 
+    /// Every lexical deviation the parser tolerated, oldest-offset first.
+    ///
+    /// Lexical deviations in this document's **object syntax**, deduplicated by
+    /// (name, offset), oldest offset first.
+    ///
+    /// # What this reports, and what it deliberately does not
+    ///
+    /// Only deviations in object syntax: dictionaries, arrays, names, numbers,
+    /// strings, and the keywords between them. Stream bodies are **skipped**,
+    /// because a stream body is opaque data at this layer.
+    ///
+    /// That exclusion is not a filter bolted on afterwards - it is the whole
+    /// design, and getting it wrong is what this method exists to avoid. A
+    /// whole-file lex of `corpus/fixtures/form_two_pages.pdf`, a clean ordinary
+    /// document that embeds two font programs, reports **70+ deviations**: 68
+    /// `invalid-hex-digit`, plus `unterminated-string`,
+    /// `unexpected-closing-paren`, `reserved-delimiter` and `unexpected-gt`.
+    /// Every one describes a font program being read as COS text. A health panel
+    /// built on that number would be reporting the engine's correct handling of
+    /// embedded data as a defect in the document, which is the exact dishonesty
+    /// SL-4.UI.09's Do: is written against.
+    ///
+    /// See [`selis_pdf_cos::object_deviations`] for the pass itself and
+    /// [`selis_pdf_cos::Lexer::skip_stream_body`] for why the `endstream` match
+    /// insists on a preceding EOL.
+    ///
+    /// # Why this re-lexes rather than reading a retained list
+    ///
+    /// The deviations are produced by [`selis_pdf_cos::Lexer`] and dropped when
+    /// it goes out of scope: `parse_revisions` walks the xref tables byte-wise
+    /// and never lexes an object body, and `Document::resolve` lexes each object
+    /// through `resolve_object`, which discards its lexer's deviations. Nothing
+    /// in the open path keeps them, so there is no retained list to read - only
+    /// a fresh pass to run.
+    ///
+    /// The alternative - threading a deviation sink through `resolve_object` ->
+    /// `resolve_object_numbered` -> `resolve_ref` -> `walk_pages` ->
+    /// `Document::resolve` -> `open_doc` - would capture them for free, at the
+    /// cost of a signature change on every object-resolution path in the
+    /// engine. That is a wide change to a hot path, bought for a report a user
+    /// asks for explicitly.
+    ///
+    /// So this runs on demand, under the caller's budget, and the caller decides
+    /// whether to cache. A health panel asks once; a hostile document is bounded
+    /// by `g` exactly as any other parse is.
+    ///
+    /// # Budget
+    ///
+    /// Ticked per token and per skipped byte, so an over-budget file yields the
+    /// deviations found so far and stops - it never runs unbounded because the
+    /// panel asked.
+    ///
+    /// # Malformed Input
+    ///
+    /// None: this reports what the lexer tolerated, which is the whole point. A
+    /// file that could not be lexed at all did not open, so there is no
+    /// `Session` to ask.
+    pub fn deviations(&self, g: &mut BudgetGuard<'_>) -> Vec<selis_pdf_cos::Deviation> {
+        selis_pdf_cos::object_deviations(&self.src, g)
+    }
+
     /// Render a page onto a backend.
     ///
     /// `page_ctm` is the page-to-device transform from

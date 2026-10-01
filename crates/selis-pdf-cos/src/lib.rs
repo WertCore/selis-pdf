@@ -37,7 +37,7 @@ pub mod xref;
 pub mod xref_stream;
 
 pub use deviation::Deviation;
-pub use lex::{tokenise, Lexer, Number, Token};
+pub use lex::{object_deviations, tokenise, Lexer, Number, Token};
 pub use linearise::Linearisation;
 pub use obj::{Obj, Ref};
 pub use parse::{parse_all, ObjectParser};

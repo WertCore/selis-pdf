@@ -1022,9 +1022,9 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
     // reaching `window.print` is the FAILURE this leg exists to catch, not the
     // success it used to be asserted as. Both the online button (1d) and the
     // offline one must leave it untouched and produce a real PDF instead.
-    let button = report
-        .get("printButton")
-        .ok_or_else(|| "the app's Print button reported nothing (printButton = None)".to_string())?;
+    let button = report.get("printButton").ok_or_else(|| {
+        "the app's Print button reported nothing (printButton = None)".to_string()
+    })?;
     assert_print_artifact(button, "the Print button")?;
     if report.get("printCalls").and_then(Json::as_u64) != Some(0) {
         return Err(
