@@ -369,9 +369,45 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     and it is a differentiator — most web PDF viewers are inaccessible.
   - **DoD:** axe-core clean; a screen-reader script walks a tagged document correctly; keyboard-only
     operation of every control.
-- [ ] **SL-4.UI.08 — Print** · deps: UI.03 · owner: AI+
+- [x] **SL-4.UI.08 — Print** · deps: UI.03 · owner: AI+
   - **Do:** Render at print resolution to a print-specific canvas or a generated print-ready PDF;
     honour `/PrintScaling` and page size; do not rely on the browser's own PDF printing.
+  - **Note:** The **generated print-ready PDF** branch of the Do:, not the canvas one, because of a
+    constraint that is recorded rather than discovered: a Letter page at 300 DPI is 2550x3300, which
+    is 33 MB of RGBA for ONE page, so a document does not fit in a tab and the only viable shape is
+    page-at-a-time into a writer. `print.ts` decides (`/PrintScaling`, the sheet, the DPI);
+    `print-pdf.ts` assembles (`buildPrintPdf`/`streamPrintPdf`, `rgbaToRgb`). `boot.js`'s `__selisPrint`
+    is the join, and the Print button drives it.
+    - **The page count comes from the engine's `open` reply** (`{doc, pages, pageSizes}`), NOT from a
+      walk. A walk probing `{op:"page"}` for N+1 until refused hung, and the 5000-page bound never
+      mattered. `op_page` does refuse out of range (`PAGE_OUT_OF_RANGE`, pinned in
+      `crates/selis-pdf-wasm/src/lib.rs`), so the walk was not wrong in principle - but the count was
+      already in the reply, with every page box beside it.
+    - **The raster generator yields PAGES ONLY.** `streamPrintPdf(pages, boxes)` takes two parallel
+      sequences and drains `boxes` first, so handing both arguments one paired generator renders
+      every page and then finds the generator spent. Measured: that shape does not fail cleanly, it
+      makes the browser check unable to complete at all (240 s, "0 of 1 reported").
+    - **DPI is MEASURED, never claimed**: `round(rasterWidthPx / printedBox.widthPt * 72)` per page,
+      and the verdict reads the *minimum* across pages. Reporting the requested DPI passed a green
+      check once - a 72 DPI render reported as 300.
+    - **`/Rotate` is honoured by measurement, not assumption.** `open` reports each page's `/MediaBox`
+      un-rotated while `Render` applies `/Rotate`, so a landscape scan comes back transposed and the
+      un-rotated box would print it SQUASHED. `reconcilePageBox` pairs the declared box against the
+      raster that was actually produced; a 72 DPI probe settles the box before planning, because the
+      plan is what chooses the DPI.
+    - **Bounded, and refused loudly.** `MAX_PRINT_PAGES = 40` (the writer is uncompressed, so ~1 GB
+      of raster at that cap). A longer document is REFUSED with its real page count named, never
+      truncated - pages 1-40 of 400 is a different document delivered silently.
+    - **The button does not call `window.print()`.** It builds the PDF, wraps it in a Blob and
+      offers it as a download; the object URL is revoked on a later turn, because revoking
+      synchronously after `.click()` intermittently cancels the download with no error anywhere.
+      The document is held as a **thunk** in `__selisView`, never as bytes. A check that only asserted
+      `window.print` was reached was asserting the **opposite** of the Do:, and is now inverted.
+    - **Gated, and each leg falsified by breaking it:** a 72 DPI render reads "measured 72 DPI, at
+      or below the 300 floor"; a re-added `window.print()` reads "exactly what UI.08 forbids"; the
+      paired generator produces an unmeasurable run. Multi-page is gated on a TWO-page fixture
+      (small pages, ~4 MB) because a one-page document cannot distinguish a document-wide print from
+      "render page 0 and stop" - which is a perfectly green way to drop 99% of a document.
 - [ ] **SL-4.UI.09 — Document health panel** · deps: SL-1.COS.11 · owner: AI
   - **Do:** Surface deviations, conformance claims, encryption state, signature presence, and
     tagging status. Honest reporting as a feature.
@@ -503,8 +539,10 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     3. ~~No bundler~~ - decided *for*: native ESM, no bundler, with a declared
        ESM closure copied by `tools/place-assets.mjs`. Only `@selis/ui-kit`
        needed a relative rewrite.
-    4. ~~Print is genuinely unimplemented~~ - a real Print control plus the
-       `@media print` stylesheet that decides the output.
+    4. ~~Print is genuinely unimplemented~~ - first a real Print control plus the
+       `@media print` stylesheet; then, on UI.08, replaced by a **generated
+       print-ready PDF** at print resolution, because the Do: rules out the
+       browser's own PDF printing and a print stylesheet cannot deliver one.
 
     **All four DoD verbs are now implemented and machine-checked against real
     documents in real Edge** (`app-shell`, `cargo xtask browser-check`), each
@@ -520,9 +558,16 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       a word absent returns 0, and case folding works. The **absent** leg is the
       one that discriminates - without it, an implementation that ignored its
       query entirely would pass.
-    - **print** - the button is clicked and `window.print` reached exactly once;
-      the stylesheet is read through the **CSSOM** so a sheet that failed to load
-      cannot pass, and must both hide the chrome and keep the page visible.
+    - **print** - the real Print button builds a **print-ready PDF** and offers
+      it as a download; `window.print` must be reached **zero** times, because
+      reaching it is the failure the Do: names. The artifact is asserted, not the
+      call: a `%PDF-` header, a **measured** 300 DPI floor read from the raster
+      (not the DPI requested), a size floor, and the page count taken from the
+      engine's `open` reply - on a TWO-page fixture, because a one-page document
+      cannot tell a document-wide print from printing only the first page. The
+      `@media print` stylesheet is still read through the **CSSOM**, so a sheet
+      that failed to load cannot pass, and must both hide the chrome and keep the
+      page visible. Re-run with the origin refusing.
     - **offline** - the app's OWN runtime-cached assets (`layout.js`,
       `windowing.js`, and 2 853 766 bytes of engine) answer from the worker with
       `no-store`, so an answer can only have come from its own cache, and the
@@ -532,6 +577,14 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     several broke the check *for real*: no `#selis-app` mount; one whitened pixel
     (`19999` vs `20000`); a stub answering "found" to every query; a print rule
     using `visibility` instead of `display`.
+    - **UI.08's print legs were falsified the same way.** Forcing the raster to
+      72 DPI read "measured 72 DPI, at or below the 300 floor" - the leg that
+      exists precisely because reporting the *requested* DPI once passed a green
+      check. Re-adding `window.print()` to the button read "exactly what UI.08
+      forbids". And passing one paired generator to both `streamPrintPdf`
+      sequences did not fail cleanly at all: it left the page unable to report
+      (240 s, "0 of 1 reported"), which is the same hang that started this work -
+      so the multi-page shape is gated on a two-page fixture rather than trusted.
 
     **Still open, and it is one thing, not four.** The DoD says "with no network
     --- FIXED 2026-09-30. The origin was the bug, and the worker was right. ---

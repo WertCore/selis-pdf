@@ -45,36 +45,80 @@ const OBJECTS_PER_PAGE = 3;
  * then get wrong for the whole file.
  */
 const BINARY_MARKER = "%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";
-/** Growable byte buffer that reports how long the file is. */
+/**
+ * Growable byte buffer that reports how long the file is.
+ *
+ * ## Why this is a `Uint8Array` and not an array of numbers
+ *
+ * The first version pushed one element per byte into a `number[]`. That is
+ * invisible on a test page and fatal on a real one: a single 300 DPI Letter
+ * page is 25,253,326 bytes, so its image data alone became a 25-million-
+ * element JS array. That is hundreds of megabytes of array for 25 MB of image,
+ * it reallocates on every growth, and `Uint8Array.from` then walks it a second
+ * time. Multi-page printing is where it showed: the cost grows with the page
+ * count, and the page count is the thing being added.
+ *
+ * A doubling `Uint8Array` copies on growth instead of on every byte, so
+ * appending N bytes costs O(N) amortised rather than O(N) with a very large
+ * constant. The buffer is truncated to `length` on the way out, so the spare
+ * capacity from the last doubling never reaches the file - and the xref
+ * offsets, which are recorded as `length` values, are unaffected either way.
+ */
 class ByteWriter {
-    #bytes = [];
+    #bytes;
+    #length = 0;
+    constructor() {
+        // Room for a PDF's worth of syntax before the first growth; the image
+        // streams dwarf it and drive the doublings from there.
+        this.#bytes = new Uint8Array(4096);
+    }
     /** Total bytes written; a valid byte offset into the finished file. */
     get length() {
-        return this.#bytes.length;
+        return this.#length;
+    }
+    /** Make room for `extra` more bytes, doubling until it fits. */
+    #reserve(extra) {
+        const needed = this.#length + extra;
+        if (needed <= this.#bytes.length)
+            return;
+        let capacity = this.#bytes.length;
+        while (capacity < needed)
+            capacity *= 2;
+        const grown = new Uint8Array(capacity);
+        grown.set(this.#bytes.subarray(0, this.#length));
+        this.#bytes = grown;
     }
     /** Append a Latin-1 string. Correct only for bytes 0x00-0xFF. */
     latin1(text) {
-        for (let i = 0; i < text.length; i++)
-            this.#bytes.push(text.charCodeAt(i) & 0xff);
+        this.#reserve(text.length);
+        for (let i = 0; i < text.length; i++) {
+            this.#bytes[this.#length++] = text.charCodeAt(i) & 0xff;
+        }
         return this;
     }
     /** Append ASCII text, mapping anything else to '?' rather than passing it. */
     ascii(text) {
+        this.#reserve(text.length);
         for (let i = 0; i < text.length; i++) {
             const code = text.charCodeAt(i);
-            this.#bytes.push(code >= 0x20 && code < 0x7f ? code : 0x3f);
+            this.#bytes[this.#length++] = code >= 0x20 && code < 0x7f ? code : 0x3f;
         }
         return this;
     }
     /** Append raw bytes. The single funnel image data passes through. */
     raw(bytes) {
-        for (let i = 0; i < bytes.length; i++)
-            this.#bytes.push(bytes[i]);
+        // `set` is the whole point: a memcpy rather than a per-byte loop, which
+        // is the difference between a 25 MB page being quick and being a pause.
+        this.#reserve(bytes.length);
+        this.#bytes.set(bytes, this.#length);
+        this.#length += bytes.length;
         return this;
     }
     /** The finished file. */
     toUint8Array() {
-        return Uint8Array.from(this.#bytes);
+        // A copy, truncated to the exact length: the spare capacity from the
+        // last doubling is not part of the file.
+        return this.#bytes.slice(0, this.#length);
     }
 }
 /**

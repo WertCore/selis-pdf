@@ -60,6 +60,14 @@
       // and `__selisBoot` / `__selisServiceWorker` are the app's own globals.
       import { registerServiceWorker } from "/sw-register.js";
 
+      // The `window.print` stub's state, at SCRIPT scope rather than inside a
+      // `.then` callback. The stub is installed in one stage of the chain and
+      // restored in a later one, and a `var` declared in a callback is scoped
+      // to that callback - so hoisting it is what stops the restore stage from
+      // throwing a ReferenceError that kills the whole check with a page that
+      // simply stops reporting.
+      var printReal = null;
+      var printCalls = 0;
       var RESULT_PATH = "/__selis_result";
       var out = {
         schema: 1,
@@ -126,6 +134,32 @@
       // before being committed here.
       var TEXT_PDF_B64 =
         "JVBERi0xLjcKJeLjz9MKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTAgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA3MDAgVGQgKFNlbGlzIHNlYXJjaCBwcm9iZSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDM0NCAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQ0MwolJUVPRgo=";
+      // A THIRD fixture: TWO pages, each a small 200x200pt box with two filled
+      // rectangles. It exists for one reason - the print path''s page COUNT.
+      //
+      //     A one-page document cannot tell a document-wide print from "render
+      //     page 0 and stop", because both produce exactly one page. Multi-page
+      //     printing is therefore untested by the one-page fixture no matter how
+      //     many assertions are hung on it, and "prints the first page" is a
+      //     perfectly green way to ship a viewer that silently drops 99% of a
+      //     document when the user prints it.
+      //
+      //     The box is DELIBERATELY small, and that is a cost decision rather
+      //     than a stylistic one. Page count and per-page iteration are what
+      //     this leg tests, and neither depends on the paper size; at 300 DPI a
+      //     200x200pt page is 833x833 - about 2 MB of raster - where two Letter
+      //     pages are 50 MB. The earlier Letter-sized version of this fixture
+      //     pushed the whole check past four minutes, which is a check that
+      //     cannot run on a pull request and therefore does not run at all.
+      //
+      //     Byte-exact xref, the same shape as the one-page fixture, declared
+      //     `/Length` computed from the stream rather than counted by hand - a
+      //     wrong `/Length` here reads as a corrupt document, and the check
+      //     would be measuring the fixture instead of the print path.
+      //     deliberately free of text so the ink count stays a known number.
+      var TWO_PAGE_PDF_B64 =
+        "JVBERi0xLjcKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUiA0IDAgUl0gL0NvdW50IDIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvUmVzb3VyY2VzIDw8ID4+IC9Db250ZW50cyA1IDAgUiA+PgplbmRvYmoKNCAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDIwMCAyMDBdIC9SZXNvdXJjZXMgPDwgPj4gL0NvbnRlbnRzIDYgMCBSID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNjYgPj4Kc3RyZWFtCjAuODUgMC4yIDAuMSByZyAyMCAyMCA4MCA0MCByZSBmCjAuMSAwLjMgMC44IHJnIDIwIDEyMCA4MCA0MCByZSBmCmVuZHN0cmVhbQplbmRvYmoKNiAwIG9iago8PCAvTGVuZ3RoIDY2ID4+CnN0cmVhbQowLjg1IDAuMiAwLjEgcmcgMjAgMjAgODAgNDAgcmUgZgowLjEgMC4zIDAuOCByZyAyMCAxMjAgODAgNDAgcmUgZgplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA3CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMjEgMDAwMDAgbiAKMDAwMDAwMDIyNSAwMDAwMCBuIAowMDAwMDAwMzI5IDAwMDAwIG4gCjAwMDAwMDA0NDQgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA3IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo1NTkKJSVFT0YK";
+
       function report() {
         // Attached on every report, pass or fail: the trace is what a reader
         // needs when this goes red, and it costs nothing when it does not.
@@ -267,20 +301,26 @@
           out.searchReadout =
             (document.getElementById("selis-search-result") || {}).textContent || null;
 
-          // 1d. PRINT. Driven through the app's real Print button.
+          // 1d. PRINT, driven through the app's real Print button.
           //
-          //     `window.print` is REPLACED for the duration, so a click that
-          //     reaches it is observable. Without the stub the click would open
-          //     a native dialog and block the run, which is also why headless
-          //     cannot verify what actually lands on paper - see the note below.
-          var printCalls = 0;
-          var realPrint = window.print;
+          //     The button is ASYNCHRONOUS: it renders every page at print
+          //     resolution before it has a file to hand over, so the click
+          //     cannot be judged on the next line. The in-flight job is
+          //     recorded on the app's own state, and that is what is awaited.
+          //
+          //     What is asserted is the ARTIFACT the button produced.
+          //
+          //     This leg used to assert that `window.print` was REACHED, which
+          //     was backwards. UI.08's Do: says "do not rely on the browser's
+          //     own PDF printing", so reaching `window.print` is precisely the
+          //     failure the check exists to catch. It is still stubbed - an
+          //     unstubbed click opens a native dialog and blocks the run - but
+          //     now so that reaching it is a recorded, assertable FAILURE.
+          printReal = window.print;
           window.print = function () { printCalls++; };
           var printButton = document.getElementById("selis-print");
           if (!printButton) throw new Error("the app exposed no Print button");
           printButton.click();
-          window.print = realPrint;
-          out.printCalls = printCalls;
 
           // The print STYLESHEET, read through the CSSOM rather than grepped
           // from the file. This asks what the browser actually parsed, so a
@@ -326,15 +366,65 @@
             return /#selis-page/.test(t) && /display:\s*block/.test(t);
           });
         })
-        // 1e. PRINT, as a generated PDF (UI.08). The Do: explicitly rules out
-        //     the browser's own PDF printing, so this asserts a real artifact:
-        //     a %PDF- header and a raster rendered at PRINT resolution rather
-        //     than the screen's 72.
+        // 1d (cont). Collect the Print button's result.
+        //
+        //     A SEPARATE stage from the click above, and that is deliberate: the
+        //     click has to be fired while `window.print` is stubbed, and the
+        //     stub may only be restored once the button has finished. Returning
+        //     a promise from the middle of the stylesheet block would make
+        //     every leg after it unreachable - code that still reads like a gate
+        //     but never runs, which is the worst of both.
         .then(function () {
-          return globalThis.__selisPrint(FIXTURE_PDF_B64).then(function (printed) {
+          return waitFor(
+            function () {
+              var job = (globalThis.__selisApp || {}).print;
+              return !!job && job.status !== "working";
+            },
+            90000,
+            "the Print button to finish building its PDF",
+          ).then(function () {
+            window.print = printReal;
+            out.printCalls = printCalls;
+            out.printButton = globalThis.__selisApp.print;
+          });
+        })
+        // 1e. PRINT, as a generated PDF (UI.08), and MULTI-PAGE.
+        //
+        //     The Do: explicitly rules out the browser''s own PDF printing, so
+        //     this asserts a real artifact: a %PDF- header and a raster at PRINT
+        //     resolution rather than the screen''s 72.
+        //
+        //     It runs against the TWO-PAGE fixture, and that is two decisions in
+        //     one. The second page is what tells a document-wide print from
+        //     "render page 0 and stop" - on a one-page document the two produce
+        //     identical results, so a one-page gate cannot fail for the reason
+        //     multi-page printing exists. And the fixture''s pages are small, so
+        //     gating the count costs ~4 MB instead of the ~50 MB two Letter
+        //     pages would: page count and per-page iteration do not depend on
+        //     the paper size, and a gate expensive enough to time out is a gate
+        //     that stops running.
+        //
+        //     The one-page Letter fixture is still printed, through the real
+        //     button, in 1d and again offline. What is removed here is the
+        //     DUPLICATE full-size direct call, not a property: the button calls
+        //     `__selisPrint` and reports its return value, so 1d already gates
+        //     this function - one level down, with the user''s verb on top.
+        //
+        //     The trap the second page gates is concrete: `streamPrintPdf(pages,
+        //     boxes)` takes TWO parallel sequences and drains the boxes FIRST.
+        //     Handing both arguments one paired generator renders every page
+        //     and then finds the generator spent, so the file comes out with
+        //     pages the boxes never matched - or throws, having done every
+        //     page''s raster twice.
+        .then(function () {
+          return globalThis.__selisPrint(TWO_PAGE_PDF_B64).then(function (printed) {
             out.print = {
               status: printed.status,
               dpi: printed.dpi,
+              lowestDpi: printed.lowestDpi,
+              dpiPerPage: printed.dpiPerPage,
+              pages: printed.pages,
+              rotatedPages: printed.rotatedPages,
               bytes: printed.bytes,
               header: printed.header,
               detail: printed.detail,
@@ -495,14 +585,34 @@
           out.offlineCutView = view.painted === undefined ? null : view.painted;
           out.offlineCutSearch = globalThis.__selisSearch(TEXT_PDF_B64, "search");
           out.offlineCutMiss = globalThis.__selisSearch(TEXT_PDF_B64, "zzzznotpresent");
-          var real = window.print;
-          var n = 0;
-          window.print = function () {
-            n++;
-          };
+          // PRINT, offline, and as a generated artifact rather than a call into
+          // the browser's pipeline. This is the leg that proves `print.js` and
+          // `print-pdf.js` are reachable with the origin refusing - they are
+          // loaded by dynamic import, so a shell that worked online and 404'd
+          // here would be an offline-only failure nothing else would catch.
+          //
+          // The DOWNLOAD is not what is gated: an anchor's navigation to a blob
+          // URL is not observable from script and waiting on it never
+          // completes, so the page would post nothing at all. What is gated is
+          // the generated artifact - the same thing 1e gates - reached through
+          // the real button, with `window.print` stubbed so that reaching the
+          // browser's pipeline is a recorded failure rather than a native
+          // dialog that blocks the run.
+          printReal = window.print;
+          window.print = function () { printCalls++; };
           document.getElementById("selis-print").click();
-          window.print = real;
-          out.offlineCutPrintCalls = n;
+          return waitFor(
+            function () {
+              var job = (globalThis.__selisApp || {}).print;
+              return !!job && job.status !== "working";
+            },
+            90000,
+            "the offline Print button to finish building its PDF",
+          ).then(function () {
+            window.print = printReal;
+            out.offlineCutPrintCalls = printCalls;
+            out.offlineCutPrint = globalThis.__selisApp.print;
+          });
         })
         .then(function () {
           report();

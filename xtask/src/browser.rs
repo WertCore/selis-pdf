@@ -918,18 +918,13 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         ));
     }
 
-    // The DoD's fourth verb: print. The control is reached, and the stylesheet
-    // that decides the printed output is the real one.
-    let calls = report
-        .get("printCalls")
-        .and_then(Json::as_u64)
-        .ok_or_else(|| "the app never reported a print (printCalls = None)".to_string())?;
-    if calls != 1 {
-        return Err(format!(
-            "pressing Print called window.print {calls} time(s), expected 1 -- the button is not \
-             wired to the browser's print pipeline"
-        ));
-    }
+    // The DoD's fourth verb: print. The control is reached, the stylesheet that
+    // decides the printed output is the real one, and - asserted further down,
+    // where the generated PDF can be examined - the button produces an artifact
+    // rather than handing the document to the browser's own print pipeline.
+    // `printCalls` used to be checked HERE for `== 1`, which asserted the
+    // opposite of UI.08's Do:; it is now checked for `== 0` alongside the
+    // artifact, where both halves of the requirement sit together.
 
     // Read through the CSSOM, not by grepping the file: this asks what the
     // browser actually parsed, so a stylesheet that failed to load or was
@@ -1023,9 +1018,31 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
             "offline search returned {hit} / {miss}, expected 1 / 0"
         ));
     }
-    if report.get("offlineCutPrintCalls").and_then(Json::as_u64) != Some(1) {
-        return Err("offline the Print control did not reach window.print".into());
+    // UI.08: the Do: forbids relying on the browser's own PDF printing, so
+    // reaching `window.print` is the FAILURE this leg exists to catch, not the
+    // success it used to be asserted as. Both the online button (1d) and the
+    // offline one must leave it untouched and produce a real PDF instead.
+    let button = report
+        .get("printButton")
+        .ok_or_else(|| "the app's Print button reported nothing (printButton = None)".to_string())?;
+    assert_print_artifact(button, "the Print button")?;
+    if report.get("printCalls").and_then(Json::as_u64) != Some(0) {
+        return Err(
+            "the Print button reached window.print, which is exactly what UI.08 forbids -- \
+the browser's print pipeline decides the paper, the margins and the resolution"
+                .into(),
+        );
     }
+    if report.get("offlineCutPrintCalls").and_then(Json::as_u64) != Some(0) {
+        return Err("offline the Print button reached window.print".into());
+    }
+    // Offline the same must hold, and through the same generated artifact:
+    // `print.js` and `print-pdf.js` are dynamically imported, so a precache
+    // list that missed them works online and 404s with the origin refusing.
+    let offline = report
+        .get("offlineCutPrint")
+        .ok_or_else(|| "the app's Print button reported nothing offline".to_string())?;
+    assert_print_artifact(offline, "the offline Print button")?;
 
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
@@ -1033,8 +1050,74 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
     let printed = report
         .get("print")
         .ok_or_else(|| "the app produced no print artifact (print = None)".to_string())?;
+    assert_print_artifact(printed, "__selisPrint")?;
+
+    // MULTI-PAGE, and the leg that can actually catch it. A one-page document
+    // cannot: "render page 0 and stop" produces an identical result on one
+    // page, so every assertion on it passes for an implementation that drops
+    // every page after the first. The fixture here has two, so the count, the
+    // per-page iteration and the second page''s own resolution are all
+    // observable - and the count is the ENGINE''s, read from its `open` reply.
+    if printed.get("pages").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the two-page document was printed as {:?} page(s); the count comes from the engine''s \
+             open reply, so this is a count being dropped rather than a writer problem",
+            printed.get("pages")
+        ));
+    }
+    // Every page measured, not just the first: a job that rendered page 1 at
+    // 300 DPI and page 2 at 72 is a real defect a first-page reading misses.
+    let per_page = printed
+        .get("dpiPerPage")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the two-page print reported no per-page DPI".to_string())?;
+    if per_page.len() != 2 {
+        return Err(format!(
+            "the two-page print reported {} per-page DPI reading(s), expected 2",
+            per_page.len()
+        ));
+    }
+    for (index, value) in per_page.iter().enumerate() {
+        let dpi = value.as_u64().unwrap_or(0);
+        if dpi < PRINT_DPI_FLOOR {
+            return Err(format!(
+                "page {} of the two-page print measured {dpi} DPI, below the {PRINT_DPI_FLOOR} floor",
+                index + 1
+            ));
+        }
+    }
+    // Two pages of raster means roughly twice one page''s bytes, and this
+    // fixture''s pages are 833x833 at 300 DPI - about 2 MB each. A one-page
+    // output for a two-page input is the truncation this leg is about, so the
+    // floor sits between the two rather than at either.
+    let two_bytes = printed.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if two_bytes < 3_000_000 {
+        return Err(format!(
+            "the two-page print is only {two_bytes} bytes; two 833x833 pages at {PRINT_DPI_FLOOR} DPI \
+             carry about 4 MB between them, so this is one page of a two-page document"
+        ));
+    }
+
+    Ok(())
+}
+
+/// Assert that a print report is a real, print-resolution PDF artifact.
+///
+/// Shared by the three places a print job can be observed - the `__selisPrint`
+/// entry point, the online Print button and the offline one - because they
+/// assert the SAME property. Duplicating the thresholds per call site is how
+/// two of them drift and the weakest one becomes the gate.
+///
+/// The DPI floor is checked against `lowestDpi` where the report carries it,
+/// and against `dpi` otherwise: page 1 of a mixed-resolution document is not
+/// evidence about page 9, and a check that reads only page 1 is a check that
+/// cannot fail for the reason it exists.
+///
+/// @param printed the report object
+/// @param what a name for the caller, used in the failure message
+fn assert_print_artifact(printed: &Json, what: &str) -> Result<(), String> {
     if printed.get("status").and_then(Json::as_str) != Some("ok") {
-        return Err(format!("printing did not produce a PDF: {printed}"));
+        return Err(format!("{what} did not produce a PDF: {printed}"));
     }
     // A real PDF header. This is what separates an artifact from a summary
     // object, and it is the cheapest check that the writer actually ran.
@@ -1047,11 +1130,15 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
     // PRINT resolution, not the screen's 72. This is the leg that catches a
     // rasteriser quietly falling back to the raw ABI, which cannot scale: the
     // output would still be a valid PDF, just soft and the wrong physical size.
-    let dpi = printed.get("dpi").and_then(Json::as_u64).unwrap_or(0);
-    if dpi < PRINT_DPI_FLOOR {
+    let measured = printed
+        .get("lowestDpi")
+        .or_else(|| printed.get("dpi"))
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if measured < PRINT_DPI_FLOOR {
         return Err(format!(
-            "the print raster was {dpi} DPI, below the {PRINT_DPI_FLOOR} floor -- that is a screen \
-             render, not a print one"
+            "the print raster measured {measured} DPI, at or below the {PRINT_DPI_FLOOR} floor \
+             -- that is a screen render, not a print one"
         ));
     }
     // A stub - an empty page, or a page object with no image - is a few hundred
@@ -1064,7 +1151,6 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
              raster, so this did not"
         ));
     }
-
     Ok(())
 }
 

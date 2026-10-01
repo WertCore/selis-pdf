@@ -12,6 +12,6 @@
  * cost: an unlisted module does not ship, so "works locally, 404s deployed" is
  * a build-time failure rather than a runtime one.
  */
-export { MIN_PRINT_DPI, POINTS_PER_INCH, parsePrintScaling, planPrint, } from "./print.js";
+export { MAX_PRINT_PAGES, MIN_PRINT_DPI, POINTS_PER_INCH, measuredPrintDpi, parsePrintScaling, planPrint, printBoxesFromOpen, reconcilePageBox, } from "./print.js";
 export { buildPrintPdf, rgbaToRgb, streamPrintPdf, } from "./print-pdf.js";
 //# sourceMappingURL=page.js.map

@@ -445,13 +445,32 @@ if (root !== null) {
 }
 
 /**
+ * The document the shell is currently showing, as a THUNK.
+ *
+ * A thunk, not the bytes and not even the base64 string. Printing needs the
+ * document again minutes later, and the alternative - holding a reference so
+ * the bytes stay alive - means a 25 MB print raster and a decoded document
+ * buffer are pinned in a tab for as long as the page is open, for a document
+ * the user may never print. A closure that produces the source on demand keeps
+ * the shell's own state to one function.
+ *
+ * `null` is "nothing open", which is a real state and the one the Print button
+ * has to report rather than print a blank page for.
+ */
+let openDocumentSource = null;
+
+/**
  * Open a document and show it — the DoD's first two verbs in one call, so the
  * browser check drives the same path a user does rather than a reduced one.
  *
- * @param {string} base64 the document
+ * @param {string|(() => string)} source the document, or a thunk producing it
  * @returns {object} the open result, with `painted` when the page was shown
  */
-globalThis.__selisView = function (base64) {
+globalThis.__selisView = function (source) {
+	// Normalised to a thunk immediately, so nothing downstream has to know
+	// which of the two shapes it was handed.
+	openDocumentSource = typeof source === "function" ? source : () => source;
+	const base64 = openDocumentSource();
 	const opened = globalThis.__selisOpen(base64);
 	if (opened.status !== "ok") return opened;
 	const painted = paintPage(opened, root);
@@ -475,13 +494,37 @@ globalThis.__selisView = function (base64) {
  *     rgbaToRgb + streamPrintPdf -> one PDF, assembled a page at a time
  *
  * The DPI handed to `Render` is `plan.dpi`, and the MediaBox the writer emits is
- * the same box `Page` reported. Those two MUST come from the same plan: if the
- * raster were rendered at a different DPI than the box was computed for, the
- * page would print at the wrong physical size and nothing downstream would say
- * so.
+ * the same box the plan was computed from. Those two MUST agree: if the raster
+ * were rendered at a different DPI than the box was computed for, the page
+ * would print at the wrong physical size and nothing downstream would say so.
  *
- * Pages are produced by a generator and consumed by `streamPrintPdf`, so only
- * one raster is live at a time - the whole reason that function exists.
+ * ## The page count comes from `open`, not from a walk
+ *
+ * The first attempt counted pages by probing `{op:"page"}` for N+1 until it was
+ * refused, and it never terminated. `op_page` does in fact refuse out of range
+ * - `PAGE_OUT_OF_RANGE`, pinned by `crates/selis-pdf-wasm/src/lib.rs` - so the
+ * walk's own logic was not what hung, and the 5000-page bound never got a
+ * chance to matter. The `open` reply already answers `{doc, pages, pageSizes}`,
+ * so the walk is not merely bounded, it is unnecessary: one round trip, a count
+ * the engine computed, and every page box in the same reply.
+ *
+ * ## The raster generator yields PAGES ONLY
+ *
+ * `streamPrintPdf(pages, boxes)` takes TWO parallel sequences and drains
+ * `boxes` first. Handing both arguments the same paired generator runs the
+ * render loop twice, and the second run starts from an exhausted generator -
+ * after 25 MB per page has already been rendered and thrown away. The boxes are
+ * collected up front (two numbers per page, so "tiny" is literal) and passed as
+ * a plain array; the generator below yields rasters and nothing else.
+ *
+ * ## Rotation, measured rather than assumed
+ *
+ * `open` reports each page's `/MediaBox` un-rotated while `Render` applies
+ * `/Rotate`, so a landscape scan comes back transposed and writing the
+ * un-rotated box beside it prints the page squashed. `orientationOf` settles the
+ * orientation from a cheap 72 DPI probe before planning, and
+ * `reconcilePageBox` re-checks it against the print-resolution raster that is
+ * what actually gets measured.
  *
  * @param {string} base64 the document
  * @param {object|null} [paper] the chosen sheet in points, or null for the page's own
@@ -496,19 +539,28 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 	// modules below are the whole surface either way; `page.ts` still exists as the
 	// entry the walk starts from, which is what keeps the service worker's own
 	// modules off the page origin.
-	const { parsePrintScaling, planPrint } = await import("/assets/host/print.js");
+	const print = await import("/assets/host/print.js");
 	const { rgbaToRgb, streamPrintPdf } = await import("/assets/host/print-pdf.js");
-	
+
 		const binary = atob(base64);
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-		const doc = searchDocumentHandle(bytes);
+		const opened = openDocumentOnce(bytes);
+		const doc = opened.doc;
 
-		// Page count, from the page tree. A `page` beyond the last is refused by
-		// the engine, so this doubles as the loop bound.
-		const { response: pageOp } = dispatch({ op: "page", doc, page: 0 });
-		if (pageOp.ok !== true) {
-			return { status: "refused", detail: `page op: ${pageOp.code ?? "unknown"}` };
+		// THE COUNT AND EVERY BOX, FROM THE REPLY THAT ALREADY HAS THEM. No walk.
+		const { count, boxes } = print.printBoxesFromOpen(opened);
+		if (count === 0) {
+			return { status: "refused", detail: "the document has no pages to print" };
+		}
+		// Refused with the real count, never truncated: a 40-page PDF handed to
+		// someone who asked for 400 is a different document, delivered silently.
+		if (count > print.MAX_PRINT_PAGES) {
+			return {
+				status: "refused",
+				detail: `this document has ${count} pages, and a print job is capped at ${print.MAX_PRINT_PAGES}:
+					every page is rasterised at ${print.MIN_PRINT_DPI} DPI and held in memory. Nothing was printed.`,
+			};
 		}
 
 		// `/PrintScaling` is not surfaced by the engine, so the plan runs on the
@@ -516,52 +568,83 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 		// `appDefault` prints at the document's own size - and it is recorded
 		// rather than hidden, because "we could not read it" is different from
 		// "the document did not ask for anything".
-		const scaling = parsePrintScaling(null);
-		const box = { widthPt: pageOp.value.widthPt, heightPt: pageOp.value.heightPt };
-		const plan = planPrint(box, scaling, paper);
+		const scaling = print.parsePrintScaling(null);
 
-		// Measured, not claimed. The page knows what DPI it ASKED for; what decides
-		// whether the page prints correctly is the raster the engine actually
-		// produced, so this is derived from the reply's pixel width against the
-		// page box. Reporting plan.dpi instead was a real gap this caught:
-		// rendering at 72 DPI and reporting 300 passed the gate.
-		let rasterWidthPx = 0;
-
-		async function* pages() {
-			// One page is the honest scope until the engine exposes a page count.
-			const { response: rendered, attachment } = dispatch({
-				op: "render",
-				doc,
-				page: 0,
-			params: { dpi: plan.dpi },
-			});
-			if (rendered.ok !== true || attachment === null) {
-				throw new Error(`render refused: ${rendered.code ?? "no attachment"}`);
-			}
-			const widthPx = rendered.value.width;
-			rasterWidthPx = widthPx;
-			const heightPx = rendered.value.height;
-			const expected = widthPx * heightPx * 4;
-			if (attachment.length !== expected) {
-				throw new Error(
-					`render returned ${attachment.length} bytes for a ${widthPx}x${heightPx} RGBA page \
-expected ${expected}`,
-				);
-			}
-			yield {
-				widthPx,
-				heightPx,
-				rgb: rgbaToRgb(attachment, widthPx * heightPx),
-			};
+		// Every box is settled BEFORE a single print-resolution pixel is rendered,
+		// because `streamPrintPdf` drains its box argument first. Two numbers per
+		// page, so holding them costs nothing beside the rasters they describe.
+		const printedBoxes = [];
+		const plans = [];
+		for (let i = 0; i < boxes.length; i++) {
+			const orientation = orientationOf(print, doc, i, boxes[i]);
+			printedBoxes.push(orientation);
+			plans.push(print.planPrint(orientation, scaling, paper));
 		}
 
-		const pdf = await streamPrintPdf(pages(), [box]);
+		// Measured, not claimed. The plan knows what DPI it ASKED for; what decides
+		// whether the page prints correctly is the raster the engine actually
+		// produced, so this is derived from each reply's pixel width against the
+		// box that page is printed at. Reporting plan.dpi instead was a real gap
+		// this caught: rendering at 72 DPI and reporting 300 passed the gate.
+		const dpiPerPage = [];
+		let rotatedPages = 0;
+
+		async function* pages() {
+			// PAGES ONLY. Never boxes, and never iterated twice.
+			//
+			// The writer drains its box sequence FIRST. One paired generator handed
+			// to both arguments therefore runs the render loop twice, and the
+			// second run starts from a generator that is already spent - after
+			// 25 MB per page has been rendered and thrown away. The boxes are a
+			// plain array above; this yields rasters and nothing else.
+			for (let i = 0; i < count; i++) {
+				const { response: rendered, attachment } = dispatch({
+					op: "render",
+					doc,
+					page: i,
+					params: { dpi: plans[i].dpi },
+				});
+				if (rendered.ok !== true || attachment === null) {
+					throw new Error(`render of page ${i} refused: ${rendered.code ?? "no attachment"}`);
+				}
+				const widthPx = rendered.value.width;
+				const heightPx = rendered.value.height;
+				const expected = widthPx * heightPx * 4;
+				if (attachment.length !== expected) {
+					throw new Error(
+						`render of page ${i} returned ${attachment.length} bytes for a ` +
+							`${widthPx}x${heightPx} RGBA page expected ${expected}`,
+					);
+				}
+				// Re-measured against the PRINT-resolution raster, not the 72 DPI
+				// probe. If the two disagreed the engine's orientation would not be
+				// stable, and the box chosen above would be a guess.
+				const measured = print.reconcilePageBox(printedBoxes[i], widthPx, heightPx);
+				if (measured.rotated) rotatedPages++;
+				dpiPerPage.push(print.measuredPrintDpi(widthPx, measured.box));
+				yield {
+					widthPx,
+					heightPx,
+					rgb: rgbaToRgb(attachment, widthPx * heightPx),
+				};
+			}
+		}
+
+		// A plain ARRAY of boxes against a generator of pages. Never one generator
+		// passed as both - see the note above.
+		const pdf = await streamPrintPdf(pages(), printedBoxes);
 		return {
 			status: "ok",
-			dpi: Math.round((rasterWidthPx / box.widthPt) * 72),
-			pages: 1,
+			// The FIRST page's measured DPI, which is what the DoD's floor is
+			// judged on, plus every page's: a document that is 300 DPI on page 1
+			// and 72 on page 9 has to be visible, not averaged away into the first.
+			dpi: dpiPerPage[0] ?? 0,
+			lowestDpi: dpiPerPage.length > 0 ? Math.min(...dpiPerPage) : 0,
+			dpiPerPage,
+			pages: count,
+			rotatedPages,
 			bytes: pdf.byteLength,
-			reason: plan.reason,
+			reason: plans[0].reason,
 			header: new TextDecoder().decode(pdf.slice(0, 8)),
 			pdf,
 		};
@@ -596,17 +679,24 @@ let searchDoc = null;
 let searchDocKey = "";
 
 /**
- * Open `bytes` for searching unless it is already the open document.
+ * Open `bytes` unless it is already the open document, and return the WHOLE
+ * `open` reply value.
+ *
+ * The reply value, not just the handle, because it is the only place the page
+ * COUNT appears: `{doc, pages, pageSizes}`. Returning the handle alone is what
+ * forced the page-count walk that used to hang here.
  *
  * Opened once and kept, because a shell that reports every keystroke must not
  * re-parse the document per character.
  *
  * @param {Uint8Array} bytes
- * @returns {number} the document handle
+ * @returns {{doc: number, pages: number, pageSizes: Array}} the open reply value
  */
-function searchDocumentHandle(bytes) {
+function openDocumentOnce(bytes) {
 	const key = `${bytes.length}:${bytes[0]}:${bytes[1]}:${bytes[bytes.length - 1]}`;
-	if (searchDoc !== null && searchDocKey === key) return searchDoc;
+	if (searchDoc !== null && searchDocKey === key) {
+		return { doc: searchDoc, pages: searchDocPages, pageSizes: searchDocSizes };
+	}
 	const { response: opened } = dispatch(
 		{ op: "open", src: { kind: "bytes", len: bytes.length }, budget: { surface: "viewer" } },
 		bytes,
@@ -614,36 +704,125 @@ function searchDocumentHandle(bytes) {
 	if (opened.ok !== true) {
 		searchDoc = null;
 		searchDocKey = "";
+		searchDocPages = 0;
+		searchDocSizes = [];
 		throw new Error(`open refused: ${opened.code ?? "unknown"} ${opened.message ?? ""}`.trim());
 	}
 	searchDoc = opened.value.doc;
 	searchDocKey = key;
-	return searchDoc;
+	searchDocPages = opened.value.pages;
+	searchDocSizes = opened.value.pageSizes;
+	return opened.value;
+}
+
+/** Page count carried by the currently open document, from its `open` reply. */
+let searchDocPages = 0;
+
+/** Per-page boxes carried by the currently open document's `open` reply. */
+let searchDocSizes = [];
+
+/**
+ * The box a page is PRINTED at, which is not always the box `open` reported.
+ *
+ * `open` gives each page's `/MediaBox` in its own un-rotated user space, while
+ * `Render` applies `/Rotate`. A landscape scan therefore comes back transposed,
+ * and a MediaBox that is not transposed to match is a page printed SQUASHED -
+ * the content stream scales the image to fill whatever box it is given.
+ *
+ * Settled by a 72 DPI probe - one point per pixel, about 1.9 MB, discarded
+ * immediately - rather than by guessing, and then re-checked against the
+ * print-resolution raster once that exists. The probe has to happen first
+ * because the PLAN chooses the DPI the print raster is rendered at, so the two
+ * cannot both be derived from the same raster: something has to be known before
+ * the expensive render, and this is the cheap way to know it.
+ *
+ * @param {object} print the imported `print.js` module
+ * @param {number} doc the engine's document handle
+ * @param {number} page the page number, zero-based
+ * @param {{widthPt: number, heightPt: number}} declared the page's declared box
+ * @returns {{widthPt: number, heightPt: number}} the box to print
+ */
+function orientationOf(print, doc, page, declared) {
+	const probe = dispatch({ op: "render", doc, page, params: { dpi: 72 } });
+	if (probe.response.ok !== true) {
+		// The probe is an optimisation, not a gate. A render that will not answer
+		// at 72 DPI has to be tried at print resolution, where the real
+		// reconciliation happens anyway; refusing here would turn a recoverable
+		// probe failure into a document that cannot be printed at all.
+		return declared;
+	}
+	return print.reconcilePageBox(declared, probe.response.value.width, probe.response.value.height)
+		.box;
 }
 
 /**
- * Hand the document to the browser's print pipeline.
+ * The Print button: build a print-ready PDF and hand it over as a download.
  *
- * `window.print()` is the whole mechanism - there is no print job to build here
- * - so what this function owns is the failure. A user who presses Print and
- * sees nothing has been told nothing, and the most common cause is not a bug
- * at all: no page is displayed yet, so the browser would print an empty shell.
- * That is refused out loud instead of printing a blank page.
+ * ## `window.print()` is not called, and that is the Do: rather than a detail
  *
- * @returns {boolean} whether the print was handed off
+ * UI.08 says "do not rely on the browser's own PDF printing". `window.print()`
+ * hands the document to a pipeline this project neither controls nor tests: it
+ * re-renders what is on screen, applies its own paper and margin defaults, and
+ * produces a PDF whose resolution, page size and `/PrintScaling` handling are
+ * the browser's decisions rather than the plan's. A check that only asserted
+ * `window.print` was reached was asserting the opposite of the requirement,
+ * which is why that leg is replaced rather than kept.
+ *
+ * What the button does instead:
+ *
+ *     __selisPrint -> the PDF, built at print resolution by the engine
+ *     Blob         -> the bytes, as something the browser can hand to a file
+ *     <a download> -> a save, after which the choice of printer is the user's
+ *
+ * The user still chooses the printer, the paper and the scaling - in whatever
+ * application they open the file in. What they no longer get is a browser
+ * quietly re-interpreting the document on the way there.
+ *
+ * ## The object URL is revoked on a LATER TURN
+ *
+ * `URL.revokeObjectURL` frees the blob the moment it is called, and the click
+ * that starts the download has not necessarily consumed it by then - the
+ * navigation to the blob is still queued. Revoking synchronously after
+ * `.click()` intermittently cancels the download with no error anywhere, which
+ * is the worst available failure: the user pressed Print, nothing appeared, and
+ * nothing said why. A one-turn `setTimeout` is the standard fix, and is why the
+ * revoke is not inline.
+ *
+ * @returns {Promise<object>} the print summary, so a caller can read it
  */
-function requestPrint() {
-	const canvas = document.getElementById("selis-page");
-	if (canvas === null) {
-		if (searchUi.readout !== null) {
-			searchUi.readout.textContent = "Nothing to print - open a document first.";
-		}
-		return false;
+async function requestPrint() {
+	const say = (message) => {
+		if (searchUi.readout !== null) searchUi.readout.textContent = message;
+	};
+	if (openDocumentSource === null) {
+		say("Nothing to print - open a document first.");
+		return { status: "refused", detail: "no document is open" };
 	}
-	window.print();
-	return true;
+	say("Building a print-ready PDF...");
+	// The thunk, not a retained copy: see `openDocumentSource`.
+	const printed = await globalThis.__selisPrint(openDocumentSource());
+	if (printed.status !== "ok") {
+		say(`Could not print: ${printed.detail ?? printed.status}`);
+		return printed;
+	}
+	const blob = new Blob([printed.pdf], { type: "application/pdf" });
+	const url = URL.createObjectURL(blob);
+	const anchor = document.createElement("a");
+	anchor.href = url;
+	// Named from what is known about the document, never from a path: nothing
+	// here may identify a file (ADR-P0017).
+	anchor.download = `selis-print-${printed.pages}p.pdf`;
+	document.body.appendChild(anchor);
+	anchor.click();
+	anchor.remove();
+	setTimeout(() => URL.revokeObjectURL(url), 0);
+	say(
+		`Prepared ${printed.pages} page(s) at ${printed.dpi} DPI ` +
+			`(${(printed.bytes / 1e6).toFixed(1)} MB) - choose your printer in the saved file.`,
+	);
+	printed.downloadName = anchor.download;
+	return printed;
 }
-
 /**
  * The search box, its result line, and the Print control.
  *
@@ -673,7 +852,35 @@ function searchControls() {
 	print.type = "button";
 	print.id = "selis-print";
 	print.textContent = "Print";
-	print.addEventListener("click", requestPrint);
+	print.addEventListener("click", () => {
+		// The handler is async - it renders every page before it has a file - so
+		// `click()` itself returns nothing to wait on. The in-flight job is
+		// recorded on the app state, which is what the browser check awaits: a
+		// check cannot observe an artifact that a click has not finished making,
+		// and asserting on the synchronous return would be asserting nothing.
+		// A rejection is caught here too, so a failed print is a recorded false
+		// rather than an unhandled rejection that never reports.
+		state.print = { status: "working" };
+		requestPrint()
+			.then((printed) => {
+				state.print = {
+					status: printed.status,
+					pages: printed.pages,
+					dpi: printed.dpi,
+					lowestDpi: printed.lowestDpi,
+					bytes: printed.bytes,
+					header: printed.header,
+					downloadName: printed.downloadName,
+					detail: printed.detail,
+				};
+			})
+			.catch((error) => {
+				state.print = {
+					status: "threw",
+					detail: error?.message ?? String(error),
+				};
+			});
+	});
 	root.appendChild(print);
 
 	searchUi.input = input;
@@ -719,7 +926,7 @@ globalThis.__selisSearch = function (base64, query) {
 		const binary = atob(base64);
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-		const doc = searchDocumentHandle(bytes);
+		const doc = openDocumentOnce(bytes).doc;
 		const { response: reply } = dispatch({ op: "search", doc, query });
 		if (reply.ok !== true) {
 			return { status: "refused", detail: `${reply.code ?? "unknown"}` };

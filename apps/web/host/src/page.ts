@@ -14,13 +14,18 @@
  */
 
 export {
+	MAX_PRINT_PAGES,
 	MIN_PRINT_DPI,
 	POINTS_PER_INCH,
 	type PageBox,
+	type PrintedPage,
 	type PrintPlan,
 	type PrintScaling,
+	measuredPrintDpi,
 	parsePrintScaling,
 	planPrint,
+	printBoxesFromOpen,
+	reconcilePageBox,
 } from "./print.js";
 
 export {
