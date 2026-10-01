@@ -40,14 +40,28 @@ import { registerServiceWorker } from "/sw-register.js";
 globalThis.__selisBoot = "web-host";
 
 /**
- * `failurePanelFromWire`, held once the boot import has resolved; `null` until
- * then, and permanently `null` if the boot never got that far.
+ * Viewer modules the CLICK paths need, by path.
  *
- * The failure path reads this instead of importing on demand, because the one
- * thing a failure panel must never do is fail to load itself. See the import
- * site below for how that actually happened.
+ * `error-panel.js` because the failure panel must never depend on a request it
+ * has to make at the moment it is needed; `health.js` for the same reason. See
+ * the preload block below for the whole argument.
  */
-let failurePanel = null;
+const UI_PRELOADS = ["/assets/ui/viewer/error-panel.js", "/assets/ui/viewer/health.js"];
+
+/** Whatever has finished preloading, by path. Missing means "try on demand". */
+const uiModules = new Map();
+
+/**
+ * A preloaded module, or `null`.
+ *
+ * Deliberately a cache lookup and not an await: every caller here is a click
+ * path that must render this turn, and a caller that has to wait on a network
+ * round-trip to discover something already in memory is the flake this exists
+ * to remove.
+ */
+function preloadedUiModule(path) {
+	return uiModules.get(path) ?? null;
+}
 
 /**
  * How far this module's own evaluation got.
@@ -246,14 +260,39 @@ globalThis.__selisBootStage = "engine-settled";
 // So it is fetched here, in the background, where a failure costs nothing and
 // is caught. `showFailure` falls back to importing on demand if this has not
 // landed, so the worst case is the original behaviour and never worse.
-import("/assets/ui/viewer/error-panel.js")
-	.then((module) => {
-		failurePanel = module.failurePanelFromWire;
-	})
-	.catch(() => {
-		// Deliberately silent. The panel degrades to a dynamic import at the
-		// moment it is needed; it does not get to break the page.
-	});
+// Preload the UI modules the click paths need, deliberately AFTER the boot's own
+// try/catch and deliberately NOT awaited.
+//
+// Two constraints, and they pull in opposite directions:
+//
+//  - A click path must not depend on a request it has to make at the moment it
+//    is clicked. Both of these were doing `await import(...)` inline, and those
+//    requests intermittently came back "Failed to fetch dynamically imported
+//    module" - the same HTTP/1.1 flake the comment above this block describes
+//    about the viewer module graph. The health panel then said "Health
+//    unavailable: Failed to fetch dynamically imported module", and the failure
+//    panel silently never appeared. The second is the worst of the two: no
+//    explanation AND no way forward, exactly the dead end SL-4.UI.12 exists to
+//    remove.
+//
+//  - Boot must not depend on them either. Adding them to the `Promise.all` above
+//    was tried and is wrong: one flaky request for a module the happy path never
+//    touches then fails the whole boot, and the viewer does not mount at all.
+//    Trading a rarely-used panel for a viewer that usually works is a bad trade.
+//
+// So both are fetched here, in the background, where a failure costs nothing and
+// is caught. Each click path falls back to importing on demand, so the worst case
+// is the original behaviour and never worse.
+for (const path of UI_PRELOADS) {
+	import(path)
+		.then((module) => {
+			uiModules.set(path, module);
+		})
+		.catch(() => {
+			// Deliberately silent. The module degrades to a dynamic import at
+			// the moment it is needed; it does not get to break the page.
+		});
+}
 
 // ── opening a document ─────────────────────────────────────────────────────
 
@@ -516,11 +555,13 @@ const searchUi = { input: null, readout: null };
 async function showFailure(wire, what) {
 	const host = document.getElementById("selis-failure");
 	if (host === null) return null;
-	// Already loaded by the boot import. The fallback exists only for the boot
-	// FAILED case, where the import never ran and a second try is better than
+	// Already preloaded by the boot. The fallback exists only for the boot
+	// FAILED case, where the preload never ran and a second try is better than
 	// no explanation at all.
+	const cached = preloadedUiModule("/assets/ui/viewer/error-panel.js");
 	const build =
-		failurePanel ?? (await import("/assets/ui/viewer/error-panel.js")).failurePanelFromWire;
+		cached?.failurePanelFromWire ??
+		(await import("/assets/ui/viewer/error-panel.js")).failurePanelFromWire;
 	const panel = build(wire, FAILURE_STRINGS);
 
 	host.textContent = "";
@@ -934,7 +975,21 @@ globalThis.__selisHealth = async function () {
 		if (openDocumentSource === null) {
 			return { status: "refused", detail: "no document is open" };
 		}
-		const { healthReportFromWire, healthRows } = await import("/assets/ui/viewer/health.js");
+		// Preloaded at boot precisely so this is a cache hit rather than a
+		// request made at click time; see the preload block for why. The
+		// fallback keeps a boot that failed before the preload ran from
+		// silently reporting "no findings".
+		const cached = preloadedUiModule("/assets/ui/viewer/health.js");
+		const module =
+			cached ??
+			(await import("/assets/ui/viewer/health.js").catch(() => null));
+		if (module === null) {
+			return {
+				status: "threw",
+				detail: "the health module could not be loaded, so nothing was measured",
+			};
+		}
+		const { healthReportFromWire, healthRows } = module;
 		const binary = atob(openDocumentSource());
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
