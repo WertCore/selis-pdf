@@ -191,6 +191,8 @@ export {
 export type { FailurePanel, FailureStrings } from "./error-panel.js";
 export { failurePanel, failurePanelFromWire } from "./error-panel.js";
 
+export type { BudgetExhaustion, BudgetRemedy, BudgetResource } from "./budget.js";
+export { budgetAction, budgetErrorState, budgetExhaustion, isBudgetCode } from "./budget.js";
 export type { OperationState, Phase, SlotReport } from "./progress.js";
 export {
 	applyReport,

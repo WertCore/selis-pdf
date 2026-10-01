@@ -502,6 +502,29 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     usage, split-the-file remedy) instead of a dead tab. The CLI/engine plumbing exists — the
     shared CancelToken, typed `CANCELLED`/budget errors with resource + measured usage, and the
     verification/`budget` JSON fields the UI consumes unchanged.
+  - **In progress. Two of the Do's three claimed numbers are NOT on the web wire.** The Do asserts
+    the plumbing exists and the UI "consumes unchanged"; that holds for the CLI but not for
+    `apps/web`:
+    - **Measured usage — absent.** `selis_sandbox::BudgetGuard` tracks a `Usage`, but
+      `ResponseMessage::error` carries only `code`, `message`, `detail`, `docState`. The string
+      `usage` appears nowhere in `crates/selis-pdf-wasm`.
+    - **The limit — also absent**, which is less obvious. `profiles.toml` is compiled into a Rust
+      `const fn` by `selis-sandbox/build.rs`, so the numbers exist in the guest and are not
+      reachable from JS. The shell can send `{surface: "viewer"}` but cannot read back what that
+      surface allows, and there is no profile-listing op.
+    - **Which budget — available.** Each budget failure has its own registry code.
+    Unblocking this needs a protocol change carrying resource + limit + usage on a budget failure.
+    Until then `budget.ts` types `measured` and `limit` as `null`, not `number | null`, so no UI
+    can render a figure that was never sent.
+  - **Landed so far** (`d8526ab5` and the commit below), pure and DOM-free per ADR-P0044:
+    `progress.ts` (a long operation's state, driven by the real `selis_progress_slot()` shape) and
+    `budget.ts` (resource, retryability, remedy). 600 UI tests; each rule falsified by removing
+    its guard.
+  - **A real defect this found, now fixed:** `recoveryFor` offered `close-and-retry` for every
+    budget, including `BUDGET_DEPTH` and `BUDGET_POISONED`, which the registry marks
+    `retryable: false`. The same file nests just as deeply the second time, so that button
+    promised progress and delivered a loop — a dead end wearing a button, which is the one thing
+    SL-4.UI.12 exists to prevent.
 
 ---
 

@@ -193,13 +193,26 @@ describe("recoveryFor", () => {
 		}
 	});
 
-	it("offers to free memory for a budget failure", () => {
+	it("offers to free memory for a budget failure that a retry could fix", () => {
+		// Only the budgets the registry marks retryable. The others are a dead
+		// end wearing a button - see the next test.
 		for (const row of REGISTRY.values()) {
-			if (row.kind === "Budget") {
+			if (row.kind === "Budget" && row.retryable) {
 				expect(recoveryFor(row), `${row.name} should offer close-and-retry`).toBe(
 					"close-and-retry",
 				);
 			}
+		}
+	});
+
+	it("never offers retry for a budget the registry says cannot succeed again", () => {
+		// `BUDGET_DEPTH` and `BUDGET_POISONED` are `retryable: false`, and the
+		// registry is right: the same file nests just as deeply the second
+		// time. A "close and try again" button here promises progress and
+		// delivers a loop, which is the one thing SL-4.UI.12 exists to prevent.
+		for (const row of REGISTRY.values()) {
+			if (row.kind !== "Budget" || row.retryable) continue;
+			expect(recoveryFor(row), `${row.name} must not offer a retry`).toBe("report");
 		}
 	});
 

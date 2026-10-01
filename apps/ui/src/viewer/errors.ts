@@ -123,7 +123,13 @@ export function recoveryFor(code: RegistryCode): RecoveryAction {
 		case "Cancelled":
 			return "retry";
 		case "Budget":
-			return "close-and-retry";
+			// Only where the registry says retrying can help. `BUDGET_DEPTH` and
+			// `BUDGET_POISONED` are `retryable: false`, and the registry is
+			// right: the same file nests just as deeply the second time, and a
+			// poisoned guard is poisoned for the operation either way. Offering
+			// "close and try again" there is a dead end wearing a button - it
+			// promises progress and delivers a loop.
+			return code.retryable ? "close-and-retry" : "report";
 		case "Auth":
 		case "Policy":
 			return "grant-access";
