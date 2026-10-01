@@ -1212,6 +1212,107 @@ mod tests {
         }
     }
 
+    /// SL-4.UI.09: the health report over the wire.
+    ///
+    /// Every field is read back, because an op that answers `{ok:true}` with an
+    /// empty object is indistinguishable from one that measured nothing - and a
+    /// panel that renders "clean" from an empty object is the exact dishonesty
+    /// the item''s Do: is written against.
+    #[test]
+    fn health_reports_every_field_it_promises() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let out = w.handle(
+            &request(
+                2,
+                protocol::RequestOp::Health {
+                    doc: protocol::DocHandle { raw: doc },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(
+            out.response.code, None,
+            "health must not refuse a valid doc"
+        );
+        let v = out.response.value.expect("a health value");
+        assert_eq!(v["pages"].as_u64().expect("pages"), 1);
+        assert_eq!(v["encrypted"].as_bool().expect("encrypted"), false);
+        // A clear document has no permission grant, and the field is ABSENT
+        // rather than a synthesised all-permissions object.
+        assert!(
+            v["permissions"].is_null(),
+            "no /Encrypt means no permissions to report: {}",
+            v["permissions"]
+        );
+        assert_eq!(v["tagged"].as_bool().expect("tagged"), false);
+        assert_eq!(v["signature"].as_str().expect("signature"), "absent");
+        assert!(
+            v["deviations"].as_array().expect("deviations").is_empty(),
+            "a clean fixture reports no deviations"
+        );
+    }
+
+    /// The signature field is PRESENCE only, and the wire shape must make that
+    /// impossible to misread.
+    ///
+    /// There is no verification in this codebase, so a boolean would have to
+    /// mean either "there is a signature" or "the signature is good". The wire
+    /// value is a STRING precisely so "present" cannot be read as a validity
+    /// claim, and so a future verified state is a new value a shell must handle
+    /// rather than a boolean it already handles.
+    #[test]
+    fn the_signature_field_is_presence_not_validity() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+        let doc = out.response.value.as_ref().unwrap()["doc"]
+            .as_u64()
+            .unwrap();
+        let out = w.handle(
+            &request(
+                2,
+                protocol::RequestOp::Health {
+                    doc: protocol::DocHandle { raw: doc },
+                },
+            ),
+            &[],
+            &e,
+        );
+        let v = out.response.value.expect("a health value");
+        let signature = v["signature"].as_str().expect("a string, not a bool");
+        assert!(
+            matches!(signature, "absent" | "present"),
+            "the wire value is one of two PRESENCE states, got {signature:?}"
+        );
+        assert!(
+            !matches!(signature, "valid" | "verified" | "invalid"),
+            "no validity state may be reported: nothing here verifies a signature"
+        );
+    }
+
+    /// A stale handle is a typed error, like every other op that takes one.
+    #[test]
+    fn health_on_a_stale_handle_is_typed() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(
+            &request(
+                1,
+                protocol::RequestOp::Health {
+                    doc: protocol::DocHandle { raw: 9_999 },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert_eq!(out.response.code, Some(Code::BindingBadHandle.id()));
+    }
     /// Out-of-range pages and tiles are typed errors, never panics.
     #[test]
     fn out_of_range_page_and_tile_are_typed_errors() {

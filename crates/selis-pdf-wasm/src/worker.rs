@@ -507,6 +507,7 @@ impl Worker {
             RequestOp::Open { src, budget } => self.op_open(id, src, budget, payload, env),
             RequestOp::Close { doc } => self.op_close(id, doc),
             RequestOp::Page { doc, page } => self.op_page(id, doc, page),
+            RequestOp::Health { doc } => self.op_health(id, doc, env),
             RequestOp::Render { doc, page, params } => self.op_render(id, doc, page, params, env),
             RequestOp::Text { doc, page, format } => self.op_text(id, doc, page, format, env),
             RequestOp::TextLayer { doc, page } => self.op_text_layer(id, doc, page, env),
@@ -1344,6 +1345,54 @@ impl Worker {
         ))
     }
 
+    /// SL-4.UI.09: the health report.
+    ///
+    /// Every field is measured, and the ones that could not be measured are
+    /// absent rather than defaulted - a panel that guesses is worse than one
+    /// that admits a gap, because its whole value is that a user can trust a
+    /// "clean" verdict.
+    ///
+    /// The signature field is the reason this op exists in this shape:
+    /// `signature` answers PRESENCE only, and the enum has no "valid" state
+    /// because nothing in this codebase verifies a signature. A shell that
+    /// renders a boolean here would be inventing the one claim this project
+    /// cannot support.
+    fn op_health(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let budget = opened.budget;
+        let health = {
+            let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+            let mut g = budget.guard_with(env.clock, env.cancel.clone());
+            opened.session.health(&budget, &mut g)
+        };
+        let permissions = health.permissions.map(|p| {
+            serde_json::json!({
+                "print": p.print(),
+                "modify": p.modify(),
+                "copy": p.copy(),
+                "annotate": p.annotate(),
+            })
+        });
+        let deviations: Vec<serde_json::Value> = health
+            .deviations
+            .iter()
+            .map(|d| serde_json::json!({ "name": d.name(), "offset": d.offset() }))
+            .collect();
+        Ok(Outgoing::ok(
+            id,
+            serde_json::json!({
+                "pages": health.pages,
+                "encrypted": health.encrypted,
+                "permissions": permissions,
+                "tagged": health.tagged,
+                "signature": match health.signature {
+                    selis_pdf_engine::SignatureStatus::Absent => "absent",
+                    selis_pdf_engine::SignatureStatus::Present => "present",
+                },
+                "deviations": deviations,
+            }),
+        ))
+    }
     // -- render ------------------------------------------------------------
 
     fn op_render(

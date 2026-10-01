@@ -133,6 +133,18 @@ pub enum RequestOp {
         /// Zero-based page number.
         page: u32,
     },
+    /// What a health report can honestly say about the document: page count,
+    /// encryption and the permissions it granted, tagging status, signature
+    /// PRESENCE, and lexical deviations.
+    ///
+    /// Conformance rule results are deliberately NOT here - they can fail, they
+    /// are a separate evaluation, and a report that could refuse is a report a
+    /// panel cannot render incrementally. See `Session::conformance`.
+    #[serde(rename_all = "camelCase")]
+    Health {
+        /// The document handle.
+        doc: DocHandle,
+    },
     /// Render a page (or a tile of one) into the response's attachment.
     #[serde(rename_all = "camelCase")]
     Render {
