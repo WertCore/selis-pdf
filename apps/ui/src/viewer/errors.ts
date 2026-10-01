@@ -60,9 +60,19 @@ export type ErrorSeverity = "blocked" | "degraded" | "info";
 
 /** One decision: how to present a failure. Carries no prose. */
 export interface ErrorState {
-	readonly code: number;
+	/**
+	 * The registry id, or `null` when the failure never reached the registry.
+	 *
+	 * Nullable on purpose. The C-ABI open path refuses with a null pointer and
+	 * no code at all, and pretending otherwise - by synthesising an id, or by
+	 * rendering "unrecognised error code -1" - would put a claim about a bug
+	 * on screen that the platform has not actually made.
+	 */
+	readonly code: number | null;
 	/** The registry's symbolic name, for logs and bug reports. */
 	readonly name: string;
+	/** Where the failure came from, which decides whether a code is shown. */
+	readonly source: "registry" | "shell";
 	readonly severity: ErrorSeverity;
 	/** What happened to the user's document, from the engine. */
 	readonly docState: DocState;
@@ -72,8 +82,30 @@ export interface ErrorState {
 	 * name we have. False only for a retry the registry says cannot help.
 	 */
 	readonly actionable: boolean;
-	/** True when the code is not in the registry. */
+	/** True when the registry has no row for this code. */
 	readonly unknown: boolean;
+}
+
+/**
+ * A failure that never reached the registry.
+ *
+ * The engine refused before it could classify anything - an allocation that
+ * returned null, a module that would not import. There is no code to show, so
+ * none is shown, and the panel says what the shell actually knows. The action
+ * is "open another file" because that is the one thing a user can always do,
+ * and it is real here rather than aspirational.
+ */
+export function shellFailure(): ErrorState {
+	return {
+		code: null,
+		name: "SHELL",
+		source: "shell",
+		severity: "blocked",
+		docState: "NotLoaded",
+		action: "open-another",
+		actionable: true,
+		unknown: false,
+	};
 }
 
 /**
@@ -144,6 +176,7 @@ export function errorState(code: number, docState?: DocState): ErrorState {
 		// Unregistered. Surfaced rather than folded into a generic state, so
 		// the number reaches a bug report instead of vanishing.
 		return {
+			source: "registry",
 			code,
 			name: "UNREGISTERED",
 			severity: "blocked",
@@ -155,6 +188,7 @@ export function errorState(code: number, docState?: DocState): ErrorState {
 	}
 	const action = recoveryFor(row);
 	return {
+		source: "registry",
 		code: row.id,
 		name: row.name,
 		severity: severityFor(docState ?? row.docState),
@@ -171,8 +205,8 @@ export function errorState(code: number, docState?: DocState): ErrorState {
  * Exists so the "every code maps" gate is a call rather than a loop written
  * twice: the test walks this and checks nothing comes back unknown.
  */
-export function everyErrorState(): ErrorState[] {
-	return [...REGISTRY.keys()].map((code) => errorState(code));
+export function everyErrorState(): Array<ErrorState & { code: number }> {
+	return [...REGISTRY.keys()].map((code) => errorState(code) as ErrorState & { code: number });
 }
 
 /** The registry's codes grouped by kind, for a summary row. */

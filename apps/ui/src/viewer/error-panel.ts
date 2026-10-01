@@ -31,7 +31,7 @@
  */
 
 import type { DocState } from "../platform/errors.js";
-import { type ErrorSeverity, type ErrorState, errorState } from "./errors.js";
+import { type ErrorSeverity, type ErrorState, errorState, shellFailure } from "./errors.js";
 
 /** The chrome a host supplies; the viewer owns no sentences of its own (UI.02). */
 export interface FailureStrings {
@@ -48,8 +48,10 @@ export interface FailureStrings {
 
 /** One panel: everything the DOM layer needs, and nothing it has to decide. */
 export interface FailurePanel {
-	readonly code: number;
+	/** The registry id, or `null` for a failure that never reached the registry. */
+	readonly code: number | null;
 	readonly name: string;
+	readonly source: "registry" | "shell";
 	readonly severity: ErrorSeverity;
 	/** The sentence, from the engine. Never reworded. */
 	readonly message: string;
@@ -87,17 +89,18 @@ export function failurePanel(
 	return {
 		code: state.code,
 		name: state.name,
+		source: state.source,
 		severity: state.severity,
 		// For an unknown code there is no registry sentence, so the catalogue
 		// supplies one that still carries the number.
-		message: engineMessage ?? (state.unknown ? strings.unknownCode(state.code) : ""),
+		message: engineMessage ?? (state.unknown ? strings.unknownCode(state.code ?? 0) : ""),
 		docState: state.docState,
 		docStateLabel: strings.docStateLabel(state.docState),
 		actionLabel: strings.actionLabel(state.action),
 		action: state.action,
 		actionable: state.actionable,
 		unknown: state.unknown,
-		showCode: state.unknown,
+		showCode: state.unknown && state.code !== null,
 	};
 }
 
@@ -117,21 +120,17 @@ export function failurePanelFromWire(
 	wire: { code?: number | null; message?: string | null; docState?: string | null },
 	strings: FailureStrings,
 ): FailurePanel {
-	const code = typeof wire.code === "number" ? wire.code : UNKNOWN_CODE;
-	// The wire sends the registry's vocabulary verbatim; anything else means we
-	// did not understand the reply, and guessing a document state from it would
-	// be a claim about the user's file that nothing supports.
 	const docState = isDocState(wire.docState) ? wire.docState : undefined;
-	return failurePanel(errorState(code, docState), wire.message ?? undefined, strings);
+	// No code at all means the failure never reached the registry: a refused
+	// allocation, a module that would not import. That is a different thing
+	// from a code the registry does not have, and conflating them once made
+	// this render "unrecognised error code -1" for a C-ABI open refusal - a
+	// bug report about a number the platform never issued.
+	if (typeof wire.code !== "number") {
+		return failurePanel(shellFailure(), wire.message ?? undefined, strings);
+	}
+	return failurePanel(errorState(wire.code, docState), wire.message ?? undefined, strings);
 }
-
-/**
- * Stand-in code for a reply that carried none.
- *
- * Negative and outside every registered range, so it resolves to the unknown
- * state rather than colliding with a real code.
- */
-const UNKNOWN_CODE = -1;
 
 function isDocState(value: string | null | undefined): value is DocState {
 	return (

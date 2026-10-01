@@ -53,6 +53,7 @@ describe("failurePanel", () => {
 		expect(known.showCode).toBe(false);
 		const unknown = failurePanel(errorState(424_242), undefined, strings);
 		expect(unknown.showCode).toBe(true);
+		expect(unknown.source).toBe("registry");
 	});
 
 	it("falls back to the catalogue sentence for an unknown code", () => {
@@ -96,12 +97,28 @@ describe("failurePanelFromWire", () => {
 		expect(panel.docState).toBe("NotLoaded");
 	});
 
-	it("treats a wire reply with no code as unknown, not as fine", () => {
-		// `code: null` means the shell could not read it. Defaulting to a
-		// known-looking state would be a guess about the user's document.
+	it("treats a wire reply with no code as a SHELL failure, not an unknown one", () => {
+		// `code: null` means the engine never got far enough to classify
+		// anything - a refused allocation, a module that would not import.
+		// Reporting that as "unrecognised error code -1" would put a bug report
+		// on screen about a number the platform never issued.
 		const panel = failurePanelFromWire({ code: null }, strings);
-		expect(panel.unknown).toBe(true);
+		expect(panel.source).toBe("shell");
+		expect(panel.code).toBeNull();
+		expect(panel.showCode).toBe(false);
 		expect(panel.severity).toBe("blocked");
+	});
+
+	it("still shows the shell's own message, and still offers a way forward", () => {
+		// "No code" must not become "nothing to say".
+		const panel = failurePanelFromWire(
+			{ message: "the engine has not been instantiated" },
+			strings,
+		);
+		expect(panel.message).toBe("the engine has not been instantiated");
+		expect(panel.action).toBe("open-another");
+		expect(panel.actionable).toBe(true);
+		expect(panel.docStateLabel).not.toBe("");
 	});
 
 	it("lets the engine's docState win over the registry default", () => {

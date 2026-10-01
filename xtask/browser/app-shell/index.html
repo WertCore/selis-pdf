@@ -54,6 +54,7 @@
       <p>Loading Selis PDF Viewerâ€¦</p>
     </main>
 
+
     <script type="module">
       // The app's own boot path does exactly this; the check mirrors it rather
       // than importing it, because the point is to observe what the app does,
@@ -96,6 +97,19 @@
         engineDispatch: null,
         windowedPages: null,
         appError: null,
+        // The FIRST uncaught error and the FIRST unhandled rejection, captured
+        // on `window` before boot.js is imported.
+        //
+        //     Without these, a boot.js exception is invisible: the chain below
+        //     only waits for `__selisApp` to appear, and an exception thrown
+        //     during the module's own evaluation means it never does. The
+        //     report then says "mount and registration never settled" and stops
+        //     - which is true, and useless. This was found the hard way: a
+        //     failure panel was wired in, the check went red with exactly that
+        //     message, and nothing on screen or in the report said why.
+        bootError: null,
+        swRegistration: null,
+        firstRejection: null,
         fatal: null,
         // The result of opening a REAL PDF through the app's own document path
         // (`__selisOpen`). Null means the check never got that far.
@@ -104,6 +118,27 @@
         // between "the import failed" and "the browser never asked for it".
         trace: null,
       };
+
+      // Installed before anything is imported, so a throw inside boot.js's own
+      // module evaluation is recorded rather than lost. `once` because the
+      // FIRST error is the informative one; a cascade of later ones is noise.
+      window.addEventListener(
+        "error",
+        function (event) {
+          if (out.bootError === null) {
+            out.bootError = String(
+              (event && (event.message || event.error)) || "unknown error",
+            );
+          }
+        },
+        true,
+      );
+      window.addEventListener("unhandledrejection", function (event) {
+        if (out.firstRejection === null) {
+          const why = event && event.reason;
+          out.firstRejection = String((why && (why.message || why)) || why);
+        }
+      });
 
       /**
        * A 446-byte, one-page PDF with a byte-exact xref, carrying two filled
@@ -120,6 +155,7 @@
        */
       var FIXTURE_PDF_B64 =
         "JVBERi0xLjcKJeLjz9MKPDwgL1R5cGUgL0NhdGFsb2cgL1BhZ2VzIDIgMCBSID4+Cjw8IC9UeXBlIC9QYWdlcyAvS2lkcyBbMyAwIFJdIC9Db3VudCAxID4+Cjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCA+PiAvQ29udGVudHMgNCAwIFIgPj4KPDwgL0xlbmd0aCA1NSA+PgpzdHJlYW0KMC44NSAwLjIgMC4xIHJnIDcyIDYyMCAyMDAgMTAwIHJlIGYKMC4xIDAuMyAwLjggcmcgNzIgNDgwIDMwMCA2MCByZSBmCmVuZHN0cmVhbQp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA0OSAwMDAwMCBuIAowMDAwMDAwMDkxIDAwMDAwIG4gCjAwMDAwMDAxODAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA1IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgoxNQolJUVPRgo=";
+
 
 
       // A SECOND fixture, with TEXT. The rectangles above are the right choice
@@ -229,6 +265,14 @@
       import("/assets/boot.js")
         .then(function () {
           out.boot = globalThis.__selisBoot || null;
+          // Read BOTH globals the instant the module finishes evaluating, and
+          // record which one is absent. The wait below reports "mount and
+          // registration never settled", which does not say WHICH - and a
+          // boot.js that finished evaluating without exporting `__selisApp`
+          // looks identical from the outside to one still loading.
+          out.appMounted = globalThis.__selisApp ? globalThis.__selisApp.mounted : "absent";
+          out.swRegistration =
+            globalThis.__selisServiceWorker === undefined ? "absent" : "present";
           // boot.js mounts the viewer and loads the engine before it registers
           // the worker, so wait for BOTH globals, not just the registration.
           return waitFor(
