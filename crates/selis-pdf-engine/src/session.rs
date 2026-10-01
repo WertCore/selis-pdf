@@ -238,6 +238,22 @@ pub struct FallbackRenderOutcome {
     pub needs: Vec<&'static str>,
 }
 
+/// A dictionary's value for `key`, or `None` when the object is not a
+/// dictionary or has no such entry.
+///
+/// Local rather than borrowed from `selis_pdf_doc`: each of that crate's
+/// modules keeps its own private copy, and none is exported, so there is nothing
+/// to import. It is four lines and duplicating it is cheaper than widening a
+/// public API for one caller.
+fn dict_get<'a>(obj: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
+    match obj {
+        Obj::Dict(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v),
+        _ => None,
+    }
+}
 /// The engine session: a parsed, resolved document ready to render.
 pub struct Session {
     /// The revision view (for the Resolver).
@@ -257,6 +273,66 @@ pub struct Session {
     /// carries them — surfaced for every open (SL-1.ENC.04 posture);
     /// enforced only through `pubkey`'s intersection (SL-1.ENC.09).
     pdf_bits: Option<u32>,
+}
+
+/// Whether this document carries a digital signature.
+///
+/// Three states, not two, and the third is the one that matters.
+///
+/// # Why not a boolean
+///
+/// There is no signature verification in this codebase - no CMS check, no
+/// certificate chain, no revocation - so a boolean would have to mean one of
+/// two very different things: "there is a signature" or "the signature is
+/// good". Collapsing them is how a viewer ends up telling a user a document
+/// is authentic because a signature-shaped object was present.
+///
+/// So the honest answer is three-valued. `Present` says a signature FIELD
+/// exists, detected from the AcroForm's `/SigFlags` (ISO 32000-2 §12.7.3.2,
+/// bit 1 = SignaturesExist). It says nothing about validity, and
+/// `Evaluated(false)` is not reachable until something actually evaluates.
+/// A panel rendering this shows "signature present, not verified" rather
+/// than a green tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureStatus {
+    /// No signature field in the document.
+    Absent,
+    /// A signature field exists. Its validity has NOT been evaluated.
+    Present,
+}
+
+/// What the health panel reports about one open document.
+///
+/// Every field is measured, and every field that could not be measured is
+/// absent rather than defaulted. A health panel that guesses is worse than
+/// one that admits a gap: its whole value is that a user can trust a "clean"
+/// verdict, and a guessed field is a hole in that trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentHealth {
+    /// Page count, from the resolved document model.
+    pub pages: usize,
+    /// Whether the trailer carries `/Encrypt`.
+    pub encrypted: bool,
+    /// The document's own `/P` permission bits, when it is encrypted and
+    /// they were parsed. `None` for a clear document, or an `/Encrypt`
+    /// dictionary that carried no `/P` - and that is a real state, not a
+    /// failure: SL-1.ENC.04's posture is to surface what the document
+    /// granted, and a document that granted nothing parseable is reported
+    /// as exactly that.
+    pub permissions: Option<selis_policy::Permissions>,
+    /// Whether the document carries a structure tree with elements.
+    ///
+    /// `false` means UNTAGGED, which is a fact about the document and not an
+    /// error - most PDFs are untagged. It is kept separate from
+    /// "this build cannot tell", which is why it is a `bool` rather than an
+    /// `Option`: the structure tree is always resolvable here.
+    pub tagged: bool,
+    /// Signature presence. Never a validity claim - see [`SignatureStatus`].
+    pub signature: SignatureStatus,
+    /// Lexical deviations in object syntax. Empty means the object syntax
+    /// was clean; see [`Session::deviations`] for what is and is not
+    /// included.
+    pub deviations: Vec<selis_pdf_cos::Deviation>,
 }
 
 impl Session {
@@ -940,6 +1016,82 @@ impl Session {
     /// `Session` to ask.
     pub fn deviations(&self, g: &mut BudgetGuard<'_>) -> Vec<selis_pdf_cos::Deviation> {
         selis_pdf_cos::object_deviations(&self.src, g)
+    }
+    /// Measure this document's health for a report.
+    ///
+    /// # Budget
+    ///
+    /// Charged against the caller's budget: the structure tree and AcroForm lookups
+    /// go through the resolver, and the deviation pass re-lexes the source under
+    /// the guard. Every part is bounded exactly as any other parse is.
+    ///
+    /// # Malformed Input
+    ///
+    /// None of the lookups can refuse the document. An absent structure tree is
+    /// `tagged: false`; an unreadable `/AcroForm` is `SignatureStatus::Absent`
+    /// rather than an error, because failing to FIND a signature field is not
+    /// evidence that one is absent - it is evidence we could not look, and the
+    /// panel says "not found" only because that is the honest floor. The
+    /// conformance rules, which CAN fail, are a separate call
+    /// ([`Session::conformance`]) so a caller can choose to surface them.
+    pub fn health(&self, budget: &Budget, g: &mut BudgetGuard<'_>) -> DocumentHealth {
+        // Encryption: the trailer's `/Encrypt`, which is the document's own
+        // statement. `pdf_bits` is the parsed `/P` when present.
+        let encrypted = self
+            .doc
+            .revisions()
+            .last()
+            .and_then(|v| v.encrypt)
+            .is_some();
+        let permissions = self.pdf_bits.map(selis_policy::Permissions::from_bits);
+
+        // Tagging: a structure tree with at least one element. An untagged
+        // document is a fact, not a failure.
+        let mut resolver = self.new_resolver(budget);
+        let tagged =
+            selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)
+                .is_ok_and(|tree| !tree.elements.is_empty());
+
+        // Signature PRESENCE only, from the AcroForm dictionary's `/SigFlags`
+        // bit 1 (SignaturesExist). Nothing here evaluates a signature, and this
+        // is the only claim made about one - see `SignatureStatus`.
+        let signature = if self
+            .acroform_sigflags(budget, g)
+            .is_some_and(|flags| flags & 1 != 0)
+        {
+            SignatureStatus::Present
+        } else {
+            SignatureStatus::Absent
+        };
+
+        DocumentHealth {
+            pages: self.len(),
+            encrypted,
+            permissions,
+            tagged,
+            signature,
+            deviations: self.deviations(g),
+        }
+    }
+
+    /// The AcroForm dictionary's `/SigFlags`, read through the resolver.
+    ///
+    /// ISO 32000-2 §12.7.3.2: bit 1 (value 1) is `SignaturesExist`. This is a
+    /// declaration by the producing application, which is why it answers
+    /// "presence" and nothing more - an application that forgot to set the bit
+    /// on a signed form will read as unsigned, and that is a limitation of the
+    /// signal rather than of this read.
+    fn acroform_sigflags(&self, budget: &Budget, g: &mut BudgetGuard<'_>) -> Option<u32> {
+        let mut resolver = self.new_resolver(budget);
+        let form = dict_get(&self.document.catalog, b"AcroForm")?;
+        let form = match form {
+            Obj::Ref(r) => resolver.resolve(*r, g).ok()?,
+            other => other.clone(),
+        };
+        match dict_get(&form, b"SigFlags")? {
+            Obj::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        }
     }
 
     /// Render a page onto a backend.
@@ -3929,16 +4081,6 @@ fn obj_to_operand(obj: &Obj) -> Option<Operand> {
             let ops: Vec<Operand> = items.iter().filter_map(obj_to_operand).collect();
             Some(Operand::Arr(ops))
         }
-        _ => None,
-    }
-}
-
-fn dict_get<'a>(obj: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
-    match obj {
-        Obj::Dict(pairs) => pairs
-            .iter()
-            .find(|(k, _)| k.as_slice() == key)
-            .map(|(_, v)| v),
         _ => None,
     }
 }

@@ -21,7 +21,7 @@ pub use render::{
 };
 pub use selis_raster::TinySkiaBackend;
 pub use session::{
-    CjkRenderOutcome, FallbackRenderOutcome, LazyFonts, LazyRenderOutcome, PublicKeyReceipt,
-    Session,
+    CjkRenderOutcome, DocumentHealth, FallbackRenderOutcome, LazyFonts, LazyRenderOutcome,
+    PublicKeyReceipt, Session, SignatureStatus,
 };
 pub use tiled::{TiledRender, DEFAULT_OVERLAP, DEFAULT_TILE};
