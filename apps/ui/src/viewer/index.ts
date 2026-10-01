@@ -176,6 +176,11 @@ export { DEFAULT_METRICS, createPageList } from "./page-list.js";
 export type { NormalisedLabelRange } from "./page-labels.js";
 export type { HealthReport, HealthRow, HealthSeverity } from "./health.js";
 export { healthReportFromWire, healthRows, summariseDeviations, worstSeverity } from "./health.js";
+
+export type { ErrorKind, RegistryCode } from "./error-codes.js";
+export { REGISTRY, REGISTRY_SIZE } from "./error-codes.js";
+export type { ErrorSeverity, ErrorState, RecoveryAction } from "./errors.js";
+export { codesByKind, errorState, everyErrorState, recoveryFor, severityFor } from "./errors.js";
 export {
 	DEFAULT_LABEL_STYLE,
 	MAX_ROMAN,

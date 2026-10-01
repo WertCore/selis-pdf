@@ -6,6 +6,7 @@
 			"dist",
 			"node_modules",
 			"packages/ui-kit/css",
+			"apps/ui/src/viewer/error-codes.ts",
 			"apps/web/host/public/sw.js",
 			"apps/web/host/public/sw-policy.js",
 			"apps/web/host/public/sw-register.js",
