@@ -766,7 +766,7 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
                 .to_string(),
         );
     }
-    // The optimised engine is ~2.8 MB, so the order of magnitude is itself the
+    // The optimised engine is ~2.3 MB, so the order of magnitude is itself the
     // assertion: a stub or a truncated body is far smaller.
     let engine_bytes = report
         .get("offlineEngineBytes")
@@ -775,7 +775,7 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
     if engine_bytes < 1_000_000 {
         return Err(format!(
             "the worker served only {engine_bytes} bytes of engine from cache, expected the \
-             ~2.8 MB optimised module"
+             ~2.3 MB optimised module"
         ));
     }
 
@@ -985,7 +985,7 @@ fn verdict_app_shell(report: &Json) -> Result<(), String> {
         .unwrap_or(0);
     if bytes < 1_000_000 {
         return Err(format!(
-            "offline the engine came back as {bytes} bytes, expected ~2.8 MB"
+            "offline the engine came back as {bytes} bytes, expected ~2.3 MB"
         ));
     }
     let ink = report
