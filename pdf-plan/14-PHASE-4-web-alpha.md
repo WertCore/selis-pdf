@@ -327,10 +327,21 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     reader navigates *by*) and `/StructTreeRoot` (tag structure — what assistive technology *reads*)
     are different trees with similar names; merging them would offer a screen-reader user a table of
     contents and call it the document's headings.
-  - **Still owed:** the `present: true` path is unexercised — the tagged fixture has no `/Outlines`,
-    so a real bookmark tree has never been walked end-to-end. `pageLabels`, `destinations` and
-    `pageLinks` have ops but are still not called from the shell, so the full `NavigationPort`
-    (which needs all three) is not yet satisfied by this host.
+  - **The `present: true` path is now exercised.** `tools/make-tagged-fixture.mjs` also emits an
+    `/Outlines` tree — two top-level chapters, one with two children — so the **populated** case runs,
+    not only "this document has none". The fixture deliberately carries BOTH trees, so a shell cannot
+    pass by implementing the structure and calling it bookmarks. The last child resolves an `/A /GoTo`
+    action rather than a `/Dest`, because the two are different shapes and only one is a plain page
+    target. Real Edge: `present:true, items:2, targets:4, nested:1, maxDepth:1`.
+  - **The nesting gate is load-bearing, and it caught a bug in the gate first.** Appending child
+    lists to the panel instead of the `<li>` makes it fail. But its FIRST version queried
+    `[role=outline-list]` when the panel sets `dataset.role` — it matched nothing and failed against
+    an app that had nested correctly, which is a gate wrong about the thing it measures.
+  - **Bookmarks render nested, not flat with `data-depth`.** A flat list passes every other check
+    here while telling a reader that four chapters are four siblings.
+  - **Still owed:** `pageLabels`, `destinations` and `pageLinks` have ops but are still not called
+    from the shell, so the full `NavigationPort` — which needs all three — is not yet satisfied by
+    this host, and page labels and named destinations remain unwired.
   - **ADR-P0020 is genuinely enforced, not merely unhandled.** `decideLinkAction` returns a
     `blocked` decision *with a spoken reason*, so a refused `/Launch` is announced rather than
     silently swallowed. The disabled classes are checked **before any field is read**, so a `/Launch`

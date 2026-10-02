@@ -34,7 +34,7 @@ const outPath = join(repoRoot, "corpus", "fixtures", "tagged_structure.pdf");
 /** Objects, in order. Index 0 is the free head. */
 const objects = [
 	null,
-	"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /MarkInfo << /Marked true >> >>",
+	"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /Outlines 21 0 R /MarkInfo << /Marked true >> >>",
 	"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 	// The page's marked content carries the MCIDs the structure references, so
 	// the tree and the content agree — a tree pointing at content that does not
@@ -73,6 +73,22 @@ const objects = [
 	"<< /Type /StructElem /S /TR /P 6 0 R /K [20 0 R] /Pg 3 0 R >>",
 	"<< /Type /StructElem /S /TH /P 6 0 R /T (Quarter) /Pg 3 0 R >>",
 	"<< /Type /StructElem /S /TD /P 6 0 R /T (Q1) /Pg 3 0 R >>",
+	// ── The BOOKMARK tree (`/Outlines`), for SL-4.UI.06 ──────────────────
+	// Separate from the tag structure above, and deliberately so: bookmarks are
+	// what a reader navigates BY, the structure is what assistive technology
+	// READS. The fixture carries both so a shell cannot pass by implementing one.
+	//
+	// Two top-level chapters, the second with two children, so the nested
+	// rendering is exercised rather than a flat list that happens to look right.
+	// The last child carries a `/A /GoTo` ACTION rather than a `/Dest`, because
+	// the two are different shapes and only one of them is a plain page target.
+	"<< /Type /Outlines /First 22 0 R /Last 23 0 R /Count 2 >>",
+	"<< /Title (Chapter One) /Parent 21 0 R /Dest [3 0 R /XYZ 72 720 null] /Next 23 0 R >>",
+	"<< /Title (Chapter Two) /Parent 21 0 R /Prev 22 0 R /First 24 0 R /Last 25 0 R " +
+		"/Count 2 /Dest [3 0 R /XYZ 72 700 null] >>",
+	"<< /Title (Section 2.1) /Parent 23 0 R /Dest [3 0 R /XYZ 72 690 null] /Next 25 0 R >>",
+	"<< /Title (Section 2.2 via action) /Parent 23 0 R /Prev 24 0 R " +
+		"/A << /S /GoTo /D [3 0 R /XYZ 72 680 null] >> >>",
 ];
 
 const content = `BT /F1 24 Tf 72 720 Td (Selis) Tj ET`;

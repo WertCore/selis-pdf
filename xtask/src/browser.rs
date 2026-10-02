@@ -1761,6 +1761,27 @@ fn assert_bookmark_outline(report: &Json) -> Result<(), String> {
     {
         return Err("the outline was truncated and the panel did not tell the reader".into());
     }
+    // An outline that IS present must render as something a reader can use.
+    let targets = marks.get("targets").and_then(Json::as_u64).unwrap_or(0);
+    if targets == 0 {
+        return Err(
+            "the document HAS an outline but no bookmark rendered as a control -- items the \
+             reader cannot press are not navigation"
+                .into(),
+        );
+    }
+    // The nesting claim. `data-depth` is metadata a screen reader never reads,
+    // so a flat list carrying it would pass every other check here while
+    // telling a reader that four chapters are four siblings.
+    if marks.get("nested").and_then(Json::as_u64).unwrap_or(0) == 0
+        && marks.get("maxDepth").and_then(Json::as_u64).unwrap_or(0) > 0
+    {
+        return Err(
+            "the outline has depth in its attributes but no nested list in the DOM -- the \
+             hierarchy is recorded where assistive technology cannot see it"
+                .into(),
+        );
+    }
     Ok(())
 }
 
