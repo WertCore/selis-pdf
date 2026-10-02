@@ -58,6 +58,8 @@ const UI_PRELOADS = [
 	// no progress bar because a background fetch was slow has failed the reader
 	// just as surely as one showing a wrong bar.
 	"/assets/ui/viewer/progress.js",
+	// UI.07. The structure model is needed the moment a reader opens the outline.
+	"/assets/ui/viewer/a11y.js",
 	// shell-keys.js is on the keydown path. A listener resolving undefined would
 	// mean the keyboard simply does not work, with no error anywhere.
 	"/assets/ui/viewer/shell-keys.js",
@@ -1602,6 +1604,142 @@ globalThis.__selisHealth = async function () {
 };
 
 /**
+ * The open document's structure tree, for assistive technology (SL-4.UI.07).
+ *
+ * Returns `{status:"untagged"}` for a document with no `/StructTreeRoot`, and
+ * that is deliberately NOT an empty tree. "This document has no structure" and
+ * "this document has a structure with nothing navigable in it" are different
+ * facts, and collapsing them is how a viewer ends up claiming "0 headings" on a
+ * document it never measured.
+ *
+ * Nothing here synthesises roles. `a11y.ts` refuses to guess a heading from a
+ * font size, and this function must not hand it something to guess from: the
+ * answer for an untagged document is "there is none", full stop.
+ */
+globalThis.__selisStructure = async function () {
+	try {
+		if (openDocumentSource === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const binary = atob(openDocumentSource());
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		const doc = openDocumentOnce(bytes).doc;
+		const { response } = dispatch({ op: "structure", doc });
+		if (response.ok !== true) {
+			return { status: "refused", wire: response };
+		}
+		const value = response.value;
+		// `tagged: false` arrives with NO root. Checked explicitly rather than by
+		// testing for an absent root, so a future engine that sends an empty root
+		// for an untagged document cannot quietly become "tagged with nothing in
+		// it" - the two are different facts and the caller words them differently.
+		if (value === null || value === undefined || value.tagged !== true) {
+			return { status: "untagged" };
+		}
+		return {
+			status: "ok",
+			// The wire nests everything under one `Document` root; `a11y.ts` takes a
+			// LIST of roots, so the wrapper is dropped here rather than in the model,
+			// where it would be a special case every caller had to remember.
+			roots: Array.isArray(value.root?.children) ? value.root.children : [],
+		};
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * Paint a structure report into the outline, or say honestly that there is none.
+ *
+ * The DOM is written from `a11y.ts`'s {@link Semantics} and never decides
+ * anything itself: which element to use, what the level is, and whether a name
+ * exists are all answers the model already gave.
+ *
+ * An untagged document renders the untagged sentence, not an empty outline. An
+ * empty outline beside a heading called "Document outline" tells a reader the
+ * document has no structure; a sentence saying so tells them why, which is a
+ * different and more useful thing to know.
+ */
+function renderStructurePanel(report) {
+	const host = document.getElementById("selis-outline-rows");
+	if (host === null) return;
+	host.textContent = "";
+	if (report.status === "untagged") {
+		const note = document.createElement("p");
+		note.id = "selis-outline-untagged";
+		note.dataset.role = "untagged";
+		note.textContent = "This document has no structure information.";
+		host.appendChild(note);
+		return;
+	}
+	if (report.status !== "ok") {
+		const note = document.createElement("p");
+		note.dataset.role = "unavailable";
+		note.textContent = "The document outline could not be read.";
+		host.appendChild(note);
+		return;
+	}
+	const model = preloadedUiModule("/assets/ui/viewer/a11y.js");
+	if (model === null) {
+		const note = document.createElement("p");
+		note.dataset.role = "unavailable";
+		note.textContent = "The document outline could not be read.";
+		host.appendChild(note);
+		return;
+	}
+	const roots = Array.isArray(report.roots) ? report.roots : [];
+	// Children go INSIDE their parent, not beside it. A flat list with
+	// `data-depth` attributes records the hierarchy as metadata a screen reader
+	// never reads: the reader hears "Introduction, A subsection, A bar chart" as
+	// three siblings, which is a different document from the one the author
+	// wrote. The browser walk showed every node at the same depth until this
+	// changed.
+	const paint = (semantics, depth, role, parent) => {
+		// `semantics.element` is the model's answer, not a decision made here. A
+		// `<ul>` for a `List` role and a `<figure>` for a `Figure` are both things
+		// assistive tech already understands; re-deriving them here is how the two
+		// copies drift.
+		const el = document.createElement(semantics.element);
+		el.dataset.role = semantics.role ?? "";
+		el.dataset.depth = String(depth);
+		if (semantics.name !== null) {
+			el.appendChild(document.createTextNode(semantics.name));
+		}
+		if (semantics.needsDescription) {
+			// Flagged rather than described. The host supplies the generic word;
+			// nothing here may write a sentence about what the picture shows.
+			const marker = document.createElement("span");
+			marker.dataset.role = "needs-description";
+			marker.textContent = " (no description)";
+			el.appendChild(marker);
+		}
+		if (semantics.unknown) el.dataset.unknownRole = "true";
+		parent.appendChild(el);
+		// An Artifact is content the author marked as decoration, so its whole
+		// SUBTREE is skipped - a heading inside one is decoration too.
+		//
+		// `a11y.ts`'s `outlineOf` skips artifacts for the same reason, and this
+		// walk has to agree with it: they are two traversals of one tree, and a
+		// reader using the panel and a reader using the outline should not be
+		// told different things. Without this the browser walk showed a heading
+		// the author explicitly asked to be hidden.
+		if (role === "Artifact") return;
+		for (const child of semantics.children) paint(child, depth + 1, child.role, el);
+	};
+	for (const node of roots) paint(model.semanticsOf(node), 0, node.role, host);
+	if (host.childElementCount === 0) {
+		const note = document.createElement("p");
+		note.dataset.role = "empty";
+		note.textContent = "This document has no structure to navigate.";
+		host.appendChild(note);
+	}
+}
+
+/**
  * Paint a health report into the panel, or say why it could not be painted.
  *
  * The failure path is deliberately visible. A panel that silently keeps its
@@ -1926,6 +2064,34 @@ function searchControls() {
 	healthOut.id = "selis-health-rows";
 	healthOut.setAttribute("aria-live", "polite");
 	root.appendChild(healthOut);
+
+	// UI.07: the document outline, as a real button and a real region, for the
+	// same reason as every other control here — a reader has to be able to see
+	// it to press it. `aria-expanded` is what tells a screen-reader user the
+	// panel is a disclosure rather than something that mysteriously appeared.
+	const outline = document.createElement("button");
+	outline.type = "button";
+	outline.id = "selis-outline";
+	outline.textContent = "Document outline";
+	outline.setAttribute("aria-expanded", "false");
+	outline.setAttribute("aria-controls", "selis-outline-rows");
+	const outlinePanel = document.createElement("div");
+	outlinePanel.id = "selis-outline-rows";
+	outlinePanel.hidden = true;
+	// `role="region"` with a name, so it is a landmark a reader can jump to.
+	// An unnamed region is announced as nothing, which makes it worse than no
+	// region at all — it looks navigable and is not.
+	outlinePanel.setAttribute("role", "region");
+	outlinePanel.setAttribute("aria-label", "Document outline");
+	outline.addEventListener("click", () => {
+		const willOpen = outlinePanel.hidden;
+		outline.setAttribute("aria-expanded", String(willOpen));
+		outlinePanel.hidden = !willOpen;
+		if (!willOpen) return;
+		globalThis.__selisStructure().then(renderStructurePanel);
+	});
+	root.appendChild(outline);
+	root.appendChild(outlinePanel);
 
 	// SL-4.UI.13: a real progress bar and a real Cancel button, in the document,
 	// for the same reason as the search field and the print button - a reader has

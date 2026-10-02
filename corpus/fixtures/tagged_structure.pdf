@@ -1,0 +1,92 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /MarkInfo << /Marked true >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 36 >>
+stream
+BT /F1 24 Tf 72 720 Td (Selis) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /StructTreeRoot /K [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R] /RoleMap << /Chart /Figure >> /ParentTree 6 0 R >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /Document /P 6 0 R /K [7 1 R] >>
+endobj
+8 0 obj
+<< /Type /StructElem /S /H1 /P 6 0 R /T (Introduction) /K [9 0 R 10 0 R] /Pg 3 0 R >>
+endobj
+9 0 obj
+<< /Type /StructElem /S /P /P 6 0 R /T (First paragraph of the document.) /Pg 3 0 R >>
+endobj
+10 0 obj
+<< /Type /StructElem /S /P /P 6 0 R /T (Second paragraph of the document.) /Pg 3 0 R >>
+endobj
+11 0 obj
+<< /Type /StructElem /S /H2 /P 6 0 R /T (A subsection) /K [12 0 R] /Pg 3 0 R >>
+endobj
+12 0 obj
+<< /Type /StructElem /S /Figure /P 6 0 R /T (Revenue by quarter) /Alt (A bar chart of revenue by quarter) /Pg 3 0 R >>
+endobj
+13 0 obj
+<< /Type /StructElem /S /Figure /P 6 0 R /T (An undescribed chart) /Pg 3 0 R >>
+endobj
+14 0 obj
+<< /Type /StructElem /S /Table /P 6 0 R /T (Quarterly figures) /K [17 0 R 18 0 R] /Pg 3 0 R >>
+endobj
+15 0 obj
+<< /Type /StructElem /S /Artifact /P 6 0 R /K [16 0 R] /Pg 3 0 R >>
+endobj
+16 0 obj
+<< /Type /StructElem /S /H1 /P 6 0 R /T (Hidden heading) /Pg 3 0 R >>
+endobj
+17 0 obj
+<< /Type /StructElem /S /TR /P 6 0 R /K [19 0 R] /Pg 3 0 R >>
+endobj
+18 0 obj
+<< /Type /StructElem /S /TR /P 6 0 R /K [20 0 R] /Pg 3 0 R >>
+endobj
+19 0 obj
+<< /Type /StructElem /S /TH /P 6 0 R /T (Quarter) /Pg 3 0 R >>
+endobj
+20 0 obj
+<< /Type /StructElem /S /TD /P 6 0 R /T (Q1) /Pg 3 0 R >>
+endobj
+xref
+0 21
+0000000000 65535 f 
+0000000009 00000 n 
+0000000109 00000 n 
+0000000166 00000 n 
+0000000292 00000 n 
+0000000378 00000 n 
+0000000448 00000 n 
+0000000611 00000 n 
+0000000683 00000 n 
+0000000784 00000 n 
+0000000886 00000 n 
+0000000990 00000 n 
+0000001086 00000 n 
+0000001221 00000 n 
+0000001317 00000 n 
+0000001428 00000 n 
+0000001512 00000 n 
+0000001598 00000 n 
+0000001676 00000 n 
+0000001754 00000 n 
+0000001833 00000 n 
+trailer
+<< /Size 21 /Root 1 0 R >>
+startxref
+1907
+%%EOF

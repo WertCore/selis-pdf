@@ -815,10 +815,26 @@ impl Session {
             node
         }
 
+        // `tree.elements` is every element reachable from the root's `/K` — which
+        // includes the NESTED ones. Using it directly as the root list therefore
+        // emits a nested heading twice: once under its parent, and again as a
+        // top-level sibling, both at depth 0. Caught by the browser walk, which
+        // showed "Hidden heading" twice and every node at the same depth.
+        //
+        // Roots are the elements no other element lists as a kid.
+        let mut nested: std::collections::HashSet<selis_pdf_cos::Ref> =
+            std::collections::HashSet::new();
+        for element in &tree.elements {
+            for kid in &element.kids {
+                if let selis_pdf_doc::StructKid::Element(reference) = kid {
+                    nested.insert(*reference);
+                }
+            }
+        }
         let roots: Vec<StructureNode> = tree
             .elements
             .iter()
-            .filter(|e| e.ty.is_some())
+            .filter(|e| e.ty.is_some() && !nested.contains(&e.ref_))
             .map(|e| walk(e, &by_ref, &mut Vec::new()))
             .collect();
         Ok(Some(StructureNode {

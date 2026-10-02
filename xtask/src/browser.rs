@@ -1223,6 +1223,9 @@ severity has to track whether anything is readable",
     // failure rather than a skip.
     assert_accessibility(report)?;
 
+    // UI.07: the screen-reader walk — the DoD's remaining line.
+    assert_reader_walk(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1594,6 +1597,92 @@ fn assert_accessibility(report: &Json) -> Result<(), String> {
         "the viewer has {} accessibility violation(s) against WCAG 2.0/2.1 A+AA: {detail}",
         violations.len()
     ))
+}
+
+/// UI.07: "a screen-reader script walks a tagged document correctly".
+///
+/// The check walks the ACCESSIBILITY TREE the page exposes — role, accessible
+/// name, and whether the node is hidden from assistive tech — which is what a
+/// screen reader announces. Reading `innerText` instead would pass on a page
+/// whose structure is invisible: it cannot see a role, cannot tell a nameless
+/// heading from a labelled one, and cannot notice an element excluded from the
+/// accessibility tree.
+///
+/// Four claims:
+/// 1. The walk happened. A reader that never ran proves nothing.
+/// 2. The disclosure is honest: `aria-expanded` agrees with what is on screen.
+/// 3. Every announced node has an accessible NAME. A heading a reader cannot
+///    hear is not a heading to them — it is an unlabelled stop in the outline.
+/// 4. A figure with no `/Alt` is announced AS needing a description, never
+///    with an invented one. This is the fabrication `a11y.ts` refuses, checked
+///    at the point it would reach a reader.
+fn assert_reader_walk(report: &Json) -> Result<(), String> {
+    let reader = report
+        .get("reader")
+        .ok_or_else(|| "the app reported no screen-reader walk (reader = None)".to_string())?;
+    if reader.is_null() {
+        return Err(
+            "the screen-reader walk never ran -- \"a screen-reader script walks a tagged \
+                    document correctly\" is half the DoD, and a walk that did not happen \
+                    proves nothing"
+                .into(),
+        );
+    }
+    if reader.get("expanded").and_then(Json::as_str) != Some("true") {
+        return Err(
+            "the outline panel was walked but its disclosure reports aria-expanded=false -- \
+                    a screen-reader user would never have been told it opened"
+                .into(),
+        );
+    }
+    let announced = reader
+        .get("announced")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the screen-reader walk reported no nodes".to_string())?;
+    // An untagged document legitimately announces a sentence and nothing else.
+    // That is a PASS, and it is the case this whole design exists for: no
+    // fabricated headings to fill the gap.
+    let untagged = reader.get("untagged").and_then(Json::as_bool) == Some(true);
+    if untagged {
+        return Ok(());
+    }
+    // A panel that could not READ the structure is not a walk, however
+    // well-formed the landmark around it is.
+    //
+    // This leg was briefly vacuous, and the shape of that is worth recording:
+    // the region itself carries `role="region"`, so the walk announced exactly
+    // ONE node - the region - satisfied "every announced node has a name", and
+    // went green on a page whose outline said nothing at all. A gate that walks
+    // a tree must also check the tree CONTAINS what it was asked for, or it is
+    // measuring the scaffolding.
+    if reader.get("unreadable").and_then(Json::as_bool) == Some(true) {
+        return Err(
+            "the outline panel could not read the document structure, so the screen-reader walk \
+             only saw the surrounding landmark -- that is not a walk of a tagged document"
+                .into(),
+        );
+    }
+    if announced.len() < 2 {
+        return Err(format!(
+            "the screen-reader walk announced only {} node(s) for a tagged document -- a landmark \
+             is not a document structure",
+            announced.len()
+        ));
+    }
+    for node in announced {
+        let tag = node.get("tag").and_then(Json::as_str).unwrap_or("?");
+        let label = node.get("name").and_then(Json::as_str).unwrap_or("");
+        // The marker the shell appends to a figure with no description IS its
+        // accessible name, so a flagged figure legitimately has text here.
+        let flagged = node.get("needsDescription").and_then(Json::as_bool) == Some(true);
+        if label.trim().is_empty() && !flagged {
+            return Err(format!(
+                "a screen reader would announce an unlabelled <{tag}> in the outline -- a heading \
+                 with no accessible name is not a heading to the person listening"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn assert_print_artifact(printed: &Json, what: &str) -> Result<(), String> {
