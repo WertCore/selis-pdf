@@ -1,31 +1,46 @@
 /**
  * What a budget exhaustion means, and what it does not (SL-4.UI.13).
  *
- * ## The Do asks for two numbers this layer cannot supply
+ * ## The two numbers, and how they got here
+
+The item asks for "the honest budget-exhaustion state (which budget, **the
+measured usage**, split-the-file remedy)".
+
+An earlier revision of this file typed `measured` and `limit` as `null`,
+because the wire did not carry them: `ResponseMessage::error` sent `code`,
+`message`, `detail` and `docState`, and nothing else. The refusal was right
+but the diagnosis was wrong. The engine had BOTH numbers the whole time,
+packed into the `detail` string as prose:
+
+    "bytes limit=268435456 requested=314572800"
+
+So the gap was a missing channel, not missing information, and refusing to
+model it was refusing to read a field that already existed. `4e39b049` added
+that channel: a budget failure now carries a structured `budget` object, and
+this module reads it.
+
+## Why they are `number | null` again, and still cannot lie
+
+`null` now means "the engine did not tell us", which is a real state: a
+non-budget failure has no body, and neither does `BUDGET_POISONED`, where an
+EARLIER exhaustion is the reason and naming a resource would blame an
+innocent budget. `null` never means "zero", and never means "we worked it
+out ourselves".
+
+A body is discarded, and the pair falls back to `null`, when it fails any of
+the checks in `usageFor`. The important one is that the body's resource must
+agree with the code's. A mismatch means the message came from a build whose
+registry disagrees with the one this table reads, and two sources that
+disagree about which budget failed is a situation to show nothing in rather
+than pick a winner between.
+
+## What IS derived rather than reported
+
+The resource, whether retrying can possibly help (the registry knows), and a
+remedy category. `usedFraction` is arithmetic on the engine's own two
+numbers, never a guess.
  *
- * The item asks for "the honest budget-exhaustion state (which budget, **the
- * measured usage**, split-the-file remedy)". Two of those three are available;
- * one is not, and the third number is not either:
- *
- *  - **WHICH budget** - yes. Each budget failure has its own registry code
- *    (`BUDGET_BYTES`, `BUDGET_WALL`, ...), so the resource is known.
- *  - **The MEASURED usage** - **no.** `selis_sandbox::BudgetGuard` tracks a
- *    `Usage`, but `ResponseMessage::error` carries only `code`, `message`,
- *    `detail` and `docState`. The string `usage` appears nowhere in the WASM
- *    crate. The wire does not have it.
- *  - **The LIMIT** - **also no**, which is not obvious. `profiles.toml` is
- *    compiled into a Rust `const fn` by `selis-sandbox/build.rs`, so the
- *    numbers exist in the guest and are not reachable from JS at all. The
- *    shell can ask for `{surface: "viewer"}` but cannot read back what that
- *    surface allows.
- *
- * So `measured` and `limit` are typed `null` below. Not "null for now" -
- * `null` as a TYPE, so no caller can assign a number to them and no UI can
- * render one by accident. Filling them in needs a protocol change that carries
- * the resource, the limit and the usage on a budget failure; until then a panel
- * that shows "used 300 MB of 256 MB" would be inventing both figures.
- *
- * ## What IS said instead
+## What IS said instead
  *
  * The resource, whether retrying can possibly help (the registry knows), and a
  * remedy category. That is genuinely actionable, and every word of it is
@@ -70,15 +85,40 @@ export interface BudgetExhaustion {
 	readonly docState: DocState;
 	readonly remedy: BudgetRemedy;
 	/**
-	 * Always `null`: the wire does not carry it.
+	 * What the engine reported it had used, or `null` if it did not say.
 	 *
-	 * Typed `null`, not `number | null`, on purpose. `number | null` invites
-	 * exactly the bug this item is about - a caller that finds no measurement
-	 * and substitutes a plausible one. This cannot be assigned a value at all.
+	 * `number | null` now, not `null`, because the wire carries it as of
+	 * `4e39b049`. The rule that made `null` a TYPE in the first place still
+	 * holds in spirit: this may only ever hold a number the ENGINE sent, never
+	 * one this module worked out, defaulted, or inferred. `null` means "not
+	 * reported", and rendering it as `0` would be the bug this item is about.
 	 */
-	readonly measured: null;
-	/** Always `null`: `profiles.toml` is compiled into the guest, not exposed. */
-	readonly limit: null;
+	readonly measured: number | null;
+	/** The limit the engine measured against, or `null` if it did not say. */
+	readonly limit: number | null;
+	/**
+	 * `measured / limit`, or `null` when either is unknown.
+	 *
+	 * Left UNCLAMPED on purpose. A charge that overshoots reports a fraction
+	 * above 1, and that overshoot is the fact - "you asked for 300 MB of a
+	 * 256 MB budget" is the useful sentence. Clamping here would hide it, and
+	 * a renderer that wants a 0..1 bar should clamp at the point of drawing
+	 * where the visual constraint lives.
+	 */
+	readonly usedFraction: number | null;
+}
+
+/**
+ * A budget exhaustion as it arrives from the guest.
+ *
+ * Mirrors `selis_pdf_wasm::protocol::BudgetBody`. Optional everywhere except
+ * `resource`, because a malformed message must not throw inside a failure
+ * panel - a crash while reporting a crash shows the reader nothing at all.
+ */
+export interface WireBudget {
+	readonly resource?: string;
+	readonly measured?: number;
+	readonly limit?: number;
 }
 
 /** Registry code -> resource. Mirrors `selis_sandbox::Resource::code()`. */
@@ -129,24 +169,73 @@ function remedyFor(resource: BudgetResource | null, retryable: boolean): BudgetR
 }
 
 /**
+ * Validate a wire budget body against the code it arrived with.
+ *
+ * Returns `null` for anything untrustworthy, and the CALLER then reports
+ * `measured`/`limit` as `null`. Failing closed is the whole point: the panel
+ * that is supposed to explain an exhaustion is the worst possible place to
+ * print a number that was not checked.
+ *
+ * The rejections, and why each earns its keep:
+ *
+ * - **No body, or a missing field.** Nothing to show.
+ * - **Resource disagrees with the code.** The guest and the shell disagree
+ *   about which budget failed. Picking either one would be a coin toss
+ *   presented as fact, so show neither.
+ * - **`BUDGET_POISONED`.** Never named, whatever the body claims. Poisoning
+ *   means an earlier exhaustion was the cause; attributing it to the resource
+ *   that tripped the assertion blames an innocent budget.
+ * - **Non-finite, negative or fractional.** Not a byte count and not a
+ *   duration. `NaN` reaching a template literal renders "NaN MB used", which
+ *   is worse than nothing.
+ * - **A limit of zero.** The fraction would be a division by zero; the engine
+ *   cannot exhaust a zero budget, so this is a malformed message, not a fact.
+ */
+export function usageFor(
+	code: number,
+	body: WireBudget | undefined,
+): { measured: number; limit: number } | null {
+	const resource = RESOURCE_BY_CODE.get(code);
+	if (resource === undefined || resource === null) return null;
+	if (body === undefined || body === null) return null;
+
+	const { measured, limit } = body;
+	if (typeof measured !== "number" || typeof limit !== "number") return null;
+	if (!Number.isFinite(measured) || !Number.isFinite(limit)) return null;
+	if (measured < 0 || limit <= 0) return null;
+	if (!Number.isInteger(measured) || !Number.isInteger(limit)) return null;
+
+	// The cross-check. `body.resource` must name the very budget this code is.
+	// A missing or different name is a mismatch, not a shortcut.
+	if (body.resource !== resource) return null;
+
+	return { measured, limit };
+}
+
+/**
  * Read a budget exhaustion out of a registry row.
+ *
+ * `body` is the optional `budget` object from the failure message. Omit it
+ * and the exhaustion is returned with `measured`/`limit` as `null` - the
+ * honest "not reported", not a zero.
  *
  * Returns `null` for anything that is not a budget failure, so a caller can
  * branch on the answer rather than on a name.
  */
-export function budgetExhaustion(code: number): BudgetExhaustion | null {
+export function budgetExhaustion(code: number, body?: WireBudget): BudgetExhaustion | null {
 	const row = REGISTRY.get(code);
 	if (row === undefined || !isBudgetCode(code)) return null;
 	const resource = RESOURCE_BY_CODE.get(code) ?? null;
+	const usage = usageFor(code, body);
 	return {
 		code,
 		resource,
 		retryable: row.retryable,
 		docState: row.docState,
 		remedy: remedyFor(resource, row.retryable),
-		// Never a number. See the type.
-		measured: null,
-		limit: null,
+		measured: usage === null ? null : usage.measured,
+		limit: usage === null ? null : usage.limit,
+		usedFraction: usage === null ? null : usage.measured / usage.limit,
 	};
 }
 
@@ -174,6 +263,13 @@ export function budgetAction(code: number): "close-and-retry" | "report" | null 
  * Kept separate from `errorState` rather than folded into it: budget failures
  * are the one case where the generic "close and retry" answer is wrong, and a
  * caller that forgets to consult this is exactly the dead end above.
+ *
+ * Deliberately does NOT hang an `exhaustion` off the returned `ErrorState`.
+ * That interface is the generic one every failure flows through; bolting a
+ * budget-only field onto it couples the two exactly as tightly as folding this
+ * function into `errorState` would, and a reader wanting the numbers would
+ * have to know which of the two shapes it is holding. A caller that wants the
+ * figures asks {@link budgetExhaustion} for them, with the same `body`.
  */
 export function budgetErrorState(code: number): ErrorState | null {
 	const exhaustion = budgetExhaustion(code);

@@ -1,10 +1,19 @@
 /**
  * SL-4.UI.13: a budget exhaustion says what it knows and admits what it does not.
  *
- * The important tests here are the negative ones. The item asks for "which
- * budget, the measured usage, split-the-file remedy"; two of those are
- * available from the wire and two numbers are not. A gate that only checked
- * the good path would let somebody "helpfully" add a usage figure later.
+ * The item asks for "which budget, the measured usage, split-the-file remedy".
+ *
+ * The measured usage used to be unavailable: the wire carried only
+ * code/message/detail/docState, and this file REFUSED to model the two missing
+ * numbers, typing them `null` so `tsc` would reject a fabricated figure
+ * anywhere. That refusal was correct and its diagnosis was wrong — the engine
+ * had both numbers the whole time, inside a `detail` string. `4e39b049` added
+ * the structured channel and this file now reads it.
+ *
+ * So most of these tests are negative again, for the same reason as before and
+ * one more: a gate that only checked the good path would let somebody
+ * "helpfully" accept a mismatched, NaN, or poisoned body later. The type is no
+ * longer the guarantee — these tests are.
  */
 import { describe, expect, it } from "vitest";
 import { budgetAction, budgetErrorState, budgetExhaustion, isBudgetCode } from "./budget.js";
@@ -36,20 +45,83 @@ describe("which budget ran out", () => {
 	});
 });
 
+describe("the measured usage and the limit", () => {
+	const bytes = { resource: "bytes", measured: 314_572_800, limit: 268_435_456 };
+
+	it("reports both figures when the guest sends a body that agrees", () => {
+		const e = budgetExhaustion(4000, bytes);
+		expect(e?.measured).toBe(314_572_800);
+		expect(e?.limit).toBe(268_435_456);
+		expect(e?.usedFraction).toBeCloseTo(314_572_800 / 268_435_456, 10);
+	});
+
+	it("reports null figures when the guest sends no body at all", () => {
+		// The real, common case: a non-budget failure, or an older guest.
+		const e = budgetExhaustion(4000);
+		expect(e?.measured).toBeNull();
+		expect(e?.limit).toBeNull();
+		expect(e?.usedFraction).toBeNull();
+	});
+
+	it("reports an OVERSHOOT above 1 rather than clamping it", () => {
+		// "You asked for 300 MB of a 256 MB budget" is the useful sentence.
+		// Clamping here would render it as exactly at the limit, which is a
+		// different and less useful claim.
+		const e = budgetExhaustion(4000, bytes);
+		expect(e?.usedFraction ?? 0).toBeGreaterThan(1);
+	});
+});
+
 describe("what it refuses to claim", () => {
-	it("reports no measured usage and no limit", () => {
-		// `ResponseMessage::error` carries code/message/detail/docState, and
-		// `profiles.toml` is compiled into the guest. Neither number is on the
-		// wire, so neither is here.
-		//
-		// The real guarantee is the TYPE: `measured` and `limit` are declared
-		// `null`, not `number | null`, so `tsc` rejects attaching a figure
-		// anywhere outside this module. This test only pins the runtime shape.
-		for (const code of [4000, 4001, 4002, 4003, 4004, 4010]) {
-			const exhaustion = budgetExhaustion(code);
-			expect(exhaustion?.measured).toBeNull();
-			expect(exhaustion?.limit).toBeNull();
+	it("ignores a body whose resource disagrees with the code", () => {
+		// BUDGET_BYTES carrying a "pixels" body means the guest and the shell
+		// disagree about which budget failed. Showing either number would be a
+		// coin toss presented as fact.
+		const e = budgetExhaustion(4000, { resource: "pixels", measured: 5, limit: 4 });
+		expect(e?.measured).toBeNull();
+		expect(e?.limit).toBeNull();
+	});
+
+	it("ignores a body with no resource name", () => {
+		// Present-but-unnamed is not a shortcut around the cross-check.
+		const e = budgetExhaustion(4000, { measured: 5, limit: 4 });
+		expect(e?.measured).toBeNull();
+	});
+
+	it("never accepts a body for BUDGET_POISONED", () => {
+		// Poisoning means an EARLIER exhaustion was the cause. Whatever resource
+		// the message names, the honest report is that no budget is identified.
+		// 4010 is deliberately absent from RESOURCE_BY_CODE.
+		for (const resource of ["bytes", "wall", "depth", "objects", "pixels"]) {
+			const e = budgetExhaustion(4010, { resource, measured: 5, limit: 4 });
+			expect(e?.measured).toBeNull();
+			expect(e?.limit).toBeNull();
 		}
+	});
+
+	it("refuses numbers that are not byte counts or durations", () => {
+		// Each of these would render as something absurd but not obviously so:
+		// "NaN MB used", "-1 bytes used", a bar pinned to Infinity.
+		const bad = [
+			{ resource: "bytes", measured: Number.NaN, limit: 10 },
+			{ resource: "bytes", measured: 10, limit: Number.POSITIVE_INFINITY },
+			{ resource: "bytes", measured: -1, limit: 10 },
+			{ resource: "bytes", measured: 10, limit: 0 },
+			{ resource: "bytes", measured: 1.5, limit: 10 },
+			{ resource: "bytes", measured: 10, limit: -5 },
+		];
+		for (const body of bad) {
+			const e = budgetExhaustion(4000, body);
+			expect(e?.measured, JSON.stringify(body)).toBeNull();
+			expect(e?.usedFraction, JSON.stringify(body)).toBeNull();
+		}
+	});
+
+	it("does not throw on a malformed body", () => {
+		// A failure panel that throws while reporting a failure shows nothing
+		// at all, which is strictly worse than showing less.
+		expect(() => budgetExhaustion(4000, {} as never)).not.toThrow();
+		expect(() => budgetExhaustion(4000, { resource: 7 } as never)).not.toThrow();
 	});
 });
 
