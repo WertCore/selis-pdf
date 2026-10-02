@@ -4,6 +4,72 @@
 }
 
 /*
+ * PRINT PROGRESS (SL-4.UI.13).
+ *
+ * The bar has to be able to say "I do not know how long this is", and CSS is
+ * where that is expressed: a determinate bar is a fill with a width, and an
+ * indeterminate one is a fill with a WIDTH OF 0 plus a moving stripe. So
+ * `data-indeterminate` is not decoration - it is the only thing telling a
+ * sighted reader the same thing `aria-valuenow`'s absence tells assistive tech.
+ *
+ * `prefers-reduced-motion` disables the sweep. A bar that animates forever is
+ * exactly the kind of thing that setting exists for, and an indeterminate bar
+ * is the one case here that animates at all.
+ */
+.selis-progress-track {
+	width: 100%;
+	max-width: 28rem;
+	height: 0.5rem;
+	margin: 0.5rem 0 0.25rem;
+	border-radius: 999px;
+	background: color-mix(in srgb, currentColor 18%, transparent);
+	overflow: hidden;
+}
+
+.selis-progress-fill {
+	height: 100%;
+	width: 0;
+	border-radius: inherit;
+	background: currentColor;
+	transition: width 120ms linear;
+}
+
+[data-indeterminate="true"] .selis-progress-fill {
+	/* No width at all: a partial fill would claim a percentage we do not have.
+	 * The gradient is drawn across the track instead, so the bar reads as
+	 * "working" and never as "some fraction done". */
+	width: 100%;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		currentColor 45%,
+		transparent 90%
+	);
+	background-size: 200% 100%;
+	animation: selis-progress-sweep 1.2s linear infinite;
+}
+
+@keyframes selis-progress-sweep {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -100% 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-indeterminate="true"] .selis-progress-fill {
+		animation: none;
+		background: currentColor;
+		opacity: 0.4;
+	}
+	.selis-progress-fill {
+		transition: none;
+	}
+}
+
+/*
  * PRINT. What is printed is the PAGE, not the application.
  *
  * Without this, printing from the shell emits the search box, the result line

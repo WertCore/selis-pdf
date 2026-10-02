@@ -1193,6 +1193,13 @@ severity has to track whether anything is readable",
         return Err("the failure panel rendered no label for its recovery action".into());
     }
 
+    // UI.13: a long operation must show truthful progress and honour a cancel.
+    //
+    // Every claim is checked at the moment it was true, because a bar that is
+    // honest while busy and lies once settled is still a liar, and asserting
+    // only the end state would miss exactly that.
+    assert_print_cancellation(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1264,6 +1271,142 @@ severity has to track whether anything is readable",
 ///
 /// @param printed the report object
 /// @param what a name for the caller, used in the failure message
+/// UI.13: verify the print job's progress bar and its Cancel control.
+///
+/// The check drives the app's own buttons and reads the DOM it painted, so
+/// what is asserted is what a reader would see - not what the model believes
+/// about itself. Four claims, each at the moment it was true:
+///
+/// 1. **Idle is silent.** Nothing is running, so the bar is hidden and Cancel
+///    is disabled. An enabled Cancel on an idle viewer is a control that
+///    promises to stop a job that does not exist.
+/// 2. **A running job is visible.** The bar is shown and Cancel is live. A
+///    cancel reachable only through a global hook is not a user affordance.
+/// 3. **A cancel is a REQUEST.** Immediately after the press the caption must
+///    say it is stopping, and must NOT say the job was cancelled: the engine
+///    has not answered yet, and claiming otherwise is a cancellation the shell
+///    invented.
+/// 4. **The engine's answer is what ends it.** The job settles `cancelled` and
+///    - the claim that matters most - NO failure panel appeared. The reader
+///    pressed the button; telling them their document has a problem it does not
+///    have is the dead end SL-4.UI.12 exists to remove.
+fn assert_print_cancellation(report: &Json) -> Result<(), String> {
+    let idle = report
+        .get("chromeIdle")
+        .ok_or_else(|| "the app reported no print chrome (chromeIdle = None)".to_string())?;
+    if idle.is_null() {
+        return Err("the app reported no idle state for its print chrome".into());
+    }
+    if idle.get("hidden").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "the print progress bar was VISIBLE while no print was running -- a bar \
+                    reading 0% on an idle viewer is a claim about nothing"
+                .into(),
+        );
+    }
+    if idle.get("cancelDisabled").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "the print Cancel control was ENABLED while no print was running -- it \
+                    promises to stop a job that does not exist"
+                .into(),
+        );
+    }
+
+    // A started job must be observable at all. This is the whole point of a
+    // progress bar, and it is the check an earlier, racy version of this gate
+    // could not make: the shell reports its first moment before it awaits
+    // anything, so this does not depend on catching a running job in the wild.
+    let at_start = report
+        .get("progressAtStart")
+        .ok_or_else(|| "the app reported no progress for a print it had started".to_string())?;
+    if at_start.is_null() {
+        return Err("a running print reported no progress at all".into());
+    }
+    if at_start.get("pagesDone").and_then(Json::as_u64).is_none() {
+        return Err(format!(
+            "a running print reported a progress with no page count: {at_start}"
+        ));
+    }
+
+    let chrome = report
+        .get("chromeAtStart")
+        .ok_or_else(|| "the app reported no chrome for a running print".to_string())?;
+    if chrome.get("hidden").and_then(Json::as_bool) != Some(false) {
+        return Err("a print was running but its progress bar was hidden".into());
+    }
+    // A running job's Cancel must be LIVE. The mirror image of the idle check:
+    // a Cancel that stays disabled while pages are being rendered is a control
+    // that does not work, and it is worse than no control because the reader
+    // pressed it.
+    if chrome.get("cancelDisabled").and_then(Json::as_bool) != Some(false) {
+        return Err(
+            "a print was running but its Cancel control was NOT enabled -- the reader has \
+                    no way to stop a long job"
+                .into(),
+        );
+    }
+
+    // The cancellation itself was accepted.
+    let request = report
+        .get("cancelRequest")
+        .ok_or_else(|| "the app reported no answer to a Cancel press".to_string())?;
+    if request.is_null() {
+        return Err(
+            "pressing Cancel while a print ran was answered with nothing -- the control did \
+             nothing"
+                .into(),
+        );
+    }
+    if request.get("requested").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "a Cancel press was not recorded as a request: {request}"
+        ));
+    }
+
+    // THE HONESTY CHECK. Read in the same task as the press, before the engine
+    // could have answered, so "Cancelled" here could only have been invented.
+    let caption = report
+        .get("captionAfterCancel")
+        .and_then(Json::as_str)
+        .unwrap_or_default();
+    if caption.trim().is_empty() {
+        return Err("the print chrome rendered no caption after a Cancel press".into());
+    }
+    if caption.contains("Cancelled") || caption.contains("Canceled") {
+        return Err(format!(
+            "the caption claimed `{caption}` immediately after Cancel was pressed -- a cancel is \
+             a REQUEST until the engine answers, and the engine had not answered yet"
+        ));
+    }
+
+    // And the settled end state.
+    let settled = report
+        .get("printAfterCancel")
+        .ok_or_else(|| "the app recorded no outcome for a cancelled print".to_string())?;
+    if settled.is_null() {
+        return Err("a cancelled print recorded no outcome".into());
+    }
+    if settled.get("status").and_then(Json::as_str) != Some("cancelled") {
+        return Err(format!(
+            "a print the reader cancelled ended as {:?}, not `cancelled`",
+            settled.get("status").and_then(Json::as_str)
+        ));
+    }
+    // A cancellation is not a failure, and the panel is how the shell says
+    // "your document has a problem". Raising it here would invent a fault.
+    let panel = report
+        .get("failureAfterCancel")
+        .and_then(Json::as_str)
+        .unwrap_or_default();
+    if !panel.trim().is_empty() {
+        return Err(format!(
+            "cancelling a print raised a failure panel saying `{panel}` -- the reader pressed \
+             Cancel, so their document has no problem to report"
+        ));
+    }
+    Ok(())
+}
+
 fn assert_print_artifact(printed: &Json, what: &str) -> Result<(), String> {
     if printed.get("status").and_then(Json::as_str) != Some("ok") {
         return Err(format!("{what} did not produce a PDF: {printed}"));

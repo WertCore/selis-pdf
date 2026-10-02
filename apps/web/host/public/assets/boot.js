@@ -46,7 +46,22 @@ globalThis.__selisBoot = "web-host";
  * has to make at the moment it is needed; `health.js` for the same reason. See
  * the preload block below for the whole argument.
  */
-const UI_PRELOADS = ["/assets/ui/viewer/error-panel.js", "/assets/ui/viewer/health.js"];
+const UI_PRELOADS = [
+	"/assets/ui/viewer/error-panel.js",
+	"/assets/ui/viewer/health.js",
+	// SL-4.UI.13. Preloaded for the same reason as the other two, and the same
+	// reason it matters MORE here: the progress module is needed the moment a
+	// print starts. If its import flakes, the fallback is "paint a bar without
+	// the model", which is exactly the unmonotonic, dishonest bar this item
+	// exists to prevent - so the fallback below refuses to paint at all instead.
+	"/assets/ui/viewer/progress.js",
+	// SL-4.UI.13. Read on the failure path, so it gets the same preloading
+	// treatment: `showFailure` runs exactly when the app is already in trouble,
+	// and it is the worst moment to discover a module request can fail. A
+	// missing budget module means the "used 300 MB of 256 MB" line is omitted -
+	// degraded, not broken, and never a fabricated zero.
+	"/assets/ui/viewer/budget.js",
+];
 
 /**
  * Set by the Cancel control, checked by the print loop (SL-4.UI.13).
@@ -66,6 +81,84 @@ let printCancelled = false;
 
 /** What the print job is doing, for the browser check and for the panel. */
 let printProgress = null;
+
+/**
+ * The print job's progress, as `progress.ts` models it (SL-4.UI.13).
+ *
+ * `null` when nothing is running. The shell does NOT compute a percentage here:
+ * `progress.ts` owns monotonicity, request filtering and the difference between
+ * "asked to stop" and "stopped", and duplicating any of that here is how the
+ * two drift apart and the bar starts telling stories.
+ */
+let printJob = null;
+
+/**
+ * Identifies THIS print job, so a late report from a previous one is dropped.
+ *
+ * `progress.ts` refuses a report whose request is not the one being tracked,
+ * which is what stops a finished job's last fraction being painted over a new
+ * job that has not started. Monotonically increasing, never reused.
+ */
+let printRequestId = 0;
+
+/** The progress module, once preloaded. `null` until it lands. */
+let progressModel = null;
+
+/**
+ * Move the print job's state on, and repaint.
+ *
+ * Every phase change in the shell goes through here, so there is exactly one
+ * place that can be wrong about what the panel says.
+ *
+ * If the model has not loaded, this is a NO-OP rather than a fallback that
+ * paints something. A progress bar with no model behind it is the one artifact
+ * this item is about not shipping: it would have to re-implement monotonicity
+ * locally to be useful, and that copy is what goes stale. Showing nothing until
+ * the real model arrives is honest and is over in milliseconds.
+ */
+function advancePrintJob(phase) {
+	if (progressModel === null || !printJob) return printJob;
+	if (phase === "cancelling") printJob = progressModel.requestCancel(printJob);
+	else if (phase === "cancelled") printJob = progressModel.confirmCancelled(printJob);
+	else if (phase === "done") printJob = progressModel.finish(printJob);
+	else if (phase === "failed") printJob = progressModel.fail(printJob);
+	renderPrintProgress();
+	// Returns the new state. Callers that assign this back MUST have the return
+	// value: an earlier version returned nothing, so `printJob =
+	// advancePrintJob("cancelling")` silently assigned `undefined` - which then
+	// sailed past the `printJob === null` guard in `renderPrintProgress` and
+	// threw on the next repaint. The browser check found that; the fix is here.
+	return printJob;
+}
+
+/**
+ * Fold the page loop's own count into the model, then repaint.
+ *
+ * The shell knows two integers - pages done, pages total - and NOT a fraction.
+ * It hands those to `progress.ts` as the same `SlotReport` shape the engine's
+ * slot produces, so the model is exercised through the interface it was written
+ * for rather than a print-specific back door.
+ *
+ * A `null` total stays `null` all the way to the bar, which then renders as
+ * indeterminate. Guessing a total from the document's page count would put a
+ * confident 100% on a job that might still fail.
+ */
+function syncPrintProgress() {
+	if (progressModel === null || !printJob || !printProgress) return;
+	const total = printProgress.pagesTotal;
+	const report = {
+		request: printJob.request,
+		stage: 1,
+		fractionBp:
+			total === null || total === undefined || total === 0
+				? 0
+				: Math.round((printProgress.pagesDone / total) * 10_000),
+	};
+	// `applyReport` clamps and refuses regressions, so `pagesDone` going
+	// backwards - or a stale report - cannot move the bar backwards.
+	printJob = progressModel.applyReport(printJob, report);
+	renderPrintProgress();
+}
 /**
  * Ask the print job to stop, at the next page boundary.
  *
@@ -75,7 +168,12 @@ let printProgress = null;
  */
 globalThis.__selisPrintCancel = function () {
 	if (printProgress === null || printProgress.pagesDone === undefined) return null;
+	// Through the model, not around it: `requestCancel` moves the phase to
+	// `cancelling`, which is the point. Setting the boolean alone would stop the
+	// loop while the panel kept saying "Printing..." - a reader who pressed
+	// Cancel and saw nothing happen would press it again.
 	printCancelled = true;
+	printJob = advancePrintJob("cancelling");
 	return { requested: true, pagesDone: printProgress.pagesDone };
 };
 
@@ -89,6 +187,46 @@ globalThis.__selisPrintCancel = function () {
 globalThis.__selisPrintProgress = function () {
 	if (printProgress === null) return null;
 	return { pagesDone: printProgress.pagesDone, pagesTotal: printProgress.pagesTotal };
+};
+
+/**
+ * The outcome of the last print, for the browser check.
+ *
+ * `null` until a print has been started, so a check can distinguish a print
+ * that has not begun yet from one that began and yielded nothing. Read-only,
+ * like the two above: a check must be able to ASK about a job without changing
+ * it.
+ *
+ * (The wording above is deliberate. `sw-ship.test.ts` scans boot.js with a
+ * regex for `from` followed by a quoted string, to prove every module
+ * specifier on the page is same-origin. An earlier draft of this sentence
+ * contained the word "from" immediately before a quoted phrase, which that
+ * scan reads as an import of a module with an English name. The test was
+ * right and the prose was wrong; a scan for specifiers should never have to be
+ * taught to ignore comments.)
+ */
+globalThis.__selisPrintState = function () {
+	return state.print ?? null;
+};
+
+/**
+ * The progress bar's own view of the world, for the browser check.
+ *
+ * Read from the DOM rather than from the model, deliberately: the claim under
+ * test is that the bar SAYS the right thing, and asserting on the model would
+ * pass even if the painting were wired to the wrong variable. `null` until the
+ * chrome is built.
+ */
+globalThis.__selisPrintChrome = function () {
+	if (printUi.root === null) return null;
+	return {
+		hidden: printUi.root.hidden,
+		indeterminate: printUi.root.getAttribute("data-indeterminate") === "true",
+		valueNow: printUi.root.getAttribute("aria-valuenow"),
+		caption: printUi.caption.textContent,
+		cancelDisabled: printUi.cancel.disabled,
+		cancelLabel: printUi.cancel.textContent,
+	};
 };
 
 /** Whatever has finished preloading, by path. Missing means "try on demand". */
@@ -330,6 +468,11 @@ for (const path of UI_PRELOADS) {
 	import(path)
 		.then((module) => {
 			uiModules.set(path, module);
+			// The progress model is captured here rather than imported at each
+			// use, because the print loop runs on the same thread as this
+			// callback and must never await anything mid-page: an await between
+			// pages is an await that can miss the Cancel press entirely.
+			if (path.endsWith("progress.js")) progressModel = module;
 		})
 		.catch(() => {
 			// Deliberately silent. The module degrades to a dynamic import at
@@ -567,6 +710,171 @@ function dispatch(body, payload = null) {
 const searchUi = { input: null, readout: null };
 
 /**
+ * The print progress bar, its caption, and its Cancel control (SL-4.UI.13).
+ *
+ * Built on demand with the rest of the viewer chrome, and every field `null`
+ * until it is - the same discipline `searchUi` follows, because the mount can
+ * run before this declaration is initialised.
+ */
+const printUi = { root: null, bar: null, caption: null, cancel: null };
+
+/**
+ * What the caption says for the current phase.
+ *
+ * Separate from {@link renderPrintProgress} so the wording is in one place and
+ * can be read without tracing the DOM writes. Every branch is a sentence the
+ * shell can actually support:
+ *
+ *  - an unknown total stays "page N" and never becomes "N of ?" - a bar that
+ *    admits it does not know the end is more useful than a wrong one;
+ *  - `cancelling` says "stopping", never "stopped" - the engine has not
+ *    answered yet, and `progress.ts` exists precisely so the UI cannot claim a
+ *    cancellation that did not happen;
+ *  - `cancelled` keeps the count, because "cancelled" alone leaves the reader
+ *    wondering whether anything was done at all.
+ */
+function printCaption(job, done, total) {
+	if (job.awaitingCancel) {
+		return total === null
+			? `Stopping after page ${done}...`
+			: `Stopping after page ${done} of ${total}...`;
+	}
+	switch (job.phase) {
+		case "running":
+			return total === null
+				? `Rendering page ${done}...`
+				: `Rendering page ${done} of ${total}...`;
+		case "done":
+			return total === null
+				? `Finished ${done} page(s).`
+				: `Finished ${done} of ${total} page(s).`;
+		case "cancelled":
+			return `Cancelled after ${done} page(s).`;
+		case "failed":
+			return "Printing failed.";
+		default:
+			return "";
+	}
+}
+
+/**
+ * Paint the bar, the caption, and the Cancel control from the model.
+ *
+ * Reads only `printJob` and `printProgress`. Nothing here decides anything -
+ * if a state needs deciding, that belongs in `progress.ts`, which is pure and
+ * tested without a browser.
+ *
+ * The Cancel control is `disabled` rather than removed while a cancel is
+ * pending: the reader has already pressed it, and a button that vanishes under
+ * their cursor reads as the app crashing. Disabled says "I heard you, I'm
+ * waiting".
+ */
+function renderPrintProgress() {
+	const ui = printUi;
+	if (ui.root === null || !printJob || !printProgress) return;
+	const job = printJob;
+	const done = printProgress.pagesDone ?? 0;
+	const total = printProgress.pagesTotal ?? null;
+	const known = total !== null && total !== 0;
+
+	// Visible only while the job is. A bar left on screen after the work is
+	// over is not a finished bar, it is a stale one - and on this shell the
+	// OUTCOME line beside it already carries the final sentence, so two status
+	// lines would compete. Hiding on settle is what keeps "idle" meaning idle.
+	ui.root.hidden = !job.busy;
+	// An unknown total is INDETERMINATE, and `aria-valuenow` is removed rather
+	// than set to 0. A progressbar reporting 0 tells assistive tech the job has
+	// definitively achieved nothing, which is a different claim from the honest
+	// one here: that nothing has been measured yet.
+	if (job.fraction === null || !known) {
+		ui.bar.style.width = "";
+		ui.root.removeAttribute("aria-valuenow");
+		ui.root.setAttribute("data-indeterminate", "true");
+	} else {
+		// Clamped HERE, at the drawing, not in the model: the model is right to
+		// report an overshoot above 1, and a 0-1 CSS width is a visual
+		// constraint rather than a fact about the job.
+		ui.bar.style.width = `${Math.min(1, Math.max(0, job.fraction)) * 100}%`;
+		ui.root.setAttribute("aria-valuenow", String(Math.round((job.fraction ?? 0) * 100)));
+		ui.root.removeAttribute("data-indeterminate");
+	}
+	ui.root.setAttribute("aria-valuemin", "0");
+	ui.root.setAttribute("aria-valuemax", "100");
+	ui.root.setAttribute("aria-busy", job.busy ? "true" : "false");
+	ui.caption.textContent = printCaption(job, done, total);
+	ui.cancel.disabled = !job.busy || job.awaitingCancel;
+	ui.cancel.textContent = job.awaitingCancel ? "Stopping..." : "Cancel";
+}
+
+/**
+ * The "used X of Y" line for a budget failure, or `null` for no line at all.
+ *
+ * Returns `null` - meaning render nothing - rather than a line with a blank or
+ * zero in it, in three cases, and they are the three that matter:
+ *
+ *  - the code is not a budget failure;
+ *  - the guest sent no `budget` body (an older build, or a non-budget failure);
+ *  - the body failed validation in `usageFor`, which covers a resource that
+ *    disagrees with the code, `NaN`, a negative, and `BUDGET_POISONED`.
+ *
+ * The wall budget is measured in NANOSECONDS, so it is formatted as a duration
+ * rather than as bytes. Rendering 3_000_000_000 as "3.0 GB of work" would be a
+ * confident, entirely wrong sentence.
+ */
+function renderBudgetLine(wire, code) {
+	if (code === null || code === undefined) return null;
+	const body = wire === null || wire === undefined ? undefined : wire.budget;
+	const model = preloadedUiModule("/assets/ui/viewer/budget.js");
+	if (model === null || typeof model.budgetExhaustion !== "function") return null;
+	const exhaustion = model.budgetExhaustion(code, body);
+	if (exhaustion === null) return null;
+	if (exhaustion.measured === null || exhaustion.limit === null) return null;
+
+	const line = document.createElement("p");
+	line.dataset.role = "budget";
+	// Machine-readable too, so the browser check can assert the NUMBERS rather
+	// than a formatted string - "300 MB of 256 MB" is a claim about rounding.
+	line.dataset.resource = exhaustion.resource ?? "";
+	line.dataset.measured = String(exhaustion.measured);
+	line.dataset.limit = String(exhaustion.limit);
+	line.textContent =
+		exhaustion.resource === "wall"
+			? `This operation took ${formatDuration(exhaustion.measured)} of a ` +
+				`${formatDuration(exhaustion.limit)} time budget.`
+			: `This document needed ${formatBytes(exhaustion.measured)} of a ` +
+				`${formatBytes(exhaustion.limit)} ${exhaustion.resource} budget.`;
+	return line;
+}
+
+/**
+ * Bytes as a short string, binary units.
+ *
+ * Uses 1024 because that is what the budget limits are expressed in, so
+ * "256 MB" in the panel means the same thing as 268435456 everywhere else.
+ * Decimal units would make the engine's own limit look 7% larger than it is.
+ */
+function formatBytes(bytes) {
+	if (!Number.isFinite(bytes) || bytes < 0) return "";
+	const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+}
+
+/** Nanoseconds as a short duration. */
+function formatDuration(nanos) {
+	if (!Number.isFinite(nanos) || nanos < 0) return "";
+	if (nanos < 1_000) return `${nanos} ns`;
+	if (nanos < 1_000_000) return `${(nanos / 1_000).toFixed(1)} µs`;
+	if (nanos < 1_000_000_000) return `${(nanos / 1_000_000).toFixed(1)} ms`;
+	return `${(nanos / 1_000_000_000).toFixed(2)} s`;
+}
+
+/**
  * Show a failure as a panel with a recovery action (SL-4.UI.12).
  *
  * ## What this replaces
@@ -637,6 +945,18 @@ async function showFailure(wire, what) {
 		host.appendChild(code);
 	}
 
+	// SL-4.UI.13: the budget line. "This document needed 300 MB of a 256 MB
+	// budget" is the difference between a reader who knows to split the file and
+	// one who is merely told it is too big.
+	//
+	// `budgetExhaustion` returns `null` for every number it cannot vouch for -
+	// a body whose resource disagrees with the code, a `NaN`, a poisoned guard,
+	// an older guest that sends no body at all. When that happens the line is
+	// NOT rendered. A panel saying "0 bytes used" because it had nothing would
+	// be worse than no panel.
+	const budgetLine = renderBudgetLine(wire, panel.code);
+	if (budgetLine !== null) host.appendChild(budgetLine);
+
 	const action = document.createElement("button");
 	action.type = "button";
 	action.dataset.role = "action";
@@ -656,8 +976,26 @@ async function showFailure(wire, what) {
 		actionable: panel.actionable,
 		docState: panel.docState,
 		operation: what,
+		// SL-4.UI.13: the budget figures, or nulls. Exposed so the browser
+		// check can assert the NUMBERS the panel rendered rather than parsing a
+		// formatted sentence back into them.
+		budget: budgetFor(wire, panel.code),
 	};
 	return panel;
+}
+
+/**
+ * The budget exhaustion behind a failure, or `null`.
+ *
+ * Separate from `renderBudgetLine` so the browser check can read the same
+ * validated figures the panel did, without re-deriving them from the DOM.
+ */
+function budgetFor(wire, code) {
+	if (code === null || code === undefined) return null;
+	const model = preloadedUiModule("/assets/ui/viewer/budget.js");
+	if (model === null || typeof model.budgetExhaustion !== "function") return null;
+	const body = wire === null || wire === undefined ? undefined : wire.budget;
+	return model.budgetExhaustion(code, body);
 }
 
 /**
@@ -881,6 +1219,12 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 		if (count === 0) {
 			return { status: "refused", detail: "the document has no pages to print" };
 		}
+		// The total is known NOW, from the reply that already had it, and it is
+		// the same number the loop iterates to - not a re-derived guess. Until
+		// this line the bar is indeterminate, which is the honest state: the
+		// shell has not counted anything yet, and "page 1 of 0" is worse than
+		// nothing.
+		if (printProgress !== null) printProgress.pagesTotal = count;
 		// Refused with the real count, never truncated: a 40-page PDF handed to
 		// someone who asked for 400 is a different document, delivered silently.
 		if (count > print.MAX_PRINT_PAGES) {
@@ -971,6 +1315,11 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 			// point where the shell learns a page is finished; the writer draining
 			// it afterwards is too late to say anything useful.
 			if (printProgress !== null) printProgress.pagesDone = i + 1;
+			// Fold the count into the model and repaint. Synchronous, and with
+			// no await: the tab is about to be handed back to the event loop
+			// below, and anything asynchronous here would be work queued behind
+			// the very Cancel press this bar exists to offer.
+			syncPrintProgress();
 			// Hand the tab back to the BROWSER, not just to the microtask queue.
 			//
 			// `streamPrintPdf` drains this generator with `for await`, and`r
@@ -1270,6 +1619,15 @@ async function requestPrint() {
 	// print would otherwise stop this one before it rendered a page.
 	printCancelled = false;
 	printProgress = { pagesDone: 0, pagesTotal: null };
+	// A fresh request id for a fresh job, and a fresh model state. The id is
+	// what makes a late report from the PREVIOUS job droppable rather than
+	// paintable, and reusing the old number would reintroduce exactly the stale
+	// bar `progress.ts` refuses to show.
+	printRequestId += 1;
+	printJob = progressModel === null ? null : progressModel.beginOperation(printRequestId);
+	// Painted before the first await, so the bar and the Cancel control exist
+	// before the reader can plausibly want them.
+	renderPrintProgress();
 	// The thunk, not a retained copy: see `openDocumentSource`.
 	const printed = await globalThis.__selisPrint(openDocumentSource());
 	if (printed.status !== "ok") {
@@ -1278,6 +1636,10 @@ async function requestPrint() {
 		// has a problem it does not have.
 		if (printed.cancelled === true) {
 			const done = printed.pagesDone ?? 0;
+			// The engine has now ANSWERED, so this is the first moment a
+			// cancellation may be called one. `cancelling` until here would have
+			// been the honest earlier state.
+			advancePrintJob("cancelled");
 			printProgress = null;
 			clearFailure();
 			say(`Printing cancelled after ${done} page(s).`);
@@ -1294,6 +1656,7 @@ async function requestPrint() {
 			},
 			"printing",
 		);
+		advancePrintJob("failed");
 		printProgress = null;
 		return printed;
 	}
@@ -1315,7 +1678,10 @@ async function requestPrint() {
 	printed.downloadName = anchor.download;
 	// The job is over. Left set, `__selisPrintCancel` would answer to a
 	// cancel for a print that had already finished, and report having
-	// cancelled work nobody asked to stop.
+	// cancelled work nobody asked to stop. The bar keeps its last painted
+	// value and its Cancel goes dead rather than vanishing: a reader who was
+	// watching it finish should see it say so.
+	advancePrintJob("done");
 	printProgress = null;
 	return printed;
 }
@@ -1392,7 +1758,54 @@ function searchControls() {
 	healthOut.id = "selis-health-rows";
 	healthOut.setAttribute("aria-live", "polite");
 	root.appendChild(healthOut);
-	root.appendChild(print);
+
+	// SL-4.UI.13: a real progress bar and a real Cancel button, in the document,
+	// for the same reason as the search field and the print button - a reader has
+	// to be able to SEE the control to press it. A cancel reachable only through
+	// `globalThis.__selisPrintCancel()` is not a user affordance.
+	//
+	// `role="progressbar"` on the wrapper with the fill as a child, because a
+	// `<progress>` element cannot express the indeterminate-but-busy state
+	// honestly here: it would need a value, and we do not have one until the page
+	// count is known.
+	const progressRoot = document.createElement("div");
+	progressRoot.id = "selis-print-progress";
+	progressRoot.setAttribute("role", "progressbar");
+	progressRoot.setAttribute("aria-label", "Printing progress");
+	progressRoot.hidden = true;
+	const track = document.createElement("div");
+	track.className = "selis-progress-track";
+	const fill = document.createElement("div");
+	fill.className = "selis-progress-fill";
+	fill.id = "selis-print-bar";
+	track.appendChild(fill);
+	const caption = document.createElement("p");
+	caption.id = "selis-print-status";
+	caption.setAttribute("role", "status");
+	caption.setAttribute("aria-live", "polite");
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.id = "selis-print-cancel";
+	cancel.textContent = "Cancel";
+	cancel.disabled = true;
+	cancel.addEventListener("click", () => {
+		// The same entry point the browser check uses. One function, so a test
+		// that drives the button and a test that calls the hook are testing the
+		// same thing rather than two things that happen to agree today.
+		globalThis.__selisPrintCancel();
+	});
+	progressRoot.appendChild(track);
+	root.appendChild(progressRoot);
+	root.appendChild(caption);
+	root.appendChild(cancel);
+
+	printUi.root = progressRoot;
+	printUi.bar = fill;
+	printUi.caption = caption;
+	printUi.cancel = cancel;
+	// Hidden until a job starts: a progress bar reading "0%" on an idle viewer
+	// is a claim about nothing.
+	progressRoot.hidden = true;
 
 	searchUi.input = input;
 	searchUi.readout = readout;

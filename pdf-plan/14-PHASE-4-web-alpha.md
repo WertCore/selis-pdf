@@ -496,27 +496,22 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Verified.** 561 UI tests, 204 host tests, browser-check 3/3 in real Edge. The browser gate
     was falsified twice independently: removing the panel call, and rendering the action
     disabled.
-- [ ] **SL-4.UI.13 — Large-file handling UX (web)** · deps: SL-0.SBX.05, SL-1A.UI.06 · owner: AI+
+- [x] **SL-4.UI.13 — Large-file handling UX (web)** · deps: SL-0.SBX.05, SL-1A.UI.06 · owner: AI+
   - **Do:** The web surface of SL-1A.UI.06, deferred from Phase 1A: progress and cancellation in
     the tab for long operations, and the honest budget-exhaustion state (which budget, the measured
     usage, split-the-file remedy) instead of a dead tab. The CLI/engine plumbing exists — the
     shared CancelToken, typed `CANCELLED`/budget errors with resource + measured usage, and the
     verification/`budget` JSON fields the UI consumes unchanged.
-  - **In progress. Two of the Do's three claimed numbers are NOT on the web wire.** The Do asserts
-    the plumbing exists and the UI "consumes unchanged"; that holds for the CLI but not for
-    `apps/web`:
-    - **Measured usage — absent.** `selis_sandbox::BudgetGuard` tracks a `Usage`, but
-      `ResponseMessage::error` carries only `code`, `message`, `detail`, `docState`. The string
-      `usage` appears nowhere in `crates/selis-pdf-wasm`.
-    - **The limit — also absent**, which is less obvious. `profiles.toml` is compiled into a Rust
-      `const fn` by `selis-sandbox/build.rs`, so the numbers exist in the guest and are not
-      reachable from JS. The shell can send `{surface: "viewer"}` but cannot read back what that
-      surface allows, and there is no profile-listing op.
-    - **Which budget — available.** Each budget failure has its own registry code.
-    Unblocking this needs a protocol change carrying resource + limit + usage on a budget failure.
-    Until then `budget.ts` types `measured` and `limit` as `null`, not `number | null`, so no UI
-    can render a figure that was never sent.
-  - **Cancel a long operation — implemented, NOT browser-verified** (`67ae9dbe`). The print loop
+  - **Status: complete, and verified in real Edge.** All three parts of the Do — truthful progress,
+    cancellation, and the budget-exhaustion state — have visible UI and a browser gate that
+    falsifies.
+  - **The premise error this item carried, and what it actually was.** The Do asserts the plumbing
+    exists and the UI "consumes unchanged". True of the CLI, **false of `apps/web`**, which is why
+    this entry sat open for most of a phase. The gap was reported as two missing numbers, and that
+    diagnosis was wrong in a way worth keeping: the engine had BOTH of them the whole time, packed
+    into a `detail` string as prose (`"bytes limit=268435456 requested=314572800"`). It was never
+    missing information — it was a missing **channel**.
+  - **Cancel a long operation — implemented, browser-verified.** The print loop
     checks a cancel flag before each page, reports its own `cancelled` status, and deliberately
     does NOT route a cancellation through the failure panel: the reader pressed the button, so
     telling them their document has a problem would be a lie about a job they stopped on purpose.
@@ -526,20 +521,21 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     **Page granularity is a real limit, not a shortcut:** the shipped guest is built
     `--target wasm32-unknown-unknown` with `+simd128` and no `+atomics`, so `selis_dispatch` runs
     on the JS thread and cannot be interrupted from it. Mid-page cancellation needs a threaded
-    build.
-  - **Why the browser gate was reverted rather than shipped** — and a correction. The commit
-    message blamed a six-page print finishing inside one 25 ms poll tick. That is **wrong**, and
-    worth recording because the real cause was in the check, not the shell: the leg's poll
-    predicate called `__selisPrintCancel()` itself, so a predicate that waits for a cancellable
-    job also cancels it. With a read-only `__selisPrintProgress()` accessor substituted, and a
-    temporary trace confirming `requestPrint` does reach `printProgress`, the mechanism is sound.
-    The remaining obstacle is that the print is too FAST to observe reliably within the harness's
-    30 s budget across a whole chain. Next attempt should poll on every macrotask and assert on
-    the SHELL's own progress accessor, and should not be written against a timing assumption.
-  - **Landed so far** (`d8526ab5`, `0221992e`, `67ae9dbe`), pure and DOM-free per ADR-P0044:
-    `progress.ts` (a long operation's state, driven by the real `selis_progress_slot()` shape) and
-    `budget.ts` (resource, retryability, remedy). 600 UI tests; each rule falsified by removing
-    its guard.
+    build. The caption says "page N of M" rather than a time estimate, because the shell knows
+    the page count and nothing about duration.
+  - **The visible UI** (`boot.js` + `style.css`): a real `role="progressbar"` with a real Cancel
+    `<button>` in the document, because a cancel reachable only through `globalThis` is not a user
+    affordance. Deliberate choices, each with a reason someone would otherwise "fix":
+    - **An unknown page total renders INDETERMINATE**, and `aria-valuenow` is *removed* rather
+      than set to 0. A progressbar reporting 0 tells assistive tech the job has definitively
+      achieved nothing, which is a different claim from "nothing measured yet".
+    - **The bar hides when the job settles.** A bar left on screen after the work is over is a
+      stale one, and the outcome line already carries the final sentence.
+    - **Cancel goes `disabled`, not gone, while a cancel is pending** — a button that vanishes
+      under the reader's cursor reads as a crash.
+    - `progress.ts` is the only thing that decides anything. If it has not loaded, `boot.js` paints
+      nothing rather than re-implementing monotonicity locally, because that copy is what goes
+      stale. Both it and `budget.js` are preloaded in the background, outside boot's awaited path.
   - **A real defect this found, now fixed:** `recoveryFor` offered `close-and-retry` for every
     budget, including `BUDGET_DEPTH` and `BUDGET_POISONED`, which the registry marks
     `retryable: false`. The same file nests just as deeply the second time, so that button
@@ -563,6 +559,32 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       engine never sends.
     - 7 new tests. Removing the producer's `.budget(...)` call fails 2 of them; the remaining ones
       are negative tests that must keep passing through that edit, which is the point of them.
+    - `budget.ts` reads the body through `usageFor`, whose load-bearing check is the
+      **cross-check**: a body's resource must agree with the code it arrived with. A mismatch means
+      guest and shell disagree about which budget failed, and picking either is a coin toss
+      presented as fact. `NaN`, `Infinity`, negatives, fractions and a zero limit are refused for
+      the same reason — each renders as something absurd but not obviously so.
+    - The panel renders the line only when both figures survive that check. No line beats
+      "0 bytes used", which is what a shell with nothing to report would otherwise print.
+  - **The browser gate, and how it stopped being a race.** Two earlier attempts polled for an
+    in-flight job and lost: a six-page print finishes inside a 25 ms poll tick, and the first
+    version's predicate called `__selisPrintCancel()` itself, so a predicate waiting for a
+    cancellable job also cancelled it. A commit message blamed the poll interval; that was wrong
+    (corrected in `06e8c3ca`), and the real lesson is that **a check must not be written against a
+    timing assumption.** The shipped leg instead requests the cancel SYNCHRONOUSLY, in the same
+    task as the click: `requestPrint` assigns its progress state before its first await, so the
+    job's first moment is observable without waiting for anything, and the page-boundary check stops
+    it before a single page is rasterised. Fast, deterministic, and dependent on no interval.
+  - **Two real defects the new gate caught in my own chrome**, neither visible to unit tests:
+    (1) the bar stayed on screen after a print finished, so "idle" was not idle; (2)
+    `advancePrintJob` returned nothing, so `printJob = advancePrintJob("cancelling")` assigned
+    `undefined`, which sailed past the `printJob === null` guard and threw on the next repaint.
+    Both needed a browser to find; the pure model tests were green throughout.
+  - **Falsification (real Edge):** disabling the page-loop cancel check makes the print finish `ok`
+    and the gate reports it; routing `cancelling` to `confirmCancelled` makes the caption claim
+    `Cancelled` before the engine answered and the gate reports it. Removing `usageFor`'s
+    cross-check fails 2 UI tests; removing its numeric guards fails 1.
+  - **Gates:** apps/ui 607, web-host 204, browser-check 3/3, `cargo fmt --check` clean.
 
 
 ---

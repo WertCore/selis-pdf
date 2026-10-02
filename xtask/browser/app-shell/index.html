@@ -129,6 +129,18 @@
         chainMs: null,
         failure: null,
         damagedOpen: null,
+        // UI.13: progress and cancellation. Recorded in stages so the Rust
+        // verdict can check the claim that was true at THAT moment - a bar
+        // that was honest when busy and lies once settled is still a liar.
+        chromeIdle: null,
+        progressAtStart: null,
+        chromeAtStart: null,
+        cancelRequest: null,
+        captionAfterCancel: null,
+        chromeAfterCancel: null,
+        printAfterCancel: null,
+        chromeAfterCancelSettled: null,
+        failureAfterCancel: null,
         firstRejection: null,
         fatal: null,
         // The result of opening a REAL PDF through the app's own document path
@@ -588,6 +600,83 @@
                   return { id: li.dataset.row, severity: li.dataset.severity, label: li.textContent };
                 }),
             };
+          });
+        })
+        // 1i. PROGRESS AND CANCELLATION (UI.13).
+        //
+        //     The claim under test has three parts, and each is checked at the
+        //     moment it is true rather than after the fact:
+        //
+        //       1. A long operation shows a progress bar and a live Cancel.
+        //       2. Pressing Cancel is a REQUEST. The caption must say
+        //          "Stopping...", not "Cancelled" - the engine has not answered
+        //          yet, and a shell that says otherwise is claiming a stop it
+        //          did not observe.
+        //       3. The engine answers, the job ends `cancelled`, and NO
+        //          failure panel appears - the reader pressed the button, so
+        //          telling them their document is broken would be a lie.
+        //
+        //     WHY THIS IS NOT A RACE. An earlier attempt at this leg polled
+        //     for an in-flight job and lost, because a 6-page print finishes
+        //     inside the polling interval. That was the wrong shape. Instead the
+        //     cancel is requested SYNCHRONOUSLY, in the same task as the click:
+        //     `requestPrint` assigns its progress state before its first await,
+        //     so the job's very first moment is observable without waiting for
+        //     anything, and the loop's page-boundary check then stops it before
+        //     a single page is rasterised. Nothing here depends on timing.
+        .then(function () {
+          var progress = document.getElementById("selis-print-progress");
+          var cancelBtn = document.getElementById("selis-print-cancel");
+          var caption = document.getElementById("selis-print-status");
+          if (!progress || !cancelBtn || !caption) {
+            throw new Error("the app exposed no print progress chrome");
+          }
+
+          // No re-open is needed here. This leg runs BEFORE the one that
+          // deliberately opens bytes that are not a PDF, so the open document is
+          // still the real fixture. It used to sit after that leg and had to
+          // re-open, which cost a full open-and-render and pushed the page past
+          // its watchdog - a check that only fits when nothing else needs the
+          // time is not a check.
+
+          // IDLE: nothing is running, so nothing may claim to be. A bar
+          // reading "0%" and an enabled Cancel are both lies about a job that
+          // does not exist.
+          out.chromeIdle = {
+            hidden: progress.hidden,
+            cancelDisabled: cancelBtn.disabled,
+            caption: caption.textContent,
+          };
+
+          document.getElementById("selis-print").click();
+
+          // Same task as the click: no await has run yet, so this is the job's
+          // first observable moment and not a sample of a running one.
+          out.progressAtStart = globalThis.__selisPrintProgress();
+          out.chromeAtStart = globalThis.__selisPrintChrome();
+
+          // Ask it to stop. This is the same call the button makes, so the
+          // control and the hook cannot disagree.
+          out.cancelRequest = globalThis.__selisPrintCancel();
+          // Read IMMEDIATELY. The engine has not been asked-and-answered yet,
+          // so anything containing "Cancelled" here is a cancellation the UI
+          // invented.
+          out.captionAfterCancel = caption.textContent;
+          out.chromeAfterCancel = globalThis.__selisPrintChrome();
+
+          return waitFor(
+            function () {
+              var s = globalThis.__selisPrintState();
+              return !!s && s.status !== "working";
+            },
+            20000,
+            "the cancelled print to settle",
+          ).then(function () {
+            out.printAfterCancel = globalThis.__selisPrintState();
+            out.chromeAfterCancelSettled = globalThis.__selisPrintChrome();
+            // The claim that matters most: a cancellation the reader asked for
+            // must not raise a failure panel.
+            out.failureAfterCancel = document.getElementById("selis-failure").textContent;
           });
         })
         // 1h. A FAILURE that must not be a dead end (UI.12).
