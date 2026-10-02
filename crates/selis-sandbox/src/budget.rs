@@ -421,11 +421,25 @@ impl<'c> BudgetGuard<'c> {
     fn exceeded(r: Resource, limit: u64, requested: u64) -> Error {
         // The detail is engine-controlled text: a resource name and two numbers.
         // No document bytes (ADR-P0017).
-        err!(
-            r.code(),
-            during = "budget-charge",
-            detail = std::format!("{} limit={} requested={}", r.as_str(), limit, requested)
-        )
+        //
+        // `budget` carries the SAME two numbers as STRUCTURED fields. The detail
+        // string stays for humans reading a log; the fields are what the UI reads,
+        // because parsing `limit=268435456` back out of a sentence is how a
+        // tooltip ends up lying about which number was the limit.
+        // Built explicitly rather than through `err!`: that macro only forwards
+        // `ident = expr` pairs, and `budget` is four values that must travel
+        // together. Routing them one at a time would let a future edit produce a
+        // context with a resource and no limit.
+        let ctx = selis_error::Ctx::new()
+            .during("budget-charge")
+            .budget(r.as_str(), requested, limit)
+            .detail(std::format!(
+                "{} limit={} requested={}",
+                r.as_str(),
+                limit,
+                requested
+            ));
+        selis_error::Error::with(r.code(), ctx)
     }
 }
 
@@ -482,6 +496,78 @@ mod tests {
         }
         assert_eq!(g.tick().expect_err("poisoned").code(), Code::BudgetPoisoned);
         assert!(!g.can_charge(Resource::Bytes, 0));
+    }
+
+    /// SL-0.SBX.01 DoD: an exhaustion says WHICH budget, and by how much.
+    ///
+    /// The UI.13 DoD is "the reader can see what ran out and what it used".
+    /// That needs the numbers as STRUCTURED fields, not as prose in `detail`
+    /// that someone has to regex apart.
+    #[test]
+    fn exhaustion_carries_resource_measured_and_limit() {
+        let b = small();
+        let mut g = b.guard();
+        // `small()` allows 1024 bytes; ask for 2000.
+        let e = g.charge(Resource::Bytes, 2000).expect_err("over budget");
+        assert_eq!(e.code(), Code::BudgetBytes);
+        let ctx = e.ctx();
+        assert_eq!(ctx.resource, Some("bytes"));
+        assert_eq!(ctx.measured, Some(2000));
+        assert_eq!(ctx.limit, Some(1024));
+    }
+
+    /// Every `BUDGET_*` code names its own resource - the remedy depends on it
+    /// ("this document is too big" vs "it is too deeply nested").
+    #[test]
+    fn each_budget_code_names_its_own_resource() {
+        let cases = [
+            (Resource::Bytes, "bytes"),
+            (Resource::Wall, "wall"),
+            (Resource::Depth, "depth"),
+            (Resource::Objects, "objects"),
+            (Resource::Pixels, "pixels"),
+        ];
+        for (r, name) in cases {
+            let b = small();
+            let mut g = b.guard();
+            let e = g.charge(r, u64::MAX).expect_err("over budget");
+            assert_eq!(e.ctx().resource, Some(name), "wrong resource for {r:?}");
+            assert!(e.ctx().measured.is_some(), "{name} had no measurement");
+            assert!(e.ctx().limit.is_some(), "{name} had no limit");
+        }
+    }
+
+    /// Poisoning does NOT name a resource.
+    ///
+    /// This is the rule most likely to be broken by someone tidying up. Once a
+    /// guard is poisoned an EARLIER exhaustion is the reason; the resource that
+    /// tripped the assertion may be a completely innocent one. Attributing the
+    /// failure to it would tell the reader their pixel budget ran out when it
+    /// was their file size, and the remedy would be wrong.
+    #[test]
+    fn poisoning_does_not_name_a_resource() {
+        let b = small();
+        let mut g = b.guard();
+        g.charge(Resource::Bytes, 2000).expect_err("over budget");
+        // Now charge an innocent resource. The guard is poisoned, so this
+        // cannot succeed and must not be blamed on `objects`.
+        let e = g.charge(Resource::Objects, 1).expect_err("poisoned");
+        assert_eq!(e.code(), Code::BudgetPoisoned);
+        assert_eq!(e.ctx().resource, None, "poisoning blamed a resource");
+        assert_eq!(e.ctx().measured, None, "poisoning invented a measurement");
+        assert_eq!(e.ctx().limit, None, "poisoning invented a limit");
+    }
+
+    /// The human-readable `detail` is kept alongside the fields, for logs.
+    #[test]
+    fn exhaustion_keeps_the_human_detail() {
+        let b = small();
+        let mut g = b.guard();
+        let e = g.charge(Resource::Bytes, 2000).expect_err("over budget");
+        assert_eq!(
+            e.ctx().detail.as_deref(),
+            Some("bytes limit=1024 requested=2000")
+        );
     }
 
     /// SL-0.SBX.01 DoD: overflow in a charge is an error, not a wrap.

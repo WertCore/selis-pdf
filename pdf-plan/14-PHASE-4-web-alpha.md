@@ -545,6 +545,25 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     `retryable: false`. The same file nests just as deeply the second time, so that button
     promised progress and delivered a loop — a dead end wearing a button, which is the one thing
     SL-4.UI.12 exists to prevent.
+  - **The premise gap is now closed** (`0221992e` + this commit). `budget.ts` types `measured` and
+    `limit` as strictly `null` because the wire carried neither — but the engine *had* both, hidden
+    inside a `detail` STRING (`"bytes limit=268435456 requested=314572800"`). So the gap was not
+    missing information, it was a missing *channel*:
+    - `Ctx` gains `resource` / `measured` / `limit`, set together by one builder so a context can
+      never carry a resource without the limit that makes it meaningful.
+    - `BudgetGuard::exceeded` fills them. The human `detail` stays, for logs; the structured fields
+      are what the shell reads. Parsing `limit=` back out of prose is how a tooltip ends up lying
+      about which number was the limit.
+    - `ResponseMessage` gains an optional `budget` object. **Absent** on non-budget errors and — the
+      rule most likely to be broken by a well-meaning tidy-up — on `BUDGET_POISONED`, which means
+      an EARLIER exhaustion failed; naming the resource that tripped the assertion would blame an
+      innocent budget and send the reader to fix the wrong thing.
+    - `measured` and `limit` are REQUIRED inside that object, not optional. The body is only built
+      when both are known, so an optional pair would only guarantee UI branches for a state the
+      engine never sends.
+    - 7 new tests. Removing the producer's `.budget(...)` call fails 2 of them; the remaining ones
+      are negative tests that must keep passing through that edit, which is the point of them.
+
 
 ---
 

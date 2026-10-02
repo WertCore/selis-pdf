@@ -153,6 +153,20 @@ pub struct Ctx {
     /// Callers must only place engine-controlled text here. Names lifted from a
     /// document must be passed through [`Ctx::sanitise`] first.
     pub detail: Option<String>,
+    /// Which budget ran out: `"bytes"`, `"wall"`, `"depth"`, `"objects"` or
+    /// `"pixels"`.
+    ///
+    /// Set only on a `BUDGET_*` failure, and `None` for `BUDGET_POISONED`, where
+    /// the honest answer is that an EARLIER exhaustion poisoned the guard - the
+    /// resource is not the one that failed.
+    ///
+    /// A static name, so it can never carry document content (ADR-P0017), and
+    /// so it needs no localisation: it is a fact about the machine, not prose.
+    pub resource: Option<&'static str>,
+    /// What the operation had actually consumed of `resource` when it stopped.
+    pub measured: Option<u64>,
+    /// The limit that consumption was measured against.
+    pub limit: Option<u64>,
 }
 
 impl Ctx {
@@ -165,7 +179,24 @@ impl Ctx {
             page: None,
             during: None,
             detail: None,
+            resource: None,
+            measured: None,
+            limit: None,
         }
+    }
+
+    /// Record which budget ran out, what it had used, and the limit it was
+    /// measured against.
+    ///
+    /// All three together or not at all: a resource with no measurement is a
+    /// claim the UI cannot act on, and a measurement with no limit is not
+    /// interpretable.
+    #[must_use]
+    pub const fn budget(mut self, resource: &'static str, measured: u64, limit: u64) -> Self {
+        self.resource = Some(resource);
+        self.measured = Some(measured);
+        self.limit = Some(limit);
+        self
     }
 
     /// Record the byte offset.
@@ -422,6 +453,9 @@ macro_rules! __err_field {
     };
     ($ctx:expr, detail, $v:expr) => {
         $ctx.detail($v)
+    };
+    ($ctx:expr, budget, $r:expr, $measured:expr, $limit:expr) => {
+        $ctx.budget($r, $measured, $limit)
     };
 }
 

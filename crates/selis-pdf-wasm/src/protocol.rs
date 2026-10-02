@@ -792,11 +792,38 @@ pub struct ResponseMessage {
     /// `doc_state` value).
     #[serde(rename = "docState", skip_serializing_if = "Option::is_none")]
     pub doc_state: Option<String>,
+    /// Which budget ran out, and by how much (`ok: false` on a `BUDGET_*`
+    /// code only).
+    ///
+    /// Absent for every other error AND for `BUDGET_POISONED`: poisoning means an
+    /// EARLIER exhaustion failed, so the resource that tripped the assertion is
+    /// not the one the reader ran out of, and reporting it as such would blame
+    /// the wrong limit. `BUDGET_POISONED` keeps its original `detail`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetBody>,
     /// Mid-operation progress (`{fraction, stage}`); reserved for the
     /// threaded shell path — the single-threaded guest reports progress
     /// through the exported slot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressBody>,
+}
+
+/// A budget exhaustion, as reported to the shell.
+///
+/// `measured` and `limit` are required, not optional. An earlier design made
+/// them `Option<u64>` because "we might not know the usage", which bought
+/// nothing: this body is only ever built when both are known, and making them
+/// optional inside it only guaranteed that the UI had to handle a state the
+/// engine never sends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetBody {
+    /// The exhausted resource: `bytes` | `wall` | `depth` | `objects` |
+    /// `pixels`. Matches the registry's `resource` vocabulary.
+    pub resource: String,
+    /// What the operation had consumed when it stopped.
+    pub measured: u64,
+    /// The limit it was measured against.
+    pub limit: u64,
 }
 
 /// A progress report body.
@@ -821,6 +848,7 @@ pub fn progress_response(v: u32, id: u64, body: ProgressBody) -> ResponseMessage
         message: None,
         detail: None,
         doc_state: None,
+        budget: None,
         progress: Some(body),
     }
 }
@@ -838,6 +866,7 @@ impl ResponseMessage {
             message: None,
             detail: None,
             doc_state: None,
+            budget: None,
             progress: None,
         }
     }
@@ -848,6 +877,25 @@ impl ResponseMessage {
     #[must_use]
     pub fn error(v: u32, id: u64, e: &selis_error::Error) -> Self {
         let code = e.code();
+        let ctx = e.ctx();
+        // Read the STRUCTURED fields. Parsing `limit=`/`requested=` back out of
+        // `detail` would be the obvious shortcut and is exactly the kind of
+        // brittle coupling that silently rots: change the wording of a log line
+        // and a reader's "you used 300 MB of 256 MB" becomes `NaN`.
+        //
+        // All three are set together by `Ctx::budget`, so test `resource` and
+        // then take the rest - but fall back rather than unwrap, so a future
+        // caller that sets one field cannot panic the shell on a malformed
+        // error.
+        let budget =
+            ctx.resource
+                .zip(ctx.measured)
+                .zip(ctx.limit)
+                .map(|((resource, measured), limit)| BudgetBody {
+                    resource: resource.to_owned(),
+                    measured,
+                    limit,
+                });
         Self {
             v,
             id,
@@ -857,8 +905,9 @@ impl ResponseMessage {
             message: Some(
                 selis_error::user_message(&selis_error::EnglishMessages, code).into_owned(),
             ),
-            detail: e.ctx().detail.clone(),
+            detail: ctx.detail.clone(),
             doc_state: Some(doc_state_str(code.doc_state()).to_owned()),
+            budget,
             progress: None,
         }
     }
@@ -931,6 +980,61 @@ mod tests {
         clippy::panic
     )]
     use super::*;
+
+    /// UI.13 DoD: a budget failure reaches the shell with the resource, what
+    /// was used, and the limit — as STRUCTURED JSON, because the shell renders
+    /// "you used 300 MB of 256 MB" from these and cannot regex a sentence
+    /// without eventually getting it wrong.
+    #[test]
+    fn budget_failure_serialises_measured_and_limit() {
+        let ctx = selis_error::Ctx::new()
+            .during("budget-charge")
+            .budget("bytes", 314_572_800, 268_435_456)
+            .detail("bytes limit=268435456 requested=314572800");
+        let e = selis_error::Error::with(selis_error::Code::BudgetBytes, ctx);
+        let j = serde_json::to_value(ResponseMessage::error(1, 9, &e)).expect("serialise");
+        assert_eq!(
+            j["budget"],
+            serde_json::json!({
+                "resource": "bytes",
+                "measured": 314_572_800u64,
+                "limit": 268_435_456u64,
+            })
+        );
+    }
+
+    /// A non-budget failure has NO `budget` key at all.
+    ///
+    /// Not `null` — absent. A shell that does `msg.budget?.measured ?? 0`
+    /// would render "0 bytes used" on a truncated file, which is a worse lie
+    /// than saying nothing.
+    #[test]
+    fn non_budget_failure_omits_the_budget_key() {
+        let e = selis_error::Error::new(selis_error::Code::PageOutOfRange);
+        let j = serde_json::to_value(ResponseMessage::error(1, 10, &e)).expect("serialise");
+        assert_eq!(j.get("budget"), None, "non-budget error grew a budget key");
+    }
+
+    /// `BUDGET_POISONED` must NOT carry a `budget` body.
+    ///
+    /// Poisoning records that an EARLIER exhaustion failed. Reporting the
+    /// resource that tripped the assertion would blame an innocent budget, and
+    /// the reader would be told to fix the wrong thing.
+    #[test]
+    fn poisoning_serialises_without_a_budget_body() {
+        let ctx = selis_error::Ctx::new()
+            .during("budget-charge")
+            .detail("bytes");
+        let e = selis_error::Error::with(selis_error::Code::BudgetPoisoned, ctx);
+        let j = serde_json::to_value(ResponseMessage::error(1, 11, &e)).expect("serialise");
+        assert_eq!(
+            j.get("budget"),
+            None,
+            "BUDGET_POISONED invented a budget body"
+        );
+        // The human detail is still there for the log.
+        assert_eq!(j["detail"], "bytes");
+    }
 
     /// Every message round-trips through serialize → deserialize unchanged
     /// (the DoD's round-trip discipline, at the schema level).
