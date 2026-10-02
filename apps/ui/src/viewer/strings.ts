@@ -654,21 +654,68 @@ export function createNavigationStrings(
  * is exactly the failure ADR-P0034 names, arrived at from the other direction.
  */
 
-/** Every key the viewer owns, from the three closed sets above. */
+/**
+ * Every user-facing string the shell's own controls own (SL-4.UI.07).
+ *
+ * Closed on purpose, for the reason the other three key sets are: a control's
+ * accessible name is prose a reader HEARS, so it belongs in the catalogue with
+ * the rest. An inline literal in `shell-keys.ts` would be one more English
+ * sentence that no translator can find and no locale can override - which is
+ * exactly what `strings.test.ts` exists to fail on.
+ *
+ * These are the names and the keyboard hints. Nothing else here is prose.
+ */
+export const CONTROL_MESSAGE_KEYS = [
+	/** The accessible name of the print control. */
+	"control.print.label",
+	/** The accessible name of the document-health control. */
+	"control.health.label",
+	/** The accessible name of the find field. */
+	"control.find.label",
+	/** The accessible name of the cancel-print control. */
+	"control.cancelPrint.label",
+	/** The accessible name of the outline toggle. */
+	"control.outline.label",
+	/** The accessible name of the open control. */
+	"control.open.label",
+	/** The accessible name of the failure panel's recovery action. */
+	"control.recovery.label",
+] as const;
+
+/** A key into {@link CONTROL_MESSAGE_KEYS}. */
+export type ControlMessageKey = (typeof CONTROL_MESSAGE_KEYS)[number];
+
+/** Templates keyed by control message key. */
+export type ControlCatalogue = Readonly<Record<ControlMessageKey, string>>;
+
+/** English catalogue for the shell's controls. No placeholders. */
+export const EN_CONTROL_CATALOGUE: ControlCatalogue = {
+	"control.print.label": "Print",
+	"control.health.label": "Document health",
+	"control.find.label": "Find in document",
+	"control.cancelPrint.label": "Cancel print",
+	"control.outline.label": "Document outline",
+	"control.open.label": "Open a document",
+	"control.recovery.label": "Recovery action",
+};
+
+/** Every key the viewer owns, from the closed sets above. */
 export const VIEWER_MESSAGE_KEYS = [
 	...PAGE_LIST_MESSAGE_KEYS,
 	...SEARCH_MESSAGE_KEYS,
 	...NAVIGATION_MESSAGE_KEYS,
+	...CONTROL_MESSAGE_KEYS,
 ] as const;
 
 /** A key into {@link VIEWER_MESSAGE_KEYS}. */
 export type ViewerMessageKey = (typeof VIEWER_MESSAGE_KEYS)[number];
 
-/** The three English catalogues as one source catalogue. */
+/** The English catalogues as one source catalogue. */
 export const EN_VIEWER_CATALOGUE: Readonly<Record<ViewerMessageKey, string>> = {
 	...EN_PAGE_LIST_CATALOGUE,
 	...EN_SEARCH_CATALOGUE,
 	...EN_NAVIGATION_CATALOGUE,
+	...EN_CONTROL_CATALOGUE,
 };
 
 /*

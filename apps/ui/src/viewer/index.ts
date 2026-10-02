@@ -191,6 +191,21 @@ export {
 export type { FailurePanel, FailureStrings } from "./error-panel.js";
 export { failurePanel, failurePanelFromWire } from "./error-panel.js";
 
+export {
+	claimedChords,
+	idleControls,
+	parseChord,
+	resolveControlKey,
+	shellControls,
+} from "./shell-keys.js";
+export type {
+	ControlCommand,
+	ControlCommandAction,
+	ControlContext,
+	KeyChord,
+	ShellControl,
+} from "./shell-keys.js";
+
 export type { Semantics, StructureNode, StructureRole } from "./a11y.js";
 export {
 	hasStructure,

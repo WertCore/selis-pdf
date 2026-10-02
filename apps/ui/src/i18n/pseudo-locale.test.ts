@@ -24,7 +24,10 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	CONTROL_MESSAGE_KEYS,
 	EN_VIEWER_CATALOGUE,
+	NAVIGATION_MESSAGE_KEYS,
+	PAGE_LIST_MESSAGE_KEYS,
 	SEARCH_MESSAGE_KEYS,
 	VIEWER_MESSAGE_KEYS,
 	createPseudoViewerStrings,
@@ -223,14 +226,27 @@ describe("the pseudo build — CI's half of the DoD", () => {
 		expect(runtime.gaps()).toEqual([]);
 	});
 
-	it("keeps the runtime's key set equal to the union of the three closed sets", () => {
-		// A guard on the guard. `VIEWER_MESSAGE_KEYS` is assembled from three
+	it("keeps the runtime's key set equal to the union of the closed sets", () => {
+		// A guard on the guard. `VIEWER_MESSAGE_KEYS` is assembled from several
 		// unions, and a key added to one component and not the union would make
 		// every test above pass over a key it never looked at.
+		//
+		// The namespace list grew from three to four when SL-4.UI.07 added
+		// `control.*`. It is asserted explicitly rather than derived, so a new
+		// closed set that forgets to reach the runtime is a failing test rather
+		// than a locale that silently ships English.
 		const runtime = createMessageRuntime({ catalogues: { en: EN_VIEWER_CATALOGUE } });
 		expect(runtime.keys).toHaveLength(VIEWER_MESSAGE_KEYS.length);
-		expect(runtime.namespaces).toEqual(["navigation", "pageList", "search"]);
-		for (const key of SEARCH_MESSAGE_KEYS) {
+		expect(runtime.namespaces).toEqual(["control", "navigation", "pageList", "search"]);
+		// Every closed set, not just search. The previous version checked one,
+		// which is how a fourth set could be added and this guard still pass on
+		// the count.
+		for (const key of [
+			...SEARCH_MESSAGE_KEYS,
+			...PAGE_LIST_MESSAGE_KEYS,
+			...NAVIGATION_MESSAGE_KEYS,
+			...CONTROL_MESSAGE_KEYS,
+		]) {
 			expect(VIEWER_MESSAGE_KEYS).toContain(key);
 		}
 	});
