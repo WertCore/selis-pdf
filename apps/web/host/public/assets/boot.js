@@ -47,22 +47,26 @@ globalThis.__selisBoot = "web-host";
  * the preload block below for the whole argument.
  */
 const UI_PRELOADS = [
+	// ORDER MATTERS, and it is ordered by WHEN each module is needed rather than
+	// by importance. These load sequentially (see the block below for why they are
+	// not concurrent), so a later entry necessarily arrives later.
+	//
+	// progress.js is first because a print can start the moment a reader opens a
+	// document. While it is unloaded, requestPrint has no model and paints no bar -
+	// correct, because painting one without a model would mean re-implementing
+	// monotonicity locally, and that copy is what goes stale. But a viewer showing
+	// no progress bar because a background fetch was slow has failed the reader
+	// just as surely as one showing a wrong bar.
+	"/assets/ui/viewer/progress.js",
+	// shell-keys.js is on the keydown path. A listener resolving undefined would
+	// mean the keyboard simply does not work, with no error anywhere.
+	"/assets/ui/viewer/shell-keys.js",
+	// The failure-path modules. Needed only once something has ALREADY gone wrong,
+	// so they may wait behind everything that is not.
+	"/assets/ui/viewer/budget.js",
 	"/assets/ui/viewer/error-panel.js",
 	"/assets/ui/viewer/health.js",
-	// SL-4.UI.13. Preloaded for the same reason as the other two, and the same
-	// reason it matters MORE here: the progress module is needed the moment a
-	// print starts. If its import flakes, the fallback is "paint a bar without
-	// the model", which is exactly the unmonotonic, dishonest bar this item
-	// exists to prevent - so the fallback below refuses to paint at all instead.
-	"/assets/ui/viewer/progress.js",
-	// SL-4.UI.13. Read on the failure path, so it gets the same preloading
-	// treatment: `showFailure` runs exactly when the app is already in trouble,
-	// and it is the worst moment to discover a module request can fail. A
-	// missing budget module means the "used 300 MB of 256 MB" line is omitted -
-	// degraded, not broken, and never a fabricated zero.
-	"/assets/ui/viewer/budget.js",
 ];
-
 /**
  * Set by the Cancel control, checked by the print loop (SL-4.UI.13).
  *
@@ -242,6 +246,41 @@ const uiModules = new Map();
  */
 function preloadedUiModule(path) {
 	return uiModules.get(path) ?? null;
+}
+
+/**
+ * A preloaded UI module, importing it on demand if the preload has not landed.
+ *
+ * One retry, and the retry is the point.
+ *
+ * These are dynamic imports over HTTP/1.1 against a local origin, and they fail
+ * intermittently with "Failed to fetch dynamically imported module" - a
+ * connection the browser gave up on, not a missing file (a missing file is a
+ * clean 404 that the check reports as such). The failure mode is nasty because
+ * it is SILENT: the health panel renders its one "unavailable" row, the failure
+ * panel never appears at all, and both look like the app working correctly on a
+ * document with nothing wrong with it.
+ *
+ * Retrying once costs one request in the rare case and removes an intermittent
+ * failure from every gate that depends on it. The backoff is a macrotask rather
+ * than `setTimeout(0)` on purpose: yielding to a zero-delay timer gives the
+ * connection pool a turn, which is the thing that actually needs to change.
+ */
+async function loadUiModule(path) {
+	const cached = preloadedUiModule(path);
+	if (cached !== null) return cached;
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			// biome-ignore lint: the module path is a build-time constant list.
+			const module = await import(path);
+			uiModules.set(path, module);
+			return module;
+		} catch {
+			if (attempt === 1) return null;
+			await new Promise((resolve) => setTimeout(resolve, 32));
+		}
+	}
+	return null;
 }
 
 /**
@@ -464,21 +503,33 @@ globalThis.__selisBootStage = "engine-settled";
 // So both are fetched here, in the background, where a failure costs nothing and
 // is caught. Each click path falls back to importing on demand, so the worst case
 // is the original behaviour and never worse.
-for (const path of UI_PRELOADS) {
-	import(path)
-		.then((module) => {
+//
+// SEQUENTIALLY, and that is a fix rather than a style choice. These are dynamic
+// imports over HTTP/1.1, which allows six connections per origin, and the page
+// is already holding several for the engine's WASM and its own module graph.
+// Firing every preload at once queued the health panel's import behind three
+// others, and it failed intermittently - "Health unavailable: Failed to fetch
+// dynamically imported module" - on runs where everything else passed. Staggering
+// removes the contention instead of hoping the timing works out, and costs
+// nothing: each module is needed at a different moment (the panels when
+// something fails, the key map and progress model when the reader acts), so a
+// few milliseconds between them is free.
+(async () => {
+	for (const path of UI_PRELOADS) {
+		try {
+			const module = await import(path);
 			uiModules.set(path, module);
 			// The progress model is captured here rather than imported at each
-			// use, because the print loop runs on the same thread as this
-			// callback and must never await anything mid-page: an await between
-			// pages is an await that can miss the Cancel press entirely.
+			// use, because the print loop runs on the same thread as this and
+			// must never await anything mid-page: an await between pages is an
+			// await that can miss the Cancel press entirely.
 			if (path.endsWith("progress.js")) progressModel = module;
-		})
-		.catch(() => {
+		} catch {
 			// Deliberately silent. The module degrades to a dynamic import at
 			// the moment it is needed; it does not get to break the page.
-		});
-}
+		}
+	}
+})();
 
 // ── opening a document ─────────────────────────────────────────────────────
 
@@ -875,6 +926,116 @@ function formatDuration(nanos) {
 }
 
 /**
+ * Wire the shell's own key map to the controls it drives (SL-4.UI.07).
+ *
+ * Installed once, on the document, and deliberately NOT on any control: the map
+ * decides which control a chord belongs to, so a handler per control would mean
+ * every control had to re-derive that decision. One listener, one resolver, one
+ * place to be wrong.
+ *
+ * The context is rebuilt from the shell's REAL state on every press rather than
+ * cached. That is what makes "Ctrl+P does nothing when no document is open"
+ * true without any explicit invalidation: there is nothing to keep in sync.
+ *
+ * `shell-keys.ts` owns every decision here. This function only asks what it
+ * resolved and does it - deliberately, because a decision smuggled into the
+ * shell is a decision the pure tests cannot reach.
+ */
+function installControlKeys() {
+	if (controlKeysInstalled) return;
+	controlKeysInstalled = true;
+	// The listener is installed UNCONDITIONALLY and the model is looked up per
+	// press.
+	//
+	// The first version returned early when the model had not preloaded, which
+	// was a hole that never closed: this runs during the mount, the preload is
+	// still in flight, so the lookup missed and the keyboard stayed dead for the
+	// life of the page. A reader's keyboard simply not working, with no error
+	// anywhere, is the worst shape this failure could take.
+	document.addEventListener("keydown", (event) => {
+		const model = preloadedUiModule("/assets/ui/viewer/shell-keys.js");
+		if (model === null || typeof model.resolveControlKey !== "function") return;
+		// A reader typing in the search field keeps every key, including the
+		// chords. The search field has its own map (keyboard.ts) and a shell-level
+		// claim here would print the document out from under them mid-word.
+		const target = event.target;
+		if (
+			target instanceof HTMLElement &&
+			(target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+		) {
+			return;
+		}
+		const command = model.resolveControlKey(
+			{
+				key: event.key,
+				ctrl: event.ctrlKey,
+				shift: event.shiftKey,
+				alt: event.altKey,
+				meta: event.metaKey,
+			},
+			{
+				hasDocument: openDocumentSource !== null,
+				hasOutline: true,
+				outlineOpen: false,
+				printRunning: printProgress !== null,
+				hasDismissable: document.getElementById("selis-failure")?.textContent?.trim() !== "",
+			},
+		);
+		if (command === null) return;
+		if (command.preventDefault) event.preventDefault();
+		runControlCommand(command.action);
+	});
+}
+
+/** True once {@link installControlKeys} has run, so it installs exactly once. */
+let controlKeysInstalled = false;
+
+/**
+ * Do what a resolved chord asked for.
+ *
+ * Every branch drives an existing control by the same call its click handler
+ * uses. There is no second path to "print" — one path per action is what keeps
+ * the keyboard and the mouse from drifting apart, which is the usual way a
+ * keyboard shortcut ends up doing something subtly different from the button
+ * beside it.
+ */
+function runControlCommand(action) {
+	switch (action) {
+		case "print":
+			document.getElementById("selis-print")?.click();
+			return;
+		case "health":
+			document.getElementById("selis-health")?.click();
+			return;
+		case "find":
+			// Focus rather than click: the reader wants to TYPE, and focusing a
+			// search field is the whole of what "find" means until they do.
+			searchUi.input?.focus();
+			return;
+		case "open":
+			globalThis.__selisOpen?.();
+			return;
+		case "cancel-print":
+			// The same entry point the Cancel button uses. UI.13 already proved
+			// that path stops the loop before the next page; routing the chord
+			// anywhere else would be a second cancellation implementation.
+			globalThis.__selisPrintCancel();
+			return;
+		case "dismiss":
+			clearFailure();
+			return;
+		case "toggle-outline":
+			// Reserved. The outline panel is UI.06's surface and this shell does
+			// not mount one yet; the map claims the chord and the click does
+			// nothing, which is a dead control and is why the key is gated on
+			// `hasOutline` rather than always resolving.
+			return;
+		default:
+			return;
+	}
+}
+
+/**
  * Show a failure as a panel with a recovery action (SL-4.UI.12).
  *
  * ## What this replaces
@@ -906,13 +1067,23 @@ function formatDuration(nanos) {
 async function showFailure(wire, what) {
 	const host = document.getElementById("selis-failure");
 	if (host === null) return null;
-	// Already preloaded by the boot. The fallback exists only for the boot
-	// FAILED case, where the preload never ran and a second try is better than
-	// no explanation at all.
-	const cached = preloadedUiModule("/assets/ui/viewer/error-panel.js");
-	const build =
-		cached?.failurePanelFromWire ??
-		(await import("/assets/ui/viewer/error-panel.js")).failurePanelFromWire;
+	// Preloaded by the boot, and retried once on demand by `loadUiModule`. The
+	// failure panel must never depend on a request that can flake at the moment
+	// it is needed: it is the one path that runs when something has already gone
+	// wrong, and it failing leaves the reader with no explanation and no way
+	// forward.
+	const panelModule = await loadUiModule("/assets/ui/viewer/error-panel.js");
+	const build = panelModule?.failurePanelFromWire;
+	if (build === undefined) {
+		// Say something rather than throwing inside a failure handler, where the
+		// reader would see a blank panel and a console error and nothing else.
+		host.textContent = "";
+		const fallback = document.createElement("p");
+		fallback.dataset.role = "what";
+		fallback.textContent = "This viewer could not show what went wrong.";
+		host.appendChild(fallback);
+		return null;
+	}
 	const panel = build(wire, FAILURE_STRINGS);
 
 	host.textContent = "";
@@ -1400,10 +1571,7 @@ globalThis.__selisHealth = async function () {
 		// request made at click time; see the preload block for why. The
 		// fallback keeps a boot that failed before the preload ran from
 		// silently reporting "no findings".
-		const cached = preloadedUiModule("/assets/ui/viewer/health.js");
-		const module =
-			cached ??
-			(await import("/assets/ui/viewer/health.js").catch(() => null));
+		const module = await loadUiModule("/assets/ui/viewer/health.js");
 		if (module === null) {
 			return {
 				status: "threw",
@@ -1809,6 +1977,9 @@ function searchControls() {
 
 	searchUi.input = input;
 	searchUi.readout = readout;
+	// The keyboard map is installed once the controls it drives exist, so a
+	// chord can never resolve to a control that has not been built.
+	installControlKeys();
 	return searchUi;
 }
 

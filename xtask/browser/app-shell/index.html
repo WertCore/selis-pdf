@@ -718,6 +718,103 @@
             },
           );
         })
+        // 1j. KEYBOARD OPERATION OF THE SHELL'S CONTROLS (UI.07).
+        //
+        //     Driven with REAL `KeyboardEvent`s dispatched at the document, not
+        //     by calling the handlers. A test that invokes the action directly
+        //     passes even when the listener is attached to the wrong element,
+        //     never fires, or was installed before its controls existed - and a
+        //     keyboard feature that is not wired up is the exact failure this
+        //     gate exists to catch.
+        //
+        //     Both halves matter: a chord that DOES drive its control, and a
+        //     chord with nothing behind it that does NOTHING. The second is the
+        //     half a keyboard test usually omits, and it is the one a reader
+        //     notices.
+        //
+        //     Each claim is made against a state this chain actually creates,
+        //     rather than against an assumed one. An earlier version of this leg
+        //     asserted "Ctrl+P with no document does nothing" and had to be
+        //     moved before anything was opened to make that true - which made it
+        //     depend on chain position, and chain position is exactly the kind of
+        //     thing that breaks silently when a leg is added. The same property
+        //     is checked here against `Ctrl+.` once the print has settled, which
+        //     is a state the run reaches on its own.
+        .then(function () {
+          function press(init) {
+            document.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: init.key,
+                ctrlKey: init.ctrl === true,
+                shiftKey: init.shift === true,
+                altKey: init.alt === true,
+                metaKey: init.meta === true,
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+          }
+
+          var search = document.getElementById("selis-search");
+          if (!search) throw new Error("the app exposed no search field");
+
+          // Ctrl+F must FOCUS the field. Focusing is the whole of what "find"
+          // means until the reader types.
+          search.blur();
+          press({ key: "f", ctrl: true });
+          out.keys = { findFocusedField: document.activeElement === search };
+
+          // The document IS open here, so Ctrl+P must genuinely start a print.
+          // The positive claim, which is the half that proves the wiring.
+          var progressBefore = globalThis.__selisPrintProgress();
+          press({ key: "p", ctrl: true });
+          out.keys.printStartedWithDocument =
+            globalThis.__selisPrintProgress() !== null || progressBefore !== null;
+
+          return waitFor(
+            function () {
+              var s = globalThis.__selisPrintState();
+              return !!s && s.status !== "working";
+            },
+            25000,
+            "the keyboard-started print to settle",
+          );
+        })
+        .then(function () {
+          // Now the negative claim, against a state the run reached by itself:
+          // no print is running, so Ctrl+. must do nothing at all. A cancel
+          // shortcut that exists when there is nothing to cancel is how a reader
+          // concludes the keyboard does not work here.
+          var stateBefore = globalThis.__selisPrintState();
+          document.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: ".",
+              ctrlKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          out.keys.cancelWithNoJob = {
+            stateBefore: stateBefore,
+            stateAfter: globalThis.__selisPrintState(),
+            progressAfter: globalThis.__selisPrintProgress(),
+          };
+
+          // A chord the browser owns must be left alone.
+          var reloaded = false;
+          window.addEventListener("beforeunload", function () {
+            reloaded = true;
+          });
+          document.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "r",
+              ctrlKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          out.keys.browserChordIgnored = reloaded === false;
+        })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;
           out.registration = reg && reg.registered ? "registered" : reg && reg.reason;

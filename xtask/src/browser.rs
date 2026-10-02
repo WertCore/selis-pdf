@@ -1200,6 +1200,9 @@ severity has to track whether anything is readable",
     // only the end state would miss exactly that.
     assert_print_cancellation(report)?;
 
+    // UI.07: the shell's controls must be operable from the keyboard.
+    assert_control_keys(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1407,6 +1410,78 @@ fn assert_print_cancellation(report: &Json) -> Result<(), String> {
     Ok(())
 }
 
+/// UI.07: the shell's own controls must be reachable and effective from the
+/// keyboard.
+///
+/// Driven with real `KeyboardEvent`s at the document, so what is checked is the
+/// wiring and not just the model: a test that called the action directly would
+/// pass with the listener attached to the wrong element, or never installed.
+///
+/// Three claims, and the second is the half a keyboard test usually omits:
+///
+/// 1. `Ctrl+F` reaches the find field.
+/// 2. `Ctrl+P` with **no document open does nothing**. A shortcut that exists
+///    when there is nothing to act on is how a reader concludes the keyboard is
+///    not trustworthy here.
+/// 3. A chord the browser owns (`Ctrl+R`) is left alone. The viewer does not get
+///    to relabel the browser's own chrome.
+fn assert_control_keys(report: &Json) -> Result<(), String> {
+    let keys = report
+        .get("keys")
+        .ok_or_else(|| "the app reported no keyboard results (keys = None)".to_string())?;
+    if keys.is_null() {
+        return Err("the app reported no keyboard results for the shell's controls".into());
+    }
+    if keys.get("findFocusedField").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "Ctrl+F did not move focus to the find field -- the control is not reachable \
+                    from the keyboard"
+                .into(),
+        );
+    }
+    if keys.get("printStartedWithDocument").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "Ctrl+P did not start a print while a document was open -- the chord is \
+                    declared but not wired to its control"
+                .into(),
+        );
+    }
+
+    let idle = keys
+        .get("cancelWithNoJob")
+        .ok_or_else(|| "the app reported nothing about Ctrl+. with no print running".to_string())?;
+    if idle.is_null() {
+        return Err("the app did not exercise Ctrl+. with no print running".into());
+    }
+    // The outcome must be UNCHANGED. `__selisPrintState` keeps the last print's
+    // outcome on purpose, so this compares before-and-after; testing for null
+    // would assert this leg ran before anything had ever printed, which is an
+    // accident of ordering rather than a claim about the keyboard.
+    if idle.get("stateAfter") != idle.get("stateBefore") {
+        return Err(format!(
+            "Ctrl+. changed the print outcome with NOTHING running: {idle} -- a shortcut that \
+             exists with nothing behind it is a dead end wearing a keybinding"
+        ));
+    }
+    if idle
+        .get("progressAfter")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(format!(
+            "Ctrl+. started a print job with NOTHING running: {idle} -- a cancel shortcut that \
+             opens a job is the opposite of a cancel shortcut"
+        ));
+    }
+
+    if keys.get("browserChordIgnored").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "Ctrl+R was claimed by the viewer -- that chord belongs to the browser, and \
+                    taking it makes the app feel like it has taken over the tab"
+                .into(),
+        );
+    }
+    Ok(())
+}
 fn assert_print_artifact(printed: &Json, what: &str) -> Result<(), String> {
     if printed.get("status").and_then(Json::as_str) != Some("ok") {
         return Err(format!("{what} did not produce a PDF: {printed}"));
