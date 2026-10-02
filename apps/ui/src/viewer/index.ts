@@ -191,6 +191,15 @@ export {
 export type { FailurePanel, FailureStrings } from "./error-panel.js";
 export { failurePanel, failurePanelFromWire } from "./error-panel.js";
 
+export type { Semantics, StructureNode, StructureRole } from "./a11y.js";
+export {
+	hasStructure,
+	outlineOf,
+	semanticsOf,
+	structureOf,
+	structureSummary,
+} from "./a11y.js";
+
 export type {
 	BudgetExhaustion,
 	BudgetRemedy,
