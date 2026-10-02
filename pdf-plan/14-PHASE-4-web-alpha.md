@@ -363,15 +363,14 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
     appearance and prompt readability are all owed a manual pass; only the prompt's *content* is
     asserted headlessly.
-- [ ] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
+- [x] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
   - **Do:** Expose the structure tree to AT: proper roles, headings, reading order, alt text for
     figures, table semantics. Full keyboard navigation. This is ADR-P0031 applied to our own UI,
     and it is a differentiator — most web PDF viewers are inaccessible.
   - **DoD:** axe-core clean; a screen-reader script walks a tagged document correctly; keyboard-only
     operation of every control.
-  - **Status: the keyboard and axe halves are done and gated; the screen-reader walk is NOT.** Two
-    of the DoD's three claims have real coverage. The third does not, and the item stays `[ ]`
-    until it does — a DoD line that is quietly half-met is worse than one that is visibly open.
+  - **Status: all three DoD lines gated in real Edge.** The third one needed a tagged document to
+    exist, and none did — see the fixture note below.
   - **The structure model** (`a11y.ts`), pure and DOM-free per ADR-P0044. One rule drives it:
     **report only what the document contains**, and "I do not know" beats a plausible answer,
     because a viewer can produce a confident, fluent, entirely invented structure tree and a
@@ -424,9 +423,38 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     `label (critical, 1 node) on #selis-search`.
   - **Gates:** apps/ui 641, web-host 204, browser-check 3/3 (`passes: 22`, `violations: []`),
     `cargo fmt --check` clean.
-  - **Still owed:** a screen-reader script that walks a TAGGED document correctly. Nothing has
-    done that yet, and the structure tree is not yet delivered over the wire — `a11y.ts` models
-    it, but no op returns it. That is the honest remainder.
+  - **The tagged fixture had to be written first.** The DoD says the walk covers "a tagged
+    document", and **every PDF in the repo was untagged** — including
+    `corpus/fixtures/structure_simple.pdf`, whose name says otherwise and whose catalog carries
+    no `/StructTreeRoot` at all. So the walk was exercising "this document has none", which is a
+    different and weaker claim than saying what there IS. `tools/make-tagged-fixture.mjs` writes
+    `corpus/fixtures/tagged_structure.pdf` **by hand** rather than committing bytes: a committed
+    blob is unreadable in a diff and its xref offsets are unverifiable. It exercises every rule
+    the model claims — H1 and H2 (levels from the role), a Figure with `/Alt` and one without, a
+    Table with TR/TH/TD, an Artifact wrapping a heading, and a custom `Chart` role mapped through
+    the document's own `/RoleMap`.
+  - **The walk found three real defects, none of which a model-only test could see:**
+    - `Session::structure` used `tree.elements` as its ROOT list, but that holds every element
+      reachable from the root **including nested ones** — so each nested heading appeared twice,
+      once under its parent and again as a top-level sibling. Roots are now the elements no other
+      element lists as a kid.
+    - The panel painted `Artifact` subtrees even though `a11y.ts`'s `outlineOf` skips them. Two
+      traversals of one tree must agree, or the panel and the outline tell a reader different
+      things — and a heading the author explicitly marked decorative was being announced.
+    - Children were appended **beside** their parent rather than inside it. The hierarchy existed
+      only as `data-depth` attributes, which a screen reader never reads, so every node was
+      announced as a sibling. The walk showed that plainly: everything at one depth, then a real
+      `h2` containing its `figure` at depth 2.
+  - **The gate was briefly vacuous, and that is recorded where it happened:** the region itself
+    carries `role="region"`, so the walk announced exactly ONE node, satisfied "every announced
+    node has a name", and went green on a page whose outline said nothing at all. It now also
+    records whether the structure could be **read**, and requires more than a landmark.
+  - **Known and NOT fixed:** an `h1`'s accessible name concatenates its subtree text, because the
+    fixture nests paragraphs inside the heading. The engine reproduces what the fixture declares,
+    faithfully; a realistic fixture would make them siblings. It affects no asserted claim, and
+    rewriting the fixture to hide it would be the wrong fix.
+  - **Gates:** apps/ui 641, web-host 204, browser-check 3/3 (axe: 22 passes / 0 violations), Rust
+    crates green, `cargo xtask size-check` 7/7 budgets, `cargo fmt --check` clean.
 - [x] **SL-4.UI.08 — Print** · deps: UI.03 · owner: AI+
   - **Do:** Render at print resolution to a print-specific canvas or a generated print-ready PDF;
     honour `/PrintScaling` and page size; do not rely on the browser's own PDF printing.
