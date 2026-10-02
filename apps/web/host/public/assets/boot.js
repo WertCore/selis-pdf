@@ -48,6 +48,49 @@ globalThis.__selisBoot = "web-host";
  */
 const UI_PRELOADS = ["/assets/ui/viewer/error-panel.js", "/assets/ui/viewer/health.js"];
 
+/**
+ * Set by the Cancel control, checked by the print loop (SL-4.UI.13).
+ *
+ * Page granularity, deliberately. The guest is built single-threaded
+ * (`+simd128` only, no `+atomics`), so an in-flight `selis_dispatch` runs on
+ * THIS thread and cannot be interrupted from it: the guest's cancel slot is
+ * cleared at dispatch entry and only read at the next budget tick, which this
+ * thread is in no position to reach. Page boundaries are what is genuinely
+ * available, and saying so beats a Cancel button that looks live and is not.
+ *
+ * Reset at the start of every print job, so a cancel left over from one job
+ * cannot stop the next one - that would be a button claiming to have
+ * cancelled work nobody asked to cancel.
+ */
+let printCancelled = false;
+
+/** What the print job is doing, for the browser check and for the panel. */
+let printProgress = null;
+/**
+ * Ask the print job to stop, at the next page boundary.
+ *
+ * `null` when nothing is in flight, rather than a fabricated idle state: there
+ * being nothing to cancel is a different answer from a cancellation, and
+ * conflating them would report a cancellation that never happened.
+ */
+globalThis.__selisPrintCancel = function () {
+	if (printProgress === null || printProgress.pagesDone === undefined) return null;
+	printCancelled = true;
+	return { requested: true, pagesDone: printProgress.pagesDone };
+};
+
+/**
+ * What the print job has done so far, or `null` when none is running.
+ *
+ * Separate from the cancel entry point, and read-only. A progress bar needs
+ * this, and a caller must be able to ASK how far along a job is without
+ * stopping it - which is why these are two functions and not one.
+ */
+globalThis.__selisPrintProgress = function () {
+	if (printProgress === null) return null;
+	return { pagesDone: printProgress.pagesDone, pagesTotal: printProgress.pagesTotal };
+};
+
 /** Whatever has finished preloading, by path. Missing means "try on demand". */
 const uiModules = new Map();
 
@@ -883,6 +926,15 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 			// 25 MB per page has been rendered and thrown away. The boxes are a
 			// plain array above; this yields rasters and nothing else.
 			for (let i = 0; i < count; i++) {
+			// Cancellation, checked BEFORE the work, so a cancel seen on page N
+			// stops before page N+1 is rasterised rather than after the whole
+			// document has been rendered and thrown away.
+			if (printCancelled) {
+				const stopped = new Error(`printing stopped after ${i} of ${count} pages`);
+				stopped.cancelled = true;
+				stopped.pagesDone = i;
+				throw stopped;
+			}
 				const { response: rendered, attachment } = dispatch({
 					op: "render",
 					doc,
@@ -915,6 +967,20 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 				const measured = print.reconcilePageBox(printedBoxes[i], widthPx, heightPx);
 				if (measured.rotated) rotatedPages++;
 				dpiPerPage.push(print.measuredPrintDpi(widthPx, measured.box));
+			// Progress for the browser check and the panel. Recorded HERE, the only
+			// point where the shell learns a page is finished; the writer draining
+			// it afterwards is too late to say anything useful.
+			if (printProgress !== null) printProgress.pagesDone = i + 1;
+			// Hand the tab back to the BROWSER, not just to the microtask queue.
+			//
+			// `streamPrintPdf` drains this generator with `for await`, and`r
+			// awaiting an async generator that yields synchronously only ever
+			// queues MICROtasks - which drain before timers. A `setTimeout`-driven
+			// progress poll or a click on a Cancel control would therefore never
+			// run between pages, and the print would be the dead tab SL-4.UI.13 says
+			// it is not. One `setTimeout(0)` per page is what actually returns the
+			// thread to the event loop, and it costs nothing next to rendering one.
+			await new Promise((resolve) => setTimeout(resolve, 0));
 				yield {
 					widthPx,
 					heightPx,
@@ -947,7 +1013,13 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 			// the registry's sentence and the document's fate rather than an
 			// Error's `.message`, which is written for a log file.
 			wire: error?.wire ?? undefined,
-			status: "threw",
+			// A cancellation is not a failure. Its own status, so the caller can say
+			// what happened instead of raising the failure panel on a job the
+			// reader deliberately stopped.
+			status: error?.cancelled === true ? "cancelled" : "threw",
+			...(error?.cancelled === true
+				? { cancelled: true, pagesDone: error.pagesDone ?? 0 }
+				: {}),
 			detail: error instanceof Error ? error.message : String(error),
 		};
 	}
@@ -1194,9 +1266,23 @@ async function requestPrint() {
 		return { status: "refused", detail: "no document is open" };
 	}
 	say("Building a print-ready PDF...");
+	// Reset the cancel flag for THIS job. A cancel left over from a previous
+	// print would otherwise stop this one before it rendered a page.
+	printCancelled = false;
+	printProgress = { pagesDone: 0, pagesTotal: null };
 	// The thunk, not a retained copy: see `openDocumentSource`.
 	const printed = await globalThis.__selisPrint(openDocumentSource());
 	if (printed.status !== "ok") {
+		// A cancelled print is NOT a failure. The reader pressed the button, so
+		// reporting it through the failure panel would tell them their document
+		// has a problem it does not have.
+		if (printed.cancelled === true) {
+			const done = printed.pagesDone ?? 0;
+			printProgress = null;
+			clearFailure();
+			say(`Printing cancelled after ${done} page(s).`);
+			return printed;
+		}
 		// The readout keeps the short form it always had - it is a transient
 		// status line - but the panel beside it carries the registry's sentence,
 		// the document's fate and an action, which is what a reader needs when
@@ -1208,6 +1294,7 @@ async function requestPrint() {
 			},
 			"printing",
 		);
+		printProgress = null;
 		return printed;
 	}
 	const blob = new Blob([printed.pdf], { type: "application/pdf" });
@@ -1226,6 +1313,10 @@ async function requestPrint() {
 			`(${(printed.bytes / 1e6).toFixed(1)} MB) - choose your printer in the saved file.`,
 	);
 	printed.downloadName = anchor.download;
+	// The job is over. Left set, `__selisPrintCancel` would answer to a
+	// cancel for a print that had already finished, and report having
+	// cancelled work nobody asked to stop.
+	printProgress = null;
 	return printed;
 }
 /**
