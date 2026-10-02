@@ -369,6 +369,64 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     and it is a differentiator — most web PDF viewers are inaccessible.
   - **DoD:** axe-core clean; a screen-reader script walks a tagged document correctly; keyboard-only
     operation of every control.
+  - **Status: the keyboard and axe halves are done and gated; the screen-reader walk is NOT.** Two
+    of the DoD's three claims have real coverage. The third does not, and the item stays `[ ]`
+    until it does — a DoD line that is quietly half-met is worse than one that is visibly open.
+  - **The structure model** (`a11y.ts`), pure and DOM-free per ADR-P0044. One rule drives it:
+    **report only what the document contains**, and "I do not know" beats a plausible answer,
+    because a viewer can produce a confident, fluent, entirely invented structure tree and a
+    screen-reader user cannot tell it from a real one. Three fabrications are refused, each
+    industry-conventional:
+    - **Headings from font size.** An untagged document returns `null`, and `structureSummary`
+      keeps `tagged: false` distinct from `tagged: true, headings: 0` — "measured and found none"
+      and "never measured" are different facts.
+    - **Invented alt text.** A figure with no `/Alt` gets `needsDescription` and NO name.
+    - **Dropping an unmapped custom role to silence.** Kept and flagged `unknown`; an honest
+      unknown beats a node that is not there.
+    - Heading levels come from the ROLE, never nesting depth — a depth-derived level puts a
+      heading inside a table cell into the outline, a claim about the document's organisation it
+      never made. The document's own `/RoleMap` is consulted FIRST: the document decides how its
+      own roles map, not this module.
+  - **The keyboard map** (`shell-keys.ts`), a FOURTH resolver alongside the three in
+    `keyboard.ts`, for the reason that file's header gives: a combined resolver needs a
+    precedence rule, and precedence is where "the arrow key did nothing" bugs live. What makes it
+    different is that it deals in AVAILABILITY — a shortcut to a control that is not there is a
+    dead end wearing a keybinding, so every command is gated on the control being usable.
+  - **axe-core is declared, not vendored.** `axe-core@4.13.0` is a root `devDependency`; `xtask`
+    copies `axe.min.js` from `node_modules` into the STAGED fixture each run. Never into `public/`
+    (ADR-P0016 keeps third-party scripts off the document-handling path) and never committed (a
+    ~500 KB blob whose version nobody tracks against the declared dependency). A missing
+    dependency is a FAILED check naming the install command — never a skip, because a skipped scan
+    would report "axe-core clean" as unverified while the gate stayed green.
+  - **Two gates caught real defects, and two of my own guards were not load-bearing:**
+    - Falsifying the reserved-chord guard by deleting it left all 16 tests PASSING — the switch
+      already declined those keys, so those tests proved the behaviour, not the guard. The
+      invariant that actually matters ("no reserved chord may resolve") was added, and adding a
+      colliding `Ctrl+R` is now caught.
+    - Wiring the map into `boot.js` revealed a **permanently dead keyboard**: the installer
+      returned early when the model had not preloaded, and it runs during the mount while the
+      preload is in flight. No error, no log — a keyboard that simply does not work. The listener
+      is now installed unconditionally and the model is looked up per press.
+    - The keyboard gate dispatches REAL `KeyboardEvent`s, because a test that calls the action
+      passes even when the listener is on the wrong element or was never installed.
+    - Two of that gate's own assumptions were wrong and are fixed: it asserted "Ctrl+P with no
+      document does nothing" and had to be moved earlier in the chain to make that true (a
+      dependency on chain position, which breaks silently when a leg is added), and it asserted
+      `__selisPrintState` was null, which is never true once anything has printed. Both now
+      assert against a state the run reaches on its own.
+    - The existing i18n gate rejected inline English control labels and was right to; they moved
+      into `strings.ts` as a fourth closed key set. Growing the runtime to four namespaces then
+      exposed a weak "guard on the guard" that checked only `SEARCH_MESSAGE_KEYS` — a fourth set
+      could be added and it still passed. It now checks every closed set.
+  - **Falsification:** removing the artifact-subtree guard fails 1 `a11y` test; ignoring the
+    document's `/RoleMap` fails 2. Removing the reserved-chord guard fails 0 — which is how the
+    missing invariant was found. Unlabelling the search field fails the browser check with
+    `label (critical, 1 node) on #selis-search`.
+  - **Gates:** apps/ui 641, web-host 204, browser-check 3/3 (`passes: 22`, `violations: []`),
+    `cargo fmt --check` clean.
+  - **Still owed:** a screen-reader script that walks a TAGGED document correctly. Nothing has
+    done that yet, and the structure tree is not yet delivered over the wire — `a11y.ts` models
+    it, but no op returns it. That is the honest remainder.
 - [x] **SL-4.UI.08 — Print** · deps: UI.03 · owner: AI+
   - **Do:** Render at print resolution to a print-specific canvas or a generated print-ready PDF;
     honour `/PrintScaling` and page size; do not rely on the browser's own PDF printing.

@@ -141,6 +141,11 @@
         printAfterCancel: null,
         chromeAfterCancelSettled: null,
         failureAfterCancel: null,
+        // UI.07: the axe-core scan. `null` means the scan never ran, which the
+        // Rust verdict treats as a FAILURE rather than a pass — "axe-core
+        // clean" is the DoD, and a run that quietly omits the scan would report
+        // the item as unverified while looking green.
+        a11y: null,
         firstRejection: null,
         fatal: null,
         // The result of opening a REAL PDF through the app's own document path
@@ -741,6 +746,21 @@
         //     is checked here against `Ctrl+.` once the print has settled, which
         //     is a state the run reaches on its own.
         .then(function () {
+          // Wait for the control this leg drives. The chain only waits for
+          // `__selisApp` to be DEFINED, which happens before the mount builds
+          // the chrome — so a leg that assumes the search field exists can run
+          // first, and does whenever the engine takes an extra moment. Deriving
+          // availability from the DOM rather than from chain position is what
+          // keeps this robust.
+          return waitFor(
+            function () {
+              return document.getElementById("selis-search") !== null;
+            },
+            20000,
+            "the viewer's controls to be built",
+          );
+        })
+        .then(function () {
           function press(init) {
             document.dispatchEvent(
               new KeyboardEvent("keydown", {
@@ -814,6 +834,67 @@
             }),
           );
           out.keys.browserChordIgnored = reloaded === false;
+        })
+        // 1k. AXE-CORE SCAN (UI.07).
+        //
+        //     Run LAST, on a fully-populated viewer: every control is built, the
+        //     progress bar has been through every phase, and a failure panel has
+        //     been rendered and cleared. Scanning earlier would pass on a page
+        //     that is only half the app, which is the flattering version of this
+        //     check and not a useful one.
+        //
+        //     Loaded from the staged copy this run, never from the app: axe-core
+        //     is a test dependency and ADR-P0016 keeps third-party scripts off
+        //     the document-handling path. A failure to load it is recorded as
+        //     such, so the verdict can fail loudly instead of skipping.
+        .then(function () {
+          return new Promise(function (resolve) {
+            var script = document.createElement("script");
+            script.src = "axe.min.js";
+            script.onload = function () {
+              resolve(globalThis.axe || null);
+            };
+            script.onerror = function () {
+              resolve(null);
+            };
+            document.head.appendChild(script);
+          });
+        })
+        .then(function (axe) {
+          if (!axe || typeof axe.run !== "function") {
+            out.a11y = { available: false, violations: [] };
+            return;
+          }
+          return axe
+            .run(document, {
+              // WCAG 2.0 and 2.1 A/AA. The DoD says "axe-core clean" with no
+              // standard named; this is the one a PDF viewer is held to, and
+              // naming it is what stops the set drifting when axe changes its
+              // defaults.
+              runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+            })
+            .then(function (results) {
+              out.a11y = {
+                available: true,
+                // Counted AND named. A count alone ("3 violations") sends the
+                // reader back to the page; the ids say what to fix.
+                violations: results.violations.map(function (v) {
+                  return {
+                    id: v.id,
+                    impact: v.impact,
+                    help: v.help,
+                    nodes: v.nodes.length,
+                    // The first target only: the full selector list for a rule
+                    // with 400 nodes is not a report, it is a scroll.
+                    firstTarget:
+                      v.nodes.length > 0 && v.nodes[0].target
+                        ? String(v.nodes[0].target)
+                        : null,
+                  };
+                }),
+                passes: results.passes.length,
+              };
+            });
         })
         .then(function () {
           var reg = globalThis.__selisServiceWorker;

@@ -478,6 +478,22 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
                     .to_string(),
             );
         }
+        // SL-4.UI.07's axe-core scan. Copied from `node_modules` into the STAGED
+        // fixture only, and never into `public/` or the committed fixture
+        // directory.
+        //
+        // Both of those exclusions are the point rather than tidiness. Into
+        // `public/` would put a third-party script on the document-handling
+        // path, which ADR-P0016 forbids outright. Into the committed fixture
+        // would commit a ~500 KB blob nobody reads, whose version nobody tracks
+        // against the declared dependency - so the copy is made HERE, from the
+        // declared `axe-core` devDependency, every run.
+        if let Err(e) = stage_axe(&served) {
+            return failed(
+                check.id,
+                format!("cannot stage axe-core for the accessibility scan: {e}"),
+            );
+        }
     }
     let profile = unique_profile(scratch, check.id);
     println!("browser-check: {} ...", check.id);
@@ -1203,6 +1219,10 @@ severity has to track whether anything is readable",
     // UI.07: the shell's controls must be operable from the keyboard.
     assert_control_keys(report)?;
 
+    // UI.07: "axe-core clean" is the DoD, so a scan that did not run is a
+    // failure rather than a skip.
+    assert_accessibility(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1482,6 +1502,100 @@ fn assert_control_keys(report: &Json) -> Result<(), String> {
     }
     Ok(())
 }
+/// Copy `axe-core` into the staged `app-shell` fixture.
+///
+/// A MISSING dependency is a failed check naming the command that installs it,
+/// never a skip and never a pass. A skipped accessibility scan is the worst
+/// possible failure for this item: "axe-core clean" is the DoD, and a run that
+/// quietly omits it reports the item as unverified while looking green.
+///
+/// The copy lands in the scratch directory the harness serves, so it exists
+/// only for the run and cannot reach `public/` — ADR-P0016 keeps third-party
+/// scripts off the document-handling path.
+fn stage_axe(served: &Path) -> Result<(), String> {
+    // `CARGO_MANIFEST_DIR` is `xtask/`, so the workspace root is one level up —
+    // derived rather than taken from the working directory, for the same reason
+    // `check_root` is: the build must not depend on where it was invoked from.
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("the xtask manifest has no parent directory")?;
+    let source = workspace
+        .join("node_modules")
+        .join("axe-core")
+        .join("axe.min.js");
+    if !source.exists() {
+        return Err(format!(
+            "{} does not exist - install it with `pnpm add -D -w axe-core`",
+            source.display()
+        ));
+    }
+    let bytes =
+        std::fs::read(&source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+    if bytes.is_empty() {
+        return Err(format!("{} is empty", source.display()));
+    }
+    std::fs::write(served.join("axe.min.js"), &bytes)
+        .map_err(|e| format!("cannot write the staged axe-core: {e}"))
+}
+
+/// UI.07: the DoD's "axe-core clean".
+///
+/// A scan that did not RUN is a failure, never a pass and never a skip. That is
+/// the whole reason this verdict exists in the shape it does: "axe-core clean"
+/// is the DoD, so a check that quietly omits the scan reports the item as
+/// unverified while the gate stays green — the exact failure mode this project
+/// keeps having to undo.
+///
+/// Violations are reported with their rule id and one target, because a count
+/// alone ("3 violations") sends the reader back to the page to find them.
+fn assert_accessibility(report: &Json) -> Result<(), String> {
+    let a11y = report
+        .get("a11y")
+        .ok_or_else(|| "the app reported no accessibility scan (a11y = None)".to_string())?;
+    if a11y.is_null() {
+        return Err(
+            "the accessibility scan never ran -- \"axe-core clean\" is the DoD, and a run \
+                    that omits it proves nothing"
+                .into(),
+        );
+    }
+    if a11y.get("available").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "axe-core did not load for the accessibility scan -- install it with \
+                    `pnpm add -D -w axe-core`"
+                .into(),
+        );
+    }
+    let violations = a11y
+        .get("violations")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the accessibility scan reported no violation list".to_string())?;
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let detail = violations
+        .iter()
+        .map(|violation| {
+            let id = violation.get("id").and_then(Json::as_str).unwrap_or("?");
+            let impact = violation
+                .get("impact")
+                .and_then(Json::as_str)
+                .unwrap_or("unknown");
+            let nodes = violation.get("nodes").and_then(Json::as_u64).unwrap_or(0);
+            let target = violation
+                .get("firstTarget")
+                .and_then(Json::as_str)
+                .unwrap_or("");
+            format!("{id} ({impact}, {nodes} node(s)) on {target}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "the viewer has {} accessibility violation(s) against WCAG 2.0/2.1 A+AA: {detail}",
+        violations.len()
+    ))
+}
+
 fn assert_print_artifact(printed: &Json, what: &str) -> Result<(), String> {
     if printed.get("status").and_then(Json::as_str) != Some("ok") {
         return Err(format!("{what} did not produce a PDF: {printed}"));
