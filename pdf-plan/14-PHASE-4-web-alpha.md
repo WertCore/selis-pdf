@@ -311,14 +311,26 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
     the full destination shown, and `/Launch` is refused.
-  - **The UI is complete (7 commits, 5 240 lines, 156 new tests, 440 in `apps/ui`); the box stays open
-    because the ENGINE cannot supply outlines or links yet.** `selis-pdf-doc` has `page_labels` and
-    `parse_destination` but no `/Outlines` walk and no annotation reader, and the WASM.01 protocol
-    has no op for either. So `PlatformAdapter.navigation` is an **optional** port and both real hosts
-    report it absent - the viewer then says *"this host cannot read the document's outline"*,
-    deliberately distinct from *"this document has no outline"*. Everything is proven against the mock
-    only. **This is what a reviewer should weigh: UI.06 is done on the UI side and blocked on the engine
-    side.**
+  - **THE BLOCKER ABOVE WAS STALE, and the box was never really on the engine.** It said
+    `selis-pdf-doc` has "no `/Outlines` walk and no annotation reader, and the WASM.01 protocol has no op
+    for either". Both halves were wrong by the time this was read: `crates/selis-pdf-doc/src/outline.rs`
+    is 944 lines with **17 tests**, and the protocol has `outline`, `pageLinks`, `pageLabels` and
+    `destinations` ops. What was actually missing was the **SHELL** — `boot.js` never called any of
+    them, so `adapter.navigation` was genuinely `undefined` and the viewer was correctly saying *this
+    host cannot read the outline*. The UI was waiting on wiring, not on an engine, and the entry
+    described a dependency that had been satisfied for a long time.
+  - **Bookmarks are now driven from the page** (`__selisOutline`, `renderOutlinePanel`), and the
+    three-way distinction the flags exist for is proven in real Edge: `status: ok`,
+    `present: false`, `unavailable: false`, saying *"This document has no outline."* — the document
+    having nothing, kept distinct from the host being unable to read it.
+  - **Kept deliberately distinct from the UI.07 structure outline.** `/Outlines` (bookmarks — what a
+    reader navigates *by*) and `/StructTreeRoot` (tag structure — what assistive technology *reads*)
+    are different trees with similar names; merging them would offer a screen-reader user a table of
+    contents and call it the document's headings.
+  - **Still owed:** the `present: true` path is unexercised — the tagged fixture has no `/Outlines`,
+    so a real bookmark tree has never been walked end-to-end. `pageLabels`, `destinations` and
+    `pageLinks` have ops but are still not called from the shell, so the full `NavigationPort`
+    (which needs all three) is not yet satisfied by this host.
   - **ADR-P0020 is genuinely enforced, not merely unhandled.** `decideLinkAction` returns a
     `blocked` decision *with a spoken reason*, so a refused `/Launch` is announced rather than
     silently swallowed. The disabled classes are checked **before any field is read**, so a `/Launch`

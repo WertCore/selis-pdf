@@ -1604,6 +1604,133 @@ globalThis.__selisHealth = async function () {
 };
 
 /**
+ * The document's BOOKMARK outline (`/Outlines`), for navigation (SL-4.UI.06).
+ *
+ * Distinct from {@link __selisStructure}, which reads the tag structure
+ * (`/StructTreeRoot`). Two different trees with unfortunately similar names: the
+ * bookmarks are what a reader navigates BY, and the structure is what assistive
+ * technology READS. A viewer that conflated them would offer a screen-reader user
+ * a table of contents and call it the document's headings.
+ *
+ * The three flags are the point of this function and are carried through
+ * unchanged, because each names a DIFFERENT fact:
+ *   - `present: false` — **this document** has no outline;
+ *   - `truncated`     — there is one, and this engine could not read it in full;
+ *   - a refusal       — **this host** cannot read outlines at all.
+ * Collapsing any two of them tells a reader something false about their own file.
+ */
+globalThis.__selisOutline = async function () {
+	try {
+		if (openDocumentSource === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const binary = atob(openDocumentSource());
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		const doc = openDocumentOnce(bytes).doc;
+		const { response } = dispatch({ op: "outline", doc });
+		if (response.ok !== true) {
+			return { status: "refused", wire: response };
+		}
+		const value = response.value ?? {};
+		return {
+			status: "ok",
+			present: value.present === true,
+			truncated: value.truncated === true,
+			pruned: value.pruned === true,
+			items: Array.isArray(value.items) ? value.items : [],
+		};
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * Paint a bookmark outline into the panel.
+ *
+ * The tree is rendered NESTED — a `<ul>` inside a `<li>` inside its parent's
+ * `<li>` — which is what a screen reader actually navigates. A flat list with
+ * indentation attributes records the hierarchy as metadata nobody reads, which is
+ * the same mistake UI.07's walk caught in the structure panel.
+ *
+ * A bookmark with no usable target is rendered as TEXT, not as a control that
+ * goes nowhere. A button that does nothing is a dead end wearing a button.
+ */
+function renderOutlinePanel(report) {
+	const host = document.getElementById("selis-bookmark-rows");
+	if (host === null) return;
+	host.textContent = "";
+	if (report.status !== "ok") {
+		const note = document.createElement("p");
+		note.dataset.role = "unavailable";
+		note.textContent = "This host cannot read the document's outline.";
+		host.appendChild(note);
+		return;
+	}
+	if (report.present === false) {
+		const note = document.createElement("p");
+		note.dataset.role = "no-outline";
+		note.textContent = "This document has no outline.";
+		host.appendChild(note);
+		return;
+	}
+	const build = (items, depth) => {
+		const list = document.createElement("ul");
+		list.dataset.role = "outline-list";
+		for (const item of items) {
+			const entry = document.createElement("li");
+			entry.dataset.role = "outline-item";
+			entry.dataset.depth = String(depth);
+			const target = item?.target ?? null;
+			const goToPage =
+				target !== null && target.kind === "page" && typeof target.page === "number"
+					? target.page
+					: null;
+			if (goToPage === null) {
+				// No target, or one this viewer cannot honour (a named destination
+				// it would have to resolve first). Text, not a no-op control.
+				const label = document.createElement("span");
+				label.dataset.role = "outline-label";
+				label.textContent = String(item?.title ?? "");
+				entry.appendChild(label);
+			} else {
+				const button = document.createElement("button");
+				button.type = "button";
+				button.dataset.role = "outline-target";
+				button.dataset.page = String(goToPage);
+				button.textContent = String(item?.title ?? "");
+				button.addEventListener("click", () => globalThis.__selisGoto?.(goToPage));
+				entry.appendChild(button);
+			}
+			if (Array.isArray(item?.children) && item.children.length > 0) {
+				entry.appendChild(build(item.children, depth + 1));
+			}
+			list.appendChild(entry);
+		}
+		return list;
+	};
+	if (report.items.length === 0) {
+		const note = document.createElement("p");
+		note.dataset.role = "no-outline";
+		note.textContent = "This document has an outline with no entries.";
+		host.appendChild(note);
+		return;
+	}
+	host.appendChild(build(report.items, 0));
+	if (report.truncated === true) {
+		// Said, not silently omitted. A reader shown four chapters of a
+		// ten-chapter outline, and not told, has been shown something false.
+		const note = document.createElement("p");
+		note.dataset.role = "truncated";
+		note.textContent = "This outline could not be read in full.";
+		host.appendChild(note);
+	}
+}
+
+/**
  * The open document's structure tree, for assistive technology (SL-4.UI.07).
  *
  * Returns `{status:"untagged"}` for a document with no `/StructTreeRoot`, and
@@ -2064,6 +2191,31 @@ function searchControls() {
 	healthOut.id = "selis-health-rows";
 	healthOut.setAttribute("aria-live", "polite");
 	root.appendChild(healthOut);
+
+	// SL-4.UI.06: the BOOKMARK outline. A separate control and region from the
+	// UI.07 structure outline above, because they are different trees — see
+	// `__selisOutline`. Merging them would offer a screen-reader user a table of
+	// contents and call it the document's headings.
+	const bookmarks = document.createElement("button");
+	bookmarks.type = "button";
+	bookmarks.id = "selis-bookmarks";
+	bookmarks.textContent = "Bookmarks";
+	bookmarks.setAttribute("aria-expanded", "false");
+	bookmarks.setAttribute("aria-controls", "selis-bookmark-rows");
+	const bookmarkPanel = document.createElement("div");
+	bookmarkPanel.id = "selis-bookmark-rows";
+	bookmarkPanel.hidden = true;
+	bookmarkPanel.setAttribute("role", "region");
+	bookmarkPanel.setAttribute("aria-label", "Bookmarks");
+	bookmarks.addEventListener("click", () => {
+		const willOpen = bookmarkPanel.hidden;
+		bookmarks.setAttribute("aria-expanded", String(willOpen));
+		bookmarkPanel.hidden = !willOpen;
+		if (!willOpen) return;
+		globalThis.__selisOutline().then(renderOutlinePanel);
+	});
+	root.appendChild(bookmarks);
+	root.appendChild(bookmarkPanel);
 
 	// UI.07: the document outline, as a real button and a real region, for the
 	// same reason as every other control here — a reader has to be able to see

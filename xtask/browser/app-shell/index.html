@@ -150,6 +150,8 @@
         reader: null,
         // The raw structure report, for diagnosing a refused outline.
         structure: null,
+        // UI.06: the bookmark outline, driven from the real engine op.
+        bookmarks: null,
         firstRejection: null,
         fatal: null,
         // The result of opening a REAL PDF through the app's own document path
@@ -954,6 +956,60 @@
             expanded:
               document.getElementById("selis-outline").getAttribute("aria-expanded"),
           };
+        })
+        // 1m. THE BOOKMARK OUTLINE (UI.06).
+        //
+        //     The plan said UI.06 was blocked on the engine: "selis-pdf-doc has
+        //     page_labels and parse_destination but no /Outlines walk and no
+        //     annotation reader, and the WASM.01 protocol has no op for either".
+        //     Both halves of that are STALE — outline.rs is 944 lines with 17
+        //     tests, and the protocol has `outline`, `pageLinks`, `pageLabels` and
+        //     `destinations` ops. What was missing was the SHELL, which never
+        //     called any of them, so the viewer correctly reported that this host
+        //     could not read outlines.
+        //
+        //     This leg is the evidence for that correction, and the first time a
+        //     real engine op has been driven from the page.
+        .then(function () {
+          globalThis.__selisView(TAGGED_PDF_B64);
+          var button = document.getElementById("selis-bookmarks");
+          var panel = document.getElementById("selis-bookmark-rows");
+          if (!button || !panel) throw new Error("the app exposed no bookmark control");
+          button.click();
+          return waitFor(
+            function () {
+              return panel.querySelector("[data-role=no-outline], [data-role=unavailable], [data-role=outline-list], [data-role=truncated]") !== null;
+            },
+            20000,
+            "the bookmark outline to render what the document actually has",
+          );
+        })
+        .then(function () {
+          var panel = document.getElementById("selis-bookmark-rows");
+          return globalThis.__selisOutline().then(function (report) {
+            out.bookmarks = {
+              status: report.status,
+              present: report.present ?? null,
+              truncated: report.truncated ?? null,
+              pruned: report.pruned ?? null,
+              items: Array.isArray(report.items) ? report.items.length : null,
+              // What a reader is actually told, which is the claim: three
+              // different facts that must never collapse into one another.
+              said:
+                (panel.querySelector("[data-role=no-outline]") || {}).textContent ||
+                null,
+              unavailable:
+                panel.querySelector("[data-role=unavailable]") !== null,
+              truncatedNote:
+                panel.querySelector("[data-role=truncated]") !== null,
+              targets:
+                panel.querySelectorAll("[data-role=outline-target]").length,
+              expanded:
+                document
+                  .getElementById("selis-bookmarks")
+                  .getAttribute("aria-expanded"),
+            };
+          });
         })
         // 1k. AXE-CORE SCAN (UI.07).
         //

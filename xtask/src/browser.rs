@@ -1226,6 +1226,9 @@ severity has to track whether anything is readable",
     // UI.07: the screen-reader walk — the DoD's remaining line.
     assert_reader_walk(report)?;
 
+    // UI.06: the bookmark outline, from the real engine op.
+    assert_bookmark_outline(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1681,6 +1684,82 @@ fn assert_reader_walk(report: &Json) -> Result<(), String> {
                  with no accessible name is not a heading to the person listening"
             ));
         }
+    }
+    Ok(())
+}
+
+/// UI.06: the bookmark outline, from a real engine op.
+///
+/// This leg exists mostly as EVIDENCE for a correction to the plan, which
+/// recorded UI.06 as blocked on the engine: "`selis-pdf-doc` has `page_labels`
+/// and `parse_destination` but no `/Outlines` walk and no annotation reader, and
+/// the WASM.01 protocol has no op for either". Both halves were stale —
+/// `outline.rs` is 944 lines with 17 tests, and the protocol has `outline`,
+/// `pageLinks`, `pageLabels` and `destinations`. What was missing was the SHELL.
+///
+/// The claim under test is the one that motivated those three flags existing at
+/// all: a reader must be able to tell "this document has no outline" from "this
+/// host cannot read outlines" from "there is one and it is incomplete". Checking
+/// the flags and the RENDERED sentence together is the only way to catch a shell
+/// that honours the first and forgets the third.
+fn assert_bookmark_outline(report: &Json) -> Result<(), String> {
+    let marks = report
+        .get("bookmarks")
+        .ok_or_else(|| "the app reported no bookmark outline (bookmarks = None)".to_string())?;
+    if marks.is_null() {
+        return Err("the bookmark outline was never read".into());
+    }
+    if marks.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "the bookmark op did not succeed: {}",
+            marks.get("status").and_then(Json::as_str).unwrap_or("?")
+        ));
+    }
+    if marks.get("expanded").and_then(Json::as_str) != Some("true") {
+        return Err(
+            "the bookmark panel was read but its disclosure reports aria-expanded=false".into(),
+        );
+    }
+    let present = marks.get("present").and_then(Json::as_bool) == Some(true);
+    let unavailable = marks.get("unavailable").and_then(Json::as_bool) == Some(true);
+
+    // The host answering and the document having nothing are DIFFERENT facts.
+    // A shell that renders "this document has no outline" when it could not read
+    // one is telling the reader something false about their own file.
+    if present && unavailable {
+        return Err(
+            "the host reported the outline BOTH readable and unreadable -- the reader cannot be \
+             told which"
+                .into(),
+        );
+    }
+    if !present {
+        if marks.get("items").and_then(Json::as_u64).unwrap_or(0) > 0 {
+            return Err(format!(
+                "the document has no outline but {} item(s) arrived anyway",
+                marks.get("items").and_then(Json::as_u64).unwrap_or(0)
+            ));
+        }
+        if marks
+            .get("said")
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(
+                "the document has no outline and the panel said nothing about it -- silence is \
+                 not an answer"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
+    // A truncated outline must SAY so. Four chapters of a ten-chapter outline,
+    // unannounced, is a document the reader does not have.
+    if marks.get("truncated").and_then(Json::as_bool) == Some(true)
+        && marks.get("truncatedNote").and_then(Json::as_bool) != Some(true)
+    {
+        return Err("the outline was truncated and the panel did not tell the reader".into());
     }
     Ok(())
 }
