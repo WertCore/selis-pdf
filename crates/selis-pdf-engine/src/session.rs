@@ -335,6 +335,29 @@ pub struct DocumentHealth {
     pub deviations: Vec<selis_pdf_cos::Deviation>,
 }
 
+/// One node of the document structure tree, as the shells consume it
+/// (SL-4.UI.07).
+///
+/// Mirrors `a11y.ts`'s `StructureNode` exactly, so the JS side needs no
+/// reshaping step — and if the two ever diverge, the shell's validation in
+/// `usageFor`/`semanticsOf` refuses the mismatch rather than rendering it.
+///
+/// `title` and `alt` are DOCUMENT text. That is fine here and would not be
+/// fine in a diagnostic: ADR-P0017 forbids document bytes in anything that might
+/// be transmitted or logged, and this reply is rendered into the reader's own
+/// view of their own document.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StructureNode {
+    /// The structure type, `/S`, as the document spells it (`H1`, `Figure`, ...).
+    pub role: String,
+    /// `/T`, the element's title.
+    pub title: Option<String>,
+    /// `/Alt`, the alternative description — present on figures that have one.
+    pub alt: Option<String>,
+    /// Child structure elements, in document order.
+    pub children: Vec<StructureNode>,
+}
+
 impl Session {
     /// Open a PDF document from its source bytes.
     ///
@@ -713,6 +736,97 @@ impl Session {
         let tree =
             selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
         Ok(tree.mcid_order())
+    }
+
+    /// The structure tree, for a shell to expose to assistive technology
+    /// (SL-4.UI.07).
+    ///
+    /// The engine ALREADY resolved this tree for `mcid_order` and discarded
+    /// everything else, because reading order was the only consumer. The roles,
+    /// titles and `/Alt` entries were resolved and thrown away — so a viewer
+    /// asking "what are this document's headings" had no answer while the bytes
+    /// sat unread in the same process.
+    ///
+    /// `None` for an untagged document, and that is a DISTINCT answer from an
+    /// empty tree: "this document has no structure" and "this document has a
+    /// structure with nothing navigable in it" are different facts, and a shell
+    /// that renders both as "no headings" claims a measurement it never made.
+    /// The caller must not synthesise roles from font sizes to fill that gap;
+    /// that fabrication is what `a11y.ts` exists to refuse.
+    ///
+    /// Marked-content kids (`Mcid`, `Objr`) carry no role of their own and are
+    /// not emitted as nodes — they are the CONTENT a node describes, which the
+    /// text layer already exposes. Emitting them would put a nameless leaf in
+    /// every heading's outline.
+    pub fn structure(
+        &self,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<Option<StructureNode>> {
+        let mut resolver = self.new_resolver(budget);
+        let tree =
+            selis_pdf_doc::StructTree::resolve(&mut resolver, &self.document.catalog, budget, g)?;
+        // `root` is `Obj::Null` when the catalog carried no `/StructTreeRoot`,
+        // which is how an untagged document arrives.
+        if matches!(tree.root, selis_pdf_cos::Obj::Null) {
+            return Ok(None);
+        }
+        let by_ref: std::collections::HashMap<_, _> =
+            tree.elements.iter().map(|e| (e.ref_, e)).collect();
+        // A structure tree is a graph, not a tree: a malformed document can point
+        // a kid at an ancestor. Without a visited set that is infinite recursion,
+        // and a crash in the guest takes the tab with it. The path (not a global
+        // seen-set) is what stops the cycle while still allowing the same element
+        // to legitimately appear under two parents.
+        fn walk(
+            element: &selis_pdf_doc::StructElement,
+            by_ref: &std::collections::HashMap<selis_pdf_cos::Ref, &selis_pdf_doc::StructElement>,
+            path: &mut Vec<selis_pdf_cos::Ref>,
+        ) -> StructureNode {
+            let Some(ty) = element.ty.as_deref() else {
+                return StructureNode::default();
+            };
+            let mut node = StructureNode {
+                role: String::from_utf8_lossy(ty).into_owned(),
+                title: element
+                    .title
+                    .as_deref()
+                    .map(|t| String::from_utf8_lossy(t).into_owned()),
+                alt: element
+                    .alt
+                    .as_deref()
+                    .map(|a| String::from_utf8_lossy(a).into_owned()),
+                children: Vec::new(),
+            };
+            path.push(element.ref_);
+            for kid in &element.kids {
+                if let selis_pdf_doc::StructKid::Element(reference) = kid {
+                    if path.contains(reference) {
+                        continue;
+                    }
+                    if let Some(child) = by_ref.get(reference) {
+                        if child.ty.is_some() {
+                            node.children.push(walk(child, by_ref, path));
+                        }
+                    }
+                }
+            }
+            path.pop();
+            node
+        }
+
+        let roots: Vec<StructureNode> = tree
+            .elements
+            .iter()
+            .filter(|e| e.ty.is_some())
+            .map(|e| walk(e, &by_ref, &mut Vec::new()))
+            .collect();
+        Ok(Some(StructureNode {
+            role: "Document".to_owned(),
+            title: None,
+            alt: None,
+            children: roots,
+        }))
     }
 
     /// The document's outline (bookmark) tree, in document order.

@@ -508,6 +508,7 @@ impl Worker {
             RequestOp::Close { doc } => self.op_close(id, doc),
             RequestOp::Page { doc, page } => self.op_page(id, doc, page),
             RequestOp::Health { doc } => self.op_health(id, doc, env),
+            RequestOp::Structure { doc } => self.op_structure(id, doc, env),
             RequestOp::Render { doc, page, params } => self.op_render(id, doc, page, params, env),
             RequestOp::Text { doc, page, format } => self.op_text(id, doc, page, format, env),
             RequestOp::TextLayer { doc, page } => self.op_text_layer(id, doc, page, env),
@@ -1357,6 +1358,45 @@ impl Worker {
     /// because nothing in this codebase verifies a signature. A shell that
     /// renders a boolean here would be inventing the one claim this project
     /// cannot support.
+    /// The structure tree, as the shell consumes it (SL-4.UI.07).
+    ///
+    /// `tagged` is the load-bearing field. An untagged document answers with
+    /// `{"tagged": false}` and NO `root`, which is deliberately not the same as
+    /// a tagged document with no navigable structure: "there is nothing here"
+    /// and "there is nothing navigable in here" are different facts, and a shell
+    /// that renders both as "no headings" has claimed a measurement it never
+    /// made. The `a11y.ts` model refuses to invent roles to fill that gap.
+    fn op_structure(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
+        let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+        let budget = opened.budget;
+        let tree = {
+            let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
+            let mut g = budget.guard_with(env.clock, env.cancel.clone());
+            opened.session.structure(&budget, &mut g)?
+        };
+        fn to_json(node: &selis_pdf_engine::StructureNode) -> serde_json::Value {
+            serde_json::json!({
+                "role": node.role,
+                "title": node.title,
+                "alt": node.alt,
+                // `children` is always present, even when empty: a node with no
+                // children and a node whose children went missing are different
+                // states, and the JS side's validation treats them differently.
+                "children": node.children.iter().map(to_json).collect::<Vec<_>>(),
+            })
+        }
+        match tree {
+            // `title`/`alt` are document text and are omitted rather than
+            // serialised as null when absent, so the shell's `StructureNode`
+            // reads `undefined` and its "no name at all" branches fire.
+            Some(root) => Ok(Outgoing::ok(
+                id,
+                serde_json::json!({ "tagged": true, "root": to_json(&root) }),
+            )),
+            None => Ok(Outgoing::ok(id, serde_json::json!({ "tagged": false }))),
+        }
+    }
+
     fn op_health(&mut self, id: u64, doc: DocHandle, env: &WorkerEnv<'_>) -> Result<Outgoing> {
         let opened = self.docs.get(&doc.raw).ok_or_else(bad_handle)?;
         let budget = opened.budget;

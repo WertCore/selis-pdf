@@ -145,6 +145,19 @@ pub enum RequestOp {
         /// The document handle.
         doc: DocHandle,
     },
+    /// The document's structure tree, for a shell to expose to assistive
+    /// technology (SL-4.UI.07).
+    ///
+    /// A separate op from `Health` because the two answer different questions
+    /// and one of them can legitimately be absent: health reports whether the
+    /// document is TAGGED, while this reports what that tag structure says. A
+    /// shell asking for structure on an untagged document gets an explicit
+    /// `"tagged": false`, not an empty list it could mistake for "no headings".
+    #[serde(rename_all = "camelCase")]
+    Structure {
+        /// The document handle.
+        doc: DocHandle,
+    },
     /// Render a page (or a tile of one) into the response's attachment.
     #[serde(rename_all = "camelCase")]
     Render {
@@ -1037,6 +1050,24 @@ mod tests {
     }
 
     /// Every message round-trips through serialize → deserialize unchanged
+    /// (the DoD's round-trip discipline, at the schema level).
+    #[test]
+    /// UI.07: the `structure` request parses under its own name.
+    ///
+    /// Named explicitly rather than folded into the round-trip list, because the
+    /// `#[serde(rename_all)]` on this variant is what decides whether a shell
+    /// sending `{"op":"structure"}` gets an op at all — and a silently unparsed
+    /// op is an "unknown op" refusal that reads like a missing feature.
+    #[test]
+    fn structure_request_uses_its_own_name() {
+        // `doc` is a numeric handle, not an opaque string - the same thing the
+        // other ops take.
+        let parsed: RequestMessage =
+            serde_json::from_str(r#"{"v":1,"id":42,"op":"structure","doc":7}"#).expect("parse");
+        assert!(matches!(parsed.op, RequestOp::Structure { .. }));
+    }
+
+    /// Every request round-trips through serialize → deserialize unchanged
     /// (the DoD's round-trip discipline, at the schema level).
     #[test]
     fn every_request_round_trips() {
