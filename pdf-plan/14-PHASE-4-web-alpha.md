@@ -516,7 +516,27 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     Unblocking this needs a protocol change carrying resource + limit + usage on a budget failure.
     Until then `budget.ts` types `measured` and `limit` as `null`, not `number | null`, so no UI
     can render a figure that was never sent.
-  - **Landed so far** (`d8526ab5` and the commit below), pure and DOM-free per ADR-P0044:
+  - **Cancel a long operation — implemented, NOT browser-verified** (`67ae9dbe`). The print loop
+    checks a cancel flag before each page, reports its own `cancelled` status, and deliberately
+    does NOT route a cancellation through the failure panel: the reader pressed the button, so
+    telling them their document has a problem would be a lie about a job they stopped on purpose.
+    The loop also yields to a MACROtask per page, because `streamPrintPdf` drains the generator
+    with `for await` and awaiting a synchronously-yielding generator only queues microtasks,
+    which drain before timers — without it the tab is exactly the dead tab the Do forbids.
+    **Page granularity is a real limit, not a shortcut:** the shipped guest is built
+    `--target wasm32-unknown-unknown` with `+simd128` and no `+atomics`, so `selis_dispatch` runs
+    on the JS thread and cannot be interrupted from it. Mid-page cancellation needs a threaded
+    build.
+  - **Why the browser gate was reverted rather than shipped** — and a correction. The commit
+    message blamed a six-page print finishing inside one 25 ms poll tick. That is **wrong**, and
+    worth recording because the real cause was in the check, not the shell: the leg's poll
+    predicate called `__selisPrintCancel()` itself, so a predicate that waits for a cancellable
+    job also cancels it. With a read-only `__selisPrintProgress()` accessor substituted, and a
+    temporary trace confirming `requestPrint` does reach `printProgress`, the mechanism is sound.
+    The remaining obstacle is that the print is too FAST to observe reliably within the harness's
+    30 s budget across a whole chain. Next attempt should poll on every macrotask and assert on
+    the SHELL's own progress accessor, and should not be written against a timing assumption.
+  - **Landed so far** (`d8526ab5`, `0221992e`, `67ae9dbe`), pure and DOM-free per ADR-P0044:
     `progress.ts` (a long operation's state, driven by the real `selis_progress_slot()` shape) and
     `budget.ts` (resource, retryability, remedy). 600 UI tests; each rule falsified by removing
     its guard.
