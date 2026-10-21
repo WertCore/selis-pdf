@@ -101,8 +101,16 @@ export interface OutlineReport {
 	readonly items: readonly OutlineNode[];
 }
 
-/** The action classes the viewer models. */
-const ACTION_KINDS: readonly LinkActionKind[] = [
+/**
+ * The action classes the viewer models.
+ *
+ * Exported because a **transport** needs the same closed set: a host that
+ * receives an action class over a wire has to decide whether it is one the
+ * viewer models or one it does not, and "decide" needs the list rather than
+ * a copy of it. A shell that kept its own list would be the second copy this
+ * module exists to prevent.
+ */
+export const ACTION_KINDS: readonly LinkActionKind[] = [
 	"goTo",
 	"uri",
 	"launch",
@@ -115,8 +123,24 @@ const ACTION_KINDS: readonly LinkActionKind[] = [
 	"unknown",
 ];
 
+/**
+ * The destination classes the viewer names.
+ *
+ * The same reasoning as {@link ACTION_KINDS}: the closed set is shared
+ * vocabulary, and a transport that has to validate a destination over a wire
+ * needs it in one place.
+ */
+export const DESTINATION_KINDS: readonly DestinationKind[] = [
+	"fit",
+	"fitH",
+	"fitV",
+	"fitR",
+	"fitB",
+	"xyz",
+];
+
 /** The `/PageLabels` styles (PDF 32000-2:2020 §7.7.3.4, Table 165). */
-const LABEL_STYLES: readonly PageLabelStyle[] = ["D", "R", "r", "A", "a"];
+export const LABEL_STYLES: readonly PageLabelStyle[] = ["D", "R", "r", "A", "a"];
 
 /**
  * How far a named destination chain is chased.

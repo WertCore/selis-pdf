@@ -11,13 +11,14 @@ about before SL-4.EXT.10 ports this to Firefox.
 
 ## What actually ships
 
-Three modules from `apps/ui`, plus two stylesheets from `@selis/ui-kit`:
+Four modules from `apps/ui`, plus two stylesheets from `@selis/ui-kit`:
 
 | Shipped | Why it is here |
 |---|---|
 | `ui/src/platform/errors.js` | `AdapterError` / `ErrorCode`. The extension refuses several capabilities, and a refusal with its own error type would break the one rule the seam has. |
 | `ui/src/viewer/surface.js` | The `TileSurface` / `FrameClock` ports, and `SurfaceFaultError`. Pulled in by the row below. |
 | `ui/src/viewer/worker-surface.js` | `createAnimationFrameClock`, used verbatim. |
+| `ui/src/viewer/navigation-wire.js` | The mapper from the engine's navigation vocabulary to the viewer's (SL-4.UI.06). The WASM guest answers outlines, page labels, destinations and links in the *engine's* words (`destKind`, `x0`, `target`), and this is the one copy of the translation. A host that mapped inline would write it a second time — in the web shell and here — and the two copies would drift, which is the failure the module was created to prevent. It is pure and DOM-free, so it costs nothing to ship and nothing to keep honest. |
 | `ui-kit/css/tokens.css`, `base.css` | Linked by `viewer.html`. Tokens are generated (UI.14) and must never be edited here. |
 
 Nothing else from `apps/ui` is in the package. The rest is either type-only
@@ -172,6 +173,7 @@ what this paragraph is for.
 | Port | Verdict | Why |
 |---|---|---|
 | `engine` | supplied | The WASM engine, in a Worker the offscreen document owns (SL-4.EXT.03), reached over a `chrome.runtime` port. |
+| `navigation` | supplied | The same engine, asked the four navigation questions (SL-4.UI.06): the outline, the `/PageLabels`, the `/Dests` name tree and a page's link annotations. One transport, two ports — the navigation reads share the engine's pending table and id counter, because the link delivers every reply to every subscriber and the correlation id is the only key. |
 | `files.pickOpen` | supplied | A transient `<input type="file">`. No MV3 permission needed. |
 | `files.pickSave` | **refused** | Save-in-place is a File System Access handle. The viewer is read-only; the only caller would be Phase 5. Returning `null` would read as "the user cancelled", which a UI cannot distinguish from a real cancellation. |
 | `storage` | supplied | `localStorage` on the extension origin. `chrome.storage` needs the `storage` permission, which EXT.01 did not approve. |
@@ -212,6 +214,47 @@ stops needing it has to delete something reviewable.
 that it performed no host side effect — a stub returning `null` is worse than a
 refusal, because a UI reports it as a cancellation of something that never
 happened.
+
+### The navigation probes are live now (SL-4.UI.06)
+
+The suite's navigation probes are **conditional on the port's presence**, so
+they were silent while the extension had none. They are not silent now: the
+adapter supplies a `navigation` port, and the suite's own four probes run
+against it — an out-of-range page rejected with `BINDING_BAD_ARGUMENT` (6001),
+a closed document rejected with `BINDING_BAD_HANDLE` (6000) and
+`docState: "Unchanged"`, and a pre-aborted signal rejected with `CANCELLED`
+(4020).
+
+The suite asserts *shape*, so the content is asserted separately, in
+`transport.test.ts`: the fixture document carries an outline, page labels, a
+named destination and two link annotations, and one of the two is a `/Launch`
+— because the transport's job is to report the classes ADR-0020 disables, and a
+fixture carrying only safe ones would not prove that.
+
+Two refusals are worth naming because they are **different** refusals, and
+collapsing them is the failure this task exists to prevent:
+
+| Situation | Code | What it says |
+|---|---|---|
+| The host has no navigation capability | `BINDING_UNSUPPORTED_OP` (6017) | "This host cannot read outlines." |
+| The page does not exist | `BINDING_BAD_ARGUMENT` (6001) | "Page 9 000 of a 3-page document is not a page." |
+| The document has no outline | *(an empty list)* | "This document has no outline." |
+
+The engine's own answer for the second case is `PAGE_OUT_OF_RANGE` (1301),
+which talks about the *engine's* page numbering rather than the seam's, so
+every hop checks the page itself: the page, the host and the guest. One rule,
+one definition (`outOfRangePage` in `engine-protocol.ts`), three enforcement
+points.
+
+### What is still missing on the extension's side
+
+The **port** is there; the **panels** are not. The extension's viewer page
+still mounts no bookmark tree, no thumbnail rail and no link overlay, because
+those are `apps/ui`'s `navigation.ts` and `thumbnails.ts` and the extension
+ships neither (see "What actually ships" above). What this task delivers is
+the capability under them: `adapter.navigation` is defined, answers, and
+refuses honestly. Whether the extension's viewer grows the panels is the
+viewer's own task, and the port is what it will need.
 
 ## The gate, and the bug it did not catch
 

@@ -383,3 +383,222 @@ describe("the engine over a Worker (SL-4.EXT.03)", () => {
 		expect(posted.filter((m) => m.kind === "init")).toHaveLength(1);
 	});
 });
+
+/**
+ * The navigation questions (SL-4.UI.06).
+ *
+ * The guest answers in the **engine's** vocabulary — `destKind`, `x0`,
+ * `target` — and this engine maps that into the viewer's with `apps/ui`'s own
+ * `navigation-wire.ts`. These tests are about the *mapping*: a field renamed,
+ * a rectangle dropped, a qualifier lost, an action class filtered out.
+ */
+describe("the navigation questions over the Worker (SL-4.UI.06)", () => {
+	/** The engine's own outline answer, in the engine's own spelling. */
+	function outlineValue(): unknown {
+		return {
+			present: true,
+			truncated: false,
+			pruned: false,
+			items: [
+				{
+					title: "Chapter one",
+					target: { kind: "page", page: 0, destKind: "Fit", left: null, top: null, zoom: null },
+					count: -1,
+					children: [
+						{
+							title: "Figure 1",
+							action: {
+								kind: "goTo",
+								rawName: "GoTo",
+								target: { kind: "page", page: 1, destKind: "XYZ", left: 10, top: 700, zoom: null },
+							},
+							count: 0,
+							children: [],
+						},
+					],
+				},
+				{ title: "Appendix", target: { kind: "named", name: "here" }, count: 0, children: [] },
+			],
+		};
+	}
+
+	/** The engine's own page-links answer, in the engine's own spelling. */
+	function pageLinksValue(): unknown {
+		return {
+			page: 0,
+			links: [
+				{
+					index: 0,
+					object: 12,
+					rect: { x0: 72, y0: 700, x1: 172, y1: 712 },
+					action: { kind: "uri", rawName: "URI", uri: "https://example.com/a", target: null },
+					target: null,
+					contents: null,
+				},
+				{
+					index: 1,
+					object: 13,
+					rect: { x0: 72, y0: 680, x1: 172, y1: 692 },
+					action: { kind: "launch", rawName: "Launch", uri: "C:/payload.exe", target: null },
+					target: null,
+					contents: "the launch",
+				},
+			],
+		};
+	}
+
+	/** A scripted guest that answers the open and one navigation op. */
+	function navigationWorker(value: unknown) {
+		return createFakeWorker({
+			reply: (id, request) => ({
+				response: (request.op as string) === "open" ? openReply(id) : { v: 1, id, ok: true, value },
+			}),
+		});
+	}
+
+	it("maps the engine's outline into the viewer's bookmarks", async () => {
+		const { channel } = navigationWorker(outlineValue());
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		const report = await engine.outline(doc);
+		expect(report.present).toBe(true);
+		expect(report.truncated).toBe(false);
+		expect(report.pruned).toBe(false);
+		expect(report.items.map((node) => node.title)).toEqual(["Chapter one", "Appendix"]);
+		// The engine's `destKind: "Fit"` is the viewer's `kind: "fit"`, and the
+		// nesting survives: a flat list would tell a reader that a chapter and
+		// its figure are siblings.
+		expect(report.items[0]?.destination).toEqual({ page: 0, kind: "fit" });
+		expect(report.items[0]?.children?.[0]?.destination).toEqual({
+			page: 1,
+			kind: "xyz",
+			left: 10,
+			top: 700,
+		});
+		// A bookmark that *names* a destination rather than carrying one.
+		expect(report.items[1]?.namedDestination).toBe("here");
+		expect(report.items[1]?.destination).toBeUndefined();
+	});
+
+	it("keeps the outline's qualifiers", async () => {
+		// "This document has no outline", "it has one this engine could not
+		// read in full" and "here it is" are three facts, and the wire
+		// carries all three.
+		const { channel } = navigationWorker({
+			present: true,
+			truncated: true,
+			pruned: true,
+			items: [],
+		});
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		const report = await engine.outline(doc);
+		expect(report.present).toBe(true);
+		expect(report.truncated).toBe(true);
+		expect(report.pruned).toBe(true);
+	});
+
+	it("refuses an outline answer that is not an outline", async () => {
+		const { channel } = navigationWorker({ items: "not a list" });
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		await expect(engine.outline(doc)).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+		});
+	});
+
+	it("maps the engine's page labels and destinations", async () => {
+		const { channel } = createFakeWorker({
+			reply: (id, request) => {
+				const op = request.op as string;
+				if (op === "open") {
+					return { response: openReply(id) };
+				}
+				if (op === "pageLabels") {
+					return {
+						response: {
+							v: 1,
+							id,
+							ok: true,
+							value: { ranges: [{ firstPage: 0, style: "r", prefix: "p", firstValue: 1 }] },
+						},
+					};
+				}
+				return {
+					response: {
+						v: 1,
+						id,
+						ok: true,
+						value: {
+							destinations: [{ name: "here", target: { kind: "page", page: 2, destKind: "Fit" } }],
+						},
+					},
+				};
+			},
+		});
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		expect(await engine.pageLabels(doc)).toEqual([
+			{ firstPage: 0, style: "r", prefix: "p", firstValue: 1 },
+		]);
+		expect(await engine.destinations(doc)).toEqual([
+			{ name: "here", destination: { page: 2, kind: "fit" } },
+		]);
+	});
+
+	it("reports ADR-0020's disabled action classes verbatim", async () => {
+		// The engine reports; the viewer decides. A mapping that dropped
+		// `/Launch` here would make "is the viewer refusing this, or does the
+		// engine not know about it?" unanswerable from the outside.
+		const { channel } = navigationWorker(pageLinksValue());
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		const links = await engine.pageLinks(doc, 0);
+		expect(links.map((link) => link.action.kind)).toEqual(["uri", "launch"]);
+		expect(links[1]?.action.uri).toBe("C:/payload.exe");
+		// The engine's `/Rect` is normalised into the viewer's, and the
+		// annotation's own id is the object number and the index.
+		expect(links[0]?.rect).toEqual({ x: 72, y: 700, width: 100, height: 12 });
+		expect(links[0]?.id).toBe("12#0");
+		expect(links[1]?.contents).toBe("the launch");
+	});
+
+	it("refuses an out-of-range page before the guest is asked", async () => {
+		// The engine's own answer for an out-of-range page is
+		// `PAGE_OUT_OF_RANGE` (1301), which is about the engine's page
+		// numbering rather than the seam's. The check happens here, so the
+		// guest is never asked and the answer is the seam's own code.
+		const { channel, posted } = navigationWorker(pageLinksValue());
+		const engine = createWasmEngine({ channel, wasmUrl: WASM_URL });
+		const doc = await engine.open({
+			kind: "bytes",
+			bytes: new ArrayBuffer(4),
+			name: "a.pdf",
+		});
+		await expect(engine.pageLinks(doc, 9)).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+			docState: "Unchanged",
+		});
+		expect(posted.filter((m) => opOf(m) === "pageLinks")).toHaveLength(0);
+	});
+});

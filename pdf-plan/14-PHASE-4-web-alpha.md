@@ -386,6 +386,74 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
     appearance and prompt readability are all owed a manual pass; only the prompt's *content* is
     asserted headlessly.
+  - **Status — the extension half (the second host), shipped 2026-10-22.** The web host's four
+    reads are shipped (the "Still owed" line above is **stale**: `pageLabels`, `destinations` and
+    `pageLinks` are called from `boot.js` now). This half gives the **MV3 extension** the same
+    capability, across its three hops - viewer page -> `chrome.runtime` port -> offscreen document
+    -> WASM guest - and it is the *port* that shipped; the extension's viewer still mounts no
+    navigation panel, which is why the box is **not** flipped.
+    - **The mapping is shared, not written twice.** The guest answers in the engine's vocabulary
+      (`destKind`, `x0`, `target`), and `apps/ui/src/viewer/navigation-wire.ts` is the one copy of
+      the translation into the viewer's. `wasm-engine.ts` imports it rather than re-implementing
+      it, and the extension now **ships** that module (`ui/src/viewer/navigation-wire.js` on the
+      ship list) - which is the whole point of the seam: a second inline mapping is a second copy
+      that drifts. The module now also **exports the three closed sets** (`ACTION_KINDS`,
+      `DESTINATION_KINDS`, `LABEL_STYLES`), because the page side has to decide whether a class
+      arriving over the wire is one the viewer models, and "decide" needs the list rather than a
+      copy of it - the same argument, one layer down.
+    - **One transport, two ports.** `link.subscribe` delivers every reply to *every* subscriber and
+      the correlation id is the only key, so the navigation reads share the engine's pending table
+      and id counter rather than getting a second factory with a second counter (which would hand
+      out colliding ids and feed a bookmark list to a tile waiter). `createEnginePort` therefore
+      returns one object satisfying both `EnginePort` and `NavigationPort`, and `adapter.ts` hands
+      the same object to both slots.
+    - **"This host cannot read outlines" is a capability fact, not a malformed request.** A host
+      with no navigation capability refuses the four ops with `BINDING_UNSUPPORTED_OP` (6017), not
+      `BINDING_BAD_ARGUMENT` (6001). The three states stay distinct all the way to the reader: a
+      **refusal** (6017) is "nobody could look", an **empty list** is "this document has none", and
+      a **populated list** is "here it is". Collapsing any two of them tells a reader something
+      false about their own file.
+    - **The page number is checked by the transport, in three places.** The engine's own answer for
+      an out-of-range page is `PAGE_OUT_OF_RANGE` (1301), which talks about the *engine's* numbering
+      rather than the seam's, and an empty list would have been indistinguishable from "this page
+      has no links". One rule (`outOfRangePage`), three enforcement points: the page (which holds
+      the `DocHandle` the host gave it), the host (which owns the document table), and the guest
+      (which minted the handle and would otherwise answer 1301). The contract wants 6001, and gets
+      it.
+    - **ADR-0020 crosses verbatim.** The extension's transport reports `/Launch`, `/GoToR`,
+      `/SubmitForm`, `/ImportData` and `/JS` **by name**, and the fixture document deliberately
+      carries a `/Launch` link so that a transport which filtered them would fail. The decision
+      stays in the viewer (`viewer/links.ts`), where it belongs.
+    - **Measured:** the shared contract suite's navigation probes are **live** for the extension
+      for the first time - they are conditional on the port's presence, so they were silent while
+      the adapter had none. Out-of-range page -> 6001, closed document -> 6000 with
+      `docState: "Unchanged"`, pre-aborted signal -> 4020, and all four reads return arrays.
+      `transport.test.ts` adds the *content* (the fixture's outline, labels, destination and two
+      links), the 6017 refusal, and three page-side trust-boundary refusals (a bookmark with no
+      title, a link rectangle missing a component, an action class outside the viewer's
+      vocabulary); `wasm-engine.test.ts` adds six guest-side tests over the mapping itself, and
+      `engine-protocol.test.ts` three over the page-number rule. **377 tests in the extension
+      (376 pass, one skipped - the clipboard-read exemption), 664 in `apps/ui`.**
+    - **NOT met, and why the box stays open.** The extension's viewer page mounts **no** bookmark
+      tree, no thumbnail rail and no link overlay - it ships neither `viewer/navigation.ts` nor
+      `viewer/thumbnails.ts` (see `apps/extension/REUSE.md`) - so there is **nothing to look at** in
+      a browser on this host and the extension's own browser check cannot be run at all. The
+      capability under those panels is what shipped; the panels are the viewer's task. The manual
+      pass the block already records (treeview roles, dialog chrome, rail appearance, prompt
+      readability) is therefore still owed on the extension as well as the web host.
+    - **Two smaller losses, recorded rather than hidden.** The outline's `truncated` and `pruned`
+      qualifiers survive the extension's internal wire - the guest's report is the wire's shape -
+      but are dropped at the UI seam, because `NavigationPort.outline` returns a list and has
+      nowhere to put them; the web shell keeps the same facts in its own page state for the same
+      reason. And the extension's out-of-range `renderTile` still answers the engine's 1301 with
+      the real WASM guest: the contract's 6001 there comes from the mock, and the same
+      three-point check this task added for `pageLinks` has **not** been applied to `render`.
+      Neither is a new defect - both are pre-existing gaps that this task did not widen - but
+      both are now visible because the navigation half does it properly.
+    - **Not done here:** the extension's own browser check (impossible without the panels), a
+      corpus entry (no engine behaviour changed - the engine already had the four ops, and the
+      corpus is fetch-only), and the `/Launch` prompt's *appearance* in the extension (the prompt
+      is the viewer's, and the extension's viewer does not have one yet).
 - [x] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
   - **Do:** Expose the structure tree to AT: proper roles, headings, reading order, alt text for
     figures, table semantics. Full keyboard navigation. This is ADR-P0031 applied to our own UI,

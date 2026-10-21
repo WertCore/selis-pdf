@@ -18,27 +18,65 @@
  *    so the surface they reach has to be a main-thread one.
  * 3. **Only inline sources.** `Blob`, `File` and `FileSystemFileHandle` are not
  *    JSON, so the page reads the bytes and sends them.
+ *
+ * ## The navigation questions (SL-4.UI.06), and why they share this factory
+ *
+ * The four navigation reads — the outline, the `/PageLabels`, the `/Dests`
+ * name tree and a page's link annotations — are part of **this** object rather
+ * than a second one, and the reason is the link's own behaviour:
+ * `link.subscribe` delivers every reply to **every** subscriber, and the
+ * correlation id is the only key that says which waiter a reply belongs to.
+ *
+ * A second factory with its own id counter would hand out ids that collide
+ * with this one's, and a reply would be delivered to the wrong waiter — a
+ * bookmark list answering a tile request, or a tile answering a bookmark list.
+ * So there is one pending table, one id counter and one subscriber, and the
+ * navigation methods are four more methods on it.
+ *
+ * The page is a **trust boundary** here, and it is treated as one: the reply
+ * arrives as untrusted JSON over a port, so every field is validated before it
+ * reaches the UI's types. A `Rect` with a missing component is a highlight
+ * somewhere arbitrary that still type-checks, and a link whose action was
+ * dropped is a link the reader can click with no destination.
  */
 
-import type { EnginePort } from "../../../ui/src/platform/adapter.js";
+import type { EnginePort, NavigationPort } from "../../../ui/src/platform/adapter.js";
 import { AdapterError, ErrorCode } from "../../../ui/src/platform/errors.js";
 import type {
 	AdapterRequestOptions,
 	DocHandle,
 	DocumentSourceDescriptor,
+	LinkAction,
+	LinkActionKind,
+	LinkAnnotation,
+	NamedDestination,
+	OutlineNode,
+	PageLabelRange,
 	PageText,
 	PageTextLayer,
+	PdfDestination,
 	Rect,
 	RenderTileRequest,
 	RenderedTile,
 	SearchBatch,
 	SearchOptions,
 } from "../../../ui/src/platform/types.js";
+import {
+	ACTION_KINDS,
+	DESTINATION_KINDS,
+	LABEL_STYLES,
+} from "../../../ui/src/viewer/navigation-wire.js";
 import type { EngineLink } from "./engine-link.js";
 import {
 	type EngineRequest,
+	type WireDestinations,
 	type WireDoc,
 	type WireError,
+	type WireLinkAction,
+	type WireOutline,
+	type WireOutlineNode,
+	type WirePageLabels,
+	type WirePageLinks,
 	type WirePageText,
 	type WirePageTextLayer,
 	type WireSearchBatch,
@@ -46,6 +84,7 @@ import {
 	base64ErrorReason,
 	decodeBase64,
 	encodeBase64,
+	outOfRangePage,
 } from "./engine-protocol.js";
 
 /** Budget surface the viewer renders into; matches the Rust `SurfaceName`. */
@@ -56,6 +95,7 @@ const STAGE_OPEN = "open";
 const STAGE_RENDER = "render";
 const STAGE_TEXT = "text";
 const STAGE_SEARCH = "search";
+const STAGE_NAVIGATION = "navigation";
 
 /**
  * Whether the caller's signal has fired.
@@ -121,8 +161,17 @@ export async function readSourceBytes(
 	}
 }
 
-/** Build the engine transport over `link`. */
-export function createEnginePort(link: EngineLink): EnginePort {
+/**
+ * Build the engine transport over `link`.
+ *
+ * The returned object is both an {@link EnginePort} and a
+ * {@link NavigationPort}: the four navigation reads share this object's
+ * pending table and id counter, because `link.subscribe` delivers every reply
+ * to every subscriber and the correlation id is the only key that says which
+ * waiter a reply belongs to. A second factory with its own counter would hand
+ * out colliding ids, and a reply would be delivered to the wrong waiter.
+ */
+export function createEnginePort(link: EngineLink): EnginePort & NavigationPort {
 	const pending = new Map<number, Pending>();
 	let nextId = 1;
 
@@ -356,6 +405,78 @@ export function createEnginePort(link: EngineLink): EnginePort {
 				},
 			};
 		},
+
+		/**
+		 * The document's bookmark outline (SL-4.UI.06).
+		 *
+		 * The host's answer carries three facts the UI's `NavigationPort` has
+		 * nowhere to put — whether the document *has* an outline, whether the
+		 * engine could read it in full, and whether the engine pruned items it
+		 * could not read. They are validated here and then dropped, because
+		 * `NavigationPort.outline` returns a list and the viewer reads an
+		 * empty list as "this document has no outline".
+		 *
+		 * That collapse is the UI's type, not this transport's: the host still
+		 * distinguishes the three states on the wire, and a refusal (this host
+		 * cannot read outlines at all) still arrives as a typed error rather
+		 * than as an empty list.
+		 */
+		async outline(doc, requestOptions): Promise<readonly OutlineNode[]> {
+			const wire = await call(
+				() => ({ op: "outline", doc: doc.id }),
+				requestOptions,
+				STAGE_NAVIGATION,
+			);
+			return toOutlineNodes(wire);
+		},
+
+		/** The document's `/PageLabels` ranges, in document order. */
+		async pageLabels(doc, requestOptions): Promise<readonly PageLabelRange[]> {
+			const wire = await call(
+				() => ({ op: "pageLabels", doc: doc.id }),
+				requestOptions,
+				STAGE_NAVIGATION,
+			);
+			return toPageLabelRanges(wire);
+		},
+
+		/** The document's `/Dests` name tree. */
+		async destinations(doc, requestOptions): Promise<readonly NamedDestination[]> {
+			const wire = await call(
+				() => ({ op: "destinations", doc: doc.id }),
+				requestOptions,
+				STAGE_NAVIGATION,
+			);
+			return toNamedDestinations(wire);
+		},
+
+		/**
+		 * One page's link annotations.
+		 *
+		 * The page is checked here as well as at the host and in the guest:
+		 * this side holds the `DocHandle` the host gave it, so it can refuse
+		 * an out-of-range page without a round trip. Every action class
+		 * crosses, including the ones ADR-0020 disables — the transport
+		 * reports what the document says and the viewer decides what happens.
+		 */
+		async pageLinks(doc, page, requestOptions): Promise<readonly LinkAnnotation[]> {
+			// The cancellation first: a cancelled request is cancelled whatever
+			// its arguments say, and a reader who has scrolled on should not be
+			// told their page number was wrong.
+			if (isAborted(requestOptions)) {
+				throw AdapterError.cancelled();
+			}
+			const reason = outOfRangePage(page, doc.pageCount);
+			if (reason !== null) {
+				throw AdapterError.badArgument(reason);
+			}
+			const wire = await call(
+				() => ({ op: "pageLinks", doc: doc.id, page }),
+				requestOptions,
+				STAGE_NAVIGATION,
+			);
+			return toLinkAnnotations(wire);
+		},
 	};
 }
 
@@ -521,4 +642,215 @@ function toSearchBatch(wire: unknown): SearchBatch {
 		progress: batch.progress,
 		done: batch.done,
 	};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The navigation replies (SL-4.UI.06).
+//
+// The wire already speaks the viewer's vocabulary, so these are not
+// *translations* — they are **validations**. Every field is checked, because
+// the page cannot tell a correct bookmark from a plausible one, and a link
+// whose action was quietly dropped is a link the reader can click with no
+// destination.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The host's outline, as the viewer's bookmark list.
+ *
+ * The three qualifiers the host sends — `present`, `truncated`, `pruned` —
+ * are checked and then dropped, because `NavigationPort.outline` returns a
+ * list. The host still distinguishes them on the wire, and a *refusal* still
+ * arrives as a typed error rather than as an empty list, so "this document
+ * has no outline" and "this host cannot read outlines" do not look alike.
+ */
+function toOutlineNodes(wire: unknown): readonly OutlineNode[] {
+	const outline = wire as WireOutline;
+	if (
+		typeof outline?.present !== "boolean" ||
+		typeof outline.truncated !== "boolean" ||
+		typeof outline.pruned !== "boolean" ||
+		!Array.isArray(outline.items)
+	) {
+		throw AdapterError.badArgument("the engine host returned an unreadable outline");
+	}
+	return outline.items.map(toOutlineNode);
+}
+
+/** One bookmark, as the viewer names it. */
+function toOutlineNode(node: unknown): OutlineNode {
+	const item = node as WireOutlineNode;
+	if (typeof item?.title !== "string") {
+		throw AdapterError.badArgument("the engine host returned an unreadable bookmark");
+	}
+	const children = Array.isArray(item.children) ? item.children.map(toOutlineNode) : [];
+	return {
+		title: item.title,
+		...(item.destination === undefined ? {} : { destination: toDestination(item.destination) }),
+		...(item.namedDestination === undefined
+			? {}
+			: { namedDestination: requireString(item.namedDestination, "bookmark name") }),
+		...(item.descendantCount === undefined
+			? {}
+			: { descendantCount: requireNumber(item.descendantCount, "bookmark count") }),
+		...(children.length === 0 ? {} : { children }),
+	};
+}
+
+/** A resolved destination: a page, and how to place it. */
+function toDestination(wire: unknown): PdfDestination {
+	const destination = wire as WireDestinations["destinations"][number]["destination"];
+	if (typeof destination?.page !== "number") {
+		throw AdapterError.badArgument("the engine host returned an unreadable destination");
+	}
+	const kind = destination.kind;
+	if (kind !== undefined && !DESTINATION_KINDS.includes(kind)) {
+		// A class outside the viewer's vocabulary. The guest maps an
+		// unrecognised *engine* class to `xyz`; a class that is not in the
+		// viewer's list at all means the host and the page disagree about the
+		// protocol, which is a bug worth refusing rather than absorbing.
+		throw AdapterError.badArgument(
+			`the engine host returned a destination of unknown kind '${kind}'`,
+		);
+	}
+	return {
+		page: destination.page,
+		...(kind === undefined ? {} : { kind }),
+		...(destination.left === undefined
+			? {}
+			: { left: requireOptionalNumber(destination.left, "destination offset") }),
+		...(destination.top === undefined
+			? {}
+			: { top: requireOptionalNumber(destination.top, "destination offset") }),
+		...(destination.zoom === undefined
+			? {}
+			: { zoom: requireOptionalNumber(destination.zoom, "destination zoom") }),
+	};
+}
+
+/** The host's `/PageLabels` ranges. */
+function toPageLabelRanges(wire: unknown): readonly PageLabelRange[] {
+	const labels = wire as WirePageLabels;
+	if (!Array.isArray(labels?.ranges)) {
+		throw AdapterError.badArgument("the engine host returned unreadable page labels");
+	}
+	return labels.ranges.map((range) => {
+		if (typeof range?.firstPage !== "number") {
+			throw AdapterError.badArgument("the engine host returned an unreadable page-label range");
+		}
+		const style = range.style;
+		if (style !== undefined && !LABEL_STYLES.includes(style)) {
+			throw AdapterError.badArgument(
+				`the engine host returned a page-label range of unknown style '${style}'`,
+			);
+		}
+		return {
+			firstPage: range.firstPage,
+			...(style === undefined ? {} : { style }),
+			...(range.prefix === undefined
+				? {}
+				: { prefix: requireString(range.prefix, "label prefix") }),
+			...(range.firstValue === undefined
+				? {}
+				: { firstValue: requireNumber(range.firstValue, "label first value") }),
+		};
+	});
+}
+
+/** The host's `/Dests` name tree. */
+function toNamedDestinations(wire: unknown): readonly NamedDestination[] {
+	const named = wire as WireDestinations;
+	if (!Array.isArray(named?.destinations)) {
+		throw AdapterError.badArgument("the engine host returned unreadable destinations");
+	}
+	return named.destinations.map((entry) => {
+		if (typeof entry?.name !== "string") {
+			throw AdapterError.badArgument("the engine host returned an unnamed destination");
+		}
+		return { name: entry.name, destination: toDestination(entry.destination) };
+	});
+}
+
+/**
+ * One page's link annotations.
+ *
+ * Every action class crosses, **including the ones ADR-0020 disables**. The
+ * transport reports what the document says; the viewer decides what happens.
+ * A transport that dropped `/Launch` here would make "is the viewer refusing
+ * this, or does the engine not know about it?" unanswerable — and the
+ * viewer's refusal is the thing under test.
+ */
+function toLinkAnnotations(wire: unknown): readonly LinkAnnotation[] {
+	const page = wire as WirePageLinks;
+	if (!Array.isArray(page?.links)) {
+		throw AdapterError.badArgument("the engine host returned unreadable link annotations");
+	}
+	return page.links.map((link) => {
+		if (typeof link?.id !== "string") {
+			throw AdapterError.badArgument("the engine host returned an unidentified link annotation");
+		}
+		return {
+			id: link.id,
+			rect: toRect(link.rect),
+			action: toLinkAction(link.action),
+			...(link.contents === undefined
+				? {}
+				: { contents: requireString(link.contents, "link contents") }),
+		};
+	});
+}
+
+/** A link's action, verbatim. */
+function toLinkAction(wire: unknown): LinkAction {
+	const action = wire as WireLinkAction;
+	if (typeof action?.kind !== "string") {
+		throw AdapterError.badArgument("the engine host returned an unreadable link action");
+	}
+	if (!ACTION_KINDS.includes(action.kind as LinkActionKind)) {
+		// The guest maps a class the *engine* does not model to `unknown`, and
+		// the viewer has a decision for `unknown`: refuse it and say so. A
+		// class outside the viewer's own vocabulary means the host and the
+		// page disagree about the protocol.
+		throw AdapterError.badArgument(
+			`the engine host returned a link action of unknown kind '${action.kind}'`,
+		);
+	}
+	return {
+		kind: action.kind as LinkActionKind,
+		...(action.uri === undefined ? {} : { uri: requireString(action.uri, "link URI") }),
+		...(action.name === undefined ? {} : { name: requireString(action.name, "link name") }),
+		...(action.destination === undefined ? {} : { destination: toDestination(action.destination) }),
+	};
+}
+
+/** A field that must be a string. */
+function requireString(value: unknown, what: string): string {
+	if (typeof value !== "string") {
+		throw AdapterError.badArgument(`the engine host returned an unreadable ${what}`);
+	}
+	return value;
+}
+
+/** A field that must be a number. */
+function requireNumber(value: unknown, what: string): number {
+	if (typeof value !== "number") {
+		throw AdapterError.badArgument(`the engine host returned an unreadable ${what}`);
+	}
+	return value;
+}
+
+/**
+ * A field that must be a number or an explicit `null`.
+ *
+ * `null` is meaningful here: a `/XYZ` destination whose author left `left`
+ * unset crosses as `null`, and the viewer tells "no offset" from "offset
+ * zero". Losing that distinction would move the page.
+ */
+function requireOptionalNumber(value: unknown, what: string): number | null {
+	if (value === null) {
+		return null;
+	}
+	if (typeof value !== "number") {
+		throw AdapterError.badArgument(`the engine host returned an unreadable ${what}`);
+	}
+	return value;
 }

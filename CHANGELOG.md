@@ -8,6 +8,22 @@ sections; every entry states what changed and what it means for the user.
 
 ### Added
 
+- The **browser extension** can now read a document's navigation structures
+  (SL-4.UI.06, extension half): its bookmark outline, its `/PageLabels`, its
+  named destinations and a page's link annotations, read from the same WASM
+  engine that renders the pages and carried across the offscreen document's
+  port. The engine's own answer is mapped with the viewer's shared mapper
+  (`apps/ui/src/viewer/navigation-wire.ts`) rather than a second translation
+  written for the extension, so the two hosts cannot drift. Every action class
+  crosses **by name**, including `/Launch` and `/GoToR` — the transport reports
+  what the document says and the viewer decides what happens (ADR-0020), so a
+  refused launch is still the *viewer's* refusal and says so. A host that cannot
+  read outlines at all now refuses with `BINDING_UNSUPPORTED_OP` (6017) rather
+  than `BINDING_BAD_ARGUMENT` (6001), because "this host cannot look" and
+  "your request was wrong" are different facts, and neither is "this document
+  has no bookmarks". **The panels are not in the extension yet**: its viewer
+  still mounts no bookmark tree, no thumbnail rail and no link overlay, so
+  what shipped is the capability under them.
 - CJK fallback no longer needs the 100 MB payload (SL-3.FONT.10, engine
   side): the viewer ships a subsetted CJK core, fetches the remaining
   Unicode ranges as separately-loadable chunk files on demand, and through

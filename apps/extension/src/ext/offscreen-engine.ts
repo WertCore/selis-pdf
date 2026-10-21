@@ -30,6 +30,26 @@
  * engine would say about a handle it never issued. It doubles as the cleanup
  * list: when the port drops, every document still open is closed, because the
  * page that owned them is gone and nothing else would ever ask.
+ *
+ * ## The navigation capability, and what its absence means (SL-4.UI.06)
+ *
+ * The host serves the four navigation questions — the outline, the
+ * `/PageLabels`, the `/Dests` name tree and a page's link annotations — from
+ * the capability it is given, not from the engine port itself.
+ *
+ * A host with **no** capability refuses those four with
+ * `BINDING_UNSUPPORTED_OP` (6017), and that refusal is the whole point of
+ * the code: "this host cannot read outlines" is a fact about the host, not a
+ * malformed request, and `BINDING_BAD_ARGUMENT` (6001) would say the request
+ * was wrong. A viewer that was never given the capability would otherwise look
+ * exactly like one that was given it and failed — and would tell a reader
+ * that their document has no bookmarks when the truth is that nobody could
+ * look.
+ *
+ * The distinction survives all the way to the reader because the three states
+ * are three states: a **refusal** (6017) is "this host cannot read outlines",
+ * an **empty list** is "this document has none", and a **populated list** is
+ * "here it is".
  */
 
 import type { EnginePort } from "../../../ui/src/platform/adapter.js";
@@ -43,6 +63,7 @@ import { type EngineLink, isEngineRequest } from "./engine-link.js";
 import {
 	type EngineReply,
 	type EngineRequest,
+	type NavigationCapability,
 	type WireAck,
 	type WireDoc,
 	type WireError,
@@ -50,6 +71,7 @@ import {
 	base64ErrorReason,
 	decodeBase64,
 	encodeBase64,
+	outOfRangePage,
 } from "./engine-protocol.js";
 
 /**
@@ -61,12 +83,22 @@ import {
  * request is the point. The alternative, not answering at all, is
  * indistinguishable from a hung engine: `chrome.runtime.connect` does not queue,
  * so the viewer's request would simply vanish and the page would spin forever.
+ *
+ * `navigation` may be `null` too, and that is a **capability** answer rather
+ * than a broken one: the four navigation ops then refuse with
+ * `BINDING_UNSUPPORTED_OP` (6017), which says "this host cannot read
+ * outlines" rather than "your request was wrong" or "this document has none".
  */
 export function serveEngineHost(options: {
 	link: EngineLink;
 	engine: EnginePort | null;
+	/**
+	 * The navigation capability this host serves, or `null` for a host that
+	 * cannot answer the four navigation questions at all.
+	 */
+	navigation?: NavigationCapability | null;
 }): () => void {
-	const { link, engine } = options;
+	const { link, engine, navigation = null } = options;
 	const requireEngine = (): EnginePort => {
 		if (engine === null) {
 			throw new AdapterError({
@@ -78,6 +110,26 @@ export function serveEngineHost(options: {
 			});
 		}
 		return engine;
+	};
+	/**
+	 * The navigation capability, or a refusal that says what is missing.
+	 *
+	 * The check comes *after* the document handle in the callers, because the
+	 * handle is the subject of the request: a request naming a document this
+	 * host never issued is malformed whatever the host can do, and a request
+	 * naming a live document is refused for the capability reason.
+	 */
+	const requireNavigation = (): NavigationCapability => {
+		if (navigation === null) {
+			throw new AdapterError({
+				code: ErrorCode.BindingUnsupportedOp,
+				message:
+					"this engine host cannot read outlines, page labels, destinations or link annotations: no navigation capability is installed",
+				docState: "Unchanged",
+				retryable: false,
+			});
+		}
+		return navigation;
 	};
 	const documents = new Map<string, DocHandle>();
 	const inFlight = new Map<number, AbortController>();
@@ -118,7 +170,7 @@ export function serveEngineHost(options: {
 			return;
 		}
 
-		void runOne(request, controller.signal, documents, requireEngine).then(
+		void runOne(request, controller.signal, documents, requireEngine, requireNavigation).then(
 			(value) => {
 				done();
 				ok(request.id, value);
@@ -163,6 +215,7 @@ async function runOne(
 	signal: AbortSignal,
 	documents: Map<string, DocHandle>,
 	requireEngine: () => EnginePort,
+	requireNavigation: () => NavigationCapability,
 ): Promise<NonNullable<EngineReply["value"]>> {
 	switch (request.op) {
 		case "open": {
@@ -229,10 +282,50 @@ async function runOne(
 			);
 			return layer;
 		}
+		// ── SL-4.UI.06: the four navigation questions ──────────────────────
+		//
+		// The host is the authority on which documents exist and how many pages
+		// they have, so it is the layer that refuses an out-of-range page: the
+		// engine's own answer for one is `PAGE_OUT_OF_RANGE` (1301), a code
+		// that talks about the engine's page numbering, and an empty list
+		// would have been indistinguishable from "this page has no links".
+		case "outline": {
+			const doc = requireDoc(documents, request.doc);
+			const report = await requireNavigation().outline(doc, { signal });
+			return report;
+		}
+		case "pageLabels": {
+			const doc = requireDoc(documents, request.doc);
+			const ranges = await requireNavigation().pageLabels(doc, { signal });
+			return { ranges };
+		}
+		case "destinations": {
+			const doc = requireDoc(documents, request.doc);
+			const destinations = await requireNavigation().destinations(doc, { signal });
+			return { destinations };
+		}
+		case "pageLinks": {
+			const doc = requireDoc(documents, request.doc);
+			const reason = outOfRangePage(request.page, doc.pageCount);
+			if (reason !== null) {
+				throw AdapterError.badArgument(reason);
+			}
+			const links = await requireNavigation().pageLinks(doc, request.page, { signal });
+			return { page: request.page, links };
+		}
 		default:
-			throw AdapterError.badArgument(
-				`the engine host does not implement '${(request as { op: string }).op}'`,
-			);
+			// An op this host does not implement is a **capability** fact, not a
+			// malformed request, so it answers 6017 rather than 6001 — the same
+			// code the four navigation ops use when no capability is installed.
+			// (Before SL-4.UI.06 the navigation ops fell through to here and
+			// answered 6001, which said "your request was wrong" about a
+			// request that was perfectly fine.)
+			throw new AdapterError({
+				code: ErrorCode.BindingUnsupportedOp,
+				message: `the engine host does not implement '${(request as { op: string }).op}'`,
+				docState: "Unchanged",
+				retryable: false,
+			});
 	}
 }
 

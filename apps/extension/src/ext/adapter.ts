@@ -12,6 +12,7 @@
  * | Port | Verdict | Why |
  * |---|---|---|
  * | `engine` | supplied | Offscreen document over a `chrome.runtime` port (`engine-client.ts`). |
+ * | `navigation` | supplied | The same engine, asked the four navigation questions (SL-4.UI.06): the outline, the `/PageLabels`, the `/Dests` name tree and a page's link annotations. One transport, two ports — the navigation reads share the engine's pending table and id counter, because the link delivers every reply to every subscriber and the correlation id is the only key. |
  * | `files.pickOpen` | supplied | A transient `<input type="file">`. No MV3 permission needed. |
  * | `files.pickSave` | **refused** | Save-in-place is a File System Access handle. The viewer is read-only, and the only caller would be Phase 5. Refusing now keeps `fileSystemAccess: false` honest. |
  * | `storage` | supplied | `localStorage` on the extension origin. `chrome.storage` would need the `storage` permission, which EXT.01 did not approve. |
@@ -95,6 +96,7 @@ export function createExtensionAdapter(options: {
 	link: EngineLink;
 }): PlatformAdapter {
 	const { env, link } = options;
+	const engine = createEnginePort(link);
 
 	const storage: StoragePort = {
 		get: (key) => env.storage.get(key),
@@ -163,7 +165,13 @@ export function createExtensionAdapter(options: {
 
 	return {
 		capabilities: EXTENSION_CAPABILITIES,
-		engine: createEnginePort(link),
+		// One transport, two ports. The engine and the navigation reads are
+		// the same object because they are the same wire: a second factory
+		// would have its own id counter, and `link.subscribe` delivers every
+		// reply to every subscriber with the correlation id as the only key —
+		// so two counters would mean two waiters fed each other's replies.
+		engine,
+		navigation: engine,
 		files,
 		storage,
 		clipboard,

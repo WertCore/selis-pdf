@@ -19,15 +19,32 @@
  * the bytes it decoded. Registering it on the way in is the whole adapter.
  * The sample document is the contract suite's, so the shared suite's own
  * expectations (page count, texts, match counts) hold unchanged.
+ *
+ * ## The navigation half (SL-4.UI.06)
+ *
+ * The sample document carries an outline, `/PageLabels`, a named destination
+ * and two link annotations - one of them a `/Launch`, because the transport's
+ * job is to report the classes ADR-0020 disables and a fixture that only
+ * carried safe ones would not prove that.
+ *
+ * The mock answers the outline with the UI's *list*; the capability the host
+ * serves answers with the engine's *report*, because the wire carries the
+ * difference between "this document has no outline" and "this document has an
+ * outline this engine could not read in full". The fixture bridges the two,
+ * and the bridge is the only place in this package where the two vocabularies
+ * meet.
  */
 
-import type { EnginePort } from "../../../ui/src/platform/adapter.js";
+import type { EnginePort, NavigationPort } from "../../../ui/src/platform/adapter.js";
 import { SAMPLE_TEXTS } from "../../../ui/src/platform/contract.js";
-import { createMockAdapter } from "../../../ui/src/platform/mock-adapter.js";
+import { type PageLinkSet, createMockAdapter } from "../../../ui/src/platform/mock-adapter.js";
 import type {
 	AdapterRequestOptions,
 	DocHandle,
 	DocumentSourceDescriptor,
+	NamedDestination,
+	OutlineNode,
+	PageLabelRange,
 	PageText,
 	PageTextLayer,
 	RenderTileRequest,
@@ -35,9 +52,63 @@ import type {
 	SearchBatch,
 	SearchOptions,
 } from "../../../ui/src/platform/types.js";
+import type { OutlineReport } from "../../../ui/src/viewer/navigation-wire.js";
+import type { NavigationCapability } from "./engine-protocol.js";
 
 /** The three-page sample the shared contract suite probes. */
 export const FIXTURE_PAGE_COUNT = SAMPLE_TEXTS.length;
+
+/**
+ * The sample document's outline.
+ *
+ * Two chapters, one of them with a child, and one item that names a
+ * destination rather than carrying one - the three shapes a bookmark can
+ * have, so the transport is exercised on all of them.
+ */
+export const FIXTURE_OUTLINE: readonly OutlineNode[] = [
+	{
+		title: "Chapter one",
+		destination: { page: 0, kind: "fit" },
+		descendantCount: -1,
+		children: [{ title: "Figure 1", destination: { page: 1, kind: "xyz", top: 700 } }],
+	},
+	{ title: "Appendix", namedDestination: "here" },
+];
+
+/** The sample document's `/PageLabels`: roman for the front matter, arabic after. */
+export const FIXTURE_PAGE_LABELS: readonly PageLabelRange[] = [
+	{ firstPage: 0, style: "r", prefix: "p" },
+	{ firstPage: 2, style: "D", firstValue: 7 },
+];
+
+/** The sample document's `/Dests` name tree. */
+export const FIXTURE_DESTINATIONS: readonly NamedDestination[] = [
+	{ name: "here", destination: { page: 2 } },
+];
+
+/**
+ * The sample document's link annotations.
+ *
+ * The second one is a `/Launch` with a local path as its target: ADR-0020
+ * refuses that class in the **viewer**, and the refusal is only testable if
+ * the transport carries the class across verbatim.
+ */
+export const FIXTURE_LINKS: readonly PageLinkSet[] = [
+	{
+		page: 0,
+		links: [
+			{
+				rect: { x: 72, y: 700, width: 100, height: 12 },
+				action: { kind: "uri", uri: "https://example.com/a" },
+			},
+			{
+				id: "launch-1",
+				rect: { x: 72, y: 680, width: 100, height: 12 },
+				action: { kind: "launch", uri: "C:/payload.exe" },
+			},
+		],
+	},
+];
 
 /**
  * A `MockDocumentSpec` for the sample, minus the mock's own knowledge of it.
@@ -45,7 +116,7 @@ export const FIXTURE_PAGE_COUNT = SAMPLE_TEXTS.length;
  * Exported so a test that wants a *different* document can register one without
  * reaching past this module.
  */
-export function createFixtureEngine(): EnginePort {
+export function createFixtureEngine(): EnginePort & NavigationCapability {
 	const mock = createMockAdapter();
 
 	return {
@@ -67,6 +138,13 @@ export function createFixtureEngine(): EnginePort {
 				pageCount: FIXTURE_PAGE_COUNT,
 				textPages: SAMPLE_TEXTS,
 				bytes: new Uint8Array(source.bytes),
+				// The navigation data the shared contract suite's navigation
+				// probes read. The suite asserts *shape* rather than content,
+				// so this is enough to prove the four reads cross the wire.
+				outline: FIXTURE_OUTLINE,
+				pageLabels: FIXTURE_PAGE_LABELS,
+				destinations: FIXTURE_DESTINATIONS,
+				links: FIXTURE_LINKS,
 			});
 			return await mock.engine.open(registered, options);
 		},
@@ -94,7 +172,44 @@ export function createFixtureEngine(): EnginePort {
 			searchOptions?: SearchOptions,
 			requestOptions?: AdapterRequestOptions,
 		): AsyncIterable<SearchBatch> => mock.engine.search(doc, query, searchOptions, requestOptions),
+
+		// ── SL-4.UI.06: the navigation capability ──────────────────────────
+		//
+		// The mock's navigation port is the UI's shape; the capability is the
+		// engine's. The outline is the one answer that differs, so it is the
+		// one that needs the bridge.
+		outline: async (doc, options): Promise<OutlineReport> => {
+			const items = await requireMockNavigation(mock).outline(doc, options);
+			return {
+				present: items.length > 0,
+				// The mock never truncates and never prunes: it is not an
+				// engine, and claiming otherwise would be a claim about a
+				// document the mock knows nothing about.
+				truncated: false,
+				pruned: false,
+				items,
+			};
+		},
+		pageLabels: (doc, options) => requireMockNavigation(mock).pageLabels(doc, options),
+		destinations: (doc, options) => requireMockNavigation(mock).destinations(doc, options),
+		pageLinks: (doc, page, options) => requireMockNavigation(mock).pageLinks(doc, page, options),
 	};
+}
+
+/**
+ * The mock's navigation port.
+ *
+ * The mock always has one - `navigation` is not optional on it - but the type
+ * says it is, because `PlatformAdapter.navigation` is. Refusing rather than
+ * answering `[]` keeps a future mock without the port from looking like a
+ * document with no outline.
+ */
+function requireMockNavigation(mock: ReturnType<typeof createMockAdapter>): NavigationPort {
+	const navigation = mock.navigation;
+	if (navigation === undefined) {
+		throw new Error("the mock adapter has no navigation port");
+	}
+	return navigation;
 }
 
 /** A minimal in-memory document, for tests that only need bytes on the wire. */
