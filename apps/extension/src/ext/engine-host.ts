@@ -89,7 +89,10 @@ export function startEngineHost(options: {
 	const { link, createWorker, wasmUrl } = options;
 	const worker = createWorker();
 	const engine = createWasmEngine({ channel: worker, wasmUrl });
-	const stopHost = serveEngineHost({ link, engine });
+	// The same engine serves the navigation questions (SL-4.UI.06): it is the
+	// engine that holds the document, so it is the engine that can walk the
+	// outline. A second engine would be a second document registry.
+	const stopHost = serveEngineHost({ link, engine, navigation: engine });
 
 	// Warm the compile. Deliberately not awaited and deliberately not
 	// reported: the first request that needs the engine surfaces the same

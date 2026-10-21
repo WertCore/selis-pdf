@@ -18,6 +18,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	ACTION_KINDS,
+	DESTINATION_KINDS,
+	LABEL_STYLES,
 	NavigationWireError,
 	destinationKindOf,
 	mapDestinations,
@@ -25,6 +28,28 @@ import {
 	mapPageLabels,
 	mapPageLinks,
 } from "./navigation-wire.js";
+
+describe("the shared vocabularies", () => {
+	it("publishes the closed sets a transport needs to validate against", () => {
+		// A transport that receives an action class or a destination class over
+		// a wire has to decide whether the viewer models it, and "decide" needs
+		// the list rather than a copy of it. These are the lists.
+		expect(ACTION_KINDS).toContain("launch");
+		expect(ACTION_KINDS).toContain("unknown");
+		expect(DESTINATION_KINDS).toContain("fit");
+		expect(DESTINATION_KINDS).toContain("xyz");
+		expect(LABEL_STYLES).toEqual(["D", "R", "r", "A", "a"]);
+	});
+
+	it("keeps the action classes the ADR-0020 policy is about", () => {
+		// The disabled classes are in the vocabulary on purpose: the engine
+		// reports them and the viewer decides, so a transport that filtered
+		// them would make "is the viewer refusing this?" unanswerable.
+		for (const disabled of ["launch", "goToR", "submitForm", "importData", "javascript"]) {
+			expect(ACTION_KINDS).toContain(disabled);
+		}
+	});
+});
 
 describe("destinationKindOf", () => {
 	it("names the six classes the spec defines", () => {

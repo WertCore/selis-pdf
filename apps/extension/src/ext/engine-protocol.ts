@@ -39,7 +39,28 @@
  * `Worker` spawned by the viewer page dies with the page — which is exactly the
  * lifetime the `offscreen` permission was justified for (PERMISSIONS.md,
  * SL-4.EXT.01). See `REUSE.md` for the full argument.
+ *
+ * ## What else lives here, and why
+ *
+ * Two things that are not wire *shapes* but are wire *rules*, because both ends
+ * of this transport and the guest under it have to agree on them:
+ *
+ * - {@link NavigationCapability}, the port the engine host serves the four
+ *   navigation questions through. It is declared beside the reply shapes it
+ *   produces, so the two cannot drift.
+ * - {@link outOfRangePage}, the page-number rule. It is one rule with three
+ *   enforcement points (the page, the host, the guest), and three copies of
+ *   one rule is three places to change it.
  */
+
+import type {
+	AdapterRequestOptions,
+	DocHandle,
+	LinkAnnotation,
+	NamedDestination,
+	PageLabelRange,
+} from "../../../ui/src/platform/types.js";
+import type { OutlineReport } from "../../../ui/src/viewer/navigation-wire.js";
 
 /** Protocol version, so a stale host fails loudly instead of mis-rendering. */
 export const ENGINE_PROTOCOL = 1;
@@ -374,6 +395,104 @@ export interface WireLinkAction {
 	readonly uri?: string;
 	readonly destination?: WireDestination;
 	readonly name?: string;
+}
+
+/**
+ * The navigation capability the engine host serves to the viewer page
+ * (SL-4.UI.06).
+ *
+ * ## Why this is not `apps/ui`'s `NavigationPort`
+ *
+ * The UI's port answers `outline` with a **list** of bookmark items, because
+ * that is all the viewer has somewhere to put. The engine's answer carries
+ * three more facts — the document *has* an outline, the engine could not read
+ * it in full, the engine pruned items it could not read — and the wire
+ * ({@link WireOutline}) carries all three, because they are not the same
+ * claim. "This document has no bookmarks", "this document has bookmarks this
+ * viewer cannot show" and "this host cannot read bookmarks at all" are three
+ * different things to tell a reader, and collapsing any two of them tells
+ * them something false about their own file.
+ *
+ * So the capability answers with the **report**, and the page side is where the
+ * report becomes the UI's list. The two extra flags are dropped there, because
+ * `NavigationPort.outline` has nowhere to put them: that is a limit of the
+ * UI's type, not of this transport, and the web shell keeps the same facts in
+ * its own page state for the same reason.
+ *
+ * ## Every action class crosses, including the disabled ones
+ *
+ * ADR-0020 makes *what happens* to a `/Launch` a decision of the viewer's. A
+ * capability that filtered the classes here would make "is the viewer refusing
+ * this, or does the engine not know about it?" unanswerable from the outside,
+ * which is the whole question `viewer/links.ts` exists to answer.
+ */
+export interface NavigationCapability {
+	/**
+	 * The document's bookmark outline, with the engine's own qualifiers.
+	 *
+	 * A refusal is a typed error, never an empty report: "this host cannot
+	 * read outlines" and "this document has none" are different facts.
+	 */
+	outline(doc: DocHandle, options?: AdapterRequestOptions): Promise<OutlineReport>;
+
+	/** The document's `/PageLabels` ranges, in document order. */
+	pageLabels(doc: DocHandle, options?: AdapterRequestOptions): Promise<readonly PageLabelRange[]>;
+
+	/** The document's `/Dests` name tree. */
+	destinations(
+		doc: DocHandle,
+		options?: AdapterRequestOptions,
+	): Promise<readonly NamedDestination[]>;
+
+	/**
+	 * One page's link annotations, in annotation-array order.
+	 *
+	 * An out-of-range page rejects with `BINDING_BAD_ARGUMENT` (6001). The
+	 * engine's own answer for one is `PAGE_OUT_OF_RANGE` (1301), which says
+	 * something different — it is about the *engine's* page numbering — so
+	 * every transport in this chain checks the page itself. See
+	 * {@link outOfRangePage}.
+	 */
+	pageLinks(
+		doc: DocHandle,
+		page: number,
+		options?: AdapterRequestOptions,
+	): Promise<readonly LinkAnnotation[]>;
+}
+
+/**
+ * The reason `page` is not a page of a document with `pageCount` pages, or
+ * `null` when it is one.
+ *
+ * ## Why the transports check this themselves
+ *
+ * A transport that answered an out-of-range page with an **empty list** would
+ * be indistinguishable from a page that genuinely has no links: the reader
+ * would see "no links on this page" where the truth is "you asked about a page
+ * that does not exist". So the refusal has to be typed, and it has to happen
+ * at the transport rather than only in the engine — the engine's own answer is
+ * `PAGE_OUT_OF_RANGE` (1301), which is a different code with a different
+ * meaning, and a shell that forwarded it verbatim would report a page-number
+ * problem in the engine's vocabulary to a UI that expects the seam's.
+ *
+ * It is checked in three places — the page, the host and the guest — because
+ * each is a boundary where the number arrives from something else:
+ *
+ * - the **page** holds the `DocHandle` the host gave it and can refuse
+ *   without a round trip;
+ * - the **host** owns the document table and is what anything on the port
+ *   actually reaches;
+ * - the **guest** holds the handle it minted and is the layer that would
+ *   otherwise answer 1301.
+ *
+ * One rule, one definition, three enforcement points.
+ */
+export function outOfRangePage(page: number, pageCount: number): string | null {
+	if (!Number.isInteger(page) || page < 0 || page >= pageCount) {
+		const pages = pageCount === 1 ? "1 page" : `${pageCount} pages`;
+		return `page ${page} is out of range (the document has ${pages})`;
+	}
+	return null;
 }
 
 /** Offscreen host → viewer page. */

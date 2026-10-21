@@ -19,7 +19,12 @@
 
 import { describe, expect, it } from "vitest";
 import { replyRejection } from "./engine-link.js";
-import { base64ErrorReason, decodeBase64, encodeBase64 } from "./engine-protocol.js";
+import {
+	base64ErrorReason,
+	decodeBase64,
+	encodeBase64,
+	outOfRangePage,
+} from "./engine-protocol.js";
 
 /** Every byte value, in order - the alphabet's worst case. */
 const EVERY_BYTE = Uint8Array.from({ length: 256 }, (_value, index) => index);
@@ -148,5 +153,32 @@ describe("reply validation (SL-4.EXT.06)", () => {
 				error: { code: 6000, message: "x", docState: "Unchanged", retryable: false },
 			}),
 		).toBeNull();
+	});
+});
+
+describe("the page-number rule (SL-4.UI.06)", () => {
+	it("names the pages that are not pages", () => {
+		// The engine's own answer for an out-of-range page is
+		// `PAGE_OUT_OF_RANGE` (1301), which talks about the engine's numbering
+		// rather than the seam's, and an empty list would have been
+		// indistinguishable from "this page has no links". So the transports
+		// check the page themselves, and they all check it with this rule.
+		expect(outOfRangePage(0, 3)).toBeNull();
+		expect(outOfRangePage(2, 3)).toBeNull();
+		expect(outOfRangePage(3, 3)).toContain("out of range");
+		expect(outOfRangePage(9000, 3)).toContain("out of range");
+		expect(outOfRangePage(-1, 3)).toContain("out of range");
+	});
+
+	it("refuses a page that is not a whole number", () => {
+		// 1.5 is not a page, and `page >= pageCount` would have let 1.5
+		// through a document with two pages.
+		expect(outOfRangePage(1.5, 3)).toContain("out of range");
+		expect(outOfRangePage(Number.NaN, 3)).toContain("out of range");
+	});
+
+	it("says how many pages the document has, because the number alone is not enough", () => {
+		expect(outOfRangePage(9, 1)).toContain("1 page");
+		expect(outOfRangePage(9, 3)).toContain("3 pages");
 	});
 });

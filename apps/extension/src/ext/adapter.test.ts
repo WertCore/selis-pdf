@@ -35,7 +35,8 @@ import {
 /** A live adapter over a loopback, with a recording env. */
 function live() {
 	const link = createLoopbackLink();
-	serveEngineHost({ link: link.host, engine: createFixtureEngine() });
+	const engine = createFixtureEngine();
+	serveEngineHost({ link: link.host, engine, navigation: engine });
 	const host = createFakeHostEnv();
 	host.usePort(link.client as unknown as HostPort);
 	return { adapter: createExtensionAdapter({ env: host.env, link: link.client }), host, link };
@@ -137,7 +138,8 @@ describe("extension capabilities (SL-4.EXT.06)", () => {
 
 	it("persists settings and the opt-in across sessions", async () => {
 		const link = createLoopbackLink();
-		serveEngineHost({ link: link.host, engine: createFixtureEngine() });
+		const engine = createFixtureEngine();
+		serveEngineHost({ link: link.host, engine, navigation: engine });
 		const host = createFakeHostEnv();
 		host.usePort(link.client as unknown as HostPort);
 		const adapter = createExtensionAdapter({ env: host.env, link: link.client });
@@ -146,6 +148,31 @@ describe("extension capabilities (SL-4.EXT.06)", () => {
 		await adapter.storage.delete("ui.theme");
 		expect(await adapter.storage.get("ui.theme")).toBeNull();
 		expect(await adapter.storage.get("never-set")).toBeNull();
+	});
+
+	it("supplies the navigation port the table claims (SL-4.UI.06)", async () => {
+		// The table at the top of `adapter.ts` is a claim about this host, and
+		// a claim that is not checked is a comment. The port must exist, the
+		// four reads must answer, and the document's own bookmarks must be
+		// readable through them.
+		const { adapter } = live();
+		expect(adapter.navigation).toBeDefined();
+		const doc = await adapter.engine.open({
+			kind: "bytes",
+			bytes: sampleBytes().buffer as ArrayBuffer,
+			name: "report.pdf",
+		});
+		const navigation = adapter.navigation;
+		if (navigation === undefined) {
+			throw new Error("the extension adapter must supply the navigation port");
+		}
+		expect((await navigation.outline(doc)).map((node) => node.title)).toEqual([
+			"Chapter one",
+			"Appendix",
+		]);
+		expect(await navigation.pageLabels(doc)).toHaveLength(2);
+		expect(await navigation.destinations(doc)).toHaveLength(1);
+		expect(await navigation.pageLinks(doc, 0)).toHaveLength(2);
 	});
 
 	it("titles the page and prints", async () => {

@@ -30,6 +30,34 @@
  * and `BINDING_BAD_ARGUMENT` (6001, `Unchanged`) for a reply that does not
  * obey the protocol it documents. A dedicated `BINDING_ENGINE_UNAVAILABLE` is
  * the honest fix and belongs in a registry change, not in a host.
+ *
+ * ## The navigation questions (SL-4.UI.06)
+ *
+ * This engine also answers the four navigation questions — the outline, the
+ * `/PageLabels`, the `/Dests` name tree and a page's link annotations — and it
+ * answers them by **mapping** the guest's JSON with `apps/ui`'s own
+ * `navigation-wire.ts`, not by casting it.
+ *
+ * The mapping is the point. The guest speaks the *engine's* vocabulary
+ * (`destKind`, `x0`, `target`), the viewer speaks its own (`kind`,
+ * `x`/`width`, `destination`), and a host that translated inline would write
+ * that translation twice — once in the web shell and once here — and the two
+ * copies would drift. `apps/ui/src/viewer/navigation-wire.ts` is the one copy;
+ * it is pure, DOM-free, and unit-tested in its own package, so this module
+ * imports it rather than re-implementing it.
+ *
+ * Two consequences worth stating:
+ *
+ * - **The engine reports; the viewer decides.** Every action class crosses,
+ *   including the ones ADR-0020 disables (`/Launch`, `/GoToR`,
+ *   `/SubmitForm`, `/ImportData`, `/JS`). A mapping that dropped them here
+ *   would make "is the viewer refusing this, or does the engine not know about
+ *   it?" unanswerable from the outside.
+ * - **The outline keeps its qualifiers.** The guest's answer separates "this
+ *   document has no outline", "it has one this engine could not read in full"
+ *   and "here it is", and the report carries all three into the extension's
+ *   wire. They are dropped only at the UI's own seam, where
+ *   `NavigationPort.outline` has nowhere to put them.
  */
 
 import type { EnginePort } from "../../../ui/src/platform/adapter.js";
@@ -39,6 +67,9 @@ import type {
 	BudgetProfile,
 	DocHandle,
 	DocumentSourceDescriptor,
+	LinkAnnotation,
+	NamedDestination,
+	PageLabelRange,
 	PageText,
 	PageTextLayer,
 	Rect,
@@ -51,6 +82,15 @@ import type {
 	TextLayerChar,
 	TextLayerLine,
 } from "../../../ui/src/platform/types.js";
+import {
+	NavigationWireError,
+	type OutlineReport,
+	mapDestinations,
+	mapOutline,
+	mapPageLabels,
+	mapPageLinks,
+} from "../../../ui/src/viewer/navigation-wire.js";
+import { type NavigationCapability, outOfRangePage } from "./engine-protocol.js";
 import type { GuestResponse } from "./wasm-guest.js";
 import type { WorkerRequest, WorkerResponse } from "./wasm-worker.js";
 
@@ -97,11 +137,17 @@ function asWorkerResponse(message: unknown): WorkerResponse | null {
  * opened, and a viewer that is closed without opening anything should not
  * have paid for a WASM compile. `start()` exposes the same work for a host
  * that would rather warm it while nobody is waiting.
+ *
+ * The returned object is an `EnginePort` **and** a
+ * {@link NavigationCapability}: the same engine answers the render and text
+ * questions and the four navigation ones, and the offscreen host serves both
+ * from the same object. One engine, two ports — not two engines, which is how
+ * a document would end up rendered by one and outlined by another.
  */
 export function createWasmEngine(options: {
 	channel: EngineChannel;
 	wasmUrl: string;
-}): EnginePort & { start(): Promise<void>; dispose(): void } {
+}): EnginePort & NavigationCapability & { start(): Promise<void>; dispose(): void } {
 	const { channel, wasmUrl } = options;
 	/** Correlation ids. The guest echoes them, and they never repeat. */
 	let nextId = 1;
@@ -434,6 +480,65 @@ export function createWasmEngine(options: {
 		yield { matches: [], progress: 1, done: true };
 	}
 
+	/**
+	 * The document's bookmark outline (SL-4.UI.06).
+	 *
+	 * The guest's answer is the engine's own JSON, so it is **mapped**, not
+	 * cast: `mapOutline` reads the three qualifiers the guest separates
+	 * (`present`, `truncated`, `pruned`) and turns the engine's destination
+	 * vocabulary into the viewer's.
+	 */
+	async function outline(doc: DocHandle, options?: AdapterRequestOptions): Promise<OutlineReport> {
+		const reply = await call({ op: "outline", doc: rawHandle(doc) }, undefined, options);
+		return mapNavigation(() => mapOutline(engineValue(reply)));
+	}
+
+	/** The document's `/PageLabels` ranges, in document order. */
+	async function pageLabels(
+		doc: DocHandle,
+		options?: AdapterRequestOptions,
+	): Promise<readonly PageLabelRange[]> {
+		const reply = await call({ op: "pageLabels", doc: rawHandle(doc) }, undefined, options);
+		return mapNavigation(() => mapPageLabels(engineValue(reply)));
+	}
+
+	/** The document's `/Dests` name tree. */
+	async function destinations(
+		doc: DocHandle,
+		options?: AdapterRequestOptions,
+	): Promise<readonly NamedDestination[]> {
+		const reply = await call({ op: "destinations", doc: rawHandle(doc) }, undefined, options);
+		return mapNavigation(() => mapDestinations(engineValue(reply)));
+	}
+
+	/**
+	 * One page's link annotations.
+	 *
+	 * The page is checked **here**, before the guest is asked, because the
+	 * guest's own answer for an out-of-range page is `PAGE_OUT_OF_RANGE`
+	 * (1301) — a code that talks about the engine's page numbering, not about
+	 * the seam's, and one this port's callers expect to be 6001. An empty
+	 * list would have been worse than either: "page 9000 of a 3-page document
+	 * has no links" and "this host cannot read links" must not look alike.
+	 */
+	async function pageLinks(
+		doc: DocHandle,
+		page: number,
+		options?: AdapterRequestOptions,
+	): Promise<readonly LinkAnnotation[]> {
+		// The cancellation first, for the same reason as the page side: a
+		// cancelled request is cancelled whatever its arguments say.
+		if (options?.signal?.aborted === true) {
+			throw AdapterError.cancelled();
+		}
+		const reason = outOfRangePage(page, doc.pageCount);
+		if (reason !== null) {
+			throw AdapterError.badArgument(reason);
+		}
+		const reply = await call({ op: "pageLinks", doc: rawHandle(doc), page }, undefined, options);
+		return mapNavigation(() => mapPageLinks(engineValue(reply)));
+	}
+
 	return {
 		open: openDocument,
 		close: closeDocument,
@@ -441,6 +546,10 @@ export function createWasmEngine(options: {
 		extractText,
 		textLayer,
 		search,
+		outline,
+		pageLabels,
+		destinations,
+		pageLinks,
 		start,
 		dispose() {
 			failAll(engineUnavailable("the engine host is shutting down"));
@@ -448,6 +557,27 @@ export function createWasmEngine(options: {
 		},
 	};
 }
+
+/**
+ * Run a navigation mapping, turning an unreadable answer into a refusal.
+ *
+ * `mapOutline` and its siblings throw {@link NavigationWireError} when the
+ * guest's answer does not obey the protocol it documents. That is a transport
+ * bug, not a fact about the document, so it becomes `BINDING_BAD_ARGUMENT`
+ * (6001, `Unchanged`) — the code this seam already uses for "a reply that
+ * does not obey the protocol it documents".
+ */
+function mapNavigation<T>(map: () => T): T {
+	try {
+		return map();
+	} catch (error) {
+		if (error instanceof NavigationWireError) {
+			throw AdapterError.badArgument(error.message);
+		}
+		throw error;
+	}
+}
+
 /** The engine mints a numeric handle; the UI's is an opaque string. */
 function rawHandle(doc: DocHandle): number {
 	const raw = Number(doc.id);

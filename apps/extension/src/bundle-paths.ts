@@ -136,6 +136,13 @@ export interface PackageEntry {
  *   UI.03's worker surface the extension uses verbatim, because a frame clock is
  *   a frame clock and re-deriving it here would be the second implementation
  *   the seam exists to prevent.
+ * - `viewer/navigation-wire.ts` — the mapper from the engine's navigation
+ *   vocabulary to the viewer's (SL-4.UI.06). The guest in the offscreen
+ *   document answers outlines, page labels, destinations and links in the
+ *   *engine's* words, and this is the one copy of the translation; a host
+ *   that mapped inline would write it a second time and the two copies would
+ *   drift. Pure and DOM-free, so it is exactly the kind of module the seam is
+ *   for.
  *
  * Nothing else from `apps/ui` ships, and that is a decision rather than an
  * oversight. The rest of the UI is either type-only (erased at compile, so
@@ -243,6 +250,14 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "extension/src/ext/surface.js", from: "build" },
 	{ out: "extension/src/ext/viewer-session.js", from: "build" },
 	{ out: "ui/src/platform/errors.js", from: "shared-js" },
+	// SL-4.UI.06: the navigation wire mapper. The guest (the WASM engine in
+	// the offscreen document) speaks the *engine's* vocabulary for outlines,
+	// page labels, destinations and links, and the viewer speaks its own;
+	// `apps/ui/src/viewer/navigation-wire.ts` is the one copy of the mapping
+	// between them, and the extension imports it rather than writing a
+	// second one that would drift. It is pure and DOM-free, so it costs
+	// nothing to ship and nothing to keep honest.
+	{ out: "ui/src/viewer/navigation-wire.js", from: "shared-js" },
 	// SL-4.EXT.09: SL-4.UI.11's i18n runtime, shipped because the viewer page's
 	// strings are registered against it rather than against a third hand-rolled
 	// formatter. `apps/ui/src/i18n/i18n-boundary.test.ts` is the gate that keeps

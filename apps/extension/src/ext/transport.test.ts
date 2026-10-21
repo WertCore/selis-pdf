@@ -43,7 +43,8 @@ function sampleDescriptor(): DocumentSourceDescriptor {
 /** A live client and host, joined by the JSON loopback. */
 function connected() {
 	const link = createLoopbackLink();
-	serveEngineHost({ link: link.host, engine: createFixtureEngine() });
+	const engine = createFixtureEngine();
+	serveEngineHost({ link: link.host, engine, navigation: engine });
 	const client = createEnginePort(link.client);
 	return { link, client };
 }
@@ -52,7 +53,8 @@ definePlatformAdapterContract(
 	"extension offscreen transport",
 	async () => {
 		const link = createLoopbackLink();
-		serveEngineHost({ link: link.host, engine: createFixtureEngine() });
+		const engine = createFixtureEngine();
+		serveEngineHost({ link: link.host, engine, navigation: engine });
 		const adapter = createExtensionAdapter({
 			env: createFakeHostEnv().env,
 			link: link.client,
@@ -285,6 +287,7 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 				textLayer: engine.textLayer,
 				search: engine.search,
 			},
+			navigation: engine,
 		});
 		const client = createEnginePort(link.client);
 		await client.open(sampleDescriptor());
@@ -299,5 +302,199 @@ describe("the transport under the shared contract (SL-4.EXT.06)", () => {
 		const doc = await client.open(sampleDescriptor());
 		const page = await client.extractText(doc, 0);
 		expect(page.text).toBe(SAMPLE_TEXTS[0]);
+	});
+});
+
+/**
+ * The navigation half (SL-4.UI.06).
+ *
+ * The shared contract suite already probes the four reads, but it probes
+ * *shape* — that each returns an array — because its fixture document has no
+ * outline. These tests are the ones that read the content across the wire, and
+ * the ones that prove the two refusals the extension owes are different
+ * refusals: a host that cannot read outlines (6017) and a page that does not
+ * exist (6001).
+ */
+describe("the navigation transport (SL-4.UI.06)", () => {
+	it("carries the outline, the labels, the destinations and the links", async () => {
+		const { client } = connected();
+		const doc = await client.open(sampleDescriptor());
+
+		const outline = await client.outline(doc);
+		expect(outline.map((node) => node.title)).toEqual(["Chapter one", "Appendix"]);
+		// The nesting survives the wire: a flat list would tell a reader that
+		// two chapters are two siblings.
+		expect(outline[0]?.children?.map((child) => child.title)).toEqual(["Figure 1"]);
+		expect(outline[0]?.children?.[0]?.destination?.page).toBe(1);
+		// A bookmark that *names* a destination rather than carrying one comes
+		// back as itself, not dropped.
+		expect(outline[1]?.namedDestination).toBe("here");
+		expect(outline[1]?.destination).toBeUndefined();
+
+		const labels = await client.pageLabels(doc);
+		expect(labels).toEqual([
+			{ firstPage: 0, style: "r", prefix: "p" },
+			{ firstPage: 2, style: "D", firstValue: 7 },
+		]);
+
+		const destinations = await client.destinations(doc);
+		expect(destinations).toEqual([{ name: "here", destination: { page: 2 } }]);
+
+		const links = await client.pageLinks(doc, 0);
+		expect(links.map((link) => link.id)).toEqual(["p0-l0", "launch-1"]);
+		expect(links[0]?.rect).toEqual({ x: 72, y: 700, width: 100, height: 12 });
+	});
+
+	it("reports ADR-0020's disabled action classes verbatim", async () => {
+		// The transport reports what the document says; the *viewer* decides.
+		// A transport that dropped `/Launch` here would make the viewer's
+		// refusal untestable, and would let a real host get away with the same.
+		const { client } = connected();
+		const doc = await client.open(sampleDescriptor());
+		const links = await client.pageLinks(doc, 0);
+		expect(links.map((link) => link.action.kind)).toEqual(["uri", "launch"]);
+		expect(links[1]?.action.uri).toBe("C:/payload.exe");
+	});
+
+	it("refuses an out-of-range page with BINDING_BAD_ARGUMENT, not an empty list", async () => {
+		// "Page 9000 of a 3-page document has no links" and "this host cannot
+		// read links" must not look alike, so the refusal is typed and it is
+		// the *seam's* code rather than the engine's 1301.
+		const { client } = connected();
+		const doc = await client.open(sampleDescriptor());
+		await expect(client.pageLinks(doc, doc.pageCount)).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+			docState: "Unchanged",
+		});
+	});
+
+	it("refuses with BINDING_UNSUPPORTED_OP when the host cannot read outlines", async () => {
+		// A host without the capability is a *capability* fact, not a
+		// malformed request: 6017, not 6001. The two are what let a viewer
+		// tell "nobody could look" from "there was nothing to see".
+		const link = createLoopbackLink();
+		const engine = createFixtureEngine();
+		serveEngineHost({ link: link.host, engine });
+		const client = createEnginePort(link.client);
+		const doc = await client.open(sampleDescriptor());
+		for (const call of [
+			client.outline(doc),
+			client.pageLabels(doc),
+			client.destinations(doc),
+			client.pageLinks(doc, 0),
+		]) {
+			await expect(call).rejects.toMatchObject({
+				code: ErrorCode.BindingUnsupportedOp,
+				docState: "Unchanged",
+			});
+		}
+	});
+
+	it("refuses a closed document with BINDING_BAD_HANDLE, not an empty outline", async () => {
+		const { client } = connected();
+		const doc = await client.open(sampleDescriptor());
+		await client.close(doc);
+		await expect(client.outline(doc)).rejects.toMatchObject({
+			code: ErrorCode.BindingBadHandle,
+			docState: "Unchanged",
+		});
+	});
+
+	it("refuses a closed document before it refuses the capability", async () => {
+		// The order matters and is stated: the document is the *subject* of the
+		// request, so a request naming a document this host never issued is
+		// malformed whatever the host can do. A host that could read outlines
+		// answers 6000 for a closed document and 6017 for a live one; a host
+		// that cannot answers 6000 for a closed document, because the handle
+		// is wrong either way.
+		const link = createLoopbackLink();
+		const engine = createFixtureEngine();
+		serveEngineHost({ link: link.host, engine });
+		const client = createEnginePort(link.client);
+		const doc = await client.open(sampleDescriptor());
+		await client.close(doc);
+		await expect(client.outline(doc)).rejects.toMatchObject({
+			code: ErrorCode.BindingBadHandle,
+			docState: "Unchanged",
+		});
+	});
+
+	it("refuses a bookmark with no title rather than showing an empty panel", async () => {
+		// The page is a trust boundary: the reply arrives as JSON over a port
+		// and every field is checked before it reaches the UI's types.
+		const link = createLoopbackLink();
+		link.host.subscribe(() => {
+			// The host exists; it does not answer on its own.
+		});
+		const client = createEnginePort(link.client);
+		const pending = client.outline({ id: "d1", pageCount: 3, pageSizes: [] });
+		link.host.post({
+			v: 1,
+			id: 1,
+			ok: true,
+			value: {
+				present: true,
+				truncated: false,
+				pruned: false,
+				items: [{ title: 42 }],
+			},
+		} as never);
+		await expect(pending).rejects.toMatchObject({ code: ErrorCode.BindingBadArgument });
+	});
+
+	it("refuses a link whose rectangle is missing a component", async () => {
+		// A rectangle missing a component is a highlight somewhere arbitrary
+		// that still type-checks. The page side refuses it.
+		const link = createLoopbackLink();
+		link.host.subscribe(() => {
+			// The host exists; it does not answer on its own.
+		});
+		const client = createEnginePort(link.client);
+		const pending = client.pageLinks({ id: "d1", pageCount: 3, pageSizes: [] }, 0);
+		link.host.post({
+			v: 1,
+			id: 1,
+			ok: true,
+			value: {
+				page: 0,
+				links: [
+					{
+						id: "l0",
+						rect: { x: 1, y: 2, width: 3 },
+						action: { kind: "uri", uri: "https://example.com/a" },
+					},
+				],
+			},
+		} as never);
+		await expect(pending).rejects.toMatchObject({ code: ErrorCode.BindingBadArgument });
+	});
+
+	it("refuses an action class the viewer does not model", async () => {
+		// The guest maps a class the *engine* does not model to `unknown`, and
+		// the viewer has a decision for `unknown`. A class outside the
+		// viewer's own vocabulary means the host and the page disagree about
+		// the protocol, which is a bug rather than a document fact.
+		const link = createLoopbackLink();
+		link.host.subscribe(() => {
+			// The host exists; it does not answer on its own.
+		});
+		const client = createEnginePort(link.client);
+		const pending = client.pageLinks({ id: "d1", pageCount: 3, pageSizes: [] }, 0);
+		link.host.post({
+			v: 1,
+			id: 1,
+			ok: true,
+			value: {
+				page: 0,
+				links: [
+					{
+						id: "l0",
+						rect: { x: 1, y: 2, width: 3, height: 4 },
+						action: { kind: "rendition" },
+					},
+				],
+			},
+		} as never);
+		await expect(pending).rejects.toMatchObject({ code: ErrorCode.BindingBadArgument });
 	});
 });
