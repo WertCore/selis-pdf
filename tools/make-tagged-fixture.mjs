@@ -1,5 +1,6 @@
 /**
- * Build a TAGGED PDF fixture for the accessibility walk (SL-4.UI.07).
+ * Build a TAGGED PDF fixture for the accessibility walk (SL-4.UI.07) and the
+ * navigation reads (SL-4.UI.06).
  *
  * Every PDF in `corpus/` is untagged, including the one named
  * `structure_simple.pdf` — its catalog carries no `/StructTreeRoot` at all. That
@@ -22,6 +23,28 @@
  *   - a custom role `Chart` mapped through `/RoleMap` to `Figure`, so the
  *     document's own mapping is the thing under test.
  *
+ * ## The navigation structures, and why they are here
+ *
+ * `/Outlines` (bookmarks), `/PageLabels`, `/Dests` and `/Annots` (links) are all
+ * **navigation**, and all four are read by the same task. The fixture carries
+ * all four, plus a **second page**, because:
+ *
+ *   - A bookmark that points at page 1 of a one-page document cannot be shown
+ *     to WORK. Navigating to page 1 and doing nothing look identical, so the
+ *     gate could only count the buttons — which is exactly the bug this
+ *     fixture exists to catch (the buttons used to be dead ends).
+ *   - A bookmark that names a destination (`/Dest (chapter-two)`) is only
+ *     navigable once the name has been resolved against the document's
+ *     `/Dests` tree. Without one, a shell can pass by rendering every
+ *     bookmark as text.
+ *   - `/PageLabels` gives the two pages **different** labels ("i" and "1"), so
+ *     a canvas's accessible name can be checked for being the document's own
+ *     word rather than the page number.
+ *   - The three link annotations are one of each interesting kind: an external
+ *     `/URI` (which must prompt, with the whole destination), an internal
+ *     `/GoTo` (which must navigate), and a `/Launch` (which ADR-0020 refuses,
+ *     with a reason).
+ *
  * Run: node tools/make-tagged-fixture.mjs
  */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -34,15 +57,28 @@ const outPath = join(repoRoot, "corpus", "fixtures", "tagged_structure.pdf");
 /** Objects, in order. Index 0 is the free head. */
 const objects = [
 	null,
-	"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /Outlines 21 0 R /MarkInfo << /Marked true >> >>",
-	"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-	// The page's marked content carries the MCIDs the structure references, so
-	// the tree and the content agree — a tree pointing at content that does not
-	// exist is a fixture that passes the parser and fails the reader.
-	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-	null, // the content stream, filled in below (it needs its own length)
+	// 1: the catalog. `/PageLabels` is an INDIRECT reference to a number tree
+	// (`selis-pdf-doc`'s `page_labels` reads `Obj::Ref(root)` and nothing else),
+	// and `/Dests` is the PDF 1.1 inline dictionary, which the engine reads
+	// before the `/Names` tree.
+	//
+	// The `/Dests` key is a NAME, not a string: a PDF dictionary's keys are
+	// names, and a string key is not valid PDF - the parser reads it as
+	// something else and the catalog stops being a catalog.
+	"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /Outlines 21 0 R /PageLabels 28 0 R " +
+		"/Dests << /chapter-two [26 0 R /XYZ 72 700 null] >> " +
+		"/MarkInfo << /Marked true >> >>",
+	// 2: the page tree. TWO pages, so a bookmark that navigates can be shown to
+	// have changed what is on screen.
+	"<< /Type /Pages /Kids [3 0 R 26 0 R] /Count 2 >>",
+	// 3: page 1. The marked content carries the MCIDs the structure references,
+	// so the tree and the content agree — a tree pointing at content that does
+	// not exist is a fixture that passes the parser and fails the reader.
+	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [29 0 R 30 0 R 31 0 R] " +
+		"/Resources << /Font << /F1 5 0 R >> >> >>",
+	null, // 4: the content stream, filled in below (it needs its own length)
 	"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-	// StructTreeRoot. `/RoleMap` is the document deciding how its own roles map,
+	// 6: StructTreeRoot. `/RoleMap` is the document deciding how its own roles map,
 	// which is exactly the precedence `semanticsOf` implements.
 	"<< /Type /StructTreeRoot /K [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R] " +
 		"/RoleMap << /Chart /Figure >> /ParentTree 6 0 R >>",
@@ -83,20 +119,58 @@ const objects = [
 	// The last child carries a `/A /GoTo` ACTION rather than a `/Dest`, because
 	// the two are different shapes and only one of them is a plain page target.
 	"<< /Type /Outlines /First 22 0 R /Last 23 0 R /Count 2 >>",
+	// "Chapter One" points at PAGE 1 - the page that is already showing, so it
+	// is the control, not the evidence.
 	"<< /Title (Chapter One) /Parent 21 0 R /Dest [3 0 R /XYZ 72 720 null] /Next 23 0 R >>",
+	// "Chapter Two" points at PAGE 2 by a plain page reference: this is the
+	// bookmark whose button must be shown to WORK.
 	"<< /Title (Chapter Two) /Parent 21 0 R /Prev 22 0 R /First 24 0 R /Last 25 0 R " +
-		"/Count 2 /Dest [3 0 R /XYZ 72 700 null] >>",
+		"/Count 2 /Dest [26 0 R /XYZ 72 700 null] >>",
 	"<< /Title (Section 2.1) /Parent 23 0 R /Dest [3 0 R /XYZ 72 690 null] /Next 25 0 R >>",
+	// The last child names a DESTINATION rather than a page. It is navigable
+	// only once the name has been resolved against the catalog's `/Dests`, and
+	// a shell that never resolves names renders it as text - which is why the
+	// fixture carries one.
 	"<< /Title (Section 2.2 via action) /Parent 23 0 R /Prev 24 0 R " +
-		"/A << /S /GoTo /D [3 0 R /XYZ 72 680 null] >> >>",
+		"/A << /S /GoTo /D (chapter-two) >> >>",
+	// 26: PAGE 2. Visibly different from page 1 - a filled block rather than a
+	// word - so "the page changed" is observable in the pixels and not only in
+	// a counter.
+	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 27 0 R " +
+		"/Resources << /Font << /F1 5 0 R >> >> >>",
+	// 27: page 2's content stream, filled in below.
+	null,
+	// 28: the `/PageLabels` number tree. Page 1 is lower-roman ("i") and page 2
+	// restarts at decimal 1 - the front-matter pattern the labels exist for,
+	// and the reason the two pages have different names.
+	"<< /Nums [0 << /S /r >> 1 << /S /D >>] >>",
+	// 29: an EXTERNAL link. ADR-0020: the viewer prompts, showing the WHOLE
+	// destination.
+	"<< /Type /Annot /Subtype /Link /Rect [72 700 220 720] /Border [0 0 0] " +
+		"/A << /S /URI /URI (https://example.com/selis?ref=fixture) >> /Contents (Read more) >>",
+	// 30: an INTERNAL link, to page 2.
+	"<< /Type /Annot /Subtype /Link /Rect [72 660 220 680] /Border [0 0 0] " +
+		"/A << /S /GoTo /D [26 0 R /XYZ 72 700 null] >> /Contents (Go to page two) >>",
+	// 31: a `/Launch`. ADR-0020 names it first: no prompt makes it safe, so
+	// the viewer refuses it - WITH A REASON, which is what the gate checks.
+	"<< /Type /Annot /Subtype /Link /Rect [72 620 220 640] /Border [0 0 0] " +
+		"/A << /S /Launch /F (setup.exe) >> /Contents (Run the installer) >>",
 ];
 
 const content = `BT /F1 24 Tf 72 720 Td (Selis) Tj ET`;
 objects[4] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
 
+// Page 2 draws a filled block: the ink count differs from page 1's single
+// word, so "the page changed" is visible in the pixels.
+const content2 = `0.2 0.4 0.8 rg 72 400 468 300 re f`;
+objects[27] = `<< /Length ${content2.length} >>\nstream\n${content2}\nendstream`;
+
 let pdf = "%PDF-1.7\n";
 const offsets = [];
 for (let i = 1; i < objects.length; i++) {
+	if (objects[i] === null) {
+		throw new Error(`object ${i} was never filled in - the fixture would be corrupt`);
+	}
 	offsets[i] = pdf.length;
 	pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
 }

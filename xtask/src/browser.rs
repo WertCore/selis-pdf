@@ -1229,6 +1229,9 @@ severity has to track whether anything is readable",
     // UI.06: the bookmark outline, from the real engine op.
     assert_bookmark_outline(report)?;
 
+    // UI.06: the navigation reads, and a bookmark button that WORKS.
+    assert_navigation(report)?;
+
     // UI.08: print must be a GENERATED print-ready PDF, not the browser's own
     // PDF printing - the Do: rules the latter out explicitly. Asserting the
     // artifact exists is the point; `window.print()` cannot produce one.
@@ -1781,6 +1784,207 @@ fn assert_bookmark_outline(report: &Json) -> Result<(), String> {
              hierarchy is recorded where assistive technology cannot see it"
                 .into(),
         );
+    }
+    Ok(())
+}
+
+/// UI.06: the navigation reads, and a bookmark button that WORKS.
+///
+/// The bookmark check above counts the buttons. Counting them proves the panel
+/// rendered; it cannot tell a working button from a dead end — and the buttons
+/// used to be dead ends, because `__selisGoto` did not exist. So this asserts
+/// the PAGE CHANGED after a button was pressed, in the pixels the browser
+/// holds.
+///
+/// The fixture has two pages with visibly different content, and the button
+/// pressed is the one for page 2: navigating to the page already showing is
+/// indistinguishable from doing nothing.
+fn assert_navigation(report: &Json) -> Result<(), String> {
+    // ── The page labels ──────────────────────────────────────────────────
+    let labels = report
+        .get("pageLabels")
+        .ok_or_else(|| "the app reported no page labels (pageLabels = None)".to_string())?;
+    if labels.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "the pageLabels read did not succeed: {:?}",
+            labels.get("status")
+        ));
+    }
+    let ranges = labels
+        .get("ranges")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the pageLabels read carried no ranges".to_string())?;
+    if ranges.len() != 2 {
+        return Err(format!(
+            "the fixture declares two label ranges and the app read {} -- the document's own \
+             page numbering is not reaching the screen",
+            ranges.len()
+        ));
+    }
+    // The document's own words: lower-roman for the front matter, decimal for
+    // the body. A viewer that reported page NUMBERS instead would show "D"
+    // nowhere and "r" nowhere.
+    if ranges[0].get("style").and_then(Json::as_str) != Some("r") {
+        return Err(format!(
+            "the first label range is not lower-roman: {:?}",
+            ranges[0].get("style")
+        ));
+    }
+    if ranges[1].get("style").and_then(Json::as_str) != Some("D") {
+        return Err(format!(
+            "the second label range is not decimal: {:?}",
+            ranges[1].get("style")
+        ));
+    }
+
+    // ── The named destinations ────────────────────────────────────────────
+    let destinations = report
+        .get("destinations")
+        .ok_or_else(|| "the app reported no destinations (destinations = None)".to_string())?;
+    if destinations.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "the destinations read did not succeed: {:?}",
+            destinations.get("status")
+        ));
+    }
+    let names = destinations
+        .get("names")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the destinations read carried no names".to_string())?;
+    if !names.iter().any(|name| name.as_str() == Some("chapter-two")) {
+        return Err(format!(
+            "the document names one destination and the app read {names:?} -- a bookmark that \
+             NAMES a destination is not navigable until the name is resolved"
+        ));
+    }
+
+    // ── The links on the page ────────────────────────────────────────────
+    let links = report
+        .get("pageLinks")
+        .ok_or_else(|| "the app reported no page links (pageLinks = None)".to_string())?;
+    if links.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "the pageLinks read did not succeed: {:?}",
+            links.get("status")
+        ));
+    }
+    if links.get("count").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the fixture puts three link annotations on page 1 and the app read {:?}",
+            links.get("count")
+        ));
+    }
+    // EVERY action class crosses, including the ones ADR-0020 disables. A
+    // transport that filtered `/Launch` at the boundary would make "is the
+    // viewer refusing this?" unanswerable from the outside.
+    let kinds: Vec<Json> = links
+        .get("kinds")
+        .and_then(Json::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for wanted in ["uri", "goTo", "launch"] {
+        if !kinds.iter().any(|kind| kind.as_str() == Some(wanted)) {
+            return Err(format!(
+                "the page's links carry no `{wanted}` action (read {kinds:?}) -- the transport \
+                 must report every action class, including the ones ADR-0020 disables"
+            ));
+        }
+    }
+
+    // ── The navigation itself: a bookmark button that WORKS ──────────────
+    let navigation = report
+        .get("navigation")
+        .ok_or_else(|| "the app reported no navigation (navigation = None)".to_string())?;
+    let before_label = navigation.get("beforeLabel").and_then(Json::as_str);
+    let after_label = navigation.get("afterLabel").and_then(Json::as_str);
+    match (before_label, after_label) {
+        (Some(before), Some(after)) if before != after => {}
+        (before, after) => {
+            return Err(format!(
+                "pressing the bookmark did not change the page on screen (aria-label {before:?} \
+                 -> {after:?}) -- the button is a dead end"
+            ));
+        }
+    }
+    // The pixels, not only the label: a shell that renamed the canvas without
+    // rendering the other page would pass the label check.
+    let before_ink = navigation.get("beforeInk").and_then(Json::as_u64);
+    let after_ink = navigation.get("afterInk").and_then(Json::as_u64);
+    match (before_ink, after_ink) {
+        (Some(before), Some(after)) if before != after => {}
+        (before, after) => {
+            return Err(format!(
+                "the canvas shows the same ink after navigating ({before:?} -> {after:?}) -- the \
+                 page on screen did not change"
+            ));
+        }
+    }
+    // ONE canvas. A viewer that stacks them shows every page it has ever
+    // painted, one under the next, and the reader cannot tell which one they
+    // are looking at.
+    if navigation.get("canvases").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the viewer has {:?} canvases on screen; one page is showing and one canvas is it",
+            navigation.get("canvases")
+        ));
+    }
+    let goto = navigation
+        .get("goto")
+        .ok_or_else(|| "the navigation report carried no goto result".to_string())?;
+    if goto.get("status").and_then(Json::as_str) != Some("ok") {
+        return Err(format!(
+            "navigating to page 2 did not succeed: {:?}",
+            goto.get("status")
+        ));
+    }
+    if goto.get("page").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "navigating to page 2 reported page {:?}",
+            goto.get("page")
+        ));
+    }
+    // The document's OWN name for the page, not its number. The fixture labels
+    // page 2 as "1" (the body restarts at decimal 1), so a viewer reporting the
+    // page NUMBER would say "2" here.
+    if goto.get("label").and_then(Json::as_str) != Some("1") {
+        return Err(format!(
+            "page 2 is labelled `1` by the document (its body restarts at 1), and the app \
+             reported {:?}",
+            goto.get("label")
+        ));
+    }
+
+    // ── Activating a link ────────────────────────────────────────────────
+    let panel = report
+        .get("linkPanel")
+        .ok_or_else(|| "the app reported no link panel (linkPanel = None)".to_string())?;
+    if panel.get("items").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the page has three link annotations and the panel rendered {:?} of them",
+            panel.get("items")
+        ));
+    }
+    // ADR-0020: an external destination prompts, and the prompt shows the
+    // WHOLE thing. A shortened or normalised URL is how a reader approves one
+    // destination and is sent to another - so the query string is checked, not
+    // just the host.
+    let shown = panel.get("externalUrl").and_then(Json::as_str).unwrap_or("");
+    if !shown.starts_with("https://example.com/selis") || !shown.contains("ref=fixture") {
+        return Err(format!(
+            "the external link's prompt showed {shown:?} -- it must show the whole destination, \
+             query string and all"
+        ));
+    }
+    if panel.get("externalHost").and_then(Json::as_bool) != Some(true) {
+        return Err("the external prompt did not name the host for the reader to check".into());
+    }
+    // A `/Launch` is refused, WITH A REASON. A refusal that says nothing is
+    // the quiet failure this whole feature exists to prevent.
+    if panel.get("refusal").and_then(Json::as_str) != Some("launch") {
+        return Err(format!(
+            "the /Launch link was not refused with a reason (refusal = {:?})",
+            panel.get("refusal")
+        ));
     }
     Ok(())
 }

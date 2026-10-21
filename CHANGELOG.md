@@ -8,6 +8,25 @@ sections; every entry states what changed and what it means for the user.
 
 ### Added
 
+- The **web viewer** can now navigate a document (SL-4.UI.06, web half): its
+  bookmark outline, its `/PageLabels`, its named destinations and a page's
+  link annotations are read from the same WASM engine that renders the pages.
+  The parts a reader actually notices:
+  - **The bookmark buttons work.** They did not: each one was wired to
+    `globalThis.__selisGoto?.(page)`, an optional-chained call on a global
+    that was never defined, so pressing one did nothing at all. A bookmark
+    that names a destination is now resolved against the document's `/Dests`
+    tree and navigates.
+  - **The page is called what the document calls it.** A document whose front
+    matter is numbered `i, ii, iii` has a page 4 that is not "4"; the page
+    shown on screen is now announced with the document's own label rather than
+    its number.
+  - **Links are activated, under ADR-0020.** An internal link navigates; an
+    external one **asks first and shows the whole destination**, query string
+    included; and a `/Launch` is **refused, with a reason**, rather than
+    swallowing the click silently.
+  - A page whose links cannot be read says so, and a page with no links says
+    that instead — the two are different facts about your file.
 - The **browser extension** can now read a document's navigation structures
   (SL-4.UI.06, extension half): its bookmark outline, its `/PageLabels`, its
   named destinations and a page's link annotations, read from the same WASM

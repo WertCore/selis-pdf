@@ -386,6 +386,76 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
     appearance and prompt readability are all owed a manual pass; only the prompt's *content* is
     asserted headlessly.
+  - **Status — the web-host half (the first host), shipped 2026-10-22.** The three reads the plan
+    said were owed are now called from the web shell, and the one thing the plan did not say was
+    owed turned out to matter more: **the bookmark buttons were dead ends.**
+    - **The buttons were dead ends, and the gate could not see it.** The panel rendered its
+      "go to" controls and wired them to `globalThis.__selisGoto?.(page)` — an optional-chained
+      call on a global **that was never defined**, so pressing one did nothing at all. The browser
+      check counted the buttons (`targets: 4`) and never pressed one, which is exactly the shape
+      of a gate that cannot tell a working control from a dead one. `__selisGoto` now exists, and
+      the check **presses** the button for page 2 and measures the page afterwards.
+    - **A one-page fixture cannot show that navigation works.** Navigating to page 1 and doing
+      nothing look identical, so `tools/make-tagged-fixture.mjs` now emits **two pages** with
+      visibly different content, plus `/PageLabels` (lower-roman front matter, decimal body),
+      `/Dests` (one named destination) and **three link annotations** — one external `/URI`, one
+      internal `/GoTo`, one `/Launch`. The check measures the **ink the browser holds** before and
+      after the press, so "the page changed" is observed in pixels and not only in a counter, and
+      it asserts **one** canvas: a viewer that stacks them shows every page it has ever painted.
+    - **The three reads, and what each one is FOR.** `__selisPageLabels` and `__selisDestinations`
+      and `__selisPageLinks` are the plan's three; they are not three calls for their own sake.
+      The page labels are the document's own name for a page, and the canvas's accessible name is
+      now that word ("Rendered page i", not "Rendered page 1") — a document whose front matter is
+      numbered `i, ii, iii` has a page 4 that is not "4". The named destinations are what a
+      bookmark whose `/Dest` is a *name* needs to be navigable at all: the panel asks for the
+      destinations **before** the outline, so such a bookmark renders as a working control instead
+      of as text. The links are activated through `apps/ui`'s `links.ts`, so the ADR-0020 decision
+      is the shared one: internal navigates, an external destination **prompts with the whole URL**
+      (query string included — a shortened URL is how a reader approves one destination and is sent
+      to another), and a `/Launch` is **refused with a reason** rather than silently swallowed.
+    - **The mapping is ONE copy, in `apps/ui`.** The engine answers in its own vocabulary
+      (`destKind`, `x0`, `target`); `apps/ui/src/viewer/navigation-wire.ts` is the single
+      translation into the viewer's, and both hosts use it. It records what it loses and why: an
+      unrecognised destination class becomes an `xyz` hop **with no parameters** (the UI's own type
+      says so), an inverted `/Rect` is normalised (the guest crosses it verbatim and says the
+      viewer is the layer that decides what "where" means), a link with **no** `/Rect` is dropped
+      (a zero box would "silently swallow clicks in the corner"), and a named-destination **chain**
+      is chased to the page it ends at (the engine passes the chain through so the *viewer* resolves
+      it). 21 unit tests, in Node, with no DOM.
+    - **A Rust regression pin for the fixture**, because a fixture nothing asserts is a fixture
+      nothing checks: `crates/selis-pdf-engine/tests/navigation.rs` reads all four structures out
+      of `corpus/fixtures/tagged_structure.pdf` — the tree is present and nested, a bookmark names
+      a destination the engine does *not* resolve, the two label ranges are the document's own, the
+      named destination resolves to page 2, and the three links carry their action classes
+      **verbatim**, `/Launch` included. 6 tests.
+    - **A fixture bug worth recording, because it is a class of bug.** The first version of the
+      fixture wrote `/Dests << (chapter-two) [...] >>` — a **string** as a dictionary key. A PDF
+      dictionary's keys are **names**, and a string key is not valid PDF: the parser read the
+      catalog as something else, and the engine answered "catalog has no /Pages". The failure was
+      silent and total — not a malformed-document deviation, but a document that was not a document.
+      `/Dests << /chapter-two [...] >>` is the correct spelling.
+    - **The SRI pin is over the COMMITTED bytes, and the mistake is easy to make.** `public/index.html`
+      pins `boot.js` by digest, and `sw-ship.test.ts` recomputes it — over the **working tree**. On a
+      Windows checkout with `core.autocrlf=true` that is CRLF, and on CI (Linux) it is LF: two
+      different digests for one file. The first version of this change computed the digest over the
+      CRLF working tree, which pinned a value CI would never see — **and the deployed boot script
+      would have been blocked by SRI in the browser**, with every local gate green. The pin is over
+      the blob's bytes, and the fixture-sync tool (`tools/sync-check-fixtures.mjs`) now exists so
+      that regenerating a fixture updates the check page's base64 rather than a human doing it.
+    - **NOT met, and why the box stays open.** The extension half (below) is the blocker: its
+      viewer mounts no navigation panels, so there is nothing to look at in a browser on that host
+      and its own browser check cannot run. The **manual browser pass** this block already records
+      (treeview roles, dialog chrome, rail appearance, prompt readability) is still owed on the web
+      host too. And the UI's `NavigationPort.outline` returns a **list**, so `present` / `truncated`
+      / `pruned` have nowhere to live at the seam: the web shell keeps them in its own page state
+      and the extension keeps them on its internal wire, and the type should carry them.
+    - **Spec problems, reported rather than edited.** UI.06's plan entry is three lines and its only
+      DoD is about links — outline, thumbnails, page labels and destinations have **no stated
+      acceptance criteria at all**, so the design decisions behind them (bijective base-26 labels,
+      roman capped at 3999, the two schedulers, the anchor of the row cap) are unrecorded judgement
+      calls a reviewer cannot check. This task's DoD is therefore the *task text*, not the plan, and
+      the plan should say so.
+
   - **Status — the extension half (the second host), shipped 2026-10-22.** The web host's four
     reads are shipped (the "Still owed" line above is **stale**: `pageLabels`, `destinations` and
     `pageLinks` are called from `boot.js` now). This half gives the **MV3 extension** the same

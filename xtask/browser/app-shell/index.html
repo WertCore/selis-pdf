@@ -239,7 +239,7 @@
       // says otherwise - so without this the accessibility walk has nothing
       // tagged to walk and 'walks a tagged document' is never actually tested.
       var TAGGED_PDF_B64 =
-        "JVBERi0xLjcKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgL1N0cnVjdFRyZWVSb290IDYgMCBSIC9PdXRsaW5lcyAyMSAwIFIgL01hcmtJbmZvIDw8IC9NYXJrZWQgdHJ1ZSA+PiA+PgplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMgWzMgMCBSXSAvQ291bnQgMSA+PgplbmRvYmoKMyAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDYxMiA3OTJdIC9Db250ZW50cyA0IDAgUiAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDM2ID4+CnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChTZWxpcykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKNiAwIG9iago8PCAvVHlwZSAvU3RydWN0VHJlZVJvb3QgL0sgWzcgMCBSIDggMCBSIDkgMCBSIDEwIDAgUiAxMSAwIFIgMTIgMCBSIDEzIDAgUiAxNCAwIFIgMTUgMCBSIDE2IDAgUl0gL1JvbGVNYXAgPDwgL0NoYXJ0IC9GaWd1cmUgPj4gL1BhcmVudFRyZWUgNiAwIFIgPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0RvY3VtZW50IC9QIDYgMCBSIC9LIFs3IDEgUl0gPj4KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0gxIC9QIDYgMCBSIC9UIChJbnRyb2R1Y3Rpb24pIC9LIFs5IDAgUiAxMCAwIFJdIC9QZyAzIDAgUiA+PgplbmRvYmoKOSAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvUCAvUCA2IDAgUiAvVCAoRmlyc3QgcGFyYWdyYXBoIG9mIHRoZSBkb2N1bWVudC4pIC9QZyAzIDAgUiA+PgplbmRvYmoKMTAgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL1AgL1AgNiAwIFIgL1QgKFNlY29uZCBwYXJhZ3JhcGggb2YgdGhlIGRvY3VtZW50LikgL1BnIDMgMCBSID4+CmVuZG9iagoxMSAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvSDIgL1AgNiAwIFIgL1QgKEEgc3Vic2VjdGlvbikgL0sgWzEyIDAgUl0gL1BnIDMgMCBSID4+CmVuZG9iagoxMiAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvRmlndXJlIC9QIDYgMCBSIC9UIChSZXZlbnVlIGJ5IHF1YXJ0ZXIpIC9BbHQgKEEgYmFyIGNoYXJ0IG9mIHJldmVudWUgYnkgcXVhcnRlcikgL1BnIDMgMCBSID4+CmVuZG9iagoxMyAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvRmlndXJlIC9QIDYgMCBSIC9UIChBbiB1bmRlc2NyaWJlZCBjaGFydCkgL1BnIDMgMCBSID4+CmVuZG9iagoxNCAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvVGFibGUgL1AgNiAwIFIgL1QgKFF1YXJ0ZXJseSBmaWd1cmVzKSAvSyBbMTcgMCBSIDE4IDAgUl0gL1BnIDMgMCBSID4+CmVuZG9iagoxNSAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvQXJ0aWZhY3QgL1AgNiAwIFIgL0sgWzE2IDAgUl0gL1BnIDMgMCBSID4+CmVuZG9iagoxNiAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvSDEgL1AgNiAwIFIgL1QgKEhpZGRlbiBoZWFkaW5nKSAvUGcgMyAwIFIgPj4KZW5kb2JqCjE3IDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9UUiAvUCA2IDAgUiAvSyBbMTkgMCBSXSAvUGcgMyAwIFIgPj4KZW5kb2JqCjE4IDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9UUiAvUCA2IDAgUiAvSyBbMjAgMCBSXSAvUGcgMyAwIFIgPj4KZW5kb2JqCjE5IDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9USCAvUCA2IDAgUiAvVCAoUXVhcnRlcikgL1BnIDMgMCBSID4+CmVuZG9iagoyMCAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvVEQgL1AgNiAwIFIgL1QgKFExKSAvUGcgMyAwIFIgPj4KZW5kb2JqCjIxIDAgb2JqCjw8IC9UeXBlIC9PdXRsaW5lcyAvRmlyc3QgMjIgMCBSIC9MYXN0IDIzIDAgUiAvQ291bnQgMiA+PgplbmRvYmoKMjIgMCBvYmoKPDwgL1RpdGxlIChDaGFwdGVyIE9uZSkgL1BhcmVudCAyMSAwIFIgL0Rlc3QgWzMgMCBSIC9YWVogNzIgNzIwIG51bGxdIC9OZXh0IDIzIDAgUiA+PgplbmRvYmoKMjMgMCBvYmoKPDwgL1RpdGxlIChDaGFwdGVyIFR3bykgL1BhcmVudCAyMSAwIFIgL1ByZXYgMjIgMCBSIC9GaXJzdCAyNCAwIFIgL0xhc3QgMjUgMCBSIC9Db3VudCAyIC9EZXN0IFszIDAgUiAvWFlaIDcyIDcwMCBudWxsXSA+PgplbmRvYmoKMjQgMCBvYmoKPDwgL1RpdGxlIChTZWN0aW9uIDIuMSkgL1BhcmVudCAyMyAwIFIgL0Rlc3QgWzMgMCBSIC9YWVogNzIgNjkwIG51bGxdIC9OZXh0IDI1IDAgUiA+PgplbmRvYmoKMjUgMCBvYmoKPDwgL1RpdGxlIChTZWN0aW9uIDIuMiB2aWEgYWN0aW9uKSAvUGFyZW50IDIzIDAgUiAvUHJldiAyNCAwIFIgL0EgPDwgL1MgL0dvVG8gL0QgWzMgMCBSIC9YWVogNzIgNjgwIG51bGxdID4+ID4+CmVuZG9iagp4cmVmCjAgMjYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAxMjYgMDAwMDAgbiAKMDAwMDAwMDE4MyAwMDAwMCBuIAowMDAwMDAwMzA5IDAwMDAwIG4gCjAwMDAwMDAzOTUgMDAwMDAgbiAKMDAwMDAwMDQ2NSAwMDAwMCBuIAowMDAwMDAwNjI4IDAwMDAwIG4gCjAwMDAwMDA3MDAgMDAwMDAgbiAKMDAwMDAwMDgwMSAwMDAwMCBuIAowMDAwMDAwOTAzIDAwMDAwIG4gCjAwMDAwMDEwMDcgMDAwMDAgbiAKMDAwMDAwMTEwMyAwMDAwMCBuIAowMDAwMDAxMjM4IDAwMDAwIG4gCjAwMDAwMDEzMzQgMDAwMDAgbiAKMDAwMDAwMTQ0NSAwMDAwMCBuIAowMDAwMDAxNTI5IDAwMDAwIG4gCjAwMDAwMDE2MTUgMDAwMDAgbiAKMDAwMDAwMTY5MyAwMDAwMCBuIAowMDAwMDAxNzcxIDAwMDAwIG4gCjAwMDAwMDE4NTAgMDAwMDAgbiAKMDAwMDAwMTkyNCAwMDAwMCBuIAowMDAwMDAxOTk4IDAwMDAwIG4gCjAwMDAwMDIxMDAgMDAwMDAgbiAKMDAwMDAwMjIzOCAwMDAwMCBuIAowMDAwMDAyMzQwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgMjYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjI0NjgKJSVFT0YK"
+        "JVBERi0xLjcKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgL1N0cnVjdFRyZWVSb290IDYgMCBSIC9PdXRsaW5lcyAyMSAwIFIgL1BhZ2VMYWJlbHMgMjggMCBSIC9EZXN0cyA8PCAvY2hhcHRlci10d28gWzI2IDAgUiAvWFlaIDcyIDcwMCBudWxsXSA+PiAvTWFya0luZm8gPDwgL01hcmtlZCB0cnVlID4+ID4+CmVuZG9iagoyIDAgb2JqCjw8IC9UeXBlIC9QYWdlcyAvS2lkcyBbMyAwIFIgMjYgMCBSXSAvQ291bnQgMiA+PgplbmRvYmoKMyAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDYxMiA3OTJdIC9Db250ZW50cyA0IDAgUiAvQW5ub3RzIFsyOSAwIFIgMzAgMCBSIDMxIDAgUl0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAzNiA+PgpzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcyMCBUZCAoU2VsaXMpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCjYgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdFRyZWVSb290IC9LIFs3IDAgUiA4IDAgUiA5IDAgUiAxMCAwIFIgMTEgMCBSIDEyIDAgUiAxMyAwIFIgMTQgMCBSIDE1IDAgUiAxNiAwIFJdIC9Sb2xlTWFwIDw8IC9DaGFydCAvRmlndXJlID4+IC9QYXJlbnRUcmVlIDYgMCBSID4+CmVuZG9iago3IDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9Eb2N1bWVudCAvUCA2IDAgUiAvSyBbNyAxIFJdID4+CmVuZG9iago4IDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9IMSAvUCA2IDAgUiAvVCAoSW50cm9kdWN0aW9uKSAvSyBbOSAwIFIgMTAgMCBSXSAvUGcgMyAwIFIgPj4KZW5kb2JqCjkgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL1AgL1AgNiAwIFIgL1QgKEZpcnN0IHBhcmFncmFwaCBvZiB0aGUgZG9jdW1lbnQuKSAvUGcgMyAwIFIgPj4KZW5kb2JqCjEwIDAgb2JqCjw8IC9UeXBlIC9TdHJ1Y3RFbGVtIC9TIC9QIC9QIDYgMCBSIC9UIChTZWNvbmQgcGFyYWdyYXBoIG9mIHRoZSBkb2N1bWVudC4pIC9QZyAzIDAgUiA+PgplbmRvYmoKMTEgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0gyIC9QIDYgMCBSIC9UIChBIHN1YnNlY3Rpb24pIC9LIFsxMiAwIFJdIC9QZyAzIDAgUiA+PgplbmRvYmoKMTIgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0ZpZ3VyZSAvUCA2IDAgUiAvVCAoUmV2ZW51ZSBieSBxdWFydGVyKSAvQWx0IChBIGJhciBjaGFydCBvZiByZXZlbnVlIGJ5IHF1YXJ0ZXIpIC9QZyAzIDAgUiA+PgplbmRvYmoKMTMgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0ZpZ3VyZSAvUCA2IDAgUiAvVCAoQW4gdW5kZXNjcmliZWQgY2hhcnQpIC9QZyAzIDAgUiA+PgplbmRvYmoKMTQgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL1RhYmxlIC9QIDYgMCBSIC9UIChRdWFydGVybHkgZmlndXJlcykgL0sgWzE3IDAgUiAxOCAwIFJdIC9QZyAzIDAgUiA+PgplbmRvYmoKMTUgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0FydGlmYWN0IC9QIDYgMCBSIC9LIFsxNiAwIFJdIC9QZyAzIDAgUiA+PgplbmRvYmoKMTYgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL0gxIC9QIDYgMCBSIC9UIChIaWRkZW4gaGVhZGluZykgL1BnIDMgMCBSID4+CmVuZG9iagoxNyAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvVFIgL1AgNiAwIFIgL0sgWzE5IDAgUl0gL1BnIDMgMCBSID4+CmVuZG9iagoxOCAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvVFIgL1AgNiAwIFIgL0sgWzIwIDAgUl0gL1BnIDMgMCBSID4+CmVuZG9iagoxOSAwIG9iago8PCAvVHlwZSAvU3RydWN0RWxlbSAvUyAvVEggL1AgNiAwIFIgL1QgKFF1YXJ0ZXIpIC9QZyAzIDAgUiA+PgplbmRvYmoKMjAgMCBvYmoKPDwgL1R5cGUgL1N0cnVjdEVsZW0gL1MgL1REIC9QIDYgMCBSIC9UIChRMSkgL1BnIDMgMCBSID4+CmVuZG9iagoyMSAwIG9iago8PCAvVHlwZSAvT3V0bGluZXMgL0ZpcnN0IDIyIDAgUiAvTGFzdCAyMyAwIFIgL0NvdW50IDIgPj4KZW5kb2JqCjIyIDAgb2JqCjw8IC9UaXRsZSAoQ2hhcHRlciBPbmUpIC9QYXJlbnQgMjEgMCBSIC9EZXN0IFszIDAgUiAvWFlaIDcyIDcyMCBudWxsXSAvTmV4dCAyMyAwIFIgPj4KZW5kb2JqCjIzIDAgb2JqCjw8IC9UaXRsZSAoQ2hhcHRlciBUd28pIC9QYXJlbnQgMjEgMCBSIC9QcmV2IDIyIDAgUiAvRmlyc3QgMjQgMCBSIC9MYXN0IDI1IDAgUiAvQ291bnQgMiAvRGVzdCBbMjYgMCBSIC9YWVogNzIgNzAwIG51bGxdID4+CmVuZG9iagoyNCAwIG9iago8PCAvVGl0bGUgKFNlY3Rpb24gMi4xKSAvUGFyZW50IDIzIDAgUiAvRGVzdCBbMyAwIFIgL1hZWiA3MiA2OTAgbnVsbF0gL05leHQgMjUgMCBSID4+CmVuZG9iagoyNSAwIG9iago8PCAvVGl0bGUgKFNlY3Rpb24gMi4yIHZpYSBhY3Rpb24pIC9QYXJlbnQgMjMgMCBSIC9QcmV2IDI0IDAgUiAvQSA8PCAvUyAvR29UbyAvRCAoY2hhcHRlci10d28pID4+ID4+CmVuZG9iagoyNiAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDYxMiA3OTJdIC9Db250ZW50cyAyNyAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjI3IDAgb2JqCjw8IC9MZW5ndGggMzQgPj4Kc3RyZWFtCjAuMiAwLjQgMC44IHJnIDcyIDQwMCA0NjggMzAwIHJlIGYKZW5kc3RyZWFtCmVuZG9iagoyOCAwIG9iago8PCAvTnVtcyBbMCA8PCAvUyAvciA+PiAxIDw8IC9TIC9EID4+XSA+PgplbmRvYmoKMjkgMCBvYmoKPDwgL1R5cGUgL0Fubm90IC9TdWJ0eXBlIC9MaW5rIC9SZWN0IFs3MiA3MDAgMjIwIDcyMF0gL0JvcmRlciBbMCAwIDBdIC9BIDw8IC9TIC9VUkkgL1VSSSAoaHR0cHM6Ly9leGFtcGxlLmNvbS9zZWxpcz9yZWY9Zml4dHVyZSkgPj4gL0NvbnRlbnRzIChSZWFkIG1vcmUpID4+CmVuZG9iagozMCAwIG9iago8PCAvVHlwZSAvQW5ub3QgL1N1YnR5cGUgL0xpbmsgL1JlY3QgWzcyIDY2MCAyMjAgNjgwXSAvQm9yZGVyIFswIDAgMF0gL0EgPDwgL1MgL0dvVG8gL0QgWzI2IDAgUiAvWFlaIDcyIDcwMCBudWxsXSA+PiAvQ29udGVudHMgKEdvIHRvIHBhZ2UgdHdvKSA+PgplbmRvYmoKMzEgMCBvYmoKPDwgL1R5cGUgL0Fubm90IC9TdWJ0eXBlIC9MaW5rIC9SZWN0IFs3MiA2MjAgMjIwIDY0MF0gL0JvcmRlciBbMCAwIDBdIC9BIDw8IC9TIC9MYXVuY2ggL0YgKHNldHVwLmV4ZSkgPj4gL0NvbnRlbnRzIChSdW4gdGhlIGluc3RhbGxlcikgPj4KZW5kb2JqCnhyZWYKMCAzMgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDE5NyAwMDAwMCBuIAowMDAwMDAwMjYxIDAwMDAwIG4gCjAwMDAwMDA0MTggMDAwMDAgbiAKMDAwMDAwMDUwNCAwMDAwMCBuIAowMDAwMDAwNTc0IDAwMDAwIG4gCjAwMDAwMDA3MzcgMDAwMDAgbiAKMDAwMDAwMDgwOSAwMDAwMCBuIAowMDAwMDAwOTEwIDAwMDAwIG4gCjAwMDAwMDEwMTIgMDAwMDAgbiAKMDAwMDAwMTExNiAwMDAwMCBuIAowMDAwMDAxMjEyIDAwMDAwIG4gCjAwMDAwMDEzNDcgMDAwMDAgbiAKMDAwMDAwMTQ0MyAwMDAwMCBuIAowMDAwMDAxNTU0IDAwMDAwIG4gCjAwMDAwMDE2MzggMDAwMDAgbiAKMDAwMDAwMTcyNCAwMDAwMCBuIAowMDAwMDAxODAyIDAwMDAwIG4gCjAwMDAwMDE4ODAgMDAwMDAgbiAKMDAwMDAwMTk1OSAwMDAwMCBuIAowMDAwMDAyMDMzIDAwMDAwIG4gCjAwMDAwMDIxMDcgMDAwMDAgbiAKMDAwMDAwMjIwOSAwMDAwMCBuIAowMDAwMDAyMzQ4IDAwMDAwIG4gCjAwMDAwMDI0NTAgMDAwMDAgbiAKMDAwMDAwMjU2NyAwMDAwMCBuIAowMDAwMDAyNjk1IDAwMDAwIG4gCjAwMDAwMDI3ODAgMDAwMDAgbiAKMDAwMDAwMjgzOCAwMDAwMCBuIAowMDAwMDAzMDExIDAwMDAwIG4gCjAwMDAwMDMxNzQgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSAzMiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKMzMyOAolJUVPRgo="
 
 
 
@@ -1034,6 +1034,188 @@
                   .getAttribute("aria-expanded"),
             };
           });
+        })
+        // 1n. THE NAVIGATION READS (SL-4.UI.06).
+        //
+        //     The three reads the host owed, and the one thing that matters
+        //     most: a bookmark button that WORKS.
+        //
+        //     The earlier version of this check COUNTED the bookmark buttons
+        //     (`targets: 4`) and never pressed one. Counting them proves the
+        //     panel rendered; it cannot tell a working button from a dead end,
+        //     and the buttons WERE dead ends - `__selisGoto?.(page)` was an
+        //     optional-chained call on a global that was never defined, so
+        //     pressing one did nothing at all.
+        //
+        //     So the button is pressed, and the PAGE is measured afterwards.
+        //     The fixture has two pages with visibly different content, so
+        //     "the page changed" is observable in the pixels and not only in a
+        //     counter. The button for PAGE 1 (index 0) is deliberately not the
+        //     one pressed: navigating to the page already showing is
+        //     indistinguishable from doing nothing.
+        .then(function () {
+          globalThis.__selisView(TAGGED_PDF_B64);
+          return globalThis.__selisPageLabels();
+        })
+        .then(function (labels) {
+          out.pageLabels = {
+            status: labels.status,
+            ranges: labels.ranges || [],
+          };
+          return globalThis.__selisDestinations();
+        })
+        .then(function (destinations) {
+          out.destinations = {
+            status: destinations.status,
+            names: (destinations.destinations || []).map(function (d) {
+              return d.name;
+            }),
+          };
+          return globalThis.__selisPageLinks(0);
+        })
+        .then(function (links) {
+          out.pageLinks = {
+            status: links.status,
+            count: (links.links || []).length,
+            kinds: (links.links || []).map(function (l) {
+              return l.action.kind;
+            }),
+          };
+        })
+        .then(function () {
+          var button = document.getElementById("selis-bookmarks");
+          var panel = document.getElementById("selis-bookmark-rows");
+          if (!button || !panel) throw new Error("the app exposed no bookmark control");
+          button.click();
+          return waitFor(
+            function () {
+              return panel.querySelector("[data-role=outline-target]") !== null;
+            },
+            20000,
+            "the bookmark outline to render its targets",
+          );
+        })
+        .then(function () {
+          var panel = document.getElementById("selis-bookmark-rows");
+
+          /**
+           * The ink on the canvas as the BROWSER holds it.
+           *
+           * Read back through `getImageData`, not taken from the engine's
+           * buffer: the question is what the reader is looking at.
+           */
+          function canvasInk() {
+            var c = document.getElementById("selis-page");
+            if (!c) return null;
+            var ctx = c.getContext("2d");
+            var data = ctx.getImageData(0, 0, c.width, c.height).data;
+            var ink = 0;
+            for (var i = 0; i < data.length; i += 4) {
+              if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) ink += 1;
+            }
+            return ink;
+          }
+
+          var canvas = document.getElementById("selis-page");
+          var before = {
+            label: canvas ? canvas.getAttribute("aria-label") : null,
+            ink: canvasInk(),
+          };
+          // The button for PAGE 2 (index 1).
+          var target = panel.querySelector('[data-role=outline-target][data-page="1"]');
+          if (!target) throw new Error("the outline offered no target for page 2");
+          target.click();
+          return waitFor(
+            function () {
+              var c = document.getElementById("selis-page");
+              return !!c && c.getAttribute("aria-label") !== before.label;
+            },
+            20000,
+            "the bookmark to change the page on screen",
+          ).then(function () {
+            var after = document.getElementById("selis-page");
+            out.navigation = {
+              beforeLabel: before.label,
+              afterLabel: after ? after.getAttribute("aria-label") : null,
+              beforeInk: before.ink,
+              afterInk: canvasInk(),
+              // ONE canvas, not one per page rendered: a viewer that stacks
+              // them shows every page it has ever painted, one under the next.
+              canvases: document.querySelectorAll("#selis-page").length,
+              goto: null,
+            };
+            return globalThis.__selisGoto(1);
+          });
+        })
+        .then(function (went) {
+          out.navigation.goto = {
+            status: went.status,
+            page: went.page,
+            label: went.label,
+          };
+        })
+        // 1o. THE LINKS ON THE PAGE, AND WHAT ACTIVATING ONE DOES.
+        //
+        //     ADR-0020: an external URI prompts with the WHOLE destination
+        //     shown, and a `/Launch` is refused. Both are checked here because
+        //     both are decisions the VIEWER makes, and the transport only
+        //     reports - a shell that filtered `/Launch` out at the boundary
+        //     would make "is the viewer refusing this?" unanswerable.
+        .then(function () {
+          var linkButton = document.getElementById("selis-links");
+          var panel = document.getElementById("selis-link-rows");
+          if (!linkButton || !panel) throw new Error("the app exposed no links control");
+          linkButton.click();
+          return waitFor(
+            function () {
+              return (
+                panel.querySelector("[data-role=link-item]") !== null ||
+                panel.querySelector("[data-role=no-links]") !== null ||
+                panel.querySelector("[data-role=unavailable]") !== null
+              );
+            },
+            20000,
+            "the links panel to render the page's links",
+          );
+        })
+        .then(function () {
+          var panel = document.getElementById("selis-link-rows");
+          out.linkPanel = { items: panel.querySelectorAll("[data-role=link-item]").length };
+          var buttons = panel.querySelectorAll("[data-role=link-activate]");
+          var uri = null;
+          var launch = null;
+          for (var i = 0; i < buttons.length; i += 1) {
+            var text = buttons[i].textContent || "";
+            if (text.indexOf("Read more") >= 0) uri = buttons[i];
+            if (text.indexOf("Run the installer") >= 0) launch = buttons[i];
+          }
+          out.linkPanel.found = { uri: !!uri, launch: !!launch };
+          if (uri) uri.click();
+          return waitFor(
+            function () {
+              return panel.querySelector("[data-role=external-url]") !== null;
+            },
+            10000,
+            "the external link to prompt before opening",
+          ).then(function () {
+            var shown = panel.querySelector("[data-role=external-url]");
+            out.linkPanel.externalUrl = shown ? shown.textContent : null;
+            out.linkPanel.externalHost =
+              panel.querySelector("[data-role=external-host]") !== null;
+            if (launch) launch.click();
+            return waitFor(
+              function () {
+                return panel.querySelector("[data-role=link-refused]") !== null;
+              },
+              10000,
+              "the /Launch link to be refused with a reason",
+            );
+          });
+        })
+        .then(function () {
+          var refused = document.querySelector("#selis-link-rows [data-role=link-refused]");
+          out.linkPanel.refusal = refused ? refused.dataset.reason : null;
+          out.linkPanel.refusalText = refused ? refused.textContent : null;
         })
         // 1k. AXE-CORE SCAN (UI.07).
         //
