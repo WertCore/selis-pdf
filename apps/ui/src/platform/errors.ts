@@ -35,6 +35,15 @@ export const ErrorCode = {
 	BindingBadHandle: 6000,
 	/** A request argument is invalid (page out of range, malformed options). */
 	BindingBadArgument: 6001,
+	/**
+	 * The request named a capability this host does not provide.
+	 *
+	 * Distinct from {@link BindingBadArgument} on purpose: "this host cannot
+	 * read outlines" is a fact about the host, not a malformed request, and
+	 * collapsing the two would make a viewer that was never given the
+	 * capability look like one that was given it and failed.
+	 */
+	BindingUnsupportedOp: 6017,
 } as const;
 
 /** One registry code value. */

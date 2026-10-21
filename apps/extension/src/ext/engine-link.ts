@@ -95,6 +95,10 @@ const KNOWN_OPS: ReadonlySet<string> = new Set([
 	"text",
 	"textLayer",
 	"search",
+	"outline",
+	"pageLabels",
+	"destinations",
+	"pageLinks",
 	"cancel",
 ]);
 

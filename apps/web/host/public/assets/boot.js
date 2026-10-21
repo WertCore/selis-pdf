@@ -645,9 +645,10 @@ globalThis.__selisOpen = function (base64) {
  *
  * @param {{ w: number, h: number, rgba: Uint8ClampedArray }} page
  * @param {HTMLElement|null} mount
+ * @param {number} [pageNumber] the zero-based page number, for the accessible name
  * @returns {{ w: number, h: number, screenInk: number } | null}
  */
-function paintPage(page, mount) {
+function paintPage(page, mount, pageNumber = 0) {
 	if (page.status !== "ok" || mount === null || !(mount instanceof HTMLElement)) {
 		return null;
 	}
@@ -661,11 +662,24 @@ function paintPage(page, mount) {
 	canvas.style.height = `${page.h}px`;
 	canvas.id = "selis-page";
 	canvas.setAttribute("role", "img");
-	canvas.setAttribute("aria-label", "Rendered page 1");
+	// The document's OWN name for the page when it has one. A document whose
+	// front matter is numbered `i, ii, iii` has a page 4 that is not "4", and
+	// a screen reader told "Rendered page 4" is being told something the
+	// document does not say.
+	const label = documentPageLabel(pageNumber);
+	canvas.setAttribute(
+		"aria-label",
+		label === null ? `Rendered page ${pageNumber + 1}` : `Rendered page ${label}`,
+	);
 
 	const context = canvas.getContext("2d");
 	if (context === null) return null;
 	context.putImageData(new ImageData(page.rgba, page.w, page.h), 0, 0);
+	// REPLACE, not append. A viewer that stacks canvases shows every page it
+	// has ever rendered, one under the next, and the reader cannot tell which
+	// one they are looking at.
+	const previous = mount.querySelector("#selis-page");
+	if (previous !== null) previous.remove();
 	mount.appendChild(canvas);
 
 	// Read back what the browser actually holds.
@@ -1313,6 +1327,8 @@ globalThis.__selisView = function (source) {
 	}
 	clearFailure();
 	const painted = paintPage(opened, root);
+	// The document is showing its first page, whatever it was before.
+	currentPage = 0;
 	// The RGBA buffer is ~1.9 MB of document pixels. It is not put on any
 	// global and not reported back, so nothing retains it after painting.
 	delete opened.rgba;
@@ -1621,24 +1637,26 @@ globalThis.__selisHealth = async function () {
  */
 globalThis.__selisOutline = async function () {
 	try {
-		if (openDocumentSource === null) {
+		const bytes = openBytes();
+		if (bytes === null) {
 			return { status: "refused", detail: "no document is open" };
 		}
-		const binary = atob(openDocumentSource());
-		const bytes = new Uint8Array(binary.length);
-		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-		const doc = openDocumentOnce(bytes).doc;
-		const { response } = dispatch({ op: "outline", doc });
+		const opened = openDocumentOnce(bytes);
+		const { response } = dispatch({ op: "outline", doc: opened.doc });
 		if (response.ok !== true) {
 			return { status: "refused", wire: response };
 		}
-		const value = response.value ?? {};
+		// Mapped through the shared vocabulary, so the panel below works in the
+		// viewer's own terms (a `destination`, a `namedDestination`) rather than
+		// in the engine's.
+		const { mapOutline } = await navigationMapper();
+		const report = mapOutline(response.value);
 		return {
 			status: "ok",
-			present: value.present === true,
-			truncated: value.truncated === true,
-			pruned: value.pruned === true,
-			items: Array.isArray(value.items) ? value.items : [],
+			present: report.present,
+			truncated: report.truncated,
+			pruned: report.pruned,
+			items: report.items,
 		};
 	} catch (error) {
 		return {
@@ -1684,17 +1702,28 @@ function renderOutlinePanel(report) {
 			const entry = document.createElement("li");
 			entry.dataset.role = "outline-item";
 			entry.dataset.depth = String(depth);
-			const target = item?.target ?? null;
+			// A bookmark's destination, resolved. Either it names a page
+			// directly, or it names a destination the document's `/Dests` tree
+			// carries - and the second form is only navigable once that tree
+			// has been read, which is why the panel asks for the destinations
+			// BEFORE it asks for the outline.
+			const direct = item?.destination?.page;
+			const named = item?.namedDestination;
+			const resolved = named === undefined ? undefined : navigationDestinations.get(named);
 			const goToPage =
-				target !== null && target.kind === "page" && typeof target.page === "number"
-					? target.page
-					: null;
+				typeof direct === "number" ? direct : (resolved?.page ?? null);
 			if (goToPage === null) {
 				// No target, or one this viewer cannot honour (a named destination
-				// it would have to resolve first). Text, not a no-op control.
+				// the document does not define). Text, not a no-op control.
 				const label = document.createElement("span");
 				label.dataset.role = "outline-label";
 				label.textContent = String(item?.title ?? "");
+				if (named !== undefined) {
+					// Said, not swallowed: the bookmark names a destination and the
+					// document does not have it.
+					label.dataset.role = "outline-unresolved";
+					label.dataset.namedDestination = named;
+				}
 				entry.appendChild(label);
 			} else {
 				const button = document.createElement("button");
@@ -1728,6 +1757,479 @@ function renderOutlinePanel(report) {
 		note.textContent = "This outline could not be read in full.";
 		host.appendChild(note);
 	}
+}
+
+// ── navigation (SL-4.UI.06) ────────────────────────────────────────────────
+
+/**
+ * The open document's bytes, or `null` when nothing is open.
+ *
+ * One helper, because four places wanted it and each had grown its own copy:
+ * the outline reader, the three navigation readers and the page renderer all
+ * want the bytes of the document that is open NOW.
+ *
+ * @returns {Uint8Array|null}
+ */
+function openBytes() {
+	if (openDocumentSource === null) return null;
+	const binary = atob(openDocumentSource());
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+/**
+ * The key the open document's cached facts belong to.
+ *
+ * The same shape `openDocumentOnce` uses, so a document that changed is a
+ * different key and the cache cannot serve one document's navigation facts for
+ * another.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+function documentKey(bytes) {
+	return `${bytes.length}:${bytes[0]}:${bytes[1]}:${bytes[bytes.length - 1]}`;
+}
+
+/**
+ * The viewer's navigation mapper, once loaded.
+ *
+ * The mapping lives in `apps/ui` next to the types it produces, because that
+ * is where the vocabulary is defined and where it can be asserted in Node. The
+ * web host reaches it by URL - the same way it reaches every other viewer
+ * module - rather than by a second copy of the rules.
+ */
+let navigationWire = null;
+
+/**
+ * Load the navigation mapper.
+ *
+ * @returns {Promise<object>} the `apps/ui` navigation module
+ */
+async function navigationMapper() {
+	if (navigationWire === null) {
+		navigationWire = await import("/assets/ui/viewer/navigation-wire.js");
+	}
+	return navigationWire;
+}
+
+/**
+ * The open document's `/PageLabels` ranges, once fetched.
+ *
+ * `null` means "not fetched yet", which is NOT the same as "fetched, and the
+ * document has none" - an empty array. The difference matters: a page label is
+ * the document's own name for a page, and a viewer that cannot tell the two
+ * apart will say "page 4" about a page the document calls "iv" and never say
+ * why.
+ */
+let navigationLabels = null;
+
+/**
+ * The open document's named destinations, by name.
+ *
+ * A bookmark whose `/Dest` is a NAME is only navigable once the name has been
+ * resolved against the document's `/Dests` tree, and that is what this is for.
+ */
+let navigationDestinations = new Map();
+
+/**
+ * The key the two caches above belong to.
+ */
+let navigationKey = "";
+
+/**
+ * The page the viewer is showing.
+ *
+ * Zero-based. It decides which page's links are on offer, and it is the page
+ * the canvas's accessible name is about - so it is set by the two paths that
+ * can change what is on screen and by nothing else.
+ */
+let currentPage = 0;
+
+/**
+ * The page-label formatter, once loaded.
+ *
+ * `apps/ui`'s `page-labels.js` owns the arithmetic - bijective base-26
+ * alphabetic labels, roman numerals capped at 3999, the spec's "no range owns
+ * this page" case - and duplicating it here would be how the two copies
+ * disagreed about what page 27 is called.
+ */
+let pageLabelFormatter = null;
+
+/**
+ * Load the page-label formatter.
+ *
+ * @returns {Promise<(page: number, ranges: readonly unknown[]) => string|null>}
+ */
+async function pageLabelFormatterFor() {
+	if (pageLabelFormatter === null) {
+		const module = await import("/assets/ui/viewer/page-labels.js");
+		pageLabelFormatter = module.pageLabelFor;
+	}
+	return pageLabelFormatter;
+}
+
+/**
+ * Say the document's own name for the page on screen, now that it is known.
+ *
+ * The canvas may have been painted before the document's numbering was read,
+ * in which case it carries the fallback name. This corrects it in place
+ * rather than repainting the page, which would cost a render to fix a label.
+ */
+function relabelCanvas() {
+	if (root === null) return;
+	const canvas = root.querySelector("#selis-page");
+	if (canvas === null) return;
+	const label = documentPageLabel(currentPage);
+	if (label === null) return;
+	canvas.setAttribute("aria-label", `Rendered page ${label}`);
+}
+
+/**
+ * The document's own name for a page, or `null` when it has not been read yet.
+ *
+ * `null` is not "the page number": it is "the document's numbering is not
+ * known", and the caller words it differently. A viewer that answers "3" for a
+ * page the document calls "iii" is not wrong exactly, but it is less true
+ * than the document's own word.
+ *
+ * @param {number} page the zero-based page number
+ * @returns {string|null}
+ */
+function documentPageLabel(page) {
+	if (pageLabelFormatter === null || navigationLabels === null) return null;
+	const label = pageLabelFormatter(page, navigationLabels);
+	return label === null || label === "" ? null : label;
+}
+
+/**
+ * The document's `/PageLabels` ranges (SL-4.UI.06).
+ *
+ * One of the three navigation reads the plan says the host owed. The engine
+ * had the op and the viewer had the vocabulary; what was missing was the call
+ * between them, which is why the host could not satisfy the whole
+ * `NavigationPort` and why a document's own page numbering never reached the
+ * screen.
+ *
+ * @returns {Promise<object>} `{status:"ok", ranges}` or a refusal
+ */
+globalThis.__selisPageLabels = async () => {
+	try {
+		const bytes = openBytes();
+		if (bytes === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const opened = openDocumentOnce(bytes);
+		const { response } = dispatch({ op: "pageLabels", doc: opened.doc });
+		if (response.ok !== true) {
+			return { status: "refused", wire: response };
+		}
+		const { mapPageLabels } = await navigationMapper();
+		const ranges = mapPageLabels(response.value);
+		navigationLabels = ranges;
+		navigationKey = documentKey(bytes);
+		// The formatter, so the page's own name can be said the moment it is
+		// known rather than the next time somebody navigates.
+		await pageLabelFormatterFor();
+		// The canvas may already be on screen with the fallback name. Say the
+		// document's own name now that it is known.
+		relabelCanvas();
+		return { status: "ok", ranges };
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * The document's named destinations, from its `/Dests` tree (SL-4.UI.06).
+ *
+ * @returns {Promise<object>} `{status:"ok", destinations}` or a refusal
+ */
+globalThis.__selisDestinations = async () => {
+	try {
+		const bytes = openBytes();
+		if (bytes === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const opened = openDocumentOnce(bytes);
+		const { response } = dispatch({ op: "destinations", doc: opened.doc });
+		if (response.ok !== true) {
+			return { status: "refused", wire: response };
+		}
+		const { mapDestinations } = await navigationMapper();
+		const destinations = mapDestinations(response.value);
+		navigationDestinations = new Map(
+			destinations.map((entry) => [entry.name, entry.destination]),
+		);
+		navigationKey = documentKey(bytes);
+		return { status: "ok", destinations };
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * One page's link annotations (SL-4.UI.06).
+ *
+ * The third of the three. Every action class crosses, including the ones
+ * ADR-0020 disables - the engine reports, the viewer decides, and a transport
+ * that filtered them here would make "is the viewer refusing this, or does
+ * the engine not know about it?" unanswerable.
+ *
+ * @param {number} page the zero-based page number
+ * @returns {Promise<object>} `{status:"ok", links}` or a refusal
+ */
+globalThis.__selisPageLinks = async (page) => {
+	try {
+		const bytes = openBytes();
+		if (bytes === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const opened = openDocumentOnce(bytes);
+		const { response } = dispatch({ op: "pageLinks", doc: opened.doc, page });
+		if (response.ok !== true) {
+			return { status: "refused", wire: response };
+		}
+		const { mapPageLinks } = await navigationMapper();
+		return { status: "ok", page, links: mapPageLinks(response.value) };
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * Show a page of the open document (SL-4.UI.06).
+ *
+ * ## Why this exists
+ *
+ * The bookmark panel's buttons call `__selisGoto`. Until this function
+ * existed they were **dead ends**: the call was `globalThis.__selisGoto?.(page)`
+ * - an optional-chained call on a global that was never defined - so pressing
+ * a bookmark did nothing at all, and the browser check counted the buttons
+ * rather than pressing them. A button that goes nowhere is a dead end wearing
+ * a button, which is the defect the panel's own comment says it does not want.
+ *
+ * The page is rendered through the same `render` op the print path uses, at
+ * 72 DPI - one pixel per point - which is the size the viewer's canvas is
+ * already drawn at.
+ *
+ * @param {number} page the zero-based page number
+ * @returns {Promise<object>} `{status:"ok", page, label, painted}` or a refusal
+ */
+globalThis.__selisGoto = async (page) => {
+	try {
+		const bytes = openBytes();
+		if (bytes === null) {
+			return { status: "refused", detail: "no document is open" };
+		}
+		const opened = openDocumentOnce(bytes);
+		if (!Number.isInteger(page) || page < 0 || page >= opened.pages) {
+			return { status: "refused", detail: `page ${page} is not in this document` };
+		}
+		const { response, attachment } = dispatch({
+			op: "render",
+			doc: opened.doc,
+			page,
+			params: { dpi: 72 },
+		});
+		if (response.ok !== true || attachment === null) {
+			return { status: "refused", wire: response };
+		}
+		// The labels, before the paint: the canvas's accessible name is the
+		// document's own name for the page, and it can only be that if the
+		// numbering has been read by the time the page is announced.
+		await globalThis.__selisPageLabels();
+		const painted = paintPage(
+			{
+				status: "ok",
+				w: response.value.width,
+				h: response.value.height,
+				rgba: new Uint8ClampedArray(
+					attachment.buffer,
+					attachment.byteOffset,
+					attachment.byteLength,
+				),
+			},
+			root,
+			page,
+		);
+		currentPage = page;
+		return { status: "ok", page, label: documentPageLabel(page), painted };
+	} catch (error) {
+		return {
+			status: "threw",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/**
+ * The link list's DOM, once the shell has built it.
+ */
+let linkRows = null;
+/**
+ * The viewer's link policy, once loaded.
+ *
+ * `apps/ui`'s `links.ts` owns the ADR-0020 decision - what is internal, what
+ * prompts, and what is refused - and the policy does not change with the host.
+ * Duplicating it here would be how `/Launch` gets re-enabled in one shell and
+ * not the other.
+ */
+let linkPolicy = null;
+
+/**
+ * Load the link policy.
+ *
+ * @returns {Promise<object>} the `apps/ui` links module
+ */
+async function linkDecider() {
+	if (linkPolicy === null) {
+		linkPolicy = await import("/assets/ui/viewer/links.js");
+	}
+	return linkPolicy;
+}
+
+/**
+ * Say why a link was not opened.
+ *
+ * A refusal is a **decision with a reason**, not an absence: a reader who
+ * clicks a `/Launch` link learns that this viewer will not run it, which is a
+ * different and much better experience from a click that silently swallows.
+ *
+ * @param {string} reason
+ */
+function sayLinkRefusal(reason) {
+	if (linkRows === null) return;
+	const note = document.createElement("p");
+	note.dataset.role = "link-refused";
+	note.dataset.reason = reason;
+	note.textContent = `This link was not opened: ${reason}.`;
+	linkRows.appendChild(note);
+}
+
+/**
+ * Ask before opening an external destination (ADR-0020).
+ *
+ * The **whole** destination is shown, verbatim. A shortened or normalised URL
+ * is how a reader approves one destination and is sent to another.
+ *
+ * @param {string} url the destination, verbatim
+ * @param {string} host the host, for the reader to check
+ */
+function showExternalPrompt(url, host) {
+	if (linkRows === null) return;
+	const prompt = document.createElement("div");
+	prompt.dataset.role = "external-prompt";
+	const question = document.createElement("p");
+	question.dataset.role = "external-question";
+	question.textContent = "This link opens another site. Open it?";
+	const shown = document.createElement("code");
+	shown.dataset.role = "external-url";
+	shown.textContent = url;
+	prompt.appendChild(question);
+	prompt.appendChild(shown);
+	if (host !== "") {
+		const hostLine = document.createElement("p");
+		hostLine.dataset.role = "external-host";
+		hostLine.textContent = `Host: ${host}`;
+		prompt.appendChild(hostLine);
+	}
+	const confirm = document.createElement("button");
+	confirm.type = "button";
+	confirm.dataset.role = "external-confirm";
+	confirm.textContent = "Open";
+	confirm.addEventListener("click", () => {
+		// `noopener` so the opened page cannot reach back into the viewer.
+		window.open(url, "_blank", "noopener");
+	});
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.dataset.role = "external-cancel";
+	cancel.textContent = "Cancel";
+	cancel.addEventListener("click", () => prompt.remove());
+	prompt.appendChild(confirm);
+	prompt.appendChild(cancel);
+	linkRows.appendChild(prompt);
+}
+
+/**
+ * Activate a link annotation.
+ *
+ * The decision belongs to `apps/ui`; this only acts on it.
+ *
+ * @param {object} link the viewer's `LinkAnnotation`
+ */
+async function activateLink(link) {
+	try {
+		const { decideLinkAction } = await linkDecider();
+		const decision = decideLinkAction(link.action, (name) =>
+			navigationDestinations.get(name),
+		);
+		if (decision.kind === "internal") {
+			await globalThis.__selisGoto(decision.destination.page);
+			return;
+		}
+		if (decision.kind === "external") {
+			showExternalPrompt(decision.url, decision.host);
+			return;
+		}
+		sayLinkRefusal(decision.reason);
+	} catch (error) {
+		sayLinkRefusal(error instanceof Error ? error.message : String(error));
+	}
+}
+
+/**
+ * Render the links on the current page.
+ *
+ * @param {object} report `{status:"ok", links}` or a refusal
+ */
+function renderLinkPanel(report) {
+	if (linkRows === null) return;
+	linkRows.textContent = "";
+	if (report.status !== "ok") {
+		const note = document.createElement("p");
+		note.dataset.role = "unavailable";
+		note.textContent = "This host cannot read the links on this page.";
+		linkRows.appendChild(note);
+		return;
+	}
+	if (report.links.length === 0) {
+		const note = document.createElement("p");
+		note.dataset.role = "no-links";
+		note.textContent = "This page has no links.";
+		linkRows.appendChild(note);
+		return;
+	}
+	const list = document.createElement("ul");
+	list.dataset.role = "link-list";
+	for (const link of report.links) {
+		const entry = document.createElement("li");
+		entry.dataset.role = "link-item";
+		const button = document.createElement("button");
+		button.type = "button";
+		button.dataset.role = "link-activate";
+		button.dataset.linkId = link.id;
+		// The document's own name for the link when it set one; otherwise the
+		// action's class, so the reader can see WHY a link is there.
+		button.textContent = link.contents ?? `Link (${link.action.kind})`;
+		button.addEventListener("click", () => {
+			void activateLink(link);
+		});
+		entry.appendChild(button);
+		list.appendChild(entry);
+	}
+	linkRows.appendChild(list);
 }
 
 /**
@@ -2212,10 +2714,54 @@ function searchControls() {
 		bookmarks.setAttribute("aria-expanded", String(willOpen));
 		bookmarkPanel.hidden = !willOpen;
 		if (!willOpen) return;
-		globalThis.__selisOutline().then(renderOutlinePanel);
+		// The DESTINATIONS FIRST. A bookmark whose `/Dest` is a name is only
+		// navigable once that name has been resolved against the document's
+		// `/Dests` tree, and asking for the outline first would render such a
+		// bookmark as plain text - a destination the document names and the
+		// viewer could have resolved.
+		globalThis.__selisDestinations()
+			.then(() => globalThis.__selisOutline())
+			.then(renderOutlinePanel)
+			.catch((error) =>
+				renderOutlinePanel({
+					status: "threw",
+					detail: error instanceof Error ? error.message : String(error),
+				}),
+			);
 	});
 	root.appendChild(bookmarks);
 	root.appendChild(bookmarkPanel);
+
+	// SL-4.UI.06: the LINKS on the page being shown. A disclosure, like the
+	// bookmarks, for the same reason - a reader has to be able to see the
+	// control to press it, and `aria-expanded` is what tells a screen-reader
+	// user the panel is a disclosure rather than something that appeared.
+	//
+	// The links are the page's own, read on demand: a document with no links
+	// says so, and a host that cannot read them says THAT instead. The two
+	// are different facts and collapsing them tells the reader something false
+	// about their file.
+	const linkButton = document.createElement("button");
+	linkButton.type = "button";
+	linkButton.id = "selis-links";
+	linkButton.textContent = "Links";
+	linkButton.setAttribute("aria-expanded", "false");
+	linkButton.setAttribute("aria-controls", "selis-link-rows");
+	const linkPanel = document.createElement("div");
+	linkPanel.id = "selis-link-rows";
+	linkPanel.hidden = true;
+	linkPanel.setAttribute("role", "region");
+	linkPanel.setAttribute("aria-label", "Links on this page");
+	linkButton.addEventListener("click", () => {
+		const willOpen = linkPanel.hidden;
+		linkButton.setAttribute("aria-expanded", String(willOpen));
+		linkPanel.hidden = !willOpen;
+		if (!willOpen) return;
+		globalThis.__selisPageLinks(currentPage).then(renderLinkPanel);
+	});
+	root.appendChild(linkButton);
+	root.appendChild(linkPanel);
+	linkRows = linkPanel;
 
 	// UI.07: the document outline, as a real button and a real region, for the
 	// same reason as every other control here — a reader has to be able to see

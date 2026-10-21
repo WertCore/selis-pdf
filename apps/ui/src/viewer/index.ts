@@ -276,6 +276,16 @@ export {
 	schemeOf,
 } from "./links.js";
 
+export type { OutlineReport } from "./navigation-wire.js";
+export {
+	NavigationWireError,
+	destinationKindOf,
+	mapDestinations,
+	mapOutline,
+	mapPageLabels,
+	mapPageLinks,
+} from "./navigation-wire.js";
+
 export type {
 	LinkActivation,
 	NavigationController,

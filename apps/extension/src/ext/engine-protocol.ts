@@ -159,6 +159,31 @@ export type EngineRequest =
 			readonly fromPage: number;
 	  }
 	/**
+	 * The document's navigation structures (SL-4.UI.06).
+	 *
+	 * Four ops rather than one `navigation` op with a `what` selector, for the
+	 * reason the WASM.01 protocol already states: "an op that answers two
+	 * shapes forces every shell that validates replies field by field to guess
+	 * which arrived". These answers have genuinely different shapes, and a
+	 * reply that arrives in the wrong one must be refused rather than
+	 * reinterpreted.
+	 *
+	 * The values on the wire are the **viewer's** vocabulary, not the
+	 * engine's: the offscreen host maps the guest's answer once, at the edge
+	 * where it is untrusted, and everything inside the extension speaks the
+	 * same shapes the page does.
+	 */
+	| { readonly v: 1; readonly id: number; readonly op: "outline"; readonly doc: string }
+	| { readonly v: 1; readonly id: number; readonly op: "pageLabels"; readonly doc: string }
+	| { readonly v: 1; readonly id: number; readonly op: "destinations"; readonly doc: string }
+	| {
+			readonly v: 1;
+			readonly id: number;
+			readonly op: "pageLinks";
+			readonly doc: string;
+			readonly page: number;
+	  }
+	/**
 	 * Cancellation, as its own message rather than a flag on the request: the
 	 * request is already in flight and may already be answered. Fire-and-forget,
 	 * and a host may ignore it — the client's own rejection is what the UI
@@ -257,6 +282,100 @@ export interface WireAck {
 	readonly done: true;
 }
 
+/**
+ * The document's bookmark outline (SL-4.UI.06).
+ *
+ * The three states are separate on purpose and are not collapsed anywhere:
+ * `present:false` is "this document has no outline", `truncated:true` is "it
+ * has one this engine could not read in full", and a **refusal** is "this host
+ * cannot read outlines at all". A viewer that collapses any two of them tells
+ * a reader something false about their own file.
+ */
+export interface WireOutline {
+	readonly present: boolean;
+	readonly truncated: boolean;
+	readonly pruned: boolean;
+	readonly items: readonly WireOutlineNode[];
+}
+
+/** One bookmark, as the viewer names it. */
+export interface WireOutlineNode {
+	readonly title: string;
+	readonly children?: readonly WireOutlineNode[];
+	readonly destination?: WireDestination;
+	readonly namedDestination?: string;
+	readonly descendantCount?: number;
+}
+
+/** A resolved destination: a page, and how to place it. */
+export interface WireDestination {
+	readonly page: number;
+	readonly kind?: "fit" | "fitH" | "fitV" | "fitR" | "fitB" | "xyz";
+	readonly left?: number | null;
+	readonly top?: number | null;
+	readonly zoom?: number | null;
+}
+
+/** The document's `/PageLabels` ranges. */
+export interface WirePageLabels {
+	readonly ranges: readonly {
+		readonly firstPage: number;
+		readonly style?: "D" | "R" | "r" | "A" | "a";
+		readonly prefix?: string;
+		readonly firstValue?: number;
+	}[];
+}
+
+/** The document's named destinations. */
+export interface WireDestinations {
+	readonly destinations: readonly {
+		readonly name: string;
+		readonly destination: WireDestination;
+	}[];
+}
+
+/** One page's link annotations. */
+export interface WirePageLinks {
+	readonly page: number;
+	readonly links: readonly {
+		readonly id: string;
+		readonly rect: {
+			readonly x: number;
+			readonly y: number;
+			readonly width: number;
+			readonly height: number;
+		};
+		readonly action: WireLinkAction;
+		readonly contents?: string;
+	}[];
+}
+
+/**
+ * A link's action, verbatim.
+ *
+ * The union is the whole vocabulary **including the classes ADR-0020
+ * disables**, because the transport reports what the document says and the
+ * viewer decides what happens. A seam that dropped `/Launch` would make "is
+ * the viewer refusing this, or does the engine not know about it?"
+ * unanswerable from the outside.
+ */
+export interface WireLinkAction {
+	readonly kind:
+		| "goTo"
+		| "uri"
+		| "launch"
+		| "goToR"
+		| "submitForm"
+		| "importData"
+		| "javascript"
+		| "named"
+		| "none"
+		| "unknown";
+	readonly uri?: string;
+	readonly destination?: WireDestination;
+	readonly name?: string;
+}
+
 /** Offscreen host → viewer page. */
 export interface EngineReply {
 	readonly v: 1;
@@ -269,7 +388,11 @@ export interface EngineReply {
 		| WirePageText
 		| WirePageTextLayer
 		| WireSearchBatch
-		| WireAck;
+		| WireAck
+		| WireOutline
+		| WirePageLabels
+		| WireDestinations
+		| WirePageLinks;
 	/** Present when not `ok`. */
 	readonly error?: WireError;
 }
