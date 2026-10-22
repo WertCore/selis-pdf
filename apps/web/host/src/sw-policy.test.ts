@@ -92,7 +92,11 @@ describe("runtime cache budget", () => {
 		// The Cache API stores the decoded body, so the cap has to clear the
 		// inflated size of the module the budget protects.
 		expect(MAX_RUNTIME_ENTRY_BYTES).toBeGreaterThan(3_000_000);
-		expect(RUNTIME_CACHE_MAX_ENTRIES).toBeGreaterThanOrEqual(6); // the six WASM.02 chunks
+		// A ceiling at 32 was already too small: the viewer's cold-start module
+		// graph is ~30 entries before the six WASM.02 chunks, and the browser
+		// check caught the eviction as an offline asset that missed the cache.
+		// The exact number can move; what must not move is "one session fits".
+		expect(RUNTIME_CACHE_MAX_ENTRIES).toBeGreaterThanOrEqual(64);
 	});
 
 	it("evicts the oldest key, and only when over the ceiling", () => {

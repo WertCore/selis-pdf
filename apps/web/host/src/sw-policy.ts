@@ -161,11 +161,20 @@ export const RUNTIME_STORABLE_CONTENT_TYPES: readonly string[] = [
 export const MAX_RUNTIME_ENTRY_BYTES = 12_000_000;
 
 /**
- * Entry ceiling for the runtime cache. WASM.02 ships six chunks; with UI
- * code-splitting this is generous. It exists so a long-lived install cannot
- * grow without bound, and so the eviction order is testable.
+ * Entry ceiling for the runtime cache. It exists so a long-lived install
+ * cannot grow without bound, and so the eviction order is testable.
+ *
+ * 128, not 32. The old figure was chosen when "UI code-splitting" meant one
+ * chunk per screen; the viewer now loads roughly thirty modules on a cold
+ * shell, with the six WASM.02 chunks on top. At 32 the cache was full before
+ * the app had finished booting, and the FIFO eviction dropped `windowing.js`
+ * - an asset the offline DoD explicitly asks for. The browser check caught it
+ * as a `no-store` request that missed the cache and then failed on a stale
+ * connection, which looked like a network flake rather than an eviction. A cap
+ * only has to be larger than one session's working set; 128 is that with room
+ * for the module graph to grow, while still bounding a long-lived install.
  */
-export const RUNTIME_CACHE_MAX_ENTRIES = 32;
+export const RUNTIME_CACHE_MAX_ENTRIES = 128;
 
 /** Message a page posts to make a waiting worker take over (see `sw-register.ts`). */
 export const SKIP_WAITING_MESSAGE = "selis:skip-waiting";

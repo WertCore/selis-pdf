@@ -450,9 +450,13 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       would have been blocked by SRI in the browser**, with every local gate green. The pin is over
       the blob's bytes, and the fixture-sync tool (`tools/sync-check-fixtures.mjs`) now exists so
       that regenerating a fixture updates the check page's base64 rather than a human doing it.
-      **The repo has no `.gitattributes` text policy**, so a file's blob can be CRLF or LF depending
-      on when it was added, and the pin follows the blob. That is fragile and is worth a
-      `.gitattributes` pass of its own (`* text=auto eol=lf`); it is not this task's to take.
+      **The repo now has a `.gitattributes` text policy** (`* text=auto eol=lf`, with PDFs, PNGs,
+      PPMs, DER keys, WASM and WOFF2 named binary), so a fresh checkout gets the same bytes on
+      Windows and Linux and the pin follows the blob rather than the machine. The policy was added
+      on 2026-10-22 after this bug. Two working-tree files that xtask gates read
+      (`assets/cjk/core-list.txt` and `crates/selis-sandbox/src/crash.rs`) were renormalised to LF;
+      `core.autocrlf=true` still makes a stale checkout possible until Git touches a file, but the
+      LF blobs and the pins are the authority, not the working tree's line endings.
     - **The browser check found a bug the unit tests could not: a temporal dead zone.** The Links
       disclosure's `let linkRows` was declared *below* the mount, and the mount assigns it — so
       assigning to it during the mount threw `ReferenceError: Cannot access 'linkRows' before
@@ -460,6 +464,36 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       it: there is no DOM in `apps/ui` (ADR-0044), the shell is not unit-tested, and the failure is
       a *timing* fact about module evaluation. The fix is the declaration order, and the reason is
       written down beside the declarations so the next reader does not "tidy" them back down.
+    - **The browser check then found a second class of failure: transport races, not logic.** The
+      app was correct in Node and correct in isolation, but a full `cargo test -p xtask` run loads
+      171 sibling tests and the origin's first-byte window is a balance. A 60 s idle window filled
+      the browser's six-connections-per-origin cap with parked preconnect sockets, so `boot.js`
+      never loaded; a 5 s window releases them, and the stale sockets it leaves are covered by
+      retries rather than by a longer window. The findings, each with its fix:
+      - **A failed module fetch is cached in the browser's module map.** Re-importing the same URL
+        rejects without a request, so every retry uses a distinct `?retry=1` specifier. The viewer
+        graph loads `layout.js`/`windowing.js` sequentially, the print path goes through the same
+        `importViewer`, and `__selisModuleErrors` records what failed for the gate and support.
+      - **The service worker's install is atomic and its runtime cache was too small.**
+        `cache.addAll` is retried once in a loop (one textual call site, so the structural
+        cache-write test still sees exactly one), runtime fetches retry once on transport failure,
+        and the runtime cache ceiling is **128**, not 32: the cold-start graph plus the six WASM
+        chunks exceeded 32 and FIFO evicted `windowing.js`, which the offline check then missed.
+      - **The harness needed the same resilience.** The app-shell page retries its stylesheet with
+        a distinct query because an aborted `<link>` is never retried, races
+        `navigator.serviceWorker.ready` against an 8 s timeout and reports the worker's `state`,
+        and the `async-wasm` page retries `probe.wasm`. The unused static import of
+        `/sw-register.js` was removed: a failed static import prevents the watchdog from ever
+        installing, which is the silent failure the watchdog exists to catch.
+      - **The keyboard is a synchronous path, and a failed preload was fatal.** `shell-keys.js`
+        moved to the front of `UI_PRELOADS` and the preload loop now retries with the same distinct
+        specifier; without it, a preload failure left Ctrl+F dead for the life of the page because
+        the keydown listener cannot await a module.
+      - **The origin honours `Connection: close`.** The keep-alive server's own test read to EOF
+        and waited out the idle window; the test now asks for a one-shot connection, and the server
+        closes after the response, which is also correct HTTP/1.1. The server still keeps the
+        connection for the browser's file requests, where closing with a queued request unread was
+        the RST that made a module look like a 0-byte failure.
     - **NOT met, and why the box stays open.** The extension half (below) is the blocker: its
       viewer mounts no navigation panels, so there is nothing to look at in a browser on that host
       and its own browser check cannot run. That is not an accident of this task: EXT.06

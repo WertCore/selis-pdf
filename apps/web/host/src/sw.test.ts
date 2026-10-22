@@ -24,7 +24,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runIntake } from "./handoff-flow.js";
 import { ISOLATION_HEADERS, buildSecurityHeaders } from "./headers.js";
 import { type RequestRecorder, installRequestRecorder } from "./no-upload.js";
@@ -319,7 +319,17 @@ describe("install: the shell, and only the shell", () => {
 	it("is atomic: one missing asset fails the install and caches nothing", async () => {
 		const { handlers, caches, origin } = createWorker();
 		origin.serve("/assets/style.css", () => new Response("gone", { status: 404 }));
-		await expect(handlers.install()).rejects.toThrow();
+		// The worker logs the final reason for support; this test is the one
+		// place that logging is expected, and a stack trace in a passing suite
+		// is noise that hides a real one.
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await expect(handlers.install()).rejects.toThrow();
+			expect(logged).toHaveBeenCalledOnce();
+			expect(String(logged.mock.calls[0]?.[0])).toContain("precache failed");
+		} finally {
+			logged.mockRestore();
+		}
 		const shell = await caches.open(SHELL_CACHE);
 		expect(shell.urls()).toHaveLength(0);
 	});
@@ -722,6 +732,42 @@ describe("runtime cache behaviour", () => {
 		expect(served.status).toBe(200);
 		const cache = await (await createWorker()).caches.open(RUNTIME_CACHE);
 		expect(cache.urls()).toHaveLength(0);
+	});
+
+	it("retries a runtime fetch once when a reused connection fails", async () => {
+		// The failure the browser check kept producing: a keep-alive socket the
+		// origin had closed looked usable, so the first fetch rejected with an
+		// opaque TypeError before any bytes arrived. The asset is a bodyless GET,
+		// so one retry is safe and turns the stale socket into a cache entry
+		// instead of a module the page cannot evaluate.
+		const origin = createOrigin();
+		origin.serve(
+			"/assets/retry.js",
+			() =>
+				new Response("export const retried = true;", {
+					headers: { "Content-Type": "text/javascript" },
+				}),
+		);
+		const caches = new FakeCacheStorage(origin);
+		let attempts = 0;
+		const handlers = createWorkerHandlers({
+			caches: caches as unknown as CacheStorage,
+			fetch: async (request) => {
+				attempts += 1;
+				if (attempts === 1) {
+					throw new TypeError("Failed to fetch: stale keep-alive socket");
+				}
+				return origin.fetch(request);
+			},
+			scopeUrl: SCOPE,
+			clients: { claim: async () => undefined },
+			skipWaiting: async () => undefined,
+		});
+		const served = await respondTo(handlers, new Request(`${SCOPE}assets/retry.js`));
+		expect(served.status).toBe(200);
+		expect(attempts).toBe(2);
+		const cache = await caches.open(RUNTIME_CACHE);
+		expect(cache.urls()).toEqual([`${SCOPE}assets/retry.js`]);
 	});
 });
 

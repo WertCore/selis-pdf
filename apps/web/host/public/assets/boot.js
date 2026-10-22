@@ -51,7 +51,13 @@ const UI_PRELOADS = [
 	// by importance. These load sequentially (see the block below for why they are
 	// not concurrent), so a later entry necessarily arrives later.
 	//
-	// progress.js is first because a print can start the moment a reader opens a
+	// shell-keys.js is FIRST because the keydown listener is synchronous. A
+	// listener that resolves undefined cannot await a module, so every chord
+	// pressed before this lands is silently dropped - and the browser check
+	// presses Ctrl+F as soon as the viewer exists. The preload retries below,
+	// but the first attempt should be the one with the least contention.
+	"/assets/ui/viewer/shell-keys.js",
+	// progress.js next because a print can start the moment a reader opens a
 	// document. While it is unloaded, requestPrint has no model and paints no bar -
 	// correct, because painting one without a model would mean re-implementing
 	// monotonicity locally, and that copy is what goes stale. But a viewer showing
@@ -60,9 +66,6 @@ const UI_PRELOADS = [
 	"/assets/ui/viewer/progress.js",
 	// UI.07. The structure model is needed the moment a reader opens the outline.
 	"/assets/ui/viewer/a11y.js",
-	// shell-keys.js is on the keydown path. A listener resolving undefined would
-	// mean the keyboard simply does not work, with no error anywhere.
-	"/assets/ui/viewer/shell-keys.js",
 	// The failure-path modules. Needed only once something has ALREADY gone wrong,
 	// so they may wait behind everything that is not.
 	"/assets/ui/viewer/budget.js",
@@ -239,6 +242,44 @@ globalThis.__selisPrintChrome = function () {
 const uiModules = new Map();
 
 /**
+ * Preloads that are still in flight, by path.
+ *
+ * A click that needs a module while the sequential preload is still walking
+ * the list used to start a SECOND import of the same URL. That is exactly the
+ * concurrency the sequential order exists to avoid, and when both requests
+ * were in flight the browser abandoned one and cached the failure. Waiting for
+ * the preload that is already running is both cheaper and safer.
+ */
+const uiPreloads = new Map();
+
+/**
+ * Module-load failures, in order.
+ *
+ * The catch blocks below are silent ON PURPOSE - a module that cannot load
+ * degrades to a sentence, not a broken page - but "silent" made a real failure
+ * indistinguishable from an ordinary missing capability: the health panel said
+ * "unavailable" and the trace showed a 200. Recording the message here lets the
+ * browser check and support see the reason without putting a JS error in front
+ * of a reader.
+ */
+globalThis.__selisModuleErrors ??= [];
+
+/**
+ * Record one module-load failure.
+ *
+ * @param {string} path the module specifier
+ * @param {string} attempt `preload`, `on-demand`, or `retry`
+ * @param {unknown} error what the browser threw
+ */
+function recordModuleError(path, attempt, error) {
+	globalThis.__selisModuleErrors.push({
+		path,
+		attempt,
+		message: error instanceof Error ? error.message : String(error),
+	});
+}
+
+/**
  * A preloaded module, or `null`.
  *
  * Deliberately a cache lookup and not an await: every caller here is a click
@@ -271,13 +312,30 @@ function preloadedUiModule(path) {
 async function loadUiModule(path) {
 	const cached = preloadedUiModule(path);
 	if (cached !== null) return cached;
+	const inflight = uiPreloads.get(path);
+	if (inflight !== undefined) {
+		try {
+			const module = await inflight;
+			if (module !== null) return module;
+		} catch {
+			// The preload failed; fall through to a fresh attempt.
+		}
+	}
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
+			// THE RETRY USES A DISTINCT SPECIFIER, and that is load-bearing: a
+			// failed module fetch is cached in the browser's module map, so
+			// importing the same URL again rejects immediately without making a
+			// request. `?retry=1` gets a fresh map entry and a fresh connection.
+			// The query is ignored by the static origin and does not change the
+			// module's own relative imports.
+			const specifier = attempt === 0 ? path : `${path}?retry=1`;
 			// biome-ignore lint: the module path is a build-time constant list.
-			const module = await import(path);
+			const module = await import(specifier);
 			uiModules.set(path, module);
 			return module;
-		} catch {
+		} catch (error) {
+			recordModuleError(path, attempt === 0 ? "on-demand" : "retry", error);
 			if (attempt === 1) return null;
 			await new Promise((resolve) => setTimeout(resolve, 32));
 		}
@@ -370,23 +428,41 @@ let engineInstance = null;
 async function importViewer(url) {
 	try {
 		return await import(url);
-	} catch (error) {
-		const probe = { url, status: null, contentType: null, firstLine: null, note: null };
+	} catch (firstError) {
+		// ONE RETRY, for the same HTTP/1.1 connection-pool flake the UI
+		// preloads document further down: the origin answers 200, but the
+		// browser abandons the connection and `import()` reports "Failed to
+		// fetch dynamically imported module". The probe below is good at
+		// explaining a SPECIFIER problem; it is useless for a dropped
+		// connection, and a viewer that refuses to start because one
+		// connection was abandoned is a failure the reader cannot act on.
+		// 32 ms yields to the pool without being a perceptible wait. A real
+		// syntax or 404 error fails the retry too and still gets the probe.
+		await new Promise((resolve) => setTimeout(resolve, 32));
 		try {
-			const res = await fetch(url, { cache: "no-store" });
-			probe.status = res.status;
-			probe.contentType = res.headers.get("content-type");
-			const text = await res.text();
-			probe.firstLine = text.split("\n")[0]?.slice(0, 120) ?? null;
-		} catch (fetchError) {
-			probe.note = `the probe fetch itself failed: ${fetchError}`;
+			// A distinct specifier: a failed module fetch is cached in the
+			// browser's module map, so re-importing the same URL would reject
+			// without touching the network. The query is ignored by the static
+			// origin and relative imports still resolve against the path.
+			return await import(`${url}?retry=1`);
+		} catch (error) {
+			const probe = { url, status: null, contentType: null, firstLine: null, note: null };
+			try {
+				const res = await fetch(url, { cache: "no-store" });
+				probe.status = res.status;
+				probe.contentType = res.headers.get("content-type");
+				const text = await res.text();
+				probe.firstLine = text.split("\n")[0]?.slice(0, 120) ?? null;
+			} catch (fetchError) {
+				probe.note = `the probe fetch itself failed: ${fetchError}`;
+			}
+			throw Object.assign(
+				new Error(
+					`${error instanceof Error ? error.message : String(error)} | probe: ${JSON.stringify(probe)}`,
+				),
+				{ cause: error },
+			);
 		}
-		throw Object.assign(
-			new Error(
-				`${error instanceof Error ? error.message : String(error)} | probe: ${JSON.stringify(probe)}`,
-			),
-			{ cause: error },
-		);
 	}
 }
 
@@ -408,10 +484,14 @@ try {
 	// this is 2 requests instead of 35, and it is also the honest dependency:
 	// this file lays out pages and asks which rows a viewport covers. Nothing
 	// else in the viewer is reachable from here yet.
-	const [{ layoutPages }, { visibleWindow }] = await Promise.all([
-		importViewer("/assets/ui/viewer/layout.js"),
-		importViewer("/assets/ui/viewer/windowing.js"),
-	]);
+	// SEQUENTIALLY, for the same reason the UI preloads below are sequential:
+	// these are dynamic imports over HTTP/1.1, and firing both at once queued
+	// one behind the other on a connection the browser then abandoned. The
+	// trace was always the same - status 0 for both, then a 200 probe for each
+	// - and it killed the mount before the search field existed. Two requests
+	// one after the other cost a few milliseconds and remove the race.
+	const { layoutPages } = await importViewer("/assets/ui/viewer/layout.js");
+	const { visibleWindow } = await importViewer("/assets/ui/viewer/windowing.js");
 
 	// The engine, over the app's own worker-glued transport.
 	//
@@ -518,18 +598,40 @@ globalThis.__selisBootStage = "engine-settled";
 // few milliseconds between them is free.
 (async () => {
 	for (const path of UI_PRELOADS) {
-		try {
-			const module = await import(path);
-			uiModules.set(path, module);
-			// The progress model is captured here rather than imported at each
-			// use, because the print loop runs on the same thread as this and
-			// must never await anything mid-page: an await between pages is an
-			// await that can miss the Cancel press entirely.
-			if (path.endsWith("progress.js")) progressModel = module;
-		} catch {
-			// Deliberately silent. The module degrades to a dynamic import at
-			// the moment it is needed; it does not get to break the page.
-		}
+		const preload = (async () => {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					// The same distinct-specifier retry as `loadUiModule`: a
+					// failed module fetch is cached in the browser's module map,
+					// so importing the bare path a second time rejects without
+					// making a request. The preload is not allowed to be the one
+					// path that does not retry - `shell-keys.js` failing here
+					// leaves the keyboard dead for the life of the page.
+					const specifier = attempt === 0 ? path : `${path}?retry=1`;
+					const module = await import(specifier);
+					uiModules.set(path, module);
+					// The progress model is captured here rather than imported at
+					// each use, because the print loop runs on the same thread as
+					// this and must never await anything mid-page: an await between
+					// pages is an await that can miss the Cancel press entirely.
+					if (path.endsWith("progress.js")) progressModel = module;
+					return module;
+				} catch (error) {
+					if (attempt === 1) {
+						// Deliberately silent to the reader. `loadUiModule` can
+						// still retry on demand, and the preload does not get to
+						// break the page; the failure is recorded for the browser
+						// check and support.
+						recordModuleError(path, "preload", error);
+						return null;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 32));
+				}
+			}
+			return null;
+		})();
+		uiPreloads.set(path, preload);
+		await preload;
 	}
 })();
 
@@ -784,6 +886,22 @@ const searchUi = { input: null, readout: null };
  * run before this declaration is initialised.
  */
 const printUi = { root: null, bar: null, caption: null, cancel: null };
+
+/**
+ * The link list's DOM, and the viewer's link policy, once they exist.
+ *
+ * `searchControls()` runs during the mount and assigns `linkRows`; it is called
+ * at module level well below this point, but its *call* is at module level too,
+ * and a `let` declared after the call is still in its temporal dead zone when
+ * the mount runs. That is not a hypothetical: the first version of this block
+ * sat beside `searchControls()` and the whole viewer failed to start with
+ * `Cannot access 'linkRows' before initialization` - the browser check saw it,
+ * no Node test could. `linkPolicy` is here for the same reason: it is read by
+ * the click paths, and one declaration block above the mount is easier to keep
+ * honest than two.
+ */
+let linkRows = null;
+let linkPolicy = null;
 
 /**
  * What the caption says for the current phase.
@@ -1394,8 +1512,12 @@ globalThis.__selisPrint = async function (base64, paper = null) {
 	// modules below are the whole surface either way; `page.ts` still exists as the
 	// entry the walk starts from, which is what keeps the service worker's own
 	// modules off the page origin.
-	const print = await import("/assets/host/print.js");
-	const { rgbaToRgb, streamPrintPdf } = await import("/assets/host/print-pdf.js");
+	// Through `importViewer`, not bare `import()`: these are dynamic imports on
+	// the same flaky local connection as the viewer graph, and the print button
+	// is exactly the wrong place to surface a one-connection failure as "the
+	// Print button did not produce a PDF". The retry and the probe live there.
+	const print = await importViewer("/assets/host/print.js");
+	const { rgbaToRgb, streamPrintPdf } = await importViewer("/assets/host/print-pdf.js");
 
 		const binary = atob(base64);
 		const bytes = new Uint8Array(binary.length);
@@ -2073,19 +2195,12 @@ globalThis.__selisGoto = async (page) => {
 	}
 };
 
-/**
- * The link list's DOM, once the shell has built it.
+/*
+ * `linkRows` and `linkPolicy` live above the mount, with `searchUi` and
+ * `printUi`. They used to be declared here, which is below the mount call, so
+ * `linkRows` was still in its temporal dead zone when `searchControls()` ran
+ * during the mount and assigned it.
  */
-let linkRows = null;
-/**
- * The viewer's link policy, once loaded.
- *
- * `apps/ui`'s `links.ts` owns the ADR-0020 decision - what is internal, what
- * prompts, and what is refused - and the policy does not change with the host.
- * Duplicating it here would be how `/Launch` gets re-enabled in one shell and
- * not the other.
- */
-let linkPolicy = null;
 
 /**
  * Load the link policy.
@@ -2416,9 +2531,29 @@ globalThis.__selisBootStage = "app-assigned";
 registerServiceWorker().then((result) => {
 	// Which of "registered", "no container", "insecure context" this session
 	// got, for the DoD's airplane-mode check and for support.
-	globalThis.__selisServiceWorker = result.ok
-		? { registered: true, scope: result.scope }
-		: { registered: false, reason: result.reason };
+	if (!result.ok) {
+		globalThis.__selisServiceWorker = { registered: false, reason: result.reason };
+		return;
+	}
+	// The install state is part of the answer, not a private detail: a
+	// registration with no active worker leaves `navigator.serviceWorker.ready`
+	// pending forever, and a report that says only "registered" cannot tell
+	// that apart from a worker that is about to activate.
+	const report = { registered: true, scope: result.scope, state: null };
+	const track = (worker) => {
+		if (!worker) return;
+		report.state = worker.state;
+		worker.addEventListener("statechange", () => {
+			report.state = worker.state;
+		});
+	};
+	track(result.registration.installing);
+	track(result.registration.waiting);
+	track(result.registration.active);
+	result.registration.addEventListener("updatefound", () => {
+		track(result.registration.installing);
+	});
+	globalThis.__selisServiceWorker = report;
 });
 
 // ── searching ───────────────────────────────────────────────────────────────

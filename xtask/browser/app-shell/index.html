@@ -68,10 +68,11 @@
     <section id="selis-failure" role="alert" aria-live="assertive" data-severity=""></section>
 
     <script type="module">
-      // The app's own boot path does exactly this; the check mirrors it rather
-      // than importing it, because the point is to observe what the app does,
-      // and `__selisBoot` / `__selisServiceWorker` are the app's own globals.
-      import { registerServiceWorker } from "/sw-register.js";
+      // No static imports. A static import is fetched and evaluated before the
+      // first line of this module runs, so a transport failure there produces a
+      // page that never installs its watchdog and never reports anything - the
+      // exact silent failure the watchdog exists to catch. boot.js registers the
+      // worker itself, via `__selisServiceWorker`; the harness only observes.
 
       // The `window.print` stub's state, at SCRIPT scope rather than inside a
       // `.then` callback. The stub is installed in one stage of the chain and
@@ -308,6 +309,10 @@
         // the watchdog's threshold can be set from evidence rather than from a
         // guess about what "slow" means.
         out.chainMs = Date.now() - chainStartedAt;
+        // Module-load failures recorded by boot.js's silent catches. Without
+        // this, a 200 in the network trace and an "unavailable" panel were
+        // indistinguishable from a module that simply was not needed.
+        out.moduleErrors = globalThis.__selisModuleErrors || null;
         var body = JSON.stringify(out);
         document.getElementById("verdict").textContent =
           "@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
@@ -366,7 +371,52 @@
         return rows;
       }
 
-      import("/assets/boot.js")
+      /**
+       * Load `/assets/style.css`, retrying a transport failure once or twice.
+       *
+       * The static <link> above is the real stylesheet and the normal path.
+       * But a first request that lands on a socket the origin has already
+       * closed is aborted by the browser *before* it has a response to cache,
+       * and a <link> does not retry itself. The print check then reads zero
+       * rules and blames the app's stylesheet for a transport race. The retry
+       * uses a distinct query so the browser cannot answer it from the failed
+       * fetch's state, and the rules are identical either way.
+       */
+      function loadStylesheet(attempt) {
+        return new Promise(function (resolve) {
+          var link = document.createElement("link");
+          link.rel = "stylesheet";
+          link.href =
+            attempt === 0 ? "/assets/style.css" : "/assets/style.css?retry=" + attempt;
+          link.onload = function () {
+            resolve(true);
+          };
+          link.onerror = function () {
+            link.remove();
+            if (attempt >= 2) {
+              resolve(false);
+              return;
+            }
+            resolve(loadStylesheet(attempt + 1));
+          };
+          document.head.appendChild(link);
+        });
+      }
+
+      function ensureStylesheet() {
+        var committed = document.querySelector(
+          'link[rel="stylesheet"][href="/assets/style.css"]',
+        );
+        if (committed && committed.sheet) {
+          return Promise.resolve(true);
+        }
+        return loadStylesheet(0);
+      }
+
+      ensureStylesheet()
+        .then(function () {
+          return import("/assets/boot.js");
+        })
         .then(function () {
           out.boot = globalThis.__selisBoot || null;
           // Read BOTH globals the instant the module finishes evaluating, and
@@ -1154,6 +1204,16 @@
             label: went.label,
           };
         })
+        .then(function () {
+          // THE LINKS ARE ON PAGE 1 (index 0), and the bookmark check above
+          // deliberately left the shell on page 2. Go back before opening the
+          // panel: otherwise this check asks page 2 for its links, correctly
+          // gets "This page has no links", and then waits forever for page 1's
+          // URI button - a red gate that says nothing about the panel. The
+          // check is about the links control, so put the viewer on the page
+          // the fixture gives links to.
+          return globalThis.__selisGoto(0);
+        })
         // 1o. THE LINKS ON THE PAGE, AND WHAT ACTIVATING ONE DOES.
         //
         //     ADR-0020: an external URI prompts with the WHOLE destination
@@ -1284,7 +1344,45 @@
 
           // 2. A controller. The app worker calls clients.claim() in activate,
           //    so a first visit should be controlled without a second load.
-          return navigator.serviceWorker.ready.then(function () {
+          //
+          //    `ready` has no timeout of its own. An install that FAILS leaves
+          //    the registration with no active worker, so the promise stays
+          //    pending forever and the only evidence is the 26 s watchdog - a
+          //    timeout that says nothing about why. Race it, and on the losing
+          //    side read the install state and the worker's own error
+          //    breadcrumb (see `precacheShell` in sw.ts).
+          return Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise(function (_, reject) {
+              setTimeout(function () {
+                navigator.serviceWorker
+                  .getRegistration()
+                  .then(function (reg) {
+                    return reg
+                      ? {
+                          installing: reg.installing && reg.installing.state,
+                          waiting: reg.waiting && reg.waiting.state,
+                          active: reg.active && reg.active.state,
+                        }
+                      : null;
+                  })
+                  .catch(function () {
+                    return null;
+                  })
+                  .then(function (states) {
+                    reject(
+                      new Error(
+                        "the service worker never became ready: " +
+                          JSON.stringify({
+                            registration: states,
+                            app: globalThis.__selisServiceWorker || null,
+                          }),
+                      ),
+                    );
+                  });
+              }, 8000);
+            }),
+          ]).then(function () {
             return waitFor(
               function () {
                 return !!navigator.serviceWorker.controller;

@@ -44,16 +44,31 @@
         };
       }
 
+      // A fetch of a file this server has already served can land on a
+      // preconnect socket the server has closed; the browser reports the
+      // opaque `TypeError: Failed to fetch` and no module is instantiated.
+      // Retry with a distinct query so the failed attempt cannot poison the
+      // next one. The server ignores the query when resolving the file.
+      function fetchProbe(attempt) {
+        var url = attempt === 0 ? "/probe.wasm" : "/probe.wasm?retry=" + attempt;
+        return fetch(url).catch(function (error) {
+          if (attempt >= 2) {
+            throw error;
+          }
+          return fetchProbe(attempt + 1);
+        });
+      }
+
       // `instantiateStreaming` rather than fetch-then-instantiate: it is the
       // path a real app takes, and it only works if the origin serves the
       // module as `application/wasm` — which the harness's MIME table does.
       // If that ever regresses, this fails here rather than silently.
-      WebAssembly.instantiateStreaming(fetch("/probe.wasm"), imports())
+      WebAssembly.instantiateStreaming(fetchProbe(0), imports())
         .then(function (result) {
           out.sum = result.instance.exports.selis_probe_add(20, 1);
           // The link-failure leg needs the same bytes, so re-fetch rather than
           // keeping a second copy of the module around.
-          return fetch("/probe.wasm")
+          return fetchProbe(0)
             .then(function (res) {
               return res.arrayBuffer();
             })

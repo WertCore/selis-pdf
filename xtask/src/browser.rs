@@ -81,7 +81,7 @@
 //!   machine seconds later. See [`scratch_dir`].
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1851,7 +1851,10 @@ fn assert_navigation(report: &Json) -> Result<(), String> {
         .get("names")
         .and_then(Json::as_array)
         .ok_or_else(|| "the destinations read carried no names".to_string())?;
-    if !names.iter().any(|name| name.as_str() == Some("chapter-two")) {
+    if !names
+        .iter()
+        .any(|name| name.as_str() == Some("chapter-two"))
+    {
         return Err(format!(
             "the document names one destination and the app read {names:?} -- a bookmark that \
              NAMES a destination is not navigable until the name is resolved"
@@ -1968,7 +1971,10 @@ fn assert_navigation(report: &Json) -> Result<(), String> {
     // WHOLE thing. A shortened or normalised URL is how a reader approves one
     // destination and is sent to another - so the query string is checked, not
     // just the host.
-    let shown = panel.get("externalUrl").and_then(Json::as_str).unwrap_or("");
+    let shown = panel
+        .get("externalUrl")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     if !shown.starts_with("https://example.com/selis") || !shown.contains("ref=fixture") {
         return Err(format!(
             "the external link's prompt showed {shown:?} -- it must show the whole destination, \
@@ -2366,16 +2372,26 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
     ))
 }
 
-/// Serve one connection: either the verdict POST, or a file out of `root`.
+/// Serve a connection: the verdict POST, the offline switch, and files out of
+/// `root`.
 ///
-/// One request per connection, and the response says so with
-/// `Connection: close`. Keeping the connection open was tried here and
-/// **reverted**, and the reason is worth keeping: it did not fix the app-shell
-/// flake (the app importing ~35 modules at once did — see `boot.js`), and on
-/// Windows it broke `the_origin_serves_files_and_collects_a_verdict` with
-/// `ConnectionAborted` on a connection the server had answered and left open.
-/// Spending risk on a change that is not load-bearing is how a gate stops being
-/// trustworthy, so the simpler behaviour stayed.
+/// **KEEP-ALIVE, and the loop is the fix.** An earlier attempt kept the socket
+/// open after one response and was reverted: the browser put its NEXT request
+/// on that socket, the server never read it, and Windows reported
+/// `ConnectionAborted`. The lesson was that an open connection must be a
+/// SERVED connection, not a parked one.
+///
+/// Sending `Connection: close` instead looked safer, but it creates the mirror
+/// image of the same race. The browser can have the next request already queued
+/// on a connection when the close arrives; the server closes with unread bytes,
+/// Windows sends RST, and the browser reports the queued module as
+/// `responseStatus: 0` — the opaque `Failed to fetch dynamically imported
+/// module` that made this gate flaky. The trace showed it on `message.js`, a
+/// file that was never missing and that the server was answering with 200.
+///
+/// So the loop below reads request after request on the same socket. The
+/// browser gets the connection reuse it expects, and a close is only sent on
+/// the one-shot control responses, where no module is waiting behind it.
 fn handle_connection(
     stream: &TcpStream,
     root: &Path,
@@ -2383,25 +2399,29 @@ fn handle_connection(
     reported: &AtomicBool,
     offline: &AtomicBool,
 ) -> std::io::Result<()> {
-    // A socket the browser opened and then abandoned must not hold a thread
-    // for the length of the run.
+    // The first-byte window is a BALANCE, and both ends of it were measured.
     //
-    // The window is short on purpose. Chrome opens speculative and preconnect
-    // sockets that it may never write to, and the browser's own per-host
-    // connection cap means a thread parked on one of those for the full run
-    // competes with the requests that actually carry modules. A long timeout
-    // therefore shows up as modules the browser ABORTED — `responseStatus: 0`,
-    // a zero-byte body, ~2 ms — which `import()` reports as an opaque
-    // `TypeError: Failed to fetch dynamically imported module`.
+    // Chrome opens speculative and preconnect sockets before it has a request
+    // for them. Closing one turns it into a stale socket, and the next reuse
+    // comes back `responseStatus: 0` with the opaque `Failed to fetch
+    // dynamically imported module`. But keeping sockets for a minute is worse:
+    // the browser's six-connections-per-origin cap fills with parked preconnect
+    // sockets, the module script that follows the document never gets a slot,
+    // and the page stops after the stylesheet. That is not a theory; it is the
+    // 60 s run that failed `async-wasm` and never loaded `boot.js`.
     //
-    // 1.5 s is far longer than a local loopback request needs and far shorter
-    // than the run, so an idle socket is released before it can matter.
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    // Five seconds releases the parked sockets long before the module graph
+    // asks for them, and the stale-socket cost is paid where it can be
+    // retried: the service worker retries both its install and its runtime
+    // fetches, and the app's module loader retries with a distinct specifier.
+    // The harness page retries its own stylesheet for the same reason.
     let mut reader = stream.try_clone()?;
 
-    {
+    loop {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut head = Vec::new();
         let mut byte = [0u8; 1];
+        let mut started = false;
         // Read through the blank line that ends the request head. One byte at a
         // time is not a performance concern for a harness that serves a handful of
         // files to one local browser, and it needs no buffering assumptions about
@@ -2409,15 +2429,24 @@ fn handle_connection(
         while !head.ends_with(b"\r\n\r\n") {
             match reader.read(&mut byte) {
                 Ok(0) => return Ok(()),
-                Ok(_) => head.push(byte[0]),
-                // A socket the browser opened, never wrote to, and then abandoned
-                // is the normal case, not an error worth printing: a speculative
-                // or preconnect socket always ends this way.
+                Ok(_) => {
+                    // Once a request has STARTED, a slow next byte is not an
+                    // idle socket - it is a request the browser expects an
+                    // answer to. The body of a loopback request needs
+                    // milliseconds; 10 s is a fuse, not a budget.
+                    if !started {
+                        started = true;
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    }
+                    head.push(byte[0]);
+                }
+                // A socket the browser opened, never wrote to, and then
+                // abandoned is the normal case, not an error worth printing.
                 Err(e) if is_idle(&e) => return Ok(()),
                 Err(e) => return Err(e),
             }
             if head.len() > MAX_REQUEST_HEAD {
-                return respond(
+                return respond_closing(
                     stream,
                     "431 Request Header Fields Too Large",
                     "text/plain",
@@ -2429,14 +2458,17 @@ fn handle_connection(
         let mut parts = head.split_whitespace();
         let method = parts.next().unwrap_or_default().to_string();
         let target = parts.next().unwrap_or_default().to_string();
+        // HTTP/1.1 lets a client ask for a one-shot connection. Honour it:
+        // a caller that reads to EOF (the origin's own test does) otherwise
+        // waits for the idle timeout, and a close under an in-flight read is
+        // the RST this loop exists to avoid.
+        let close = wants_close(&head);
 
-        // The verdict POST is the last thing a run does, so the connection is
-        // finished here rather than left open for a request that never comes.
+        // The verdict POST is the last thing a run does, so close after it.
         if method == "POST" && target == RESULT_PATH {
             let mut body = vec![0u8; content_length(&head)];
             reader.read_exact(&mut body)?;
-            respond(stream, "204 No Content", "text/plain", b"")?;
-            let _ = stream.shutdown(Shutdown::Write);
+            respond_closing(stream, "204 No Content", "text/plain", b"")?;
             if !reported.swap(true, Ordering::SeqCst) {
                 let _ = tx.send(String::from_utf8_lossy(&body).to_string());
             }
@@ -2446,22 +2478,51 @@ fn handle_connection(
         if method == "POST" && target == OFFLINE_PATH {
             let _ = reader.read_exact(&mut vec![0u8; content_length(&head)]);
             offline.store(true, Ordering::SeqCst);
-            return respond(stream, "204 No Content", "text/plain", b"");
+            return respond_closing(stream, "204 No Content", "text/plain", b"");
         }
         if offline.load(Ordering::SeqCst) {
-            return respond(stream, "503 Service Unavailable", "text/plain", b"offline");
+            // Keep the connection by default: the browser may already have the
+            // next request on it, and the status is what the offline leg
+            // measures. A client that asked to close gets its wish.
+            if close {
+                return respond_closing(
+                    stream,
+                    "503 Service Unavailable",
+                    "text/plain",
+                    b"offline",
+                );
+            }
+            respond(stream, "503 Service Unavailable", "text/plain", b"offline")?;
+            continue;
         }
         let Some(path) = resolve(root, &target) else {
-            return respond(stream, "403 Forbidden", "text/plain", b"forbidden");
+            if close {
+                return respond_closing(stream, "403 Forbidden", "text/plain", b"forbidden");
+            }
+            respond(stream, "403 Forbidden", "text/plain", b"forbidden")?;
+            continue;
         };
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let kind = content_type(&path);
+                if close {
+                    return respond_closing(stream, "200 OK", kind, &bytes);
+                }
                 respond(stream, "200 OK", kind, &bytes)?;
-                let _ = stream.shutdown(Shutdown::Write);
-                Ok(())
+                // Do NOT close here. The next request may already be on its
+                // way, and closing with it unread is the RST this loop exists
+                // to avoid.
             }
-            Err(_) => respond(stream, "404 Not Found", "text/plain", b"not found"),
+            Err(_) => {
+                // A 404 is a response, not a reason to abandon the connection:
+                // the favicon is a 404 on every run, and closing behind it was
+                // one of the ways a queued module request became status 0.
+                if close {
+                    return respond_closing(stream, "404 Not Found", "text/plain", b"not found");
+                }
+                respond(stream, "404 Not Found", "text/plain", b"not found")?;
+                continue;
+            }
         }
     }
 }
@@ -2489,6 +2550,24 @@ fn content_length(head: &str) -> usize {
                 .then(|| value.trim().parse::<usize>().unwrap_or(0))
         })
         .unwrap_or(0)
+}
+
+/// Whether a request head asks for its connection to be closed afterwards.
+///
+/// The header is a comma-separated token list, and the name is
+/// case-insensitive; a strict equality check on `Connection: close` would miss
+/// `connection: keep-alive, Close`. HTTP/1.1 defaults to keep-alive, so an
+/// absent header means false.
+fn wants_close(head: &str) -> bool {
+    head.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.trim().eq_ignore_ascii_case("connection")
+            && value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"))
+    })
 }
 
 /// Map a request target onto a file under `root`, refusing to leave it.
@@ -2589,18 +2668,41 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Write one complete response and close it.
+/// Write one complete response and keep the connection open.
 ///
-/// `Connection: close` because the engine is about to be killed and a
-/// half-open keep-alive socket would only delay that. Keeping the connection
-/// open was tried and reverted; `handle_connection` says why.
-/// `Cache-Control: no-store` because the whole point of the worker check is that
-/// the *worker's* cache answers, and a served HTTP cache answering first would
-/// prove nothing.
+/// The browser reuses this socket for its next request; `handle_connection`
+/// explains why closing after every file was the flakier choice. Responses
+/// that end the conversation use [`respond_closing`].
+///
+/// `Cache-Control: max-age=0, must-revalidate` keeps a served file from
+/// answering the offline leg out of the HTTP cache without revalidation: the
+/// *worker's* cache is what that check measures, and a fresh network answer
+/// would prove nothing.
 fn respond(stream: &TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
+    write_response(stream, status, kind, body, "keep-alive")
+}
+
+/// Write the last response on a connection. The caller closes after it.
+fn respond_closing(
+    stream: &TcpStream,
+    status: &str,
+    kind: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    write_response(stream, status, kind, body, "close")
+}
+
+/// Write one HTTP/1.1 response with an explicit connection disposition.
+fn write_response(
+    stream: &TcpStream,
+    status: &str,
+    kind: &str,
+    body: &[u8],
+    connection: &str,
+) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: max-age=0, must-revalidate\r\nConnection: close\r\n\r\n",
+         Cache-Control: max-age=0, must-revalidate\r\nConnection: {connection}\r\n\r\n",
         body.len()
     );
     let mut writer = stream.try_clone()?;
@@ -2873,6 +2975,22 @@ mod tests {
     }
 
     #[test]
+    fn a_client_can_ask_for_the_connection_to_close() {
+        assert!(wants_close("GET /x HTTP/1.1\r\nConnection: close\r\n\r\n"));
+        assert!(wants_close(
+            "GET /x HTTP/1.1\r\nconnection: keep-alive, Close\r\n\r\n"
+        ));
+        assert!(!wants_close(
+            "GET /x HTTP/1.1\r\nConnection: keep-alive\r\n\r\n"
+        ));
+        assert!(!wants_close("GET /x HTTP/1.1\r\n\r\n"));
+        // A different header that ends in the same token is not the header.
+        assert!(!wants_close(
+            "GET /x HTTP/1.1\r\nX-Connection: close\r\n\r\n"
+        ));
+    }
+
+    #[test]
     fn wasm_is_served_as_wasm_so_the_streaming_api_can_be_used() {
         assert_eq!(content_type(Path::new("probe.wasm")), "application/wasm");
         assert_eq!(
@@ -2900,13 +3018,18 @@ mod tests {
         let port = server.port;
 
         let mut get = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        get.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        // Ask for a one-shot connection: this test reads to EOF, and the
+        // origin otherwise keeps the socket until its five-second idle
+        // timeout. Honouring the request is also the correct HTTP behaviour,
+        // so the read gets a FIN rather than a reset under it.
+        get.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
             .expect("write");
         let mut body = String::new();
         get.read_to_string(&mut body).expect("read");
         assert!(body.starts_with("HTTP/1.1 200 OK"), "got: {body}");
         assert!(body.contains("hello"), "got: {body}");
         assert!(body.contains("Content-Type: text/html"), "got: {body}");
+        assert!(body.contains("Connection: close"), "got: {body}");
 
         let verdict = r#"{"schema":1,"sum":42}"#;
         let mut post = TcpStream::connect(("127.0.0.1", port)).expect("connect");

@@ -1,3 +1,12 @@
+# Text is LF in the repository AND in the working tree, on every platform.
+#
+# SRI pins are SHA-384 over the bytes the server actually sends. A Windows
+# checkout with core.autocrlf=true serves CRLF for a file whose committed blob
+# is LF, so a pin computed over the blob fails in the browser (`style.css` was
+# blocked outright by this) while a pin computed over the working tree would
+# fail on the next Linux checkout. `eol=lf` makes the two the same bytes.
+* text=auto eol=lf
+
 # Binary artefacts must never be line-ending translated. With core.autocrlf=true
 # on Windows checkouts, PDFs without this attribute were CRLF-smudged on
 # checkout, shifting every byte offset after the first LF and breaking the
@@ -12,3 +21,9 @@ fuzz/seeds/** -text
 
 # DER test fixtures (SL-1.ENC.03 PKCS#8 keys) are byte-exact binaries.
 *.der binary
+
+# Compiled WebAssembly and font payloads are bytes, not text. `text=auto` would
+# usually sniff these correctly; naming them makes it a rule rather than a
+# heuristic that a future compression change could flip.
+*.wasm binary
+*.woff2 binary

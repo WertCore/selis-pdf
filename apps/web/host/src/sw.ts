@@ -156,7 +156,31 @@ export function createWorkerHandlers(deps: WorkerDeps): WorkerHandlers {
 		const cache = await deps.caches.open(SHELL_CACHE);
 		// Atomic by specification. A missing asset fails the install rather than
 		// leaving a partially-cached "offline" app.
-		await cache.addAll([...PRECACHE_PATHS]);
+		//
+		// Retried once, because the transport can fail for a reason that is not
+		// about the asset: a keep-alive socket the origin closed while idle is
+		// reused, the fetch is aborted before any bytes arrive, and atomic
+		// `addAll` turns that one stale socket into a worker with no active
+		// version. The next visit would retry the install, but this visit is then
+		// online-only for no reason the asset set can explain. The retry reuses
+		// the HTTP cache for the files that did arrive and opens a fresh
+		// connection for the one that did not. One call site on purpose: the
+		// structural test counts cache-write sites, so the retry is a loop around
+		// the same `addAll`, not a second write path.
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				await cache.addAll([...PRECACHE_PATHS]);
+				return;
+			} catch (error) {
+				if (attempt >= 1) {
+					// The page cannot read this: an install that rejects leaves a
+					// redundant worker behind. The browser console is the only
+					// place the reason survives.
+					console.error("selis: precache failed", error);
+					throw error;
+				}
+			}
+		}
 	}
 
 	/**
@@ -205,13 +229,32 @@ export function createWorkerHandlers(deps: WorkerDeps): WorkerHandlers {
 		await cache.put(request, response.clone());
 	}
 
+	/**
+	 * Fetch a runtime asset, retrying once on a transport failure.
+	 *
+	 * A keep-alive socket that the origin closed while it was idle is
+	 * indistinguishable from a live one until the request is written; the
+	 * browser then rejects the fetch before any response bytes arrive. That is
+	 * exactly the shape a local harness produces, and it is also what a flaky
+	 * mobile connection produces. The request is a bodyless GET of a fixed
+	 * asset, so a second attempt is safe by construction - and without it one
+	 * stale socket turns into a module the page cannot evaluate.
+	 */
+	async function fetchRuntime(request: Request): Promise<Response> {
+		try {
+			return await deps.fetch(request);
+		} catch {
+			return deps.fetch(request);
+		}
+	}
+
 	async function respondRuntime(request: Request): Promise<Response> {
 		const cache = await deps.caches.open(RUNTIME_CACHE);
 		const hit = await cache.match(request);
 		if (hit !== undefined) {
 			return hit;
 		}
-		const response = await deps.fetch(request);
+		const response = await fetchRuntime(request);
 		const verdict = mayStoreResponse(responseFactsFrom(response));
 		if (verdict.store) {
 			try {
