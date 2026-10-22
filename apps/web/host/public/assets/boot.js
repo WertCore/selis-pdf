@@ -1447,6 +1447,13 @@ globalThis.__selisView = function (source) {
 	const painted = paintPage(opened, root);
 	// The document is showing its first page, whatever it was before.
 	currentPage = 0;
+	// The first paint happens before the document's numbering is read, so the
+	// canvas carries the fallback "Rendered page N". Ask for the labels now and
+	// let `__selisPageLabels` relabel the canvas in place; without this, a
+	// front-matter page "i" is announced as "1" until the reader navigates or
+	// opens a panel. Deliberately not awaited: opening is synchronous, and the
+	// fallback name is better than no name while the read is in flight.
+	void globalThis.__selisPageLabels();
 	// The RGBA buffer is ~1.9 MB of document pixels. It is not put on any
 	// global and not reported back, so nothing retains it after painting.
 	delete opened.rgba;
@@ -2225,12 +2232,21 @@ async function linkDecider() {
  */
 function sayLinkRefusal(reason) {
 	if (linkRows === null) return;
+	// One refusal line, not one per press: a reader who tries the same
+	// `/Launch` twice should not collect duplicate sentences.
+	for (const previous of linkRows.querySelectorAll('[data-role="link-refused"]')) {
+		previous.remove();
+	}
 	const note = document.createElement("p");
 	note.dataset.role = "link-refused";
 	note.dataset.reason = reason;
+	note.setAttribute("role", "status");
 	note.textContent = `This link was not opened: ${reason}.`;
 	linkRows.appendChild(note);
 }
+
+/** Monotonic suffix for the external prompt's labelled/described nodes. */
+let externalPromptSeq = 0;
 
 /**
  * Ask before opening an external destination (ADR-0020).
@@ -2238,43 +2254,92 @@ function sayLinkRefusal(reason) {
  * The **whole** destination is shown, verbatim. A shortened or normalised URL
  * is how a reader approves one destination and is sent to another.
  *
+ * The prompt is a **dialog**, not a modal: it asks a question and waits for an
+ * answer, but the links stay readable behind it and there is no focus trap.
+ * Focus moves to Cancel (the safe answer), Escape and Cancel close it, and
+ * focus returns to the link that asked. Open is one Tab away, so a keyboard
+ * reader can still confirm without reaching for the pointer.
+ *
  * @param {string} url the destination, verbatim
  * @param {string} host the host, for the reader to check
  */
 function showExternalPrompt(url, host) {
 	if (linkRows === null) return;
+	// Captured before focus moves into the prompt. `isConnected` is checked on
+	// dismissal because rendering the links again can remove the trigger.
+	const trigger =
+		document.activeElement instanceof HTMLElement ? document.activeElement : null;
+	// One prompt at a time: a second external link replaces the first instead
+	// of stacking confirmations the reader has to dismiss one by one.
+	for (const existing of linkRows.querySelectorAll(
+		'[data-role="external-prompt"]',
+	)) {
+		existing.remove();
+	}
 	const prompt = document.createElement("div");
 	prompt.dataset.role = "external-prompt";
+	prompt.setAttribute("role", "dialog");
+	const seq = ++externalPromptSeq;
+	const questionId = `selis-external-question-${seq}`;
+	const urlId = `selis-external-url-${seq}`;
 	const question = document.createElement("p");
+	question.id = questionId;
 	question.dataset.role = "external-question";
 	question.textContent = "This link opens another site. Open it?";
 	const shown = document.createElement("code");
+	shown.id = urlId;
 	shown.dataset.role = "external-url";
 	shown.textContent = url;
+	prompt.setAttribute("aria-labelledby", questionId);
+	const describedBy = [urlId];
 	prompt.appendChild(question);
 	prompt.appendChild(shown);
 	if (host !== "") {
 		const hostLine = document.createElement("p");
+		hostLine.id = `selis-external-host-${seq}`;
 		hostLine.dataset.role = "external-host";
 		hostLine.textContent = `Host: ${host}`;
+		describedBy.push(hostLine.id);
 		prompt.appendChild(hostLine);
 	}
+	prompt.setAttribute("aria-describedby", describedBy.join(" "));
 	const confirm = document.createElement("button");
 	confirm.type = "button";
 	confirm.dataset.role = "external-confirm";
 	confirm.textContent = "Open";
-	confirm.addEventListener("click", () => {
-		// `noopener` so the opened page cannot reach back into the viewer.
-		window.open(url, "_blank", "noopener");
-	});
 	const cancel = document.createElement("button");
 	cancel.type = "button";
 	cancel.dataset.role = "external-cancel";
 	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", () => prompt.remove());
+	const dismiss = (restoreFocus) => {
+		const target = trigger !== null && trigger.isConnected ? trigger : null;
+		prompt.remove();
+		// Returning focus to the trigger keeps the reader's place in the panel.
+		// On confirm the new tab owns focus; restoring here is for the case
+		// where the open was blocked or the reader comes back.
+		if (restoreFocus) target?.focus();
+	};
+	confirm.addEventListener("click", () => {
+		// `noopener` so the opened page cannot reach back into the viewer.
+		window.open(url, "_blank", "noopener");
+		dismiss(true);
+	});
+	cancel.addEventListener("click", () => dismiss(true));
+	prompt.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		// A dialog consumes Escape. Stopping propagation keeps the shell's
+		// document-level Escape handler from also clearing a failure panel
+		// behind it.
+		event.preventDefault();
+		event.stopPropagation();
+		dismiss(true);
+	});
 	prompt.appendChild(confirm);
 	prompt.appendChild(cancel);
 	linkRows.appendChild(prompt);
+	// The SAFE answer takes focus: Enter on "open another site?" should not
+	// leave the document. Open remains one Tab away.
+	cancel.focus();
 }
 
 /**

@@ -1909,6 +1909,15 @@ fn assert_navigation(report: &Json) -> Result<(), String> {
             ));
         }
     }
+    // The first paint used to say "Rendered page 1" while the document calls
+    // this page "i". The host now reads /PageLabels on open, and the check
+    // waits for that relabel before it presses anything.
+    if before_label != Some("Rendered page i") {
+        return Err(format!(
+            "the first page is labelled `i` by the document, but the canvas announced \
+             {before_label:?} before the first bookmark press"
+        ));
+    }
     // The pixels, not only the label: a shell that renamed the canvas without
     // rendering the other page would pass the label check.
     let before_ink = navigation.get("beforeInk").and_then(Json::as_u64);
@@ -1983,6 +1992,53 @@ fn assert_navigation(report: &Json) -> Result<(), String> {
     }
     if panel.get("externalHost").and_then(Json::as_bool) != Some(true) {
         return Err("the external prompt did not name the host for the reader to check".into());
+    }
+    // The manual pass found that the prompt was a plain div: no dialog role,
+    // no accessible name or description, and focus stayed on the link that
+    // opened it. These assertions are what keep the fix from regressing into
+    // the same visually-fine, keyboard-hostile control.
+    let prompt = panel.get("prompt").ok_or_else(|| {
+        "the app reported no external-prompt semantics (prompt = None)".to_string()
+    })?;
+    if prompt.get("role").and_then(Json::as_str) != Some("dialog") {
+        return Err(format!(
+            "the external prompt is not a dialog (role = {:?})",
+            prompt.get("role")
+        ));
+    }
+    if prompt.get("labelled").and_then(Json::as_bool) != Some(true) {
+        return Err("the external prompt is not labelled by its question".into());
+    }
+    let described = prompt.get("described").and_then(Json::as_str).unwrap_or("");
+    if !described.contains("https://example.com/selis") || !described.contains("Host: example.com")
+    {
+        return Err(format!(
+            "the external prompt's description omits the destination or host: {described:?}"
+        ));
+    }
+    if prompt.get("focus").and_then(Json::as_str) != Some("external-cancel") {
+        return Err(format!(
+            "focus did not move to the safe answer when the external prompt opened: {:?}",
+            prompt.get("focus")
+        ));
+    }
+    let escape = panel.get("escape").ok_or_else(|| {
+        "the app reported no Escape result for the prompt (escape = None)".to_string()
+    })?;
+    if escape.get("closed").and_then(Json::as_bool) != Some(true) {
+        return Err("Escape did not close the external prompt".into());
+    }
+    if escape.get("focusRestored").and_then(Json::as_bool) != Some(true) {
+        return Err("Escape closed the prompt but did not return focus to the link".into());
+    }
+    let cancel = panel.get("cancel").ok_or_else(|| {
+        "the app reported no Cancel result for the prompt (cancel = None)".to_string()
+    })?;
+    if cancel.get("closed").and_then(Json::as_bool) != Some(true) {
+        return Err("Cancel did not close the external prompt".into());
+    }
+    if cancel.get("focusRestored").and_then(Json::as_bool) != Some(true) {
+        return Err("Cancel closed the prompt but did not return focus to the link".into());
     }
     // A `/Launch` is refused, WITH A REASON. A refusal that says nothing is
     // the quiet failure this whole feature exists to prevent.

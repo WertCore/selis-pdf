@@ -1127,6 +1127,21 @@
         //     indistinguishable from doing nothing.
         .then(function () {
           globalThis.__selisView(TAGGED_PDF_B64);
+          // UI.06 manual pass: the first paint used to carry the fallback
+          // number "Rendered page 1" while the document calls this page "i".
+          // The host now reads /PageLabels on open and relabels the canvas in
+          // place; wait for that before the explicit read, or the check would
+          // pass on the explicit read alone.
+          return waitFor(
+            function () {
+              var canvas = document.getElementById("selis-page");
+              return !!canvas && canvas.getAttribute("aria-label") === "Rendered page i";
+            },
+            10000,
+            "the first page to take the document's own label on open",
+          );
+        })
+        .then(function () {
           return globalThis.__selisPageLabels();
         })
         .then(function (labels) {
@@ -1272,26 +1287,95 @@
             if (text.indexOf("Run the installer") >= 0) launch = buttons[i];
           }
           out.linkPanel.found = { uri: !!uri, launch: !!launch };
-          if (uri) uri.click();
+          if (!uri) throw new Error("the page exposed no external link to prompt");
+          // Focus before clicking, as a pointer press would. The prompt has to
+          // return focus here when it closes; a synthetic click alone would
+          // leave the assertion unable to tell "restored" from "never moved".
+          uri.focus();
+          uri.click();
           return waitFor(
             function () {
-              return panel.querySelector("[data-role=external-url]") !== null;
+              return panel.querySelector("[data-role=external-prompt]") !== null;
             },
             10000,
             "the external link to prompt before opening",
           ).then(function () {
-            var shown = panel.querySelector("[data-role=external-url]");
+            var prompt = panel.querySelector("[data-role=external-prompt]");
+            var question = prompt.querySelector("[data-role=external-question]");
+            var shown = prompt.querySelector("[data-role=external-url]");
+            var described = (prompt.getAttribute("aria-describedby") || "")
+              .split(/\s+/)
+              .filter(function (id) {
+                return id.length > 0;
+              })
+              .map(function (id) {
+                var node = document.getElementById(id);
+                return node ? node.textContent : "";
+              })
+              .join(" ");
             out.linkPanel.externalUrl = shown ? shown.textContent : null;
             out.linkPanel.externalHost =
-              panel.querySelector("[data-role=external-host]") !== null;
-            if (launch) launch.click();
+              prompt.querySelector("[data-role=external-host]") !== null;
+            out.linkPanel.prompt = {
+              role: prompt.getAttribute("role"),
+              labelled:
+                !!question && prompt.getAttribute("aria-labelledby") === question.id,
+              described: described,
+              focus:
+                document.activeElement && document.activeElement.dataset
+                  ? document.activeElement.dataset.role || null
+                  : null,
+            };
+            // Escape is the keyboard dismissal; focus must come back to the
+            // link, not disappear with the removed button.
+            prompt.dispatchEvent(
+              new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+            );
+            out.linkPanel.escape = {
+              closed: panel.querySelector("[data-role=external-prompt]") === null,
+              focusRestored: document.activeElement === uri,
+            };
+            // Re-open and take the Cancel path too: same dismissal, different
+            // listener, and a Cancel that strands focus is the same defect.
+            uri.focus();
+            uri.click();
             return waitFor(
               function () {
-                return panel.querySelector("[data-role=link-refused]") !== null;
+                return panel.querySelector("[data-role=external-prompt]") !== null;
               },
               10000,
-              "the /Launch link to be refused with a reason",
-            );
+              "the external prompt to open again",
+            ).then(function () {
+              var again = panel.querySelector("[data-role=external-prompt]");
+              var againCancel = again.querySelector("[data-role=external-cancel]");
+              if (!againCancel) throw new Error("the external prompt has no Cancel button");
+              againCancel.click();
+              out.linkPanel.cancel = {
+                closed: panel.querySelector("[data-role=external-prompt]") === null,
+                focusRestored: document.activeElement === uri,
+              };
+              // Leave one prompt open for the axe scan below. It is the state
+              // a reader is in when the dialog is on screen, and scanning an
+              // empty page would not test the dialog's own semantics.
+              uri.focus();
+              uri.click();
+              return waitFor(
+                function () {
+                  return panel.querySelector("[data-role=external-prompt]") !== null;
+                },
+                10000,
+                "the external prompt to be present for the accessibility scan",
+              ).then(function () {
+                if (launch) launch.click();
+                return waitFor(
+                  function () {
+                    return panel.querySelector("[data-role=link-refused]") !== null;
+                  },
+                  10000,
+                  "the /Launch link to be refused with a reason",
+                );
+              });
+            });
           });
         })
         .then(function () {

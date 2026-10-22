@@ -391,9 +391,11 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       All 15 corrected sites now cite ADR-P0044 alongside SL-4.UI.01 rather than pointing at a
       test path alone; the 39 genuine ADR-P0021 licence citations were not touched.
   - **Other limits:** a mid-page `/XYZ` destination lands on the top of the page (reduced to page plus
-    alignment), and nothing has been rendered in a browser - treeview roles, dialog chrome, rail
-    appearance and prompt readability are all owed a manual pass; only the prompt's *content* is
-    asserted headlessly.
+    alignment). The web host's manual browser pass is recorded in the status block below
+    (2026-10-22): the prompt now has dialog semantics and focus management, the first paint
+    relabels itself from `/PageLabels`, the bookmarks are a nested list rather than a treeview,
+    and the host mounts no thumbnail rail. The extension half still has no panels to inspect;
+    only the prompt's *content* is asserted headlessly.
   - **Status — the web-host half (the first host), shipped 2026-10-22.** The three reads the plan
     said were owed are now called from the web shell, and the one thing the plan did not say was
     owed turned out to matter more: **the bookmark buttons were dead ends.**
@@ -499,14 +501,43 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
         closes after the response, which is also correct HTTP/1.1. The server still keeps the
         connection for the browser's file requests, where closing with a queued request unread was
         the RST that made a module look like a 0-byte failure.
+    - **The manual browser pass on the web host is done (2026-10-22).** It found two real
+      accessibility defects and two host-integration gaps the plan had not named:
+      - **The external-link prompt was a plain `div`.** No dialog role, no accessible name or
+        description, focus stayed on the link that opened it, and Escape did nothing. It is now
+        a non-modal `role="dialog"` labelled by its question and described by the verbatim URL
+        and host; focus moves to **Cancel** (the safe answer), Escape and Cancel close it, and
+        focus returns to the triggering link. The browser check asserts the role, the
+        labelled/described relationships, the focus move, both dismissal paths and focus
+        restoration, so the fix cannot regress to a visually-fine, keyboard-hostile control.
+      - **The first paint announced the wrong page name.** `/PageLabels` was read only when a
+        bookmark was pressed or the reader navigated, so a front-matter page the document calls
+        `i` was announced as "Rendered page 1" until then - and page 2, whose decimal label is
+        also `1`, could be reached without the name changing at all. Opening now asks for the
+        labels and relabels the canvas in place; the check waits for "Rendered page i" before it
+        presses anything, and the Rust side asserts the exact name.
+      - **The bookmarks are a nested list, not an ARIA treeview.** The host renders
+        `region > ul > li > button` with child `<ul>`s inside their parent `<li>`; every control
+        is a native button reachable by Tab, but there is no `role=tree`/`treeitem`, no roving
+        tabindex, and ArrowDown does not move focus. The viewer's `navigation.ts` controller
+        implements those tree keys, but this host does not mount it, and the plan's outline
+        clause never states that a treeview is required. Recorded as a host-integration
+        difference, not repaired by wrapping a disclosure list in tree roles it does not honour.
+      - **There is no rail, page list or thumbnail surface in this host.** The navigation
+        surface is three plain disclosure buttons stacked above the canvas; the
+        `thumbnails.ts` ladder exists in `apps/ui` but is not mounted here. The rail's
+        *appearance* therefore cannot be judged on the web host at all - that is a missing host
+        integration, not a visual verdict. The only navigation chrome that can be looked at is
+        the unstyled disclosure list, which is legible but not the themed shell UI.02+ will ship.
+      - **Minor, fixed while there:** activating the same refused `/Launch` link repeatedly
+        appended duplicate refusal sentences; the panel now carries one, in a `role="status"`.
     - **NOT met, and why the box stays open.** The extension half (below) is the blocker: its
       viewer mounts no navigation panels, so there is nothing to look at in a browser on that host
       and its own browser check cannot run. That is not an accident of this task: EXT.06
       deliberately ships no page list and `REUSE.md` records it, because the virtualised page list
       and zoom ladder are UI.04+ work and mounting them here would be a half-built viewer in a
-      size-budgeted package. The **manual browser pass** this block already records (treeview
-      roles, dialog chrome, rail appearance, prompt readability) is still owed on the web host
-      too.
+      size-budgeted package. The manual pass above is the web-host half; the extension has no
+      panels to inspect.
     - **The type now carries the three qualifiers (2026-10-22).** `NavigationPort.outline`
       returns `OutlineReport` (`present`, `truncated`, `pruned`, `items`) rather than a bare
       list. The extension forwards the host's flags instead of dropping them at the page seam,
@@ -573,9 +604,9 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       tree, no thumbnail rail and no link overlay - it ships neither `viewer/navigation.ts` nor
       `viewer/thumbnails.ts` (see `apps/extension/REUSE.md`) - so there is **nothing to look at** in
       a browser on this host and the extension's own browser check cannot be run at all. The
-      capability under those panels is what shipped; the panels are the viewer's task. The manual
-      pass the block already records (treeview roles, dialog chrome, rail appearance, prompt
-      readability) is therefore still owed on the extension as well as the web host.
+      capability under those panels is what shipped; the panels are the viewer's task. The
+      web-host manual pass is recorded in the block above (2026-10-22); the same pass is still
+      owed on the extension, which has no panels to render or inspect.
     - **The UI seam now carries the qualifiers (2026-10-22).** `NavigationPort.outline` returns
       `OutlineReport` — `present`, `truncated`, `pruned`, `items` — so the extension's page side
       forwards them instead of dropping them, and the web shell no longer needs a private copy
