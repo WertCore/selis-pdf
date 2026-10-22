@@ -41,6 +41,7 @@ export type {
 	DestinationKind,
 	PdfDestination,
 	OutlineNode,
+	OutlineReport,
 	NamedDestination,
 	LinkActionKind,
 	LinkAction,
