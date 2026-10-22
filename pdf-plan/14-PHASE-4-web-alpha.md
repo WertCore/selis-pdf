@@ -475,12 +475,17 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
         graph loads `layout.js`/`windowing.js` sequentially, the print path goes through the same
         `importViewer`, and `__selisModuleErrors` records what failed for the gate and support.
       - **The service worker's install is atomic and its runtime cache was too small.**
-        `cache.addAll` is retried once in a loop (one textual call site, so the structural
-        cache-write test still sees exactly one), runtime fetches retry once on transport failure,
-        and the runtime cache ceiling is **128**, not 32: the cold-start graph plus the six WASM
-        chunks exceeded 32 and FIFO evicted `windowing.js`, which the offline check then missed.
-      - **The harness needed the same resilience.** The app-shell page retries its stylesheet with
-        a distinct query because an aborted `<link>` is never retried, races
+        `cache.addAll` is retried up to five times with a short backoff in a loop (one textual
+        call site, so the structural cache-write test still sees exactly one); two stale sockets
+        in a row beat the single retry, and an install that rejects leaves a redundant worker and
+        an 8 s wait in the harness. Runtime fetches retry once on transport failure, and the
+        runtime cache ceiling is **128**, not 32: the cold-start graph plus the six WASM chunks
+        exceeded 32 and FIFO evicted `windowing.js`, which the offline check then missed.
+      - **The harness needed the same resilience.** The app-shell page treats a stylesheet with
+        zero parsed rules as unloaded, not just a missing `sheet` object: after an aborted fetch
+        Chrome can expose an empty sheet, which made the old truthiness check skip the retry and
+        report zero `@media print` rules. The retry uses a distinct query because an aborted
+        `<link>` is never retried; the page also races
         `navigator.serviceWorker.ready` against an 8 s timeout and reports the worker's `state`,
         and the `async-wasm` page retries `probe.wasm`. The unused static import of
         `/sw-register.js` was removed: a failed static import prevents the watchdog from ever

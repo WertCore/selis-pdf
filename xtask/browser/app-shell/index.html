@@ -403,11 +403,33 @@
         });
       }
 
+      /**
+       * Whether a stylesheet link is loaded AND has parsed rules.
+       *
+       * `link.sheet` alone is not enough. After a transport failure Chrome can
+       * still expose a CSSStyleSheet object with zero rules, so a check for
+       * truthiness decides the stylesheet is fine and never retries - the print
+       * gate then reads zero `@media print` rules and blames the app. Rules are
+       * the observable that actually matters here.
+       */
+      function stylesheetHasRules(link) {
+        if (!link || !link.sheet) {
+          return false;
+        }
+        try {
+          return link.sheet.cssRules.length > 0;
+        } catch (error) {
+          // A cross-origin sheet would throw; this one is same-origin, so a
+          // throw means it is not usable as CSS and a retry is the right move.
+          return false;
+        }
+      }
+
       function ensureStylesheet() {
         var committed = document.querySelector(
           'link[rel="stylesheet"][href="/assets/style.css"]',
         );
-        if (committed && committed.sheet) {
+        if (stylesheetHasRules(committed)) {
           return Promise.resolve(true);
         }
         return loadStylesheet(0);

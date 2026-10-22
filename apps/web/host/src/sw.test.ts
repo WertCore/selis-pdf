@@ -316,6 +316,24 @@ describe("install: the shell, and only the shell", () => {
 		expect(caches.opened.has(RUNTIME_CACHE)).toBe(false);
 	});
 
+	it("retries a transient precache failure before giving up", async () => {
+		const { handlers, caches, origin } = createWorker();
+		let attempts = 0;
+		origin.serve("/assets/style.css", () => {
+			attempts += 1;
+			if (attempts < 3) {
+				return new Response("gone", { status: 404 });
+			}
+			return new Response("body{}", { headers: { "Content-Type": "text/css" } });
+		});
+		await handlers.install();
+		// Two stale sockets in a row are exactly the case a single retry did
+		// not survive under the full xtask suite; the third attempt must.
+		expect(attempts).toBe(3);
+		const shell = await caches.open(SHELL_CACHE);
+		expect(shell.urls()).toHaveLength(PRECACHE_PATHS.length);
+	});
+
 	it("is atomic: one missing asset fails the install and caches nothing", async () => {
 		const { handlers, caches, origin } = createWorker();
 		origin.serve("/assets/style.css", () => new Response("gone", { status: 404 }));

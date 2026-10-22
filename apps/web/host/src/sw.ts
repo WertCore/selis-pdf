@@ -157,28 +157,30 @@ export function createWorkerHandlers(deps: WorkerDeps): WorkerHandlers {
 		// Atomic by specification. A missing asset fails the install rather than
 		// leaving a partially-cached "offline" app.
 		//
-		// Retried once, because the transport can fail for a reason that is not
-		// about the asset: a keep-alive socket the origin closed while idle is
-		// reused, the fetch is aborted before any bytes arrive, and atomic
-		// `addAll` turns that one stale socket into a worker with no active
-		// version. The next visit would retry the install, but this visit is then
-		// online-only for no reason the asset set can explain. The retry reuses
-		// the HTTP cache for the files that did arrive and opens a fresh
-		// connection for the one that did not. One call site on purpose: the
-		// structural test counts cache-write sites, so the retry is a loop around
-		// the same `addAll`, not a second write path.
+		// Retried a few times, because the transport can fail for a reason that
+		// is not about the asset: a keep-alive socket the origin closed while
+		// idle is reused, the fetch is aborted before any bytes arrive, and
+		// atomic `addAll` turns that one stale socket into a worker with no
+		// active version. The next visit would retry the install, but this visit
+		// is then online-only for no reason the asset set can explain. Each retry
+		// reuses the HTTP cache for the files that did arrive and opens a fresh
+		// connection for the one that did not; the short backoff gives a failed
+		// socket time to leave the pool. One call site on purpose: the structural
+		// test counts cache-write sites, so the retry is a loop around the same
+		// `addAll`, not a second write path.
 		for (let attempt = 0; ; attempt += 1) {
 			try {
 				await cache.addAll([...PRECACHE_PATHS]);
 				return;
 			} catch (error) {
-				if (attempt >= 1) {
+				if (attempt >= 4) {
 					// The page cannot read this: an install that rejects leaves a
 					// redundant worker behind. The browser console is the only
 					// place the reason survives.
 					console.error("selis: precache failed", error);
 					throw error;
 				}
+				await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
 			}
 		}
 	}
