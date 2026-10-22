@@ -249,7 +249,7 @@ as CI oracles (ADR-P0009).
 **Revision accepted 2026-10-22 (SL-4.UI.14 stage 2).**
 The `deny.toml` / `cargo deny` gate governs **Rust** dependencies only, and `crates.io only` +
 `wildcards = "deny"` describe the registry, not every ecosystem. SL-4.UI.14 introduces the first
-non-Rust shipped dependency: `@wertkit/ui` from npm, plus React 18/19 and nine `@radix-ui/*`
+non-Rust shipped dependency: `@wertkit/ui` from npm, plus React 18/19 and ten `@radix-ui/*`
 packages. Without this amendment it is a policy hole rather than a decision, because nothing in
 the current gate can see an npm tree at all. The policy now reads:
 - The **licence rationale is unchanged and still binding** — GPL/LGPL/AGPL/SSPL/CDDL stay denied

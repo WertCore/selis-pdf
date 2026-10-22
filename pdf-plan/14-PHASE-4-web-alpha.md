@@ -223,6 +223,12 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     and pre-approved, and `pnpm-lock.yaml` is the integrity record. Stage 3 (React +
     `@wertkit/ui` chrome) is the only part left, and it is still a dependency change to be
     proposed before it is made — the plan's own rule.
+  - **Stage 3 proposal filed (2026-10-22):** the exact React/`@wertkit/ui` pins,
+    the ten Radix transitives, the licence/maintenance record, the vendor-only
+    bundler exception, the `--wk-*` bridge, and the validation plan are in
+    `33-UI14-STAGE3-DEPENDENCY-PROPOSAL.md`. **Approval is pending; no manifest
+    has changed.** If the vendor-bundle exception is refused, stage 3 stays
+    open and the dependencies are not added.
   - **Deferred, not open:** wertkit is first-party — the repo's own author maintains it — so its
     licence and provenance are settled and need no gate here. The remaining pre-release item is
     a dependency **audit** (npm licence allow-list, `unmaintained` check, a `cargo vet`
