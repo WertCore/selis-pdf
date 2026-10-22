@@ -401,23 +401,21 @@ export interface WireLinkAction {
  * The navigation capability the engine host serves to the viewer page
  * (SL-4.UI.06).
  *
- * ## Why this is not `apps/ui`'s `NavigationPort`
+ * ## Why the outline is a report, not a list
  *
- * The UI's port answers `outline` with a **list** of bookmark items, because
- * that is all the viewer has somewhere to put. The engine's answer carries
- * three more facts — the document *has* an outline, the engine could not read
- * it in full, the engine pruned items it could not read — and the wire
- * ({@link WireOutline}) carries all three, because they are not the same
- * claim. "This document has no bookmarks", "this document has bookmarks this
- * viewer cannot show" and "this host cannot read bookmarks at all" are three
- * different things to tell a reader, and collapsing any two of them tells
- * them something false about their own file.
+ * The engine's answer carries three facts beside the items — the document
+ * *has* an outline, the engine could not read it in full, the engine pruned
+ * items it could not read — and the wire ({@link WireOutline}) carries all
+ * three, because they are not the same claim. "This document has no
+ * bookmarks", "this document has bookmarks this viewer cannot show" and "this
+ * host cannot read bookmarks at all" are three different things to tell a
+ * reader, and collapsing any two of them tells them something false about
+ * their own file.
  *
- * So the capability answers with the **report**, and the page side is where the
- * report becomes the UI's list. The two extra flags are dropped there, because
- * `NavigationPort.outline` has nowhere to put them: that is a limit of the
- * UI's type, not of this transport, and the web shell keeps the same facts in
- * its own page state for the same reason.
+ * The UI's `NavigationPort` now carries the same `OutlineReport`, so the page
+ * side forwards the qualifiers instead of dropping them at the seam. The
+ * capability keeps its own declaration because it is the *host's* contract and
+ * is served from the guest, not because the two shapes differ.
  *
  * ## Every action class crosses, including the disabled ones
  *

@@ -166,7 +166,7 @@ describe("extension capabilities (SL-4.EXT.06)", () => {
 		if (navigation === undefined) {
 			throw new Error("the extension adapter must supply the navigation port");
 		}
-		expect((await navigation.outline(doc)).map((node) => node.title)).toEqual([
+		expect((await navigation.outline(doc)).items.map((node) => node.title)).toEqual([
 			"Chapter one",
 			"Appendix",
 		]);

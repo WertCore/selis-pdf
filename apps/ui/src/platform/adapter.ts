@@ -38,7 +38,7 @@ import type {
 	DocumentSourceDescriptor,
 	LinkAnnotation,
 	NamedDestination,
-	OutlineNode,
+	OutlineReport,
 	PageLabelRange,
 	PageText,
 	PageTextLayer,
@@ -172,13 +172,19 @@ export interface NavigationPort {
 	/**
 	 * The document's outline (bookmark) tree, in document order.
 	 *
+	 * The report carries the three qualifiers the tree alone cannot: whether
+	 * the document has an outline at all, whether the walk was truncated, and
+	 * whether items the reader could not resolve were pruned. An empty `items`
+	 * with `present: true` is "the outline exists but yielded nothing"; an
+	 * empty `items` with `present: false` is "this document has no outline".
+	 *
 	 * An unresolvable item (a `/Dest` naming a destination that is not in the
 	 * name tree) is still returned, with `namedDestination` set and no
 	 * `destination`: a bookmark the reader can see and that reports "this
 	 * document's destination is missing" is more useful, and more honest, than
 	 * a silently shorter outline.
 	 */
-	outline(doc: DocHandle, options?: AdapterRequestOptions): Promise<readonly OutlineNode[]>;
+	outline(doc: DocHandle, options?: AdapterRequestOptions): Promise<OutlineReport>;
 
 	/**
 	 * The `/PageLabels` ranges, in document order. Empty for a document with

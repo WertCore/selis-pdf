@@ -320,7 +320,14 @@ describe("the navigation transport (SL-4.UI.06)", () => {
 		const { client } = connected();
 		const doc = await client.open(sampleDescriptor());
 
-		const outline = await client.outline(doc);
+		const report = await client.outline(doc);
+		// The qualifiers cross the seam too: "this document has an outline",
+		// "the walk was complete", "nothing was pruned" are three facts a
+		// bare list cannot carry.
+		expect(report.present).toBe(true);
+		expect(report.truncated).toBe(false);
+		expect(report.pruned).toBe(false);
+		const outline = report.items;
 		expect(outline.map((node) => node.title)).toEqual(["Chapter one", "Appendix"]);
 		// The nesting survives the wire: a flat list would tell a reader that
 		// two chapters are two siblings.

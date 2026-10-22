@@ -56,8 +56,8 @@
  * - **The outline keeps its qualifiers.** The guest's answer separates "this
  *   document has no outline", "it has one this engine could not read in full"
  *   and "here it is", and the report carries all three into the extension's
- *   wire. They are dropped only at the UI's own seam, where
- *   `NavigationPort.outline` has nowhere to put them.
+ *   wire **and across the UI seam**, because `NavigationPort.outline` returns
+ *   the same `OutlineReport`.
  */
 
 import type { EnginePort } from "../../../ui/src/platform/adapter.js";

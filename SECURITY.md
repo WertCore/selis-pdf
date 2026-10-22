@@ -17,6 +17,8 @@ and no equivalent of `cargo vet` for the JS tree.
 
 The first deliberate first-party npm dependency is `@wertkit/ui` (this organisation's own design
 system, alongside React and `@radix-ui/*`), introduced by SL-4.UI.14. It is pre-approved —
-first-party, so no licence gate. The gap above is nonetheless **real and still open**: it is a
-property of the npm ecosystem, not of any one dependency, and is owned by a pre-release
-hardening pass. ADR-P0021 records it.
+first-party, so no licence gate. **Versions are pinned exactly** (`0.1.8`, never `^0.1.8`):
+a 0.x package with no published changelog drifts across breaking minors under a caret, and the
+pin is the reproducibility record even where the licence gate does not apply. The gap above is
+nonetheless **real and still open**: it is a property of the npm ecosystem, not of any one
+dependency, and is owned by a pre-release hardening pass. ADR-P0021 records it.

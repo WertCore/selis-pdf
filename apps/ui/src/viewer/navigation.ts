@@ -203,6 +203,10 @@ export function createNavigation(options: NavigationOptions): NavigationControll
 	const port = options.adapter.navigation;
 
 	let nodes: readonly OutlineNode[] = [];
+	// The document's own answer, kept apart from `nodes.length`: see the note
+	// in `runLoad`. `false` means "this document has no outline", not "the host
+	// could not read one" — the latter is `port === undefined`.
+	let outlinePresent = false;
 	let destinations = new Map<string, PdfDestination>();
 	let labels: readonly NormalisedLabelRange[] = [];
 	let expanded = new Set<string>();
@@ -262,7 +266,7 @@ export function createNavigation(options: NavigationOptions): NavigationControll
 		const table = meaningfulLabels();
 		return {
 			available: port !== undefined,
-			hasOutline: nodes.length > 0,
+			hasOutline: outlinePresent && nodes.length > 0,
 			rows,
 			focusedId,
 			currentPage,
@@ -330,12 +334,16 @@ export function createNavigation(options: NavigationOptions): NavigationControll
 			if (disposed) {
 				return lastState ?? buildState();
 			}
-			nodes = outline;
+			nodes = outline.items;
+			// `present` is the document's own answer, not "the list is non-empty":
+			// an outline that exists but yielded nothing is still a document with
+			// an outline, and the panel must not call it "unavailable".
+			outlinePresent = outline.present;
 			labels = normaliseLabelRanges(labelRanges);
 			destinations = new Map(named.map((entry) => [entry.name, entry.destination]));
 			// Initial expansion is the document's own: only items with a negative
 			// `/Count` start closed. See `initialExpansion`.
-			expanded = new Set(initialExpansion(outline));
+			expanded = new Set(initialExpansion(outline.items));
 			focusedId = null;
 			say(nodes.length === 0 ? strings.empty() : "");
 			return publish();

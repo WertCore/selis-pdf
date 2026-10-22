@@ -175,21 +175,13 @@ export function createFixtureEngine(): EnginePort & NavigationCapability {
 
 		// ── SL-4.UI.06: the navigation capability ──────────────────────────
 		//
-		// The mock's navigation port is the UI's shape; the capability is the
-		// engine's. The outline is the one answer that differs, so it is the
-		// one that needs the bridge.
-		outline: async (doc, options): Promise<OutlineReport> => {
-			const items = await requireMockNavigation(mock).outline(doc, options);
-			return {
-				present: items.length > 0,
-				// The mock never truncates and never prunes: it is not an
-				// engine, and claiming otherwise would be a claim about a
-				// document the mock knows nothing about.
-				truncated: false,
-				pruned: false,
-				items,
-			};
-		},
+		// The mock already answers in the UI's `OutlineReport` shape, so the
+		// outline no longer needs a list-to-report bridge here. Its `present`
+		// is `items.length > 0`, and it never truncates or prunes: it is not an
+		// engine, and claiming otherwise would be a claim about a document the
+		// mock knows nothing about.
+		outline: (doc, options): Promise<OutlineReport> =>
+			requireMockNavigation(mock).outline(doc, options),
 		pageLabels: (doc, options) => requireMockNavigation(mock).pageLabels(doc, options),
 		destinations: (doc, options) => requireMockNavigation(mock).destinations(doc, options),
 		pageLinks: (doc, page, options) => requireMockNavigation(mock).pageLinks(doc, page, options),

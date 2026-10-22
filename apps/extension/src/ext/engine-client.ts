@@ -51,6 +51,7 @@ import type {
 	LinkAnnotation,
 	NamedDestination,
 	OutlineNode,
+	OutlineReport,
 	PageLabelRange,
 	PageText,
 	PageTextLayer,
@@ -409,25 +410,21 @@ export function createEnginePort(link: EngineLink): EnginePort & NavigationPort 
 		/**
 		 * The document's bookmark outline (SL-4.UI.06).
 		 *
-		 * The host's answer carries three facts the UI's `NavigationPort` has
-		 * nowhere to put — whether the document *has* an outline, whether the
-		 * engine could read it in full, and whether the engine pruned items it
-		 * could not read. They are validated here and then dropped, because
-		 * `NavigationPort.outline` returns a list and the viewer reads an
-		 * empty list as "this document has no outline".
-		 *
-		 * That collapse is the UI's type, not this transport's: the host still
-		 * distinguishes the three states on the wire, and a refusal (this host
-		 * cannot read outlines at all) still arrives as a typed error rather
-		 * than as an empty list.
+		 * The host's answer carries three facts — whether the document *has* an
+		 * outline, whether the engine could read it in full, and whether the
+		 * engine pruned items it could not read. All three cross into the UI's
+		 * `OutlineReport`; dropping them here would make "this document has no
+		 * outline" and "the outline exists but was truncated" the same empty
+		 * list. A refusal (this host cannot read outlines at all) still arrives
+		 * as a typed error rather than as an empty report.
 		 */
-		async outline(doc, requestOptions): Promise<readonly OutlineNode[]> {
+		async outline(doc, requestOptions): Promise<OutlineReport> {
 			const wire = await call(
 				() => ({ op: "outline", doc: doc.id }),
 				requestOptions,
 				STAGE_NAVIGATION,
 			);
-			return toOutlineNodes(wire);
+			return toOutlineReport(wire);
 		},
 
 		/** The document's `/PageLabels` ranges, in document order. */
@@ -655,15 +652,16 @@ function toSearchBatch(wire: unknown): SearchBatch {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The host's outline, as the viewer's bookmark list.
+ * The host's outline, as the viewer's outline report.
  *
  * The three qualifiers the host sends — `present`, `truncated`, `pruned` —
- * are checked and then dropped, because `NavigationPort.outline` returns a
- * list. The host still distinguishes them on the wire, and a *refusal* still
- * arrives as a typed error rather than as an empty list, so "this document
- * has no outline" and "this host cannot read outlines" do not look alike.
+ * are validated and **carried**, not dropped: the UI's `OutlineReport` has
+ * fields for all three, so a truncated walk can be told apart from a document
+ * with no outline. A *refusal* still arrives as a typed error rather than as
+ * an empty report, so "this document has no outline" and "this host cannot
+ * read outlines" do not look alike.
  */
-function toOutlineNodes(wire: unknown): readonly OutlineNode[] {
+function toOutlineReport(wire: unknown): OutlineReport {
 	const outline = wire as WireOutline;
 	if (
 		typeof outline?.present !== "boolean" ||
@@ -673,7 +671,12 @@ function toOutlineNodes(wire: unknown): readonly OutlineNode[] {
 	) {
 		throw AdapterError.badArgument("the engine host returned an unreadable outline");
 	}
-	return outline.items.map(toOutlineNode);
+	return {
+		present: outline.present,
+		truncated: outline.truncated,
+		pruned: outline.pruned,
+		items: outline.items.map(toOutlineNode),
+	};
 }
 
 /** One bookmark, as the viewer names it. */

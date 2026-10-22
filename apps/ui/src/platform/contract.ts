@@ -304,8 +304,13 @@ export function definePlatformAdapterContract(
 					adapter.navigation.pageLinks(doc, 0),
 				]);
 				// Shape, not content: the contract suite's fixture document has
-				// no outline, and a host must not invent one.
-				expect(Array.isArray(outline)).toBe(true);
+				// no outline, and a host must not invent one. The three
+				// qualifiers are part of the shape: a host that returned only a
+				// list would have lost "no outline" versus "truncated walk".
+				expect(Array.isArray(outline.items)).toBe(true);
+				expect(typeof outline.present).toBe("boolean");
+				expect(typeof outline.truncated).toBe("boolean");
+				expect(typeof outline.pruned).toBe("boolean");
 				expect(Array.isArray(labels)).toBe(true);
 				expect(Array.isArray(destinations)).toBe(true);
 				expect(Array.isArray(links)).toBe(true);

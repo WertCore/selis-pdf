@@ -217,6 +217,12 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     that is not in workspace dependencies; if you need one, stop and propose it with a licence
     + maintenance justification") stage 2 is where they get proposed and justified, not
     slipped in.
+  - **Stage 2 done (2026-10-22).** `SECURITY.md` records the npm dependency and the exact-pin
+    rule, and ADR-P0021's proposed revision is **accepted** rather than left as a proposal:
+    the licence rationale is unchanged, the npm gate is described, `@wertkit/*` is first-party
+    and pre-approved, and `pnpm-lock.yaml` is the integrity record. Stage 3 (React +
+    `@wertkit/ui` chrome) is the only part left, and it is still a dependency change to be
+    proposed before it is made — the plan's own rule.
   - **Deferred, not open:** wertkit is first-party — the repo's own author maintains it — so its
     licence and provenance are settled and need no gate here. The remaining pre-release item is
     a dependency **audit** (npm licence allow-list, `unmaintained` check, a `cargo vet`
@@ -339,9 +345,11 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     an app that had nested correctly, which is a gate wrong about the thing it measures.
   - **Bookmarks render nested, not flat with `data-depth`.** A flat list passes every other check
     here while telling a reader that four chapters are four siblings.
-  - **Still owed:** `pageLabels`, `destinations` and `pageLinks` have ops but are still not called
-    from the shell, so the full `NavigationPort` — which needs all three — is not yet satisfied by
-    this host, and page labels and named destinations remain unwired.
+  - **These three reads were wired later the same day.** The paragraph above records what was
+    owed when the panels landed, not the current state: see the web-host status block below
+    (2026-10-22), where `__selisPageLabels`, `__selisDestinations` and `__selisPageLinks` are
+    called and each one's purpose is stated. Kept here because deleting the intermediate state
+    would make the next reader think the reads shipped with the panels.
   - **ADR-P0020 is genuinely enforced, not merely unhandled.** `decideLinkAction` returns a
     `blocked` decision *with a spoken reason*, so a refused `/Launch` is announced rather than
     silently swallowed. The disabled classes are checked **before any field is read**, so a `/Launch`
@@ -442,13 +450,31 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       would have been blocked by SRI in the browser**, with every local gate green. The pin is over
       the blob's bytes, and the fixture-sync tool (`tools/sync-check-fixtures.mjs`) now exists so
       that regenerating a fixture updates the check page's base64 rather than a human doing it.
+      **The repo has no `.gitattributes` text policy**, so a file's blob can be CRLF or LF depending
+      on when it was added, and the pin follows the blob. That is fragile and is worth a
+      `.gitattributes` pass of its own (`* text=auto eol=lf`); it is not this task's to take.
+    - **The browser check found a bug the unit tests could not: a temporal dead zone.** The Links
+      disclosure's `let linkRows` was declared *below* the mount, and the mount assigns it — so
+      assigning to it during the mount threw `ReferenceError: Cannot access 'linkRows' before
+      initialization`, and **the whole viewer failed to start**. Nothing in Node could have found
+      it: there is no DOM in `apps/ui` (ADR-0044), the shell is not unit-tested, and the failure is
+      a *timing* fact about module evaluation. The fix is the declaration order, and the reason is
+      written down beside the declarations so the next reader does not "tidy" them back down.
     - **NOT met, and why the box stays open.** The extension half (below) is the blocker: its
       viewer mounts no navigation panels, so there is nothing to look at in a browser on that host
-      and its own browser check cannot run. The **manual browser pass** this block already records
-      (treeview roles, dialog chrome, rail appearance, prompt readability) is still owed on the web
-      host too. And the UI's `NavigationPort.outline` returns a **list**, so `present` / `truncated`
-      / `pruned` have nowhere to live at the seam: the web shell keeps them in its own page state
-      and the extension keeps them on its internal wire, and the type should carry them.
+      and its own browser check cannot run. That is not an accident of this task: EXT.06
+      deliberately ships no page list and `REUSE.md` records it, because the virtualised page list
+      and zoom ladder are UI.04+ work and mounting them here would be a half-built viewer in a
+      size-budgeted package. The **manual browser pass** this block already records (treeview
+      roles, dialog chrome, rail appearance, prompt readability) is still owed on the web host
+      too.
+    - **The type now carries the three qualifiers (2026-10-22).** `NavigationPort.outline`
+      returns `OutlineReport` (`present`, `truncated`, `pruned`, `items`) rather than a bare
+      list. The extension forwards the host's flags instead of dropping them at the page seam,
+      the mock wraps its declarative items, and the contract suite asserts the shape — so
+      "this document has no outline" and "the outline exists but was truncated" no longer
+      collapse into the same empty array. The box is still open for the panels and the manual
+      pass, not for the shape.
     - **Spec problems, reported rather than edited.** UI.06's plan entry is three lines and its only
       DoD is about links — outline, thumbnails, page labels and destinations have **no stated
       acceptance criteria at all**, so the design decisions behind them (bijective base-26 labels,
@@ -511,11 +537,14 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       capability under those panels is what shipped; the panels are the viewer's task. The manual
       pass the block already records (treeview roles, dialog chrome, rail appearance, prompt
       readability) is therefore still owed on the extension as well as the web host.
-    - **Two smaller losses, recorded rather than hidden.** The outline's `truncated` and `pruned`
-      qualifiers survive the extension's internal wire - the guest's report is the wire's shape -
-      but are dropped at the UI seam, because `NavigationPort.outline` returns a list and has
-      nowhere to put them; the web shell keeps the same facts in its own page state for the same
-      reason. And the extension's out-of-range `renderTile` still answers the engine's 1301 with
+    - **The UI seam now carries the qualifiers (2026-10-22).** `NavigationPort.outline` returns
+      `OutlineReport` — `present`, `truncated`, `pruned`, `items` — so the extension's page side
+      forwards them instead of dropping them, and the web shell no longer needs a private copy
+      of the same three facts. The type lives in `apps/ui/src/platform/types.ts`; the wire
+      mapper re-exports it so a transport still has one import for the whole navigation
+      vocabulary. The box stays open for the panels and the manual pass, not for the shape.
+    - **One smaller loss, recorded rather than hidden.** The extension's out-of-range
+      `renderTile` still answers the engine's 1301 with
       the real WASM guest: the contract's 6001 there comes from the mock, and the same
       three-point check this task added for `pageLinks` has **not** been applied to `render`.
       Neither is a new defect - both are pre-existing gaps that this task did not widen - but
@@ -1280,7 +1309,16 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
        this before the interception path is trusted with SSO-gated PDFs.
     3. `createWorkerSurface` ships uncalled (no bundler to tree-shake under ADR-P0021) — dead code in
        a package EXT.05 must size-budget. Flagged in `apps/extension/REUSE.md`.
-- [ ] **SL-4.EXT.07 — Options page + first-run onboarding** · deps: EXT.06 · owner: AI
+- [x] **SL-4.EXT.07 - Options page + first-run onboarding** · deps: EXT.06 · owner: AI
+  - **Done (2026-09-27; ticked 2026-10-22 — the box was missed, not the work).** `options.html`
+    is a text-free skeleton driven by `options-strings.ts`, and `options-boot.ts` fills it:
+    privacy summary, the telemetry switch (off by default, and the port behind it is inert), the
+    permission list built from `permissions.ts`, the measured CJK refusal, replay and reset.
+    `service-worker.js` offers the guide exactly once via `onInstalled` → `planFirstRun` →
+    `chrome.runtime.openOptionsPage()` — no `tabs` permission, no URL to get wrong. The two
+    failure modes are tested: a guide on every update is a nag, and a flag that fails closed
+    hides it forever. No network API is named by the page or the worker, asserted by
+    `options-page.test.ts`.
 - [ ] **SL-4.EXT.08 — Deep link into the web app for edit actions** · deps: EXT.06 · owner: AI+
   - **Do:** "Edit this" hands the document to the web app **locally** (OPFS handoff or a same-origin
     transfer), never by uploading. The funnel from free viewer to paid editor is this button.

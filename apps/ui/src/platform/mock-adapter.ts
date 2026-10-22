@@ -502,7 +502,8 @@ export function createMockAdapter(
 				const mock = lookupDocument(doc.id);
 				await microtask();
 				assertNotAborted(requestOptions);
-				return mock.spec.outline ?? [];
+				const items = mock.spec.outline ?? [];
+				return { present: items.length > 0, truncated: false, pruned: false, items };
 			},
 
 			async pageLabels(doc, requestOptions) {

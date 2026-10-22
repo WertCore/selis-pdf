@@ -330,6 +330,27 @@ export interface OutlineNode {
 	readonly descendantCount?: number;
 }
 
+/**
+ * The outcome of reading a document's `/Outlines` tree (SL-4.UI.06).
+ *
+ * The three booleans are not decoration: they distinguish a document that
+ * **has no outline** (`present: false`) from one whose outline **could not be
+ * read in full** (`truncated: true`) from one where the reader **dropped items
+ * it could not resolve** (`pruned: true`). Collapsing them into an empty list
+ * tells a reader something false about their own file, and a host that kept
+ * the facts in private page state would be a second copy of this type.
+ */
+export interface OutlineReport {
+	/** The document HAS an outline. `false` is "this document has none". */
+	readonly present: boolean;
+	/** The outline exists but could not be read in full. */
+	readonly truncated: boolean;
+	/** The outline was pruned — the reader dropped items it could not read. */
+	readonly pruned: boolean;
+	/** The bookmark tree, in document order. */
+	readonly items: readonly OutlineNode[];
+}
+
 /** A `/Dests` name-tree entry: a name and the page it resolves to. */
 export interface NamedDestination {
 	readonly name: string;

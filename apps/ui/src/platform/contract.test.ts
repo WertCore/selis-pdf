@@ -202,7 +202,11 @@ describe("mock adapter specifics", () => {
 			if (navigation === undefined) {
 				throw new Error("the mock must provide the navigation port");
 			}
-			const outline = await navigation.outline(doc);
+			const report = await navigation.outline(doc);
+			expect(report.present).toBe(true);
+			expect(report.truncated).toBe(false);
+			expect(report.pruned).toBe(false);
+			const outline = report.items;
 			expect(outline).toHaveLength(2);
 			expect(outline[0]?.title).toBe("Chapter one");
 			expect(outline[0]?.children?.[0]?.destination?.page).toBe(1);
@@ -232,7 +236,12 @@ describe("mock adapter specifics", () => {
 			const adapter = createMockAdapter();
 			const descriptor = adapter.addDocument({ name: "plain.pdf", pageCount: 2 });
 			const doc = await adapter.engine.open(descriptor);
-			expect(await adapter.navigation?.outline(doc)).toEqual([]);
+			expect(await adapter.navigation?.outline(doc)).toEqual({
+				present: false,
+				truncated: false,
+				pruned: false,
+				items: [],
+			});
 			expect(await adapter.navigation?.pageLabels(doc)).toEqual([]);
 			expect(await adapter.navigation?.destinations(doc)).toEqual([]);
 			expect(await adapter.navigation?.pageLinks(doc, 1)).toEqual([]);

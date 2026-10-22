@@ -54,11 +54,14 @@ import type {
 	LinkAnnotation,
 	NamedDestination,
 	OutlineNode,
+	OutlineReport,
 	PageLabelRange,
 	PageLabelStyle,
 	PdfDestination,
 	Rect,
 } from "../platform/types.js";
+
+export type { OutlineReport } from "../platform/types.js";
 
 /**
  * The answer to a navigation op that could not be understood.
@@ -87,18 +90,6 @@ export class NavigationWireError extends Error {
 		super(`the ${op} answer was not readable: ${detail}`);
 		this.name = "NavigationWireError";
 	}
-}
-
-/** The outcome of reading an `outline` answer. */
-export interface OutlineReport {
-	/** The document HAS an outline. `false` is "this document has none". */
-	readonly present: boolean;
-	/** The outline exists but could not be read in full. */
-	readonly truncated: boolean;
-	/** The outline was pruned — the engine dropped items it could not read. */
-	readonly pruned: boolean;
-	/** The bookmark tree, in document order. */
-	readonly items: readonly OutlineNode[];
 }
 
 /**
