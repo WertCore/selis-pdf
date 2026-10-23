@@ -72,9 +72,19 @@ jobs:
           # dict API) above the documented policy.
           rustflags: ""
       # `cargo xtask lint` also runs `cargo deny check` + `cargo vet` (SL-0.WS.07).
+      #
+      # The tools are PINNED here deliberately: `tool:` without a version floats,
+      # and the float bit us — install-action resolved cargo-vet 0.10.0, whose
+      # importer schema predates `trusted-publisher` records and so rejects the
+      # imports.lock the crates.io-current 0.10.3 wrote for the wasmtime bump
+      # (`missing field user-id for key publisher.cranelift-assembler-x64`),
+      # while the supply-chain job — which installs cargo-vet from crates.io,
+      # not here — passed on the very same commit. The pins match the versions
+      # validated on the dev host (cargo-deny 0.20.2, cargo-vet 0.10.3) so CI
+      # reproduces the gate that was signed off, not whatever floated that hour.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-vet
+          tool: cargo-deny@0.20.2,cargo-vet@0.10.3
       - run: cargo xtask lint
       # CI lesson: every cfg branch must be lint-clean in BOTH branches, but
       # `xtask lint` clippies the default feature set only — the Tier-2 codec
