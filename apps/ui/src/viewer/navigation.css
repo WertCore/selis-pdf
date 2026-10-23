@@ -126,8 +126,9 @@
  * it deserves to see that it is there. */
 .selis-outline__row--unresolved .selis-outline__title {
 	color: var(--selis-color-fg-subtle);
+}
 
-	/* The rail. Fixed width from the shell; the previews inside carry their own
+/* The rail. Fixed width from the shell; the previews inside carry their own
  * boxes, so nothing here can move a thumbnail when its bitmap lands. */
 	.selis-thumbnail-rail {
 		display: flex;
@@ -256,4 +257,3 @@
 			border-color: CanvasText;
 		}
 	}
-}
