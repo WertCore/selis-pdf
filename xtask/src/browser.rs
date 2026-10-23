@@ -657,9 +657,27 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
             );
         }
     }
-    let profile = unique_profile(scratch, check.id);
+    let mut profile = unique_profile(scratch, check.id);
     println!("browser-check: {} ...", check.id);
-    match measure(browser, &served, &profile, cfg.timeout_ms) {
+    let mut measured = measure(browser, &served, &profile, cfg.timeout_ms);
+    // Measured at most twice. A page that POSTs a report has been measured and
+    // is judged as reported; a page that reports nothing gave this gate no
+    // verdict at all, which is a measurement failure and not a judgement - so
+    // the measurement (never the verdict) is taken again once, on a fresh
+    // engine profile. First-time cold runners can deliver an unmeasured window
+    // that a second real invocation does not (the same fixture page that timed
+    // out unmeasured in CI passed its own self-test on the same runner image).
+    // A page that is silent through both windows still records `unmeasured`
+    // and the gate stays red.
+    if matches!(&measured, Err(why) if why.contains("did not report within")) {
+        println!(
+            "browser-check: {} ... unmeasured; measuring once more (fresh engine profile)",
+            check.id
+        );
+        profile = unique_profile(scratch, check.id);
+        measured = measure(browser, &served, &profile, cfg.timeout_ms);
+    }
+    match measured {
         Err(why) => Row {
             id: check.id.to_string(),
             status: Status::Unmeasured,
