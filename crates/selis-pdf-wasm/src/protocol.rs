@@ -990,7 +990,10 @@ mod tests {
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::unwrap_in_result,
-        clippy::panic
+        clippy::panic,
+        // The report is a fixed-shape JSON schema asserted field by field;
+        // a missing key is a test failure worth a panic, not an Option row.
+        clippy::indexing_slicing
     )]
     use super::*;
 

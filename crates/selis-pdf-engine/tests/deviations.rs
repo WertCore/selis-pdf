@@ -84,7 +84,9 @@ fn splice_length_preserving(src: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
         .windows(needle.len())
         .position(|w| w == needle)
         .expect("the fixture contains the needle");
-    out.splice(at..at + needle.len(), with.iter().copied());
+    // `at` came from `position` over `windows(needle.len())`, so the range's
+    // end cannot exceed the vector; saturating makes that invariant explicit.
+    out.splice(at..at.saturating_add(needle.len()), with.iter().copied());
     out
 }
 

@@ -20,7 +20,15 @@
 //! `tools/make-tagged-fixture.mjs`. It has TWO pages on purpose: a bookmark
 //! that points at page 1 of a one-page document cannot be shown to work,
 //! because navigating to page 1 and doing nothing look identical.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 use selis_pdf_doc::{ActionKind, NavTarget};
 use selis_pdf_engine::Session;
