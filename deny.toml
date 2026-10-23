@@ -9,6 +9,12 @@ all-features = true
 
 [licenses]
 version = 2
+# ISC / MPL-2.0 / OFL-1.1 below may sit unmatched against the current Cargo.lock
+# (dependency mixes shift with every bump; OFL fonts ship as assets — cargo-deny
+# never sees them). Those rows are pre-authorisations, not stale entries, so the
+# license-not-encountered warnings they would emit are silenced here, not by
+# pruning the policy.
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "Apache-2.0",
