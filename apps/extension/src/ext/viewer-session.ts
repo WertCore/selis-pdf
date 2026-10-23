@@ -3,10 +3,12 @@
  *
  * `apps/ui` receives an adapter; something has to decide *which* adapter, build
  * the pieces it needs, and tell the page what happened. That is this module,
- * and it is the only place in the extension that knows the page exists. The
- * adapter, the transport and the surface are all constructed from parameters
- * and are testable without a DOM; this is the seam where the real globals meet
- * them.
+ * and it is the only place in the extension that knows how the page's session
+ * is brought up. (The page's *view* is a different seam: `viewer-boot.ts`
+ * mounts `src/viewer-view.ts` — see "Why this module ships no page list"
+ * below.) The adapter, the transport and the surface are all constructed from
+ * parameters and are testable without a DOM; this is the seam where the real
+ * globals meet them.
  *
  * ## The startup order, and why it is that order
  *
@@ -20,14 +22,22 @@
  * 4. Restore the stored telemetry opt-in, so a user who opted in last week is
  *    not asked again this week.
  *
- * ## Why this task ships no page list
+ * ## Why this module ships no page list
  *
  * The plan's architecture table says the extension reuses `apps/web/ui` in a
  * "no-network" configuration, and the seam that makes that possible is this
- * adapter. The virtualised page list, the zoom ladder and the keyboard map are
- * UI.04+ and they mount against whatever `PageList` a later task composes;
- * shipping them here would put a half-built viewer in a size-budgeted package
- * and would collide with that work. `REUSE.md` records this explicitly.
+ * adapter. When this module landed, the virtualised page list, the zoom ladder
+ * and the keyboard map were UI.04+ work: shipping them then would have put a
+ * half-built viewer into a size-budgeted package, so the capability shipped
+ * alone and `REUSE.md` recorded the refusal.
+ *
+ * The panels have since landed (SL-4.UI.06's extension half, 2026-10-23) — and
+ * deliberately not here. The page's view is `src/viewer-view.ts`, which
+ * `viewer-boot.ts` mounts once a document opens; this module's job still ends
+ * at the handover, supplying the adapter the panels read. Bringing the session
+ * up is a job this file keeps DOM-free and unit-testable, and composing the
+ * view would give it a second reason to change. `REUSE.md` carries the
+ * current ship list.
  */
 
 import type { PlatformAdapter } from "../../../ui/src/platform/adapter.js";

@@ -11,7 +11,8 @@ about before SL-4.EXT.10 ports this to Firefox.
 
 ## What actually ships
 
-Four modules from `apps/ui`, plus two stylesheets from `@selis/ui-kit`:
+Four modules from `apps/ui`, plus two stylesheets from `@selis/ui-kit` — and,
+since SL-4.UI.06's extension half, the larger block in the second table below:
 
 | Shipped | Why it is here |
 |---|---|
@@ -21,11 +22,39 @@ Four modules from `apps/ui`, plus two stylesheets from `@selis/ui-kit`:
 | `ui/src/viewer/navigation-wire.js` | The mapper from the engine's navigation vocabulary to the viewer's (SL-4.UI.06). The WASM guest answers outlines, page labels, destinations and links in the *engine's* words (`destKind`, `x0`, `target`), and this is the one copy of the translation. A host that mapped inline would write it a second time — in the web shell and here — and the two copies would drift, which is the failure the module was created to prevent. It is pure and DOM-free, so it costs nothing to ship and nothing to keep honest. |
 | `ui-kit/css/tokens.css`, `base.css` | Linked by `viewer.html`. Tokens are generated (UI.14) and must never be edited here. |
 
-Nothing else from `apps/ui` is in the package. The rest is either type-only
-(erased at compile, so it costs nothing) or belongs to a viewer this package
-does not contain yet — the virtualised page list and its stylesheet are UI.04+'s
-to mount. Shipping them now would put a half-built viewer into a package that
-SL-4.EXT.05 has to fit a size budget.
+Those rows were the whole `apps/ui` story until 2026-10-23, when the extension
+half of SL-4.UI.06 mounted the shared navigation controllers into the viewer
+page — and that changed the ship list more than any task before it. Nothing is
+forked: these are the same `apps/ui` sources the web app runs, pulled in as
+rows because the mounted modules import them at run time.
+
+| Shipped | Why it is here |
+|---|---|
+| `extension/src/viewer-view.js` | This package's own composition. `mountViewerView` builds the page canvas, the outline panel, the external-link prompt and a notes host around the controllers below, fetches destinations in parallel with the outline's first load, and repaints from the states the controllers publish. The web shell's `boot.js` is the other host's half of the same composition. |
+| `ui/src/viewer/navigation.js`, `outline.js` | The real outline controller — `role="tree"`/`treeitem`, roving tabindex, its own key handling — and the row arithmetic both the controller and the mount use. The asymmetry with the web host is real: the web page (plan 14, 2026-10-22) renders a plain nested `<ul>` and does not mount this controller, so this package's page is where ArrowDown first actually moves focus inside its own outline. |
+| `ui/src/viewer/page-list.js`, `compositor.js`, `tile-ladder.js` | The page canvas. `createPageList` owns the window, the scroll offset and the tile ladder; `page-list.js` imports `tile-ladder.js` at run time, and the mount drives `createTileCompositor` itself. |
+| `ui/src/viewer/layout.js`, `windowing.js`, `anchoring.js` | The layout, window and scroll-anchor arithmetic `page-list.js` imports. |
+| `ui/src/viewer/links.js`, `page-labels.js` | Link-decision policy and label formatting, imported by `navigation.js`. |
+| `ui/src/viewer/keyboard.js` | Shared by `navigation.js` for the tree keys and by the mount, which consults `resolveNavigationKey` only inside the outline tree. |
+| `ui/src/viewer/strings.js`, `ui/src/i18n/pseudo-locale.js` | The navigation and page-list catalogues and their factories; `strings.js` imports the pseudo-locale at run time, so it ships rather than being erased with the types. |
+| `ui/src/viewer/navigation.css`, `page-list.css` | Linked by `viewer.html` as `shared-asset` rows, verbatim like the ui-kit pair. |
+
+Still out: `thumbnails.ts` (the rail), the search panel, and anything the
+viewer page has no call site for — the same policy as before, applied to a
+longer list. And `keyboard.js` shipping does not mean the page claims keys:
+there is no key map for the page tiles — native scrolling moves the pages, and
+the outline tree is the only place the mount consults `resolveNavigationKey`.
+
+One inherited defect is recorded rather than forked. Upstream `navigation.css`
+is missing the closing brace of the rule at its line 127, so everything after
+it in the file — the thumbnail boxes, the dialog backdrop, the dialog, the
+URL, the actions row and the forced-colours block — parses as sitting *inside*
+that rule, or is dropped by a stricter parser; either way it stops matching
+anything. The rules up to the break still apply, which is why the tree renders
+correctly and the visible consequence on the extension page is exactly that
+`.selis-navigation__dialog`/`__url`/`__actions` render unstyled. The fix
+belongs to `apps/ui`'s owner; forking the sheet here would end the verbatim
+reuse that is the whole point of the row.
 
 `PACKAGE_ENTRIES` in `src/bundle-paths.ts` is the authority. The bundled-only
 gate fails on any file in the package that is not on that list, and on any
@@ -256,6 +285,23 @@ the capability under them: `adapter.navigation` is defined, answers, and
 refuses honestly. Whether the extension's viewer grows the panels is the
 viewer's own task, and the port is what it will need.
 
+**Updated 2026-10-23 (SL-4.UI.06's extension half):** the bookmark tree, the
+page canvas and the prompt are there now. `src/viewer-view.ts` mounts the real
+`createNavigation` and `createPageList` against this same port, as the row
+table in "What actually ships" records. What still does not come with them:
+
+- **A canvas click overlay.** Nothing intercepts a click on the rendered
+  canvas, so `controller.activateLink` — and with it the prompt — is reachable
+  through tests only (`viewer-view.test.ts` drives the prompt from the
+  controller's `pendingExternal`). The prompt is real; its trigger is a
+  separate slice.
+- **A key map for the page tiles.** Native scrolling moves the pages; the
+  mount claims keys only inside the outline tree.
+- **The thumbnail rail.** `thumbnails.ts` is still not shipped.
+- **The extension's own browser-check leg.** Coverage of the mounted view is
+  Node-level only, and the web host's precedent (plan 14, 2026-10-22) is that
+  a browser pass finds what Node cannot.
+
 ## The gate, and the bug it did not catch
 
 `pnpm --filter @selis/extension build` runs `tsc`, packs, and scans the **built
@@ -328,7 +374,12 @@ in-package shape still resolves.
   the link, and it changes shared transport semantics, so it wants its own
   change rather than a late edit from a task that was not asked for it.
 - **No page list.** The viewer shows a page count and any failure, not pages.
-  That is UI.04+ and the reason `page-list.css` is not shipped.
+  That is UI.04+ and the reason `page-list.css` is not shipped. *(No longer
+  true as of 2026-10-23: the extension half of SL-4.UI.06 mounts the page
+  list, and `page-list.css` ships — see "What actually ships" above. What
+  remains of this bullet is the thumbnail rail and the prompt's missing
+  on-page trigger, which live in the extension-half record under
+  "Capabilities".)*
 - **`getContexts` needs Chrome 116** and the manifest floor is 114, so the
   worker falls back to catching Chrome's single-document rejection. Raising the
   floor for a tidier branch was not worth a viewer that stops working on 114.
