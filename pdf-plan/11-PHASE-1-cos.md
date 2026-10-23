@@ -508,6 +508,24 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
       wrong-key in both modes, tolerant open without a credential).
     * Gates local: `xtask lint` (contracts/alloc/layers/purity/vet/deny/size-check) green;
       `cargo test --workspace` green; fuzz workspace + nightly `-D warnings` compile green.
+  - **Nightly found the missing arm of this same shape contract (2026-10-23, dispatch run
+    `39935161321` @ `243b5f1`), fixed same day.** The `pkcs7_cms` soak reached the line-76
+    assertion with a body whose length is not 24:
+    `assert_eq!(content.len(), 24, "RC4 seals exactly the 24-byte payload")` fired on a blob the
+    *parse* had accepted — i.e. the record's own claim above ("fuzz assertions back this up —
+    never `Ok` on a shape the cipher's contract forbids") was enforced **only at
+    `decrypt_payload`** since ENC.08, not at the parse the assertion examines. Ten minutes of
+    mutation found a re-lengthed DER shape that passes `parse_enveloped_data` `Ok`, and the
+    wrong-length `Ok` envelope then waited for whichever decrypt consumer ran later. The fix puts
+    the four bounds (exactly-24 RC4; ≥2-block 8-byte CBC; ≥32-and-16-multiple AES) inside
+    `parse_encrypted_content_info` as a typed `EncryptMalformed` — the same assertions, one
+    statement owning the facts, and the wrong-CEK detector of course stays at `decrypt_payload`
+    because parity needs the CEK the parse never has. The damage model does not move: a structurally
+    broken recipient blob was *already* a whole-document parse failure in
+    `authenticate_public_key`, so selection still fails the document instead of reclassifying it
+    as "not my recipient". Tests: `selis-crypto` +1 (`legacy_content_shapes_are_enforced_at_parse`:
+    RC4 23/25/empty through the constructed form, a non-block-multiple 3DES body, AES at 24, and
+    the primitive `[0]` form), `selis-crypto` 61 green, `selis-pdf-cos` 95 green.
 
 - [ ] **SL-1.ENC.09 — Enforce per-recipient PKCS#7 permission bits on Selis actions** (sign-off
   decision 2026-09-12: enforce = core differentiator; competitors advertise but leak) · deps:

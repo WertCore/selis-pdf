@@ -391,6 +391,56 @@ fn legacy_content_iv_lengths_are_enforced() {
 }
 
 #[test]
+fn legacy_content_shapes_are_enforced_at_parse() {
+    // SL-1.ENC.08: the nightly `pkcs7_cms` soak found an accepting path for
+    // an RC4 envelope whose body was not the 24-byte payload (2026-10-23) —
+    // the length rules the target asserts were carried only by
+    // `decrypt_payload`, so a damaged blob parsed `Ok` and left the failure
+    // waiting for whichever decrypt ran later. The parse now refuses those
+    // shapes outright, like every other structural deviation.
+    let mut g = guard();
+    let ktri = key_trans_recipient(&[0xAA; 64]);
+
+    let rc4: &[u64] = &[1, 2, 840, 113_549, 3, 4];
+    // Shorter, longer and empty bodies are all "not the payload".
+    for body in [&[0x11u8; 23] as &[u8], &[0x11u8; 25], &[]] {
+        let eci = encrypted_content_info(rc4, None, body);
+        let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
+        let e = parse_enveloped_data(&blob, &mut g)
+            .expect_err("non-24-byte RC4 content is malformed at parse");
+        assert_eq!(e.code(), Code::EncryptMalformed);
+    }
+
+    // A 3DES body that is not an 8-byte multiple has no PKCS#7 padding block
+    // that could ever make it the 24-byte payload.
+    let eci = encrypted_content_info(DES_EDE3_CBC, Some(&[0x22; 8]), &[0x11; 30]);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
+    let e = parse_enveloped_data(&blob, &mut g)
+        .expect_err("non-block-multiple 3DES content is malformed at parse");
+    assert_eq!(e.code(), Code::EncryptMalformed);
+
+    // Same for the AES arm at its own block size.
+    let aes128: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 2];
+    let eci = encrypted_content_info(aes128, Some(&[0x22; 16]), &[0x11; 24]);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
+    let e = parse_enveloped_data(&blob, &mut g)
+        .expect_err("non-block-multiple AES content is malformed at parse");
+    assert_eq!(e.code(), Code::EncryptMalformed);
+
+    // The primitive `[0]` form reaches the same gate — the helpers above all
+    // emit the constructed form, and the two spellings decode the same
+    // octet string.
+    let mut body = oid_bytes(DATA);
+    body.extend_from_slice(&algorithm_identifier(rc4, None));
+    body.extend_from_slice(&tlv(0x80, &[0x11; 23]));
+    let eci = tlv(0x30, &body);
+    let blob = enveloped_blob(std::slice::from_ref(&ktri), &eci);
+    let e =
+        parse_enveloped_data(&blob, &mut g).expect_err("primitive-form RC4 content is gated too");
+    assert_eq!(e.code(), Code::EncryptMalformed);
+}
+
+#[test]
 fn unsupported_content_algorithms_are_typed_errors() {
     let mut g = guard();
     let ktri = key_trans_recipient(&[0xAA; 64]);

@@ -939,9 +939,47 @@ fn parse_encrypted_content_info<'a>(
         if !eci.is_empty() {
             return Err(der::malformed(at, "trailing bytes in encryptedContent"));
         }
+        // SL-1.ENC.08: the content-*shape* contract is structural. The nightly
+        // soak's target (`fuzz_targets/pkcs7_cms.rs`) asserts it on the
+        // *parsed* envelope, and on 2026-10-23 that reach was real: a
+        // re-lengthed blob parsed `Ok` and left the verdict to whichever
+        // decrypt ran later. A body that could not possibly carry the sealed
+        // [`CMS_PAYLOAD_LEN`] payload — RC4 seals exactly its payload length;
+        // the block arms must hold the 24-byte plaintext *plus* PKCS#7's
+        // padding block — is a damaged blob, and the parse refuses damaged
+        // blobs typed.
+        validate_content_shape(cek_algorithm, content, at)?;
         Some(content)
     };
     Ok((cek_algorithm, encrypted_content))
+}
+
+/// The content-shape bounds of this dialect, as [`parse_encrypted_content_info`]
+/// enforces them at parse. These are exactly the assertions the nightly
+/// `pkcs7_cms` target makes on a *parsed* envelope, so one statement owns the
+/// facts: the wrong-CEK parity checks and the strict padding walk stay at
+/// [`decrypt_payload`] (they need the CEK, which the parse never has), while
+/// everything decidable from the body's length alone is refused here.
+fn validate_content_shape(algorithm: CekAlgorithm, content: &[u8], at: u64) -> Result<()> {
+    let shape_ok = match algorithm {
+        // No padding: RC4 seals exactly the payload length, so the 24-byte
+        // rule is the whole shape.
+        CekAlgorithm::Rc4 => content.len() == CMS_PAYLOAD_LEN,
+        CekAlgorithm::TdeaCbc { .. } | CekAlgorithm::Rc2Cbc { .. } => {
+            content.len() >= 16 && content.len() % 8 == 0
+        }
+        CekAlgorithm::Aes128Cbc { .. }
+        | CekAlgorithm::Aes192Cbc { .. }
+        | CekAlgorithm::Aes256Cbc { .. } => content.len() >= 32 && content.len() % 16 == 0,
+    };
+    if shape_ok {
+        Ok(())
+    } else {
+        Err(der::malformed(
+            at,
+            "encryptedContent carries a shape no valid producer of this dialect emits",
+        ))
+    }
 }
 
 /// Read the 8-byte IV of an RC2/TDEA `AlgorithmIdentifier`.
