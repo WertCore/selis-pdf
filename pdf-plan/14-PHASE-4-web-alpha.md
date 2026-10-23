@@ -554,6 +554,11 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       and zoom ladder are UI.04+ work and mounting them here would be a half-built viewer in a
       size-budgeted package. The manual pass above is the web-host half; the extension has no
       panels to inspect.
+    - **The blocker above has since moved (2026-10-23).** The extension half has since landed
+      its panels - see the 2026-10-23 records in the extension block below - so that paragraph
+      is history. What keeps this task's box open is now the extension's own browser-check leg:
+      the prompt has no on-page trigger yet (no canvas click overlay) and no manual pass has
+      been run on that host.
     - **The type now carries the three qualifiers (2026-10-22).** `NavigationPort.outline`
       returns `OutlineReport` (`present`, `truncated`, `pruned`, `items`) rather than a bare
       list. The extension forwards the host's flags instead of dropping them at the page seam,
@@ -623,6 +628,39 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       capability under those panels is what shipped; the panels are the viewer's task. The
       web-host manual pass is recorded in the block above (2026-10-22); the same pass is still
       owed on the extension, which has no panels to render or inspect.
+    - **The panels landed (2026-10-23).** The extension half has since closed the panels gap
+      above: `apps/extension/src/viewer-view.ts` mounts the real controllers into the MV3 viewer
+      page - `createNavigation` (the outline tree with the controller's own roving-tabindex and
+      arrow keys; unlike the web host's plain nested `ul`, this page is where ArrowDown actually
+      moves focus inside an outline), `createPageList` + `createTileCompositor` (the page
+      canvas), the external-link prompt, and the distinct placeholder notes (a document with no
+      outline, an outline whose walk failed because the host cannot read outlines, one that was
+      truncated), with destinations fetched by the mount in parallel with the first outline
+      load. The capability half's facts above stand unchanged - a real view now consumes them.
+    - **Why the box still cannot flip on this host (2026-10-23).** Three deferrals and one
+      open leg, recorded: no **canvas click overlay** - nothing intercepts a click on the
+      rendered canvas, so `activateLink` and its prompt are reachable through tests only
+      (`viewer-view.test.ts` drives the prompt off `NavigationState.pendingExternal`); no
+      **page-list key map** - native scrolling moves the pages, and the mount claims keys only
+      inside the outline tree; no **thumbnail rail** - `thumbnails.ts` is still not shipped; and
+      the **extension's own browser-check leg** has not run, so the appearance of the panels,
+      the prompt and the placeholder notes is still unobserved on a real host. One inherited
+      defect, recorded not forked: upstream `navigation.css` is missing the closing brace of
+      its line-127 rule, so the dialog, URL, actions and forced-colours rules after it do not
+      apply on the extension page (`apps/ui` owns the fix).
+    - **Measured on 2026-10-23** (extension branch, unmerged when recorded): the extension is
+      at **400 tests (399 pass, one skipped)**, up from 377 - the delta is 23 in the new
+      `viewer-view.test.ts`, which runs without a DOM: the pure helpers are called directly, and
+      the controller-level tests drive the *real* `createNavigation`/`createPageList` through
+      the extension adapter against a loopback-wired fixture engine host, including the failed
+      walk a capability-less host produces (6017 -> available with an empty placeholder and the
+      unavailable announcement, which the notes host reports). The package is 53 files,
+      4,739,578 raw bytes; the shell carries 607,009 raw of its 1,000,000 (60.7%), the engine
+      862,720 brotli of 2,000,000. The ship list gained `extension/src/viewer-view.js`, 13
+      `shared-js` rows from `apps/ui` (twelve viewer modules plus `i18n/pseudo-locale.js`,
+      imported at run time by `strings.js`) and the two viewer stylesheets; `REUSE.md` records
+      why each row is there. Same-source non-bundling is still what makes a stranded row
+      impossible: the gate fails a build whose rows miss anything the sources import.
     - **The UI seam now carries the qualifiers (2026-10-22).** `NavigationPort.outline` returns
       `OutlineReport` — `present`, `truncated`, `pruned`, `items` — so the extension's page side
       forwards them instead of dropping them, and the web shell no longer needs a private copy
@@ -638,7 +676,10 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     - **Not done here:** the extension's own browser check (impossible without the panels), a
       corpus entry (no engine behaviour changed - the engine already had the four ops, and the
       corpus is fetch-only), and the `/Launch` prompt's *appearance* in the extension (the prompt
-      is the viewer's, and the extension's viewer does not have one yet).
+      is the viewer's, and the extension's viewer does not have one yet). *(2026-10-23: the
+      panels and the prompt now exist on the extension page - see the records above - but the
+      prompt still has no on-page trigger and the browser check has still not been run; no
+      corpus entry was owed, since no engine behaviour changed.)*
 - [x] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
   - **Do:** Expose the structure tree to AT: proper roles, headings, reading order, alt text for
     figures, table semantics. Full keyboard navigation. This is ADR-P0031 applied to our own UI,
