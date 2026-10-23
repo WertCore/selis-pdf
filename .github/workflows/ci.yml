@@ -142,7 +142,35 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          target: wasm32-unknown-unknown
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pnpm
+        run: corepack enable
+      - name: Install the workspace toolchain
+        # `cargo test --workspace` includes the xtask suite's real-engine
+        # self-test (`browser::tests::a_real_engine_runs_the_committed_checks`),
+        # which drives the committed checks for real, with --strict. The
+        # app-shell and chrome checks stage axe-core out of the workspace
+        # node_modules and serve the placed app tree (the ui bundle, the
+        # ui-kit stylesheets, the engine wasm). A machine with neither has
+        # nothing real to drive, and the harness refuses loudly instead of
+        # passing a half-exercise - correct at a desk where the toolchain
+        # exists, wasteful here, where the job can provide it. So test-fast
+        # carries the same environment as the browser-check job, and runs
+        # the whole app chain as a unit test.
+        run: pnpm install --frozen-lockfile
+      - name: Build the wasm engine the self-test drives
+        # The same artifact `place-assets` refuses to place without.
+        run: cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+        timeout-minutes: 10
+      - name: Place the app tree the self-test drives
+        run: |
+          pnpm --dir packages/ui-kit build
+          pnpm --dir apps/ui build
+          pnpm --dir apps/web/host build
       - run: cargo test --workspace
         timeout-minutes: 10
       # The web feature configuration, which `--workspace` cannot reach.
