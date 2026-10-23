@@ -34,13 +34,20 @@
 # Local binaries on the dev host (recorded here for drift visibility; the
 # authoritative comparison identity is the container):
 #   qpdf  12.4.1 (winget)   mutool 1.23.0 (winget; the pinned container is
-#                           1.23.9 — the drift is measured, not hidden)   gs: not installed
+#                           1.23.9 - the drift is measured, not hidden)   gs: not installed
+#
+# Digest re-record history: the digests below come from the 2026-09-16
+# oracle-images push (run 35072406510, `oracle-digests-<tool>` artifacts;
+# recorded 2026-10-23). The 2026-09-14 digests (run 34820871908) stopped
+# resolving after that push re-published the tags - a tag pull resolves the
+# NEW manifest and the old digests return 404, which is what the scheduled
+# render-conf job tripped over (`Unable to find image ... @sha256:d9c76dfb`).
 
 [tool.qpdf]
 role = "structural (SL-0.ORACLE.03)"
 version = "11.9.0"
 image = "ghcr.io/wertcore/selis-pdf/oracle-qpdf"
-digest = "sha256:7ed4a8e25987d3e5b162a373abdb1e33b380635247395a9be9d7f0add2a07cb5"
+digest = "sha256:982b456abde7e7a52eb964fa62f6e65f9c3b419e3b63a14d37514e770894a843"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/qpdf/qpdf/releases/download/v11.9.0/qpdf-11.9.0.tar.gz"
@@ -52,7 +59,7 @@ licence = "Apache-2.0"
 role = "render + text (SL-0.ORACLE.02/04)"
 version = "1.23.9"
 image = "ghcr.io/wertcore/selis-pdf/oracle-mupdf"
-digest = "sha256:87d6cbf2d2e293827b39a35d5487e18e5df03f32b84a6d31b0b77cbe05b6b518"
+digest = "sha256:6f7f6d7d3e98f2a9ebf5ba14523a9e26387b06d2c0ad98911998394778b91b18"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://mupdf.com/downloads/archive/mupdf-1.23.9-source.tar.gz"
@@ -64,7 +71,7 @@ licence = "AGPL-3.0 (external process only, ADR-P0021)"
 role = "codec/colour/shading reference (SL-0.ORACLE.02)"
 version = "9.56.1"
 image = "ghcr.io/wertcore/selis-pdf/oracle-ghostscript"
-digest = "sha256:50ccd19854397811816879103580156158875954f96667b1b79c8a79f6d789d6"
+digest = "sha256:268d770b9980523760b1475d3081c0b3df603db4bbb99934400ffd0c0af9cc7e"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs9561/ghostscript-9.56.1.tar.gz"
@@ -76,7 +83,7 @@ licence = "AGPL-3.0 (external process only, ADR-P0021)"
 role = "primary render oracle (SL-0.ORACLE.02)"
 version = "chromium-7961"
 image = "ghcr.io/wertcore/selis-pdf/oracle-pdfium"
-digest = "sha256:d9c76dfb33826dcb1394e4b7490a780a59d3f74728069d97e53e8d9d34d58b67"
+digest = "sha256:ab041a33a4f39afbde08e4b5deeb2cfd8dfa7271727bb57feceafc469a4e431d"
 base = "debian:bookworm-slim"
 base_digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 source_url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-linux-x64.tgz"
@@ -88,7 +95,7 @@ licence = "BSD-3-Clause"
 role = "independent render + extract oracle (SL-0.ORACLE.02/04)"
 version = "6.2.108"
 image = "ghcr.io/wertcore/selis-pdf/oracle-pdfjs"
-digest = "sha256:8e94a6aa5d2268a9c2660492237a3571d49b780209cf70f02595f618d69db34e"
+digest = "sha256:c123671a3ed733c1b1c35a20667828d7ee295b93aa3702d60781bb30ab543ef5"
 base = "node:22-bookworm-slim"
 base_digest = "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
 source_url = "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.2.108.tgz"
