@@ -327,19 +327,29 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
-      # The `app-shell` check drives apps/web/host's OWN service worker, so the
-      # built app has to exist before the browser runs. The Rust harness
-      # deliberately does not shell out to pnpm - that would make this gate
-      # depend on a Node toolchain it does not otherwise need - so the build
-      # happens here instead, and a missing `public/` fails the check loudly
-      # rather than skipping.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Install pnpm
         run: corepack enable
-      - name: Build the web host (the app-shell check's subject)
-        run: pnpm --dir apps/web/host build
+      - name: Install the workspace toolchain
+        # `--frozen-lockfile` is the whole point: CI builds exactly what the
+        # committed lockfile declares, so a dependency edit without its lockfile
+        # edit fails here and not later.
+        run: pnpm install --frozen-lockfile
+      - name: Build the app the checks drive
+        # The `app-shell` check drives apps/web/host's OWN service worker, and
+        # the `chrome` check imports the built React chrome plus the ui-kit
+        # stylesheets out of the host's `public/`, so each link in the chain is
+        # built here. The Rust harness deliberately does not shell out to pnpm
+        # - that would make these gates depend on a Node toolchain they do not
+        # otherwise need - so the build happens instead, and a missing
+        # `public/` fails the check loudly rather than skipping
+        # (see `app_public_dir`).
+        run: |
+          pnpm --dir packages/ui-kit build
+          pnpm --dir apps/ui build
+          pnpm --dir apps/web/host build
       - name: Name the engine under test
         run: |
           browser="$(command -v microsoft-edge || command -v chromium || command -v google-chrome || true)"

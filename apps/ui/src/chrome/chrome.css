@@ -1,0 +1,150 @@
+/* The React chrome (SL-4.UI.14 stage 3) — app-level layout only.
+ *
+ * Everything here is token-driven and under the `selis-` namespace. The
+ * wertkit components supply their own appearance; this file only places the
+ * shell's workspace, sidebar content and status bar. Page-tile geometry stays
+ * in `page-list.css` and is supplied by the UI.02 controller as inline custom
+ * properties.
+ *
+ * The chrome needs `base.css` as well as `page-list.css`: UI.02's tile class
+ * names (`selis-page-tile`, `selis-page-tile--loading`, `selis-page-tile__label`)
+ * and the document-area baseline are defined there. The stage 3 proposal's
+ * five-file list omitted it; the host links it between `tokens.css` and the
+ * bridge so the page list is not shipped as unstyled boxes.
+ */
+
+.selis-chrome {
+	height: 100dvh;
+}
+
+.selis-chrome__workspace {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.selis-chrome__doc-area {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-chrome__empty {
+	display: block;
+	margin: 0;
+	padding: var(--selis-space-12);
+	color: var(--selis-color-fg-muted);
+	text-align: center;
+}
+
+.selis-chrome__brand {
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-semibold);
+	white-space: nowrap;
+}
+
+.selis-chrome__doc-name {
+	overflow: hidden;
+	min-width: 0;
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-sm);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.selis-chrome__statusbar {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--selis-space-3);
+	min-height: var(--selis-density-panel-header-height);
+	padding: var(--selis-space-2) var(--selis-space-6);
+	border-top: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+}
+
+.selis-chrome__statusbar-spacer {
+	flex: 1;
+}
+
+.selis-chrome__sidebar {
+	padding: var(--selis-space-6);
+}
+
+.selis-chrome__tabs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-6);
+}
+
+.selis-chrome__tab-content {
+	display: grid;
+	gap: var(--selis-space-6);
+	margin: 0;
+	padding: var(--selis-space-2) 0 0;
+}
+
+/* The vendored tabs primitive paints the *active* tab with the accent token.
+   As a fill behind `accentFg` that is enough; as ink on the panel background
+   the accent only reaches 4.5:1 in themes whose accent is light. In the dark
+   themes the same accent reads under 3:1 — the chrome check's axe scan caught
+   the View tab exactly there — so in a dark theme the chrome keeps the
+   accent's underline but reads the word in the foreground ink, which clears
+   the floor, and leaves the light themes' accent ink untouched. */
+[data-theme="dark"] .selis-chrome [role="tab"][data-state="active"] {
+	color: var(--selis-color-fg);
+}
+
+.selis-chrome__field {
+	display: grid;
+	gap: var(--selis-space-2);
+}
+
+.selis-chrome__field-label {
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-medium);
+}
+
+.selis-chrome__checks {
+	display: grid;
+	gap: var(--selis-space-4);
+}
+
+.selis-chrome__facts {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: var(--selis-space-2) var(--selis-space-4);
+	margin: 0;
+	font-size: var(--selis-text-sm);
+}
+
+.selis-chrome__facts dt {
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-chrome__facts dd {
+	margin: 0;
+	color: var(--selis-color-fg);
+	overflow-wrap: anywhere;
+}
+
+.selis-chrome__hint {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+	line-height: var(--selis-leading-normal);
+}
+
+@media (max-width: 720px) {
+	.selis-chrome__doc-name {
+		display: none;
+	}
+}

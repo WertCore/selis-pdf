@@ -403,12 +403,21 @@
 	animation: none;
 }
 
+/* The pulse breathes the tile's *background*, not the tile group: fading the
+   group also fades the page label inside it, which sends its composited
+   contrast below the WCAG floor mid-pulse — exactly what the chrome check's
+   axe scan caught on the loading tile. The label pill above the pulse keeps
+   its own opaque pair, so its ratio never varies. */
 @keyframes selis-placeholder-pulse {
 	from {
-		opacity: 1;
+		background-color: var(--selis-color-page-placeholder);
 	}
 
 	to {
-		opacity: 0.55;
+		background-color: color-mix(
+			in srgb,
+			var(--selis-color-page-placeholder),
+			var(--selis-color-bg-inset) 45%
+		);
 	}
 }

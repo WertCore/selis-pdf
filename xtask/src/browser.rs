@@ -184,14 +184,17 @@ struct Check {
 
 /// The committed checks, in report order.
 ///
-/// Two, deliberately. `service-worker` is the WEB.02 payload: real lifecycle
+/// Four, deliberately. `service-worker` is the WEB.02 payload: real lifecycle
 /// event delivery, `clients.claim()`, and browser-enforced `respondWith`, over
 /// a real origin. `async-wasm` is the cheap proof that this harness itself
 /// works end to end — a page whose verdict is only written after an awaited
 /// `WebAssembly.instantiate` of a module committed beside it, run by a
 /// different code generator than the native engine. It costs a second or two,
 /// so unlike SL-4.WASM.08's 25-minute leg it can run on every commit.
-const CHECKS: [Check; 3] = [
+/// `app-shell` proves the app's own worker; `chrome` proves the stage 3 React
+/// screen against the built UI and token bridge. Both need the host build, so
+/// they run last.
+const CHECKS: [Check; 4] = [
     Check {
         id: "service-worker",
         dir: "service-worker",
@@ -210,6 +213,14 @@ const CHECKS: [Check; 3] = [
         id: "app-shell",
         dir: "app-shell",
         verdict: verdict_app_shell,
+    },
+    // The UI.14 stage 3 screen. It shares `stage_app` and the axe staging with
+    // `app-shell`, but its page imports the built chrome entry from
+    // `/assets/ui/chrome/index.js` and exercises the real component library.
+    Check {
+        id: "chrome",
+        dir: "chrome",
+        verdict: verdict_chrome,
     },
 ];
 
@@ -264,6 +275,157 @@ fn string_field(report: &Json, key: &str) -> Result<String, String> {
         .and_then(Json::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("the page reported no `{key}` (report: {report})"))
+}
+
+/// Read a boolean field, naming it when absent or not a boolean.
+fn bool_field(report: &Json, key: &str) -> Result<bool, String> {
+    report
+        .get(key)
+        .and_then(Json::as_bool)
+        .ok_or_else(|| format!("the page reported no boolean `{key}` (report: {report})"))
+}
+
+/// Read a boolean inside a named object.
+fn nested_bool(report: &Json, object: &str, key: &str) -> Result<bool, String> {
+    let value = report
+        .get(object)
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the page reported no `{object}` object (report: {report})"))?;
+    value
+        .get(key)
+        .and_then(Json::as_bool)
+        .ok_or_else(|| format!("`{object}` reported no boolean `{key}` (report: {report})"))
+}
+
+/// `chrome`: React, `@wertkit/ui`, the selis token bridge and UI.02's page list
+/// are one live screen in a real engine.
+///
+/// The page exercises each component family through its public DOM surface, and
+/// scans light, dark and high-contrast appearances with axe-core. This verdict
+/// refuses a report that merely rendered: every control has to have changed the
+/// document or the visible status, the dialog has to trap and restore focus,
+/// and the page list has to carry UI.02's geometry and labels.
+fn verdict_chrome(report: &Json) -> Result<(), String> {
+    well_formed(report)?;
+    if string_field(report, "check")? != "chrome" {
+        return Err("the page did not identify itself as the chrome check".into());
+    }
+    if !bool_field(report, "mounted")? {
+        return Err("the chrome never mounted in the engine".into());
+    }
+    for (object, key) in [
+        ("landmarks", "header"),
+        ("landmarks", "main"),
+        ("landmarks", "nav"),
+        ("focus", "dialogTrapped"),
+        ("focus", "dialogRestored"),
+    ] {
+        if !nested_bool(report, object, key)? {
+            return Err(format!(
+                "`{object}.{key}` was false; the check did not observe it"
+            ));
+        }
+    }
+    if !bool_field(report, "bridge")? {
+        return Err(
+            "the `--wk-*` bridge produced no value for `--wk-bg`; the chrome is unstyled".into(),
+        );
+    }
+    if !bool_field(report, "densityChanged")? {
+        return Err(
+            "compact density did not change the rendered control height; the token layer is \
+             not reaching the components"
+                .into(),
+        );
+    }
+
+    let page_list = report
+        .get("pageList")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the page reported no `pageList` object (report: {report})"))?;
+    let tiles = page_list.get("tiles").and_then(Json::as_u64).unwrap_or(0);
+    if tiles == 0 {
+        return Err("UI.02's page list rendered zero page tiles".into());
+    }
+    let labels = page_list.get("labels").and_then(Json::as_u64).unwrap_or(0);
+    if labels == 0 {
+        return Err("the page tiles had no visible labels".into());
+    }
+    if page_list
+        .get("current")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err("no page tile carried aria-current=\"page\"".into());
+    }
+    for key in ["positioned", "hasGeometry"] {
+        if page_list.get(key).and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "UI.02's tile geometry was not applied (`pageList.{key}` was not true)"
+            ));
+        }
+    }
+
+    for key in [
+        "button", "checkbox", "switch", "dialog", "menu", "tooltip", "tabs", "select", "toast",
+    ] {
+        if !nested_bool(report, "controls", key)? {
+            return Err(format!(
+                "the `{key}` component family did not pass its interaction leg"
+            ));
+        }
+    }
+
+    let themes = report
+        .get("themes")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the page reported no `themes` array (report: {report})"))?;
+    for (name, expected_theme) in [
+        ("light", "light"),
+        ("dark", "dark"),
+        ("high-contrast", "light"),
+    ] {
+        let entry = themes
+            .iter()
+            .find(|entry| entry.get("name").and_then(Json::as_str) == Some(name))
+            .ok_or_else(|| format!("the page reported no `{name}` theme scan"))?;
+        if entry.get("theme").and_then(Json::as_str) != Some(expected_theme) {
+            return Err(format!(
+                "the `{name}` scan ran under theme {:?}, expected {expected_theme:?}",
+                entry.get("theme").and_then(Json::as_str)
+            ));
+        }
+        if entry.get("available").and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "axe-core did not run for the `{name}` appearance; an unrun scan is not a pass"
+            ));
+        }
+        let violations = entry
+            .get("violations")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("the `{name}` scan reported no violations array"))?;
+        if !violations.is_empty() {
+            let first = &violations[0];
+            let id = first.get("id").and_then(Json::as_str).unwrap_or("unknown");
+            let help = first.get("help").and_then(Json::as_str).unwrap_or("");
+            return Err(format!(
+                "axe-core found {} violation(s) in the `{name}` appearance; first is {id}: \
+                 {help}",
+                violations.len()
+            ));
+        }
+    }
+
+    if let Some(errors) = report.get("errors").and_then(Json::as_array) {
+        if !errors.is_empty() {
+            return Err(format!(
+                "the page recorded {} interaction error(s)",
+                errors.len()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `service-worker`: the *browser* has to make this true, not the page.
@@ -442,9 +604,9 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
     if let Err(e) = stage(&check_root().join(check.dir), &served) {
         return failed(check.id, format!("cannot stage the check: {e}"));
     }
-    // `app-shell` drives the app's OWN worker, so the built app has to sit on
-    // the same origin as the page.
-    if check.id == "app-shell" {
+    // `app-shell` drives the app's OWN worker; `chrome` imports the built
+    // React entries. Both need the built app on the same origin as the page.
+    if check.id == "app-shell" || check.id == "chrome" {
         if let Err(e) = stage_app(&app_public_dir(), &served) {
             return failed(check.id, format!("cannot stage the built web app: {e}"));
         }
@@ -2387,6 +2549,18 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
         while !flag.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    // The listener is polled non-blocking, and on Windows an
+                    // accepted socket INHERITS that flag across to a different
+                    // file description. A non-blocking read ignores the read
+                    // timeout: it answers `WSAEWOULDBLOCK` immediately
+                    // whenever the request bytes have not arrived yet, so
+                    // every fresh connection raced its own first read and the
+                    // idle-close branch sealed it — in microseconds, per the
+                    // connection-lifetime log. Return the connection to
+                    // blocking before serving so the five-second idle window
+                    // is actually what a parked socket waits, and the read
+                    // fuse actually covers a request.
+                    let _ = stream.set_nonblocking(false);
                     // One thread per connection, deliberately. A browser opens
                     // speculative and preconnect sockets that it may never write
                     // to, and a single-threaded loop that blocks reading one of
@@ -2431,23 +2605,25 @@ fn serve(root: &Path) -> Result<(Server, Receiver<String>), String> {
 /// Serve a connection: the verdict POST, the offline switch, and files out of
 /// `root`.
 ///
-/// **KEEP-ALIVE, and the loop is the fix.** An earlier attempt kept the socket
-/// open after one response and was reverted: the browser put its NEXT request
-/// on that socket, the server never read it, and Windows reported
-/// `ConnectionAborted`. The lesson was that an open connection must be a
-/// SERVED connection, not a parked one.
+/// **Every response is the last response.** The origin used to answer request
+/// after request on one keep-alive socket, and that lost to a race this loop
+/// cannot fight from the serving side: the server's five-second idle close
+/// retired a served socket that the browser's pool still handed out, the
+/// import bursts lost half their children within ~30 ms — captured live with
+/// the DevTools protocol as `net::ERR_SOCKET_NOT_CONNECTED` and
+/// `net::ERR_CONNECTION_RESET` on fresh, already-started requests — and
+/// because a failed module fetch is remembered in the module map, no amount
+/// of same-URL retrying brought the burst back. Advertising
+/// `Keep-Alive: timeout=4` did not buy the coordination back either.
 ///
-/// Sending `Connection: close` instead looked safer, but it creates the mirror
-/// image of the same race. The browser can have the next request already queued
-/// on a connection when the close arrives; the server closes with unread bytes,
-/// Windows sends RST, and the browser reports the queued module as
-/// `responseStatus: 0` — the opaque `Failed to fetch dynamically imported
-/// module` that made this gate flaky. The trace showed it on `message.js`, a
-/// file that was never missing and that the server was answering with 200.
-///
-/// So the loop below reads request after request on the same socket. The
-/// browser gets the connection reuse it expects, and a close is only sent on
-/// the one-shot control responses, where no module is waiting behind it.
+/// Closing after every response removes the shared state altogether, and the
+/// close is advertised *in the response*, so the browser never queues its next
+/// request behind a socket that is being finished. That is the difference from
+/// the earlier attempt documented here once before: that server stopped
+/// reading a socket it had not told the client to abandon ("a queued module
+/// request became responseStatus: 0" — the trace landed on `message.js`, a
+/// file the server was answering with 200). Whole-graph serving has to read
+/// nothing else: one head in, one head satisfied, one socket finished.
 fn handle_connection(
     stream: &TcpStream,
     root: &Path,
@@ -2472,113 +2648,83 @@ fn handle_connection(
     // fetches, and the app's module loader retries with a distinct specifier.
     // The harness page retries its own stylesheet for the same reason.
     let mut reader = stream.try_clone()?;
-
-    loop {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut head = Vec::new();
-        let mut byte = [0u8; 1];
-        let mut started = false;
-        // Read through the blank line that ends the request head. One byte at a
-        // time is not a performance concern for a harness that serves a handful of
-        // files to one local browser, and it needs no buffering assumptions about
-        // what the browser packs into the first packet.
-        while !head.ends_with(b"\r\n\r\n") {
-            match reader.read(&mut byte) {
-                Ok(0) => return Ok(()),
-                Ok(_) => {
-                    // Once a request has STARTED, a slow next byte is not an
-                    // idle socket - it is a request the browser expects an
-                    // answer to. The body of a loopback request needs
-                    // milliseconds; 10 s is a fuse, not a budget.
-                    if !started {
-                        started = true;
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                    }
-                    head.push(byte[0]);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    let mut started = false;
+    // Read through the blank line that ends the request head. One byte at a
+    // time is not a performance concern for a harness that serves a handful of
+    // files to one local browser, and it needs no buffering assumptions about
+    // what the browser packs into the first packet.
+    while !head.ends_with(b"\r\n\r\n") {
+        match reader.read(&mut byte) {
+            // The peer closed its end before a full head.
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                // Once a request has STARTED, a slow next byte is not an
+                // idle socket - it is a request the browser expects an
+                // answer to. The body of a loopback request needs
+                // milliseconds; 10 s is a fuse, not a budget.
+                if !started {
+                    started = true;
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                 }
-                // A socket the browser opened, never wrote to, and then
-                // abandoned is the normal case, not an error worth printing.
-                Err(e) if is_idle(&e) => return Ok(()),
-                Err(e) => return Err(e),
+                head.push(byte[0]);
             }
-            if head.len() > MAX_REQUEST_HEAD {
-                return respond_closing(
-                    stream,
-                    "431 Request Header Fields Too Large",
-                    "text/plain",
-                    b"",
-                );
-            }
+            // A socket the browser opened, never wrote to, and then
+            // abandoned is the normal case, not an error worth printing.
+            Err(e) if is_idle(&e) => return Ok(()),
+            Err(e) => return Err(e),
         }
-        let head = String::from_utf8_lossy(&head).to_string();
-        let mut parts = head.split_whitespace();
-        let method = parts.next().unwrap_or_default().to_string();
-        let target = parts.next().unwrap_or_default().to_string();
-        // HTTP/1.1 lets a client ask for a one-shot connection. Honour it:
-        // a caller that reads to EOF (the origin's own test does) otherwise
-        // waits for the idle timeout, and a close under an in-flight read is
-        // the RST this loop exists to avoid.
-        let close = wants_close(&head);
+        if head.len() > MAX_REQUEST_HEAD {
+            return respond_closing(
+                stream,
+                "431 Request Header Fields Too Large",
+                "text/plain",
+                b"",
+            );
+        }
+    }
+    let head = String::from_utf8_lossy(&head).to_string();
+    let mut parts = head.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let target = parts.next().unwrap_or_default().to_string();
 
-        // The verdict POST is the last thing a run does, so close after it.
-        if method == "POST" && target == RESULT_PATH {
-            let mut body = vec![0u8; content_length(&head)];
-            reader.read_exact(&mut body)?;
-            respond_closing(stream, "204 No Content", "text/plain", b"")?;
-            if !reported.swap(true, Ordering::SeqCst) {
-                let _ = tx.send(String::from_utf8_lossy(&body).to_string());
-            }
-            return Ok(());
+    // The verdict POST is the last thing a run does, so its response closes
+    // like every other one.
+    if method == "POST" && target == RESULT_PATH {
+        let mut body = vec![0u8; content_length(&head)];
+        reader.read_exact(&mut body)?;
+        respond_closing(stream, "204 No Content", "text/plain", b"")?;
+        if !reported.swap(true, Ordering::SeqCst) {
+            let _ = tx.send(String::from_utf8_lossy(&body).to_string());
         }
+        return Ok(());
+    }
 
-        if method == "POST" && target == OFFLINE_PATH {
-            let _ = reader.read_exact(&mut vec![0u8; content_length(&head)]);
-            offline.store(true, Ordering::SeqCst);
-            return respond_closing(stream, "204 No Content", "text/plain", b"");
+    if method == "POST" && target == OFFLINE_PATH {
+        let _ = reader.read_exact(&mut vec![0u8; content_length(&head)]);
+        offline.store(true, Ordering::SeqCst);
+        return respond_closing(stream, "204 No Content", "text/plain", b"");
+    }
+    if offline.load(Ordering::SeqCst) {
+        // The status is what the offline leg measures. The disposition is the
+        // same one every response carries now; see this function's docs.
+        return respond_closing(stream, "503 Service Unavailable", "text/plain", b"offline");
+    }
+    let Some(path) = resolve(root, &target) else {
+        return respond_closing(stream, "403 Forbidden", "text/plain", b"forbidden");
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let kind = content_type(&path);
+            return respond_closing(stream, "200 OK", kind, &bytes);
         }
-        if offline.load(Ordering::SeqCst) {
-            // Keep the connection by default: the browser may already have the
-            // next request on it, and the status is what the offline leg
-            // measures. A client that asked to close gets its wish.
-            if close {
-                return respond_closing(
-                    stream,
-                    "503 Service Unavailable",
-                    "text/plain",
-                    b"offline",
-                );
-            }
-            respond(stream, "503 Service Unavailable", "text/plain", b"offline")?;
-            continue;
-        }
-        let Some(path) = resolve(root, &target) else {
-            if close {
-                return respond_closing(stream, "403 Forbidden", "text/plain", b"forbidden");
-            }
-            respond(stream, "403 Forbidden", "text/plain", b"forbidden")?;
-            continue;
-        };
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let kind = content_type(&path);
-                if close {
-                    return respond_closing(stream, "200 OK", kind, &bytes);
-                }
-                respond(stream, "200 OK", kind, &bytes)?;
-                // Do NOT close here. The next request may already be on its
-                // way, and closing with it unread is the RST this loop exists
-                // to avoid.
-            }
-            Err(_) => {
-                // A 404 is a response, not a reason to abandon the connection:
-                // the favicon is a 404 on every run, and closing behind it was
-                // one of the ways a queued module request became status 0.
-                if close {
-                    return respond_closing(stream, "404 Not Found", "text/plain", b"not found");
-                }
-                respond(stream, "404 Not Found", "text/plain", b"not found")?;
-                continue;
-            }
+        Err(_) => {
+            // A 404 is a response, not an error: the favicon is a 404 on
+            // every run. Its disposition is the same as every other
+            // response, so nothing lands behind a dying socket.
+            return respond_closing(stream, "404 Not Found", "text/plain", b"not found");
         }
     }
 }
@@ -2606,24 +2752,6 @@ fn content_length(head: &str) -> usize {
                 .then(|| value.trim().parse::<usize>().unwrap_or(0))
         })
         .unwrap_or(0)
-}
-
-/// Whether a request head asks for its connection to be closed afterwards.
-///
-/// The header is a comma-separated token list, and the name is
-/// case-insensitive; a strict equality check on `Connection: close` would miss
-/// `connection: keep-alive, Close`. HTTP/1.1 defaults to keep-alive, so an
-/// absent header means false.
-fn wants_close(head: &str) -> bool {
-    head.lines().any(|line| {
-        let Some((name, value)) = line.split_once(':') else {
-            return false;
-        };
-        name.trim().eq_ignore_ascii_case("connection")
-            && value
-                .split(',')
-                .any(|token| token.trim().eq_ignore_ascii_case("close"))
-    })
 }
 
 /// Map a request target onto a file under `root`, refusing to leave it.
@@ -2724,41 +2852,40 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Write one complete response and keep the connection open.
+/// Write the only response on a connection; the caller closes after it.
 ///
-/// The browser reuses this socket for its next request; `handle_connection`
-/// explains why closing after every file was the flakier choice. Responses
-/// that end the conversation use [`respond_closing`].
+/// With one response per connection there is no reuse to coordinate, so
+/// [`write_response`] always renders the closing disposition and this name is
+/// the only entry the serving paths use.
 ///
 /// `Cache-Control: max-age=0, must-revalidate` keeps a served file from
 /// answering the offline leg out of the HTTP cache without revalidation: the
 /// *worker's* cache is what that check measures, and a fresh network answer
 /// would prove nothing.
-fn respond(stream: &TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
-    write_response(stream, status, kind, body, "keep-alive")
-}
-
-/// Write the last response on a connection. The caller closes after it.
 fn respond_closing(
     stream: &TcpStream,
     status: &str,
     kind: &str,
     body: &[u8],
 ) -> std::io::Result<()> {
-    write_response(stream, status, kind, body, "close")
+    write_response(stream, status, kind, body)
 }
 
-/// Write one HTTP/1.1 response with an explicit connection disposition.
+/// Write one HTTP/1.1 response and finish the conversation on it.
+///
+/// `Connection: close` is part of the head, so the client knows the socket is
+/// spent before it is done reading — no further request can be queued behind
+/// the close, and no parked socket outlives the answer it served. Where the
+/// trickier history started is `handle_connection`'s doc.
 fn write_response(
     stream: &TcpStream,
     status: &str,
     kind: &str,
     body: &[u8],
-    connection: &str,
 ) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: max-age=0, must-revalidate\r\nConnection: {connection}\r\n\r\n",
+         Cache-Control: max-age=0, must-revalidate\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let mut writer = stream.try_clone()?;
@@ -3031,22 +3158,6 @@ mod tests {
     }
 
     #[test]
-    fn a_client_can_ask_for_the_connection_to_close() {
-        assert!(wants_close("GET /x HTTP/1.1\r\nConnection: close\r\n\r\n"));
-        assert!(wants_close(
-            "GET /x HTTP/1.1\r\nconnection: keep-alive, Close\r\n\r\n"
-        ));
-        assert!(!wants_close(
-            "GET /x HTTP/1.1\r\nConnection: keep-alive\r\n\r\n"
-        ));
-        assert!(!wants_close("GET /x HTTP/1.1\r\n\r\n"));
-        // A different header that ends in the same token is not the header.
-        assert!(!wants_close(
-            "GET /x HTTP/1.1\r\nX-Connection: close\r\n\r\n"
-        ));
-    }
-
-    #[test]
     fn wasm_is_served_as_wasm_so_the_streaming_api_can_be_used() {
         assert_eq!(content_type(Path::new("probe.wasm")), "application/wasm");
         assert_eq!(
@@ -3074,11 +3185,9 @@ mod tests {
         let port = server.port;
 
         let mut get = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        // Ask for a one-shot connection: this test reads to EOF, and the
-        // origin otherwise keeps the socket until its five-second idle
-        // timeout. Honouring the request is also the correct HTTP behaviour,
-        // so the read gets a FIN rather than a reset under it.
-        get.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        // The origin closes after every response, so this read ends at the
+        // FIN without any special request on the way in.
+        get.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             .expect("write");
         let mut body = String::new();
         get.read_to_string(&mut body).expect("read");

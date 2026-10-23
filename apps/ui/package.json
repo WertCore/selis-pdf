@@ -13,17 +13,26 @@
 		},
 		"./css/page-list.css": "./src/viewer/page-list.css"
 	},
-	"files": ["dist", "src/viewer/page-list.css"],
+	"files": [
+		"dist",
+		"src/viewer/page-list.css"
+	],
 	"scripts": {
-		"build": "tsc -p tsconfig.json",
+		"build": "tsc -p tsconfig.json && node tools/build-vendor.mjs",
 		"test": "vitest run",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
-		"@selis/ui-kit": "workspace:*"
+		"@selis/ui-kit": "workspace:*",
+		"@wertkit/ui": "0.1.8",
+		"react": "19.3.1",
+		"react-dom": "19.3.1"
 	},
 	"devDependencies": {
 		"@types/node": "^24.13.4",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"esbuild": "0.28.2",
 		"typescript": "^5.5.0",
 		"vitest": "^2.0.0"
 	}

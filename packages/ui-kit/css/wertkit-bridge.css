@@ -1,0 +1,142 @@
+/* The `--wk-*` -> `--selis-*` bridge (SL-4.UI.14 stage 3).
+ *
+ * `@wertkit/ui/styles.css` consumes 87 `--wk-*` variables and defines none of
+ * them. `@wertkit/ui/tokens.css` is deliberately NOT imported: it is a second
+ * theme system, with no `data-contrast="high"` variant, and UI.10's 7:1
+ * high-contrast gate is owned by the generated `--selis-*` tokens in
+ * `tokens.css`.
+ *
+ * This file is the whole translation layer. Every value on the right is a
+ * selis token or a derived structural value; no colour literal appears here.
+ * `apps/ui/src/chrome/wertkit-bridge.test.ts` extracts the `var(--wk-*)` names
+ * from the installed `@wertkit/ui/styles.css` and fails if one is not defined
+ * below, or if a definition introduces a raw colour.
+ *
+ * ## Scope, and why it is repeated
+ *
+ * The aliases are declared on the theme scopes, not only on `:root`. A custom
+ * property value is substituted where it is declared, so an alias defined only
+ * at `:root` would capture the default theme even when `data-theme="dark"` is
+ * on a nested `.selis-root`. Repeating the block makes the alias resolve
+ * against the nearest theme scope.
+ *
+ * Chrome still sets its theme attributes on `document.documentElement`. Radix
+ * portals (Dialog, Select, Menu, Tooltip) mount under `<body>`; a theme scoped
+ * only to `.selis-root` would leave those portals on the default theme, and
+ * `@wertkit/ui@0.1.8` exposes no portal-container prop.
+ *
+ * ## The non-mechanical choices
+ *
+ * - `bg-subtle` -> `bg-inset`: selis has one recessed surface role.
+ * - `fg-on-solid` -> `accent-fg`: white on the solid accent/danger fills in
+ *   all four themes.
+ * - `info*` -> the accent family. Selis has no info role; inventing one here
+ *   would bypass UI.10's contrast gate. If info semantics become a product
+ *   need, add a gated token first.
+ * - `overlay` is derived from `--selis-color-shadow`, not a black literal.
+ * - `syntax-variable` -> `fg`; selis ships no syntax palette, and this is the
+ *   only syntax variable the component CSS consumes.
+ * - z-index values map onto the selis layering ladder; popovers sit one below
+ *   toasts so a toast remains the top transient surface.
+ * - safe-area values are `env()` because they are host facts, not design
+ *   tokens.
+ * - leading/tracking fall back to the selis body rhythm; copying wertkit's px
+ *   line-heights would fork the typography scale.
+ * - control heights derive from the selis density control height, so compact
+ *   density moves wertkit controls with the rest of the shell.
+ */
+
+:root,
+.selis-root,
+[data-theme],
+[data-contrast],
+[data-density],
+[data-motion] {
+	--wk-accent: var(--selis-color-accent);
+	--wk-accent-fg: var(--selis-color-accent-fg);
+	--wk-accent-hover: var(--selis-color-accent-hover);
+	--wk-accent-subtle: var(--selis-color-accent-subtle);
+	--wk-bg: var(--selis-color-bg);
+	--wk-bg-inset: var(--selis-color-bg-inset);
+	--wk-bg-raised: var(--selis-color-bg-raised);
+	--wk-bg-subtle: var(--selis-color-bg-inset);
+	--wk-border: var(--selis-color-border);
+	--wk-border-strong: var(--selis-color-border-strong);
+	--wk-border-thick: var(--selis-border-thick);
+	--wk-border-thin: var(--selis-border-hairline);
+	--wk-cell-py: var(--selis-space-4);
+	--wk-control-h-lg: calc(var(--selis-density-control-height) + 8px);
+	--wk-control-h-md: var(--selis-density-control-height);
+	--wk-control-h-sm: calc(var(--selis-density-control-height) - 4px);
+	--wk-control-px: var(--selis-density-control-pad-x);
+	--wk-danger: var(--selis-color-danger);
+	--wk-danger-fg: var(--selis-color-danger-fg);
+	--wk-danger-subtle: var(--selis-color-danger-subtle);
+	--wk-dialog-w: 480px;
+	--wk-fg: var(--selis-color-fg);
+	--wk-fg-muted: var(--selis-color-fg-muted);
+	--wk-fg-on-solid: var(--selis-color-accent-fg);
+	--wk-fg-subtle: var(--selis-color-fg-subtle);
+	--wk-focus-ring: var(--selis-color-focus-ring);
+	--wk-focus-width: var(--selis-border-thick);
+	--wk-font-mono: var(--selis-font-mono);
+	--wk-font-sans: var(--selis-font-sans);
+	--wk-image-ar: auto;
+	--wk-info: var(--selis-color-accent);
+	--wk-info-fg: var(--selis-color-link);
+	--wk-info-subtle: var(--selis-color-accent-subtle);
+	--wk-leading-2xl: var(--selis-leading-normal);
+	--wk-leading-lg: var(--selis-leading-normal);
+	--wk-leading-md: var(--selis-leading-normal);
+	--wk-leading-sm: var(--selis-leading-normal);
+	--wk-leading-xl: var(--selis-leading-normal);
+	--wk-leading-xs: var(--selis-leading-normal);
+	--wk-motion-base: var(--selis-duration-base);
+	--wk-motion-ease: var(--selis-ease-standard);
+	--wk-motion-ease-out: var(--selis-ease-entrance);
+	--wk-motion-fast: var(--selis-duration-fast);
+	--wk-overlay: color-mix(in srgb, var(--selis-color-shadow) 55%, transparent);
+	--wk-radius-full: var(--selis-radius-full);
+	--wk-radius-lg: var(--selis-radius-lg);
+	--wk-radius-md: var(--selis-radius-md);
+	--wk-radius-sm: var(--selis-radius-sm);
+	--wk-safe-b: env(safe-area-inset-bottom, 0px);
+	--wk-safe-l: env(safe-area-inset-left, 0px);
+	--wk-safe-r: env(safe-area-inset-right, 0px);
+	--wk-safe-t: env(safe-area-inset-top, 0px);
+	--wk-shadow-md: var(--selis-shadow-2);
+	--wk-shadow-sm: var(--selis-shadow-1);
+	--wk-sidebar-w: 240px;
+	--wk-space-1: var(--selis-space-1);
+	--wk-space-12: var(--selis-space-12);
+	--wk-space-2: var(--selis-space-2);
+	--wk-space-3: var(--selis-space-3);
+	--wk-space-4: var(--selis-space-4);
+	--wk-space-6: var(--selis-space-6);
+	--wk-space-8: var(--selis-space-8);
+	--wk-success: var(--selis-color-success);
+	--wk-success-fg: var(--selis-color-success-fg);
+	--wk-success-subtle: var(--selis-color-success-subtle);
+	--wk-surface-p: var(--selis-space-8);
+	--wk-syntax-variable: var(--selis-color-fg);
+	--wk-table-header-bg: var(--selis-color-bg-raised);
+	--wk-table-max-block: 60vh;
+	--wk-text-2xl: var(--selis-text-2xl);
+	--wk-text-lg: var(--selis-text-lg);
+	--wk-text-md: var(--selis-text-md);
+	--wk-text-sm: var(--selis-text-sm);
+	--wk-text-xl: var(--selis-text-xl);
+	--wk-text-xs: var(--selis-text-xs);
+	--wk-titlebar-h: var(--selis-density-panel-header-height);
+	--wk-tracking-tight: normal;
+	--wk-warn: var(--selis-color-warn);
+	--wk-warn-fg: var(--selis-color-warn-fg);
+	--wk-warn-subtle: var(--selis-color-warn-subtle);
+	--wk-weight-medium: var(--selis-weight-medium);
+	--wk-weight-semibold: var(--selis-weight-semibold);
+	--wk-z-modal: var(--selis-z-dialog);
+	--wk-z-overlay: var(--selis-z-dialog-backdrop);
+	--wk-z-popover: calc(var(--selis-z-toast) - 1);
+	--wk-z-sticky: var(--selis-z-toolbar);
+	--wk-z-toast: var(--selis-z-toast);
+}

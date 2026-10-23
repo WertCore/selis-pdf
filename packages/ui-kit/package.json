@@ -12,7 +12,8 @@
 			"default": "./dist/index.js"
 		},
 		"./css/tokens.css": "./css/tokens.css",
-		"./css/base.css": "./css/base.css"
+		"./css/base.css": "./css/base.css",
+		"./css/wertkit-bridge.css": "./css/wertkit-bridge.css"
 	},
 	"files": ["dist", "css"],
 	"scripts": {

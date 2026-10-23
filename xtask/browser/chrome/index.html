@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Selis chrome browser check (SL-4.UI.14)</title>
+		<style>
+			/* The page is a harness, not the product. Keep its own surface out of
+			 * the way so the AppShell is the only full-viewport element. */
+			html,
+			body {
+				margin: 0;
+				min-height: 100%;
+				background: #ffffff;
+			}
+			#verdict {
+				display: none;
+			}
+		</style>
+		<!-- The same order the deployment uses. `base.css` is before the bridge
+		 * because UI.02's tile classes live there. No @wertkit/ui/tokens.css:
+		 * selis's generated tokens are the only theme source. -->
+		<link rel="stylesheet" href="/assets/ui-kit/css/tokens.css" />
+		<link rel="stylesheet" href="/assets/ui-kit/css/base.css" />
+		<link rel="stylesheet" href="/assets/ui-kit/css/wertkit-bridge.css" />
+		<link rel="stylesheet" href="/assets/ui/vendor/wertkit.css" />
+		<link rel="stylesheet" href="/assets/ui/css/page-list.css" />
+		<link rel="stylesheet" href="/assets/ui/css/chrome.css" />
+	</head>
+	<body>
+		<div id="app"></div>
+		<pre id="verdict" hidden></pre>
+		<script>
+			// Deliberately a CLASSIC script that imports the chrome dynamically.
+			// A static module import that fails (a missing rewritten vendor
+			// specifier, a 404 in the app staging) never enters the module body,
+			// so the report handlers below would never be installed and the
+			// harness would see only a timeout. This shape reports the import
+			// error as a fatal instead.
+			const RESULT_PATH = "/__selis_result";
+			const params = new URLSearchParams(location.search);
+			const output = {
+				schema: 1,
+				check: "chrome",
+				mounted: false,
+				landmarks: { header: false, main: false, nav: false },
+				bridge: false,
+				pageList: null,
+				controls: {
+					button: false,
+					checkbox: false,
+					switch: false,
+					dialog: false,
+					menu: false,
+					tooltip: false,
+					tabs: false,
+					select: false,
+					toast: false,
+				},
+				focus: { dialogTrapped: false, dialogRestored: false },
+				themes: [],
+				errors: [],
+				fatal: null,
+			};
+			let reported = false;
+
+			function report() {
+				if (reported) return;
+				reported = true;
+				const body = JSON.stringify(output);
+				document.getElementById("verdict").textContent =
+					"@@SELIS-RESULT@@" + body + "@@SELIS-END@@";
+				const xhr = new XMLHttpRequest();
+				xhr.open("POST", RESULT_PATH, true);
+				xhr.send(body);
+			}
+
+			function fail(why) {
+				output.fatal = String(why && (why.stack || why.message || why));
+				report();
+			}
+
+			window.addEventListener(
+				"error",
+				(event) => {
+					if (!output.fatal) {
+						fail(
+							event.error ||
+								event.message ||
+								(event.target && (event.target.src || event.target.href)) ||
+								"window error",
+						);
+					}
+				},
+				true,
+			);
+			window.addEventListener("unhandledrejection", (event) => {
+				if (!output.fatal) fail(event.reason || "unhandled rejection");
+			});
+			setTimeout(() => {
+				if (!reported) fail("the chrome check did not finish before the watchdog");
+			}, 25_000);
+
+			function sleep(ms) {
+				return new Promise((resolve) => setTimeout(resolve, ms));
+			}
+
+			function frame() {
+				return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+			}
+
+			async function waitFor(predicate, what, limit = 5_000) {
+				const started = Date.now();
+				while (Date.now() - started < limit) {
+					const value = predicate();
+					if (value) return value;
+					await frame();
+				}
+				throw new Error(`timed out waiting for ${what}`);
+			}
+
+			function textButton(text) {
+				return [...document.querySelectorAll("button")].find(
+					(button) => button.textContent.trim() === text,
+				);
+			}
+
+			function pointerClick(element) {
+				// A real press produces the full event sequence: pointerdown,
+				// mousedown, focus, pointerup, mouseup, click. Every event in it
+				// is needed: Radix primitives differ in which one they activate
+				// on (menus open from pointerdown, tab triggers select from
+				// mousedown, plain buttons listen for click), so the helper
+				// poses as a complete press rather than a minimal one.
+				const options = { bubbles: true, cancelable: true, button: 0, pointerType: "mouse" };
+				element.dispatchEvent(new PointerEvent("pointerdown", options));
+				element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+				element.dispatchEvent(new PointerEvent("pointerup", options));
+				element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+				element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+			}
+
+			function press(element, key) {
+				element.dispatchEvent(
+					new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+				);
+			}
+
+			async function loadAxe() {
+				return await new Promise((resolve) => {
+					const script = document.createElement("script");
+					script.src = "axe.min.js";
+					script.onload = () => resolve(globalThis.axe || null);
+					script.onerror = () => resolve(null);
+					document.head.appendChild(script);
+				});
+			}
+
+			async function scan(name) {
+				const axe = await loadAxe();
+				if (!axe || typeof axe.run !== "function") {
+					output.themes.push({
+						name,
+						theme: document.documentElement.getAttribute("data-theme"),
+						contrast: document.documentElement.getAttribute("data-contrast"),
+						available: false,
+						violations: [],
+					});
+					return;
+				}
+				const results = await axe.run(document, {
+					runOnly: {
+						type: "tag",
+						values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+					},
+				});
+				output.themes.push({
+					name,
+					theme: document.documentElement.getAttribute("data-theme"),
+					contrast: document.documentElement.getAttribute("data-contrast"),
+					available: true,
+					violations: results.violations.map((violation) => ({
+						id: violation.id,
+						impact: violation.impact,
+						help: violation.help,
+						nodes: violation.nodes.length,
+						firstTarget:
+							violation.nodes.length > 0 && violation.nodes[0].target
+								? String(violation.nodes[0].target)
+								: null,
+					})),
+				});
+			}
+
+			async function ensureStyles() {
+				for (const link of [...document.querySelectorAll('link[rel="stylesheet"]')]) {
+					if (link.sheet) continue;
+					// The harness origin keeps keep-alive sockets open for five
+					// seconds; a preconnect socket can be reset while a sheet is
+					// in flight. Re-request once with a cache-buster rather than
+					// measuring an unstyled screen. `resolve` strips the query.
+					const href = link.href.split("?")[0];
+					link.remove();
+					const retry = document.createElement("link");
+					retry.rel = "stylesheet";
+					retry.href = `${href}?retry=${Date.now()}`;
+					const loaded = new Promise((resolve) => {
+						retry.onload = () => resolve(true);
+						retry.onerror = () => resolve(false);
+					});
+					document.head.appendChild(retry);
+					const ok = await Promise.race([loaded, sleep(3_000).then(() => false)]);
+					if (!ok) throw new Error(`stylesheet did not load: ${href}`);
+				}
+			}
+
+			async function main() {
+				await ensureStyles();
+				output.stylesLoaded = [...document.querySelectorAll('link[rel="stylesheet"]')].every(
+					(link) => Boolean(link.sheet),
+				);
+				// The deployment's manifest names every served module; reading it is
+				// also proof the app the check stages is the one `place-assets`
+				// wrote for the chrome. (The chrome imports open one burst of
+				// parallel module fetches; the harness origin is sensitive to
+				// connection churn, so this leg deliberately stays at one request.)
+				const manifest = await (await fetch("/app-manifest.json", { cache: "no-store" })).json();
+				if (manifest.chrome !== "/assets/ui/chrome/index.js") {
+					throw new Error("the manifest does not name a chrome entry");
+				}
+				// An engine records a failed module fetch in its module map, so
+				// one aborted request in the burst a whole-graph import opens
+				// would poison every later attempt against the same graph.
+				// Warming each module with a plain GET and importing it
+				// immediately after keeps the loop sequential — the shape the
+				// origins here are measured to serve reliably — and names the
+				// module that could not load instead of reporting an opaque
+				// failure of the entry. Each attempt imports a fresh
+				// specifier: a raced socket is not a verdict about the file,
+				// and a distinct URL is a fresh module-map entry as well. Host
+				// modules are skipped: this page needs the chrome closure,
+				// not the boot closure.
+				const importFailures = [];
+				for (const module of manifest.modules) {
+					if (module.startsWith("assets/host/")) continue;
+					const url = `/${module}`;
+					let imported = false;
+					let lastError = null;
+					for (let attempt = 0; attempt < 3 && !imported; attempt += 1) {
+						try {
+							await fetch(url, { cache: "no-store" });
+							await import(`${url}${attempt === 0 ? "" : `?attempt=${attempt}`}`);
+							imported = true;
+						} catch (error) {
+							lastError = error;
+						}
+					}
+					if (!imported) {
+						importFailures.push(`${module}: ${lastError}`);
+					}
+				}
+				if (importFailures.length > 0) {
+					throw new Error(
+						`the manifest failed ${importFailures.length} imports: ${importFailures.join(" | ")}`,
+					);
+				}
+				const { mountChrome } = await import(manifest.chrome);
+				const initialPreferences = {
+					theme: params.get("theme") === "dark" ? "dark" : "light",
+					contrast: params.get("contrast") === "high" ? "high" : "normal",
+					density: "comfortable",
+					motion: "system",
+				};
+				mountChrome(document.getElementById("app"), {
+					initialPreferences,
+					fixture: {
+						name: "chrome-sample.pdf",
+						pageCount: 6,
+						textPages: ["one", "two", "three", "four", "five", "six"],
+					},
+				});
+
+				await waitFor(
+					() => document.querySelector(".selis-page-list--virtual"),
+					"the page list to mount",
+				);
+				await frame();
+				output.mounted = true;
+				output.landmarks.header = Boolean(document.querySelector(".wk-AppShell_titlebar"));
+				output.landmarks.main = Boolean(document.querySelector("main#selis-chrome-main"));
+				output.landmarks.nav = Boolean(document.querySelector('nav[aria-label="Primary"]'));
+
+				const rootStyle = getComputedStyle(document.documentElement);
+				const selisBg = rootStyle.getPropertyValue("--selis-color-bg").trim();
+				const wkBg = rootStyle.getPropertyValue("--wk-bg").trim();
+				output.bridge = selisBg.length > 0 && wkBg.length > 0;
+				output.styleDebug = {
+					selisBg,
+					wkBg,
+				};
+
+				const tiles = [...document.querySelectorAll(".selis-page-tile")];
+				const current = document.querySelector('.selis-page-tile[aria-current="page"]');
+				const labels = [...document.querySelectorAll(".selis-page-tile__label")];
+				output.pageList = {
+					tiles: tiles.length,
+					current: current ? current.getAttribute("aria-label") : null,
+					labels: labels.length,
+					positioned: tiles.every(
+						(tile) => getComputedStyle(tile).position === "absolute",
+					),
+					hasGeometry: tiles.every(
+						(tile) =>
+							getComputedStyle(tile).width !== "0px" &&
+							getComputedStyle(tile).height !== "0px",
+					),
+				};
+
+				// Button: next/previous, zoom and theme toggle. The status bar is
+				// the user-visible proof; reading an internal model would not prove
+				// the screen changed.
+				const status = () =>
+					document.querySelector(".selis-chrome__statusbar").textContent;
+				const next = document.querySelector('button[aria-label="Next page"]');
+				const previous = document.querySelector('button[aria-label="Previous page"]');
+				const docArea = document.querySelector(".selis-chrome__doc-area");
+				next.click();
+				await waitFor(() => status().includes("Page 2 of 6"), "next page");
+				previous.click();
+				await waitFor(() => status().includes("Page 1 of 6"), "previous page");
+				const zoomIn = document.querySelector('button[aria-label="Zoom in"]');
+				const zoomOut = document.querySelector('button[aria-label="Zoom out"]');
+				zoomIn.click();
+				await waitFor(() => !status().includes("100%"), "zoom in");
+				zoomOut.click();
+				await waitFor(() => status().includes("100%"), "zoom out");
+				output.controls.button = true;
+
+				// Checkbox: high contrast is an attribute on <html>, not a local
+				// class, so portals and the page list share it.
+				const checkboxFor = (labelText) =>
+					[...document.querySelectorAll('[role="checkbox"]')].find((checkbox) => {
+						const label = checkbox.id
+							? document.querySelector(`label[for="${checkbox.id}"]`)
+							: null;
+						return label && label.textContent.trim() === labelText;
+					});
+				const highContrast = checkboxFor("High contrast");
+				highContrast.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-contrast") === "high",
+					"high contrast",
+				);
+				output.controls.checkbox = true;
+
+				// Switch: reduced motion writes data-motion="reduced".
+				const motionSwitch = [...document.querySelectorAll('[role="switch"]')].find(
+					(element) => {
+						const label = element.id
+							? document.querySelector(`label[for="${element.id}"]`)
+							: null;
+						return label && label.textContent.trim() === "Reduce motion";
+					},
+				);
+				motionSwitch.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-motion") === "reduced",
+					"reduced motion",
+				);
+				motionSwitch.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-motion") === null,
+					"system motion",
+				);
+				output.controls.switch = true;
+
+				// Dialog: open, focus enters the dialog, Escape closes it, and the
+				// trigger gets focus back.
+				const about = textButton("About");
+				about.focus();
+				about.click();
+				const dialog = await waitFor(
+					() => document.querySelector('[role="dialog"]'),
+					"the About dialog",
+				);
+				await frame();
+				output.focus.dialogTrapped = dialog.contains(document.activeElement);
+				press(document, "Escape");
+				await waitFor(
+					() => !document.querySelector('[role="dialog"]'),
+					"the About dialog to close",
+				);
+				await frame();
+				output.focus.dialogRestored = document.activeElement === about;
+				output.controls.dialog = true;
+
+				// Menu: open with the pointer, move with the keyboard, select with
+				// Escape-independent Enter *on the focused item* - Radix handles a
+				// selection from the item, not the container, and selecting the
+				// Print item is what raises the toast the leg below consumes.
+				const more = textButton("More");
+				pointerClick(more);
+				const menu = await waitFor(
+					() => document.querySelector('[role="menu"]'),
+					"the More menu",
+				);
+				await frame();
+				const focussedItem = await waitFor(
+					() => menu.querySelector('[role="menuitem"]:focus, [role="menuitemradio"]:focus, [role="menuitemcheckbox"]:focus') ??
+						menu.querySelector('[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]'),
+					"a focused menu item",
+				);
+				press(focussedItem, "ArrowDown");
+				press(focussedItem, "Enter");
+				await waitFor(
+					() => !document.querySelector('[role="menu"]'),
+					"the More menu to close after selection",
+				);
+				output.controls.menu = true;
+
+				// Toast: the menu's Print item raised one; dismiss it through the
+				// control the component renders, not by clearing React state.
+				const toast = await waitFor(
+					() => document.querySelector(".wk-Toast_root"),
+					"the Print toast",
+				);
+				output.controls.toast = toast.textContent.includes("Print is a host action");
+				const dismiss = toast.querySelector('button[aria-label="Dismiss"]');
+				dismiss.click();
+				await waitFor(
+					() => !document.querySelector(".wk-Toast_root"),
+					"the toast to dismiss",
+				);
+
+				// Menu Escape, separately, because select-on-Enter and
+				// close-on-Escape are different Radix paths.
+				pointerClick(more);
+				await waitFor(() => document.querySelector('[role="menu"]'), "the menu again");
+				press(document, "Escape");
+				await waitFor(
+					() => !document.querySelector('[role="menu"]'),
+					"the menu to close on Escape",
+				);
+
+				// Tooltip: focus is the keyboard path; the provider's delay is
+				// 250 ms, so wait rather than sampling immediately.
+				const zoom = document.querySelector('button[aria-label="Zoom in"]');
+				zoom.focus();
+				const tooltip = await waitFor(
+					() => document.querySelector('[role="tooltip"]'),
+					"the Zoom in tooltip",
+					2_000,
+				);
+				output.controls.tooltip = tooltip.textContent.includes("Zoom in");
+				zoom.blur();
+
+				// Tabs: click Document, then use the arrow key on View to prove
+				// Radix's roving focus selects rather than merely moves focus.
+				const tabs = [...document.querySelectorAll('[role="tab"]')];
+				const viewTab = tabs.find((tab) => tab.textContent.trim() === "View");
+				const documentTab = tabs.find((tab) => tab.textContent.trim() === "Document");
+				pointerClick(documentTab);
+				await waitFor(
+					() => documentTab.getAttribute("aria-selected") === "true",
+					"the Document tab",
+				);
+				viewTab.focus();
+				press(viewTab, "ArrowRight");
+				await waitFor(
+					() => documentTab.getAttribute("aria-selected") === "true",
+					"arrow-key tab selection",
+				);
+				pointerClick(viewTab);
+				await waitFor(
+					() => viewTab.getAttribute("aria-selected") === "true",
+					"the View tab",
+				);
+				output.controls.tabs = true;
+
+				// Select: the portalled listbox and a real option choice. The
+				// status bar is the proof that the UI.02 controller relaid out.
+				const select = document.querySelector('button[role="combobox"]');
+				pointerClick(select);
+				const listbox = await waitFor(
+					() => document.querySelector('[role="listbox"]'),
+					"the fit-mode listbox",
+				);
+				const fitWidth = [...listbox.querySelectorAll('[role="option"]')].find(
+					(option) => option.textContent.trim() === "Fit width",
+				);
+				// A plain synthetic click is the activation the Radix select item's
+				// handlers accept: its pointer handlers reset the selection flow
+				// when a fake pointer sequence lands on the item, while a click
+				// alone commits the value and closes the listbox.
+				fitWidth.click();
+				await waitFor(
+					() => select.getAttribute("aria-expanded") === "false",
+					"the fit-mode listbox to close",
+				);
+				await waitFor(
+					() => status().includes("Fit width"),
+					"the fit-mode status",
+				);
+				output.controls.select = true;
+
+				// Themes and accessibility. Light and high-contrast are both
+				// recorded; dark is the middle state. High contrast is scanned in
+				// the light theme, which is the mode UI.10's 7:1 gate names.
+				await sleep(100);
+				await scan("light");
+
+				const themeButton = textButton("Dark theme");
+				themeButton.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-theme") === "dark",
+					"the dark theme",
+				);
+				await sleep(100);
+				await scan("dark");
+				textButton("Light theme").click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-theme") === "light",
+					"the light theme",
+				);
+
+				// `highContrast` is still checked from the checkbox leg, and the
+				// element is re-found here: the tabs leg remounted the View
+				// panel, so the node captured for the checkbox leg is detached.
+				await sleep(100);
+				await scan("high-contrast");
+				checkboxFor("High contrast").click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-contrast") === null,
+					"normal contrast",
+				);
+
+				// Compact density is a token preference, not a component class:
+				// the control height should change with the attribute.
+				const compact = checkboxFor("Compact density");
+				const beforeHeight = getComputedStyle(
+					document.querySelector('button[aria-label="Next page"]'),
+				).height;
+				compact.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-density") === "compact",
+					"compact density",
+				);
+				await frame();
+				const afterHeight = getComputedStyle(
+					document.querySelector('button[aria-label="Next page"]'),
+				).height;
+				output.densityChanged = beforeHeight !== afterHeight;
+				compact.click();
+				await waitFor(
+					() => document.documentElement.getAttribute("data-density") === null,
+					"comfortable density",
+				);
+
+				report();
+			}
+
+			main().catch(fail);
+		</script>
+	</body>
+</html>

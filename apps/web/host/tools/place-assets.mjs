@@ -9,15 +9,18 @@
  *   2. The viewer. `@selis/ui` was imported zero times across the host, so the
  *      shipped UI (UI.02-UI.05) was unreachable from any host.
  *
- * ## Why this is a COPY and not a bundle
+ * ## Why the app is copied and only the vendor closure is bundled
  *
- * The obvious move is a bundler, and the absence of one looked like the real
- * blocker. It is not. Every shipped `.js` under `apps/ui/dist` and
- * `packages/ui-kit/dist` is already valid browser ESM (`tsc` emits
- * `module: ESNext`), and the ONLY bare specifier in the whole closure is
- * `import { VERSION } from "@selis/ui-kit"` in `apps/ui/dist/index.js`.
- * `@selis/ui-kit` is a workspace package whose own dist has no bare imports,
- * so mapping it to `/assets/ui-kit/` is a rename, not a resolution.
+ * Every app-owned `.js` under `apps/ui/dist` and `packages/ui-kit/dist` is
+ * already valid browser ESM (`tsc` emits `module: ESNext`). The workspace
+ * specifier `@selis/ui-kit` is a rename to `/assets/ui-kit/`.
+ *
+ * Stage 3 (UI.14) adds React and `@wertkit/ui`. Those cannot be served as bare
+ * ESM: React/ReactDOM are CommonJS and Radix imports its siblings by package
+ * name. `apps/ui/tools/build-vendor.mjs` therefore emits one closed, audited
+ * `vendor.js`; this walk rewrites exactly `react`, `react/jsx-runtime`,
+ * `react-dom/client` and `@wertkit/ui` to it and continues to reject any other
+ * bare specifier. App chrome modules remain reviewable `tsc` output.
  *
  * So the page is served as the same bundle-free, same-origin tree the service
  * worker already is. That is not a compromise - it is the rule ADR-P0016 and
@@ -84,9 +87,13 @@ const workspaceRoot = resolve(pkgRoot, "../../..");
  * comment already describes `/assets/` as "the built UI", so this is the
  * prefix it was written for.
  */
+const UI_DIST = join(workspaceRoot, "apps/ui/dist");
+const UI_KIT_DIST = join(workspaceRoot, "packages/ui-kit/dist");
 const ESM_ROOTS = [
-	{ from: join(workspaceRoot, "apps/ui/dist"), to: "assets/ui" },
-	{ from: join(workspaceRoot, "packages/ui-kit/dist"), to: "assets/ui-kit" },
+	// Two entries, one root: the DOM-free viewer barrel and the React chrome.
+	// Both share `seen`, so a module reachable from both is copied once.
+	{ from: UI_DIST, to: "assets/ui", entries: ["index.js", "chrome/index.js"] },
+	{ from: UI_KIT_DIST, to: "assets/ui-kit" },
 	// The web host's OWN modules, for the same reason and under the same prefix:
 	// `print.js` and `print-pdf.js` are the print path's decision and assembly
 	// layers (UI.08), and `boot.js` imports them exactly as it imports the viewer
@@ -166,8 +173,10 @@ function localImports(source) {
 		const specifier = match[1];
 		if (specifier.startsWith("./") || specifier.startsWith("../")) {
 			found.push(specifier);
-		} else if (specifier === "@selis/ui-kit") {
-			// The one bare specifier in the shipped UI. See the header.
+		} else if (specifier === "@selis/ui-kit" || VENDOR_SPECIFIERS.has(specifier)) {
+			// Workspace and vendored specifiers are declared in SPECIFIER_MAP.
+			// `@selis/ui-kit` is walked into its own root; the vendor names all
+			// resolve to the one explicit bundle copy.
 			found.push(specifier);
 		} else if (!specifier.startsWith(".")) {
 			console.error(
@@ -195,8 +204,21 @@ function localImports(source) {
  * bare specifier shipped would be the worst outcome, so the count is reported
  * rather than assumed.
  */
+const VENDOR_SPECIFIERS = new Set([
+	"react",
+	"react/jsx-runtime",
+	"react-dom/client",
+	"@wertkit/ui",
+]);
+
 const SPECIFIER_MAP = {
 	"@selis/ui-kit": "assets/ui-kit/index.js",
+	// One closed file serves all four names. It is copied explicitly below,
+	// not walked: the bundle has no imports of its own.
+	react: "assets/ui/vendor/vendor.js",
+	"react/jsx-runtime": "assets/ui/vendor/vendor.js",
+	"react-dom/client": "assets/ui/vendor/vendor.js",
+	"@wertkit/ui": "assets/ui/vendor/vendor.js",
 };
 
 /**
@@ -236,15 +258,18 @@ function place(from, to) {
 	// silently is not.
 	const servedDir = dirname(served);
 	for (const [bare, target] of Object.entries(SPECIFIER_MAP)) {
-		// Match the bare specifier only as a whole quoted module specifier, so
-		// a mention in prose or a longer name (`@selis/ui-kit-extra`) is not
-		// rewritten by accident.
-		const pattern = new RegExp(`(["'])${bare.replace("/", "\\/")}\\1`, "g");
-		rewritten = rewritten.replace(pattern, (_match, quote) => {
+		// Match a whole quoted module specifier only, and only after `from`.
+		// A mention in prose, an object key, or a longer name
+		// (`@selis/ui-kit-extra`) is therefore not rewritten. The previous
+		// version matched any quoted occurrence, which could corrupt a
+		// translation string that happened to read "react".
+		const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const pattern = new RegExp(`(\\bfrom\\s*)(["'])${escaped}\\2`, "g");
+		rewritten = rewritten.replace(pattern, (_match, lead, quote) => {
 			count++;
 			const relativeTarget = relative(servedDir, target).split("\\").join("/");
 			const specifier = relativeTarget.startsWith(".") ? relativeTarget : `./${relativeTarget}`;
-			return `${quote}${specifier}${quote}`;
+			return `${lead}${quote}${specifier}${quote}`;
 		});
 	}
 
@@ -262,11 +287,6 @@ function place(from, to) {
 const modules = [];
 /** How many bare specifiers were rewritten across the whole closure. */
 let rewrites = 0;
-// Derived from ESM_ROOTS rather than hardcoded, so changing a prefix above
-// cannot leave this pointing at a root that no longer exists (which silently
-// degrades to "no bare specifier found" instead of failing).
-const kit = ESM_ROOTS.find((r) => r.from === join(workspaceRoot, "packages/ui-kit/dist"));
-
 for (const root of ESM_ROOTS) {
 	if (!existsSync(root.from)) {
 		console.error(
@@ -275,13 +295,15 @@ for (const root of ESM_ROOTS) {
 		);
 		process.exit(1);
 	}
-	const entry = join(root.from, root.entry ?? "index.js");
-	if (!existsSync(entry)) {
-		console.error(
-			`place-assets: no ${root.entry ?? "index.js"} in ${relative(workspaceRoot, root.from)} - run ` +
-				"`tsc -p tsconfig.json` there first.",
-		);
-		process.exit(1);
+	const entries = root.entries ?? [root.entry ?? "index.js"];
+	for (const entryName of entries) {
+		if (!existsSync(join(root.from, entryName))) {
+			console.error(
+				`place-assets: no ${entryName} in ${relative(workspaceRoot, root.from)} - run ` +
+					"`tsc -p tsconfig.json` there first.",
+			);
+			process.exit(1);
+		}
 	}
 
 	// The walk follows IMPORTS from the entry, so a file nothing imports cannot
@@ -297,7 +319,10 @@ for (const root of ESM_ROOTS) {
 	//    a file in another package: `@selis/ui-kit` lives outside this root, so
 	//    the name came out as `../../../packages/ui-kit/dist/index.js` and the
 	//    copies escaped `public/` entirely (see `place`).
-	const queue = [{ from: entry, served: "index.js" }];
+	const queue = entries.map((entryName) => ({
+		from: join(root.from, entryName),
+		served: entryName,
+	}));
 	const seen = new Set();
 	while (queue.length > 0) {
 		const { from, served } = queue.pop();
@@ -322,9 +347,13 @@ for (const root of ESM_ROOTS) {
 		const dir = dirname(from);
 		for (const dependency of localImports(readFileSync(from, "utf8"))) {
 			if (dependency === "@selis/ui-kit") {
-				// The one bare specifier: it maps into the OTHER root, so it is
-				// served under that root's prefix, not this one.
-				queue.push({ from: join(kit.from, "index.js"), served: "index.js" });
+				// Its own ESM_ROOT copies the whole ui-kit dist. Queueing it
+				// here would serve its files under the UI prefix and let its
+				// relative imports escape `public/`.
+				continue;
+			} else if (VENDOR_SPECIFIERS.has(dependency)) {
+				// Copied explicitly below; it is not part of the app walk.
+				continue;
 			} else {
 				const target = resolve(dir, dependency);
 				queue.push({ from: target, served: relative(root.from, target) });
@@ -332,6 +361,66 @@ for (const root of ESM_ROOTS) {
 		}
 	}
 }
+
+// ── CSS and the closed vendor bundle ──────────────────────────────────────
+//
+// These are not reachable by the ESM walk: CSS is linked by the page, and the
+// vendor bundle is reached only through the four rewritten bare specifiers.
+// Copying them explicitly keeps the served path reviewable. `base.css` is
+// listed because UI.02's tile class names live there; the stage 3 proposal's
+// five-sheet list omitted it and would have shipped unstyled page boxes.
+const ASSET_COPIES = [
+	{
+		from: join(UI_DIST, "vendor/vendor.js"),
+		to: "assets/ui/vendor/vendor.js",
+	},
+	{
+		from: join(UI_DIST, "vendor/wertkit.css"),
+		to: "assets/ui/vendor/wertkit.css",
+	},
+	{
+		from: join(workspaceRoot, "packages/ui-kit/css/tokens.css"),
+		to: "assets/ui-kit/css/tokens.css",
+	},
+	{
+		from: join(workspaceRoot, "packages/ui-kit/css/base.css"),
+		to: "assets/ui-kit/css/base.css",
+	},
+	{
+		from: join(workspaceRoot, "packages/ui-kit/css/wertkit-bridge.css"),
+		to: "assets/ui-kit/css/wertkit-bridge.css",
+	},
+	{
+		from: join(workspaceRoot, "apps/ui/src/viewer/page-list.css"),
+		to: "assets/ui/css/page-list.css",
+	},
+	{
+		from: join(workspaceRoot, "apps/ui/src/chrome/chrome.css"),
+		to: "assets/ui/css/chrome.css",
+	},
+];
+
+for (const asset of ASSET_COPIES) {
+	if (!existsSync(asset.from)) {
+		console.error(
+			`place-assets: ${relative(workspaceRoot, asset.from)} is missing - build ` +
+				"`@selis/ui` and `@selis/ui-kit` first.",
+		);
+		process.exit(1);
+	}
+	const target = join(publicRoot, asset.to);
+	mkdirSync(dirname(target), { recursive: true });
+	copyFileSync(asset.from, target);
+}
+
+const STYLE_PATHS = [
+	"/assets/ui-kit/css/tokens.css",
+	"/assets/ui-kit/css/base.css",
+	"/assets/ui-kit/css/wertkit-bridge.css",
+	"/assets/ui/vendor/wertkit.css",
+	"/assets/ui/css/page-list.css",
+	"/assets/ui/css/chrome.css",
+];
 
 /**
  * A missing engine is a BUILD FAILURE naming the command that makes it, never
@@ -371,6 +460,9 @@ writeFileSync(
 	`${JSON.stringify(
 		{
 			entry: "/assets/boot.js",
+			chrome: "/assets/ui/chrome/index.js",
+			vendor: "/assets/ui/vendor/vendor.js",
+			styles: STYLE_PATHS,
 			modules: modules.sort(),
 			// Recorded rather than implied: a build where this is 0 while a bare
 			// specifier still shipped would be the failure worth catching.
@@ -385,7 +477,7 @@ writeFileSync(
 );
 
 console.log(
-	`place-assets: copied ${modules.length} modules + the engine ` +
-		`(${engineBytes} B, from ${relative(workspaceRoot, engine)}) into public/, ` +
+	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
+		`and the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) into public/, ` +
 		`rewriting ${rewrites} bare specifier(s)`,
 );
