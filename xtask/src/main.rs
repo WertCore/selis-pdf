@@ -916,7 +916,12 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => {
-            println!("xtask: ok");
+            // STDERR, deliberately: a subcommand's stdout is DATA for callers
+            // that capture it (`IMG=$(cargo xtask oracle image-ref pdfium)`;
+            // see perf/render-conf in ci.yml). Log lines and failures live on
+            // stderr together, so nothing a human needs is lost and nothing a
+            // `$(...)` captures gains a second line it never asked for.
+            eprintln!("xtask: ok");
             ExitCode::SUCCESS
         }
         Err(msg) => {
