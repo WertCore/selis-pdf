@@ -24,6 +24,15 @@
  * reader who clicked the icon actually came for, which includes a route that
  * works with no permission at all.
  *
+ * ## And since SL-4.UI.06, a path also ends in a document
+ *
+ * Every successful `openDocument` hands the opened document to `#selis-document`
+ * — the element the page carries `hidden` in its markup — composed by the
+ * shared viewer's half in `src/viewer-view.ts`. The words above stay the
+ * reporting channel: a mount that fails is a status line like any other, and an
+ * opened document does not retire the panel's controls on the path where the
+ * panel brought the reader here.
+ *
  * ## Every path ends in words
  *
  * `describeFailure` turns a rejection into a sentence with its registry code
@@ -35,6 +44,7 @@
  */
 
 import type { PlatformAdapter } from "../../ui/src/platform/adapter.js";
+import type { DocHandle } from "../../ui/src/platform/types.js";
 import { type HostEnv, createBrowserHostEnv } from "./ext/host-env.js";
 import {
 	createBrowserViewerSession,
@@ -52,6 +62,7 @@ import {
 } from "./local-files.js";
 import { SRC_PARAM } from "./permissions.js";
 import { TOGGLE_NAME, type ViewerMessageKey, viewerText } from "./viewer-strings.js";
+import { mountViewerView } from "./viewer-view.js";
 
 /** Why a viewer session has no document, for the SL-4.UI.12 error state.
  *
@@ -75,6 +86,9 @@ export class ViewerSourceError extends Error {
 /** The element ids `viewer.html` declares and this module drives. */
 const IDS = {
 	status: "selis-status",
+	// SL-4.UI.06: the document view's mount, the one element the shared viewer
+	// is composed into.
+	document: "selis-document",
 	local: "selis-local",
 	localHeading: "selis-local-heading",
 	localState: "selis-local-state",
@@ -219,6 +233,53 @@ function report(container: HTMLElement, message: string): void {
 	}
 }
 
+/**
+ * The document view on the page, if one is.
+ *
+ * Module-scoped because the page is (one `bootViewer` per load), and disposal
+ * matters because the local flow can open *twice* — a first document, then a
+ * second chosen from the very same panel. Replacing the composition without
+ * releasing the previous one would leak its observers and subscriptions
+ * against a page they can no longer repaint.
+ */
+let activeView: { dispose(): void } | null = null;
+
+/**
+ * Reveal the mount element and put a viewer view in it.
+ *
+ * Called after `openDocument` succeeds, so it can assume a document the
+ * adapters can serve. A composition failure is reported here, by the
+ * boot's own vocabulary, rather than left for the reader to discover as
+ * a page that fetched a document and shows none.
+ */
+function presentDocument(container: HTMLElement, adapter: PlatformAdapter, doc: DocHandle): void {
+	const mount = container.querySelector<HTMLElement>(`#${IDS.document}`);
+	if (mount === null) {
+		return;
+	}
+	mount.hidden = false;
+	activeView?.dispose();
+	try {
+		activeView = mountViewerView({
+			adapter,
+			doc,
+			container: mount,
+			onError: (failure) => {
+				report(
+					container,
+					viewerText("viewer.status.failure", { reason: describeFailure(failure).message }),
+				);
+			},
+		});
+	} catch (error) {
+		activeView = null;
+		report(
+			container,
+			viewerText("viewer.status.failure", { reason: describeFailure(error).message }),
+		);
+	}
+}
+
 /** Fill every `data-i18n` key the page's skeleton declares. */
 function fill(root: Element): void {
 	// The cast is a boundary, not a shortcut: `viewer-page.test.ts` reads the
@@ -311,6 +372,7 @@ async function openChosenFile(deps: ViewerDeps, container: HTMLElement): Promise
 			return;
 		}
 		const { doc } = await openDocument(adapter, descriptor);
+		presentDocument(container, adapter, doc);
 		// `sourceName` is the one place that knows which descriptor members carry a
 		// name; re-deriving it here would be a second answer to the same question
 		// and would have to be kept in step.
@@ -424,6 +486,7 @@ async function openDocumentAt(
 			bytes,
 			name: fileNameFromUrl(url),
 		});
+		presentDocument(container, adapter, doc);
 		report(
 			container,
 			viewerText("viewer.status.opened", { name: fileNameFromUrl(url), pages: doc.pageCount }),

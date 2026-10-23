@@ -144,12 +144,13 @@ export interface PackageEntry {
  *   drift. Pure and DOM-free, so it is exactly the kind of module the seam is
  *   for.
  *
- * Nothing else from `apps/ui` ships, and that is a decision rather than an
- * oversight. The rest of the UI is either type-only (erased at compile, so
- * costing nothing) or belongs to a viewer this package does not contain yet —
- * the virtualised page list and its stylesheet are UI.04+'s to mount, and
- * shipping them now would put a half-built viewer in a package that
- * SL-4.EXT.05 has to fit a size budget.
+ * Everything else is a row decision made on the budget it costs. The
+ * SL-4.UI.06 half began to mount the shared viewer, so the page list,
+ * navigation, compositor and their arithmetic are shipped from `apps/ui`
+ * verbatim below (see the block comment there); the parts this viewer still
+ * does not reach — the search panel, the thumbnail rail — stay out rather
+ * than shipping half-built, which is what reads as a decision here rather
+ * than an oversight.
  *
  * ### One row ships more than the extension uses
  *
@@ -186,9 +187,12 @@ export interface PackageEntry {
  * `size-budget.ts` fails the build if one of them appears in the package, so
  * "we did not ship it" is a checked fact rather than a claim in a comment.
  *
- * The stylesheets are `@selis/ui-kit`'s, copied verbatim (`shared-asset`): the
- * same no-bundler reason, so a shell links them, and `tokens.css` is generated
- * so it is never hand-edited (UI.14). No font is fetched — the stacks are
+ * The stylesheets are copied verbatim (`shared-asset`): the
+ * same no-bundler reason, so a shell links them — `@selis/ui-kit`'s pair of
+ * generated token and base sheets, and, since the UI.06 half also draws pages
+ * and an outline, the shared `ui/src/viewer/page-list.css` and
+ * `navigation.css`. `tokens.css` is generated so it is never hand-edited
+ * (UI.14). No font is fetched — the stacks are
  * `system-ui` and friends, which is also why the CJK payload is a post-install
  * download (EXT.05).
  */
@@ -217,7 +221,8 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "extension/src/viewer-boot.js", from: "build" },
 	// SL-4.EXT.09: the `file://` flow's decisions (no browser in them) and the
 	// viewer's string catalogue (registered against the shared `apps/ui` i18n
-	// runtime, which is what the two rows at the bottom of this list are for).
+	// runtime, which is what the shared i18n rows further down this list are
+	// for).
 	{ out: "extension/src/local-files.js", from: "build" },
 	{ out: "extension/src/viewer-strings.js", from: "build" },
 	// SL-4.EXT.07: the options page's entry, its state, and its strings. The
@@ -258,6 +263,32 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	// second one that would drift. It is pure and DOM-free, so it costs
 	// nothing to ship and nothing to keep honest.
 	{ out: "ui/src/viewer/navigation-wire.js", from: "shared-js" },
+	// SL-4.UI.06: the extension's half mounts the shared viewer, so its
+	// controllers and arithmetic ship from `apps/ui` verbatim — the same
+	// modules the web app runs, at `ui/src/…` because the specifiers this
+	// package's compiled sources write are never rewritten (see
+	// {@link OWN_PACKAGE_PREFIX}). No bundler (ADR-P0021) makes every runtime
+	// import a row here: the controllers pull in `keyboard`, `layout`,
+	// `windowing`, `anchoring`, `outline`, `links`, `page-labels`,
+	// `tile-ladder` and `strings`; `strings.js` at run time imports
+	// `i18n/pseudo-locale.js` (the catalogue's self-test alphabet), which
+	// imports the already-shipped `message.js`/`runtime.js`. The gate fails a
+	// build whose rows miss any of these, and every row is paid for out of
+	// the package budget SL-4.EXT.05 guards.
+	{ out: "extension/src/viewer-view.js", from: "build" },
+	{ out: "ui/src/viewer/layout.js", from: "shared-js" },
+	{ out: "ui/src/viewer/windowing.js", from: "shared-js" },
+	{ out: "ui/src/viewer/anchoring.js", from: "shared-js" },
+	{ out: "ui/src/viewer/keyboard.js", from: "shared-js" },
+	{ out: "ui/src/viewer/strings.js", from: "shared-js" },
+	{ out: "ui/src/viewer/tile-ladder.js", from: "shared-js" },
+	{ out: "ui/src/viewer/page-list.js", from: "shared-js" },
+	{ out: "ui/src/viewer/compositor.js", from: "shared-js" },
+	{ out: "ui/src/viewer/navigation.js", from: "shared-js" },
+	{ out: "ui/src/viewer/outline.js", from: "shared-js" },
+	{ out: "ui/src/viewer/links.js", from: "shared-js" },
+	{ out: "ui/src/viewer/page-labels.js", from: "shared-js" },
+	{ out: "ui/src/i18n/pseudo-locale.js", from: "shared-js" },
 	// SL-4.EXT.09: SL-4.UI.11's i18n runtime, shipped because the viewer page's
 	// strings are registered against it rather than against a third hand-rolled
 	// formatter. `apps/ui/src/i18n/i18n-boundary.test.ts` is the gate that keeps
@@ -281,6 +312,21 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 		out: "ui-kit/css/base.css",
 		from: "shared-asset",
 		source: "../../packages/ui-kit/css/base.css",
+	},
+	// SL-4.UI.06: the two viewer stylesheets the page links, copied verbatim
+	// like the ui-kit rows — ADR-P0021 rules out the bundler that would inline
+	// them, so the markup references them by path and each byte is the
+	// package budget's. `source` is resolved from this package's root, so
+	// `../ui/…` reaches the shared sources.
+	{
+		out: "ui/src/viewer/page-list.css",
+		from: "shared-asset",
+		source: "../ui/src/viewer/page-list.css",
+	},
+	{
+		out: "ui/src/viewer/navigation.css",
+		from: "shared-asset",
+		source: "../ui/src/viewer/navigation.css",
 	},
 ];
 

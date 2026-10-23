@@ -1,4 +1,4 @@
-/* Selis viewer page (SL-4.EXT.09) — layout for the local-file panel only.
+/* Selis viewer page (SL-4.EXT.09 + SL-4.UI.06) — this page's own layout.
  *
  * `ui-kit/css/base.css` is the sanctioned consumer of the token file and this
  * sheet consumes the same tokens; it may not define a value the tokens define,
@@ -9,10 +9,11 @@
  * to nothing.
  *
  * It is a `root` row in `PACKAGE_ENTRIES` rather than a `shared-asset` because it
- * is this package's own layout, exactly as `options.css` is. It is not a second
- * copy of `options.css`: the panel is the only styled surface in this page, so
- * this sheet is the token-consuming rules for one form and its status lines, and
- * the two sheets share a design language rather than a file.
+ * is this package's own layout, exactly as `options.css` is. It styles the page's
+ * own arrangement — the local-file panel below, and, since the UI.06 half
+ * mounted the shared viewer, the stage the page list and outline panel sit in.
+ * The components themselves are styled by the shared sheets
+ * (`ui/src/viewer/page-list.css`, `navigation.css`); this sheet only places them.
  *
  * Class names stay under the `selis-` namespace, as UI.10 requires of the kit.
  */
@@ -122,4 +123,88 @@
 	background: var(--selis-color-bg);
 	color: var(--selis-color-fg);
 	font: inherit;
+}
+
+/*
+ * SL-4.UI.06: the mounted document view.
+ *
+ * `viewer-boot.ts` reveals the element the page carries for it
+ * (`#selis-document`, below the status line), and `src/viewer-view.ts` replaces
+ * its content with the outline panel and the page stage. The `[hidden]` guard
+ * is the same one `.selis-viewer__local` has — the class sets a `display`, so
+ * hiding has to defeat it — and it applies before the boot ever touches the
+ * element: an unrevealed document area must contribute nothing to the page.
+ */
+.selis-viewer__mount[hidden] {
+	display: none;
+}
+
+.selis-viewer__mount {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	/* An overflowing region inside a flex column has to be allowed to shrink to
+	 * its box rather than push the page out; this is what makes that true. */
+	min-height: 0;
+}
+
+/* The outline in the column layout: a capped panel above the stage, so a long
+ * outline scrolls inside the panel rather than extending the page past the
+ * document. */
+.selis-viewer__mount .selis-navigation {
+	max-height: 50vh;
+}
+
+/* The stage: a positioned box the canvas paints and the scroll region covers.
+ * The canvas inside it is `page-list.css`'s absolute `100%` child, so the stage
+ * is what it resolves against; the scroller is the transparent layer the reader
+ * scrolls and clicks. One viewport tall — the document is this page's main
+ * event, and it is the scroller that scrolls, not the page. */
+.selis-viewer__stage {
+	position: relative;
+	height: 100vh;
+}
+
+.selis-viewer__scroller {
+	position: absolute;
+	inset: 0;
+	overflow: auto;
+}
+
+/* The stage region is the document area's tab stop. The ring is how a keyboard
+ * reader finds it, on `:focus-visible` so a pointer reader is not shown a
+ * border they did not earn; the offset keeps it inside the box so it cannot
+ * shift the layout it announces. */
+.selis-viewer__scroller:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: calc(-1 * var(--selis-border-thick));
+}
+
+/* The outline panel's explanatory lines. The controller tells the reader when
+ * the document has no outline, when the panel could not read it, and when the
+ * row cap stopped the list; they render as prose on purpose, not as a second
+ * heading level. */
+.selis-viewer__notes {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-2);
+}
+
+.selis-viewer__note {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-sm);
+}
+
+/* The subtrees the mount nests (`ol` inside the parent's `li`, the hierarchy a
+ * screen reader navigates). The browser's list marker and default padding are
+ * its own, not the outline's, so this resets them and states the one visual
+ * rule instead: one step per level, in em of the text, so it tracks the
+ * reader's font size — the same carrier `navigation.css` names with
+ * `--row-indent`, applied to the subtree because the rows keep one box. */
+.selis-outline__subtree {
+	margin: 0;
+	padding: 0;
+	padding-inline-start: 1em;
+	list-style: none;
 }

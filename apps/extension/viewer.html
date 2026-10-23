@@ -23,6 +23,16 @@
 		<link rel="stylesheet" href="./ui-kit/css/tokens.css" />
 		<link rel="stylesheet" href="./ui-kit/css/base.css" />
 		<link rel="stylesheet" href="./viewer.css" />
+		<!--
+			SL-4.UI.06: the shared viewer's two stylesheets, copied in under the
+			same rules as the rows above. `pack.mjs` places them at
+			`ui/src/viewer/…` (they are `shared-asset` rows in
+			`src/bundle-paths.ts`), so these same-origin references resolve
+			inside the package and the bundled-only gate checks them like any
+			other fetch.
+		-->
+		<link rel="stylesheet" href="./ui/src/viewer/page-list.css" />
+		<link rel="stylesheet" href="./ui/src/viewer/navigation.css" />
 		<script type="module" src="./extension/src/viewer-boot.js"></script>
 	</head>
 	<body class="selis-root">
@@ -37,10 +47,12 @@
 				   at boot, against the shared `apps/ui` i18n runtime, so a rename
 				   of anything on this page is a catalogue change rather than an
 				   edit to a shipped file.
-				2. **Same-extension-origin references only.** The three stylesheets
-				   are @selis/ui-kit's two and this package's own `viewer.css`,
-				   copied in rather than linked from a CDN (ADR-P0028 — a CDN
-				   would be remote code), and no inline script.
+				2. **Same-extension-origin references only.** The five stylesheets
+				   are @selis/ui-kit's two, this package's own `viewer.css`, and
+				   the shared viewer's two (`ui/src/viewer/page-list.css` and
+				   `navigation.css`), all copied in rather than linked from a CDN
+				   (ADR-P0028 — a CDN would be remote code), and no inline
+				   script.
 
 				The panel is the whole of the `file://` flow and it is `hidden` in
 				the markup: a web PDF arriving from the DNR redirect must not also
@@ -49,6 +61,16 @@
 				source or on no source at all.
 			-->
 			<p id="selis-status" class="selis-viewer__status" role="status" aria-live="polite"></p>
+
+			<!--
+				SL-4.UI.06: the mounted document view. Empty and `hidden` in the
+				markup — `viewer-boot.ts` reveals it once a document is open,
+				and `src/viewer-view.ts` replaces its content with the outline
+				panel and the page stage. Nothing of the viewer is spelled out
+				here: the controllers speak their catalogues, and the mount
+				builds the DOM from their published states.
+			-->
+			<div id="selis-document" class="selis-viewer__mount" hidden></div>
 
 			<section
 				id="selis-local"
