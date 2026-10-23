@@ -177,7 +177,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     ships yet; the WASM.01 Worker protocol exists in `selis-pdf-wasm` (Rust) and maps onto
     `DocumentSourceDescriptor` inside a future transport, not in the UI. `apps/web/host` still owns
     that wiring.
-- [ ] **SL-4.UI.14 — Adopt the WertKit contract; consume `@wertkit/ui` for chrome** ·
+- [x] **SL-4.UI.14 — Adopt the WertKit contract; consume `@wertkit/ui` for chrome** ·
   deps: UI.10 · owner: AI+ · **filed 2026-09-27**
   - **Context:** `WertCore/wertkit` is the org's design system — a token core plus a React
     component layer (Radix behaviour, CSS Modules, zero styling runtime), published on npm as
@@ -226,9 +226,19 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Stage 3 proposal filed (2026-10-22):** the exact React/`@wertkit/ui` pins,
     the ten Radix transitives, the licence/maintenance record, the vendor-only
     bundler exception, the `--wk-*` bridge, and the validation plan are in
-    `33-UI14-STAGE3-DEPENDENCY-PROPOSAL.md`. **Approval is pending; no manifest
-    has changed.** If the vendor-bundle exception is refused, stage 3 stays
-    open and the dependencies are not added.
+    `33-UI14-STAGE3-DEPENDENCY-PROPOSAL.md`. **Approved 2026-10-23 and
+    implemented the same day — the stage 3 record below closes it.** If the
+    vendor-bundle exception had been refused, stage 3 would have stayed
+    open and the dependencies would not have been added.
+  - **Stage 3 DONE (2026-10-23, commit 00f861f).** Implemented as proposed:
+    `apps/ui` gains `react`/`react-dom` and consumes `@wertkit/ui@0.1.8` for
+    the ten chrome components (AppShell, Button, Dialog, DropdownMenu, Tooltip,
+    Tabs, Select, Checkbox, Switch, Toast) — every pin **exact**, no `^`; the
+    vendor-only bundler exception carries the Radix transitives. DoD evidence:
+    browser-check `--strict` 4/4, the `xtask` suite 172/172, `apps/ui` 671/671,
+    the high-contrast theme still passes its 7:1 gate, and the UI.02 60 fps
+    budget is untouched (the compositor bench still measures the same
+    off-React `OffscreenCanvas` path; no reconciler is reachable from it).
   - **Deferred, not open:** wertkit is first-party — the repo's own author maintains it — so its
     licence and provenance are settled and need no gate here. The remaining pre-release item is
     a dependency **audit** (npm licence allow-list, `unmaintained` check, a `cargo vet`
