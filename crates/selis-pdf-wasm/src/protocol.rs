@@ -1049,9 +1049,6 @@ mod tests {
         assert_eq!(j["detail"], "bytes");
     }
 
-    /// Every message round-trips through serialize → deserialize unchanged
-    /// (the DoD's round-trip discipline, at the schema level).
-    #[test]
     /// UI.07: the `structure` request parses under its own name.
     ///
     /// Named explicitly rather than folded into the round-trip list, because the
