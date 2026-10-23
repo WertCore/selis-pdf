@@ -326,6 +326,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          target: wasm32-unknown-unknown
           cache: true
       - uses: actions/setup-node@v4
         with:
@@ -337,6 +338,13 @@ jobs:
         # committed lockfile declares, so a dependency edit without its lockfile
         # edit fails here and not later.
         run: pnpm install --frozen-lockfile
+      # `place-assets` refuses to segment the app without an engine — a placed
+      # tree that cannot open a PDF is a broken app, and must fail here rather
+      # than at browser-click time. The RAW release artifact is enough for the
+      # checks; the optimised one is size-check's business.
+      - name: Build the wasm engine the app ships
+        run: cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+        timeout-minutes: 10
       - name: Build the app the checks drive
         # The `app-shell` check drives apps/web/host's OWN service worker, and
         # the `chrome` check imports the built React chrome plus the ui-kit
