@@ -70,5 +70,6 @@ assets/payload/fallback/*.ttf.br
 # this rule (SL-0.LEGAL.04): artefacts are built and manifested, not committed.
 apps/web/host/public/assets/ui/
 apps/web/host/public/assets/ui-kit/
+apps/web/host/public/assets/host/page.js
 apps/web/host/public/wasm/
 apps/web/host/public/app-manifest.json
