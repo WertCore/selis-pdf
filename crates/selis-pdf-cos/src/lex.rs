@@ -274,7 +274,7 @@ impl<'a> Lexer<'a> {
         const KEYWORD: &[u8] = b"endstream";
         while self.pos < self.src.len() {
             g.tick()?;
-            let rest = &self.src[self.pos..];
+            let rest = self.src.get(self.pos..).unwrap_or(&[]);
             if rest.starts_with(KEYWORD) {
                 // Preceded by EOL, or at offset 0 (a body that is its own
                 // first byte cannot be preceded by anything).
@@ -739,11 +739,13 @@ pub fn tokenise(src: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<Token>> {
 
 #[cfg(test)]
 mod tests {
-    // Test vectors are fixed and known-length; indexing them is deliberate.
+    // Test vectors are fixed and known-length; indexing them is deliberate,
+    // and the lexer's positions are u64 that index vectors this small.
     #![allow(
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
     )]
 
     use super::*;
