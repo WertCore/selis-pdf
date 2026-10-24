@@ -556,9 +556,11 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       panels to inspect.
     - **The blocker above has since moved (2026-10-23).** The extension half has since landed
       its panels - see the 2026-10-23 records in the extension block below - so that paragraph
-      is history. What keeps this task's box open is now the extension's own browser-check leg:
-      the prompt has no on-page trigger yet (no canvas click overlay) and no manual pass has
-      been run on that host.
+      is history. What kept this task's box open was then the extension's own browser-check leg:
+      the prompt has no on-page trigger yet (no canvas click overlay) and no manual pass had
+      been run on that host. *(2026-10-24: the browser leg has since run - see the records
+      below. The remaining gaps are the canvas click overlay, the page-list key map and the
+      thumbnail rail.)*
     - **The type now carries the three qualifiers (2026-10-22).** `NavigationPort.outline`
       returns `OutlineReport` (`present`, `truncated`, `pruned`, `items`) rather than a bare
       list. The extension forwards the host's flags instead of dropping them at the page seam,
@@ -661,6 +663,49 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       imported at run time by `strings.js`) and the two viewer stylesheets; `REUSE.md` records
       why each row is there. Same-source non-bundling is still what makes a stranded row
       impossible: the gate fails a build whose rows miss anything the sources import.
+    - **The extension's browser-check leg ran (2026-10-24).** `cargo xtask browser-check` now
+      has a fifth check, `extension`, and it passes on a real Edge. It stages the **packed**
+      extension as an unpacked one — a fixed manifest `key` giving id
+      `ppekgfikbjkfgckpcjibplnhhaaonaem`, `host_permissions: ["http://127.0.0.1/*"]`,
+      `viewer.html` as a web-accessible resource, and `options_page` removed (EXT.07's welcome
+      opens it on install and takes the foreground; a background viewer does not paint on
+      animation frames). A command-line navigation straight to the extension URL is refused
+      with `ERR_BLOCKED_BY_CLIENT`; a loopback launcher navigates there after 500 ms, and the
+      committed probe reports from inside the shipped page. The claims are measured: two
+      outline rows carrying the document's titles and page labels, two page tiles, a live
+      region, and a press on the second bookmark that changes five witnesses — both live
+      announcements, the current row, the current tile, `scrollTop`, and a sampled hash of
+      the canvas pixels. Measured: compose 278 ms, whole run 492 ms; the canvas hash moves
+      `c68900ff` -> `8d0e51f4`, with 278 of 3,106 sampled pixels inked.
+    - **Five real-browser defects, fixed.** (1) `chrome.runtime.connect` takes `{ name }`, and
+      Chrome's `Port` exposes `onMessage`/`onDisconnect` as events; `hostPortOf` adapts the
+      real shape once. (2) `createPortLink` is direction-aware — viewer replies, offscreen
+      host requests — because the host half run through the reply validator dropped every
+      request. (3) `createDocument` resolves when the document exists, not when its module is
+      listening, and `runtime.connect` does not queue; the document announces
+      `ENGINE_HOST_READY` and the service worker answers `ENSURE_ENGINE_HOST` only after it.
+      (4) The engine is a `wasm-bindgen --target web` build and needs four generated imports —
+      the same set as `apps/web/host/public/assets/boot.js`; `engineImports` supplies them and
+      closes the list. (5) `DrawOp.source` is the cached `TileEntry`, not the `RenderedTile`;
+      the main-thread surface read `.format` off the entry, so every op was a placeholder and
+      the canvas stayed blank while the engine was returning ink. The surface unwraps `.tile`,
+      and the test now feeds it a real entry.
+    - **Measured on 2026-10-24, after `wasm-opt -O3`:** 19 extension test files, **403 passed,
+      one skipped**; the package is **53 files, 3,498,633 raw bytes / 930,096 brotli**, the
+      shell **616,524 of 1,000,000** (61.7%), and the engine **2,882,109 raw / 754,631 brotli
+      of 2,000,000** (37.7%). The older 4.1 MB engine figures came from the wasm-bindgen
+      processed artifact; the rebuilt one is the same `wasm32-unknown-unknown` build
+      `cargo xtask size-check` measures, optimised for real. CI's `browser-check` job now
+      builds the WASM, runs `wasm-opt -O3`, builds the app and builds `apps/extension` before
+      the check, so the package the leg drives is the package the size gate measured.
+    - **What still keeps the box open (2026-10-24).** The browser leg is no longer owed. What
+      remains is the extension's **canvas click overlay** (the prompt is reachable from
+      `pendingExternal` and the tests, but no click on the canvas activates a link), its
+      **page-list key map**, and the **thumbnail rail** (`thumbnails.ts` is not shipped). The
+      prompt's *appearance* is still unjudged: the check proves the panels and the move, not
+      spacing or contrast. The two engine-contract gaps recorded above are unchanged: an
+      out-of-range `renderTile` answers 1301 rather than 6001, and the three-point page-number
+      rule still stops at `pageLinks`.
     - **The UI seam now carries the qualifiers (2026-10-22).** `NavigationPort.outline` returns
       `OutlineReport` — `present`, `truncated`, `pruned`, `items` — so the extension's page side
       forwards them instead of dropping them, and the web shell no longer needs a private copy

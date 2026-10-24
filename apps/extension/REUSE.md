@@ -275,20 +275,66 @@ every hop checks the page itself: the page, the host and the guest. One rule,
 one definition (`outOfRangePage` in `engine-protocol.ts`), three enforcement
 points.
 
+### The extension's own browser check now runs (SL-4.UI.06)
+
+`cargo xtask browser-check` has a fifth check, `extension`, and it passes on a
+real Edge. It is the first gate that measures the **packed extension** rather
+than the sources: `xtask/src/browser.rs` stages `dist/` as an unpacked extension
+(a fixed manifest `key` giving id `ppekgfikbjkfgckpcjibplnhhaaonaem`, a loopback
+`host_permissions` row, `viewer.html` as a web-accessible resource, and
+`options_page` removed), serves a launcher page and a two-page fixture on
+loopback, and injects `xtask/browser/extension/probe.js` into the shipped
+viewer page. A command-line navigation straight to the extension URL is
+refused by the engine with `ERR_BLOCKED_BY_CLIENT`; the launcher navigates
+there instead after 500 ms.
+
+The check asserts the two claims this task exists for. **The panels:** two
+outline rows carrying the document's own titles and `Page N of 2` labels, two
+page tiles, and a live region. **The move:** pressing the second bookmark
+changes five witnesses — both live announcements, the current outline row, the
+current page tile, the scroller's `scrollTop`, and a sampled hash of the canvas
+pixels. Measured on this machine, with the engine built by `wasm-opt -O3`:
+compose 278 ms, whole run 492 ms; the canvas hash moves `c68900ff` ->
+`8d0e51f4`, and 278 of 3,106 sampled pixels are ink. The pixel witness counts
+pixels that differ from the page background because the canvas is created
+`{ alpha: false }`; counting alpha would call a blank white page inked.
+
+**Five real-API defects, all fixed, all invisible in Node:**
+
+1. `chrome.runtime.connect` takes `{ name }`. A bare string is an *extension
+   id*, so the viewer threw `Invalid extension id: 'selis.engine.v1'`. Chrome's
+   `Port` also exposes `onMessage`/`onDisconnect` as events; `hostPortOf`
+   adapts the real shape once instead of teaching every caller two shapes.
+2. `createPortLink` is direction-aware. The viewer receives replies and the
+   offscreen host receives requests; a host half fed through the reply
+   validator silently dropped every request.
+3. `chrome.offscreen.createDocument` resolves when the document exists, not
+   when its module is listening, and `runtime.connect` does not queue. The
+   offscreen document now announces `ENGINE_HOST_READY`, and the service
+   worker answers `ENSURE_ENGINE_HOST` only after it has heard that.
+4. The engine is a `wasm-bindgen --target web` build: instantiating it with
+   `{}` fails on import #0, `__wbindgen_placeholder__`. `engineImports` supplies
+   the four generated shims the artifact declares — the same set as
+   `apps/web/host/public/assets/boot.js` — and the list is closed, so a future
+   wasm-bindgen import fails loudly instead of becoming a missing function.
+5. `DrawOp.source` is the cached `TileEntry`, not the `RenderedTile` inside it.
+   The main-thread surface read `.format` off the entry, so every op became a
+   placeholder and the canvas stayed blank while the engine returned tens of
+   thousands of inked pixels. `worker-surface.ts` documents the real shape; the
+   surface now unwraps `.tile`, and `surface.test.ts` feeds it a real entry.
+
+The package after the panels and these fixes: **53 files, 3,498,633 raw bytes /
+930,096 brotli**; the shell is **616,524 of 1,000,000** (61.7%), and the engine
+**2,882,109 raw / 754,631 brotli of 2,000,000** after `wasm-opt -O3`. The
+extension suite is 19 files, **403 passed, one skipped**.
+
 ### What is still missing on the extension's side
 
-The **port** is there; the **panels** are not. The extension's viewer page
-still mounts no bookmark tree, no thumbnail rail and no link overlay, because
-those are `apps/ui`'s `navigation.ts` and `thumbnails.ts` and the extension
-ships neither (see "What actually ships" above). What this task delivers is
-the capability under them: `adapter.navigation` is defined, answers, and
-refuses honestly. Whether the extension's viewer grows the panels is the
-viewer's own task, and the port is what it will need.
-
-**Updated 2026-10-23 (SL-4.UI.06's extension half):** the bookmark tree, the
-page canvas and the prompt are there now. `src/viewer-view.ts` mounts the real
-`createNavigation` and `createPageList` against this same port, as the row
-table in "What actually ships" records. What still does not come with them:
+The bookmark tree, the page canvas and the prompt are mounted now (SL-4.UI.06's
+extension half): `src/viewer-view.ts` drives the real `createNavigation` and
+`createPageList` against the navigation port, as the row table in "What
+actually ships" records. The browser check above measures that they compose
+and that a bookmark moves the reader. What still does not come with them:
 
 - **A canvas click overlay.** Nothing intercepts a click on the rendered
   canvas, so `controller.activateLink` — and with it the prompt — is reachable
@@ -298,9 +344,10 @@ table in "What actually ships" records. What still does not come with them:
 - **A key map for the page tiles.** Native scrolling moves the pages; the
   mount claims keys only inside the outline tree.
 - **The thumbnail rail.** `thumbnails.ts` is still not shipped.
-- **The extension's own browser-check leg.** Coverage of the mounted view is
-  Node-level only, and the web host's precedent (plan 14, 2026-10-22) is that
-  a browser pass finds what Node cannot.
+- **A visual judgement of the panels.** The browser check measures that they
+  exist and that a bookmark moves the reader; it does not judge spacing,
+  contrast, or the prompt's readability. The prompt's only trigger is still the
+  controller, because the canvas click overlay above is still missing.
 
 ## The gate, and the bug it did not catch
 
@@ -325,10 +372,10 @@ in-package shape still resolves.
   document spawns, and the package now carries `wasm/selis_pdf_wasm.wasm` — a
   ship-list row whose bytes come from the `wasm-opt -O3` output of the same
   `wasm32-unknown-unknown` build `cargo xtask size-check` measures, at a
-  measured 4,135,676 raw / 1,326,454 brotli. The typed "the engine is not in
-  this build" failure EXT.03 reported is no longer reachable from a green
-  build: `pack.mjs` fails when the artefact is absent and the size gate fails on
-  a package that somehow lost it. See `SIZE.md`.
+  measured 2,882,109 raw / 754,631 brotli after `wasm-opt -O3`. The typed "the
+  engine is not in this build" failure EXT.03 reported is no longer reachable
+  from a green build: `pack.mjs` fails when the artefact is absent and the size
+  gate fails on a package that somehow lost it. See `SIZE.md`.
 - **The CJK payload store ships with no producer and no caller**
   (`extension/src/ext/cjk-payload.js`, ~5 KB of dead code). SL-4.EXT.05
   implemented the store half of "an optional post-install download into

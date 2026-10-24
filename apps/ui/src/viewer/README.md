@@ -430,19 +430,22 @@ literal. It is a lint-style unit test, following the idiom
 
 Honest limits, in the spirit of the search section above:
 
-- **The engine has no outline walk and no link reader yet.** `selis-pdf-doc`
-  exports `page_labels` and `parse_destination` but nothing for `/Outlines` or
-  annotations, and the WASM.01 protocol has no op for either. So
-  `PlatformAdapter.navigation` is an **optional** port, and `apps/web/host` and
-  the extension both report it absent today; the viewer then says *"this host
-  cannot read the document's outline"*, which is a different sentence from
-  *"this document has no outline"* and is the truth. Everything above is proven
-  against the mock, which serves the port from a declarative spec.
+- **The extension's page canvas has no click overlay and no page-tile key map.**
+  The extension mounts the shared outline, page list and link prompt, but no
+  click on the rendered page reaches `activateLink`, so the prompt is driven
+  from `NavigationState.pendingExternal` in tests; native scrolling moves the
+  pages, and keys are claimed only inside the outline tree. The web host
+  exposes a page's links as a panel of buttons instead. Both gaps are recorded
+  in `apps/extension/REUSE.md`.
 - **A mid-page `/XYZ` destination shows the top of the page.** The point is
   reduced to a page and an alignment because `goToPage` is the only way to move;
   scrolling to a position inside a page is a UI.07 question with a real answer.
-- **Nothing has been looked at on a screen.** The outline's treeview roles, the
-  dialog's chrome, the rail's appearance and the prompt's readability are all
-  owed a browser pass. What *is* asserted headlessly is the prompt's **content**
-  (the full destination, verbatim, plus the host), because that is the part this
-  code owns and the part ADR-P0020 is about.
+- **The extension's screen is measured, not judged.** The 2026-10-24
+  `cargo xtask browser-check` pass opens the packed extension in Edge, composes
+  the outline and page canvas, presses a bookmark, and asserts five witnesses,
+  including a sampled canvas hash. The web host's manual pass is recorded in
+  plan 14 (2026-10-22). Neither is a judgement of spacing, contrast, or the
+  prompt's readability — that is still owed a person looking at it. The prompt's
+  **content** is asserted headlessly (the full destination, verbatim, plus the
+  host), because that is the part this code owns and the part ADR-P0020 is
+  about.

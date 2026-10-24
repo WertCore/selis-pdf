@@ -184,17 +184,19 @@ struct Check {
 
 /// The committed checks, in report order.
 ///
-/// Four, deliberately. `service-worker` is the WEB.02 payload: real lifecycle
-/// event delivery, `clients.claim()`, and browser-enforced `respondWith`, over
-/// a real origin. `async-wasm` is the cheap proof that this harness itself
-/// works end to end — a page whose verdict is only written after an awaited
+/// Five now. `service-worker` is the WEB.02 payload: real lifecycle event
+/// delivery, `clients.claim()`, and browser-enforced `respondWith`, over a real
+/// origin. `async-wasm` is the cheap proof that this harness itself works end
+/// to end — a page whose verdict is only written after an awaited
 /// `WebAssembly.instantiate` of a module committed beside it, run by a
 /// different code generator than the native engine. It costs a second or two,
 /// so unlike SL-4.WASM.08's 25-minute leg it can run on every commit.
 /// `app-shell` proves the app's own worker; `chrome` proves the stage 3 React
 /// screen against the built UI and token bridge. Both need the host build, so
-/// they run last.
-const CHECKS: [Check; 4] = [
+/// they run last. `extension` (SL-4.UI.06) is the only one that loads an
+/// unpacked extension; it needs the extension build and a fixed key so the
+/// launcher can name the page it opens.
+const CHECKS: [Check; 5] = [
     Check {
         id: "service-worker",
         dir: "service-worker",
@@ -222,6 +224,15 @@ const CHECKS: [Check; 4] = [
         dir: "chrome",
         verdict: verdict_chrome,
     },
+    // SL-4.UI.06's extension leg. It stages the packed extension as an
+    // unpacked one instead of serving a page, and it is opened through a
+    // loopback launcher rather than at the extension URL directly; both are
+    // explained at `stage_extension`.
+    Check {
+        id: "extension",
+        dir: "extension",
+        verdict: verdict_extension,
+    },
 ];
 
 /// The body `xtask/browser/service-worker/asset.txt` is committed to hold.
@@ -238,6 +249,24 @@ const WASM_PROBE_SUM: i64 = 42;
 /// Schema version of a page's verdict document. Bump on any shape change; the
 /// host refuses a version it does not know rather than guessing.
 const SCHEMA: u32 = 1;
+
+/// The public key the extension check stages into `manifest.json`.
+///
+/// Chromium derives an unpacked extension's id from this key (SHA-256 over the
+/// DER bytes, first 16 bytes hex-mapped `a`..`p`), and an unpacked extension
+/// without one gets an id from the profile path — which changes every run. The
+/// launcher page has to name the id in a URL *before* the extension can answer
+/// anything, so a fixed key is what makes that URL knowable. It is a public
+/// key for a test-only extension and signs nothing; no private half is used or
+/// committed anywhere.
+///
+/// The key and [`EXTENSION_ID`] are a pair. Changing one without the other
+/// sends the launcher at a page that does not exist, and the check records
+/// `unmeasured` with no viewer loaded — which is honest, but slow to diagnose.
+const EXTENSION_KEY: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu53Cglv8Zrob4k2VgkWwZ42pfF67TGS4sSdontZVzJBRuL3zat1TLwiUM611rL0iuZx0cJA+dwPTwfAzxVydKWv0yJj7ZiwcLt7j6bo4mJUJTPT9uUu4RYqwEKEZKz/FBLeVDAu/sV78iYe7zrtEuhfYE9+dEfRq+R8XBqCzpTkkBNGtXRncaK3DI9VyrVz2McxJ1IG2u0SO07a06uwahxpgIpsz6PWC32C5wH3TM7GoOqg3lU+vn4a4S5LFskoQHVP3382X5SjWCeakvy6/ZO5vN3tshh+2hjU0En59gFBROv2GECHalhTO57gmxnjLUJfLiOR2DyjScsbzlSMQuwIDAQAB";
+
+/// The id [`EXTENSION_KEY`] produces. See its docs for why this is fixed.
+const EXTENSION_ID: &str = "ppekgfikbjkfgckpcjibplnhhaaonaem";
 
 /// The most request head the origin will buffer before giving up on a client.
 /// A request line plus headers is hundreds of bytes; this is the point at which
@@ -425,6 +454,245 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+/// `extension` (SL-4.UI.06): the packed viewer, in the extension's own
+/// processes, reads the fixture and a bookmark moves it.
+///
+/// This is the only check that drives a real extension. The viewer is a
+/// `chrome-extension://` page, the engine lives in the extension's offscreen
+/// document behind the WASM worker, and the two talk over a real
+/// `chrome.runtime` port. Every one of the bugs this leg found first — the
+/// port name's shape, the two port halves validating different directions, the
+/// wasm-bindgen imports, the surface reading a `TileEntry` as a tile — was a
+/// real-API difference the Node suite could not see.
+///
+/// The two claims are the web leg's, in the extension's terms: the panels
+/// render, and a press MOVES the reader. The move is asserted through five
+/// independent witnesses; one witness changing could be a measurement
+/// accident, five is a navigation. The pixel witness is a sampled hash of the
+/// canvas, not a count of opaque pixels: the canvas is `{ alpha: false }`, so
+/// alpha is 255 everywhere and a count of it says nothing.
+fn verdict_extension(report: &Json) -> Result<(), String> {
+    well_formed(report)?;
+    if string_field(report, "check")? != "extension" {
+        return Err("the page did not identify itself as the extension check".into());
+    }
+    if string_field(report, "protocol")? != "chrome-extension:" {
+        return Err(format!(
+            "the viewer is not running as an extension page (protocol = {:?})",
+            report.get("protocol")
+        ));
+    }
+    if string_field(report, "extensionId")? != EXTENSION_ID {
+        return Err(format!(
+            "the viewer ran under extension id {:?}, not the staged key's {EXTENSION_ID}",
+            report.get("extensionId")
+        ));
+    }
+    if string_field(report, "stage")? != "done" {
+        return Err(format!(
+            "the probe stopped at stage {:?} rather than after the press",
+            report.get("stage")
+        ));
+    }
+
+    let origin = string_field(report, "origin")?;
+    if !origin.starts_with("http://127.0.0.1:") {
+        return Err(format!(
+            "the viewer's source is not the loopback fixture (origin = {origin:?})"
+        ));
+    }
+    let src = string_field(report, "src")?;
+    if src != format!("{origin}/doc.pdf") {
+        return Err(format!(
+            "the viewer opened {src:?}, not the fixture at {origin}/doc.pdf"
+        ));
+    }
+    let status = string_field(report, "status")?;
+    if !status.starts_with("Opened doc.pdf") || !status.contains("2 pages") {
+        return Err(format!(
+            "the viewer did not open the two-page fixture: status = {status:?}"
+        ));
+    }
+    if report.get("composedMs").and_then(Json::as_u64).is_none() {
+        return Err("the viewer never composed its mount (composedMs = null)".into());
+    }
+
+    // ── The panels ───────────────────────────────────────────────────────
+    let mount = report
+        .get("mount")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no mount (mount = null)".to_string())?;
+    if mount.get("hidden").and_then(Json::as_bool) != Some(false) {
+        return Err(format!("the document mount is not visible: {mount:?}"));
+    }
+    if mount.get("children").and_then(Json::as_u64).unwrap_or(0) == 0 {
+        return Err("the document mount composed no children".into());
+    }
+    let width = mount.get("width").and_then(Json::as_f64).unwrap_or(0.0);
+    let height = mount.get("height").and_then(Json::as_f64).unwrap_or(0.0);
+    if width <= 0.0 || height <= 0.0 {
+        return Err(format!("the document mount has no area ({width}x{height})"));
+    }
+
+    let outline = report
+        .get("outline")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no outline panel (outline = null)".to_string())?;
+    if outline.get("rows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the fixture declares two outline entries and the viewer rendered {:?}",
+            outline.get("rows")
+        ));
+    }
+    let titles: Vec<&str> = outline
+        .get("titles")
+        .and_then(Json::as_array)
+        .map(|rows| rows.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    if titles.len() != 2 || titles[0] != "First layer" || titles[1] != "Second layer" {
+        return Err(format!(
+            "the outline rows do not carry the document's own titles: {titles:?}"
+        ));
+    }
+    let pages: Vec<&str> = outline
+        .get("pages")
+        .and_then(Json::as_array)
+        .map(|rows| rows.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    if pages.len() != 2 || pages[0] != "0" || pages[1] != "1" {
+        return Err(format!(
+            "the outline rows do not name page indexes 0 and 1: {pages:?}"
+        ));
+    }
+    let labels: Vec<&str> = outline
+        .get("labels")
+        .and_then(Json::as_array)
+        .map(|rows| rows.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    if !labels.iter().any(|label| label.ends_with("Page 2 of 2")) {
+        return Err(format!(
+            "no outline row announces the second page in its accessible name: {labels:?}"
+        ));
+    }
+
+    let page_list = report
+        .get("pageList")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no page list (pageList = null)".to_string())?;
+    if page_list.get("tiles").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the fixture has two pages and the page list rendered {:?} tiles",
+            page_list.get("tiles")
+        ));
+    }
+    let live = page_list.get("live").and_then(Json::as_str).unwrap_or("");
+    if !live.starts_with("Page 1 of 2") {
+        return Err(format!(
+            "the page list did not announce the first page before the press (live = {live:?})"
+        ));
+    }
+
+    // ── The press ────────────────────────────────────────────────────────
+    let press = report
+        .get("press")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no press (press = null)".to_string())?;
+    if press.get("attempted").and_then(Json::as_bool) != Some(true) {
+        return Err("the probe never pressed the second outline row".into());
+    }
+    if press.get("page").and_then(Json::as_str) != Some("1") {
+        return Err(format!(
+            "the probe pressed page {:?}, not the fixture's second page",
+            press.get("page")
+        ));
+    }
+    let changed = press
+        .get("changed")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the press carried no changed flags".to_string())?;
+    for witness in ["ink", "live", "navLive", "currentRow", "scrollTop"] {
+        if changed.get(witness).and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "pressing the bookmark did not change `{witness}`; five witnesses are what \
+                 separates a move from a repaint"
+            ));
+        }
+    }
+    let before = press
+        .get("before")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the press carried no before snapshot".to_string())?;
+    let after = press
+        .get("after")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the press carried no after snapshot".to_string())?;
+    if before.get("currentRow").and_then(Json::as_i64) != Some(0)
+        || after.get("currentRow").and_then(Json::as_i64) != Some(1)
+    {
+        return Err(format!(
+            "the current outline row did not move from the first to the second: {:?} -> {:?}",
+            before.get("currentRow"),
+            after.get("currentRow")
+        ));
+    }
+    if before.get("currentTile").and_then(Json::as_str) != Some("Page 1 of 2")
+        || after.get("currentTile").and_then(Json::as_str) != Some("Page 2 of 2")
+    {
+        return Err(format!(
+            "the current page tile did not move from page 1 to page 2: {:?} -> {:?}",
+            before.get("currentTile"),
+            after.get("currentTile")
+        ));
+    }
+    let before_top = before
+        .get("scrollTop")
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0);
+    let after_top = after.get("scrollTop").and_then(Json::as_f64).unwrap_or(0.0);
+    if after_top <= before_top {
+        return Err(format!(
+            "the reader did not scroll to the second page (scrollTop {before_top} -> {after_top})"
+        ));
+    }
+    let announced = after.get("navLive").and_then(Json::as_str).unwrap_or("");
+    if announced.is_empty() {
+        return Err("the move was silent: the navigation live region announced nothing".into());
+    }
+    // The pixels. The probe samples a fixed stride and hashes the sampled
+    // RGBA; `inkPixels` counts sampled pixels that differ from the page
+    // background, because the canvas is opaque and alpha cannot say that.
+    let ink_pixels = |side: &serde_json::Map<String, Json>| -> u64 {
+        side.get("ink")
+            .and_then(|ink| ink.get("inkPixels"))
+            .and_then(Json::as_u64)
+            .unwrap_or(0)
+    };
+    if ink_pixels(before) == 0 || ink_pixels(after) == 0 {
+        return Err(format!(
+            "the canvas was blank before or after the press (ink pixels {} -> {})",
+            ink_pixels(before),
+            ink_pixels(after)
+        ));
+    }
+    let hash = |side: &serde_json::Map<String, Json>| -> Option<String> {
+        side.get("ink")
+            .and_then(|ink| ink.get("hash"))
+            .and_then(Json::as_str)
+            .map(str::to_string)
+    };
+    match (hash(before), hash(after)) {
+        (Some(before), Some(after)) if before != after => {}
+        (before, after) => {
+            return Err(format!(
+                "the canvas shows the same pixels after the press ({before:?} -> {after:?}) -- \
+                 the page on screen did not change"
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -657,9 +925,44 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
             );
         }
     }
+    // The extension leg is the only check whose subject is a package rather
+    // than a page: it loads `apps/extension/dist` as an unpacked extension and
+    // serves only the fixture and the probe. Staged here, before the launch,
+    // so a missing extension build is a named failure rather than a browser
+    // that silently never runs the viewer.
+    let mut extension: Option<PathBuf> = None;
+    if check.id == "extension" {
+        let package = scratch.join("packages").join("extension");
+        if let Err(e) = stage_extension(
+            &extension_dist_dir(),
+            &package,
+            &check_root().join(check.dir),
+        ) {
+            return failed(check.id, format!("cannot stage the packed extension: {e}"));
+        }
+        if let Err(e) = stage_extension_launcher(&served) {
+            return failed(
+                check.id,
+                format!("cannot stage the extension launcher page: {e}"),
+            );
+        }
+        extension = Some(package);
+    }
+    let launch_page = if check.id == "extension" {
+        Some("start.html")
+    } else {
+        None
+    };
     let mut profile = unique_profile(scratch, check.id);
     println!("browser-check: {} ...", check.id);
-    let mut measured = measure(browser, &served, &profile, cfg.timeout_ms);
+    let mut measured = measure(
+        browser,
+        &served,
+        &profile,
+        cfg.timeout_ms,
+        launch_page,
+        extension.as_deref(),
+    );
     // Measured at most twice. A page that POSTs a report has been measured and
     // is judged as reported; a page that reports nothing gave this gate no
     // verdict at all, which is a measurement failure and not a judgement - so
@@ -675,7 +978,14 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
             check.id
         );
         profile = unique_profile(scratch, check.id);
-        measured = measure(browser, &served, &profile, cfg.timeout_ms);
+        measured = measure(
+            browser,
+            &served,
+            &profile,
+            cfg.timeout_ms,
+            launch_page,
+            extension.as_deref(),
+        );
     }
     match measured {
         Err(why) => Row {
@@ -741,7 +1051,7 @@ fn run_ad_hoc(cfg: &Config, browser: &Path, scratch: &Path, page: &Path) -> Resu
     let id = format!("page:{}", page.display());
     let profile = unique_profile(scratch, "ad-hoc");
     println!("browser-check: {id} ...");
-    match measure(browser, &root, &profile, cfg.timeout_ms) {
+    match measure(browser, &root, &profile, cfg.timeout_ms, None, None) {
         Ok(report) => {
             println!("browser-check: {id} reported {report}");
             Ok(Row {
@@ -2313,6 +2623,126 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Where `pnpm build` leaves the packed extension.
+fn extension_dist_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../apps/extension/dist")
+}
+
+/// Stage the packed extension as an *unpacked* one the engine will load.
+///
+/// The package on disk is the store-shaped build: no key, no loopback host
+/// permission, and `viewer.html` not reachable from a page. Every edit below is
+/// load-bearing, and each was found by running the check rather than by reading
+/// the manifest:
+///
+/// * **`key`** fixes the extension id. An unpacked extension without one gets
+///   an id derived from the profile path, which changes every run — and the
+///   launcher has to name the id in a URL before the extension can answer
+///   anything. [`EXTENSION_ID`] is the id this key produces.
+/// * **`host_permissions: http://127.0.0.1/*`** lets the viewer fetch the
+///   fixture from the harness origin. The store build asks for the documents a
+///   user opens instead, which no CI page can grant.
+/// * **`web_accessible_resources`** lets the loopback launcher navigate to
+///   `viewer.html`. Without it the navigation is refused and the viewer never
+///   runs.
+/// * **`options_page` is removed.** SL-4.EXT.07's welcome calls
+///   `chrome.runtime.openOptionsPage()` on install, and the options page takes
+///   the foreground. A viewer in a background tab does not paint on animation
+///   frames, so the pixel witness would stay blank while the rest of the view
+///   composed — measured here. The check's subject is the viewer, not the
+///   welcome.
+///
+/// The probe is copied in and its script tag appended to `viewer.html`, the
+/// same way the page-shaped checks inject theirs: the subject is the packed
+/// viewer, and a stand-in page would prove nothing about the package.
+fn stage_extension(from: &Path, to: &Path, check: &Path) -> Result<(), String> {
+    if !from.is_dir() {
+        return Err(format!(
+            "{} does not exist - build the extension first (`pnpm build` in apps/extension)",
+            from.display()
+        ));
+    }
+    copy_tree(from, to)?;
+
+    let manifest_path = to.join("manifest.json");
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let mut manifest: Json = serde_json::from_str(&raw)
+        .map_err(|e| format!("{} is not JSON: {e}", manifest_path.display()))?;
+    let object = manifest
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", manifest_path.display()))?;
+    object.insert("key".to_string(), json!(EXTENSION_KEY));
+    object.insert(
+        "host_permissions".to_string(),
+        json!(["http://127.0.0.1/*"]),
+    );
+    object.insert(
+        "web_accessible_resources".to_string(),
+        json!([{ "resources": ["viewer.html"], "matches": ["http://127.0.0.1/*"] }]),
+    );
+    object.remove("options_page");
+    let staged = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("cannot serialise the staged manifest: {e}"))?;
+    std::fs::write(&manifest_path, format!("{staged}\n"))
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+
+    let probe_source = check.join("probe.js");
+    let probe = std::fs::read_to_string(&probe_source)
+        .map_err(|e| format!("{}: {e}", probe_source.display()))?;
+    let probe_path = to.join("__selis_probe.js");
+    std::fs::write(&probe_path, probe).map_err(|e| format!("{}: {e}", probe_path.display()))?;
+
+    let viewer_path = to.join("viewer.html");
+    let viewer = std::fs::read_to_string(&viewer_path)
+        .map_err(|e| format!("{}: {e}", viewer_path.display()))?;
+    const END: &str = "</body>";
+    if !viewer.contains(END) {
+        return Err(format!(
+            "{} has no {END}; the probe cannot be injected and nothing would report",
+            viewer_path.display()
+        ));
+    }
+    let injected = viewer.replacen(
+        END,
+        "<script src=\"./__selis_probe.js\"></script>\n</body>",
+        1,
+    );
+    std::fs::write(&viewer_path, injected)
+        .map_err(|e| format!("{}: {e}", viewer_path.display()))?;
+    Ok(())
+}
+
+/// Write the loopback launcher the extension check is opened on.
+///
+/// A command-line navigation straight to `chrome-extension://<id>/viewer.html`
+/// is refused by the engine with `ERR_BLOCKED_BY_CLIENT`, measured on both a
+/// cold and a warm profile. A loopback page that navigates there after a beat
+/// is not: by then the unpacked extension is loaded, and the viewer is a
+/// web-accessible resource for this origin. The 500 ms beat is the one measured
+/// on this machine; it is a scheduling pause, not a race with extension
+/// loading, because the browser loads unpacked extensions before its first
+/// page.
+///
+/// The fixture URL is derived from `location.origin` inside the page, so the
+/// harness never templates a random port into staged HTML.
+fn stage_extension_launcher(served: &Path) -> Result<(), String> {
+    let html = format!(
+        r#"<!doctype html>
+<meta charset="utf-8">
+<title>extension launcher</title>
+<script>
+setTimeout(function () {{
+	location.assign("chrome-extension://{EXTENSION_ID}/viewer.html?src=" +
+		encodeURIComponent(location.origin + "/doc.pdf"));
+}}, 500);
+</script>
+"#
+    );
+    let path = served.join("start.html");
+    std::fs::write(&path, html).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod app_shell_tests {
     use super::*;
@@ -2365,6 +2795,147 @@ mod app_shell_tests {
             err.contains("build the web host first"),
             "the error must say what to do, got: {err}"
         );
+    }
+}
+
+/// The staged extension is what the browser loads, so the manifest edits are
+/// the check's subject rather than packaging detail. Each one is asserted here
+/// because every one of them was found by a run where the viewer never appeared
+/// or never painted: the key makes the id knowable, the permission makes the
+/// fixture fetchable, the resource makes the launcher's navigation legal, and
+/// removing the options page keeps the welcome from taking the foreground.
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("selis-extension-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fixture_dist(root: &Path, viewer: &str) -> PathBuf {
+        let dist = root.join("dist");
+        std::fs::create_dir_all(dist.join("extension/src")).unwrap();
+        std::fs::write(
+            dist.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"selis","version":"0.1.0","options_page":"options.html"}"#,
+        )
+        .unwrap();
+        std::fs::write(dist.join("viewer.html"), viewer).unwrap();
+        std::fs::write(dist.join("extension/src/nested.js"), b"nested").unwrap();
+        dist
+    }
+
+    fn fixture_check(root: &Path) -> PathBuf {
+        let check = root.join("check");
+        std::fs::create_dir_all(&check).unwrap();
+        std::fs::write(check.join("probe.js"), "/* probe */").unwrap();
+        check
+    }
+
+    #[test]
+    fn stages_the_package_as_an_unpacked_extension_with_the_probe() {
+        let root = scratch("stage");
+        let dist = fixture_dist(&root, "<!doctype html><body>viewer</body>");
+        let check = fixture_check(&root);
+        let to = root.join("package");
+
+        stage_extension(&dist, &to, &check).expect("staging the package");
+
+        let manifest: Json =
+            serde_json::from_str(&std::fs::read_to_string(to.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest.get("key").and_then(Json::as_str),
+            Some(EXTENSION_KEY),
+            "the key is what makes the extension id knowable before launch"
+        );
+        assert_eq!(
+            manifest.get("host_permissions"),
+            Some(&json!(["http://127.0.0.1/*"])),
+            "the viewer fetches the fixture from the harness origin"
+        );
+        assert_eq!(
+            manifest.get("web_accessible_resources"),
+            Some(&json!([{ "resources": ["viewer.html"], "matches": ["http://127.0.0.1/*"] }])),
+            "the loopback launcher navigates to the viewer"
+        );
+        assert!(
+            manifest.get("options_page").is_none(),
+            "EXT.07's welcome opens the options page on install and takes the \
+             foreground; a background viewer does not paint"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.join("__selis_probe.js")).unwrap(),
+            "/* probe */"
+        );
+        let viewer = std::fs::read_to_string(to.join("viewer.html")).unwrap();
+        assert!(
+            viewer.contains("<script src=\"./__selis_probe.js\"></script>"),
+            "the probe must run inside the packed viewer, got: {viewer}"
+        );
+        assert_eq!(
+            std::fs::read(to.join("extension/src/nested.js")).unwrap(),
+            b"nested",
+            "the package is a tree; a flat copier would stage a broken extension"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_a_viewer_without_a_body_to_inject_into() {
+        let root = scratch("nobody");
+        let dist = fixture_dist(&root, "<!doctype html><p>no body tag</p>");
+        let check = fixture_check(&root);
+
+        let err = stage_extension(&dist, &root.join("package"), &check)
+            .expect_err("a viewer with no </body> cannot carry the probe");
+        assert!(
+            err.contains("has no </body>"),
+            "the error must name the missing anchor, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_a_missing_extension_build() {
+        let root = scratch("missing");
+        let check = fixture_check(&root);
+        let err = stage_extension(&root.join("no-such-dist"), &root.join("package"), &check)
+            .expect_err("a missing build must not stage");
+        assert!(
+            err.contains("build the extension first"),
+            "the error must say what to do, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn launcher_names_the_fixed_extension_id_and_the_fixture() {
+        let served = scratch("launcher");
+        stage_extension_launcher(&served).expect("writing the launcher");
+
+        let html = std::fs::read_to_string(served.join("start.html")).unwrap();
+        assert!(
+            html.contains(&format!("chrome-extension://{EXTENSION_ID}/viewer.html")),
+            "the launcher must open the staged id, got: {html}"
+        );
+        assert!(
+            html.contains("location.origin + \"/doc.pdf\""),
+            "the fixture URL is derived from the served origin, not templated"
+        );
+        assert!(
+            html.contains("setTimeout"),
+            "the navigation waits for the unpacked extension to be loaded"
+        );
+
+        let _ = std::fs::remove_dir_all(&served);
     }
 }
 
@@ -2434,9 +3005,25 @@ fn shutdown(child: &mut Child) {
 /// The wait is wall-clock, not virtual: see the module docs for the
 /// measurement that decided it. A page that never reports is an `Err`, so the
 /// caller can record it as unmeasured rather than as a pass.
-fn measure(browser: &Path, root: &Path, profile: &Path, timeout_ms: u64) -> Result<Json, String> {
+///
+/// `page` is a path under the served root; `None` opens the origin itself, as
+/// every page-shaped check does. `extension` is an unpacked package to load —
+/// only SL-4.UI.06's leg sets it, and when it does the launcher page is the
+/// subject because a command-line navigation to an extension URL is refused.
+fn measure(
+    browser: &Path,
+    root: &Path,
+    profile: &Path,
+    timeout_ms: u64,
+    page: Option<&str>,
+    extension: Option<&Path>,
+) -> Result<Json, String> {
     let (server, results) = serve(root)?;
-    let mut child = spawn(browser, profile, &server.origin())?;
+    let url = match page {
+        Some(page) => format!("{}/{page}", server.origin()),
+        None => server.origin(),
+    };
+    let mut child = spawn(browser, profile, &url, extension)?;
 
     // Poll rather than block on the channel, so that an engine which *died*
     // is reported as such. "The page did not report" and "the browser exited
@@ -2462,9 +3049,15 @@ fn measure(browser: &Path, root: &Path, profile: &Path, timeout_ms: u64) -> Resu
             Err(e) => break Err(format!("cannot poll {}: {e}", browser_name(browser))),
         }
         if Instant::now() >= deadline {
+            let extension_hint = if extension.is_some() {
+                " -- this leg loads an unpacked extension with --load-extension; an engine that \
+                 refuses it never runs the viewer, and the report is absent rather than red"
+            } else {
+                ""
+            };
             break Err(format!(
                 "the page did not report within {timeout_ms}ms -- the engine launched and the \
-                 origin served, so this is the page or the browser, not the harness"
+                 origin served, so this is the page or the browser, not the harness{extension_hint}"
             ));
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -2481,7 +3074,7 @@ fn measure(browser: &Path, root: &Path, profile: &Path, timeout_ms: u64) -> Resu
         .map_err(|e| format!("the page reported a non-JSON body ({e}): {body}"))
 }
 
-/// Launch the engine on the harness origin.
+/// Launch the engine.
 ///
 /// `--headless=new` rather than the old `--headless`: the new headless is the
 /// same code path as a real window, which is the point of driving a browser at
@@ -2489,9 +3082,20 @@ fn measure(browser: &Path, root: &Path, profile: &Path, timeout_ms: u64) -> Resu
 /// service worker, cache or first-run state can answer for this one. Output is
 /// discarded — a browser's stderr is noise here, and the verdict is the
 /// structured report the page POSTs.
-fn spawn(browser: &Path, profile: &Path, url: &str) -> Result<Child, String> {
+///
+/// The ordinary checks pass `--disable-extensions`, because an installed
+/// extension is not part of what they measure. The extension leg must not:
+/// `--disable-extensions` wins over `--load-extension`, and the except list
+/// keeps every other extension out without touching the one under test.
+fn spawn(
+    browser: &Path,
+    profile: &Path,
+    url: &str,
+    extension: Option<&Path>,
+) -> Result<Child, String> {
     std::fs::create_dir_all(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
-    Command::new(browser)
+    let mut command = Command::new(browser);
+    command
         .arg("--headless=new")
         .arg("--disable-gpu")
         // CI runners have no user-namespace sandbox available, and the page
@@ -2500,13 +3104,23 @@ fn spawn(browser: &Path, profile: &Path, url: &str) -> Result<Child, String> {
         .arg("--no-sandbox")
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
-        .arg("--disable-extensions")
         .arg("--disable-background-networking")
         .arg("--disable-component-update")
         .arg("--disable-sync")
         .arg("--disable-default-apps")
         .arg("--metrics-recording-only")
-        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(format!("--user-data-dir={}", profile.display()));
+    match extension {
+        Some(dir) => {
+            command
+                .arg(format!("--disable-extensions-except={}", dir.display()))
+                .arg(format!("--load-extension={}", dir.display()));
+        }
+        None => {
+            command.arg("--disable-extensions");
+        }
+    }
+    command
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -3044,10 +3658,162 @@ mod tests {
         })
     }
 
+    /// The report a real Edge produced for `extension` on the development
+    /// machine, verbatim except for the ephemeral port. The two ink hashes are
+    /// the bytes the surface actually drew, and `inkPixels` counts sampled
+    /// pixels that differ from the page background - the canvas is created
+    /// `{ alpha: false }`, so counting alpha would call a white page inked.
+    fn real_extension_report() -> Json {
+        json!({
+            "schema": SCHEMA,
+            "check": "extension",
+            "fatal": Json::Null,
+            "stage": "done",
+            "elapsedMs": 634,
+            "href": "chrome-extension://ppekgfikbjkfgckpcjibplnhhaaonaem/viewer.html?src=http%3A%2F%2F127.0.0.1%3A52672%2Fdoc.pdf",
+            "protocol": "chrome-extension:",
+            "extensionId": EXTENSION_ID,
+            "src": "http://127.0.0.1:52672/doc.pdf",
+            "origin": "http://127.0.0.1:52672",
+            "composedMs": 406,
+            "status": "Opened doc.pdf — 2 pages.",
+            "mount": {
+                "hidden": false,
+                "children": 1,
+                "width": 693.0,
+                "height": 538.390625,
+            },
+            "outline": {
+                "rows": 2,
+                "pages": ["0", "1"],
+                "titles": ["First layer", "Second layer"],
+                "labels": ["First layer, Page 1 of 2", "Second layer, Page 2 of 2"],
+                "currentRow": 0,
+                "notes": [],
+            },
+            "pageList": {
+                "tiles": 2,
+                "live": "Page 1 of 2 — fit page",
+                "scrollTop": 0,
+                "scrollHeight": 866,
+                "clientHeight": 441,
+            },
+            "press": {
+                "attempted": true,
+                "index": 1,
+                "page": "1",
+                "title": "Second layer",
+                "label": "Second layer, Page 2 of 2",
+                "before": {
+                    "live": "Page 1 of 2 — fit page",
+                    "navLive": "",
+                    "currentRow": 0,
+                    "currentRowPage": "0",
+                    "currentTile": "Page 1 of 2",
+                    "scrollTop": 0,
+                    "ink": {
+                        "width": 683,
+                        "height": 441,
+                        "hash": "c68900ff",
+                        "inkPixels": 278,
+                        "sampled": 3106,
+                    },
+                },
+                "after": {
+                    "live": "Page 2 of 2 — fit page",
+                    "navLive": "Moved to Page 2 of 2",
+                    "currentRow": 1,
+                    "currentRowPage": "1",
+                    "currentTile": "Page 2 of 2",
+                    "scrollTop": 425,
+                    "ink": {
+                        "width": 683,
+                        "height": 441,
+                        "hash": "8d0e51f4",
+                        "inkPixels": 278,
+                        "sampled": 3106,
+                    },
+                },
+                "changed": {
+                    "ink": true,
+                    "live": true,
+                    "navLive": true,
+                    "currentRow": true,
+                    "scrollTop": true,
+                },
+            },
+        })
+    }
+
     #[test]
     fn the_verdicts_accept_what_a_real_browser_reported() {
         assert!(verdict_service_worker(&real_service_worker_report()).is_ok());
         assert!(verdict_async_wasm(&real_async_wasm_report()).is_ok());
+        assert!(verdict_extension(&real_extension_report()).is_ok());
+    }
+
+    /// The extension verdict's witnesses, withdrawn one at a time. Each control
+    /// keeps every other claim, so it fails for the reason under test rather
+    /// than because the report stopped being well-formed.
+    #[test]
+    fn the_extension_verdict_fails_when_a_witness_is_withdrawn() {
+        let report = real_extension_report();
+
+        let mut no_outline = report.clone();
+        *no_outline.pointer_mut("/outline/rows").unwrap() = json!(0);
+        assert!(
+            verdict_extension(&no_outline).is_err(),
+            "an outline panel with no rows must not pass"
+        );
+
+        let mut silent = report.clone();
+        *silent.pointer_mut("/press/changed/navLive").unwrap() = json!(false);
+        assert!(
+            verdict_extension(&silent).is_err(),
+            "a move with no announcement must not pass"
+        );
+
+        let mut same_pixels = report.clone();
+        *same_pixels.pointer_mut("/press/after/ink/hash").unwrap() = json!("c68900ff");
+        assert!(
+            verdict_extension(&same_pixels).is_err(),
+            "repainting the same page is not a move"
+        );
+
+        let mut blank = report.clone();
+        *blank.pointer_mut("/press/before/ink/inkPixels").unwrap() = json!(0);
+        assert!(
+            verdict_extension(&blank).is_err(),
+            "a blank canvas before the press must not pass"
+        );
+
+        let mut no_scroll = report.clone();
+        *no_scroll.pointer_mut("/press/after/scrollTop").unwrap() = json!(0);
+        assert!(
+            verdict_extension(&no_scroll).is_err(),
+            "a reader that did not scroll must not pass"
+        );
+
+        let mut foreign = report.clone();
+        *foreign.pointer_mut("/extensionId").unwrap() = json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert!(
+            verdict_extension(&foreign).is_err(),
+            "a page under another extension id is not the staged package"
+        );
+
+        let mut partial = report.clone();
+        *partial.pointer_mut("/stage").unwrap() = json!("press");
+        assert!(
+            verdict_extension(&partial).is_err(),
+            "a probe that stopped before the press must not pass"
+        );
+
+        let mut elsewhere = report;
+        *elsewhere.pointer_mut("/origin").unwrap() = json!("https://elsewhere.example");
+        assert!(
+            verdict_extension(&elsewhere).is_err(),
+            "the fixture must come from the harness origin, not anywhere"
+        );
     }
 
     /// The falsifiability check: every claim the verdicts make, withdrawn one

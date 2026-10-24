@@ -371,6 +371,10 @@ jobs:
           node-version: 22
       - name: Install pnpm
         run: corepack enable
+      - name: Install wasm-opt (binaryen, via npm)
+        # The packed extension carries the optimised engine (the pack gate
+        # expects `selis_pdf_wasm.opt.wasm`), and `place-assets` prefers it too.
+        run: npm install -g wasm-opt
       - name: Install the workspace toolchain
         # `--frozen-lockfile` is the whole point: CI builds exactly what the
         # committed lockfile declares, so a dependency edit without its lockfile
@@ -378,10 +382,13 @@ jobs:
         run: pnpm install --frozen-lockfile
       # `place-assets` refuses to segment the app without an engine — a placed
       # tree that cannot open a PDF is a broken app, and must fail here rather
-      # than at browser-click time. The RAW release artifact is enough for the
-      # checks; the optimised one is size-check's business.
-      - name: Build the wasm engine the app ships
-        run: cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+      # than at browser-click time. The extension's pack tool also refuses
+      # without the optimised artifact, so both are produced here.
+      - name: Build and optimise the wasm engine the app ships
+        run: |
+          cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+          wasm-opt -O3 target/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm \
+            -o target/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm
         timeout-minutes: 10
       - name: Build the app the checks drive
         # The `app-shell` check drives apps/web/host's OWN service worker, and
@@ -396,6 +403,12 @@ jobs:
           pnpm --dir packages/ui-kit build
           pnpm --dir apps/ui build
           pnpm --dir apps/web/host build
+      - name: Build the packed extension the extension leg loads
+        # SL-4.UI.06's leg stages `apps/extension/dist` as an unpacked
+        # extension. A missing package is a named check failure, not a skip;
+        # building it here is what makes the leg measured on CI rather than
+        # only on a developer machine.
+        run: pnpm --dir apps/extension build
       - name: Name the engine under test
         run: |
           browser="$(command -v microsoft-edge || command -v chromium || command -v google-chrome || true)"

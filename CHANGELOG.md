@@ -40,9 +40,15 @@ sections; every entry states what changed and what it means for the user.
   read outlines at all now refuses with `BINDING_UNSUPPORTED_OP` (6017) rather
   than `BINDING_BAD_ARGUMENT` (6001), because "this host cannot look" and
   "your request was wrong" are different facts, and neither is "this document
-  has no bookmarks". **The panels are not in the extension yet**: its viewer
-  still mounts no bookmark tree, no thumbnail rail and no link overlay, so
-  what shipped is the capability under them.
+  has no bookmarks". **The panels are in the extension now** (2026-10-24): its
+  viewer renders the bookmark tree, the page canvas and the external-link
+  prompt from the same controllers the web viewer uses, and a real-browser check
+  of the **packed** extension proves the route end to end — the document opens
+  in the offscreen WASM engine, the outline and page tiles compose, and pressing
+  the second bookmark changes the announced page, the current row, the scroll
+  position and the canvas pixels. What the extension still does not have is a
+  canvas click overlay (so the prompt has no on-page trigger yet) and a
+  thumbnail rail.
 - CJK fallback no longer needs the 100 MB payload (SL-3.FONT.10, engine
   side): the viewer ships a subsetted CJK core, fetches the remaining
   Unicode ranges as separately-loadable chunk files on demand, and through

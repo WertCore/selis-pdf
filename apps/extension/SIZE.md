@@ -92,11 +92,12 @@ wasm-opt -O3 <target>/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm \
 pnpm --filter @selis/extension build
 ```
 
-There is no JavaScript CI job in this repository today, so the build is not yet
-wired to a workflow that has the artefact. When one lands it must run
-`cargo xtask size-check` (which builds and optimises every chunk) before the
-extension build; a job that gets that order wrong fails here rather than
-shipping a package with no engine.
+The `browser-check` job is now the CI leg that builds this package: it installs
+`wasm-opt` via npm, builds the `wasm32-unknown-unknown` release artifact, runs
+`wasm-opt -O3`, builds the app, and then runs `pnpm --dir apps/extension build`
+before driving the packed extension. `size-check` runs inside that build, so
+the package CI exercises is the package this gate measured; a job that gets the
+order wrong fails here rather than shipping a package with no engine.
 
 ## Verifying it, both ways
 
@@ -138,6 +139,16 @@ shell 192,505 raw (19%).
 Re-measured after SL-4.EXT.07 (the options page) and SL-3.FONT.10 (the bundled
 CJK core): **package 4,523,037 raw (56.5%), engine 4,279,475 raw / 1,357,411
 brotli (67.9% of the engine budget), shell 243,562 raw (24.4%)** — 31 files.
+
+Re-measured on 2026-10-24, after SL-4.UI.06 mounted the navigation panels and the
+browser check began loading the packed extension: **package 3,498,633 raw
+(43.7%), engine 2,882,109 raw / 754,631 brotli (37.7% of the engine budget),
+shell 616,524 raw (61.7%)** — 53 files. The engine figures are the first from
+the rebuilt `wasm32-unknown-unknown` artifact with `wasm-opt -O3`; the older
+ones came from a wasm-bindgen-processed artifact that carried far more import
+scaffolding. The shell grew by ~373 KB with the mounted viewer — the navigation
+controllers, page list, compositor, tile ladder and their stylesheets — and is
+the number to watch when the thumbnail rail lands.
 
 The two movements are different and are worth keeping apart:
 
