@@ -4014,10 +4014,23 @@ mod tests {
         }
         let dir = std::env::temp_dir().join("selis-browser-harness-selftest");
         let _ = std::fs::remove_dir_all(&dir);
-        let cfg = Config {
+        // The extension check's subject is the packaged `apps/extension/dist`,
+        // which `test-fast` deliberately does not build: it has no `wasm-opt`
+        // step, and the package gate refuses an unoptimised engine. The
+        // `browser-check` job builds it and runs the fifth check with
+        // `--strict`; here, a missing package runs the four page checks and
+        // says so, rather than failing `cargo test` for a build it does not own.
+        let extension_built = extension_dist_dir().exists();
+        if !extension_built {
+            println!(
+                "SKIP extension -- {} does not exist; build the package to measure it",
+                extension_dist_dir().display()
+            );
+        }
+        let config = |only: Option<String>, out| Config {
             browser: None,
             page: None,
-            only: None,
+            only,
             // NOT `DEFAULT_TIMEOUT_MS`, and the difference is deliberate.
             //
             // The default is a product choice for an interactive run: fail fast
@@ -4032,12 +4045,22 @@ mod tests {
             // Raised only HERE, deliberately: the interactive default stays
             // tight, so a developer still gets a fast failure on a real hang.
             timeout_ms: 120_000,
-            out: dir.join("report.json"),
+            out,
             keep: false,
             strict: true,
         };
-        if let Err(e) = run(&cfg) {
-            panic!("the real-engine harness failed: {e}");
+        if extension_built {
+            let cfg = config(None, dir.join("report.json"));
+            if let Err(e) = run(&cfg) {
+                panic!("the real-engine harness failed: {e}");
+            }
+        } else {
+            for id in ["service-worker", "async-wasm", "app-shell", "chrome"] {
+                let cfg = config(Some(id.to_owned()), dir.join(format!("report-{id}.json")));
+                if let Err(e) = run(&cfg) {
+                    panic!("the real-engine harness failed for {id}: {e}");
+                }
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
