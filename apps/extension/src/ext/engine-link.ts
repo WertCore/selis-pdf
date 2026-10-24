@@ -35,7 +35,12 @@ export type EngineMessage = EngineRequest | EngineReply;
 export interface EngineLink {
 	/** Send a message. Fire-and-forget; the other direction arrives via {@link subscribe}. */
 	post(message: EngineMessage): void;
-	/** Observe replies. Returns an unsubscribe. */
+	/**
+	 * Observe this end's incoming messages. Returns an unsubscribe.
+	 *
+	 * What arrives is named by `createPortLink`'s direction: replies for the
+	 * viewer page, requests for the offscreen host.
+	 */
 	subscribe(listener: (reply: EngineReply) => void): () => void;
 	/**
 	 * The far end going away: the page closed, or the service worker was killed.
@@ -132,7 +137,7 @@ function isWireError(value: unknown): boolean {
 
 /** Counters the link keeps, so a dropped message is visible rather than silent. */
 export interface LinkDiagnostics {
-	/** Messages that arrived and were refused by {@link replyRejection}. */
+	/** Messages that arrived and were refused by this end's validator. */
 	readonly rejected: number;
 	/** Messages delivered to subscribers. */
 	readonly delivered: number;
@@ -141,15 +146,96 @@ export interface LinkDiagnostics {
 /** A link over a real `chrome.runtime` port. */
 export type PortLink = EngineLink & { readonly diagnostics: LinkDiagnostics };
 
-/** Wrap a {@link HostPort} as an {@link EngineLink}. */
-export function createPortLink(port: HostPort): PortLink {
+/**
+ * The slice of a real `chrome.runtime.Port` this package reads.
+ *
+ * Chrome's port exposes `onMessage` and `onDisconnect` as **events**
+ * (`addListener` / `removeListener`), not as methods that take a listener and
+ * return an unsubscribe. {@link HostPort} is deliberately the method shape,
+ * because a loopback can implement that in a few lines and every Node test
+ * drives it; the browser end has to be adapted at the boundary.
+ */
+export interface BrowserPort {
+	postMessage(message: unknown): void;
+	disconnect(): void;
+	onMessage: {
+		addListener(listener: (message: unknown) => void): void;
+		removeListener(listener: (message: unknown) => void): void;
+	};
+	onDisconnect: {
+		addListener(listener: () => void): void;
+		removeListener(listener: () => void): void;
+	};
+}
+
+/**
+ * Wrap a real port as a {@link HostPort}.
+ *
+ * This is the only place the two shapes meet. Both ends of the engine link go
+ * through it - the viewer page's `connect()` and the offscreen document's
+ * `onConnect` - so there is one definition of "what a port is" for the real
+ * browser, and `engine-link.ts`'s transport stays testable without `chrome`.
+ *
+ * Reading `port.onMessage(...)` as a function is exactly what the SL-4.UI.06
+ * browser check caught: every mock had the method shape and the real port had
+ * the event one.
+ */
+export function hostPortOf(port: BrowserPort): HostPort {
+	return {
+		postMessage(message) {
+			port.postMessage(message);
+		},
+		disconnect() {
+			port.disconnect();
+		},
+		onMessage(listener) {
+			const handler = (message: unknown): void => {
+				listener(message);
+			};
+			port.onMessage.addListener(handler);
+			return () => {
+				port.onMessage.removeListener(handler);
+			};
+		},
+		onDisconnect(listener) {
+			const handler = (): void => {
+				listener();
+			};
+			port.onDisconnect.addListener(handler);
+			return () => {
+				port.onDisconnect.removeListener(handler);
+			};
+		},
+	};
+}
+
+/**
+ * Wrap a {@link HostPort} as an {@link EngineLink}.
+ *
+ * `receives` names which half this is, and it is not cosmetic. A
+ * `chrome.runtime` port is bidirectional, so one wrapper serves both ends - but
+ * each end must validate what *it* receives: the viewer page receives replies,
+ * and the offscreen host receives requests. Feeding the host half through
+ * {@link replyRejection} drops every request it is sent, and the page waits
+ * forever for an answer that was never asked for; the SL-4.UI.06 browser check
+ * found exactly that, because the loopback pair had always supplied the right
+ * validator per side.
+ */
+export function createPortLink(
+	port: HostPort,
+	receives: "replies" | "requests" = "replies",
+): PortLink {
 	const listeners = new Set<(reply: EngineReply) => void>();
 	let closed = false;
 	let rejected = 0;
 	let delivered = 0;
+	const accepts =
+		receives === "replies"
+			? (message: unknown): boolean => replyRejection(message) === null
+			: isEngineRequest;
 
 	const offMessage = port.onMessage((message) => {
-		if (replyRejection(message) !== null) {
+		if (!accepts(message)) {
 			rejected += 1;
 			return;
 		}

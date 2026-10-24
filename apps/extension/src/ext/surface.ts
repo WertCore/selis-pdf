@@ -37,6 +37,7 @@ import type {
 	SurfaceSize,
 	TileSurface,
 } from "../../../ui/src/viewer/surface.js";
+import type { TileEntry } from "../../../ui/src/viewer/tile-ladder.js";
 import { createAnimationFrameClock } from "../../../ui/src/viewer/worker-surface.js";
 import type { FrameRequester } from "../../../ui/src/viewer/worker-surface.js";
 
@@ -157,14 +158,7 @@ export function createMainThreadSurface(options: { raster: SurfaceRaster }): Til
 	};
 }
 
-/**
- * Read an op's pixels, or decide it has none.
- *
- * `DrawOp.source` is `unknown` by design - it is an `ImageBitmap` on the worker
- * path and a `RenderedTile` here - so this is the one place the two are told
- * apart. An op carrying anything else is a placeholder, not an error: the
- * compositor legitimately emits ops for tiles it does not have yet.
- */
+/** One op's worth of drawing, after the surface has resolved its source. */
 function resolve(op: DrawOp): ResolvedOp {
 	const tile = asTile(op.source);
 	if (tile === null) {
@@ -173,11 +167,33 @@ function resolve(op: DrawOp): ResolvedOp {
 	return { kind: "pixels", op, pixels: new Uint8ClampedArray(tile.data) };
 }
 
+/**
+ * Read the cached tile out of an op's source.
+ *
+ * `DrawOp.source` is the {@link TileEntry} the compositor picked - page, rung,
+ * rasterisation scale and the tile itself - not the bare `RenderedTile`.
+ * `worker-surface.ts` says the same where it strips a frame down to keys, and
+ * the compositor passes the entry through untouched, so this is the one place
+ * a main-thread surface has to open it.
+ *
+ * Reading the entry as if it were the tile is not a type error here: `source`
+ * is `unknown` on purpose. But `entry.format` is `undefined`, so every op
+ * became a placeholder and the canvas showed its background and nothing else.
+ * That is exactly what the SL-4.UI.06 browser check measured on its first
+ * green-compose run: the tile requests returned 27,060 inked pixels and the
+ * surface drew none of them.
+ *
+ * An op carrying anything else is a placeholder, not an error: the compositor
+ * legitimately emits ops for tiles it does not have yet.
+ */
 function asTile(source: unknown): RenderedTile | null {
 	if (typeof source !== "object" || source === null) {
 		return null;
 	}
-	const candidate = source as Partial<RenderedTile>;
+	const candidate = (source as Partial<TileEntry>).tile as Partial<RenderedTile> | undefined;
+	if (typeof candidate !== "object" || candidate === null) {
+		return null;
+	}
 	if (
 		candidate.format !== "rgba8" ||
 		typeof candidate.width !== "number" ||

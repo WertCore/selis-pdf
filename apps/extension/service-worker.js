@@ -9,12 +9,45 @@
  * and base64 tiles, in a context the browser kills after ~30 s idle. The
  * offscreen document listens instead (`offscreen.js`). */
 
-import { ENSURE_ENGINE_HOST } from "./extension/src/ext/engine-protocol.js";
+import { ENGINE_HOST_READY, ENSURE_ENGINE_HOST } from "./extension/src/ext/engine-protocol.js";
 import { createOnboardingStore, planFirstRun } from "./extension/src/options-state.js";
 import { buildRedirectRules, isFileRule } from "./extension/src/permissions.js";
 
 /** The page that hosts the engine, and the one it is created for. */
 const OFFSCREEN_PATH = "offscreen.html";
+
+/**
+ * Resolves when the offscreen document announces {@link ENGINE_HOST_READY}.
+ *
+ * A promise rather than a boolean because the announcement can arrive while
+ * `createDocument` is still resolving. It is resolved once and never reset: an
+ * offscreen document lives until the browser closes, and a worker restart
+ * clears this module with it.
+ */
+let hostReady = null;
+let announceHostReady = null;
+
+/**
+ * Wait for the engine document's listener to exist, or give up after a bound.
+ *
+ * The timeout is not the contract - the announcement is. It exists so a
+ * document whose script failed cannot make every "open a PDF" hang inside this
+ * worker; the page then fails with the engine's own timeout, which names the
+ * engine rather than the worker.
+ */
+function waitForHostReady(timeoutMs = 5000) {
+	if (hostReady === null) {
+		hostReady = new Promise((resolve) => {
+			announceHostReady = resolve;
+		});
+	}
+	return Promise.race([
+		hostReady,
+		new Promise((resolve) => {
+			setTimeout(resolve, timeoutMs);
+		}),
+	]);
+}
 
 /**
  * SL-4.EXT.02: install the PDF navigation interception ruleset.
@@ -97,6 +130,15 @@ async function ensureEngineHost() {
 	if (await hasOffscreenDocument()) {
 		return;
 	}
+	// No document. Whatever `hostReady` recorded belongs to one that is gone
+	// (its `pagehide` ran, or the browser closed it), so forget it: a new
+	// document announces itself, and the wait below must be for THIS one.
+	hostReady = null;
+	announceHostReady = null;
+	// Set up the wait BEFORE creating the document: the announcement can arrive
+	// while `createDocument` is still resolving, and a promise created after it
+	// would miss the one event it exists to observe.
+	const ready = waitForHostReady();
 	try {
 		await chrome.offscreen.createDocument({
 			url: OFFSCREEN_PATH,
@@ -112,6 +154,11 @@ async function ensureEngineHost() {
 			throw error;
 		}
 	}
+	// The document exists; wait until it is LISTENING. `createDocument`
+	// resolves at creation, and `runtime.connect` does not queue - a port
+	// opened before the document's module ran is dropped, and the viewer sees
+	// a page that starts the engine forever.
+	await ready;
 }
 
 /**
@@ -162,6 +209,15 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+	if (typeof message === "object" && message !== null && message.type === ENGINE_HOST_READY) {
+		// The offscreen document's listener is registered. Release everyone
+		// waiting in `ensureEngineHost`; a late announcement resolves an
+		// already-settled promise, which does nothing.
+		announceHostReady?.();
+		announceHostReady = null;
+		sendResponse({ ok: true });
+		return false;
+	}
 	if (typeof message !== "object" || message === null || message.type !== ENSURE_ENGINE_HOST) {
 		return false;
 	}

@@ -36,6 +36,7 @@
 import type { PickOpenOptions } from "../../../ui/src/platform/adapter.js";
 import type { DocumentSourceDescriptor } from "../../../ui/src/platform/types.js";
 import { type FileAccess, extensionDetailsUrl } from "../local-files.js";
+import { type BrowserPort, hostPortOf } from "./engine-link.js";
 import { ENSURE_ENGINE_HOST } from "./engine-protocol.js";
 
 /** The subset of a `chrome.runtime` port this package uses. */
@@ -52,7 +53,7 @@ export interface HostPort {
 
 /** The subset of `chrome.runtime` this package uses. */
 export interface HostRuntime {
-	/** Open a port to another extension context by name. */
+	/** Open a port to this extension's other contexts by name. */
 	connect(name: string): HostPort;
 	/** One-shot message to the service worker; resolves with its reply. */
 	sendToServiceWorker(message: unknown): Promise<unknown>;
@@ -149,7 +150,7 @@ export interface HostEnv {
 export function createBrowserHostEnv(): HostEnv {
 	const runtime = (globalThis as { chrome?: { runtime?: unknown } }).chrome?.runtime as
 		| {
-				connect?: (name: string) => HostPort;
+				connect?: (info: { name: string }) => BrowserPort;
 				sendMessage?: (message: unknown) => Promise<unknown>;
 		  }
 		| undefined;
@@ -160,7 +161,17 @@ export function createBrowserHostEnv(): HostEnv {
 				if (runtime?.connect === undefined) {
 					throw new Error("chrome.runtime.connect is unavailable in this context");
 				}
-				return runtime.connect(name);
+				// `chrome.runtime.connect(id?, info?)`: a BARE STRING is the
+				// *extension id*, not the port name. Passing the name that way
+				// throws `Invalid extension id: 'selis.engine.v1'` before any
+				// port exists - a failure no Node test can see, because the
+				// fakes take a name and return a loopback. Talking to this same
+				// extension is the `info` form with `name`.
+				//
+				// The returned Port is adapted to the test-shaped `HostPort`
+				// here: `onMessage`/`onDisconnect` are events on the real
+				// object, and the transport reads them as methods.
+				return hostPortOf(runtime.connect({ name }));
 			},
 			async sendToServiceWorker(message) {
 				if (runtime?.sendMessage === undefined) {

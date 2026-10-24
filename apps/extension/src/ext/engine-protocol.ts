@@ -65,18 +65,19 @@ import type { OutlineReport } from "../../../ui/src/viewer/navigation-wire.js";
 /** Protocol version, so a stale host fails loudly instead of mis-rendering. */
 export const ENGINE_PROTOCOL = 1;
 
-/** Name both ends connect with; the second is the reply direction's listener. */
+/**
+ * Name the viewer page connects with; the offscreen host receives it.
+ *
+ * The direction is the API's, not this package's: `runtime.connect` is the
+ * initiator's call, and the context that registers `onConnect` receives the
+ * port. The offscreen document is the receiver (`offscreen.js`), the viewer
+ * page is the initiator (`viewer-session.ts`), and the service worker
+ * registers no listener on purpose (REUSE.md) so document bytes never reach
+ * the context the browser kills.
+ */
 export const ENGINE_PORT_NAMES = {
 	/** The viewer page connects with this; the offscreen host answers on it. */
 	request: "selis.engine.v1",
-	/**
-	 * The offscreen host connects with this purely to *listen*. Chrome delivers
-	 * a connection to every extension context holding an `onConnect` listener,
-	 * the service worker included — and that one must never see a port which
-	 * can carry document bytes, so it deliberately has no listener
-	 * (`service-worker.js`).
-	 */
-	accept: "selis.engine.host.v1",
 } as const;
 
 /**
@@ -93,6 +94,21 @@ export const ENGINE_PORT_NAMES = {
  * message that carried document bytes would not be (24-BINDINGS-SPEC §5).
  */
 export const ENSURE_ENGINE_HOST = "selis/ensure-engine-host";
+
+/**
+ * The offscreen document's announcement that its `onConnect` listener is
+ * registered.
+ *
+ * `chrome.offscreen.createDocument` resolves when the document *exists*, not
+ * when its module has run, and `chrome.runtime.connect` does not queue: a port
+ * opened into a context that is not listening yet is dropped, which looks
+ * exactly like a hung engine. So the worker answers {@link ENSURE_ENGINE_HOST}
+ * only after this announcement - the one fact the document itself can report.
+ *
+ * It travels the other way from every other message here (document → worker)
+ * and carries nothing but its type.
+ */
+export const ENGINE_HOST_READY = "selis/engine-host-ready";
 
 /** Budget surface names, matching the Rust `SurfaceName` enum (`worker-glue.ts`). */
 export type WireSurface = "thumbnail" | "viewer" | "editor" | "batch" | "server";

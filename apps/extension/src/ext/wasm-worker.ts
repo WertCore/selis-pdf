@@ -90,10 +90,66 @@ export interface WorkerScope {
 	compile(bytes: ArrayBuffer): Promise<WebAssembly.Instance>;
 }
 
-/** The production compile step: the platform's, with no wrapper of its own. */
+/**
+ * The import object for the engine, from the module's own import list.
+ *
+ * The artifact is a `wasm-bindgen --target web` build, so it declares four
+ * generated shims rather than calling the host directly. Instantiating it with
+ * `{}` - what this file did until the SL-4.UI.06 browser check caught it -
+ * fails with `Import #0 "__wbindgen_placeholder__"` before a single byte of a
+ * document is read. The web host supplies the same four in
+ * `apps/web/host/public/assets/boot.js`.
+ *
+ * Every name is closed over: an import outside this set throws, so a
+ * wasm-bindgen upgrade that adds one fails loudly here instead of being
+ * quietly stubbed and surfacing later as a null dereference inside the engine.
+ */
+export function engineImports(
+	declared: readonly {
+		readonly module: string;
+		readonly name: string;
+		readonly kind: string;
+	}[],
+): WebAssembly.Imports {
+	const imports: WebAssembly.Imports = {};
+	for (const { module: mod, name, kind } of declared) {
+		if (kind !== "function") {
+			throw new Error(`unexpected engine import ${mod}::${name} (${kind})`);
+		}
+		let bucket = imports[mod];
+		if (bucket === undefined) {
+			bucket = {};
+			imports[mod] = bucket;
+		}
+		if (mod === "__wbindgen_placeholder__") {
+			if (name === "__wbindgen_describe") {
+				bucket[name] = () => {};
+			} else if (name.startsWith("__wbg___wbindgen_throw")) {
+				bucket[name] = () => {
+					throw new Error("the engine threw via the wasm-bindgen shim");
+				};
+			} else {
+				throw new Error(`unexpected engine import ${mod}::${name}`);
+			}
+		} else if (mod === "__wbindgen_externref_xform__") {
+			if (name === "__wbindgen_externref_table_set_null") {
+				bucket[name] = () => {};
+			} else if (name === "__wbindgen_externref_table_grow") {
+				bucket[name] = () => 0;
+			} else {
+				throw new Error(`unexpected engine import ${mod}::${name}`);
+			}
+		} else {
+			throw new Error(`unexpected engine import module ${mod}`);
+		}
+	}
+	return imports;
+}
+
+/** The production compile step: the platform's, with the engine's imports. */
 async function compileWithWebAssembly(bytes: ArrayBuffer): Promise<WebAssembly.Instance> {
 	const module = await WebAssembly.compile(bytes);
-	return await WebAssembly.instantiate(module, {});
+	return await WebAssembly.instantiate(module, engineImports(WebAssembly.Module.imports(module)));
 }
 
 /**

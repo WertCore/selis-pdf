@@ -20,6 +20,7 @@ import type {
 	FrameClock,
 	SurfaceSize,
 } from "../../../ui/src/viewer/surface.js";
+import type { TileEntry } from "../../../ui/src/viewer/tile-ladder.js";
 import {
 	type SurfaceRaster,
 	createAnimationFrameClock,
@@ -81,6 +82,11 @@ function tile(first: number) {
 	return { page: 0, width: 2, height: 2, format: "rgba8" as const, data };
 }
 
+/** A cached `TileEntry`, which is what the compositor puts on an op. */
+function entry(first: number): TileEntry {
+	return { page: 0, stage: "full", deviceScale: 1, tile: tile(first) };
+}
+
 function op(over: Partial<DrawOp> = {}): DrawOp {
 	return {
 		page: 0,
@@ -95,7 +101,7 @@ function op(over: Partial<DrawOp> = {}): DrawOp {
 		height: 200,
 		scaled: false,
 		provisional: false,
-		source: tile(7),
+		source: entry(7),
 		...over,
 	};
 }
@@ -148,18 +154,21 @@ describe("the main-thread surface (SL-4.EXT.06)", () => {
 		expect(calls.draws[0]).toMatchObject({ x: 10, y: 20, destWidth: 100, destHeight: 200 });
 	});
 
-	it("reads the tile's pixels", () => {
+	it("reads the tile carried by a cached entry", () => {
+		// `DrawOp.source` is the compositor's `TileEntry`, not the
+		// `RenderedTile` inside it. Treating the entry as the tile made every
+		// op a placeholder - the bug the SL-4.UI.06 browser check found.
 		const { raster, calls } = recorder();
 		const surface = createMainThreadSurface({ raster });
 		surface.configure(SIZE);
-		surface.draw(frame([op({ source: tile(200) })]));
+		surface.draw(frame([op({ source: entry(200) })]));
 		expect(calls.draws[0]?.firstPixel).toBe(200);
 	});
 
 	it("treats an op carrying no tile as a placeholder, not an error", () => {
 		// The compositor legitimately emits ops for tiles it does not have yet,
-		// and `DrawOp.source` is `unknown` precisely because the worker path
-		// puts an ImageBitmap there and this one puts a RenderedTile.
+		// and `DrawOp.source` is `unknown` precisely because a surface has to
+		// decide whether the handle it was given carries readable pixels.
 		const { raster, calls } = recorder();
 		const surface = createMainThreadSurface({ raster });
 		surface.configure(SIZE);

@@ -165,9 +165,10 @@ export interface DrawOp {
 	 */
 	readonly provisional: boolean;
 	/**
-	 * The pixels. An opaque handle from the caller's point of view — an
-	 * `ImageBitmap` for a worker surface, the `RenderedTile` for a main-thread
-	 * one. See {@link TileSurface.takesOwnership} for who owns it.
+	 * The pixels. An opaque handle from the caller's point of view: the cached
+	 * `TileEntry`. A worker surface serialises it to a key (the worker keeps its
+	 * own copy); a main-thread surface reads its `tile`. See
+	 * {@link TileSurface.takesOwnership} for who owns it.
 	 */
 	readonly source: unknown;
 }

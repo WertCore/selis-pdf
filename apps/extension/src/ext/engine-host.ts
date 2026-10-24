@@ -86,13 +86,50 @@ export function startEngineHost(options: {
 	/** Absolute URL of the core WASM chunk, inside the package. */
 	wasmUrl: string;
 }): EngineHost {
-	const { link, createWorker, wasmUrl } = options;
+	const host = startSharedEngineHost(options);
+	const stopServing = host.serve(options.link);
+	return {
+		engine: host.engine,
+		ready: host.ready,
+		stop() {
+			stopServing();
+			host.stop();
+		},
+	};
+}
+
+/** What {@link startSharedEngineHost} hands back. */
+export interface SharedEngineHost {
+	/** The one engine every viewer page talks to. */
+	readonly engine: EnginePort;
+	/** Resolves when the engine has compiled, or rejects with why it did not. */
+	ready(): Promise<void>;
+	/** Serve one viewer page's link. Returns that page's teardown. */
+	serve(link: EngineLink): () => void;
+	/** Stop serving every page and terminate the Worker. */
+	stop(): void;
+}
+
+/**
+ * The offscreen document's real composition: one engine, many viewer ports.
+ *
+ * Chrome delivers every `runtime.connect({ name })` to the contexts holding an
+ * `onConnect` listener, so the offscreen document is the receiver and the
+ * viewer pages are the initiators. Each delivered port gets its own
+ * `serveEngineHost` loop - that is where a page's document table lives, and
+ * its disconnect releases exactly that page's documents - while the WASM guest
+ * and its Worker stay shared. A second tab therefore opens a second document
+ * on the same compiled engine instead of paying for a second Worker.
+ */
+export function startSharedEngineHost(options: {
+	createWorker: () => WorkerLike;
+	/** Absolute URL of the core WASM chunk, inside the package. */
+	wasmUrl: string;
+}): SharedEngineHost {
+	const { createWorker, wasmUrl } = options;
 	const worker = createWorker();
 	const engine = createWasmEngine({ channel: worker, wasmUrl });
-	// The same engine serves the navigation questions (SL-4.UI.06): it is the
-	// engine that holds the document, so it is the engine that can walk the
-	// outline. A second engine would be a second document registry.
-	const stopHost = serveEngineHost({ link, engine, navigation: engine });
+	const serving = new Set<() => void>();
 
 	// Warm the compile. Deliberately not awaited and deliberately not
 	// reported: the first request that needs the engine surfaces the same
@@ -104,8 +141,19 @@ export function startEngineHost(options: {
 	return {
 		engine,
 		ready: () => ready,
+		serve(link) {
+			const stopServing = serveEngineHost({ link, engine, navigation: engine });
+			serving.add(stopServing);
+			return () => {
+				serving.delete(stopServing);
+				stopServing();
+			};
+		},
 		stop() {
-			stopHost();
+			for (const stopServing of [...serving]) {
+				stopServing();
+			}
+			serving.clear();
 			engine.dispose();
 		},
 	};

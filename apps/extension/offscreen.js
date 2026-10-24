@@ -5,11 +5,15 @@
  * spawned by the viewer dies with that page. Document bytes are allowed here
  * and nowhere else (24-BINDINGS-SPEC section 5).
  *
- * It connects a `chrome.runtime` port purely to LISTEN on the engine port
- * name. Chrome delivers a `runtime.connect` to every extension context
- * holding an `onConnect` listener, the service worker included - and the
- * service worker deliberately registers none, so a port carrying document
- * bytes is never delivered to a context that can be torn down mid-session.
+ * Chrome delivers every `chrome.runtime.connect({ name })` to the extension
+ * contexts holding an `onConnect` listener, so this document is the listener
+ * and each viewer page is an initiator. The service worker deliberately
+ * registers no listener: a port carrying document bytes must never be handed
+ * to the context the browser kills mid-session.
+ *
+ * One engine serves every page. `startSharedEngineHost` builds it once and
+ * gives each delivered port its own serve loop, so a second tab opens its
+ * document on the same compiled guest.
  *
  * SL-4.EXT.03: the engine is real now. It is a WASM guest owned by a Worker
  * this document spawns, so a long render does not stop the port from being
@@ -23,15 +27,12 @@
 import {
 	CORE_CHUNK_PATH,
 	ENGINE_WORKER_PATH,
-	startEngineHost,
+	startSharedEngineHost,
 } from "./extension/src/ext/engine-host.js";
-import { createPortLink } from "./extension/src/ext/engine-link.js";
-import { ENGINE_PORT_NAMES } from "./extension/src/ext/engine-protocol.js";
+import { createPortLink, hostPortOf } from "./extension/src/ext/engine-link.js";
+import { ENGINE_HOST_READY, ENGINE_PORT_NAMES } from "./extension/src/ext/engine-protocol.js";
 
-const link = createPortLink(chrome.runtime.connect({ name: ENGINE_PORT_NAMES.accept }));
-
-const host = startEngineHost({
-	link,
+const host = startSharedEngineHost({
 	// A module Worker from this package, by a literal path. The compiled
 	// script is a ship-list row, so the bundled-only gate knows about it;
 	// `chrome.runtime.getURL` is what turns that path into a same-origin URL
@@ -62,12 +63,27 @@ const host = startEngineHost({
 	wasmUrl: chrome.runtime.getURL(CORE_CHUNK_PATH),
 });
 
-// Closing the document is the only teardown there is: the port drops with it,
-// and `stop()` is what closes every document still open on the far side,
-// terminates the engine Worker, and releases the guest's heap. Before
-// SL-4.EXT.03 there was nothing to terminate, which is why the comment here
-// used to say there was nothing worth tearing down.
+// The receiver half of the link. One serve loop per viewer page, all on the
+// shared engine; a port with any other name is left to disconnect, because
+// nothing in this package connects with another.
+chrome.runtime.onConnect.addListener((port) => {
+	if (port.name !== ENGINE_PORT_NAMES.request) {
+		return;
+	}
+	host.serve(createPortLink(hostPortOf(port), "requests"));
+});
+
+// The listener above is the thing the worker waits for. `createDocument`
+// resolves before this module has run, and `connect` into a context that is
+// not listening is dropped rather than queued, so the worker answers the
+// viewer's `ensure` only once this announcement arrives.
+void chrome.runtime.sendMessage({ type: ENGINE_HOST_READY }).catch(() => {
+	// A worker that is not there to hear it is not a failure: the next
+	// `ensure` sees the document via `getContexts` and returns immediately.
+});
+
+// Closing the document is the only teardown there is: it terminates the
+// engine Worker, releases the guest's heap and drops every serve loop.
 globalThis.addEventListener("pagehide", () => {
 	host.stop();
-	link.close();
 });
