@@ -434,6 +434,12 @@ fn option_fields(options: &serde_json::Value) -> Result<Vec<(String, String)>, T
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::expect_used,
+        clippy::indexing_slicing
+    )]
+
     use super::*;
 
     fn request(op: u32, options: &[u8], files: &[(&str, &[u8])]) -> Vec<u8> {
