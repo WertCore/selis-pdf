@@ -168,6 +168,9 @@ pub fn atomic_write(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResu
 /// removed (`FileSink`'s drop).
 #[cfg(feature = "native-fs")]
 fn commit(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
+    if crate::memory::active() {
+        return crate::memory::write_output(output, bytes);
+    }
     let sink = selis_io::FileSink::create(output)
         .map_err(|e| CliError(format!("cannot create output {output}: {e}")))?;
     let mut sink: Box<dyn selis_io::DocSink> = Box::new(sink);

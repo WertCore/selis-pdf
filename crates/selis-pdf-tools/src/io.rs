@@ -2,18 +2,25 @@
 
 use crate::{CliError, CliResult};
 
+fn read_memory(path: &str) -> CliResult<Vec<u8>> {
+    crate::memory::read_input(path).ok_or_else(|| {
+        CliError(format!(
+            "cannot read {path}: input is not in the tool session"
+        ))
+    })
+}
+
 /// Read an input document by path.
 #[cfg(feature = "native-fs")]
 pub(crate) fn read_file(path: &str) -> CliResult<Vec<u8>> {
+    if crate::memory::active() {
+        return read_memory(path);
+    }
     std::fs::read(path).map_err(|e| CliError(format!("cannot read {path}: {e}")))
 }
 
 /// Read an input document from the in-memory table.
 #[cfg(not(feature = "native-fs"))]
 pub(crate) fn read_file(path: &str) -> CliResult<Vec<u8>> {
-    crate::memory::read_input(path).ok_or_else(|| {
-        CliError(format!(
-            "cannot read {path}: input is not in the tool session"
-        ))
-    })
+    read_memory(path)
 }

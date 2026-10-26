@@ -215,6 +215,19 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 fn run_request(request: &[u8]) -> Vec<u8> {
+    // The session table is process-wide, and `clear()` at the edges means two
+    // concurrent requests would erase each other's inputs. The page runs one
+    // request at a time; the lock makes the native test binary obey that too.
+    // Recover from a poisoned lock: a caught panic must not poison the next
+    // browser operation.
+    static REQUEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _serial = REQUEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A workspace test unifies the CLI's `native-fs` feature into this crate.
+    // The guard keeps this request on the in-memory backend regardless, so the
+    // browser protocol is tested against the browser I/O boundary.
+    let _memory = selis_pdf_tools::MemorySession::activate();
     // A failed operation must never leave a previous result reachable.
     selis_pdf_tools::clear();
     let result = parse_and_run(request);

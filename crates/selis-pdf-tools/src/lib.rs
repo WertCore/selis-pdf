@@ -39,7 +39,7 @@ pub mod write_gate;
 
 use selis_sandbox::Clock;
 
-pub use memory::{clear, insert_input, take_output};
+pub use memory::{clear, insert_input, take_output, MemorySession};
 pub use verify_report::Verification;
 
 /// A tool operation failure.
