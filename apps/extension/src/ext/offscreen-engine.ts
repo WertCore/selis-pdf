@@ -243,9 +243,17 @@ async function runOne(
 			return ack;
 		}
 		case "render": {
+			const doc = requireDoc(documents, request.doc);
+			// The host owns the document table, so it is the second of the
+			// three points that refuse an out-of-range page with the seam's
+			// 6001 instead of letting the engine answer 1301.
+			const reason = outOfRangePage(request.page, doc.pageCount);
+			if (reason !== null) {
+				throw AdapterError.badArgument(reason);
+			}
 			const tile = await requireEngine().renderTile(
 				{
-					doc: requireDoc(documents, request.doc),
+					doc,
 					page: request.page,
 					scale: request.scale,
 					...(request.rect === undefined ? {} : { rect: request.rect }),

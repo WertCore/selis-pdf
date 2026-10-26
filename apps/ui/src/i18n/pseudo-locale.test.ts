@@ -99,6 +99,7 @@ function renderedStrings(): readonly string[] {
 		viewer.navigation.moved("Page iv"),
 		viewer.navigation.thumbnailsLabel,
 		viewer.navigation.thumbnailItem("Page 2 of 900"),
+		viewer.navigation.linkLabel,
 		viewer.navigation.externalTitle,
 		viewer.navigation.externalBody("https://example.com/a.pdf", "example.com"),
 		viewer.navigation.externalConfirm,

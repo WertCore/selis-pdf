@@ -45,10 +45,18 @@ sections; every entry states what changed and what it means for the user.
   prompt from the same controllers the web viewer uses, and a real-browser check
   of the **packed** extension proves the route end to end — the document opens
   in the offscreen WASM engine, the outline and page tiles compose, and pressing
-  the second bookmark changes the announced page, the current row, the scroll
-  position and the canvas pixels. What the extension still does not have is a
-  canvas click overlay (so the prompt has no on-page trigger yet) and a
-  thumbnail rail.
+  the second bookmark changes the announced page, the current row, the rail's
+  current page, the scroll position and the canvas pixels. **The rail, link
+  overlay and page key map are in too** (2026-10-24): the extension shows page
+  thumbnails, paints each page's link annotations as transparent on-page
+  controls, opens the external-link prompt from a real click, and lets
+  `ArrowUp`/`ArrowDown`/`PageUp`/`PageDown`/`Home`/`End` move by page instead of
+  letting the browser scroll by a line. The browser check clicks a real `/Link`
+  annotation, cancels the prompt, and dispatches `ArrowUp` on the stage; it
+  asserts six witnesses for the bookmark move. The shared page-number rule now
+  covers page rendering as well: an out-of-range `renderTile` is
+  `BINDING_BAD_ARGUMENT` (6001) at the page, host and guest edges, the same as
+  `pageLinks`, so the obsolete 1301 alias is no longer exposed.
 - CJK fallback no longer needs the 100 MB payload (SL-3.FONT.10, engine
   side): the viewer ships a subsetted CJK core, fetches the remaining
   Unicode ranges as separately-loadable chunk files on demand, and through

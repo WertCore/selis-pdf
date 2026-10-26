@@ -17,6 +17,12 @@
  *     Direct destinations rather than a named tree: the named-destination
  *     resolution already has its own coverage on the web leg, and this fixture
  *     exists to prove the ROW works, not the resolver.
+ *   - **One external link annotation on page one.** The mount clicks it and
+ *     proves the prompt opens with the destination verbatim; without an
+ *     annotation on the page the overlay would have nothing to place and the
+ *     browser leg would be unable to distinguish "no links" from "the overlay
+ *     never ran". The rectangle is the page's upper red box, so the link is
+ *     inside the first stage viewport without scrolling.
  *
  * Page size is 200x200pt for the same cost reason the web leg records: at the
  * viewer's render DPI a Letter page is tens of megabytes of raster, and a
@@ -43,8 +49,9 @@ const objects = [
 	"<< /Type /Catalog /Pages 2 0 R /Outlines 7 0 R >>",
 	// 2: the page tree.
 	"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
-	// 3: page one — red over blue, both at the left margin.
-	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 5 0 R >>",
+	// 3: page one — red over blue, both at the left margin, and the external
+	// link over the red box (object 10).
+	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 5 0 R /Annots [10 0 R] >>",
 	// 4: page two — green over red, both at the right, so the two rasters
 	// cannot be mistaken for one another.
 	"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 6 0 R >>",
@@ -60,6 +67,8 @@ const objects = [
 	"<< /Title (First layer) /Parent 7 0 R /Dest [3 0 R /Fit] /Next 9 0 R >>",
 	// 9: entry two — page two.
 	"<< /Title (Second layer) /Parent 7 0 R /Dest [4 0 R /Fit] >>",
+	// 10: page one's external link, over the red box (20..100 x 120..160).
+	"<< /Type /Annot /Subtype /Link /Rect [20 120 100 160] /Border [0 0 0] /A << /S /URI /URI (https://example.com/a) >> >>",
 ];
 
 const parts = [];

@@ -30,31 +30,26 @@ rows because the mounted modules import them at run time.
 
 | Shipped | Why it is here |
 |---|---|
-| `extension/src/viewer-view.js` | This package's own composition. `mountViewerView` builds the page canvas, the outline panel, the external-link prompt and a notes host around the controllers below, fetches destinations in parallel with the outline's first load, and repaints from the states the controllers publish. The web shell's `boot.js` is the other host's half of the same composition. |
+| `extension/src/viewer-view.js` | This package's own composition. `mountViewerView` builds the page canvas, the outline panel, the thumbnail rail, the canvas link overlay, the external-link prompt and a notes host around the controllers below, fetches destinations and labels in parallel with the outline's first load, and repaints from the states the controllers publish. The web shell's `boot.js` is the other host's half of the same composition. |
 | `ui/src/viewer/navigation.js`, `outline.js` | The real outline controller — `role="tree"`/`treeitem`, roving tabindex, its own key handling — and the row arithmetic both the controller and the mount use. The asymmetry with the web host is real: the web page (plan 14, 2026-10-22) renders a plain nested `<ul>` and does not mount this controller, so this package's page is where ArrowDown first actually moves focus inside its own outline. |
 | `ui/src/viewer/page-list.js`, `compositor.js`, `tile-ladder.js` | The page canvas. `createPageList` owns the window, the scroll offset and the tile ladder; `page-list.js` imports `tile-ladder.js` at run time, and the mount drives `createTileCompositor` itself. |
-| `ui/src/viewer/layout.js`, `windowing.js`, `anchoring.js` | The layout, window and scroll-anchor arithmetic `page-list.js` imports. |
-| `ui/src/viewer/links.js`, `page-labels.js` | Link-decision policy and label formatting, imported by `navigation.js`. |
-| `ui/src/viewer/keyboard.js` | Shared by `navigation.js` for the tree keys and by the mount, which consults `resolveNavigationKey` only inside the outline tree. |
+| `ui/src/viewer/thumbnails.js` | The thumbnail rail controller: the same tile ladder at a fixed width, windowed with its own `TileScheduler`. The mount measures it, paints its previews into canvases and calls `setCurrentPage` from the page list's publication. |
+| `ui/src/viewer/layout.js`, `windowing.js`, `anchoring.js` | The layout, window and scroll-anchor arithmetic `page-list.js` and `thumbnails.js` import. |
+| `ui/src/viewer/links.js`, `page-labels.js` | Link-decision policy and label formatting, imported by `navigation.js`; the mount reads the label ranges once more for the rail. |
+| `ui/src/viewer/keyboard.js` | Shared by `navigation.js` for the outline tree and by `page-list.js` for the stage's page keys; the mount wires both, and prevents native scrolling only when the page-list controller claims the key. |
 | `ui/src/viewer/strings.js`, `ui/src/i18n/pseudo-locale.js` | The navigation and page-list catalogues and their factories; `strings.js` imports the pseudo-locale at run time, so it ships rather than being erased with the types. |
 | `ui/src/viewer/navigation.css`, `page-list.css` | Linked by `viewer.html` as `shared-asset` rows, verbatim like the ui-kit pair. |
 
-Still out: `thumbnails.ts` (the rail), the search panel, and anything the
-viewer page has no call site for — the same policy as before, applied to a
-longer list. And `keyboard.js` shipping does not mean the page claims keys:
-there is no key map for the page tiles — native scrolling moves the pages, and
-the outline tree is the only place the mount consults `resolveNavigationKey`.
+Still out: the search panel and anything the viewer page has no call site for —
+the same policy as before, applied to a longer list. The rail ships now, and the
+stage claims its page keys: `viewer-view.ts` calls `list.handleKey` for a
+keydown on the scroller and prevents the native scroll only when the controller
+returns a state, so `ArrowUp`/`ArrowDown`/`PageUp`/`PageDown`/`Home`/`End` move by
+page rather than by a browser-dependent line.
 
-One inherited defect is recorded rather than forked. Upstream `navigation.css`
-is missing the closing brace of the rule at its line 127, so everything after
-it in the file — the thumbnail boxes, the dialog backdrop, the dialog, the
-URL, the actions row and the forced-colours block — parses as sitting *inside*
-that rule, or is dropped by a stricter parser; either way it stops matching
-anything. The rules up to the break still apply, which is why the tree renders
-correctly and the visible consequence on the extension page is exactly that
-`.selis-navigation__dialog`/`__url`/`__actions` render unstyled. The fix
-belongs to `apps/ui`'s owner; forking the sheet here would end the verbatim
-reuse that is the whole point of the row.
+The inherited missing-brace defect in `navigation.css` (rule at line 127) was
+fixed in `eb33931`; the rules after it parse again, which is why the rail and
+the prompt are styled on the extension page without forking the sheet.
 
 `PACKAGE_ENTRIES` in `src/bundle-paths.ts` is the authority. The bundled-only
 gate fails on any file in the package that is not on that list, and on any
@@ -288,16 +283,28 @@ viewer page. A command-line navigation straight to the extension URL is
 refused by the engine with `ERR_BLOCKED_BY_CLIENT`; the launcher navigates
 there instead after 500 ms.
 
-The check asserts the two claims this task exists for. **The panels:** two
+The check asserts the whole surface this task exists for. **The panels:** two
 outline rows carrying the document's own titles and `Page N of 2` labels, two
-page tiles, and a live region. **The move:** pressing the second bookmark
-changes five witnesses — both live announcements, the current outline row, the
-current page tile, the scroller's `scrollTop`, and a sampled hash of the canvas
-pixels. Measured on this machine, with the engine built by `wasm-opt -O3`:
-compose 278 ms, whole run 492 ms; the canvas hash moves `c68900ff` ->
-`8d0e51f4`, and 278 of 3,106 sampled pixels are ink. The pixel witness counts
-pixels that differ from the page background because the canvas is created
+page tiles, a thumbnail rail with two painted preview canvases, and a live region. **The link:**
+the page's real `/Link` annotation is painted as a transparent control whose own
+centre hit-tests to that control; activating it opens the external-link prompt
+with the destination verbatim and `data-host="example.com"`, and cancelling
+closes it. **The move:** pressing the
+second bookmark changes six witnesses — both live announcements, the current
+outline row, the current page tile, the rail's current page, the scroller's
+`scrollTop`, and a sampled hash of the canvas pixels. **The stage key map:**
+dispatching `ArrowUp` on the focused scroller claims the key
+(`defaultPrevented`), returns the outline/rail to page 1, scrolls back, and
+repaints the canvas. Measured on this machine, with the engine built by
+`wasm-opt -O3`: compose 400 ms, whole run 783 ms; the bookmark press moves the
+canvas hash `c68900ff` -> `8d0e51f4` (278 of 3,106 sampled pixels inked), and
+`ArrowUp` moves it again to `13df0979`. The pixel witness counts pixels that
+differ from the page background because the canvas is created
 `{ alpha: false }`; counting alpha would call a blank white page inked.
+
+CI's Ubuntu runner also loaded the same packed extension: run
+`40069426336` at `e6adf7a` had `browser-check` green with all five checks and
+`test-fast` green.
 
 **Five real-API defects, all fixed, all invisible in Node:**
 
@@ -323,31 +330,26 @@ pixels that differ from the page background because the canvas is created
    thousands of inked pixels. `worker-surface.ts` documents the real shape; the
    surface now unwraps `.tile`, and `surface.test.ts` feeds it a real entry.
 
-The package after the panels and these fixes: **53 files, 3,498,633 raw bytes /
-930,096 brotli**; the shell is **616,524 of 1,000,000** (61.7%), and the engine
-**2,882,109 raw / 754,631 brotli of 2,000,000** after `wasm-opt -O3`. The
-extension suite is 19 files, **403 passed, one skipped**.
+The package after the rail, link overlay, key map and these fixes: **54 files,
+3,531,172 raw bytes / 937,818 brotli**; the shell is **649,063 of 1,000,000**
+(64.9%), and the engine **2,882,109 raw / 754,631 brotli of 2,000,000** after
+`wasm-opt -O3`. The extension suite is 19 files, **405 passed, one skipped**.
 
 ### What is still missing on the extension's side
 
-The bookmark tree, the page canvas and the prompt are mounted now (SL-4.UI.06's
-extension half): `src/viewer-view.ts` drives the real `createNavigation` and
-`createPageList` against the navigation port, as the row table in "What
-actually ships" records. The browser check above measures that they compose
-and that a bookmark moves the reader. What still does not come with them:
+The bookmark tree, page canvas, thumbnail rail, canvas link overlay, prompt and
+page-list key map are mounted now (SL-4.UI.06's extension half):
+`src/viewer-view.ts` drives the real `createNavigation`, `createPageList` and
+`createThumbnailRail` against the navigation port, as the row table in "What
+actually ships" records. The browser check above measures that they compose,
+that a link opens and cancels the prompt, that a bookmark moves the reader and
+the rail, and that `ArrowUp` moves back.
 
-- **A canvas click overlay.** Nothing intercepts a click on the rendered
-  canvas, so `controller.activateLink` — and with it the prompt — is reachable
-  through tests only (`viewer-view.test.ts` drives the prompt from the
-  controller's `pendingExternal`). The prompt is real; its trigger is a
-  separate slice.
-- **A key map for the page tiles.** Native scrolling moves the pages; the
-  mount claims keys only inside the outline tree.
-- **The thumbnail rail.** `thumbnails.ts` is still not shipped.
-- **A visual judgement of the panels.** The browser check measures that they
-  exist and that a bookmark moves the reader; it does not judge spacing,
-  contrast, or the prompt's readability. The prompt's only trigger is still the
-  controller, because the canvas click overlay above is still missing.
+What remains is **a visual judgement of the panels**: the browser check measures
+that they exist and that the moves happen; it does not judge spacing, contrast,
+or the prompt's readability on a real screen. The prompt's focus return after
+cancel is wired through the controller and exercised by tests, but it is part of
+that same manual pass.
 
 ## The gate, and the bug it did not catch
 

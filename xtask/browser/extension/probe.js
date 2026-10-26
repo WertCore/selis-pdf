@@ -52,8 +52,16 @@
 	/** How long the raster may stay blank after the mount appears; the
 	 * compositor paints on animation frames, so this is frames, not work. */
 	var INK_WAIT_MS = 10000;
-	/** How long a press may take to show all four witnesses. */
+	/** How long a press may take to show all six witnesses. */
 	var CHANGE_WAIT_MS = 8000;
+	/** How long the first page's link overlay may take to arrive. */
+	var LINK_WAIT_MS = 8000;
+	/** How long the rail's previews may take to paint before the snapshot. */
+	var PREVIEW_WAIT_MS = 5000;
+	/** How long the prompt may take to open or close. */
+	var PROMPT_WAIT_MS = 3000;
+	/** How long one stage key may take to paint the previous page. */
+	var KEY_WAIT_MS = 6000;
 
 	var startedAt = Date.now();
 	var finished = false;
@@ -75,7 +83,10 @@
 		mount: null,
 		outline: null,
 		pageList: null,
+		rail: null,
+		link: null,
 		press: null,
+		key: null,
 	};
 
 	function text(element) {
@@ -261,6 +272,12 @@
 		return -1;
 	}
 
+	/** The page number the rail itself marks current, or null when none is. */
+	function currentRailPage() {
+		var current = document.querySelector('[data-role="thumbnail"][aria-current="page"]');
+		return current === null ? null : current.getAttribute("data-page");
+	}
+
 	/** One instant of everything the press must be shown to have changed. */
 	function snapshot() {
 		var targets = outlineTargets();
@@ -273,6 +290,7 @@
 			currentRow: current,
 			currentRowPage: current === -1 ? null : targets[current].getAttribute("data-page"),
 			currentTile: tile === null ? null : tile.getAttribute("aria-label"),
+			railCurrent: currentRailPage(),
 			scrollTop: scroller === null ? null : scroller.scrollTop,
 			ink: canvasInk(),
 		};
@@ -289,6 +307,9 @@
 			notes: notes(),
 			pageLive: text(document.querySelector('[data-role="page-list-live"]')),
 			navLive: text(document.querySelector('[data-role="navigation-live"]')),
+			rail: document.querySelectorAll('[data-role="thumbnail"]').length,
+			links: document.querySelectorAll('[data-role="page-link"]').length,
+			prompt: document.querySelector('[data-role="external-prompt"]') !== null,
 			canvas:
 				canvas === null
 					? null
@@ -296,7 +317,7 @@
 		};
 	}
 
-	// ── The three steps ─────────────────────────────────────────────────────
+	// ── The measured stages ────────────────────────────────────────────────
 
 	/** Whether the mount has composed enough to be read: the frame, at least
 	 * one outline row to press, a live region, and a sized raster. */
@@ -312,6 +333,12 @@
 			return false;
 		}
 		if (outlineTargets().length < 2) {
+			return false;
+		}
+		if (document.querySelector('[data-role="thumbnail-rail"]') === null) {
+			return false;
+		}
+		if (document.querySelectorAll('[data-role="thumbnail"]').length < 1) {
 			return false;
 		}
 		var canvas = raster();
@@ -354,11 +381,189 @@
 				return;
 			}
 			if (ink !== null && ink.inkPixels > 0) {
-				pressRow();
+				visitLink();
 				return;
 			}
 			if (Date.now() >= deadline) {
 				fatal("the page raster stayed blank after the mount composed", diagnostics());
+				return;
+			}
+			setTimeout(poll, POLL_MS);
+		};
+		poll();
+	}
+
+	/**
+	 * Click the fixture's external link, prove the prompt opened, then cancel it.
+	 *
+	 * The links live on the page tiles, not in the sidebar, so this is the only
+	 * witness that the canvas overlay is real. It runs before the outline press
+	 * because page 0 is the page that carries them.
+	 */
+	function visitLink() {
+		report.stage = "link";
+		var deadline = Date.now() + LINK_WAIT_MS;
+		var poll = function () {
+			if (finished) {
+				return;
+			}
+			var links = all('[data-role="page-link"]');
+			if (links.length > 0) {
+				var chosen = links[0];
+				for (var index = 0; index < links.length; index += 1) {
+					if (links[index].getAttribute("data-action-kind") === "uri") {
+						chosen = links[index];
+						break;
+					}
+				}
+				revealLink(chosen, links, 0);
+				return;
+			}
+			if (Date.now() >= deadline) {
+				fatal("the page rendered no link overlay after the raster inked", diagnostics());
+				return;
+			}
+			setTimeout(poll, POLL_MS);
+		};
+		poll();
+	}
+
+	/**
+	 * Bring the link into the stage before hit-testing it.
+	 *
+	 * The fixture's link sits near the bottom of a page that is taller than the
+	 * stage, so its centre can start below the viewport. `scrollIntoView` on the
+	 * control scrolls the page-list scroller (the nearest scrollable ancestor),
+	 * which is exactly where a reader would scroll to reach it. Three frames is
+	 * enough for the scroll and the page-list repaint to settle; if the control
+	 * still cannot be hit, the report says so and the verdict fails.
+	 */
+	function revealLink(chosen, links, attempt) {
+		var box = chosen.getBoundingClientRect();
+		var cx = box.left + box.width / 2;
+		var cy = box.top + box.height / 2;
+		if (
+			attempt < 3 &&
+			(cx < 0 || cx > globalThis.innerWidth || cy < 0 || cy > globalThis.innerHeight)
+		) {
+			chosen.scrollIntoView({ block: "center", inline: "center" });
+			setTimeout(function () {
+				revealLink(chosen, links, attempt + 1);
+			}, 80);
+			return;
+		}
+		box = chosen.getBoundingClientRect();
+		cx = box.left + box.width / 2;
+		cy = box.top + box.height / 2;
+		var hit =
+			box.width > 0 && box.height > 0 && cy >= 0 && cy <= globalThis.innerHeight
+				? document.elementFromPoint(cx, cy)
+				: null;
+		report.link = {
+			found: true,
+			count: links.length,
+			page: chosen.getAttribute("data-page"),
+			actionKind: chosen.getAttribute("data-action-kind"),
+			label: chosen.getAttribute("aria-label") || "",
+			// The programmatic click below proves the handler; this proves
+			// the rectangle is the topmost thing at its own centre, which
+			// is what makes a pointer able to reach it at all.
+			hit: hit !== null && (hit === chosen || chosen.contains(hit)),
+			hitRole: hit === null ? null : hit.getAttribute("data-role"),
+			hitTag: hit === null ? null : hit.tagName,
+			box: {
+				x: box.left,
+				y: box.top,
+				width: box.width,
+				height: box.height,
+			},
+			viewport: {
+				width: globalThis.innerWidth,
+				height: globalThis.innerHeight,
+			},
+			prompt: null,
+			closed: false,
+		};
+		chosen.click();
+		waitForPrompt();
+	}
+
+	function waitForPrompt() {
+		report.stage = "prompt";
+		var deadline = Date.now() + PROMPT_WAIT_MS;
+		var poll = function () {
+			if (finished) {
+				return;
+			}
+			var prompt = document.querySelector('[data-role="external-prompt"]');
+			if (prompt !== null) {
+				var cancel = prompt.querySelector('[data-role="external-cancel"]');
+				report.link.prompt = {
+					title: text(prompt.querySelector('[data-role="external-question"]')),
+					body: text(prompt.querySelector('[data-role="external-url"]')),
+					host: prompt.getAttribute("data-host") || "",
+					cancel: text(cancel),
+				};
+				if (cancel === null) {
+					fatal("the external-link prompt carried no cancel button", diagnostics());
+					return;
+				}
+				cancel.click();
+				waitForClose();
+				return;
+			}
+			if (Date.now() >= deadline) {
+				fatal("clicking the page link opened no external-link prompt", diagnostics());
+				return;
+			}
+			setTimeout(poll, POLL_MS);
+		};
+		poll();
+	}
+
+	function waitForClose() {
+		report.stage = "prompt-close";
+		var deadline = Date.now() + PROMPT_WAIT_MS;
+		var poll = function () {
+			if (finished) {
+				return;
+			}
+			if (document.querySelector('[data-role="external-prompt"]') === null) {
+				report.link.closed = true;
+				waitForPreviews();
+				return;
+			}
+			if (Date.now() >= deadline) {
+				fatal("the external-link prompt did not close on cancel", diagnostics());
+				return;
+			}
+			setTimeout(poll, POLL_MS);
+		};
+		poll();
+	}
+
+	/**
+	 * Wait for the rail's previews before taking the snapshot.
+	 *
+	 * The rail has its own scheduler and its own rung plan; the page canvas can
+	 * be inked before the first thumbnail reaches a rung. The snapshot is what
+	 * the verdict reads, so wait for the two pages' previews rather than racing
+	 * a smaller document on a slower machine. The timeout is not a pass: if the
+	 * count never arrives, `pressRow` records it and the verdict fails.
+	 */
+	function waitForPreviews() {
+		report.stage = "previews";
+		var deadline = Date.now() + PREVIEW_WAIT_MS;
+		var poll = function () {
+			if (finished) {
+				return;
+			}
+			var thumbnails = document.querySelectorAll('[data-role="thumbnail"]').length;
+			var painted = document.querySelectorAll(
+				'[data-role="thumbnail"] canvas.selis-thumbnail__preview',
+			).length;
+			if ((thumbnails > 0 && painted >= thumbnails) || Date.now() >= deadline) {
+				pressRow();
 				return;
 			}
 			setTimeout(poll, POLL_MS);
@@ -395,6 +600,18 @@
 			scrollTop: document.querySelector('[data-role="page-list-scroll"]').scrollTop,
 			scrollHeight: document.querySelector('[data-role="page-list-scroll"]').scrollHeight,
 			clientHeight: document.querySelector('[data-role="page-list-scroll"]').clientHeight,
+		};
+		var railElement = document.querySelector('[data-role="thumbnail-rail"]');
+		report.rail = {
+			present: railElement !== null,
+			label: text(document.querySelector('[data-role="thumbnail-heading"]')),
+			thumbnails: document.querySelectorAll('[data-role="thumbnail"]').length,
+			previews: document.querySelectorAll(
+				'[data-role="thumbnail"] canvas.selis-thumbnail__preview',
+			).length,
+			currentPage: currentRailPage(),
+			scrollHeight: railElement === null ? 0 : railElement.scrollHeight,
+			clientHeight: railElement === null ? 0 : railElement.clientHeight,
 		};
 
 		// The row for the document's LAST page - page index 1 in this fixture.
@@ -443,13 +660,81 @@
 				live: after.live !== before.live,
 				navLive: after.navLive !== before.navLive,
 				currentRow: after.currentRow !== before.currentRow,
+				railCurrent: after.railCurrent !== before.railCurrent,
 				scrollTop: after.scrollTop !== before.scrollTop,
 			};
-			// The three the verdict treats as the move itself; the others are
-			// recorded so a red run says which witness disagreed.
-			if ((changed.ink && changed.live && changed.currentRow) || Date.now() >= deadline) {
+			// The six the verdict treats as the move itself; the others are
+			// recorded so a red run says which witness disagreed. The rail's
+			// current page is part of the wait because it is a second
+			// controller updating from the same page-list publication.
+			if (
+				(changed.ink && changed.live && changed.currentRow && changed.railCurrent) ||
+				Date.now() >= deadline
+			) {
 				report.press.after = after;
 				report.press.changed = changed;
+				pressKey();
+				return;
+			}
+			setTimeout(poll, POLL_MS);
+		};
+		poll();
+	}
+
+	/**
+	 * The stage's own key map, after the bookmark move: ArrowUp must go back a
+	 * page and the shell must claim the key instead of letting the browser
+	 * scroll by a line. A synthetic event exercises the same listener a keyboard
+	 * does; `defaultPrevented` is the witness that the listener claimed it.
+	 */
+	function pressKey() {
+		report.stage = "key";
+		var scroller = document.querySelector('[data-role="page-list-scroll"]');
+		if (scroller === null) {
+			fatal("the page-list scroller disappeared before the key probe", diagnostics());
+			return;
+		}
+		scroller.focus();
+		var before = snapshot();
+		var event = new KeyboardEvent("keydown", {
+			key: "ArrowUp",
+			bubbles: true,
+			cancelable: true,
+		});
+		scroller.dispatchEvent(event);
+		report.key = {
+			attempted: true,
+			key: "ArrowUp",
+			prevented: event.defaultPrevented,
+			before: before,
+			after: null,
+			moved: false,
+		};
+		var deadline = Date.now() + KEY_WAIT_MS;
+		var poll = function () {
+			if (finished) {
+				return;
+			}
+			var after = snapshot();
+			var moved =
+				after.currentRow !== before.currentRow ||
+				after.railCurrent !== before.railCurrent ||
+				after.scrollTop !== before.scrollTop;
+			// Wait for the whole move, not the first witness: the row can
+			// update on the controller's publication before the canvas has
+			// painted the previous page. The final state is the claim.
+			var settled =
+				after.currentRow === 0 &&
+				after.railCurrent === "0" &&
+				after.scrollTop < before.scrollTop &&
+				before.ink !== null &&
+				after.ink !== null &&
+				before.ink.hash !== null &&
+				after.ink.hash !== null &&
+				after.ink.hash !== before.ink.hash;
+			if (settled || Date.now() >= deadline) {
+				report.key.after = after;
+				report.key.moved = moved;
 				report.stage = "done";
 				finish();
 				return;

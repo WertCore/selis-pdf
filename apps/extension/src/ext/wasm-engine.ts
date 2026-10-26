@@ -363,6 +363,17 @@ export function createWasmEngine(options: {
 		request: RenderTileRequest,
 		options?: AdapterRequestOptions,
 	): Promise<RenderedTile> {
+		// The guest would answer an out-of-range page with `PAGE_OUT_OF_RANGE`
+		// (1301), which is about its numbering, not this seam's. The same
+		// three-point rule as `pageLinks` applies here: refuse with 6001 before
+		// the guest is asked.
+		if (options?.signal?.aborted === true) {
+			throw AdapterError.cancelled();
+		}
+		const reason = outOfRangePage(request.page, request.doc.pageCount);
+		if (reason !== null) {
+			throw AdapterError.badArgument(reason);
+		}
 		const scale = request.scale;
 		const pageHeight = request.doc.pageSizes[request.page]?.height ?? 0;
 		const tile =

@@ -80,6 +80,37 @@
 	outline-offset: var(--selis-space-1);
 }
 
+/* Link annotations (SL-4.UI.06). The page tile is the positioned box; this
+ * layer is the transparent part of it that carries one control per annotation.
+ * `pointer-events: none` on the layer means the tile's own hit area is
+ * unchanged; only the rectangles the document named take a click. */
+.selis-page-link-overlay {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.selis-page-link {
+	position: absolute;
+	inset-block-start: var(--link-y, 0px);
+	inset-inline-start: var(--link-x, 0px);
+	width: var(--link-w, 0px);
+	height: var(--link-h, 0px);
+	padding: 0;
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+	pointer-events: auto;
+}
+
+/* The rectangle is document geometry, so the ring is the only visual the
+ * viewer adds. `outline` keeps that ring from changing the rectangle's box. */
+.selis-page-link:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: 0;
+}
+
 /* The bitmap itself, sized by the compositor (UI.03) to the tile's device
  * pixels. `max-width: 100%` keeps a stale bitmap from ever widening a box. */
 .selis-page-tile__image {

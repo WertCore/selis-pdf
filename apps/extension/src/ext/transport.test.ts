@@ -375,6 +375,49 @@ describe("the navigation transport (SL-4.UI.06)", () => {
 		});
 	});
 
+	it("refuses an out-of-range render with the same 6001 the seam uses", async () => {
+		// The render path had the engine's 1301 for the same page-number
+		// mistake; one rule now covers every per-page read at all three points,
+		// so the page side never sends the request that would earn 1301.
+		const { client } = connected();
+		const doc = await client.open(sampleDescriptor());
+		await expect(client.renderTile({ doc, page: doc.pageCount, scale: 1 })).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+			docState: "Unchanged",
+		});
+	});
+
+	it("refuses an out-of-range render at the host too, when a raw request skips the page", async () => {
+		// The page-side check is the first of three. This posts the wire request
+		// directly so the host's own check is exercised rather than hidden by
+		// the client's earlier refusal.
+		const { link, client } = connected();
+		const doc = await client.open(sampleDescriptor());
+		const reply = await new Promise<unknown>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("no host reply")), 2000);
+			const off = link.client.subscribe((message) => {
+				if (message.id !== 4242) {
+					return;
+				}
+				off();
+				clearTimeout(timer);
+				resolve(message);
+			});
+			link.client.post({
+				v: 1,
+				id: 4242,
+				op: "render",
+				doc: doc.id,
+				page: doc.pageCount,
+				scale: 1,
+			});
+		});
+		expect(reply).toMatchObject({
+			ok: false,
+			error: { code: ErrorCode.BindingBadArgument, docState: "Unchanged" },
+		});
+	});
+
 	it("refuses with BINDING_UNSUPPORTED_OP when the host cannot read outlines", async () => {
 		// A host without the capability is a *capability* fact, not a
 		// malformed request: 6017, not 6001. The two are what let a viewer

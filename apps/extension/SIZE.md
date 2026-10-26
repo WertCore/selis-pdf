@@ -140,15 +140,16 @@ Re-measured after SL-4.EXT.07 (the options page) and SL-3.FONT.10 (the bundled
 CJK core): **package 4,523,037 raw (56.5%), engine 4,279,475 raw / 1,357,411
 brotli (67.9% of the engine budget), shell 243,562 raw (24.4%)** — 31 files.
 
-Re-measured on 2026-10-24, after SL-4.UI.06 mounted the navigation panels and the
-browser check began loading the packed extension: **package 3,498,633 raw
-(43.7%), engine 2,882,109 raw / 754,631 brotli (37.7% of the engine budget),
-shell 616,524 raw (61.7%)** — 53 files. The engine figures are the first from
-the rebuilt `wasm32-unknown-unknown` artifact with `wasm-opt -O3`; the older
-ones came from a wasm-bindgen-processed artifact that carried far more import
-scaffolding. The shell grew by ~373 KB with the mounted viewer — the navigation
-controllers, page list, compositor, tile ladder and their stylesheets — and is
-the number to watch when the thumbnail rail lands.
+Re-measured on 2026-10-24, after SL-4.UI.06 mounted the navigation panels,
+thumbnail rail, link overlay and page-list key map, and the browser check began
+loading the packed extension: **package 3,531,172 raw (44.1%), engine 2,882,109
+raw / 754,631 brotli (37.7% of the engine budget), shell 649,063 raw (64.9%)**
+— 54 files. The engine figures are the first from the rebuilt
+`wasm32-unknown-unknown` artifact with `wasm-opt -O3`; the older ones came from
+a wasm-bindgen-processed artifact that carried far more import scaffolding. The
+shell grew by ~405 KB with the mounted viewer — the navigation controllers,
+page list, thumbnail rail, compositor, tile ladder and their stylesheets — and
+has ~351 KB of headroom under its 1,000,000-byte budget.
 
 The two movements are different and are worth keeping apart:
 

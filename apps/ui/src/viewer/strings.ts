@@ -378,6 +378,13 @@ export const NAVIGATION_MESSAGE_KEYS = [
 	"navigation.thumbnails.label",
 	/** One thumbnail's accessible name; the page label is passed in. */
 	"navigation.thumbnails.item",
+	/**
+	 * The accessible name of an on-page link whose annotation has no
+	 * `/Contents`. A generic "Link" is honest: the position is the only
+	 * description the document supplied, and inventing the destination's
+	 * prose here would be a second description of the same link.
+	 */
+	"navigation.link.label",
 	/** The external-link prompt's title. */
 	"navigation.link.external.title",
 	/**
@@ -541,6 +548,7 @@ export const EN_NAVIGATION_CATALOGUE: NavigationCatalogue = {
 	"navigation.outline.moved": "Moved to {pageLabel}",
 	"navigation.thumbnails.label": "Page thumbnails",
 	"navigation.thumbnails.item": "Go to {pageLabel}",
+	"navigation.link.label": "Link",
 	"navigation.link.external.title": "Open an external link?",
 	"navigation.link.external.body": "This document links to {url} on {host}.",
 	"navigation.link.external.confirm": "Open link",
@@ -571,6 +579,8 @@ export interface NavigationStrings {
 	readonly moved: (pageLabel: string) => string;
 	readonly thumbnailsLabel: string;
 	readonly thumbnailItem: (pageLabel: string) => string;
+	/** A link's accessible name when its annotation has no `/Contents`. */
+	readonly linkLabel: string;
 	readonly externalTitle: string;
 	readonly externalBody: (url: string, host: string) => string;
 	readonly externalConfirm: string;
@@ -608,6 +618,7 @@ export function navigationStrings(runtime: MessageRuntime): NavigationStrings {
 		moved: (pageLabel) => runtime.t("navigation.outline.moved", { pageLabel }),
 		thumbnailsLabel: runtime.t("navigation.thumbnails.label"),
 		thumbnailItem: (pageLabel) => runtime.t("navigation.thumbnails.item", { pageLabel }),
+		linkLabel: runtime.t("navigation.link.label"),
 		externalTitle: runtime.t("navigation.link.external.title"),
 		externalBody: (url, host) => runtime.t("navigation.link.external.body", { url, host }),
 		externalConfirm: runtime.t("navigation.link.external.confirm"),

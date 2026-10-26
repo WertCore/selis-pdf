@@ -21,35 +21,42 @@
  *
  * ## What is deliberately *not* here
  *
- * - **The canvas click overlay for links.** Without it nothing in this page
- *   can call `controller.activateLink`, which is why the prompt's wiring is
- *   driven by {@link NavigationState.pendingExternal} and exercised by tests
- *   rather than by a click: the prompt is real, its trigger is future work and
- *   `REUSE.md` says so.
- * - **The thumbnail rail.** `thumbnails.ts` exists in `apps/ui`; the rail is
- *   the next slice and is not pretended into existence here.
- * - **A keyboard map for the page tiles.** Native scrolling is what moves the
- *   pages, so `ResolveNavigationKey` on lines below claims keys *only* inside
- *   the outline tree; the stage region keeps its own key set untouched, and
- *   the tile's roving tabindex puts exactly one page in the tab order.
+ * - **The web host's sidebar link list.** The extension activates links from the
+ *   page itself: each rendered page tile carries an absolutely positioned
+ *   control for every annotation the host reported, and a click calls
+ *   `controller.activateLink`. The prompt's state is the shared controller's;
+ *   this shell paints the dialog and returns focus to its trigger.
+ * - **A second geometry source for links.** The annotation rectangle is in PDF
+ *   user space (y-up); this shell flips it with the page's own height and the
+ *   tile's published `scale`, the same pair the renderer used for the tile.
+ * - **A second scheduler for thumbnails.** `createThumbnailRail` owns its own
+ *   `TileScheduler`; the page list's scheduler is not shared, because the rail
+ *   and the stage plan different scales and budgets.
  */
 
 import type { PlatformAdapter } from "../../ui/src/platform/adapter.js";
 import type { AdapterError } from "../../ui/src/platform/errors.js";
 import type {
 	DocHandle,
+	LinkAnnotation,
 	NamedDestination,
+	PageLabelRange,
 	PdfDestination,
 } from "../../ui/src/platform/types.js";
 import { createTileCompositor } from "../../ui/src/viewer/compositor.js";
+import type { NavigationKeyContext } from "../../ui/src/viewer/keyboard.js";
+import { resolveNavigationKey } from "../../ui/src/viewer/keyboard.js";
 import type { NavigationController } from "../../ui/src/viewer/navigation.js";
 import type { NavigationState } from "../../ui/src/viewer/navigation.js";
 import { createNavigation } from "../../ui/src/viewer/navigation.js";
-import type { NavigationKeyContext } from "../../ui/src/viewer/keyboard.js";
-import { resolveNavigationKey } from "../../ui/src/viewer/keyboard.js";
 import type { OutlineRow } from "../../ui/src/viewer/outline.js";
 import { rowPage } from "../../ui/src/viewer/outline.js";
-import type { PageList, PageListMetrics, PageListState, PageTileView } from "../../ui/src/viewer/page-list.js";
+import type {
+	PageList,
+	PageListMetrics,
+	PageListState,
+	PageTileView,
+} from "../../ui/src/viewer/page-list.js";
 import { DEFAULT_METRICS, createPageList } from "../../ui/src/viewer/page-list.js";
 import type { NavigationStrings, PageListStrings } from "../../ui/src/viewer/strings.js";
 import {
@@ -58,6 +65,12 @@ import {
 	createNavigationStrings,
 	createPageListStrings,
 } from "../../ui/src/viewer/strings.js";
+import type {
+	ThumbnailRail,
+	ThumbnailRailState,
+	ThumbnailView,
+} from "../../ui/src/viewer/thumbnails.js";
+import { createThumbnailRail } from "../../ui/src/viewer/thumbnails.js";
 import {
 	createAnimationFrameClock,
 	createCanvasRaster,
@@ -380,8 +393,13 @@ const DATA_ROLE = {
 	outlineRowLabel: "outline-label",
 	outlineRowUnresolved: "outline-unresolved",
 	outlineExpander: "outline-expander",
+	railHeading: "thumbnail-heading",
+	rail: "thumbnail-rail",
+	thumbnail: "thumbnail",
 	pageScroll: "page-list-scroll",
 	pageTile: "page-tile",
+	pageLinkOverlay: "page-link-overlay",
+	pageLink: "page-link",
 	pageLive: "page-list-live",
 	prompt: "external-prompt",
 	promptQuestion: "external-question",
@@ -393,6 +411,7 @@ const DATA_ROLE = {
 /** The ids the accessible-name wiring needs; one mount per page, so stable. */
 const ELEMENT_ID = {
 	outlineHeading: "selis-viewer-outline-heading",
+	railHeading: "selis-viewer-rail-heading",
 	promptQuestion: "selis-viewer-prompt-question",
 	promptBody: "selis-viewer-prompt-body",
 } as const;
@@ -431,6 +450,19 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		strings: EN_PAGE_LIST_CATALOGUE,
 		metrics: metricsFromStyle(globalThis.getComputedStyle(container)),
 	});
+	// The rail owns a second scheduler and a second read of the page labels.
+	// `NavigationState` publishes a label *function*, not the ranges, so the
+	// mount would otherwise have to guess at a page's label; the extra port call
+	// is the honest way to give the rail the document's own numbering.
+	const rail: ThumbnailRail = createThumbnailRail({
+		adapter,
+		doc,
+		strings: EN_NAVIGATION_CATALOGUE,
+		pageStrings: EN_PAGE_LIST_CATALOGUE,
+		onError: (error) => {
+			options.onError?.(error);
+		},
+	});
 
 	// The name tree, fetched beside the controller's load so named rows resolve
 	// without the controller growing a second copy of the destinations. The
@@ -459,7 +491,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	navPanel.setAttribute("aria-label", nav.state().regionLabel);
 
 	const section = document.createElement("div");
-	section.className = "selis-navigation__section";
+	section.className = "selis-navigation__section selis-viewer__outline-section";
 	navPanel.append(section);
 
 	const outlineHeading = document.createElement("h2");
@@ -480,11 +512,35 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	outlineTree.setAttribute("aria-labelledby", ELEMENT_ID.outlineHeading);
 	section.append(outlineTree);
 
+	// The thumbnail rail. It is a second column of the navigation panel, not a
+	// row of the outline: `createThumbnailRail` owns the window and the
+	// scheduler, and this section is only its measured box.
+	const railSection = document.createElement("div");
+	railSection.className = "selis-navigation__section selis-viewer__rail-section";
+	const railHeading = document.createElement("h2");
+	railHeading.className = "selis-navigation__heading";
+	railHeading.id = ELEMENT_ID.railHeading;
+	railHeading.setAttribute("data-role", DATA_ROLE.railHeading);
+	railHeading.textContent = rail.state().railLabel;
+	const railEl = document.createElement("ul");
+	railEl.className = "selis-thumbnail-rail";
+	railEl.setAttribute("role", "list");
+	railEl.setAttribute("aria-labelledby", ELEMENT_ID.railHeading);
+	railEl.setAttribute("data-role", DATA_ROLE.rail);
+	// One spacer creates the rail's scroll extent; the windowed rows themselves
+	// are absolute, so a 2 000-page rail is still a handful of elements.
+	const railSpacer = document.createElement("li");
+	railSpacer.className = "selis-thumbnail-rail__spacer";
+	railSpacer.setAttribute("aria-hidden", "true");
+	railEl.append(railSpacer);
+	railSection.append(railHeading, railEl);
+	navPanel.append(railSection);
+
 	// The nav panel's live line. It sits **outside** the outline scroller so a
 	// repaint cannot march it out of view mid-scroll, and it doubles as the
-	// links surface: activation announcements and refusals arrive here. There
-	// are no sidebar link rows — without a canvas click overlay there is no
-	// link to list, and an empty list that looks real would claim otherwise.
+	// link surface: activation announcements and refusals arrive here. The
+	// links themselves are on the page tiles (the overlay below), so there are
+	// no sidebar link rows to keep in sync.
 	const navLive = document.createElement("p");
 	navLive.className = "selis-visually-hidden";
 	navLive.setAttribute("data-role", DATA_ROLE.outlineLive);
@@ -508,9 +564,10 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	scroller.setAttribute("data-role", DATA_ROLE.pageScroll);
 	scroller.setAttribute("role", "region");
 	scroller.setAttribute("aria-label", list.state().regionLabel);
-	// The stage region itself is the tab stop (not each tile's scroll): native
-	// keyboard scrolling is what turns pages here, and the page list's own key
-	// map stays unclaimed — recorded as a limit in REUSE.md.
+	// The stage region itself is the tab stop; the page list's own key map is
+	// wired below, so an arrow/page/home/end key moves by page rather than by a
+	// browser-dependent scroll increment. The controller decides whether a key
+	// is claimed; the shell only prevents the native scroll when it is.
 	scroller.tabIndex = 0;
 
 	const plane = document.createElement("ol");
@@ -563,6 +620,24 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	/** Parked focus row, so a tree rebuild can put the reader back. */
 	let parkedRowId: string | null = null;
 
+	/** The latest page-list tile per page, for asynchronous link repaints. */
+	const tileViews = new Map<number, PageTileView>();
+	/** One page's link annotations, once the host has answered. */
+	const linkCache = new Map<number, readonly LinkAnnotation[]>();
+	/** Pages whose link read is in flight or has already failed. No retry storm. */
+	const linkRequested = new Set<number>();
+	/** The overlay geometry currently painted per page. */
+	const linkSignatures = new Map<number, string>();
+	/** The rail's windowed DOM, keyed by page. */
+	interface RailElement {
+		readonly item: HTMLLIElement;
+		readonly button: HTMLButtonElement;
+		readonly label: HTMLSpanElement;
+		canvas: HTMLCanvasElement | null;
+		tile: ThumbnailView["tile"];
+	}
+	const railEls = new Map<number, RailElement>();
+
 	/** One placeholder tile, exactly the window's box for every ladder rung. */
 	function tileElement(tile: PageTileView): HTMLElement {
 		const el = tileEls.get(tile.page);
@@ -591,9 +666,226 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 			el.removeAttribute("aria-current");
 		}
 		// Roving tabindex: the state already decided which page is the one in
-		// the tab order. A tile claims none of the key map — native scrolling
-		// on the stage region is what moves the reader.
+		// the tab order. The stage's key map belongs to the scroller below, not
+		// to each tile.
 		el.tabIndex = tile.tabIndex;
+	}
+
+	/** The accessible name for one annotation: its own `/Contents`, or "Link". */
+	function linkAccessibleName(link: LinkAnnotation): string {
+		const contents = link.contents?.trim();
+		return contents !== undefined && contents !== "" ? contents : navStrings.linkLabel;
+	}
+
+	/**
+	 * Paint the transparent link controls for one page tile.
+	 *
+	 * The rect arrives in PDF user space (y-up, from the MediaBox's bottom-left)
+	 * and the tile's `scale` is CSS pixels per point, so the flip is the same one
+	 * `wasm-engine.ts` makes for a raster tile: subtract the rect's top edge from
+	 * the page height, then scale. The overlay's own box is the tile, which is
+	 * already the placed, clipped page box.
+	 */
+	function paintLinkOverlay(el: HTMLElement, tile: PageTileView): void {
+		const links = linkCache.get(tile.page);
+		if (links === undefined) {
+			return;
+		}
+		const signature = `${tile.scale}:${links
+			.map(
+				(link) => `${link.id}:${link.rect.x},${link.rect.y},${link.rect.width},${link.rect.height}`,
+			)
+			.join("|")}`;
+		const existing = el.querySelector<HTMLElement>(`[data-role="${DATA_ROLE.pageLinkOverlay}"]`);
+		if (existing !== null && linkSignatures.get(tile.page) === signature) {
+			return;
+		}
+		const pageHeight = doc.pageSizes[tile.page]?.height ?? 0;
+		const buttons: HTMLButtonElement[] = [];
+		for (const link of links) {
+			const width = link.rect.width * tile.scale;
+			const height = link.rect.height * tile.scale;
+			// A zero-area annotation cannot be clicked, and a negative one cannot
+			// be hit-tested; both are omitted rather than made into a focus stop
+			// with no box.
+			if (!(width > 0) || !(height > 0)) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "selis-page-link";
+			button.setAttribute("data-role", DATA_ROLE.pageLink);
+			button.dataset.page = String(tile.page);
+			button.dataset.linkId = link.id;
+			button.dataset.actionKind = link.action.kind;
+			button.setAttribute("aria-label", linkAccessibleName(link));
+			button.style.setProperty("--link-x", `${link.rect.x * tile.scale}px`);
+			button.style.setProperty(
+				"--link-y",
+				`${(pageHeight - link.rect.y - link.rect.height) * tile.scale}px`,
+			);
+			button.style.setProperty("--link-w", `${width}px`);
+			button.style.setProperty("--link-h", `${height}px`);
+			button.addEventListener("click", (event) => {
+				// The tile itself has no click action; stopping here keeps a future
+				// page-level gesture from also firing for the same pointer.
+				event.stopPropagation();
+				nav.activateLink(link);
+			});
+			buttons.push(button);
+		}
+		if (buttons.length === 0) {
+			existing?.remove();
+			linkSignatures.set(tile.page, signature);
+			return;
+		}
+		const overlay = existing ?? document.createElement("div");
+		overlay.className = "selis-page-link-overlay";
+		overlay.setAttribute("data-role", DATA_ROLE.pageLinkOverlay);
+		overlay.replaceChildren(...buttons);
+		if (existing === null) {
+			el.append(overlay);
+		}
+		linkSignatures.set(tile.page, signature);
+	}
+
+	/**
+	 * Ask the host for one page's links, once.
+	 *
+	 * Links are fetched only for pages in the page-list window. A failure is
+	 * reported once and the page is not retried on every scroll frame: a host
+	 * that cannot read links should not be asked again on every pointer move.
+	 */
+	function ensurePageLinks(page: number): void {
+		const port = adapter.navigation;
+		if (port === undefined || linkRequested.has(page)) {
+			return;
+		}
+		linkRequested.add(page);
+		void port
+			.pageLinks(doc, page)
+			.then((links) => {
+				if (disposed) {
+					return;
+				}
+				linkCache.set(page, links);
+				const tile = tileViews.get(page);
+				const el = tileEls.get(page);
+				if (tile !== undefined && el !== undefined) {
+					paintLinkOverlay(el, tile);
+				}
+			})
+			.catch((error: AdapterError) => {
+				if (!disposed) {
+					options.onError?.(error);
+				}
+			});
+	}
+
+	/** Create the unchanged shell of one rail row; the state patch fills it. */
+	function railElement(thumb: ThumbnailView): RailElement {
+		const existing = railEls.get(thumb.page);
+		if (existing !== undefined) {
+			return existing;
+		}
+		const item = document.createElement("li");
+		item.className = "selis-thumbnail-rail__item";
+		item.setAttribute("role", "listitem");
+		const button = document.createElement("button");
+		button.type = "button";
+		button.setAttribute("data-role", DATA_ROLE.thumbnail);
+		button.dataset.page = String(thumb.page);
+		const label = document.createElement("span");
+		label.className = "selis-thumbnail__label";
+		button.append(label);
+		button.addEventListener("click", () => {
+			list.goToPage(thumb.page);
+		});
+		item.append(button);
+		const record: RailElement = { item, button, label, canvas: null, tile: null };
+		railEls.set(thumb.page, record);
+		return record;
+	}
+
+	/** Draw one rail preview from the tile the rail's scheduler landed. */
+	function drawThumbnail(record: RailElement, thumb: ThumbnailView): void {
+		if (thumb.tile === record.tile) {
+			return;
+		}
+		record.tile = thumb.tile;
+		if (thumb.tile === null) {
+			record.canvas?.remove();
+			record.canvas = null;
+			return;
+		}
+		const rendered = thumb.tile.tile;
+		if (rendered.width <= 0 || rendered.height <= 0) {
+			return;
+		}
+		const canvas = record.canvas ?? document.createElement("canvas");
+		canvas.className = "selis-thumbnail__preview";
+		canvas.width = rendered.width;
+		canvas.height = rendered.height;
+		const context = canvas.getContext("2d");
+		if (context !== null) {
+			try {
+				context.putImageData(
+					new ImageData(new Uint8ClampedArray(rendered.data), rendered.width, rendered.height),
+					0,
+					0,
+				);
+			} catch {
+				// A malformed tile leaves the placeholder visible; the engine
+				// already owns the error and this preview is not worth a crash.
+			}
+		}
+		if (record.canvas === null) {
+			record.canvas = canvas;
+			record.button.insertBefore(canvas, record.label);
+		}
+	}
+
+	/** Repaint the rail's window and its one content-height spacer. */
+	function paintRail(state: ThumbnailRailState): void {
+		if (disposed) {
+			return;
+		}
+		railHeading.textContent = state.railLabel;
+		railEl.setAttribute("aria-label", state.railLabel);
+		railEl.style.setProperty("--rail-content-h", `${state.contentHeight}px`);
+		const kept = new Set(state.thumbnails.map((thumb) => thumb.page));
+		for (const [page, record] of [...railEls]) {
+			if (!kept.has(page)) {
+				record.item.remove();
+				railEls.delete(page);
+			}
+		}
+		let previous: Element | null = railSpacer;
+		for (const thumb of state.thumbnails) {
+			const record = railElement(thumb);
+			if (previous === null) {
+				if (railEl.firstElementChild !== record.item) {
+					railEl.insertBefore(record.item, railEl.firstElementChild);
+				}
+			} else if (previous.nextElementSibling !== record.item) {
+				railEl.insertBefore(record.item, previous.nextElementSibling);
+			}
+			previous = record.item;
+			record.item.style.setProperty("--thumb-y", `${thumb.y}px`);
+			record.item.style.setProperty("--thumb-w", `${thumb.width}px`);
+			record.item.style.setProperty("--thumb-h", `${thumb.height}px`);
+			record.button.className = thumb.className;
+			record.button.tabIndex = thumb.tabIndex;
+			record.button.setAttribute("aria-label", thumb.action);
+			record.button.dataset.page = String(thumb.page);
+			if (thumb.current) {
+				record.button.setAttribute("aria-current", "page");
+			} else {
+				record.button.removeAttribute("aria-current");
+			}
+			record.label.textContent = thumb.label;
+			drawThumbnail(record, thumb);
+		}
 	}
 
 	/** Repaint one page-list state: the plane, the window, the announcement. */
@@ -615,6 +907,8 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 				if (!kept.has(page)) {
 					el.remove();
 					tileEls.delete(page);
+					tileViews.delete(page);
+					linkSignatures.delete(page);
 				}
 			}
 		}
@@ -631,7 +925,10 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 				plane.insertBefore(el, previous.nextElementSibling);
 			}
 			previous = el;
+			tileViews.set(tile.page, tile);
 			patchTile(el, tile);
+			ensurePageLinks(tile.page);
+			paintLinkOverlay(el, tile);
 		}
 		pageLive.textContent = state.announcement;
 		// The controller echoes the page it is showing, for `aria-current`. The
@@ -640,6 +937,10 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		if (state.currentPage !== nav.state().currentPage) {
 			nav.setCurrentPage(state.currentPage);
 		}
+		// The rail follows the same page number, with its own `aria-current`.
+		// It is a separate controller and a separate scheduler; the page number
+		// is the only fact they share.
+		rail.setCurrentPage(state.currentPage);
 		// The scroll offset the controller decided is authoritative. While the
 		// reader scrolls, the value equals their own and the write is a no-op;
 		// after `goToPage` it is what puts the reader where the pointer said.
@@ -665,9 +966,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 					? navStrings.row(row.title, null)
 					: row.title;
 		const el =
-			plan.kind === "target"
-				? document.createElement("button")
-				: document.createElement("span");
+			plan.kind === "target" ? document.createElement("button") : document.createElement("span");
 		if (plan.kind === "target") {
 			const button = el as HTMLButtonElement;
 			button.type = "button";
@@ -781,9 +1080,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 			const hadTreeFocus = outlineTree.contains(document.activeElement);
 			const nodes = nestOutlineRows(state.rows);
 			outlineTree.replaceChildren(
-				...nodes.map((node) =>
-					nodeElement(node, destinations, state, currentId, tabOwner),
-				),
+				...nodes.map((node) => nodeElement(node, destinations, state, currentId, tabOwner)),
 			);
 			if (hadTreeFocus && parkedRowId !== null) {
 				rowEls.get(parkedRowId)?.focus({ preventScroll: true });
@@ -840,16 +1137,14 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		const plan = externalPromptPlan(state);
 		const transition = promptTransition(renderedPending, state.pendingExternal);
 		renderedPending = state.pendingExternal;
-		const existing = view.querySelector<HTMLElement>(
-			`[data-role="${DATA_ROLE.prompt}"]`,
-		);
+		const existing = view.querySelector<HTMLElement>(`[data-role="${DATA_ROLE.prompt}"]`);
 		if (!plan.open) {
 			if (transition === "closed") {
 				existing?.remove();
 				// Focus returns to whatever the trigger was, when it is still in
 				// the document: leaving the reader at the document without their
 				// place is how a dialog becomes a dead end.
-				if (promptTrigger !== null && promptTrigger.isConnected) {
+				if (promptTrigger?.isConnected === true) {
 					promptTrigger.focus();
 				}
 				promptTrigger = null;
@@ -865,8 +1160,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		// dialog this branch is about to remove, and re-capturing would park
 		// the reader on its own outgoing button.
 		if (existing === null) {
-			promptTrigger =
-				document.activeElement instanceof HTMLElement ? document.activeElement : null;
+			promptTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		}
 		existing?.remove();
 		const prompt = document.createElement("div");
@@ -934,7 +1228,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	// ── 5. Measurement, scroll and device-scale ─────────────────────────────
 
 	/** Report the current stage facts; idempotent, and safe before it loads. */
-	function measure(): void {
+	function measureStage(): void {
 		if (disposed) {
 			return;
 		}
@@ -944,6 +1238,34 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 			scrollTop: scroller.scrollTop,
 			devicePixelRatio: globalThis.devicePixelRatio,
 		});
+	}
+
+	/**
+	 * Report the rail's content box, not its border box.
+	 *
+	 * The controller's `scrollTop` origin is the first row, while the rail's own
+	 * scroller origin includes its padding; subtracting the inset is what keeps
+	 * the visible window from lagging by one padding token after a scroll.
+	 */
+	function measureRail(): void {
+		if (disposed) {
+			return;
+		}
+		const style = globalThis.getComputedStyle(railEl);
+		const padTop = parsePxOr(style.paddingTop, 0);
+		const padX = parsePxOr(style.paddingLeft, 0) + parsePxOr(style.paddingRight, 0);
+		const padY = padTop + parsePxOr(style.paddingBottom, 0);
+		rail.update({
+			width: Math.max(0, railEl.clientWidth - padX),
+			height: Math.max(0, railEl.clientHeight - padY),
+			scrollTop: Math.max(0, railEl.scrollTop - padTop),
+			devicePixelRatio: globalThis.devicePixelRatio,
+		});
+	}
+
+	function measure(): void {
+		measureStage();
+		measureRail();
 	}
 
 	/** One-time stage focus, guarded so a late reveal cannot steal focus. */
@@ -967,7 +1289,11 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	}
 
 	scroller.addEventListener("scroll", () => {
-		measure();
+		measureStage();
+	});
+
+	railEl.addEventListener("scroll", () => {
+		measureRail();
 	});
 
 	const resizeObserver = new ResizeObserver(() => {
@@ -980,6 +1306,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	});
 	resizeObserver.observe(scroller);
 	resizeObserver.observe(stage);
+	resizeObserver.observe(railEl);
 
 	/**
 	 * Device-pixel-ratio changes re-measure: the ladder computes its request
@@ -994,9 +1321,7 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		}
 		dppxCleanup?.();
 		dppxCleanup = null;
-		const query = globalThis.matchMedia(
-			`(resolution: ${globalThis.devicePixelRatio}dppx)`,
-		);
+		const query = globalThis.matchMedia(`(resolution: ${globalThis.devicePixelRatio}dppx)`);
 		const listener = (): void => {
 			if (disposed) {
 				return;
@@ -1098,6 +1423,41 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 		}
 	});
 
+	/**
+	 * The stage's key map.
+	 *
+	 * The page list controller owns the decision (`resolvePageKey` inside
+	 * `handleKey`); the shell prevents the browser's line scroll only when the
+	 * controller actually claimed the key. A link rectangle inside the stage is
+	 * deliberately left out of this map: moving the reader while focus is on a
+	 * link would be a second, unannounced action, so that key keeps whatever the
+	 * browser does by default.
+	 */
+	function onPageKeydown(event: KeyboardEvent): void {
+		if (
+			event.defaultPrevented ||
+			event.altKey ||
+			event.ctrlKey ||
+			event.metaKey ||
+			event.shiftKey
+		) {
+			return;
+		}
+		const target = event.target;
+		if (
+			target instanceof Element &&
+			target.closest(`[data-role="${DATA_ROLE.pageLink}"]`) !== null
+		) {
+			return;
+		}
+		const next = list.handleKey(event.key);
+		if (next === null) {
+			return;
+		}
+		event.preventDefault();
+	}
+	scroller.addEventListener("keydown", onPageKeydown);
+
 	// ── 7. Subscriptions: the published flow the mount listens to ────────────
 
 	/**
@@ -1120,6 +1480,27 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	const unsubscribeList = list.subscribe((state) => {
 		paintPageList(state);
 	});
+	const unsubscribeRail = rail.subscribe((state) => {
+		paintRail(state);
+	});
+
+	// The rail's labels are the mount's own read, for the reason the
+	// destinations are: `NavigationState` republishes a label function, not the
+	// ranges, and the rail needs the ranges to label pages before they are
+	// current. A failure leaves the decimal fallback in place.
+	const labelFetch: Promise<readonly PageLabelRange[]> =
+		adapter.navigation?.pageLabels(doc) ?? Promise.resolve([]);
+	void labelFetch
+		.then((ranges) => {
+			if (!disposed) {
+				rail.setPageLabels(ranges);
+			}
+		})
+		.catch((error: AdapterError) => {
+			if (!disposed) {
+				options.onError?.(error);
+			}
+		});
 
 	// The destinations are the mount's own read, fetched beside the load, so a
 	// failure of the *document walk* cannot decide whether a reader gets to
@@ -1168,8 +1549,10 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 	// immediately, rather than a blank area waiting for a network round trip.
 	paintNav(nav.state());
 	paintPageList(list.state());
+	paintRail(rail.state());
 	// And the first honest measure: the compositor configures its backing
-	// store here, since the plane's own height is what the stage's box is.
+	// store here, the rail learns its content box, since the plane's own height
+	// is what the stage's box is.
 	measure();
 
 	// ── 8. Teardown ──────────────────────────────────────────────────────────
@@ -1185,7 +1568,9 @@ export function mountViewerView(options: ViewerViewOptions): ViewerView {
 			dppxCleanup = null;
 			unsubscribeNav();
 			unsubscribeList();
+			unsubscribeRail();
 			compositor.dispose();
+			rail.dispose();
 			list.dispose();
 			nav.dispose();
 			container.replaceChildren();

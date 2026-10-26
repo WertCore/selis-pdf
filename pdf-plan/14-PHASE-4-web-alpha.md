@@ -330,7 +330,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     TEXT.06 question. The per-page breakdown is windowed, not document-wide; a results *sidebar*
     would need UI.06's page model. And with no jsdom in the tree, nothing has been looked at on
     screen.
-- [ ] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
+- [x] **SL-4.UI.06 — Navigation: outline, thumbnails, page labels, destinations, links** · deps: UI.02 · owner: AI
   - **Do:** Link annotations are *activated* here but obey ADR-P0020 — external URIs prompt with
     the full destination shown, and `/Launch` is refused.
   - **THE BLOCKER ABOVE WAS STALE, and the box was never really on the engine.** It said
@@ -410,8 +410,10 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
     alignment). The web host's manual browser pass is recorded in the status block below
     (2026-10-22): the prompt now has dialog semantics and focus management, the first paint
     relabels itself from `/PageLabels`, the bookmarks are a nested list rather than a treeview,
-    and the host mounts no thumbnail rail. The extension half still has no panels to inspect;
-    only the prompt's *content* is asserted headlessly.
+    and the host mounts no thumbnail rail. The extension half still had no panels to inspect at
+    that point; only the prompt's *content* was asserted headlessly. *(2026-10-24: the extension
+    now mounts the rail, overlay and key map, and the packed-extension browser leg measures
+    them; see the Slice C closure record below.)*
   - **Status — the web-host half (the first host), shipped 2026-10-22.** The three reads the plan
     said were owed are now called from the web shell, and the one thing the plan did not say was
     owed turned out to matter more: **the bookmark buttons were dead ends.**
@@ -556,18 +558,18 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       panels to inspect.
     - **The blocker above has since moved (2026-10-23).** The extension half has since landed
       its panels - see the 2026-10-23 records in the extension block below - so that paragraph
-      is history. What kept this task's box open was then the extension's own browser-check leg:
-      the prompt has no on-page trigger yet (no canvas click overlay) and no manual pass had
-      been run on that host. *(2026-10-24: the browser leg has since run - see the records
-      below. The remaining gaps are the canvas click overlay, the page-list key map and the
-      thumbnail rail.)*
+      is history. What kept this task's box open was then the extension's own browser-check leg,
+      the canvas click overlay, the page-list key map and the thumbnail rail. *(2026-10-24: all
+      four have landed and the browser leg runs; see the Slice C closure record below. The box
+      is checked. The only thing a browser check cannot supply is a person's judgement of
+      spacing, contrast and readability, recorded as owed rather than as a functional gap.)*
     - **The type now carries the three qualifiers (2026-10-22).** `NavigationPort.outline`
       returns `OutlineReport` (`present`, `truncated`, `pruned`, `items`) rather than a bare
       list. The extension forwards the host's flags instead of dropping them at the page seam,
       the mock wraps its declarative items, and the contract suite asserts the shape — so
       "this document has no outline" and "the outline exists but was truncated" no longer
-      collapse into the same empty array. The box is still open for the panels and the manual
-      pass, not for the shape.
+      collapse into the same empty array. *(At that point the box was open for the panels and
+      the manual pass, not for the shape; both have since landed.)*
     - **Spec problems, reported rather than edited.** UI.06's plan entry is three lines and its only
       DoD is about links — outline, thumbnails, page labels and destinations have **no stated
       acceptance criteria at all**, so the design decisions behind them (bijective base-26 labels,
@@ -628,8 +630,9 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       `viewer/thumbnails.ts` (see `apps/extension/REUSE.md`) - so there is **nothing to look at** in
       a browser on this host and the extension's own browser check cannot be run at all. The
       capability under those panels is what shipped; the panels are the viewer's task. The
-      web-host manual pass is recorded in the block above (2026-10-22); the same pass is still
-      owed on the extension, which has no panels to render or inspect.
+      web-host manual pass is recorded in the block above (2026-10-22); at the time the same
+      pass was still owed on the extension, which had no panels to render or inspect. *(That
+      changed on 2026-10-23: the panels landed; see the next record.)*
     - **The panels landed (2026-10-23).** The extension half has since closed the panels gap
       above: `apps/extension/src/viewer-view.ts` mounts the real controllers into the MV3 viewer
       page - `createNavigation` (the outline tree with the controller's own roving-tabindex and
@@ -649,7 +652,10 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       the prompt and the placeholder notes is still unobserved on a real host. One inherited
       defect, recorded not forked: upstream `navigation.css` is missing the closing brace of
       its line-127 rule, so the dialog, URL, actions and forced-colours rules after it do not
-      apply on the extension page (`apps/ui` owns the fix).
+      apply on the extension page (`apps/ui` owns the fix). *(2026-10-24: all four gaps are
+      closed - the rail ships and is mounted, the overlay and key map are wired, and the packed
+      browser leg is green. The line-127 brace was fixed in `eb33931`. The only thing the check
+      cannot supply is a person's judgement of spacing and contrast.)*
     - **Measured on 2026-10-23** (extension branch, unmerged when recorded): the extension is
       at **400 tests (399 pass, one skipped)**, up from 377 - the delta is 23 in the new
       `viewer-view.test.ts`, which runs without a DOM: the pure helpers are called directly, and
@@ -672,11 +678,18 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       animation frames). A command-line navigation straight to the extension URL is refused
       with `ERR_BLOCKED_BY_CLIENT`; a loopback launcher navigates there after 500 ms, and the
       committed probe reports from inside the shipped page. The claims are measured: two
-      outline rows carrying the document's titles and page labels, two page tiles, a live
-      region, and a press on the second bookmark that changes five witnesses — both live
-      announcements, the current row, the current tile, `scrollTop`, and a sampled hash of
-      the canvas pixels. Measured: compose 278 ms, whole run 492 ms; the canvas hash moves
-      `c68900ff` -> `8d0e51f4`, with 278 of 3,106 sampled pixels inked.
+      outline rows carrying the document's titles and page labels, two page tiles, a thumbnail
+      rail with two painted preview canvases, a live region; the page's real `/Link` annotation is a transparent
+      control whose centre hit-tests to itself, and activating it opens the external-link prompt
+      with the destination verbatim and `data-host="example.com"`; cancelling closes it; a press
+      on the second bookmark changes **six** witnesses — both live
+      announcements, the current row, the current tile, the rail's current page, `scrollTop`,
+      and a sampled hash of the canvas pixels; and `ArrowUp` on the focused stage claims the key
+      (`defaultPrevented`), returns the outline and rail to page 1 and repaints the canvas.
+      Measured: compose 400 ms, whole run 783 ms; the press moves the canvas hash `c68900ff` ->
+      `8d0e51f4` (278 of 3,106 sampled pixels inked), and `ArrowUp` moves it to `13df0979`.
+      CI's Ubuntu runner loaded the same packed extension: run `40069426336` at `e6adf7a` had
+      `browser-check` green with all five checks and `test-fast` green.
     - **Five real-browser defects, fixed.** (1) `chrome.runtime.connect` takes `{ name }`, and
       Chrome's `Port` exposes `onMessage`/`onDisconnect` as events; `hostPortOf` adapts the
       real shape once. (2) `createPortLink` is direction-aware — viewer replies, offscreen
@@ -690,41 +703,48 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
       the main-thread surface read `.format` off the entry, so every op was a placeholder and
       the canvas stayed blank while the engine was returning ink. The surface unwraps `.tile`,
       and the test now feeds it a real entry.
-    - **Measured on 2026-10-24, after `wasm-opt -O3`:** 19 extension test files, **403 passed,
-      one skipped**; the package is **53 files, 3,498,633 raw bytes / 930,096 brotli**, the
-      shell **616,524 of 1,000,000** (61.7%), and the engine **2,882,109 raw / 754,631 brotli
-      of 2,000,000** (37.7%). The older 4.1 MB engine figures came from the wasm-bindgen
-      processed artifact; the rebuilt one is the same `wasm32-unknown-unknown` build
-      `cargo xtask size-check` measures, optimised for real. CI's `browser-check` job now
+    - **Measured on 2026-10-24, after `wasm-opt -O3` and Slice C:** 19 extension test files,
+      **405 passed, one skipped**; the package is **54 files, 3,531,172 raw bytes / 937,818
+      brotli**, the shell **649,063 of 1,000,000** (64.9%), and the engine **2,882,109 raw /
+      754,631 brotli of 2,000,000** (37.7%). The older 4.1 MB engine figures came from the
+      wasm-bindgen processed artifact; the rebuilt one is the same `wasm32-unknown-unknown`
+      build `cargo xtask size-check` measures, optimised for real. CI's `browser-check` job now
       builds the WASM, runs `wasm-opt -O3`, builds the app and builds `apps/extension` before
       the check, so the package the leg drives is the package the size gate measured.
-    - **What still keeps the box open (2026-10-24).** The browser leg is no longer owed. What
-      remains is the extension's **canvas click overlay** (the prompt is reachable from
-      `pendingExternal` and the tests, but no click on the canvas activates a link), its
-      **page-list key map**, and the **thumbnail rail** (`thumbnails.ts` is not shipped). The
-      prompt's *appearance* is still unjudged: the check proves the panels and the move, not
-      spacing or contrast. The two engine-contract gaps recorded above are unchanged: an
-      out-of-range `renderTile` answers 1301 rather than 6001, and the three-point page-number
-      rule still stops at `pageLinks`.
+    - **Slice C closes the viewer gaps (2026-10-24).** The extension page now mounts the shared
+      thumbnail rail in a second navigation column; the outline keeps column one and the
+      prompt spans both columns in its own row. Each page tile carries one transparent control
+      per link annotation, positioned in tile space from the annotation rect flipped by page
+      height and multiplied by the tile's scale, so a real click reaches `activateLink` and the
+      prompt opens with the whole destination. The page-list scroller claims its six page keys
+      through the shared `PageList.handleKey` and calls `preventDefault` only when the controller
+      returns a state, so native line scrolling is not silently disabled. The rail follows the
+      page-list publication, and the probe now asserts it. The three-point page-number rule was
+      extended to `renderTile`: an out-of-range page is `BINDING_BAD_ARGUMENT` (6001) at the
+      page, host and guest edges, exactly as `pageLinks`; the old 1301 is no longer exposed at
+      the seam. The browser fixture gained one real external `/Link`, because the browser leg
+      runs the real WASM engine rather than the mock's `FIXTURE_LINKS`. The browser check now
+      measures all of it (rail, link prompt open/cancel, six press witnesses, `ArrowUp`) and is
+      green on Edge. What remains is a person's visual judgement of spacing, contrast and the
+      prompt's readability; that is recorded as owed, not as a functional gap.
     - **The UI seam now carries the qualifiers (2026-10-22).** `NavigationPort.outline` returns
       `OutlineReport` — `present`, `truncated`, `pruned`, `items` — so the extension's page side
       forwards them instead of dropping them, and the web shell no longer needs a private copy
       of the same three facts. The type lives in `apps/ui/src/platform/types.ts`; the wire
       mapper re-exports it so a transport still has one import for the whole navigation
       vocabulary. The box stays open for the panels and the manual pass, not for the shape.
-    - **One smaller loss, recorded rather than hidden.** The extension's out-of-range
-      `renderTile` still answers the engine's 1301 with
-      the real WASM guest: the contract's 6001 there comes from the mock, and the same
-      three-point check this task added for `pageLinks` has **not** been applied to `render`.
-      Neither is a new defect - both are pre-existing gaps that this task did not widen - but
-      both are now visible because the navigation half does it properly.
-    - **Not done here:** the extension's own browser check (impossible without the panels), a
-      corpus entry (no engine behaviour changed - the engine already had the four ops, and the
-      corpus is fetch-only), and the `/Launch` prompt's *appearance* in the extension (the prompt
-      is the viewer's, and the extension's viewer does not have one yet). *(2026-10-23: the
-      panels and the prompt now exist on the extension page - see the records above - but the
-      prompt still has no on-page trigger and the browser check has still not been run; no
-      corpus entry was owed, since no engine behaviour changed.)*
+    - **One smaller loss, since recovered.** The extension's out-of-range `renderTile` used to
+      answer the engine's 1301 with the real WASM guest while the contract's 6001 came from the
+      mock. *(2026-10-24: Slice C applied the same three-point page-number rule to `render` that
+      this task added for `pageLinks`; 6001 is now the answer at page, host and guest, and 1301
+      is no longer exposed at the seam.)*
+    - **Not done here:** a corpus entry (no engine behaviour changed - the engine already had
+      the four ops, and the corpus is fetch-only) and a person's visual judgement of the
+      extension's prompt (the prompt is the viewer's, and the browser check now proves it opens
+      and closes from a page click; spacing and contrast are still unjudged).
+      *(2026-10-24: the extension's own browser check has since been built and run — see the
+      records above — and Slice C closed the canvas overlay, page-list key map, rail and render
+      contract gaps. No corpus entry was owed, since no engine behaviour changed.)*
 - [x] **SL-4.UI.07 — Accessibility of the viewer itself** · deps: SL-1.DOC.06 · owner: AI+
   - **Do:** Expose the structure tree to AT: proper roles, headings, reading order, alt text for
     figures, table semantics. Full keyboard navigation. This is ADR-P0031 applied to our own UI,

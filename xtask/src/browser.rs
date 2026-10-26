@@ -595,6 +595,109 @@ fn verdict_extension(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // ── The rail ─────────────────────────────────────────────────────────
+    let rail = report
+        .get("rail")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no thumbnail rail (rail = null)".to_string())?;
+    if rail.get("present").and_then(Json::as_bool) != Some(true) {
+        return Err("the thumbnail rail is not mounted".into());
+    }
+    let thumbnails = rail.get("thumbnails").and_then(Json::as_u64).unwrap_or(0);
+    if thumbnails == 0 {
+        return Err("the thumbnail rail painted no thumbnails".into());
+    }
+    if rail.get("previews").and_then(Json::as_u64) != Some(thumbnails) {
+        return Err(format!(
+            "the rail painted {:?} preview canvases for {thumbnails} thumbnails",
+            rail.get("previews")
+        ));
+    }
+    if rail
+        .get("label")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        return Err("the thumbnail rail has no accessible label".into());
+    }
+    if rail.get("currentPage").and_then(Json::as_str) != Some("0") {
+        return Err(format!(
+            "the rail did not start on the first page: {:?}",
+            rail.get("currentPage")
+        ));
+    }
+    if rail
+        .get("scrollHeight")
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0)
+        <= 0.0
+    {
+        return Err("the thumbnail rail has no scroll extent".into());
+    }
+
+    // ── The page link and its prompt ─────────────────────────────────────
+    let link = report
+        .get("link")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no page link (link = null)".to_string())?;
+    if link.get("found").and_then(Json::as_bool) != Some(true) {
+        return Err("the page rendered no link overlay".into());
+    }
+    if link.get("page").and_then(Json::as_str) != Some("0") {
+        return Err(format!(
+            "the probe clicked a link on page {:?}, not the fixture's first page",
+            link.get("page")
+        ));
+    }
+    if link.get("actionKind").and_then(Json::as_str) != Some("uri") {
+        return Err(format!(
+            "the probe clicked a {:?} link, not the fixture's external URI",
+            link.get("actionKind")
+        ));
+    }
+    if link
+        .get("label")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        return Err("the page link has no accessible name".into());
+    }
+    if link.get("hit").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the link rectangle is not the topmost thing at its own centre (hit role = {:?})",
+            link.get("hitRole")
+        ));
+    }
+    let prompt = link
+        .get("prompt")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page link opened no external-link prompt".to_string())?;
+    if prompt
+        .get("title")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        return Err("the external-link prompt has no title".into());
+    }
+    let body = prompt.get("body").and_then(Json::as_str).unwrap_or("");
+    if !body.contains("https://example.com/a") {
+        return Err(format!(
+            "the prompt did not name the destination verbatim: {body:?}"
+        ));
+    }
+    if prompt.get("host").and_then(Json::as_str) != Some("example.com") {
+        return Err(format!(
+            "the prompt did not name example.com as the host: {:?}",
+            prompt.get("host")
+        ));
+    }
+    if link.get("closed").and_then(Json::as_bool) != Some(true) {
+        return Err("cancelling the external-link prompt did not close it".into());
+    }
+
     // ── The press ────────────────────────────────────────────────────────
     let press = report
         .get("press")
@@ -613,10 +716,17 @@ fn verdict_extension(report: &Json) -> Result<(), String> {
         .get("changed")
         .and_then(Json::as_object)
         .ok_or_else(|| "the press carried no changed flags".to_string())?;
-    for witness in ["ink", "live", "navLive", "currentRow", "scrollTop"] {
+    for witness in [
+        "ink",
+        "live",
+        "navLive",
+        "currentRow",
+        "railCurrent",
+        "scrollTop",
+    ] {
         if changed.get(witness).and_then(Json::as_bool) != Some(true) {
             return Err(format!(
-                "pressing the bookmark did not change `{witness}`; five witnesses are what \
+                "pressing the bookmark did not change `{witness}`; six witnesses are what \
                  separates a move from a repaint"
             ));
         }
@@ -647,6 +757,15 @@ fn verdict_extension(report: &Json) -> Result<(), String> {
             after.get("currentTile")
         ));
     }
+    if before.get("railCurrent").and_then(Json::as_str) != Some("0")
+        || after.get("railCurrent").and_then(Json::as_str) != Some("1")
+    {
+        return Err(format!(
+            "the rail's current page did not move from 0 to 1: {:?} -> {:?}",
+            before.get("railCurrent"),
+            after.get("railCurrent")
+        ));
+    }
     let before_top = before
         .get("scrollTop")
         .and_then(Json::as_f64)
@@ -660,6 +779,69 @@ fn verdict_extension(report: &Json) -> Result<(), String> {
     let announced = after.get("navLive").and_then(Json::as_str).unwrap_or("");
     if announced.is_empty() {
         return Err("the move was silent: the navigation live region announced nothing".into());
+    }
+
+    // ── The stage's key map ─────────────────────────────────────────────
+    let key = report
+        .get("key")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the viewer reported no key probe (key = null)".to_string())?;
+    if key.get("attempted").and_then(Json::as_bool) != Some(true) {
+        return Err("the probe never pressed a key on the stage".into());
+    }
+    if key.get("prevented").and_then(Json::as_bool) != Some(true) {
+        return Err("the stage did not claim ArrowUp; native scrolling was left in charge".into());
+    }
+    if key.get("moved").and_then(Json::as_bool) != Some(true) {
+        return Err("ArrowUp on the stage did not move the reader".into());
+    }
+    let key_before = key
+        .get("before")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the key probe carried no before snapshot".to_string())?;
+    let key_after = key
+        .get("after")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the key probe carried no after snapshot".to_string())?;
+    if key_before.get("currentRow").and_then(Json::as_i64) != Some(1)
+        || key_after.get("currentRow").and_then(Json::as_i64) != Some(0)
+        || key_after.get("railCurrent").and_then(Json::as_str) != Some("0")
+    {
+        return Err(format!(
+            "ArrowUp did not return the outline and rail to the first page: rows {:?} -> {:?}, \
+             rail {:?} -> {:?}",
+            key_before.get("currentRow"),
+            key_after.get("currentRow"),
+            key_before.get("railCurrent"),
+            key_after.get("railCurrent")
+        ));
+    }
+    let key_before_top = key_before
+        .get("scrollTop")
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0);
+    let key_after_top = key_after
+        .get("scrollTop")
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0);
+    if key_after_top >= key_before_top {
+        return Err(format!(
+            "ArrowUp did not scroll back to the first page (scrollTop {key_before_top} -> \
+             {key_after_top})"
+        ));
+    }
+    let key_ink_hash = |side: &serde_json::Map<String, Json>| -> Option<String> {
+        side.get("ink")
+            .and_then(|ink| ink.get("hash"))
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+    };
+    if key_ink_hash(key_before).is_none() || key_ink_hash(key_before) == key_ink_hash(key_after) {
+        return Err(format!(
+            "ArrowUp did not repaint the previous page (ink hash {:?} -> {:?})",
+            key_ink_hash(key_before),
+            key_ink_hash(key_after)
+        ));
     }
     // The pixels. The probe samples a fixed stride and hashes the sampled
     // RGBA; `inkPixels` counts sampled pixels that differ from the page
@@ -3659,7 +3841,7 @@ mod tests {
     }
 
     /// The report a real Edge produced for `extension` on the development
-    /// machine, verbatim except for the ephemeral port. The two ink hashes are
+    /// machine, verbatim except for the ephemeral port. The ink hashes are
     /// the bytes the surface actually drew, and `inkPixels` counts sampled
     /// pixels that differ from the page background - the canvas is created
     /// `{ alpha: false }`, so counting alpha would call a white page inked.
@@ -3669,19 +3851,19 @@ mod tests {
             "check": "extension",
             "fatal": Json::Null,
             "stage": "done",
-            "elapsedMs": 634,
-            "href": "chrome-extension://ppekgfikbjkfgckpcjibplnhhaaonaem/viewer.html?src=http%3A%2F%2F127.0.0.1%3A52672%2Fdoc.pdf",
+            "elapsedMs": 783,
+            "href": "chrome-extension://ppekgfikbjkfgckpcjibplnhhaaonaem/viewer.html?src=http%3A%2F%2F127.0.0.1%3A51845%2Fdoc.pdf",
             "protocol": "chrome-extension:",
             "extensionId": EXTENSION_ID,
-            "src": "http://127.0.0.1:52672/doc.pdf",
-            "origin": "http://127.0.0.1:52672",
-            "composedMs": 406,
+            "src": "http://127.0.0.1:51845/doc.pdf",
+            "origin": "http://127.0.0.1:51845",
+            "composedMs": 400,
             "status": "Opened doc.pdf — 2 pages.",
             "mount": {
                 "hidden": false,
                 "children": 1,
                 "width": 693.0,
-                "height": 538.390625,
+                "height": 669.5,
             },
             "outline": {
                 "rows": 2,
@@ -3698,6 +3880,31 @@ mod tests {
                 "scrollHeight": 866,
                 "clientHeight": 441,
             },
+            "rail": {
+                "present": true,
+                "label": "Page thumbnails",
+                "thumbnails": 2,
+                "previews": 2,
+                "currentPage": "0",
+                "scrollHeight": 292,
+                "clientHeight": 195,
+            },
+            "link": {
+                "found": true,
+                "count": 1,
+                "page": "0",
+                "actionKind": "uri",
+                "label": "Link",
+                "hit": true,
+                "hitRole": "page-link",
+                "prompt": {
+                    "title": "Open an external link?",
+                    "body": "This document links to https://example.com/a on example.com.",
+                    "host": "example.com",
+                    "cancel": "Cancel",
+                },
+                "closed": true,
+            },
             "press": {
                 "attempted": true,
                 "index": 1,
@@ -3710,6 +3917,7 @@ mod tests {
                     "currentRow": 0,
                     "currentRowPage": "0",
                     "currentTile": "Page 1 of 2",
+                    "railCurrent": "0",
                     "scrollTop": 0,
                     "ink": {
                         "width": 683,
@@ -3725,6 +3933,7 @@ mod tests {
                     "currentRow": 1,
                     "currentRowPage": "1",
                     "currentTile": "Page 2 of 2",
+                    "railCurrent": "1",
                     "scrollTop": 425,
                     "ink": {
                         "width": 683,
@@ -3739,7 +3948,46 @@ mod tests {
                     "live": true,
                     "navLive": true,
                     "currentRow": true,
+                    "railCurrent": true,
                     "scrollTop": true,
+                },
+            },
+            "key": {
+                "attempted": true,
+                "key": "ArrowUp",
+                "prevented": true,
+                "moved": true,
+                "before": {
+                    "live": "Page 2 of 2 — fit page",
+                    "navLive": "Moved to Page 2 of 2",
+                    "currentRow": 1,
+                    "currentRowPage": "1",
+                    "currentTile": "Page 2 of 2",
+                    "railCurrent": "1",
+                    "scrollTop": 425,
+                    "ink": {
+                        "width": 683,
+                        "height": 441,
+                        "hash": "8d0e51f4",
+                        "inkPixels": 278,
+                        "sampled": 3106,
+                    },
+                },
+                "after": {
+                    "live": "Page 1 of 2 — fit page",
+                    "navLive": "Moved to Page 2 of 2",
+                    "currentRow": 0,
+                    "currentRowPage": "0",
+                    "currentTile": "Page 1 of 2",
+                    "railCurrent": "0",
+                    "scrollTop": 16,
+                    "ink": {
+                        "width": 683,
+                        "height": 441,
+                        "hash": "13df0979",
+                        "inkPixels": 282,
+                        "sampled": 3106,
+                    },
                 },
             },
         })
@@ -3792,6 +4040,64 @@ mod tests {
         assert!(
             verdict_extension(&no_scroll).is_err(),
             "a reader that did not scroll must not pass"
+        );
+
+        let mut no_key = report.clone();
+        *no_key.pointer_mut("/key").unwrap() = Json::Null;
+        assert!(
+            verdict_extension(&no_key).is_err(),
+            "a stage that never tried its key map must not pass"
+        );
+
+        let mut native_scroll = report.clone();
+        *native_scroll.pointer_mut("/key/prevented").unwrap() = json!(false);
+        assert!(
+            verdict_extension(&native_scroll).is_err(),
+            "a stage that left ArrowUp to native scrolling must not pass"
+        );
+
+        let mut no_rail = report.clone();
+        *no_rail.pointer_mut("/rail/present").unwrap() = json!(false);
+        assert!(
+            verdict_extension(&no_rail).is_err(),
+            "a viewer with no thumbnail rail must not pass"
+        );
+
+        let mut blank_rail = report.clone();
+        *blank_rail.pointer_mut("/rail/previews").unwrap() = json!(0);
+        assert!(
+            verdict_extension(&blank_rail).is_err(),
+            "a rail of empty boxes must not pass as painted previews"
+        );
+
+        let mut rail_stuck = report.clone();
+        *rail_stuck
+            .pointer_mut("/press/changed/railCurrent")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_extension(&rail_stuck).is_err(),
+            "a rail stuck on the old page must not pass"
+        );
+
+        let mut no_link = report.clone();
+        *no_link.pointer_mut("/link/found").unwrap() = json!(false);
+        assert!(
+            verdict_extension(&no_link).is_err(),
+            "a viewer that painted no link overlay must not pass"
+        );
+
+        let mut unreachable_link = report.clone();
+        *unreachable_link.pointer_mut("/link/hit").unwrap() = json!(false);
+        assert!(
+            verdict_extension(&unreachable_link).is_err(),
+            "a link rectangle under another element must not pass"
+        );
+
+        let mut no_prompt = report.clone();
+        *no_prompt.pointer_mut("/link/prompt").unwrap() = Json::Null;
+        assert!(
+            verdict_extension(&no_prompt).is_err(),
+            "a link that opened no prompt must not pass"
         );
 
         let mut foreign = report.clone();

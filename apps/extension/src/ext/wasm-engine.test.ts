@@ -599,6 +599,11 @@ describe("the navigation questions over the Worker (SL-4.UI.06)", () => {
 			code: ErrorCode.BindingBadArgument,
 			docState: "Unchanged",
 		});
+		await expect(engine.renderTile({ doc, page: 9, scale: 1 })).rejects.toMatchObject({
+			code: ErrorCode.BindingBadArgument,
+			docState: "Unchanged",
+		});
 		expect(posted.filter((m) => opOf(m) === "pageLinks")).toHaveLength(0);
+		expect(posted.filter((m) => opOf(m) === "render")).toHaveLength(0);
 	});
 });

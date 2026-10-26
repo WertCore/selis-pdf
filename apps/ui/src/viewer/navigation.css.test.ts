@@ -106,9 +106,11 @@ describe("navigation.css", () => {
 			);
 			const stray = [...new Set(carriers)].filter((name) => !name.startsWith("--selis-")).sort();
 			expect(stray, `carriers outside the namespace: ${stray.join(", ")}`).toEqual([
+				"--rail-content-h",
 				"--row-indent",
 				"--thumb-h",
 				"--thumb-w",
+				"--thumb-y",
 			]);
 		});
 

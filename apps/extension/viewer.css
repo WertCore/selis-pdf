@@ -148,11 +148,41 @@
 	min-height: 0;
 }
 
-/* The outline in the column layout: a capped panel above the stage, so a long
- * outline scrolls inside the panel rather than extending the page past the
- * document. */
+/* The navigation panel in the column layout: a capped panel above the stage.
+ * The outline and the rail are two columns of that panel. The rail needs a
+ * definite height for the controller to window against, so the panel is a fixed
+ * 50vh rather than content-height: a reader who scrolls the page to the stage
+ * still has a stable rail. The dialog is a full-width row beneath them and
+ * shrinks the two columns when it opens. */
 .selis-viewer__mount .selis-navigation {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 10rem;
+	grid-template-rows: minmax(0, 1fr);
+	gap: var(--selis-space-4);
+	height: 50vh;
 	max-height: 50vh;
+}
+
+.selis-viewer__outline-section {
+	grid-column: 1;
+	grid-row: 1;
+	min-width: 0;
+}
+
+.selis-viewer__rail-section {
+	grid-column: 2;
+	grid-row: 1;
+	min-width: 0;
+}
+
+.selis-viewer__rail-section .selis-thumbnail-rail {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.selis-viewer__mount .selis-navigation__dialog {
+	grid-column: 1 / -1;
+	grid-row: 2;
 }
 
 /* The stage: a positioned box the canvas paints and the scroll region covers.

@@ -270,7 +270,7 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	// {@link OWN_PACKAGE_PREFIX}). No bundler (ADR-P0021) makes every runtime
 	// import a row here: the controllers pull in `keyboard`, `layout`,
 	// `windowing`, `anchoring`, `outline`, `links`, `page-labels`,
-	// `tile-ladder` and `strings`; `strings.js` at run time imports
+	// `tile-ladder`, `thumbnails` and `strings`; `strings.js` at run time imports
 	// `i18n/pseudo-locale.js` (the catalogue's self-test alphabet), which
 	// imports the already-shipped `message.js`/`runtime.js`. The gate fails a
 	// build whose rows miss any of these, and every row is paid for out of
@@ -283,6 +283,7 @@ export const PACKAGE_ENTRIES: readonly PackageEntry[] = [
 	{ out: "ui/src/viewer/strings.js", from: "shared-js" },
 	{ out: "ui/src/viewer/tile-ladder.js", from: "shared-js" },
 	{ out: "ui/src/viewer/page-list.js", from: "shared-js" },
+	{ out: "ui/src/viewer/thumbnails.js", from: "shared-js" },
 	{ out: "ui/src/viewer/compositor.js", from: "shared-js" },
 	{ out: "ui/src/viewer/navigation.js", from: "shared-js" },
 	{ out: "ui/src/viewer/outline.js", from: "shared-js" },

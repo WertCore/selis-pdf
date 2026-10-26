@@ -327,6 +327,17 @@ export function createEnginePort(link: EngineLink): EnginePort & NavigationPort 
 		},
 
 		async renderTile(request: RenderTileRequest, requestOptions): Promise<RenderedTile> {
+			// The page number is checked at the same three points as
+			// `pageLinks`: here the page holds the handle, so an out-of-range
+			// page is refused with the seam's 6001 rather than being sent to a
+			// host that would answer the engine's 1301.
+			if (isAborted(requestOptions)) {
+				throw AdapterError.cancelled();
+			}
+			const reason = outOfRangePage(request.page, request.doc.pageCount);
+			if (reason !== null) {
+				throw AdapterError.badArgument(reason);
+			}
 			const wire = await call(
 				() => ({
 					op: "render",

@@ -120,4 +120,23 @@ describe("page-list.css", () => {
 		expect(surface).not.toMatch(/\d+(?:\.\d+)?(?:px|rem|em)\b/);
 		expect(surface).toContain("height: 100%");
 	});
+
+	it("keeps the link overlay transparent and sized only by the document's rects", () => {
+		// SL-4.UI.06. The tile is the positioned box; the overlay covers it but
+		// takes no pointer events, and only the annotation rectangles do. The
+		// geometry carriers are set by the shell from the annotation and the
+		// tile's published scale, so a stylesheet length here would be a second,
+		// guessed geometry.
+		const css = rulesOnly(appCss);
+		const overlay = /\.selis-page-link-overlay\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(overlay).toContain("position: absolute");
+		expect(overlay).toContain("inset: 0");
+		expect(overlay).toContain("pointer-events: none");
+		const link = /\.selis-page-link\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(link).toContain("pointer-events: auto");
+		for (const carrier of ["--link-x", "--link-y", "--link-w", "--link-h"]) {
+			expect(link, carrier).toContain(`var(${carrier}`);
+		}
+		expect(link).not.toMatch(/(?:width|height):\s*\d/);
+	});
 });
