@@ -28,7 +28,7 @@ use crate::{CliError, CliResult};
 /// (`img2pdf`, `topdf`): there is nothing to compare against and the field is
 /// honestly absent rather than zero.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct Verification {
+pub struct Verification {
     /// Input page count, when an input document was surveyed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pages_in: Option<u64>,
@@ -89,7 +89,7 @@ impl Verification {
     /// `verdict` is the gate's verification of the output bytes; `expected`
     /// is the expectation set the gate enforced, which determines `checked`.
     #[must_use]
-    pub(crate) fn from_gate(
+    pub fn from_gate(
         input: Option<&Observed>,
         verdict: &Verdict,
         expected: &Expectations,
@@ -160,7 +160,7 @@ impl Verification {
     /// The display for an operation that wrote the input's own bytes
     /// unchanged (verbatim copy: no rewrite, no writer output to verify).
     #[must_use]
-    pub(crate) fn copied(bytes: u64) -> Self {
+    pub fn copied(bytes: u64) -> Self {
         Verification {
             pages_in: None,
             pages_out: 0,
@@ -187,7 +187,7 @@ impl Verification {
     /// render as `in->out`; unmeasured (no input document) render as the
     /// output count only.
     #[must_use]
-    pub(crate) fn line(&self) -> String {
+    pub fn line(&self) -> String {
         let mut parts: Vec<String> = Vec::with_capacity(8);
         let count = |name: &str, into: (Option<u64>, u64)| match into.0 {
             Some(i) if i == into.1 => format!("{name} {i}"),
@@ -226,7 +226,7 @@ impl Verification {
     ///
     /// Serialization of this plain-data struct cannot fail in practice; the
     /// error is surfaced rather than swallowed (honest failure).
-    pub(crate) fn print_json(&self) -> CliResult<()> {
+    pub fn print_json(&self) -> CliResult<()> {
         #[derive(serde::Serialize)]
         struct Envelope<'a> {
             verification: &'a Verification,
@@ -240,7 +240,7 @@ impl Verification {
     /// Print the human-readable line to stderr. The line is the visible
     /// proof of the verification pass every output goes through; it states
     /// what was measured and nothing more.
-    pub(crate) fn emit_line(&self) {
+    pub fn emit_line(&self) {
         eprintln!("{}", self.line());
     }
 }

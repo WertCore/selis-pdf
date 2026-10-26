@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#f4f1e8" />
+		<meta
+			name="description"
+			content="A private, browser-local PDF toolkit. Merge, split, rotate, delete, reorder, and set metadata without uploading a byte."
+		/>
+		<title>Selis Tools — PDFs, handled here</title>
+		<link rel="stylesheet" href="/assets/tools.css" />
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="site-header">
+			<a class="brand" href="/tools.html" aria-label="Selis Tools home">
+				<span class="brand-mark" aria-hidden="true">S</span>
+				<span class="brand-word">selis<span>tools</span></span>
+			</a>
+			<nav class="site-nav" aria-label="Primary">
+				<a href="/">Viewer</a>
+				<a href="#roadmap">Roadmap</a>
+				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
+			</nav>
+		</header>
+
+		<main id="main">
+			<section class="hero" aria-labelledby="hero-title">
+				<p class="eyebrow">Private PDF toolkit</p>
+				<h1 id="hero-title">PDFs, handled <em>here</em>.</h1>
+				<p class="lede">
+					Merge, split, and tidy your PDFs in the browser. Document bytes never
+					leave this device — there is no upload step to disable.
+				</p>
+				<div class="hero-actions">
+					<a class="primary-link" href="#tools">Choose a tool</a>
+					<a class="secondary-link" href="/">Open the viewer</a>
+				</div>
+				<ul class="trust-list">
+					<li><span aria-hidden="true">01</span> Files are read with the browser’s file API.</li>
+					<li><span aria-hidden="true">02</span> Writes happen in WebAssembly on this tab.</li>
+					<li><span aria-hidden="true">03</span> Downloads are Blob URLs, not server links.</li>
+				</ul>
+			</section>
+
+			<section id="tools" class="tools" aria-labelledby="tools-heading">
+				<div class="section-head">
+					<div>
+						<p class="eyebrow">Available now</p>
+						<h2 id="tools-heading">Six operations. Zero uploads.</h2>
+					</div>
+					<p class="section-note">
+						Every tool uses the same in-memory engine as the command line and
+						shows the verification result before you download.
+					</p>
+				</div>
+				<div id="tool-grid" class="tool-grid"></div>
+				<p class="tool-footnote">
+					More tools are on the roadmap below. Nothing in this list requires an
+					account, a queue, or a server-side copy of your document.
+				</p>
+			</section>
+
+			<section id="workspace" class="workspace" aria-labelledby="workspace-title" hidden>
+				<button id="back-to-tools" class="back" type="button">← All tools</button>
+				<div class="workspace-grid">
+					<div class="workspace-main">
+						<p class="eyebrow">Local workspace</p>
+						<h2 id="workspace-title">Merge PDF</h2>
+						<p id="workspace-blurb" class="workspace-blurb"></p>
+
+						<div
+							id="dropzone"
+							class="dropzone"
+							role="button"
+							tabindex="0"
+							aria-label="Choose PDF files"
+						>
+							<span class="drop-icon" aria-hidden="true">↓</span>
+							<span class="drop-title">Drop PDFs here</span>
+							<span class="drop-hint"
+								>or <span class="drop-link">choose files</span> · up to 256 MiB per
+								run</span
+							>
+							<input
+								id="file-input"
+								class="visually-hidden"
+								type="file"
+								accept="application/pdf,.pdf"
+								multiple
+								tabindex="-1"
+							/>
+						</div>
+
+						<ul id="file-list" class="file-list" aria-label="Selected PDFs"></ul>
+						<div id="options" class="options"></div>
+
+						<div class="run-row">
+							<button id="run-tool" class="run-button" type="button" disabled>
+								Run
+							</button>
+							<p id="status" class="status" role="status" aria-live="polite"></p>
+						</div>
+
+						<section id="result" class="result" aria-labelledby="result-title" hidden>
+							<div class="result-head">
+								<div>
+									<p class="eyebrow">Result</p>
+									<h3 id="result-title"></h3>
+									<p id="result-meta" class="result-meta"></p>
+								</div>
+								<div class="result-actions">
+									<a
+										id="result-preview"
+										class="secondary-link"
+										href="#"
+										target="_blank"
+										rel="noopener"
+										>Preview</a
+									>
+									<a id="result-download" class="primary-link" href="#" download
+										>Download</a
+									>
+								</div>
+							</div>
+							<dl id="result-rows" class="result-rows"></dl>
+							<div class="result-foot">
+								<p>
+									Verified against the input structure after the write. The
+									result is a Blob in this tab.
+								</p>
+								<button id="result-again" class="text-button" type="button">
+									Start another
+								</button>
+							</div>
+						</section>
+					</div>
+
+					<aside class="workspace-aside" aria-labelledby="aside-title">
+						<h3 id="aside-title">What stays local</h3>
+						<ul>
+							<li>Your PDFs are read in this tab and copied into WebAssembly memory.</li>
+							<li>No request carries a document body, filename, or page text.</li>
+							<li>The result is downloaded with a Blob URL created here.</li>
+						</ul>
+						<p class="aside-note">
+							The first run fetches a small WebAssembly chunk from this same
+							site. That request has no document bytes; after it loads, the
+							operation does not touch the network.
+						</p>
+					</aside>
+				</div>
+			</section>
+
+			<section id="roadmap" class="roadmap" aria-labelledby="roadmap-heading">
+				<div class="section-head">
+					<div>
+						<p class="eyebrow">Roadmap</p>
+						<h2 id="roadmap-heading">The rest of the toolkit.</h2>
+					</div>
+					<p class="section-note">
+						The feature matrix is public and staged. Each entry ships through
+						the same local-only path; none is a link to a third-party service.
+					</p>
+				</div>
+				<div class="roadmap-grid">
+					<article class="roadmap-card">
+						<p class="roadmap-status">Next</p>
+						<h3>Compress, repair, OCR</h3>
+						<p>
+							Target-size compression, structural repair, searchable scans,
+							and a PII scanner with review before any redaction is committed.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Next</p>
+						<h3>Convert in both directions</h3>
+						<p>
+							JPG, PNG, WebP, HEIC, and TIFF to PDF; PDF to JPG, text, HTML,
+							Word, PowerPoint, Excel, and PDF/A; HTML, Markdown, LaTeX, CSV,
+							and Office documents to PDF.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Planned</p>
+						<h3>Secure and sign</h3>
+						<p>
+							Protect, unlock, permissions, certificates, signatures,
+							watermarks, Bates numbering, and page numbering — all with keys
+							that never leave the device.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Planned</p>
+						<h3>Organize and edit</h3>
+						<p>
+							Crop, resize, N-up, flip, alternate and mix pages, split by size,
+							bookmarks, text, headers and footers, flatten, invert, and page
+							workflows.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Planned</p>
+						<h3>Forms and review</h3>
+						<p>
+							Fill forms, compare revisions, redact with preview, add
+							handwriting or a thumbmark, and summarize a document without
+							sending it away.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Research</p>
+						<h3>Scan, share, collaborate</h3>
+						<p>
+							Camera scan to PDF, peer-to-peer sharing, collaborative
+							whiteboards, GST invoices, POS billing, and filing workflows.
+						</p>
+					</article>
+				</div>
+			</section>
+		</main>
+
+		<footer class="site-footer">
+			<p>
+				<strong>Selis Tools</strong> is part of the Selis PDF project. Local-only
+				by construction, not by policy alone.
+			</p>
+			<p><a href="/">Viewer</a> · <a href="/tools.html">Tools</a></p>
+		</footer>
+
+		<noscript>
+			<p class="noscript">
+				This page needs JavaScript to read files locally and run the WebAssembly
+				tools. No document is sent anywhere when JavaScript is enabled.
+			</p>
+		</noscript>
+		<script type="module" src="/assets/host/tools/tools-page.js"></script>
+	</body>
+</html>

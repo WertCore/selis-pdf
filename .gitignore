@@ -61,6 +61,8 @@ assets/payload/fallback/*.ttf.br
 #                                   apps/web/host/dist (place-assets walks
 #                                   imports from the page entry; the worker
 #                                   entry index.js is NOT what a page loads)
+#   assets/host/no-upload.js,      the tools page's local-only guard and module
+#   assets/host/tools/**           graph, copied from apps/web/host/dist
 #   wasm/selis_pdf_wasm.wasm        the engine, copied from the cargo target dir
 #   app-manifest.json               the list of what was copied
 #
@@ -71,5 +73,7 @@ assets/payload/fallback/*.ttf.br
 apps/web/host/public/assets/ui/
 apps/web/host/public/assets/ui-kit/
 apps/web/host/public/assets/host/page.js
+apps/web/host/public/assets/host/no-upload.js
+apps/web/host/public/assets/host/tools/
 apps/web/host/public/wasm/
 apps/web/host/public/app-manifest.json

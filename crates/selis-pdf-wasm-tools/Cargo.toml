@@ -1,0 +1,20 @@
+[package]
+name = "selis-pdf-wasm-tools"
+description = "Lazy WASM chunk: byte-in/byte-out document tools for the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: every path is a key in the in-memory tool session.
+selis-pdf-tools = { workspace = true }
+serde_json = { workspace = true }

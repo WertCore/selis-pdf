@@ -33,16 +33,76 @@ mod extract;
 mod failure;
 mod img2pdf;
 mod inspect;
-mod progress;
 mod protect;
 mod render;
-mod runtime;
 mod search;
-mod tools;
 mod topdf;
 mod unlock;
-mod verify_report;
-mod write_gate;
+
+// The tool implementation now lives in `selis-pdf-tools`, shared with the
+// browser tools chunk. These re-export modules keep the CLI's existing call
+// sites and its `CliResult` boundary unchanged.
+mod runtime {
+    pub(crate) use selis_pdf_tools::runtime::*;
+}
+mod verify_report {
+    pub(crate) use selis_pdf_tools::Verification;
+}
+mod write_gate {
+    pub(crate) use selis_pdf_tools::write_gate::*;
+}
+mod tools {
+    use crate::verify_report::Verification;
+    use crate::{CliError, CliResult};
+
+    pub(crate) use selis_pdf_tools::warn_if_digital_signature;
+
+    pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::merge(inputs, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn split(
+        path: &str,
+        first: usize,
+        last: usize,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::split(path, first, last, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn set_metadata(
+        path: &str,
+        fields: &[(&str, &str)],
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::set_metadata(path, fields, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn redact(
+        path: &str,
+        rects: &[(f64, f64, f64, f64)],
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::redact(path, rects, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn rotate(
+        path: &str,
+        angle: i64,
+        pages: Option<&str>,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::rotate(path, angle, pages, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::delete(path, pages, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::reorder(path, order, output).map_err(CliError::from)
+    }
+}
 
 #[cfg(test)]
 mod tool_conformance;
@@ -628,6 +688,12 @@ impl std::error::Error for CliError {}
 impl From<selis_error::Error> for CliError {
     fn from(e: selis_error::Error) -> Self {
         CliError(e.to_string())
+    }
+}
+
+impl From<selis_pdf_tools::ToolError> for CliError {
+    fn from(e: selis_pdf_tools::ToolError) -> Self {
+        CliError(e.0)
     }
 }
 

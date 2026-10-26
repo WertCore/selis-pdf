@@ -102,19 +102,28 @@ const ESM_ROOTS = [
 	// the writer 13, none of which could exist if the logic lived in one long
 	// script.
 	//
-	// The entry is `page.js`, NOT `index.js`. The host's index is the service
-	// worker's source generator; walking from it would drag the whole worker
-	// (sw, headers, no-upload, worker-glue) onto the page origin for no reason.
-	// Because the walk follows IMPORTS, `page.ts` re-exporting only the print
-	// modules ships exactly those two and nothing else - and test files, maps
-	// and declarations are excluded automatically because nothing imports them.
-	{ from: join(workspaceRoot, "apps/web/host/dist"), to: "assets/host", entry: "page.js" },
+	// The entries are `page.js` and `tools/tools-page.js`, NOT `index.js`. The
+	// host's index is the service worker's source generator; walking from it
+	// would drag the whole worker (sw, headers, no-upload, worker-glue) onto the
+	// page origin for no reason. Because the walk follows IMPORTS, the print
+	// page ships only its two modules and the tools page ships its protocol,
+	// input parser, and UI - test files, maps and declarations are excluded
+	// automatically because nothing imports them.
+	{
+		from: join(workspaceRoot, "apps/web/host/dist"),
+		to: "assets/host",
+		entries: ["page.js", "tools/tools-page.js"],
+	},
 ];
 
 /** The engine filename inside a cargo target dir, optimised first. */
 const WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm";
 /** The unoptimised build, so a developer who only ran `cargo build` still gets a working app. */
 const WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm.wasm";
+/** The tools chunk, optimised first. It must stay import-free (checked below). */
+const TOOLS_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.opt.wasm";
+/** The unoptimised tools chunk, for developers who only ran `cargo build`. */
+const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -133,6 +142,17 @@ function targetDirs() {
 function findEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [WASM_OPT, WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first tools chunk that exists, optimised preferred over raw. */
+function findToolsEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [TOOLS_WASM_OPT, TOOLS_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -453,6 +473,52 @@ mkdirSync(dirname(engineOut), { recursive: true });
 copyFileSync(engine, engineOut);
 const engineBytes = readFileSync(engineOut).length;
 
+// The tools page is a second, much smaller engine. Its whole security claim is
+// that it has NO host imports: no clock, no entropy, no filesystem, no network.
+// Compile the copy that will actually be served, not the source path, so a stale
+// or edited public/ file cannot pass on the strength of a different artefact.
+const tools = findToolsEngine();
+if (tools === null) {
+	console.error(
+		[
+			"place-assets: no tools WASM chunk found - /tools.html cannot run an operation without one,",
+			"so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-tools --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const toolsOut = join(publicRoot, "wasm/selis_pdf_wasm_tools.wasm");
+mkdirSync(dirname(toolsOut), { recursive: true });
+copyFileSync(tools, toolsOut);
+const toolsBytes = readFileSync(toolsOut).length;
+let toolsImports;
+try {
+	toolsImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(toolsOut)));
+} catch (error) {
+	console.error(`place-assets: the tools chunk at ${toolsOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (toolsImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the tools chunk has host imports; the six operations must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...toolsImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-tools --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -469,6 +535,10 @@ writeFileSync(
 			specifierRewrites: rewrites,
 			engine: "/wasm/selis_pdf_wasm.wasm",
 			engineBytes,
+			tools: {
+				url: "/wasm/selis_pdf_wasm_tools.wasm",
+				bytes: toolsBytes,
+			},
 		},
 		null,
 		2,
@@ -478,6 +548,7 @@ writeFileSync(
 
 console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
-		`and the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) into public/, ` +
-		`rewriting ${rewrites} bare specifier(s)`,
+		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
+		`tools chunk (${toolsBytes} B, 0 imports, from ${relative(workspaceRoot, tools)}) ` +
+		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );

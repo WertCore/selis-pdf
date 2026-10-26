@@ -39,6 +39,13 @@ chunk = "editor"
 artifact = "selis_pdf_wasm_editor"
 budget = 900000
 
+# The tool-first page's lazy chunk (merge/split/rotate/delete/reorder/metadata).
+# It must stay import-free; `place-assets` fails the build if it grows JS glue.
+[[budget]]
+chunk = "tools"
+artifact = "selis_pdf_wasm_tools"
+budget = 300000
+
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]
 chunk = "engine-viewer"

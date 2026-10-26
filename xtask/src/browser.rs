@@ -184,7 +184,7 @@ struct Check {
 
 /// The committed checks, in report order.
 ///
-/// Five now. `service-worker` is the WEB.02 payload: real lifecycle event
+/// Six now. `service-worker` is the WEB.02 payload: real lifecycle event
 /// delivery, `clients.claim()`, and browser-enforced `respondWith`, over a real
 /// origin. `async-wasm` is the cheap proof that this harness itself works end
 /// to end — a page whose verdict is only written after an awaited
@@ -193,10 +193,12 @@ struct Check {
 /// so unlike SL-4.WASM.08's 25-minute leg it can run on every commit.
 /// `app-shell` proves the app's own worker; `chrome` proves the stage 3 React
 /// screen against the built UI and token bridge. Both need the host build, so
-/// they run last. `extension` (SL-4.UI.06) is the only one that loads an
-/// unpacked extension; it needs the extension build and a fixed key so the
-/// launcher can name the page it opens.
-const CHECKS: [Check; 5] = [
+/// they run last. `tools-page` drives the real `/tools.html` through a merge,
+/// reads the downloaded Blob bytes, and checks the page's no-upload assertion.
+/// `extension` (SL-4.UI.06) is the only one that loads an unpacked extension;
+/// it needs the extension build and a fixed key so the launcher can name the
+/// page it opens.
+const CHECKS: [Check; 6] = [
     Check {
         id: "service-worker",
         dir: "service-worker",
@@ -223,6 +225,15 @@ const CHECKS: [Check; 5] = [
         id: "chrome",
         dir: "chrome",
         verdict: verdict_chrome,
+    },
+    // The tool-first product surface (SL-4.TOOLS.02). It stages the same built
+    // app as `app-shell`/`chrome`, opens the real `/tools.html` in a
+    // same-origin frame, and drives a merge end to end. The downloaded Blob is
+    // fetched back and its bytes checked, so "a result appeared" is not enough.
+    Check {
+        id: "tools-page",
+        dir: "tools-page",
+        verdict: verdict_tools_page,
     },
     // SL-4.UI.06's extension leg. It stages the packed extension as an
     // unpacked one instead of serving a page, and it is opened through a
@@ -453,6 +464,159 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
                 errors.len()
             ));
         }
+    }
+    Ok(())
+}
+
+/// `tools-page` (SL-4.TOOLS.02): the real `/tools.html` merges two PDFs in the
+/// browser and hands back a complete, downloadable PDF.
+///
+/// Every claim is read from the page the user gets, not from a helper:
+///
+/// * six cards render, and choosing Merge opens the workspace;
+/// * two real `File` objects produce two rows and enable the button;
+/// * the run reaches `data-no-upload="verified"`, which the page only sets after
+///   its request recorder asserts that no request carried the input bytes;
+/// * the result card shows Pages `2 → 2` and a `pass` verdict;
+/// * the download href is a Blob URL and the bytes behind it begin `%PDF-` and
+///   are larger than the two 423-byte inputs;
+/// * every resource the iframe's own Resource Timing saw is same-origin, and the
+///   lazy `selis_pdf_wasm_tools.wasm` chunk is one of them.
+///
+/// The last point is why the page cannot pass on a fixture: the fixture would
+/// not fetch the real module graph, and a page that silently skipped the WASM
+/// chunk would still be able to render a card grid.
+fn verdict_tools_page(report: &Json) -> Result<(), String> {
+    well_formed(report)?;
+    if string_field(report, "check")? != "tools-page" {
+        return Err("the page did not identify itself as the tools check".into());
+    }
+    if report.get("cards").and_then(Json::as_u64) != Some(6) {
+        return Err(format!(
+            "the tools grid did not render six cards (cards = {:?})",
+            report.get("cards")
+        ));
+    }
+    if report.get("fileRows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the page did not show two selected PDFs (fileRows = {:?})",
+            report.get("fileRows")
+        ));
+    }
+    if string_field(report, "noUpload")? != "verified" {
+        return Err(
+            "the page never set data-no-upload=verified; the local request check did not pass"
+                .into(),
+        );
+    }
+
+    let result = report
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no result object".to_string())?;
+    let title = result
+        .get("title")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "the result had no title".to_string())?;
+    if title != "merged.pdf" {
+        return Err(format!(
+            "the merge result was named {title:?}, expected \"merged.pdf\""
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the result had no verification rows".to_string())?;
+    let row_value = |label: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(label))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    let pages = row_value("Pages");
+    if pages != "2 \u{2192} 2" {
+        return Err(format!(
+            "the merge of two one-page PDFs reported Pages {pages:?}, expected \"2 \u{2192} 2\""
+        ));
+    }
+    let verdict = row_value("Verification");
+    if verdict != "ok" {
+        return Err(format!(
+            "the merge result did not report a passing structural verification (got {verdict:?})"
+        ));
+    }
+
+    let output = report
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no output object".to_string())?;
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err("the result download was not a Blob URL".into());
+    }
+    if output.get("previewBlob").and_then(Json::as_bool) != Some(true) {
+        return Err("the result preview was not a Blob URL".into());
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the downloaded bytes did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if bytes <= 500 {
+        return Err(format!(
+            "the downloaded PDF is only {bytes} bytes; two 423-byte inputs should produce more"
+        ));
+    }
+    let name = output
+        .get("downloadName")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !name.ends_with(".pdf") {
+        return Err(format!("the download name {name:?} is not a PDF name"));
+    }
+
+    let network = report
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no network object".to_string())?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no foreign-resource list".to_string())?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the tools page fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    let resources = network.get("resources").and_then(Json::as_u64).unwrap_or(0);
+    if resources < 6 {
+        return Err(format!(
+            "only {resources} same-origin resources were observed; the page graph and lazy chunk did not all load"
+        ));
+    }
+    let paths = network
+        .get("paths")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no resource paths".to_string())?;
+    if !paths.iter().any(|path| {
+        path.as_str()
+            .is_some_and(|path| path.ends_with("/wasm/selis_pdf_wasm_tools.wasm"))
+    }) {
+        return Err(
+            "the lazy tools WASM chunk was not among the page's resources; the merge could not have run"
+                .into(),
+        );
+    }
+
+    let status = string_field(report, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the success status did not say the result was verified (status = {status:?})"
+        ));
     }
     Ok(())
 }
@@ -1056,7 +1220,7 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
     }
     // `app-shell` drives the app's OWN worker; `chrome` imports the built
     // React entries. Both need the built app on the same origin as the page.
-    if check.id == "app-shell" || check.id == "chrome" {
+    if check.id == "app-shell" || check.id == "chrome" || check.id == "tools-page" {
         if let Err(e) = stage_app(&app_public_dir(), &served) {
             return failed(check.id, format!("cannot stage the built web app: {e}"));
         }
@@ -3993,11 +4157,102 @@ mod tests {
         })
     }
 
+    /// A report in the shape `xtask/browser/tools-page/index.html` emits after
+    /// a real merge. The numbers are representative; the assertions are about
+    /// the shape and the claims, not about a particular compression ratio.
+    fn real_tools_page_report() -> Json {
+        json!({
+            "schema": SCHEMA,
+            "check": "tools-page",
+            "fatal": Json::Null,
+            "cards": 6,
+            "fileRows": 2,
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "merged.pdf",
+                "meta": "848 B · verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "2 \u{2192} 2" },
+                    { "label": "Annotations", "value": "0 \u{2192} 0" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "output": {
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "merged.pdf",
+                "bytes": 848,
+                "header": "%PDF-",
+            },
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 7,
+                "foreign": [],
+                "paths": [
+                    "/tools.html",
+                    "/assets/tools.css",
+                    "/assets/host/tools/tools-page.js",
+                    "/assets/host/tools/protocol.js",
+                    "/assets/host/tools/inputs.js",
+                    "/assets/host/no-upload.js",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
     #[test]
     fn the_verdicts_accept_what_a_real_browser_reported() {
         assert!(verdict_service_worker(&real_service_worker_report()).is_ok());
         assert!(verdict_async_wasm(&real_async_wasm_report()).is_ok());
         assert!(verdict_extension(&real_extension_report()).is_ok());
+        assert!(verdict_tools_page(&real_tools_page_report()).is_ok());
+    }
+
+    /// The tools verdict's witnesses, withdrawn one at a time. A merge that
+    /// rendered a result but never proved the local-only claim must not pass,
+    /// and neither must a same-origin page that quietly fetched a resource from
+    /// somewhere else.
+    #[test]
+    fn the_tools_verdict_fails_when_a_witness_is_withdrawn() {
+        let report = real_tools_page_report();
+
+        let mut unverified = report.clone();
+        *unverified.pointer_mut("/noUpload").unwrap() = json!("watching");
+        assert!(
+            verdict_tools_page(&unverified).is_err(),
+            "a result shown before the no-upload assertion must not pass"
+        );
+
+        let mut foreign = report.clone();
+        *foreign.pointer_mut("/network/foreign").unwrap() =
+            json!(["https://example.invalid/upload"]);
+        assert!(
+            verdict_tools_page(&foreign).is_err(),
+            "a resource from another origin must not pass"
+        );
+
+        let mut not_a_pdf = report.clone();
+        *not_a_pdf.pointer_mut("/output/header").unwrap() = json!("<html");
+        assert!(
+            verdict_tools_page(&not_a_pdf).is_err(),
+            "a download that is not a PDF must not pass"
+        );
+
+        let mut wrong_pages = report.clone();
+        *wrong_pages.pointer_mut("/result/rows/0/value").unwrap() = json!("1 \u{2192} 1");
+        assert!(
+            verdict_tools_page(&wrong_pages).is_err(),
+            "a merge that did not add the second page must not pass"
+        );
+
+        let mut missing_chunk = report.clone();
+        *missing_chunk.pointer_mut("/network/paths").unwrap() = json!(["/tools.html"]);
+        assert!(
+            verdict_tools_page(&missing_chunk).is_err(),
+            "a page that never loaded the lazy WASM chunk must not pass"
+        );
     }
 
     /// The extension verdict's witnesses, withdrawn one at a time. Each control

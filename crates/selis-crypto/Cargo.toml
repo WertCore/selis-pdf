@@ -10,9 +10,15 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["rng"]
+# Native and viewer builds use the OS/browser CSPRNG. The browser tools chunk
+# disables this feature because its six operations never encrypt; that keeps
+# `getrandom`'s wasm-bindgen JS glue out of the lazy tools artifact.
+rng = ["dep:getrandom"]
+
 [dependencies]
 aes = { workspace = true }
-getrandom = { workspace = true }
 md-5 = { workspace = true }
 p256 = { workspace = true }
 rsa = { workspace = true }
@@ -21,8 +27,17 @@ selis-sandbox = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
 
-# wasm32-unknown-unknown has no OS entropy source; getrandom's `js` feature
-# routes to crypto.getRandomValues via wasm-bindgen so the web shell keeps a
-# real CSPRNG (ADR-P0011). Other targets use the OS source unchanged.
+# wasm32-unknown-unknown has no OS entropy source; with `rng` enabled,
+# getrandom's `js` feature routes to crypto.getRandomValues via wasm-bindgen
+# so the web shell keeps a real CSPRNG (ADR-P0011). The tools chunk leaves
+# `rng` off and never links this path.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { workspace = true, features = ["js"] }
+getrandom = { workspace = true, optional = true, features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The PKCS#7 fixtures use `rsa::rand_core::OsRng`; the library's own `rng`
+# feature is separate from that test-only re-export.
+rsa = { workspace = true, features = ["getrandom"] }

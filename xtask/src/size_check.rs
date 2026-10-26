@@ -277,6 +277,7 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         "selis-pdf-wasm-ocr",
         "selis-pdf-wasm-convert",
         "selis-pdf-wasm-editor",
+        "selis-pdf-wasm-tools",
         "xtask",
     ];
     for pkg in WASM_PACKAGES {

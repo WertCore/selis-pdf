@@ -34,7 +34,7 @@ use crate::{CliError, CliResult};
 
 /// Which counts an operation guarantees are preserved from input to output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Preserved {
+pub struct Preserved {
     /// The page count must match the input's.
     pub pages: bool,
     /// The annotation count must match the input's.
@@ -51,7 +51,7 @@ pub(crate) struct Preserved {
 
 /// Counts guaranteed preserved by the full-rewrite tools (split picks a
 /// subset of pages, so its page count is asserted by the caller instead).
-pub(crate) const PRESERVE_ALL: Preserved = Preserved {
+pub const PRESERVE_ALL: Preserved = Preserved {
     pages: true,
     annotations: true,
     fields: true,
@@ -64,7 +64,7 @@ pub(crate) const PRESERVE_ALL: Preserved = Preserved {
 /// (and outlines, whose items pruned with the pages that hosted their
 /// destinations). Embedded files never reference pages and always carry
 /// through.
-pub(crate) const PRESERVE_EXCEPT_PAGES: Preserved = Preserved {
+pub const PRESERVE_EXCEPT_PAGES: Preserved = Preserved {
     pages: false,
     annotations: true,
     fields: true,
@@ -74,7 +74,7 @@ pub(crate) const PRESERVE_EXCEPT_PAGES: Preserved = Preserved {
 };
 
 /// Build the output expectations from the input's observed counts.
-pub(crate) fn expectations_from(input: &Observed, preserved: &Preserved) -> Expectations {
+pub fn expectations_from(input: &Observed, preserved: &Preserved) -> Expectations {
     Expectations {
         pages: if preserved.pages {
             Some(input.pages)
@@ -123,7 +123,7 @@ pub(crate) fn expectations_from(input: &Observed, preserved: &Preserved) -> Expe
 /// `VERIFY_FAILED` when the output fails structural verification;
 /// `WRITE_FAILED` when the atomic commit fails; `CANCELLED` when the
 /// operation's cancel token fired during the commit.
-pub(crate) fn write_verified(
+pub fn write_verified(
     bytes: &[u8],
     output: &str,
     expected: &Expectations,
@@ -157,7 +157,7 @@ pub(crate) fn write_verified(
 ///
 /// `WRITE_FAILED` when the atomic commit fails; `CANCELLED` when the
 /// operation's cancel token fired during the commit.
-pub(crate) fn atomic_write(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
+pub fn atomic_write(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
     commit(bytes, output, cancel)
 }
 
@@ -166,6 +166,7 @@ pub(crate) fn atomic_write(bytes: &[u8], output: &str, cancel: &CancelToken) -> 
 /// progress on stderr for large outputs), fsync, rename. A cancellation
 /// before the rename leaves the destination untouched and the temp file
 /// removed (`FileSink`'s drop).
+#[cfg(feature = "native-fs")]
 fn commit(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
     let sink = selis_io::FileSink::create(output)
         .map_err(|e| CliError(format!("cannot create output {output}: {e}")))?;
@@ -186,6 +187,14 @@ fn commit(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
     Ok(())
 }
 
+/// In the browser the commit is a table insert after verification. There is
+/// no destination to tear and no cancellation signal: the operation is a
+/// single synchronous call and a failed verification never reaches here.
+#[cfg(not(feature = "native-fs"))]
+fn commit(bytes: &[u8], output: &str, _cancel: &CancelToken) -> CliResult<()> {
+    crate::memory::write_output(output, bytes)
+}
+
 /// Survey `src`, verify `bytes` against the full preservation set
 /// (`PRESERVE_ALL`: pages, annotations, fields, OCGs, outline entries,
 /// embedded files), commit atomically, and return the display. For the
@@ -195,7 +204,7 @@ fn commit(bytes: &[u8], output: &str, cancel: &CancelToken) -> CliResult<()> {
 /// # Errors
 ///
 /// As [`write_verified`].
-pub(crate) fn verify_all_preserved(
+pub fn verify_all_preserved(
     bytes: &[u8],
     output: &str,
     src: &[u8],
@@ -224,7 +233,7 @@ pub(crate) fn verify_all_preserved(
 ///
 /// `VERIFY_FAILED` when the output fails structural verification;
 /// `WRITE_FAILED` when the atomic commit fails.
-pub(crate) fn write_generated(
+pub fn write_generated(
     bytes: &[u8],
     output: &str,
     budget: &Budget,

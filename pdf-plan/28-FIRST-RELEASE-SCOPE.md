@@ -164,3 +164,33 @@ for rasterisation — a generic component, not the moat.
 | `25-RISK-REGISTER.md` | R10 rewritten (competitor materialised). R16 rewritten (see below). |
 | `27-COST-AND-LICENSING.md` | Reinforced by §3 here. Add the build-time/distribution-time distinction to its §2 framing. |
 | ADR-P0008, ADR-P0009 | **Reaffirmed.** No third-party PDF implementation ships. Oracles are for CI. |
+
+---
+
+## 8. Tools-site execution update (27 October 2026)
+
+The first browser slice is now real: `/tools.html` is a tool-first surface with merge, split,
+rotate, delete, reorder, and metadata, all running through the shared `selis-pdf-tools` engine in a
+lazy, import-free WASM chunk. Outputs open in the browser's native PDF viewer via Blob URLs and are
+downloaded without a server round trip. The edge browser check (`xtask/browser/tools-page`) merges
+two PDFs, reads the downloaded bytes, requires `%PDF-` and Pages `2 → 2`, asserts the page set
+`data-no-upload="verified"` before showing the result, and finds no cross-origin resource.
+
+Two corrections to the framing above:
+
+1. **"Do not clone all 46" is sequencing, not deletion.** `34-TOOLS-SITE-ROADMAP.md` is the full
+   iLovePDF/ihatepdf.cv matrix, phased behind owned-engine gates. Phase 1A.0 is the six live
+   object-graph tools; Phase 1A.1 completes the remaining object-graph work; raster, OCR, text,
+   forms/security, editing, AI/collaboration, and compliance follow in their named phases. Editing
+   remains Phase 5 and no Phase 1A surface claims it.
+2. **Browser-native display is the display strategy.** A custom viewer is not a tools launch gate.
+   The viewer remains at `/`; the tools page opens inputs and outputs in the browser's PDF viewer.
+
+The no-upload claim is mechanically checked, not copy: CSP is `connect-src 'self'`, the tools
+chunk has zero WASM imports (the build fails otherwise), the page installs the request recorder
+and refuses to show a result when `assertNoUpload(inputBytes)` fails, and the browser check records
+only same-origin resources. Offline promotion of the tools page (`SL-4.TOOLS.05`) and the full
+egress matrix (`SL-8.BOUND.02`) remain open; neither is an excuse to weaken the online guarantee.
+
+See also `11A-PHASE-1A-tools.md` §1A.WEBTOOLS for task status and `34-TOOLS-SITE-ROADMAP.md` for
+the complete matrix and launch checklist.

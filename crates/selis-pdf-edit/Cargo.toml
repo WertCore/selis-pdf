@@ -16,7 +16,7 @@ selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-geom = { workspace = true }
 selis-io = { workspace = true }
-selis-pdf-cos = { workspace = true }
+selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-log = { workspace = true }

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>selis browser harness - tools page</title>
+    <style>
+      iframe { width: 1100px; height: 900px; border: 1px solid #ccc; }
+      #verdict { font: 14px monospace; }
+    </style>
+  </head>
+  <body>
+    <!-- @@SELIS-RESULT@@: the harness stages this page over the app's own index.html. -->
+    <pre id="verdict">PENDING</pre>
+    <iframe id="tools" src="about:blank" title="Selis tools page"></iframe>
+    <script type="module">
+      // The tools page is the product surface: it is loaded as the REAL
+      // `/tools.html` from the staged app tree inside this same-origin frame.
+      // This harness page only drives the DOM and reports, so a test cannot
+      // pass by exercising a fixture that re-implements the page.
+      const out = { schema: 1, check: "tools-page" };
+      let posted = false;
+
+      function post() {
+        if (posted) return;
+        posted = true;
+        fetch("/__selis_result", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(out),
+        });
+      }
+
+      function fail(error) {
+        out.fatal = String((error && error.stack) || error);
+        post();
+      }
+
+      function waitFor(probe, timeoutMs, label) {
+        return new Promise((resolve, reject) => {
+          const started = performance.now();
+          const tick = () => {
+            let value = false;
+            try {
+              value = probe();
+            } catch (_) {
+              value = false;
+            }
+            if (value) {
+              resolve(value);
+              return;
+            }
+            if (performance.now() - started > timeoutMs) {
+              reject(new Error("timed out waiting for " + label));
+              return;
+            }
+            setTimeout(tick, 40);
+          };
+          tick();
+        });
+      }
+
+      const watchdog = setTimeout(
+        () => fail(new Error("the tools page did not finish inside 25s")),
+        25_000,
+      );
+
+      (async () => {
+        const frame = document.getElementById("tools");
+        const loaded = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener(
+            "error",
+            () => reject(new Error("the tools iframe failed to load")),
+            { once: true },
+          );
+        });
+        frame.src = "/tools.html";
+        await loaded;
+        const win = frame.contentWindow;
+        const doc = () => {
+          const current = frame.contentDocument;
+          if (!current) throw new Error("the tools iframe has no document");
+          return current;
+        };
+
+        await waitFor(
+          () => doc().querySelectorAll("#tool-grid .tool-card").length === 6,
+          10_000,
+          "the six tool cards",
+        );
+        out.cards = doc().querySelectorAll("#tool-grid .tool-card").length;
+        out.pageTitle = doc().title;
+
+        const merge = doc().querySelector('[data-tool="merge"]');
+        if (!merge) throw new Error("the page offered no Merge card");
+        merge.click();
+        await waitFor(
+          () => !doc().getElementById("workspace").hidden,
+          5_000,
+          "the merge workspace",
+        );
+
+        const fixture = await fetch("one.pdf").then((r) => {
+          if (!r.ok) throw new Error("one.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const makeFile = (name) =>
+          new win.File([fixture.slice(0)], name, { type: "application/pdf" });
+        const transfer = new win.DataTransfer();
+        transfer.items.add(makeFile("alpha.pdf"));
+        transfer.items.add(makeFile("beta.pdf"));
+        const input = doc().getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+
+        await waitFor(
+          () => doc().querySelectorAll("#file-list .file-row").length === 2,
+          5_000,
+          "two selected PDFs",
+        );
+        out.fileRows = doc().querySelectorAll("#file-list .file-row").length;
+        const run = doc().getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the Merge button to enable");
+        out.runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc().documentElement.dataset.noUpload === "verified" &&
+            !doc().getElementById("result").hidden,
+          20_000,
+          "the merge result and the no-upload assertion",
+        );
+
+        out.noUpload = doc().documentElement.dataset.noUpload;
+        out.status = doc().getElementById("status").textContent.trim();
+        out.result = {
+          title: doc().getElementById("result-title").textContent.trim(),
+          meta: doc().getElementById("result-meta").textContent.trim(),
+          rows: Array.from(doc().querySelectorAll("#result-rows .result-row")).map(
+            (row) => ({
+              label: row.querySelector("dt").textContent.trim(),
+              value: row.querySelector("dd").textContent.trim(),
+            }),
+          ),
+        };
+        const preview = doc().getElementById("result-preview");
+        const download = doc().getElementById("result-download");
+        const href = download.getAttribute("href") || "";
+        out.output = {
+          blob: href.startsWith("blob:"),
+          previewBlob: (preview.getAttribute("href") || "").startsWith("blob:"),
+          downloadName: download.getAttribute("download"),
+        };
+        if (!out.output.blob) throw new Error("the download was not a Blob URL");
+        const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
+        out.output.bytes = bytes.length;
+        out.output.header = new TextDecoder().decode(bytes.subarray(0, 5));
+
+        // Resource Timing is the page's own account of every subresource it
+        // fetched. All of them must be this origin; no document body is
+        // observable here, which is why the page's recorder assertion above is
+        // the other half of the network claim.
+        const resources = win.performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => name.startsWith("http"));
+        const origin = win.location.origin;
+        out.network = {
+          origin,
+          resources: resources.length,
+          foreign: resources.filter((name) => new URL(name).origin !== origin),
+          paths: resources.map((name) => new URL(name).pathname).sort(),
+        };
+
+        clearTimeout(watchdog);
+        post();
+      })().catch((error) => {
+        clearTimeout(watchdog);
+        fail(error);
+      });
+    </script>
+  </body>
+</html>

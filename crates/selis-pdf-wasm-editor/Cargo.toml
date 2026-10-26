@@ -20,5 +20,5 @@ selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-edit = { workspace = true }
 selis-pdf-optimize = { workspace = true }
-selis-pdf-cos = { workspace = true }
+selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }

@@ -13,12 +13,18 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["rng"]
+# Encryption support needs a CSPRNG. Parsing, verification, and the six
+# browser-safe tools do not, so the tools chunk compiles this crate without it.
+rng = ["selis-crypto/rng"]
+
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
-selis-crypto = { workspace = true }
+selis-crypto = { workspace = true, default-features = false }
 selis-pdf-filter = { workspace = true }
 
 [dev-dependencies]

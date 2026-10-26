@@ -21,7 +21,7 @@ static TOKEN: OnceLock<CancelToken> = OnceLock::new();
 /// Called once from `main`. When the platform offers no hook (`wasm`-like
 /// targets), the token simply never fires and Ctrl-C keeps its default
 /// behavior — a process kill, which WRITE.06 already makes safe.
-pub(crate) fn init_cancel() {
+pub fn init_cancel() {
     let token = selis_io::install_ctrl_c_flag()
         .map(selis_sandbox::CancelToken::from_flag)
         .unwrap_or_default();
@@ -31,7 +31,7 @@ pub(crate) fn init_cancel() {
 /// The CLI's cancel token. In test binaries (which never call
 /// [`init_cancel`]) this is a fresh, never-cancelled token.
 #[must_use]
-pub(crate) fn token() -> CancelToken {
+pub fn token() -> CancelToken {
     TOKEN.get_or_init(CancelToken::new).clone()
 }
 
@@ -47,6 +47,6 @@ pub(crate) fn token() -> CancelToken {
 /// turns Ctrl-C into a typed `CANCELLED` at the next tick or charge, and the
 /// clock makes `Budget::wall` a genuine deadline.
 #[must_use]
-pub(crate) fn cli_guard<'c>(budget: &Budget, clock: &'c dyn Clock) -> BudgetGuard<'c> {
+pub fn cli_guard<'c>(budget: &Budget, clock: &'c dyn Clock) -> BudgetGuard<'c> {
     budget.guard_with(clock, token())
 }

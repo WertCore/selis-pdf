@@ -11,12 +11,12 @@ publish = false
 clap = { workspace = true, features = ["derive"] }
 miniz_oxide = { workspace = true }
 selis-bytes = { workspace = true }
-selis-crypto = { workspace = true }
+selis-crypto = { workspace = true, features = ["rng"] }
 # SL-3.FONT.10: the cjk-build asset pipeline runs the font-side chunk
 # builder (FONT.11 subsetting under the hood).
 selis-font = { workspace = true }
 selis-pdf-content = { workspace = true }
-selis-pdf-cos = { workspace = true }
+selis-pdf-cos = { workspace = true, features = ["rng"] }
 # The render sweep decodes oracle-driver PNG output (PDFium/pdf.js) with the
 # shared flate filter — harness-side decode of oracle output only (ADR-P0009).
 selis-pdf-filter = { workspace = true }

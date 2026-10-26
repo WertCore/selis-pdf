@@ -29,12 +29,12 @@ builtin-fallback-fonts = ["selis-font/builtin-fallback-fonts"]
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
-selis-crypto = { workspace = true }
+selis-crypto = { workspace = true, features = ["rng"] }
 selis-geom = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
 selis-log = { workspace = true }
-selis-pdf-cos = { workspace = true }
+selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
 selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }

@@ -172,9 +172,11 @@ jobs:
         # carries the same environment as the browser-check job, and runs
         # the whole app chain as a unit test.
         run: pnpm install --frozen-lockfile
-      - name: Build the wasm engine the self-test drives
-        # The same artifact `place-assets` refuses to place without.
-        run: cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+      - name: Build the wasm engine and tools chunk the self-test drives
+        # The same artifacts `place-assets` refuses to place without.
+        run: |
+          cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+          cargo build -p selis-pdf-wasm-tools --target wasm32-unknown-unknown --release
         timeout-minutes: 10
       - name: Place the app tree the self-test drives
         run: |
@@ -384,11 +386,14 @@ jobs:
       # tree that cannot open a PDF is a broken app, and must fail here rather
       # than at browser-click time. The extension's pack tool also refuses
       # without the optimised artifact, so both are produced here.
-      - name: Build and optimise the wasm engine the app ships
+      - name: Build and optimise the wasm engine and tools chunk the app ships
         run: |
           cargo build -p selis-pdf-wasm --target wasm32-unknown-unknown --release
+          cargo build -p selis-pdf-wasm-tools --target wasm32-unknown-unknown --release
           wasm-opt -O3 target/wasm32-unknown-unknown/release/selis_pdf_wasm.wasm \
             -o target/wasm32-unknown-unknown/release/selis_pdf_wasm.opt.wasm
+          wasm-opt -O3 target/wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm \
+            -o target/wasm32-unknown-unknown/release/selis_pdf_wasm_tools.opt.wasm
         timeout-minutes: 10
       - name: Build the app the checks drive
         # The `app-shell` check drives apps/web/host's OWN service worker, and

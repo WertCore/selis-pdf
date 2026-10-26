@@ -391,6 +391,9 @@ operation is available identically in the CLI, the web app, and the extension.
     never appear in the report or the oplog.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
+  - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned
+    raster path and a separate lazy chunk; it is Phase 2 in `34-TOOLS-SITE-ROADMAP.md`, not a
+    hidden switch on the current tools chunk.
 
 ---
 
@@ -401,6 +404,11 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
+  - **Status (2026-10-27, partial):** `/tools.html` is the tool-first surface: six live cards,
+    multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
+    Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
+    The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not
+    silently omitted. This task stays open until the complete Phase 1A.1 object-graph set ships.
 - [x] **SL-1A.UI.02 — Per-tool result verification display** · deps: `SL-1A.WRITE.05` · owner: AI
   - **Do:** Show what was verified after each operation — page count, preserved features, size
     delta. Turning the verification pass into visible UI is a trust asset competitors cannot copy
@@ -419,11 +427,22 @@ operation is available identically in the CLI, the web app, and the extension.
     `corpus/fixtures/verification_features.pdf` + `apps/cli/tests/verification_display.rs`
     (line, JSON twin, page-selection display, batch fields); report-builder unit + property tests
     in `apps/cli/src/verify_report.rs`.
+  - **Done in the browser (SL-4.TOOLS.02, 2026-10-27):** the tools result card renders the same
+    eight rows (Pages, Annotations, Form fields, Layers, Outline entries, Embedded files, Size,
+    Verification) from the WASM response. `xtask/browser/tools-page` drives a real merge in Edge
+    and requires Pages `2 → 2` and Verification `ok`; a failed gate yields no result card.
 - [ ] **SL-1A.UI.03 — "Your file never left this device" indicator** · deps: `SL-8.BOUND.03` · owner: AI+
   - **Do:** Pull the data-flow indicator forward from Phase 8. On a tools product it is the single
     most valuable piece of UI on the page.
   - **DoD:** Backed by the egress test harness (`SL-8.BOUND.02`), also pulled forward — the claim
     must be mechanically true from the first release, not from Phase 8.
+  - **Status (2026-10-27, partial):** the tools page installs the existing request recorder at
+    init, sets `data-no-upload="verified"` only after a successful operation and a passed
+    `assertNoUpload(inputBytes)`, and drops the result if the assertion fails. CSP is
+    `connect-src 'self'`; `place-assets` compiles the lazy chunk in Node and fails on any WASM
+    import. `xtask/browser/tools-page` confirms the real page fetched only same-origin resources
+    and set `verified` before showing the download. Remaining: fold this into the formal
+    `SL-8.BOUND.02` egress matrix and add the visible trust indicator copy/state to the UI.
 - [ ] **SL-1A.UI.04 — Extension surface for tools** · deps: `SL-4.EXT.01`, UI.01 · owner: AI+
   - **Do:** Side panel and toolbar entry points; right-click a PDF link → run a tool; multi-file
     selection handled in the extension's own page rather than a content script.
@@ -432,6 +451,10 @@ operation is available identically in the CLI, the web app, and the extension.
     fiddliest extension work from the first ship.
 - [ ] **SL-1A.UI.05 — Offline-first PWA** · deps: `SL-4.WEB.02` · owner: AI
   - **Do:** The whole toolkit works airplane-mode. Demonstrably. It is the proof of the claim.
+  - **Status (2026-10-27, open):** the viewer shell and engine are precached and pass the app-shell
+    browser check. `/tools.html` is online-first in this slice: the page, CSS, tools modules and
+    lazy chunk are not yet on the precache/runtime gate. This is a Phase 1A.1 ship gate; the tools
+    page does not weaken the no-upload promise while online.
 - [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
   - **Do:** Progress, cancellation, and honest failure when a file exceeds the WASM budget —
     with a clear message rather than a dead tab. Competitors have server-side memory; we have a
@@ -455,6 +478,39 @@ operation is available identically in the CLI, the web app, and the extension.
     SL-4.UI.13 in `14-PHASE-4-web-alpha.md`. The incremental *append* path has no shipped tool
     surface yet beyond the crash harness, so per-chunk progress there lands with the first
     incremental-save tool.
+
+---
+
+## 1A.WEBTOOLS — The browser tools surface (2026-10-27)
+
+- [x] **SL-4.TOOLS.01 — Shared byte-oriented tools library + WASM protocol**
+  - **Done:** `selis-pdf-tools` owns the six operations over an in-memory backend and a native
+    filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
+    `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
+    capabilities/chunk_id`; the raw chunk is 537 892 B (137 074 B brotli) with **0 imports**.
+  - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
+    and viewer builds enable `rng`, the six-tool chunk does not.
+- [x] **SL-4.TOOLS.02 — Tool-first page and six live tools**
+  - **Done:** `/tools.html` (merge, split, rotate, delete, reorder, metadata), 1-based page input,
+    drag/drop file selection, ordered merge list with ↑/↓, browser-native Blob preview and download,
+    verification rows, responsive external CSS. `xtask/browser/tools-page` drives a real merge in
+    Edge, fetches the downloaded Blob, requires `%PDF-` and Pages `2 → 2`, and proves the no-upload
+    assertion ran before the result appeared.
+  - **Deferred within this task:** drag-to-reorder (buttons ship), target-size split, multi-output
+    downloads, and the raster/forms/edit features in `34-TOOLS-SITE-ROADMAP.md`.
+- [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
+  - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
+    the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
+    builds it with the other chunks; budget 300 000 B brotli, baseline 137 074 B. CI builds it in
+    `test-fast` and `browser-check`.
+- [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
+  - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
+    raster/OCR, Phase 3 text/layout/convert, Phase 4 forms/security, Phase 5 editing, Phase 8
+    AI/collaboration/verticals, Phase 9 compliance. No feature advertised before its phase gate.
+- [ ] **SL-4.TOOLS.05 — Tools-page offline promotion**
+  - **Do:** add `/tools.html`, `tools.css`, the tools module graph and the lazy chunk to the
+    service-worker gate without weakening the document cache exclusion; prove it with the
+    browser harness in airplane mode.
 
 ---
 

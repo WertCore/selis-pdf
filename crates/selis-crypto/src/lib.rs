@@ -571,10 +571,12 @@ fn random16() -> [u8; 16] {
     out
 }
 
-/// Fill a buffer with random bytes from the OS CSPRNG. On the rare platforms
-/// where `getrandom` is unavailable it falls back to a deterministic PRNG so
-/// the function can never fail.
+/// Fill a buffer with random bytes from the OS CSPRNG when the `rng` feature
+/// is enabled. The browser tools chunk disables it because its six operations
+/// never encrypt; on a platform without entropy the fallback keeps this
+/// function infallible, exactly as it was before the feature split.
 fn fill_random(out: &mut [u8]) {
+    #[cfg(feature = "rng")]
     if getrandom::getrandom(out).is_ok() {
         return;
     }

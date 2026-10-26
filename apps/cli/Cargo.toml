@@ -24,9 +24,10 @@ selis-io = { workspace = true, features = ["native-io"] }
 # so `Budget::wall` is enforced on real parse paths (SL-0.SBX.07).
 selis-sandbox = { workspace = true, features = ["instant-clock"] }
 selis-log = { workspace = true }
-selis-crypto = { workspace = true }
-selis-pdf-cos = { workspace = true }
+selis-crypto = { workspace = true, features = ["rng"] }
+selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
+selis-pdf-tools = { workspace = true, features = ["native-fs"] }
 selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-content = { workspace = true }
