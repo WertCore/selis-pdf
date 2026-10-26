@@ -193,8 +193,9 @@ struct Check {
 /// so unlike SL-4.WASM.08's 25-minute leg it can run on every commit.
 /// `app-shell` proves the app's own worker; `chrome` proves the stage 3 React
 /// screen against the built UI and token bridge. Both need the host build, so
-/// they run last. `tools-page` drives the real `/tools.html` through a merge,
-/// reads the downloaded Blob bytes, and checks the page's no-upload assertion.
+/// they run last. `tools-page` drives the real `/tools.html` through an online
+/// merge and an offline reload, reads the downloaded Blob bytes both times, and
+/// checks the page's no-upload assertion.
 /// `extension` (SL-4.UI.06) is the only one that loads an unpacked extension;
 /// it needs the extension build and a fixed key so the launcher can name the
 /// page it opens.
@@ -226,10 +227,12 @@ const CHECKS: [Check; 6] = [
         dir: "chrome",
         verdict: verdict_chrome,
     },
-    // The tool-first product surface (SL-4.TOOLS.02). It stages the same built
-    // app as `app-shell`/`chrome`, opens the real `/tools.html` in a
-    // same-origin frame, and drives a merge end to end. The downloaded Blob is
-    // fetched back and its bytes checked, so "a result appeared" is not enough.
+    // The tool-first product surface (SL-4.TOOLS.02 + SL-4.TOOLS.05). It stages
+    // the same built app as `app-shell`/`chrome`, opens the real `/tools.html`
+    // in a same-origin frame, and drives a merge end to end. Then the harness
+    // cuts the origin, reloads the page, and merges again from the worker's
+    // cache. The downloaded Blob is fetched back and its bytes checked both
+    // times, so "a result appeared" is not enough.
     Check {
         id: "tools-page",
         dir: "tools-page",
@@ -468,8 +471,9 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
     Ok(())
 }
 
-/// `tools-page` (SL-4.TOOLS.02): the real `/tools.html` merges two PDFs in the
-/// browser and hands back a complete, downloadable PDF.
+/// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05): the real `/tools.html`
+/// merges two PDFs online, then the harness cuts the origin, reloads the same
+/// page, and merges again with every byte coming from the worker's cache.
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
@@ -477,15 +481,19 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
-/// * the result card shows Pages `2 → 2` and a `pass` verdict;
+/// * the result card shows Pages `2 → 2` and an `ok` verdict;
 /// * the download href is a Blob URL and the bytes behind it begin `%PDF-` and
 ///   are larger than the two 423-byte inputs;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
-///   lazy `selis_pdf_wasm_tools.wasm` chunk is one of them.
+///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
+/// * the offline leg repeats the card grid and merge after the origin has
+///   answered 503, while the page is worker-controlled and still sees zero
+///   foreign resources.
 ///
-/// The last point is why the page cannot pass on a fixture: the fixture would
-/// not fetch the real module graph, and a page that silently skipped the WASM
-/// chunk would still be able to render a card grid.
+/// The last two points are why the page cannot pass on a fixture: the fixture
+/// would not fetch the real module graph, and a page that silently skipped the
+/// WASM chunk would still be able to render a card grid. The offline leg is
+/// what proves the precache list is complete rather than merely present.
 fn verdict_tools_page(report: &Json) -> Result<(), String> {
     well_formed(report)?;
     if string_field(report, "check")? != "tools-page" {
@@ -610,6 +618,126 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the lazy tools WASM chunk was not among the page's resources; the merge could not have run"
                 .into(),
         );
+    }
+
+    // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
+    // page that forgot to register the worker, or a precache list missing one
+    // module, never reaches the card grid: the harness gets the worker's 503.
+    let offline = report
+        .get("offline")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no offline leg (offline = None)".to_string())?;
+    if offline.get("controlled").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the offline tools page was not controlled by the worker (controlled = {:?})",
+            offline.get("controlled")
+        ));
+    }
+    let script = offline.get("script").and_then(Json::as_str).unwrap_or("");
+    if !script.ends_with("/sw.js") {
+        return Err(format!(
+            "the offline tools page was controlled by {script:?}, not the app's /sw.js"
+        ));
+    }
+    if offline.get("cards").and_then(Json::as_u64) != Some(6) {
+        return Err(format!(
+            "the offline tools page did not render six cards (cards = {:?})",
+            offline.get("cards")
+        ));
+    }
+    if offline.get("noUpload").and_then(Json::as_str) != Some("verified") {
+        return Err(
+            "the offline merge never set data-no-upload=verified; the local request check did \
+             not pass"
+                .into(),
+        );
+    }
+    let offline_result = offline
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the offline merge reported no result object".to_string())?;
+    if offline_result.get("title").and_then(Json::as_str) != Some("merged.pdf") {
+        return Err(format!(
+            "the offline merge result was named {:?}, expected \"merged.pdf\"",
+            offline_result.get("title")
+        ));
+    }
+    let offline_rows = offline_result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the offline result had no verification rows".to_string())?;
+    let offline_row_value = |label: &str| {
+        offline_rows
+            .iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(label))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    let offline_pages = offline_row_value("Pages");
+    if offline_pages != "2 \u{2192} 2" {
+        return Err(format!(
+            "the offline merge of two one-page PDFs reported Pages {offline_pages:?}, expected \
+             \"2 \u{2192} 2\""
+        ));
+    }
+    if offline_row_value("Verification") != "ok" {
+        return Err(format!(
+            "the offline merge did not report a passing structural verification (got {:?})",
+            offline_row_value("Verification")
+        ));
+    }
+    let offline_output = offline
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the offline merge reported no output object".to_string())?;
+    if offline_output.get("blob").and_then(Json::as_bool) != Some(true)
+        || offline_output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err("the offline result did not use Blob URLs for preview and download".into());
+    }
+    if offline_output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the offline downloaded bytes did not begin with %PDF- (header = {:?})",
+            offline_output.get("header")
+        ));
+    }
+    let offline_bytes = offline_output
+        .get("bytes")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if offline_bytes <= 500 {
+        return Err(format!(
+            "the offline downloaded PDF is only {offline_bytes} bytes; two 423-byte inputs \
+             should produce more"
+        ));
+    }
+    let offline_name = offline_output
+        .get("downloadName")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !offline_name.ends_with(".pdf") {
+        return Err(format!(
+            "the offline download name {offline_name:?} is not a PDF name"
+        ));
+    }
+    let offline_network = offline
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the offline leg reported no network object".to_string())?;
+    let offline_foreign = offline_network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the offline leg reported no foreign-resource list".to_string())?;
+    if !offline_foreign.is_empty() {
+        return Err(format!(
+            "the offline tools page recorded {} foreign resource(s): {:?}",
+            offline_foreign.len(),
+            offline_foreign
+                .iter()
+                .filter_map(Json::as_str)
+                .collect::<Vec<_>>()
+        ));
     }
 
     let status = string_field(report, "status")?;
@@ -4187,17 +4315,66 @@ mod tests {
             },
             "network": {
                 "origin": "http://127.0.0.1:1234",
-                "resources": 7,
+                "resources": 9,
                 "foreign": [],
                 "paths": [
                     "/tools.html",
                     "/assets/tools.css",
+                    "/assets/host/sw-policy.js",
+                    "/assets/host/sw-register.js",
                     "/assets/host/tools/tools-page.js",
                     "/assets/host/tools/protocol.js",
                     "/assets/host/tools/inputs.js",
                     "/assets/host/no-upload.js",
                     "/wasm/selis_pdf_wasm_tools.wasm",
                 ],
+            },
+            "sw": {
+                "registration": "registered",
+                "script": "http://127.0.0.1:1234/sw.js",
+                "controlled": true,
+            },
+            "offline": {
+                "cards": 6,
+                "controlled": true,
+                "script": "http://127.0.0.1:1234/sw.js",
+                "pageTitle": "Selis Tools — PDFs, handled here",
+                "fileRows": 2,
+                "runLabel": "Merge PDFs",
+                "noUpload": "verified",
+                "status": "Done. The result was verified on this device.",
+                "result": {
+                    "title": "merged.pdf",
+                    "meta": "848 B · verified locally",
+                    "rows": [
+                        { "label": "Pages", "value": "2 \u{2192} 2" },
+                        { "label": "Annotations", "value": "0 \u{2192} 0" },
+                        { "label": "Verification", "value": "ok" },
+                    ],
+                },
+                "output": {
+                    "blob": true,
+                    "previewBlob": true,
+                    "downloadName": "merged.pdf",
+                    "bytes": 848,
+                    "header": "%PDF-",
+                },
+                "network": {
+                    "origin": "http://127.0.0.1:1234",
+                    "resources": 9,
+                    "foreign": [],
+                    "paths": [
+                        "/tools.html",
+                        "/assets/tools.css",
+                        "/assets/host/sw-policy.js",
+                        "/assets/host/sw-register.js",
+                        "/assets/host/tools/tools-page.js",
+                        "/assets/host/tools/protocol.js",
+                        "/assets/host/tools/inputs.js",
+                        "/assets/host/no-upload.js",
+                        "/wasm/selis_pdf_wasm_tools.wasm",
+                    ],
+                },
             },
         })
     }
@@ -4252,6 +4429,48 @@ mod tests {
         assert!(
             verdict_tools_page(&missing_chunk).is_err(),
             "a page that never loaded the lazy WASM chunk must not pass"
+        );
+
+        let mut no_offline = report.clone();
+        no_offline
+            .as_object_mut()
+            .expect("report object")
+            .remove("offline");
+        assert!(
+            verdict_tools_page(&no_offline).is_err(),
+            "an online-only run must not pass the offline gate"
+        );
+
+        let mut uncontrolled = report.clone();
+        *uncontrolled.pointer_mut("/offline/controlled").unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&uncontrolled).is_err(),
+            "an offline page with no worker controller must not pass"
+        );
+
+        let mut offline_unverified = report.clone();
+        *offline_unverified.pointer_mut("/offline/noUpload").unwrap() = json!("watching");
+        assert!(
+            verdict_tools_page(&offline_unverified).is_err(),
+            "an offline result shown before the no-upload assertion must not pass"
+        );
+
+        let mut offline_foreign = report.clone();
+        *offline_foreign
+            .pointer_mut("/offline/network/foreign")
+            .unwrap() = json!(["https://example.invalid/upload"]);
+        assert!(
+            verdict_tools_page(&offline_foreign).is_err(),
+            "an offline resource from another origin must not pass"
+        );
+
+        let mut offline_wrong_pages = report.clone();
+        *offline_wrong_pages
+            .pointer_mut("/offline/result/rows/0/value")
+            .unwrap() = json!("1 \u{2192} 1");
+        assert!(
+            verdict_tools_page(&offline_wrong_pages).is_err(),
+            "an offline merge that did not add the second page must not pass"
         );
     }
 

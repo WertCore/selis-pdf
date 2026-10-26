@@ -12,24 +12,20 @@
  * as HTML.
  */
 
+import { installRequestRecorder } from "../no-upload.js";
+import { registerServiceWorker } from "../sw-register.js";
+import { ToolInputError, hasPdfHeader, pageIndex, shiftPageSelection } from "./inputs.js";
 import {
+	type ToolOp,
+	ToolProtocolError,
+	type ToolRequest,
+	type ToolsWasm,
+	type WireFile,
 	formatBytes,
 	loadTools,
 	runTool,
 	verificationRows,
-	ToolProtocolError,
-	type ToolOp,
-	type ToolRequest,
-	type ToolsWasm,
-	type WireFile,
 } from "./protocol.js";
-import {
-	hasPdfHeader,
-	pageIndex,
-	shiftPageSelection,
-	ToolInputError,
-} from "./inputs.js";
-import { installRequestRecorder } from "../no-upload.js";
 
 interface ToolDef {
 	readonly id: ToolOp;
@@ -257,12 +253,7 @@ function init(): void {
 		toolGrid.replaceChildren(...cards);
 	}
 
-	function addField(
-		key: string,
-		labelText: string,
-		control: Control,
-		hint?: string,
-	): Control {
+	function addField(key: string, labelText: string, control: Control, hint?: string): Control {
 		control.id = `option-${key}`;
 		optionControls.set(key, control);
 		const field = make("div", "field");
@@ -285,11 +276,7 @@ function init(): void {
 		return control;
 	}
 
-	function textInput(
-		key: string,
-		type: "text" | "number",
-		placeholder: string,
-	): HTMLInputElement {
+	function textInput(key: string, type: "text" | "number", placeholder: string): HTMLInputElement {
 		const input = make("input", "control");
 		input.type = type;
 		input.name = key;
@@ -313,7 +300,12 @@ function init(): void {
 			return;
 		}
 		if (tool.id === "split") {
-			const from = addField("from", "From page", textInput("from", "number", "1"), "1-based, inclusive.");
+			const from = addField(
+				"from",
+				"From page",
+				textInput("from", "number", "1"),
+				"1-based, inclusive.",
+			);
 			(from as HTMLInputElement).value = "1";
 			addField(
 				"to",
@@ -642,10 +634,7 @@ function init(): void {
 			return;
 		}
 		if (files.length < (tool.multiple ? 2 : 1)) {
-			setStatus(
-				tool.multiple ? "Choose at least two PDFs first." : "Choose a PDF first.",
-				"error",
-			);
+			setStatus(tool.multiple ? "Choose at least two PDFs first." : "Choose a PDF first.", "error");
 			return;
 		}
 		setBusy(true);
@@ -774,6 +763,25 @@ function init(): void {
 	}
 }
 
+/**
+ * Register the same origin-wide worker the viewer uses.
+ *
+ * The tools page is often the first page a visitor opens, so it cannot rely on
+ * a previous viewer visit to install the worker. Registration is deliberately
+ * non-blocking and non-fatal: an operation must work online even when a browser
+ * refuses service workers (private mode, `file://`, an insecure origin). The
+ * browser check waits for `navigator.serviceWorker.ready`, then reloads with the
+ * network cut; `data-sw` is the page's own record of which of those happened.
+ */
+async function registerOfflineSupport(): Promise<void> {
+	const result = await registerServiceWorker();
+	document.documentElement.dataset.sw = result.ok ? "registered" : result.reason;
+	if (!result.ok) {
+		console.warn("Selis tools: offline support is unavailable:", result.reason);
+	}
+}
+
 if (typeof document !== "undefined") {
 	init();
+	void registerOfflineSupport();
 }

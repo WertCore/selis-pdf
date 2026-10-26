@@ -28,7 +28,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runIntake } from "./handoff-flow.js";
 import { ISOLATION_HEADERS, buildSecurityHeaders } from "./headers.js";
 import { type RequestRecorder, installRequestRecorder } from "./no-upload.js";
-import { OWNED_CACHES, PRECACHE_PATHS, RUNTIME_CACHE, SHELL_CACHE } from "./sw-policy.js";
+import {
+	OWNED_CACHES,
+	PRECACHE_PATHS,
+	RUNTIME_CACHE,
+	SHELL_CACHE,
+	TOOLS_PRECACHE_PATHS,
+} from "./sw-policy.js";
 import {
 	type WorkerHandlers,
 	createWorkerHandlers,
@@ -120,6 +126,39 @@ function createOrigin(): Origin {
 		() =>
 			new Response(new Uint8Array([0x00, 0x61, 0x73, 0x6d]), {
 				headers: { "Content-Type": "application/wasm", "Content-Length": "4" },
+			}),
+	);
+
+	// The tools surface, as SL-4.TOOLS.05 promotes it into the shell cache.
+	origin.serve(
+		"/tools.html",
+		() =>
+			new Response("<!doctype html><title>Selis Tools</title><main id=tool-grid>", {
+				headers: shellHeaders(),
+			}),
+	);
+	origin.serve(
+		"/assets/tools.css",
+		() => new Response("body{}", { headers: { "Content-Type": "text/css" } }),
+	);
+	for (const module of [
+		"/assets/host/no-upload.js",
+		"/assets/host/sw-policy.js",
+		"/assets/host/sw-register.js",
+		"/assets/host/tools/inputs.js",
+		"/assets/host/tools/protocol.js",
+		"/assets/host/tools/tools-page.js",
+	]) {
+		origin.serve(
+			module,
+			() => new Response("// tools module", { headers: { "Content-Type": "text/javascript" } }),
+		);
+	}
+	origin.serve(
+		"/wasm/selis_pdf_wasm_tools.wasm",
+		() =>
+			new Response(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01]), {
+				headers: { "Content-Type": "application/wasm", "Content-Length": "5" },
 			}),
 	);
 	return origin;
@@ -305,7 +344,7 @@ async function dispatch(handlers: WorkerHandlers, request: Request): Promise<Res
 	}
 	return handlers.respond(request, decision);
 }
-describe("install: the shell, and only the shell", () => {
+describe("install: the declared precache set, and only it", () => {
 	it("precaches PRECACHE_PATHS into the shell cache and touches no runtime cache", async () => {
 		const { handlers, caches } = createWorker();
 		await handlers.install();
@@ -412,6 +451,31 @@ describe("airplane mode: the DoD's precondition", () => {
 		);
 		// And it came from the cache, not from an origin that is now unreachable.
 		expect(origin.log.filter((entry) => entry.url.endsWith(".wasm"))).toHaveLength(1);
+	});
+
+	it("serves the tools page, its module graph, and its chunk offline", async () => {
+		const { handlers, origin } = createWorker();
+		await handlers.install();
+		origin.online = false;
+
+		const page = await dispatch(handlers, navigationRequest(`${SCOPE}tools.html`));
+		if (page === "browser") {
+			throw new Error("a tools navigation must never be passed through");
+		}
+		expect(page.status).toBe(200);
+		expect(await page.text()).toContain("Selis Tools");
+
+		for (const path of TOOLS_PRECACHE_PATHS) {
+			if (path === "/tools.html") continue;
+			const asset = await dispatch(handlers, new Request(`${SCOPE}${path.slice(1)}`));
+			if (asset === "browser") {
+				throw new Error(`${path} must be answered by the worker offline`);
+			}
+			expect(asset.status, path).toBe(200);
+			expect((await asset.arrayBuffer()).byteLength, path).toBeGreaterThan(0);
+		}
+		// Nothing above reached the origin: the install was the only network leg.
+		expect(origin.log).toHaveLength(PRECACHE_PATHS.length);
 	});
 
 	it("resolves /index.html through the shell alias when the host routes it apart", async () => {

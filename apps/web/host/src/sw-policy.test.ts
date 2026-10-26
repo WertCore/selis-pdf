@@ -15,11 +15,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	CACHE_VERSION,
 	MAX_RUNTIME_ENTRY_BYTES,
 	PRECACHE_PATHS,
 	RUNTIME_CACHE_MAX_ENTRIES,
 	RUNTIME_STORABLE_CONTENT_TYPES,
 	SHELL_ALIASES,
+	SHELL_PRECACHE_PATHS,
+	TOOLS_PRECACHE_PATHS,
 	chooseEvictionKey,
 	classifyRequest,
 	isStaleCacheName,
@@ -61,29 +64,64 @@ function documentResponse(overrides: Partial<ResponseFacts> = {}): ResponseFacts
 	return response({ contentType: "application/pdf", ...overrides });
 }
 
-describe("precache set: the boot minimum and nothing else", () => {
-	it("holds the shell only - no WASM, no document, no query string", () => {
+describe("precache set: a small viewer shell and the complete tools surface", () => {
+	it("holds only static same-origin URLs - no document, no query string", () => {
 		for (const path of PRECACHE_PATHS) {
 			expect(path.startsWith("/"), path).toBe(true);
 			expect(path.includes("?"), path).toBe(false);
-			expect(path.endsWith(".wasm"), `${path} must not be precached`).toBe(false);
 			expect(path.includes("src="), path).toBe(false);
+			expect(path.includes(".."), path).toBe(false);
 		}
 	});
 
-	it("keeps the WASM engine out of the install, as the size budget requires", () => {
+	it("keeps the viewer's core engine in the runtime cache, not the install", () => {
 		// The core chunk is up to 3 MB brotli (03-CONVENTIONS.md 12). A first
-		// visit must not be a multi-megabyte install, so no module - and no
-		// `/wasm/` path at all - appears in the precache list.
-		expect(PRECACHE_PATHS).not.toContain("/wasm/selis_pdf_wasm.wasm");
-		for (const path of PRECACHE_PATHS) {
+		// visit must not be a multi-megabyte install, so no viewer module - and
+		// no `/wasm/` path at all - appears in the viewer shell.
+		expect(SHELL_PRECACHE_PATHS).not.toContain("/wasm/selis_pdf_wasm.wasm");
+		for (const path of SHELL_PRECACHE_PATHS) {
 			expect(path.startsWith("/wasm/"), path).toBe(false);
 			expect(path.endsWith(".wasm"), path).toBe(false);
 		}
 	});
 
-	it("lists the shell's own assets, so install cannot fail on a missing file", () => {
-		expect(PRECACHE_PATHS).toEqual(["/", "/index.html", "/assets/style.css", "/assets/boot.js"]);
+	it("precaches the tools page, its complete module graph, and its own chunk", () => {
+		// The tools chunk is 137 KB brotli, not 3 MB. Precaching it makes the
+		// tool-first page work in airplane mode on the first visit; leaving a
+		// module out here is caught by the offline browser leg.
+		expect(TOOLS_PRECACHE_PATHS).toEqual([
+			"/tools.html",
+			"/assets/tools.css",
+			"/assets/host/no-upload.js",
+			"/assets/host/sw-policy.js",
+			"/assets/host/sw-register.js",
+			"/assets/host/tools/inputs.js",
+			"/assets/host/tools/protocol.js",
+			"/assets/host/tools/tools-page.js",
+			"/wasm/selis_pdf_wasm_tools.wasm",
+		]);
+		expect(TOOLS_PRECACHE_PATHS.filter((path) => path.endsWith(".wasm"))).toEqual([
+			"/wasm/selis_pdf_wasm_tools.wasm",
+		]);
+	});
+
+	it("is exactly the two named groups, in one install list", () => {
+		expect(PRECACHE_PATHS).toEqual([...SHELL_PRECACHE_PATHS, ...TOOLS_PRECACHE_PATHS]);
+		expect(PRECACHE_PATHS).toEqual([
+			"/",
+			"/index.html",
+			"/assets/style.css",
+			"/assets/boot.js",
+			"/tools.html",
+			"/assets/tools.css",
+			"/assets/host/no-upload.js",
+			"/assets/host/sw-policy.js",
+			"/assets/host/sw-register.js",
+			"/assets/host/tools/inputs.js",
+			"/assets/host/tools/protocol.js",
+			"/assets/host/tools/tools-page.js",
+			"/wasm/selis_pdf_wasm_tools.wasm",
+		]);
 	});
 });
 
@@ -114,13 +152,24 @@ describe("requests the worker answers from a cache", () => {
 	});
 
 	it("answers the precached assets from the shell cache", () => {
-		for (const path of ["/index.html", "/assets/style.css", "/assets/boot.js"]) {
+		for (const path of PRECACHE_PATHS.filter((path) => path !== "/")) {
 			expect(classifyRequest(facts({ url: `${SCOPE}${path.slice(1)}` }))).toEqual({
 				kind: "shell",
 				path,
 				respond: true,
 			});
 		}
+	});
+
+	it("answers an offline tools navigation and its chunk from the shell cache", () => {
+		const navigation = classifyRequest(facts({ url: `${SCOPE}tools.html`, mode: "navigate" }));
+		expect(navigation).toEqual({ kind: "shell", path: "/tools.html", respond: true });
+		const chunk = classifyRequest(facts({ url: `${SCOPE}wasm/selis_pdf_wasm_tools.wasm` }));
+		expect(chunk).toEqual({
+			kind: "shell",
+			path: "/wasm/selis_pdf_wasm_tools.wasm",
+			respond: true,
+		});
 	});
 
 	it("caches the WASM chunks and the code-split UI at runtime", () => {
@@ -330,7 +379,8 @@ describe("shell cache housekeeping", () => {
 	it("purges our own stale versions and nothing else", () => {
 		expect(isStaleCacheName("selis-shell-v0")).toBe(true);
 		expect(isStaleCacheName("selis-runtime-v0")).toBe(true);
-		expect(isStaleCacheName("selis-shell-v1")).toBe(false);
+		expect(isStaleCacheName("selis-shell-v1")).toBe(true);
+		expect(isStaleCacheName(`selis-shell-v${CACHE_VERSION}`)).toBe(false);
 		expect(isStaleCacheName("workbox-precache-v2")).toBe(false);
 		expect(isStaleCacheName("some-other-app-v1")).toBe(false);
 	});

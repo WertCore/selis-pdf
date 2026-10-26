@@ -21,7 +21,12 @@ import { PRECACHE_PATHS, SERVICE_WORKER_PATH, SW_SCOPE } from "./sw-policy.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const html = readFileSync(join(pkgRoot, "public", "index.html"), "utf8");
+const toolsHtml = readFileSync(join(pkgRoot, "public", "tools.html"), "utf8");
 const boot = readFileSync(join(pkgRoot, "public", "assets", "boot.js"), "utf8");
+const toolsPage = readFileSync(
+	join(pkgRoot, "public", "assets", "host", "tools", "tools-page.js"),
+	"utf8",
+);
 const packScript = readFileSync(join(pkgRoot, "tools", "place-sw.mjs"), "utf8");
 
 describe("the deployment serves what the policy expects", () => {
@@ -59,6 +64,19 @@ describe("the page registers the worker", () => {
 		for (const specifier of specifiers) {
 			expect(specifier.startsWith("/"), specifier).toBe(true);
 			expect(specifier.includes(".."), specifier).toBe(false);
+		}
+	});
+
+	it("the tools page registers the same worker, from same-origin modules only", () => {
+		expect(toolsHtml).toContain('src="/assets/host/tools/tools-page.js"');
+		expect(toolsPage).toContain("registerServiceWorker");
+		const specifiers: string[] = [...toolsPage.matchAll(/from\s+"([^"]+)"/g)]
+			.map((match) => match[1] ?? "")
+			.filter((specifier) => specifier.length > 0);
+		expect(specifiers).toContain("../sw-register.js");
+		for (const specifier of specifiers) {
+			expect(specifier.startsWith("."), specifier).toBe(true);
+			expect(specifier.includes("://"), specifier).toBe(false);
 		}
 	});
 

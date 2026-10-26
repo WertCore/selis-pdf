@@ -449,12 +449,16 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Note:** `SL-4.EXT.02` (PDF navigation interception) is *not* required for the tools release.
     The extension can ship as a tools surface first and gain the viewer at G4. That decouples the
     fiddliest extension work from the first ship.
-- [ ] **SL-1A.UI.05 — Offline-first PWA** · deps: `SL-4.WEB.02` · owner: AI
+- [x] **SL-1A.UI.05 — Offline-first PWA** · deps: `SL-4.WEB.02` · owner: AI
   - **Do:** The whole toolkit works airplane-mode. Demonstrably. It is the proof of the claim.
-  - **Status (2026-10-27, open):** the viewer shell and engine are precached and pass the app-shell
-    browser check. `/tools.html` is online-first in this slice: the page, CSS, tools modules and
-    lazy chunk are not yet on the precache/runtime gate. This is a Phase 1A.1 ship gate; the tools
-    page does not weaken the no-upload promise while online.
+  - **Done (SL-4.TOOLS.05, 2026-10-27):** the install set now carries `/tools.html`,
+    `tools.css`, the complete tools module graph (including the registrar), and the 137 KB-brotli
+    tools chunk alongside the viewer shell. The tools page registers the origin-wide worker itself,
+    so a first visit that lands on `/tools.html` is enough. `xtask/browser/tools-page` merges
+    online, cuts the origin (the harness answers 503), reloads the same page, and merges again:
+    6 cards, 8 same-origin resources, 0 foreign, `%PDF-` download, `data-no-upload="verified"`.
+    The viewer's 3 MB core engine remains runtime-cached; the document cache exclusion is
+    unchanged.
 - [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
   - **Do:** Progress, cancellation, and honest failure when a file exceeds the WASM budget —
     with a clear message rather than a dead tab. Competitors have server-side memory; we have a
@@ -507,10 +511,13 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
     raster/OCR, Phase 3 text/layout/convert, Phase 4 forms/security, Phase 5 editing, Phase 8
     AI/collaboration/verticals, Phase 9 compliance. No feature advertised before its phase gate.
-- [ ] **SL-4.TOOLS.05 — Tools-page offline promotion**
-  - **Do:** add `/tools.html`, `tools.css`, the tools module graph and the lazy chunk to the
-    service-worker gate without weakening the document cache exclusion; prove it with the
-    browser harness in airplane mode.
+- [x] **SL-4.TOOLS.05 — Tools-page offline promotion**
+  - **Done (2026-10-27):** `SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS` are one atomic
+    install list; `CACHE_VERSION` is 2, so the old shell cache is purged. The tools page imports
+    the same `sw-register` module as the viewer (copied into `/assets/host/`), and the browser
+    check proves the offline reload and merge. Node tests cover the new shell/runtime split, the
+    offline tools navigation, all graph assets, and the unchanged invariant: the worker fetches
+    only bodyless GETs from the declared list, and no document response is ever stored.
 
 ---
 

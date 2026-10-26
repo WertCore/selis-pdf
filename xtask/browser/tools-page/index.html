@@ -17,6 +17,15 @@
       // `/tools.html` from the staged app tree inside this same-origin frame.
       // This harness page only drives the DOM and reports, so a test cannot
       // pass by exercising a fixture that re-implements the page.
+      //
+      // Two legs, because "works online" and "works in airplane mode" are
+      // different claims (SL-4.TOOLS.05):
+      //
+      //   1. load the real page, wait for its own worker registration to claim
+      //      it, then merge two PDFs;
+      //   2. flip the harness origin's offline switch, reload the SAME page,
+      //      and merge again. Every module, the CSS, and the tools WASM chunk
+      //      must come back from the worker's cache; the origin answers 503.
       const out = { schema: 1, check: "tools-page" };
       let posted = false;
 
@@ -59,14 +68,21 @@
         });
       }
 
-      const watchdog = setTimeout(
-        () => fail(new Error("the tools page did not finish inside 25s")),
-        25_000,
-      );
+      function withTimeout(promise, timeoutMs, label) {
+        let timer;
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("timed out waiting for " + label)),
+              timeoutMs,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+      }
 
-      (async () => {
-        const frame = document.getElementById("tools");
-        const loaded = new Promise((resolve, reject) => {
+      function waitForLoad(frame) {
+        return new Promise((resolve, reject) => {
           frame.addEventListener("load", resolve, { once: true });
           frame.addEventListener(
             "error",
@@ -74,103 +90,201 @@
             { once: true },
           );
         });
-        frame.src = "/tools.html";
-        await loaded;
-        const win = frame.contentWindow;
-        const doc = () => {
-          const current = frame.contentDocument;
-          if (!current) throw new Error("the tools iframe has no document");
-          return current;
+      }
+
+      function frameDocument(frame) {
+        const current = frame.contentDocument;
+        if (!current) throw new Error("the tools iframe has no document");
+        return current;
+      }
+
+      function readNetwork(win) {
+        // Resource Timing is the page's own account of every subresource it
+        // fetched. All of them must be this origin; no document body is
+        // observable here, which is why the page's recorder assertion is the
+        // other half of the network claim.
+        const resources = win.performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => name.startsWith("http"));
+        const origin = win.location.origin;
+        return {
+          origin,
+          resources: resources.length,
+          foreign: resources.filter((name) => new URL(name).origin !== origin),
+          paths: resources.map((name) => new URL(name).pathname).sort(),
         };
+      }
 
+      async function waitForCards(frame, label) {
         await waitFor(
-          () => doc().querySelectorAll("#tool-grid .tool-card").length === 6,
-          10_000,
-          "the six tool cards",
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 6,
+          15_000,
+          label,
         );
-        out.cards = doc().querySelectorAll("#tool-grid .tool-card").length;
-        out.pageTitle = doc().title;
+        return frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length;
+      }
 
-        const merge = doc().querySelector('[data-tool="merge"]');
+      async function mergeInFrame(frame, fixture, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        const merge = doc.querySelector('[data-tool="merge"]');
         if (!merge) throw new Error("the page offered no Merge card");
         merge.click();
         await waitFor(
-          () => !doc().getElementById("workspace").hidden,
+          () => !doc.getElementById("workspace").hidden,
           5_000,
-          "the merge workspace",
+          "the merge workspace (" + label + ")",
         );
 
-        const fixture = await fetch("one.pdf").then((r) => {
-          if (!r.ok) throw new Error("one.pdf fixture returned " + r.status);
-          return r.arrayBuffer();
-        });
         const makeFile = (name) =>
           new win.File([fixture.slice(0)], name, { type: "application/pdf" });
         const transfer = new win.DataTransfer();
         transfer.items.add(makeFile("alpha.pdf"));
         transfer.items.add(makeFile("beta.pdf"));
-        const input = doc().getElementById("file-input");
+        const input = doc.getElementById("file-input");
         input.files = transfer.files;
         input.dispatchEvent(new win.Event("change", { bubbles: true }));
 
         await waitFor(
-          () => doc().querySelectorAll("#file-list .file-row").length === 2,
+          () => doc.querySelectorAll("#file-list .file-row").length === 2,
           5_000,
-          "two selected PDFs",
+          "two selected PDFs (" + label + ")",
         );
-        out.fileRows = doc().querySelectorAll("#file-list .file-row").length;
-        const run = doc().getElementById("run-tool");
-        await waitFor(() => !run.disabled, 5_000, "the Merge button to enable");
-        out.runLabel = run.textContent.trim();
+        const fileRows = doc.querySelectorAll("#file-list .file-row").length;
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the Merge button to enable (" + label + ")");
+        const runLabel = run.textContent.trim();
         run.click();
 
         await waitFor(
           () =>
-            doc().documentElement.dataset.noUpload === "verified" &&
-            !doc().getElementById("result").hidden,
-          20_000,
-          "the merge result and the no-upload assertion",
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the merge result and the no-upload assertion (" + label + ")",
         );
 
-        out.noUpload = doc().documentElement.dataset.noUpload;
-        out.status = doc().getElementById("status").textContent.trim();
-        out.result = {
-          title: doc().getElementById("result-title").textContent.trim(),
-          meta: doc().getElementById("result-meta").textContent.trim(),
-          rows: Array.from(doc().querySelectorAll("#result-rows .result-row")).map(
+        const result = {
+          title: doc.getElementById("result-title").textContent.trim(),
+          meta: doc.getElementById("result-meta").textContent.trim(),
+          rows: Array.from(doc.querySelectorAll("#result-rows .result-row")).map(
             (row) => ({
               label: row.querySelector("dt").textContent.trim(),
               value: row.querySelector("dd").textContent.trim(),
             }),
           ),
         };
-        const preview = doc().getElementById("result-preview");
-        const download = doc().getElementById("result-download");
+        const preview = doc.getElementById("result-preview");
+        const download = doc.getElementById("result-download");
         const href = download.getAttribute("href") || "";
-        out.output = {
+        const output = {
           blob: href.startsWith("blob:"),
           previewBlob: (preview.getAttribute("href") || "").startsWith("blob:"),
           downloadName: download.getAttribute("download"),
         };
-        if (!out.output.blob) throw new Error("the download was not a Blob URL");
+        if (!output.blob) throw new Error("the download was not a Blob URL (" + label + ")");
         const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
-        out.output.bytes = bytes.length;
-        out.output.header = new TextDecoder().decode(bytes.subarray(0, 5));
+        output.bytes = bytes.length;
+        output.header = new TextDecoder().decode(bytes.subarray(0, 5));
 
-        // Resource Timing is the page's own account of every subresource it
-        // fetched. All of them must be this origin; no document body is
-        // observable here, which is why the page's recorder assertion above is
-        // the other half of the network claim.
-        const resources = win.performance
-          .getEntriesByType("resource")
-          .map((entry) => entry.name)
-          .filter((name) => name.startsWith("http"));
-        const origin = win.location.origin;
-        out.network = {
-          origin,
-          resources: resources.length,
-          foreign: resources.filter((name) => new URL(name).origin !== origin),
-          paths: resources.map((name) => new URL(name).pathname).sort(),
+        return {
+          win,
+          fileRows,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result,
+          output,
+          network: readNetwork(win),
+        };
+      }
+
+      const watchdog = setTimeout(
+        () => fail(new Error("the tools page did not finish inside 50s")),
+        50_000,
+      );
+
+      (async () => {
+        const frame = document.getElementById("tools");
+        const firstLoad = waitForLoad(frame);
+        frame.src = "/tools.html";
+        await firstLoad;
+        const win = frame.contentWindow;
+        if (!win) throw new Error("the tools iframe had no window");
+        out.cards = await waitForCards(frame, "the six tool cards");
+        out.pageTitle = frameDocument(frame).title;
+
+        // The page registers the worker itself. Wait for that registration to
+        // finish and for the worker to claim THIS document, so the online merge
+        // is already running behind the same request path the offline reload
+        // will use. A page that forgot to register fails here, not silently
+        // passes an online-only run.
+        await waitFor(
+          () => frameDocument(frame).documentElement.dataset.sw !== undefined,
+          10_000,
+          "the page's service-worker registration result",
+        );
+        out.sw = {
+          registration: frameDocument(frame).documentElement.dataset.sw,
+          script: win.navigator.serviceWorker?.controller?.scriptURL || null,
+        };
+        if (out.sw.registration !== "registered") {
+          throw new Error("the tools page did not register its worker: " + out.sw.registration);
+        }
+        await withTimeout(win.navigator.serviceWorker.ready, 20_000, "the worker to activate");
+        await waitFor(
+          () => win.navigator.serviceWorker.controller !== null,
+          10_000,
+          "the worker to claim the tools page",
+        );
+        out.sw.controlled = win.navigator.serviceWorker.controller !== null;
+        out.sw.script = win.navigator.serviceWorker.controller?.scriptURL || null;
+
+        const fixture = await fetch("one.pdf").then((r) => {
+          if (!r.ok) throw new Error("one.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+
+        const online = await mergeInFrame(frame, fixture, "online");
+        out.fileRows = online.fileRows;
+        out.runLabel = online.runLabel;
+        out.noUpload = online.noUpload;
+        out.status = online.status;
+        out.result = online.result;
+        out.output = online.output;
+        out.network = online.network;
+
+        // Cut the harness origin. The worker still has the complete tools page;
+        // an uncached module, stylesheet, or chunk gets a 503 and the reload
+        // never reaches the card grid.
+        const cut = await fetch("/__selis_offline", { method: "POST" });
+        if (!cut.ok) throw new Error("the offline switch returned " + cut.status);
+        const secondLoad = waitForLoad(frame);
+        frame.contentWindow.location.reload();
+        await secondLoad;
+        const offlineWin = frame.contentWindow;
+        if (!offlineWin) throw new Error("the offline tools iframe had no window");
+
+        const offlineCards = await waitForCards(frame, "the six offline tool cards");
+        await waitFor(
+          () => offlineWin.navigator.serviceWorker.controller !== null,
+          10_000,
+          "the worker to claim the offline tools page",
+        );
+        const offline = await mergeInFrame(frame, fixture, "offline");
+        out.offline = {
+          cards: offlineCards,
+          controlled: offlineWin.navigator.serviceWorker.controller !== null,
+          script: offlineWin.navigator.serviceWorker.controller?.scriptURL || null,
+          pageTitle: frameDocument(frame).title,
+          fileRows: offline.fileRows,
+          runLabel: offline.runLabel,
+          noUpload: offline.noUpload,
+          status: offline.status,
+          result: offline.result,
+          output: offline.output,
+          network: offline.network,
         };
 
         clearTimeout(watchdog);

@@ -26,10 +26,10 @@
  *    response too, so a document served *from an allow-listed path* is still
  *    refused.
  * 3. There are exactly two places in this package that write to a cache:
- *    `install` (the shell, from the fixed {@link PRECACHE_PATHS}) and the
- *    runtime branch of the fetch handler (allow-listed paths, storable
- *    responses only). A test greps the built worker for cache-write calls and
- *    fails if a third call site appears.
+ *    `install` (the declared {@link PRECACHE_PATHS} set) and the runtime
+ *    branch of the fetch handler (allow-listed paths, storable responses
+ *    only). A test greps the built worker for cache-write calls and fails if a
+ *    third call site appears.
  *
  * The `Range` and query-string rules are what make the `?src=` path
  * structurally uncacheable: WEB.03 pulls a remote document in with
@@ -67,12 +67,12 @@
  * browser's own update detection (a changed `sw.js`, byte for byte) is the
  * trigger; this constant is the *namespace*, not the trigger.
  */
-export const CACHE_VERSION = "1";
+export const CACHE_VERSION = "2";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
 
-/** The app shell: precached at install, read-only for the lifetime of a version. */
+/** The declared precache set (viewer shell + tools surface); read-only for a version. */
 export const SHELL_CACHE = `${CACHE_PREFIX}shell-v${CACHE_VERSION}`;
 
 /** Same-origin static assets (JS/CSS chunks, WASM modules, fonts) cached on first use. */
@@ -86,9 +86,10 @@ export const SERVICE_WORKER_PATH = "/sw.js";
 export const SW_SCOPE = "/";
 
 /**
- * The precache list: the minimum needed to boot with no network at all.
+ * The viewer shell: the minimum needed to boot the document viewer with no
+ * network at all.
  *
- * Small on purpose. The core WASM module alone is up to 3 MB brotli
+ * Small on purpose. The viewer's core WASM module alone is up to 3 MB brotli
  * (`03-CONVENTIONS.md §12`, `xtask/size-budgets.toml`); putting it here would
  * make a first visit a multi-megabyte install for every visitor, including the
  * many who will never open a PDF. So the shell is HTML + CSS + the boot
@@ -101,12 +102,52 @@ export const SW_SCOPE = "/";
  * navigation to either resolves from cache regardless of how the static host
  * routes them (see {@link SHELL_ALIASES}).
  */
-export const PRECACHE_PATHS: readonly string[] = [
+export const SHELL_PRECACHE_PATHS: readonly string[] = [
 	"/",
 	"/index.html",
 	"/assets/style.css",
 	"/assets/boot.js",
 ];
+
+/**
+ * The tools surface, precached as one install unit (SL-4.TOOLS.05).
+ *
+ * This is deliberately a second group rather than four more entries in the
+ * viewer shell: the two surfaces have different budgets and different failure
+ * modes. The tools page is now the product's front door, and its complete
+ * offline story is one merge with the network cut. Its chunk is 137 KB
+ * brotli — two orders of magnitude below the viewer's core engine — so paying
+ * for it at install is a different decision from paying for the viewer.
+ *
+ * The module list is explicit, not discovered at runtime. `place-assets` copies
+ * exactly this graph, `sw-ship.test.ts` asserts every URL exists in `public/`,
+ * and the browser check reloads the page offline and runs a merge. A module
+ * added to the page without adding it here therefore fails the offline check
+ * rather than silently half-installing the app.
+ *
+ * The tools chunk is still lazy from the page's point of view: the install
+ * fetches it in the background, but `tools-page.ts` does not load or
+ * instantiate it until an operation runs.
+ */
+export const TOOLS_PRECACHE_PATHS: readonly string[] = [
+	"/tools.html",
+	"/assets/tools.css",
+	"/assets/host/no-upload.js",
+	"/assets/host/sw-policy.js",
+	"/assets/host/sw-register.js",
+	"/assets/host/tools/inputs.js",
+	"/assets/host/tools/protocol.js",
+	"/assets/host/tools/tools-page.js",
+	"/wasm/selis_pdf_wasm_tools.wasm",
+];
+
+/**
+ * Everything `install` writes to the shell cache.
+ *
+ * One list, one `addAll`, one atomic install: a missing tools asset fails the
+ * whole install instead of leaving a page that loads online and 503s offline.
+ */
+export const PRECACHE_PATHS: readonly string[] = [...SHELL_PRECACHE_PATHS, ...TOOLS_PRECACHE_PATHS];
 
 /**
  * One shell path stands in for another when the host routes `/` and

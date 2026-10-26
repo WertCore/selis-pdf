@@ -194,7 +194,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | P2P share | — | yes | AI/Collab | WebRTC data channels; no relay that sees document bytes; explicit consent and room codes. |
 | Collaborative whiteboard | — | yes | AI/Collab | Separate CRDT surface; PDF export via the writer. |
 | Client-side task queue / batch | — | yes | 1A.1 | CLI batch exists; browser needs a multi-file queue with per-file isolation and no cross-file cancellation. |
-| Offline PWA | — | yes | 1A.1 | Viewer shell is precached; tools page and lazy chunk still need an offline promotion gate. |
+| Offline PWA | — | yes | 1A.1 | Live. Viewer shell and the complete tools page graph are precached; the browser check cuts the origin, reloads `/tools.html`, and merges again from the worker. |
 | SEO landing page per tool | — | — | Ship | One route per operation; the privacy claim in the meta description is the differentiator. |
 
 ---
@@ -296,9 +296,10 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 - [x] Browser check drives merge end-to-end, downloads the output, and asserts the network log.
       `xtask/browser/tools-page` passed in Edge: 6 same-origin resources, 0 foreign, Pages
       `2 → 2`, `%PDF-` download, `data-no-upload="verified"` before the result appeared.
-- [ ] Tools page precache/offline promotion. The viewer shell is precached; the tools page is
-      currently online-first. Offline-first is a Phase 1A.1 ship gate, not a reason to weaken the
-      no-upload promise.
+- [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
+      the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
+      The `tools-page` browser check now merges online, cuts the origin, reloads the page, and
+      merges again with zero foreign resources. The document cache exclusion is unchanged.
 - [ ] CI green on `feature/tools-site`; fast-forward `origin/main`; no worktree/build on `C:`.
 
 ---

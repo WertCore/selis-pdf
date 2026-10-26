@@ -74,6 +74,10 @@ apps/web/host/public/assets/ui/
 apps/web/host/public/assets/ui-kit/
 apps/web/host/public/assets/host/page.js
 apps/web/host/public/assets/host/no-upload.js
+# The tools page imports the same registrar as the viewer; place-assets copies
+# it and its policy module under the page prefix. Source of truth is src/.
+apps/web/host/public/assets/host/sw-policy.js
+apps/web/host/public/assets/host/sw-register.js
 apps/web/host/public/assets/host/tools/
 apps/web/host/public/wasm/
 apps/web/host/public/app-manifest.json

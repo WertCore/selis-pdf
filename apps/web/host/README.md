@@ -9,17 +9,22 @@ one thing this app must never do is upload a document.
 | Module | Role |
 |---|---|
 | `sw-policy.ts` | The caching policy as pure data and functions: precache list, cache names, the request/response allow-lists, the budgets. No DOM, no `caches`, no `fetch`. |
-| `sw.ts` | The worker. `install` precaches the shell, `activate` purges our own stale cache names and claims clients, `fetch` classifies then answers. Owns the only two cache-write call sites in the package. |
-| `sw-register.ts` | Registration, scope `/`, the refusal conditions, and the update handoff. |
+| `sw.ts` | The worker. `install` precaches the declared set, `activate` purges our own stale cache names and claims clients, `fetch` classifies then answers. Owns the only two cache-write call sites in the package. |
+| `sw-register.ts` | Registration, scope `/`, the refusal conditions, and the update handoff. Both `boot.js` (viewer) and `tools-page.ts` (tools) use it. |
 | `tools/place-sw.mjs` | Copies the compiled `sw.js` + `sw-register.js` into `public/` (the deploy root) after `tsc`, refusing any bare or remote specifier. |
 | `public/assets/boot.js` | Registers the worker on load and records the outcome on `globalThis.__selisServiceWorker` (registered, or which refusal applied). |
+| `src/tools/tools-page.ts` | Registers the same worker on the tools page, so a first visit that lands on `/tools.html` is offline-ready too. |
 
 ### What is cached, and what is not
 
-**Precached (install):** `/`, `/index.html`, `/assets/style.css`,
-`/assets/boot.js` — the boot minimum, and nothing else. `addAll` is atomic, so
-one missing asset fails the install and the browser keeps the previous worker
-rather than activating a half-cached app.
+**Precached (install):** the viewer shell (`/`, `/index.html`,
+`/assets/style.css`, `/assets/boot.js`) and the complete tools surface
+(`/tools.html`, `/assets/tools.css`, its module graph including the registrar,
+and `/wasm/selis_pdf_wasm_tools.wasm`). `addAll` is atomic, so one missing asset
+fails the install and the browser keeps the previous worker rather than
+activating a half-cached app. The two groups live in
+`SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS`; the tools chunk is 137 KB
+brotli, not the viewer's 3 MB core, which is why promoting it is affordable.
 
 **Runtime-cached (first use, cache-first):** `/assets/…` (the built UI and its
 code-split chunks) and `/wasm/…` (the WASM.02 chunks the manifest points at).
@@ -27,7 +32,7 @@ The core module is up to 3 MB brotli (`03-CONVENTIONS.md` §12), so it is
 fetched once, on demand, rather than installed for every visitor — the same
 reasoning as EXT.05, which keeps CJK fonts an optional download rather than a
 bundled asset. Caps: 12 MB per entry (4× the brotli core budget, because Cache
-Storage keeps the *decoded* body) and 32 entries, oldest evicted first.
+Storage keeps the *decoded* body) and 128 entries, oldest evicted first.
 
 **Never cached:** anything that is not a bodyless same-origin `GET` with no
 `Range` header, no query string, and an allow-listed path; and any response
@@ -98,12 +103,13 @@ The **browser's** half is measured separately, by `cargo xtask browser-check`
 a real Edge/Chrome/Chromium at it, and judges the JSON the page POSTs back. Its `service-worker`
 check proves the engine delivers `install`/`activate`, that `clients.claim()` really hands the page
 a controller, and that `respondWith` really returns the precached body — the three behaviours the
-Node double has to fake.
+Node double has to fake. `app-shell` runs this package's own `sw.js` behind the viewer; `tools-page`
+runs it behind the real `/tools.html`, then cuts the origin, reloads the page, and merges again
+from the cache.
 
-**Not** covered by either, and still to be confirmed at deploy or in a real browser: this
-package's own `sw.js` running in a browser (the harness ships its own minimal worker, so as of
-this writing the built app is not the thing under test), real Cache Storage quota behaviour, and
-the DoD's manual airplane-mode pass (open a local PDF, view, search, print).
+**Not** covered by either, and still to be confirmed at deploy or in a real browser: real Cache
+Storage quota behaviour, and the DoD's manual airplane-mode pass (open a local PDF, view, search,
+print, and run a tools operation).
 
 ## Entry points (all local)
 
