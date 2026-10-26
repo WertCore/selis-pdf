@@ -14,6 +14,7 @@ allow = [
     "selis-pdf-wasm-ocr",     # OCR chunk boundary (SL-4.WASM.02)
     "selis-pdf-wasm-convert", # Convert chunk boundary (SL-4.WASM.02)
     "selis-pdf-wasm-editor",  # Editor chunk boundary (SL-4.WASM.02) — mutation/save isolated from viewer
+    "selis-pdf-wasm-tools",   # Tools chunk boundary (SL-4.TOOLS.01, ADR-P0045) — alloc/free/run only
     "selis-pdf-wasm-cjk",     # CJK font chunk boundary (SL-4.WASM.02 + WASM.07)
     "selis-raster",      # proven-identical SIMD kernels only (planned — Phase 2)
 ]

@@ -166,6 +166,9 @@ pub unsafe extern "C" fn selis_tools_run(
     let Ok(request_len) = usize::try_from(request_len) else {
         return std::ptr::null_mut();
     };
+    // SAFETY: the caller promised `request_ptr` is readable for `request_len`
+    // bytes. The guest is single-threaded, and the slice does not outlive the
+    // call.
     let request = unsafe { std::slice::from_raw_parts(request_ptr, request_len) };
     let response = catch_unwind(AssertUnwindSafe(|| run_request(request))).unwrap_or_else(|_| {
         let message = b"tool operation panicked";
@@ -179,6 +182,8 @@ pub unsafe extern "C" fn selis_tools_run(
         return ptr;
     }
     std::ptr::copy_nonoverlapping(response.as_ptr(), ptr, response.len());
+    // SAFETY: `out_len` was checked non-null above, and the caller promised it
+    // points to four writable bytes.
     unsafe { out_len.write(len) };
     ptr
 }

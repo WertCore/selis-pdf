@@ -926,3 +926,46 @@ no longer implies host-blind), because a shim is a second source of behaviour th
 differs from every real host, and because it would buy assertions about the *shim*.
 **Superseding:** introducing a DOM shim, or a second UI package with a different rule,
 is a superseding ADR — not a dependency bump.
+
+## ADR-P0045 — Tools chunk: a separate import-free WASM ABI for document operations
+**Status:** Accepted (recorded 2026-10-27 at SL-4.TOOLS.01; **retroactive** — the
+chunk and its browser check shipped in `f7fa8d2`, this ADR records the boundary
+that made the `unsafe` allowlist entry valid)
+**Decision:** `selis-pdf-wasm-tools` is a **separate lazy-loaded `cdylib`** from
+the viewer. It exposes five exports over guest linear memory:
+`selis_tools_alloc`, `selis_tools_free`, `selis_tools_run`,
+`selis_tools_capabilities`, and `selis_tools_chunk_id`. A request carries the
+magic `SLTS`, a version, an operation, JSON options, and named file bytes; a
+response carries `SLTR`, a status, verification JSON or an error, and named
+output bytes. The page copies bytes into guest memory, calls `run` once, copies
+the response out, and frees both buffers. All pointer dereferences are `unsafe`
+and only at that boundary; every block has a `// SAFETY:` case, checks null and
+explicit lengths, and the guest is single-threaded. The chunk is **import-free**
+by construction: no clock, entropy, filesystem, or network imports, and the
+`rng` feature is absent from this build. `place-assets` compiles the served
+chunk and fails the build if any import appears. The operations themselves are
+the CLI's byte-oriented tools in `selis-pdf-tools`, selected at request time; a
+thread-local memory session routes reads and commits to the in-memory table so
+a workspace test build that unifies `native-fs` still exercises the browser I/O
+boundary.
+**Rationale:** Loading the viewer's render engine (and its crypto/RNG surface)
+on a page that only merges or rotates documents is unnecessary attack surface
+and download weight. A separate chunk keeps the six operations lazy, keeps the
+no-upload guarantee auditable at the module boundary, and lets the site ship
+them before the Phase 5 editor exists. The raw ABI is the minimum crossing
+needed to move bytes in and out; a JS PDF implementation would be a third-party
+document engine in a product path, which the project forbids.
+**Consequences:** `selis-pdf-wasm-tools` joins `xtask/unsafe-allow.toml` with
+this ADR named. The browser check drives the real `/tools.html`, verifies a
+merged Blob's page count and `%PDF-` header, and requires zero foreign
+resources. The tools chunk has its own size budget, and `place-assets` treats a
+missing or import-bearing chunk as a build failure, never a skip. Editing
+operations remain Phase 5 work; this ADR covers only the six byte-in/byte-out
+operations the page advertises.
+**Rejected alternatives:** folding tools into the viewer chunk (pays the render
+engine's size and capability surface on every tools visit); a WASM filesystem
+or Worker filesystem (the page has no need to persist document bytes, and the
+browser-native Blob path is the no-upload boundary); a third-party JS PDF
+library (violates the in-house implementation rule and expands the no-upload
+audit surface); one export per operation (more boundary crossings and a larger
+ABI without a measured benefit).
