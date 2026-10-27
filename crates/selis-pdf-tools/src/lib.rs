@@ -62,6 +62,12 @@ pub struct SplitPart {
     pub output: String,
     /// The verification display for this part.
     pub verification: Verification,
+    /// True when this part alone exceeds a size target.
+    ///
+    /// A single page that cannot fit the requested target is still emitted
+    /// rather than being dropped; callers surface this flag instead of
+    /// pretending the output met the target. Multi-page parts never carry it.
+    pub over_target: bool,
 }
 
 /// A tool operation failure.
@@ -163,6 +169,43 @@ pub fn split_every(path: &str, every: usize, output_prefix: &str) -> ToolResult<
 /// As [`split_every`].
 pub fn split_half(path: &str, output_prefix: &str) -> ToolResult<Vec<SplitPart>> {
     tools::split_half(path, output_prefix)
+}
+
+/// Split `path` into consecutive groups whose measured PDF output stays at or
+/// below `target_bytes`.
+///
+/// The writer is the measurement: each candidate group is built and written
+/// in memory, so the boundary reflects the actual output rather than a page
+/// estimate. A single page larger than the target is emitted on its own and
+/// its [`SplitPart::over_target`] flag is set; a multi-page group is never
+/// allowed to exceed the target. The 64-part cap is enforced before any part
+/// is committed.
+///
+/// # Errors
+///
+/// As [`split`], plus `target_bytes == 0` and a part count above
+/// [`MAX_SPLIT_OUTPUTS`].
+pub fn split_by_size(
+    path: &str,
+    target_bytes: u64,
+    output_prefix: &str,
+) -> ToolResult<Vec<SplitPart>> {
+    tools::split_by_size(path, target_bytes, output_prefix)
+}
+
+/// Split `path` at the pages named by the document's top-level bookmarks.
+///
+/// Only the first outline level creates boundaries. Pages before the first
+/// bookmark become a separate front-matter part; duplicate bookmark targets
+/// are collapsed; targets are applied in page order. A document without a
+/// readable outline, or whose bookmarks do not divide it into at least two
+/// parts, is refused rather than silently producing a copy.
+///
+/// # Errors
+///
+/// As [`split`], plus absent/truncated outlines and a single resulting part.
+pub fn split_by_bookmarks(path: &str, output_prefix: &str) -> ToolResult<Vec<SplitPart>> {
+    tools::split_by_bookmarks(path, output_prefix)
 }
 
 /// Extract the pages in `selection` (the CLI's `0,2,5-7` syntax) into one

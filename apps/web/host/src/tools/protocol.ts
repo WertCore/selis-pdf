@@ -89,6 +89,8 @@ export interface ToolOutputReport {
 	readonly pages: number;
 	readonly bytes: number;
 	readonly verdict: string;
+	/** A size-split part that is larger than the requested target. */
+	readonly overTarget?: boolean;
 }
 
 /** A successful operation. */
@@ -261,6 +263,7 @@ function decodeReports(
 				pages: zip ? 0 : verification.pages_out,
 				bytes: output.bytes.length,
 				verdict: verification.verdict,
+				overTarget: false,
 			},
 		];
 	}
@@ -272,7 +275,7 @@ function decodeReports(
 			throw new ToolProtocolError("the tool chunk returned malformed output metadata");
 		}
 		const output = outputs[index];
-		const { name, kind, pages, bytes, verdict } = item;
+		const { name, kind, pages, bytes, verdict, overTarget } = item;
 		if (output === undefined || typeof name !== "string" || name !== output.name) {
 			throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
 		}
@@ -287,11 +290,12 @@ function decodeReports(
 			!Number.isInteger(bytes) ||
 			bytes < 0 ||
 			bytes !== output.bytes.length ||
-			typeof verdict !== "string"
+			typeof verdict !== "string" ||
+			(overTarget !== undefined && typeof overTarget !== "boolean")
 		) {
 			throw new ToolProtocolError("the tool chunk returned malformed output metadata");
 		}
-		return { name, kind, pages, bytes, verdict };
+		return { name, kind, pages, bytes, verdict, overTarget: overTarget === true };
 	});
 }
 

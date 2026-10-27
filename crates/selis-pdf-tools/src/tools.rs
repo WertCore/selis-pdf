@@ -1268,6 +1268,80 @@ fn remap_page_label_keys(
     out
 }
 
+/// Flatten a name tree without native recursion or trusting document-chosen
+/// nesting.
+///
+/// A `/Kids` cycle is stopped by the visited-reference set, and both the node
+/// and pair counts are capped. The values stay unresolved; destination
+/// lookups resolve them through the same bounded chain as `/Dest` values.
+fn flatten_name_tree(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    root: &Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Vec<(selis_bytes::Bytes, Obj)> {
+    const MAX_TREE_NODES: usize = 10_000;
+    const MAX_TREE_PAIRS: usize = 100_000;
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    let mut visited = std::collections::HashSet::new();
+    let mut nodes = 0usize;
+    while let Some(value) = stack.pop() {
+        if nodes >= MAX_TREE_NODES || out.len() >= MAX_TREE_PAIRS {
+            break;
+        }
+        nodes = nodes.saturating_add(1);
+        let node = match value {
+            Obj::Ref(r) => {
+                if !visited.insert(r.num) {
+                    continue;
+                }
+                match resolve_ref_obj(src, doc, r, budget, g) {
+                    Ok(obj) => obj,
+                    Err(_) => continue,
+                }
+            }
+            other => other,
+        };
+        let Obj::Dict(pairs) = node else {
+            continue;
+        };
+        for (key, value) in &pairs {
+            if key.as_slice() == b"Names" {
+                if let Obj::Array(items) = value {
+                    let mut it = items.iter();
+                    while let Some(name) = it.next() {
+                        let Some(dest) = it.next() else { break };
+                        if let Obj::String(name) = name {
+                            // Match the old `/Names` reader: resolve one
+                            // indirect hop so the outline pruner's named
+                            // destination lookup keeps working. The bookmark
+                            // resolver can follow any remaining chain itself.
+                            let dest = match dest {
+                                Obj::Ref(r) => resolve_ref_obj(src, doc, *r, budget, g)
+                                    .unwrap_or_else(|_| dest.clone()),
+                                other => other.clone(),
+                            };
+                            out.push((name.clone(), dest));
+                            if out.len() >= MAX_TREE_PAIRS {
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if key.as_slice() == b"Kids" {
+                if let Obj::Array(items) = value {
+                    for kid in items.iter().rev() {
+                        stack.push(kid.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The document's named-destination tables flattened for destination
 /// lookups: the `/Names/Dests` name tree plus the legacy direct `/Dests`
 /// dictionary.
@@ -1291,9 +1365,7 @@ impl NamedDests {
             if let Obj::Dict(np) = &names {
                 if let Some((_, dests)) = np.iter().find(|(k, _)| k.as_slice() == b"Dests") {
                     let dests = resolve_shallow(src, doc, dests.clone(), budget, g);
-                    if let Ok(found) = rec::name_tree_pairs(&dests, src, doc, budget, g) {
-                        pairs.extend(found);
-                    }
+                    pairs.extend(flatten_name_tree(src, doc, &dests, budget, g));
                 }
             }
         }
@@ -1308,9 +1380,17 @@ impl NamedDests {
         NamedDests { pairs }
     }
 
+    /// The destination value stored under `name`, when present.
+    fn value_of(&self, name: &[u8]) -> Option<&Obj> {
+        self.pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == name)
+            .map(|(_, v)| v)
+    }
+
     /// The page object number a named destination targets, when decidable.
     fn page_of(&self, name: &[u8]) -> Option<u32> {
-        let (_, value) = self.pairs.iter().find(|(k, _)| k.as_slice() == name)?;
+        let value = self.value_of(name)?;
         match value {
             Obj::Array(items) => match items.first() {
                 Some(Obj::Ref(r)) => Some(r.num),
@@ -1349,6 +1429,258 @@ fn dest_page_num(dest: &Obj, named: &NamedDests) -> Option<u32> {
             .and_then(|(_, v)| dest_page_num(v, named)),
         _ => None,
     }
+}
+
+/// Follow an indirect object chain with a fixed cap.
+fn resolve_indirect(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    mut value: Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Obj, String> {
+    const MAX_INDIRECT: usize = 32;
+    for _ in 0..MAX_INDIRECT {
+        match value {
+            Obj::Ref(r) => value = resolve_ref_obj(src, doc, r, budget, g)?,
+            other => return Ok(other),
+        }
+    }
+    Err("destination reference chain is too deep".to_string())
+}
+
+/// Resolve a destination value (explicit array, destination dictionary, or
+/// named destination) to a zero-based page index.
+fn destination_page_index(
+    value: Obj,
+    named: &NamedDests,
+    page_index: &std::collections::HashMap<u32, usize>,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<usize>, String> {
+    const MAX_DESTINATION_CHAIN: usize = 32;
+    let mut current = value;
+    let mut seen_names: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    for _ in 0..MAX_DESTINATION_CHAIN {
+        match current {
+            Obj::Ref(r) => current = resolve_ref_obj(src, doc, r, budget, g)?,
+            Obj::Array(items) => {
+                let Some(Obj::Ref(page_ref)) = items.first() else {
+                    return Err("bookmark destination does not name a page".to_string());
+                };
+                return page_index
+                    .get(&page_ref.num)
+                    .copied()
+                    .map(Some)
+                    .ok_or_else(|| {
+                        format!(
+                        "bookmark destination names page object {}, which is not in the page tree",
+                        page_ref.num
+                    )
+                    });
+            }
+            Obj::Dict(pairs) => {
+                let Some((_, dest)) = pairs.iter().find(|(k, _)| k.as_slice() == b"D") else {
+                    return Err("bookmark destination dictionary has no /D".to_string());
+                };
+                current = dest.clone();
+            }
+            Obj::String(name) | Obj::Name(name) => {
+                if !seen_names.insert(name.as_slice().to_vec()) {
+                    return Err("bookmark named destinations contain a cycle".to_string());
+                }
+                let Some(next) = named.value_of(name.as_slice()) else {
+                    return Err(format!(
+                        "bookmark names the missing destination `{}`",
+                        String::from_utf8_lossy(name.as_slice())
+                    ));
+                };
+                current = next.clone();
+            }
+            _ => return Err("bookmark destination is not a local page".to_string()),
+        }
+    }
+    Err("bookmark destination chain is too deep".to_string())
+}
+
+/// The page a top-level bookmark item points at, following `/A /S /GoTo`
+/// first and `/Dest` only when no action is present (the PDF precedence rule).
+fn outline_item_page_index(
+    item: &Obj,
+    named: &NamedDests,
+    page_index: &std::collections::HashMap<u32, usize>,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<usize>, String> {
+    let Obj::Dict(pairs) = item else {
+        return Err("bookmark outline item is not a dictionary".to_string());
+    };
+    if let Some((_, action)) = pairs.iter().find(|(k, _)| k.as_slice() == b"A") {
+        let action = resolve_indirect(src, doc, action.clone(), budget, g)?;
+        let Obj::Dict(action_pairs) = action else {
+            // An action class this reader does not model is not a local
+            // boundary, and /A wins over /Dest even when it is unusable.
+            return Ok(None);
+        };
+        let goto = action_pairs.iter().find(|(k, _)| k.as_slice() == b"S");
+        let Some((_, Obj::Name(kind))) = goto else {
+            return Ok(None);
+        };
+        if kind.as_slice() != b"GoTo" {
+            return Ok(None);
+        }
+        let Some((_, dest)) = action_pairs.iter().find(|(k, _)| k.as_slice() == b"D") else {
+            return Err("bookmark GoTo action has no destination".to_string());
+        };
+        return destination_page_index(dest.clone(), named, page_index, src, doc, budget, g);
+    }
+    if let Some((_, dest)) = pairs.iter().find(|(k, _)| k.as_slice() == b"Dest") {
+        return destination_page_index(dest.clone(), named, page_index, src, doc, budget, g);
+    }
+    Ok(None)
+}
+
+/// Collect the page starts named by the document's top-level bookmarks.
+///
+/// Only the first outline level is read. External actions are skipped (they
+/// are not boundaries in this document); a local destination that cannot be
+/// resolved is a truncated outline and refuses the split rather than silently
+/// dropping a section.
+fn bookmark_page_starts(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<usize>, String> {
+    use selis_pdf_cos::reconcile as rec;
+    const MAX_TOP_LEVEL_ITEMS: usize = 10_000;
+    let Some(outlines) =
+        rec::catalog_entry(src, doc, b"Outlines", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Err("this PDF has no bookmarks to split by".to_string());
+    };
+    let root = resolve_indirect(src, doc, outlines, budget, g)?;
+    let Obj::Dict(root_pairs) = root else {
+        return Err("the bookmark outline is unreadable".to_string());
+    };
+    let Some((_, first)) = root_pairs.iter().find(|(k, _)| k.as_slice() == b"First") else {
+        return Err("this PDF has no top-level bookmarks to split by".to_string());
+    };
+    let named = NamedDests::collect(src, doc, budget, g);
+    let mut page_index = std::collections::HashMap::new();
+    for (index, page_ref) in page_refs.iter().enumerate() {
+        page_index.entry(page_ref.num).or_insert(index);
+    }
+
+    let mut starts = std::collections::BTreeSet::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut pending = Some(first.clone());
+    let mut item_count = 0usize;
+    while let Some(value) = pending.take() {
+        item_count = item_count.saturating_add(1);
+        if item_count > MAX_TOP_LEVEL_ITEMS {
+            return Err("the bookmark outline has too many top-level items".to_string());
+        }
+        let item = match value {
+            Obj::Ref(r) => {
+                if !visited.insert(r.num) {
+                    return Err("the bookmark outline contains a cycle".to_string());
+                }
+                resolve_ref_obj(src, doc, r, budget, g)?
+            }
+            Obj::Dict(_) => value,
+            _ => return Err("the bookmark outline is unreadable".to_string()),
+        };
+        if let Some(page) =
+            outline_item_page_index(&item, &named, &page_index, src, doc, budget, g)?
+        {
+            starts.insert(page);
+        }
+        let next = match &item {
+            Obj::Dict(pairs) => pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Next")
+                .map(|(_, v)| v.clone()),
+            _ => None,
+        };
+        match next {
+            None | Some(Obj::Null) => break,
+            Some(next @ (Obj::Ref(_) | Obj::Dict(_))) => pending = Some(next),
+            Some(_) => return Err("the bookmark outline has an invalid next link".to_string()),
+        }
+    }
+    if starts.is_empty() {
+        return Err("the top-level bookmarks do not point to local pages".to_string());
+    }
+    Ok(starts.into_iter().collect())
+}
+
+/// Turn sorted bookmark page starts into contiguous output ranges. Pages
+/// before the first bookmark form a front-matter part when there are any.
+fn bookmark_ranges(starts: &[usize], page_count: usize) -> Result<Vec<(usize, usize)>, String> {
+    if starts.is_empty() {
+        return Err("this PDF has no local bookmark targets".to_string());
+    }
+    if let Some(&last) = starts.last() {
+        if last >= page_count {
+            return Err("a bookmark targets a page outside the document".to_string());
+        }
+    }
+    let mut ranges = Vec::new();
+    if let Some(&first) = starts.first() {
+        if first > 0 {
+            ranges.push((0, first.saturating_sub(1)));
+        }
+    }
+    for (index, &start) in starts.iter().enumerate() {
+        let end = starts
+            .get(index.saturating_add(1))
+            .map_or(page_count.saturating_sub(1), |next| next.saturating_sub(1));
+        if start <= end {
+            ranges.push((start, end));
+        }
+    }
+    if ranges.len() <= 1 {
+        return Err("the bookmarks do not divide this PDF into two or more parts".to_string());
+    }
+    Ok(ranges)
+}
+
+/// Split `path` at top-level bookmark boundaries.
+pub(crate) fn split_by_bookmarks(path: &str, output_prefix: &str) -> CliResult<Vec<SplitPart>> {
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let count = page_refs.len();
+    if count == 0 {
+        return Err(CliError(format!("{path}: document has no pages")));
+    }
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let starts = bookmark_page_starts(&src, &doc, &page_refs, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let ranges = bookmark_ranges(&starts, count).map_err(|e| CliError(format!("{path}: {e}")))?;
+    if ranges.len() > MAX_SPLIT_OUTPUTS {
+        return Err(CliError(format!(
+            "bookmark split would produce {} parts; the limit is {MAX_SPLIT_OUTPUTS}",
+            ranges.len()
+        )));
+    }
+    write_ranges(
+        path,
+        &src,
+        &doc,
+        &page_refs,
+        &ranges,
+        output_prefix,
+        in_bytes,
+        &budget,
+        &mut g,
+    )
 }
 
 /// Carry the input's outlines into `out`, dropping items whose destination
@@ -2144,22 +2476,23 @@ fn open_for_split(path: &str) -> CliResult<(Vec<u8>, selis_pdf_cos::Doc, Vec<Ref
     Ok((src, doc, page_refs, budget))
 }
 
-/// Write one page selection through the full writer and verification gate.
+/// Build one page selection without committing it.
 ///
 /// `selected` is a list of zero-based source page indexes in output order. The
-/// caller has already validated every index against `page_refs`.
+/// caller has already validated every index against `page_refs`. The returned
+/// builder is fresh for each call because [`DocumentBuilder::write`] mutates
+/// the document it serialises.
 #[allow(clippy::too_many_arguments)]
-fn write_selection(
+fn build_selection(
     path: &str,
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     page_refs: &[Ref],
     selected: &[usize],
-    output: &str,
-    in_bytes: u64,
+    count_annots: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> CliResult<Verification> {
+) -> CliResult<(selis_pdf_cos::doc_writer::DocumentBuilder, u64, Option<u64>)> {
     if selected.is_empty() {
         return Err(CliError("no pages were selected".to_string()));
     }
@@ -2183,28 +2516,70 @@ fn write_selection(
         .map_err(CliError)?;
     let expected_pages = u64::try_from(kept.len()).unwrap_or(u64::MAX);
     // The annotation expectation counts the surviving ORIGINAL pages (the
-    // merged page numbers do not exist in the input document).
-    let kept_annots = annots_on_pages(
-        src,
-        doc,
-        &kept
-            .iter()
-            .map(|(_, old_num, _)| Ref::new(*old_num, 0))
-            .collect::<Vec<_>>(),
-        budget,
-        g,
-    );
+    // merged page numbers do not exist in the input document). Size probes do
+    // not need the count, so skipping the walk keeps those probes cheaper.
+    let kept_annots = if count_annots {
+        Some(annots_on_pages(
+            src,
+            doc,
+            &kept
+                .iter()
+                .map(|(_, old_num, _)| Ref::new(*old_num, 0))
+                .collect::<Vec<_>>(),
+            budget,
+            g,
+        ))
+    } else {
+        None
+    };
+    Ok((out, expected_pages, kept_annots))
+}
+
+/// Write one page selection through the full writer and verification gate.
+#[allow(clippy::too_many_arguments)]
+fn write_selection(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    selected: &[usize],
+    output: &str,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
+    let (out, expected_pages, kept_annots) =
+        build_selection(path, src, doc, page_refs, selected, true, budget, g)?;
     write_document(
         out,
         output,
         Some(src),
         PRESERVE_EXCEPT_PAGES,
         Some(expected_pages),
-        Some(kept_annots),
+        kept_annots,
         in_bytes,
         budget,
         g,
     )
+}
+
+/// Serialise a page selection and return the exact output size without
+/// committing it. This is the measurement used by split-by-size.
+#[allow(clippy::too_many_arguments)]
+fn measure_selection(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    selected: &[usize],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<u64> {
+    let (mut out, _, _) = build_selection(path, src, doc, page_refs, selected, false, budget, g)?;
+    let bytes = out
+        .write(budget, g)
+        .map_err(|e| CliError(format!("write failed: {e}")))?;
+    Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
 }
 
 /// Write consecutive page ranges as independent verified PDFs.
@@ -2249,6 +2624,7 @@ fn write_ranges(
             last,
             output,
             verification,
+            over_target: false,
         });
     }
     Ok(parts)
@@ -2362,6 +2738,134 @@ pub(crate) fn split_half(path: &str, output_prefix: &str) -> CliResult<Vec<Split
         &budget,
         &mut g,
     )
+}
+
+/// Find the largest `end` for which the measured `start..=end` group fits
+/// `target_bytes`.
+///
+/// Adding a page to a contiguous group never removes output bytes, so the
+/// measured size is monotonic in `end`. A gallop finds an upper bound with
+/// O(log n) probes, then a binary search finds the last fitting end.
+#[allow(clippy::too_many_arguments)]
+fn largest_fitting_end(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    start: usize,
+    target_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<usize> {
+    let count = page_refs.len();
+    if start >= count {
+        return Err(CliError(format!(
+            "page {start} out of range (document has {count} pages)"
+        )));
+    }
+    let mut fit = start;
+    let mut step = 1usize;
+    let mut high = loop {
+        let end = start.saturating_add(step).min(count - 1);
+        let selected: Vec<usize> = (start..=end).collect();
+        let measured = measure_selection(path, src, doc, page_refs, &selected, budget, g)?;
+        if measured > target_bytes {
+            break end;
+        }
+        fit = end;
+        if end == count - 1 {
+            return Ok(end);
+        }
+        step = step.saturating_mul(2);
+    };
+    // `fit` fits and `high` does not; keep the invariant while closing the gap.
+    while fit.saturating_add(1) < high {
+        let mid = fit.midpoint(high);
+        let selected: Vec<usize> = (start..=mid).collect();
+        let measured = measure_selection(path, src, doc, page_refs, &selected, budget, g)?;
+        if measured > target_bytes {
+            high = mid;
+        } else {
+            fit = mid;
+        }
+    }
+    Ok(fit)
+}
+
+/// Split `path` into contiguous groups whose exact PDF output stays within
+/// `target_bytes` (SL-1A.TOOL.02 size mode).
+///
+/// A one-page group that cannot fit the target is emitted alone with
+/// [`SplitPart::over_target`] set. Any larger group exceeding the target is a
+/// bug in the measurement and aborts the request.
+pub(crate) fn split_by_size(
+    path: &str,
+    target_bytes: u64,
+    output_prefix: &str,
+) -> CliResult<Vec<SplitPart>> {
+    if target_bytes == 0 {
+        return Err(CliError(
+            "split target size must be at least one byte".to_string(),
+        ));
+    }
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let count = page_refs.len();
+    if count == 0 {
+        return Err(CliError(format!("{path}: document has no pages")));
+    }
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while start < count {
+        let single = measure_selection(path, &src, &doc, &page_refs, &[start], &budget, &mut g)?;
+        let end = if single > target_bytes {
+            start
+        } else {
+            largest_fitting_end(
+                path,
+                &src,
+                &doc,
+                &page_refs,
+                start,
+                target_bytes,
+                &budget,
+                &mut g,
+            )?
+        };
+        ranges.push((start, end));
+        if ranges.len() > MAX_SPLIT_OUTPUTS {
+            return Err(CliError(format!(
+                "split by {target_bytes} bytes would produce more than {MAX_SPLIT_OUTPUTS} parts"
+            )));
+        }
+        start = end.saturating_add(1);
+    }
+
+    let mut parts = write_ranges(
+        path,
+        &src,
+        &doc,
+        &page_refs,
+        &ranges,
+        output_prefix,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    for part in &mut parts {
+        let over = part.verification.bytes_out > target_bytes;
+        if over && part.first != part.last {
+            return Err(CliError(format!(
+                "split pages {}..{} produced {} bytes, above the {} byte target",
+                part.first, part.last, part.verification.bytes_out, target_bytes
+            )));
+        }
+        part.over_target = over;
+    }
+    Ok(parts)
 }
 
 /// Extract the pages in `selection` into one PDF, keeping document order
@@ -3905,6 +4409,105 @@ mod tests {
             .expect("write multipage source")
     }
 
+    /// A numbered PDF assembled with a valid xref table.
+    fn numbered_source(numbered: &[(u32, &[u8])]) -> Vec<u8> {
+        let max_num = numbered.iter().map(|(n, _)| *n).max().unwrap_or(1);
+        let size = usize::try_from(max_num.saturating_add(1)).unwrap();
+        let by_num: std::collections::HashMap<u32, &[u8]> = numbered.iter().copied().collect();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets: Vec<Option<u64>> = vec![None; size];
+        for num in 1..=max_num {
+            let Some(body) = by_num.get(&num) else {
+                continue;
+            };
+            offsets[usize::try_from(num).unwrap()] = Some(u64::try_from(out.len()).unwrap_or(0));
+            out.extend_from_slice(body);
+        }
+        let xref_at = u64::try_from(out.len()).unwrap_or(0);
+        out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+        for off in offsets.iter().skip(1) {
+            match off {
+                Some(off) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
+                None => out.extend_from_slice(b"0000000000 65535 f \n"),
+            }
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n").as_bytes(),
+        );
+        out.extend_from_slice(format!("{xref_at}\n").as_bytes());
+        out.extend_from_slice(b"%%EOF\n");
+        out
+    }
+
+    /// Five pages with a front matter page and three top-level bookmarks:
+    /// an explicit array (page 1), a /GoTo action (page 3), and a named
+    /// destination (page 2), plus a nested item that must not create a
+    /// boundary (page 0).
+    fn bookmarked_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (
+                1,
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /Names 14 0 R >>\nendobj\n",
+            ),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (
+                4,
+                b"4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (
+                5,
+                b"5 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (
+                6,
+                b"6 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (
+                7,
+                b"7 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (8, b"8 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                10,
+                b"10 0 obj\n<< /Type /Outlines /First 11 0 R /Last 17 0 R /Count 4 >>\nendobj\n",
+            ),
+            (
+                11,
+                b"11 0 obj\n<< /Title (Start) /Parent 10 0 R /Next 12 0 R /First 16 0 R /Dest [4 0 R /Fit] >>\nendobj\n",
+            ),
+            (
+                12,
+                b"12 0 obj\n<< /Title (Middle) /Parent 10 0 R /Prev 11 0 R /Next 13 0 R /A << /S /GoTo /D [6 0 R /Fit] >> /Dest [3 0 R /Fit] >>\nendobj\n",
+            ),
+            (
+                13,
+                b"13 0 obj\n<< /Title (Named) /Parent 10 0 R /Prev 12 0 R /Next 17 0 R /Dest (There) >>\nendobj\n",
+            ),
+            (14, b"14 0 obj\n<< /Dests 15 0 R >>\nendobj\n"),
+            (
+                15,
+                b"15 0 obj\n<< /Names [(There) [5 0 R /Fit]] >>\nendobj\n",
+            ),
+            (
+                16,
+                b"16 0 obj\n<< /Title (Nested) /Parent 11 0 R /Dest [3 0 R /Fit] >>\nendobj\n",
+            ),
+            (
+                17,
+                b"17 0 obj\n<< /Title (External) /Parent 10 0 R /Prev 13 0 R /A << /S /URI /URI (https://example.invalid/) >> >>\nendobj\n",
+            ),
+        ];
+        numbered_source(numbered)
+    }
+
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("selis-tools-{}-{name}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
@@ -3976,6 +4579,145 @@ mod tests {
         assert_eq!(verification.pages_in, Some(6));
         assert_eq!(verification.pages_out, 3);
         assert_eq!(pages_in_file(&output), 3);
+    }
+
+    #[test]
+    fn split_by_size_uses_exact_measured_group_boundaries() {
+        let dir = temp_dir("split-size-groups");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(4)).expect("write input");
+        let (src, doc, page_refs, budget) =
+            super::open_for_split(input.to_str().unwrap()).expect("open input");
+        let clock = crate::shell_clock();
+        let mut g = crate::runtime::cli_guard(&budget, &clock);
+        let single = super::measure_selection(
+            input.to_str().unwrap(),
+            &src,
+            &doc,
+            &page_refs,
+            &[0],
+            &budget,
+            &mut g,
+        )
+        .expect("measure single");
+        let pair = super::measure_selection(
+            input.to_str().unwrap(),
+            &src,
+            &doc,
+            &page_refs,
+            &[0, 1],
+            &budget,
+            &mut g,
+        )
+        .expect("measure pair");
+        assert!(single < pair, "adding a page must add bytes");
+        drop(g);
+
+        let prefix = format!("{}\\size-", dir.display());
+        let parts =
+            super::split_by_size(input.to_str().unwrap(), pair, &prefix).expect("split by size");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| (part.first, part.last))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (2, 3)]
+        );
+        for part in &parts {
+            assert!(!part.over_target);
+            assert!(part.verification.bytes_out <= pair);
+            assert_eq!(part.verification.verdict, "ok");
+            assert_eq!(pages_in_file(std::path::Path::new(&part.output)), 2);
+        }
+    }
+
+    #[test]
+    fn split_by_size_flags_a_single_page_that_cannot_fit() {
+        let dir = temp_dir("split-size-oversize");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(3)).expect("write input");
+        let (src, doc, page_refs, budget) =
+            super::open_for_split(input.to_str().unwrap()).expect("open input");
+        let clock = crate::shell_clock();
+        let mut g = crate::runtime::cli_guard(&budget, &clock);
+        let single = super::measure_selection(
+            input.to_str().unwrap(),
+            &src,
+            &doc,
+            &page_refs,
+            &[0],
+            &budget,
+            &mut g,
+        )
+        .expect("measure single");
+        drop(g);
+        let target = single.saturating_sub(1);
+        assert!(target > 0);
+
+        let prefix = format!("{}\\oversize-", dir.display());
+        let parts =
+            super::split_by_size(input.to_str().unwrap(), target, &prefix).expect("split by size");
+        assert_eq!(parts.len(), 3);
+        for part in &parts {
+            assert!(part.over_target, "a one-page part above target is flagged");
+            assert!(part.verification.bytes_out > target);
+            assert_eq!(part.first, part.last);
+        }
+        assert!(super::split_by_size(input.to_str().unwrap(), 0, &prefix).is_err());
+    }
+
+    #[test]
+    fn split_by_size_refuses_more_than_the_part_limit() {
+        let dir = temp_dir("split-size-limit");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(65)).expect("write input");
+        let error = super::split_by_size(input.to_str().unwrap(), 1, "")
+            .expect_err("65 one-page parts exceed the cap");
+        assert!(error.0.contains("64"), "{error:?}");
+    }
+
+    #[test]
+    fn split_by_bookmarks_uses_top_level_targets_and_front_matter() {
+        let dir = temp_dir("split-bookmarks");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, bookmarked_source()).expect("write input");
+        let prefix = format!("{}\\bookmarks-", dir.display());
+        let parts =
+            super::split_by_bookmarks(input.to_str().unwrap(), &prefix).expect("split bookmarks");
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| (part.first, part.last))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (1, 1), (2, 2), (3, 4)]
+        );
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| pages_in_file(std::path::Path::new(&part.output)))
+                .sum::<u64>(),
+            5
+        );
+        for part in &parts {
+            assert_eq!(part.verification.verdict, "ok");
+            assert!(!part.over_target);
+        }
+    }
+
+    #[test]
+    fn split_by_bookmarks_refuses_absent_or_single_part_outlines() {
+        let dir = temp_dir("split-bookmarks-errors");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(3)).expect("write input");
+        let error = super::split_by_bookmarks(input.to_str().unwrap(), "")
+            .expect_err("a document without bookmarks cannot be split by them");
+        assert!(error.0.contains("no bookmarks"), "{error:?}");
+        assert!(super::bookmark_ranges(&[0], 3).is_err());
+        assert_eq!(
+            super::bookmark_ranges(&[1], 3).expect("front matter and one section"),
+            vec![(0, 0), (1, 2)]
+        );
     }
 
     #[test]

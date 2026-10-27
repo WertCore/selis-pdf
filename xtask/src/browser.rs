@@ -471,7 +471,47 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
     Ok(())
 }
 
-fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
+struct SplitExpectation {
+    pdf_names: &'static [&'static str],
+    zip_name: &'static str,
+    title: &'static str,
+    pages_row: &'static str,
+    total_pages: u64,
+    over_target: bool,
+}
+
+const SPLIT_EVERY: SplitExpectation = SplitExpectation {
+    pdf_names: &[
+        "report-pages-1-1.pdf",
+        "report-pages-2-2.pdf",
+        "report-pages-3-3.pdf",
+    ],
+    zip_name: "report-split.zip",
+    title: "3 PDFs and a ZIP",
+    pages_row: "3 \u{2192} 3",
+    total_pages: 3,
+    over_target: false,
+};
+
+const SPLIT_SIZE: SplitExpectation = SplitExpectation {
+    pdf_names: &["outlined-size-1-1.pdf", "outlined-size-2-2.pdf"],
+    zip_name: "outlined-split.zip",
+    title: "2 PDFs and a ZIP",
+    pages_row: "2 \u{2192} 2",
+    total_pages: 2,
+    over_target: true,
+};
+
+const SPLIT_BOOKMARKS: SplitExpectation = SplitExpectation {
+    pdf_names: &["outlined-bookmarks-1-1.pdf", "outlined-bookmarks-2-2.pdf"],
+    zip_name: "outlined-split.zip",
+    title: "2 PDFs and a ZIP",
+    pages_row: "2 \u{2192} 2",
+    total_pages: 2,
+    over_target: false,
+};
+
+fn check_split_leg(leg: &Json, label: &str, expected: &SplitExpectation) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
             "the {label} split did not show one selected PDF (fileRows = {:?})",
@@ -501,19 +541,22 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("result")
         .and_then(Json::as_object)
         .ok_or_else(|| format!("the {label} split reported no result object"))?;
-    if result.get("title").and_then(Json::as_str) != Some("3 PDFs and a ZIP") {
+    if result.get("title").and_then(Json::as_str) != Some(expected.title) {
         return Err(format!(
-            "the {label} split result was named {:?}, expected \"3 PDFs and a ZIP\"",
-            result.get("title")
+            "the {label} split result was named {:?}, expected {:?}",
+            result.get("title"),
+            expected.title
         ));
     }
+    let expected_files = expected.pdf_names.len().saturating_add(1);
     let meta = result
         .get("meta")
         .and_then(Json::as_str)
         .ok_or_else(|| format!("the {label} split result had no summary"))?;
-    if !meta.contains("4 files") || !meta.contains("verified locally") {
+    if !meta.contains(&format!("{expected_files} files")) || !meta.contains("verified locally") {
         return Err(format!(
-            "the {label} split summary did not describe four verified files (meta = {meta:?})"
+            "the {label} split summary did not describe {expected_files} verified files (meta = \
+             {meta:?})"
         ));
     }
     let rows = result
@@ -527,10 +570,11 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
             .and_then(Json::as_str)
             .unwrap_or("")
     };
-    if row_value("Pages") != "3 \u{2192} 3" {
+    if row_value("Pages") != expected.pages_row {
         return Err(format!(
-            "the {label} split reported Pages {:?}, expected \"3 \u{2192} 3\"",
-            row_value("Pages")
+            "the {label} split reported Pages {:?}, expected {:?}",
+            row_value("Pages"),
+            expected.pages_row
         ));
     }
     if row_value("Verification") != "ok" {
@@ -544,10 +588,11 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("outputs")
         .and_then(Json::as_array)
         .ok_or_else(|| format!("the {label} split reported no output list"))?;
-    if outputs.len() != 4 {
+    if outputs.len() != expected_files {
         return Err(format!(
-            "the {label} split produced {} outputs, expected three PDFs and one ZIP",
-            outputs.len()
+            "the {label} split produced {} outputs, expected {} PDFs and one ZIP",
+            outputs.len(),
+            expected.pdf_names.len()
         ));
     }
     let mut pdf_names = Vec::new();
@@ -596,8 +641,26 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
                     ));
                 }
                 let pages = output.get("pages").and_then(Json::as_u64).unwrap_or(0);
-                if pages == 0 {
-                    return Err(format!("the {label} split PDF {name:?} reported no pages"));
+                if pages != 1 {
+                    return Err(format!(
+                        "the {label} split PDF {name:?} reported {pages} pages, expected one"
+                    ));
+                }
+                let over_target = output
+                    .get("overTarget")
+                    .and_then(Json::as_bool)
+                    .ok_or_else(|| {
+                        format!(
+                            "the {label} split PDF {name:?} had no overTarget flag; the page did \
+                             not surface the size result"
+                        )
+                    })?;
+                if over_target != expected.over_target {
+                    return Err(format!(
+                        "the {label} split PDF {name:?} reported overTarget = {over_target}, \
+                         expected {}",
+                        expected.over_target
+                    ));
                 }
                 total_pages = total_pages.saturating_add(pages);
                 pdf_names.push(name.to_string());
@@ -634,25 +697,34 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
             }
         }
     }
-    if pdf_names.len() != 3 || zip_names.len() != 1 {
+    if pdf_names.len() != expected.pdf_names.len() || zip_names.len() != 1 {
         return Err(format!(
-            "the {label} split returned {:?} PDF(s) and {:?} ZIP(s), expected three and one",
+            "the {label} split returned {} PDF(s) and {} ZIP(s), expected {} and one",
             pdf_names.len(),
-            zip_names.len()
+            zip_names.len(),
+            expected.pdf_names.len()
         ));
     }
-    let mut unique = pdf_names.clone();
-    unique.extend(zip_names.iter().cloned());
-    unique.sort();
-    unique.dedup();
-    if unique.len() != 4 {
+    for (index, expected_name) in expected.pdf_names.iter().enumerate() {
+        if pdf_names.get(index).map(String::as_str) != Some(*expected_name) {
+            return Err(format!(
+                "the {label} split output #{index} was named {:?}, expected {:?}",
+                pdf_names.get(index),
+                expected_name
+            ));
+        }
+    }
+    if zip_names.first().map(String::as_str) != Some(expected.zip_name) {
         return Err(format!(
-            "the {label} split output names were not unique: {unique:?}"
+            "the {label} split ZIP was named {:?}, expected {:?}",
+            zip_names.first(),
+            expected.zip_name
         ));
     }
-    if total_pages != 3 {
+    if total_pages != expected.total_pages {
         return Err(format!(
-            "the {label} split PDFs carried {total_pages} pages, expected 3"
+            "the {label} split PDFs carried {total_pages} pages, expected {}",
+            expected.total_pages
         ));
     }
 
@@ -690,11 +762,14 @@ fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///   begins `%PDF-` and is larger than the two 423-byte inputs;
 /// * the split-every leg shows one selected PDF, Pages `3 → 3`, three PDF rows
 ///   with one page each, and a fourth ZIP row whose actual Blob starts `PK`;
+/// * the size leg measures the outlined fixture against a 1 KiB target and
+///   shows two over-target PDFs plus the ZIP, while the bookmark leg shows two
+///   bookmark-bounded PDFs with no over-target flag;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
-/// * the offline leg repeats the card grid, merge, and split after the origin
-///   has answered 503, while the page is worker-controlled and still sees zero
-///   foreign resources.
+/// * the offline leg repeats the card grid, merge, every-size-bookmark splits
+///   after the origin has answered 503, while the page is worker-controlled and
+///   still sees zero foreign resources.
 ///
 /// The last two points are why the page cannot pass on a fixture: the fixture
 /// would not fetch the real module graph, and a page that silently skipped the
@@ -827,12 +902,22 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     }
 
     // Phase 1A.1. The same page splits the three-page fixture one page at a
-    // time. The proof is structural: three PDFs with one page each plus a ZIP
-    // whose local-file header is read from the actual Blob bytes.
+    // time, then measures a size target and the outline fixture. The proof is
+    // structural: every PDF has one page, each leg has a ZIP whose local-file
+    // header is read from the actual Blob bytes, and the size leg carries the
+    // page's overTarget flag.
     let split = report
         .get("split")
-        .ok_or_else(|| "the page reported no split leg (split = None)".to_string())?;
-    check_split_leg(split, "online")?;
+        .ok_or_else(|| "the page reported no split-every leg (split = None)".to_string())?;
+    check_split_leg(split, "online every", &SPLIT_EVERY)?;
+    let split_size = report
+        .get("splitSize")
+        .ok_or_else(|| "the page reported no size-split leg (splitSize = None)".to_string())?;
+    check_split_leg(split_size, "online size", &SPLIT_SIZE)?;
+    let split_bookmarks = report.get("splitBookmarks").ok_or_else(|| {
+        "the page reported no bookmark-split leg (splitBookmarks = None)".to_string()
+    })?;
+    check_split_leg(split_bookmarks, "online bookmarks", &SPLIT_BOOKMARKS)?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -955,8 +1040,20 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     }
     let offline_split = offline
         .get("split")
-        .ok_or_else(|| "the offline leg reported no split result".to_string())?;
-    check_split_leg(offline_split, "offline")?;
+        .ok_or_else(|| "the offline leg reported no split-every result".to_string())?;
+    check_split_leg(offline_split, "offline every", &SPLIT_EVERY)?;
+    let offline_split_size = offline
+        .get("splitSize")
+        .ok_or_else(|| "the offline leg reported no size-split result".to_string())?;
+    check_split_leg(offline_split_size, "offline size", &SPLIT_SIZE)?;
+    let offline_split_bookmarks = offline
+        .get("splitBookmarks")
+        .ok_or_else(|| "the offline leg reported no bookmark-split result".to_string())?;
+    check_split_leg(
+        offline_split_bookmarks,
+        "offline bookmarks",
+        &SPLIT_BOOKMARKS,
+    )?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -4503,75 +4600,62 @@ mod tests {
         })
     }
 
-    /// The split-every leg shared by the online and offline halves of the
-    /// tools-page report. The byte counts are representative; the verdict
-    /// checks headers, kinds, names, and page totals rather than a particular
-    /// compressor output.
-    fn real_tools_split_leg() -> Json {
+    /// A split leg shared by the online and offline halves of the tools-page
+    /// report. The byte counts are representative; the verdict checks headers,
+    /// kinds, names, page totals, and the over-target flag rather than a
+    /// particular compressor output.
+    fn real_tools_split_leg_for(
+        pdf_names: &[&str],
+        zip_name: &str,
+        title: &str,
+        pages_row: &str,
+        over_target: bool,
+    ) -> Json {
+        let mut outputs = Vec::new();
+        for (index, name) in pdf_names.iter().enumerate() {
+            let bytes = 601 + index;
+            outputs.push(json!({
+                "kind": "pdf",
+                "name": name,
+                "pages": 1,
+                "declaredBytes": bytes,
+                "bytes": bytes,
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": name,
+                "header": "%PDF-",
+                "zip": false,
+                "overTarget": over_target,
+            }));
+        }
+        outputs.push(json!({
+            "kind": "zip",
+            "name": zip_name,
+            "pages": 0,
+            "declaredBytes": 1200,
+            "bytes": 1200,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": zip_name,
+            "header": "PK",
+            "zip": true,
+        }));
+        let files = pdf_names.len().saturating_add(1);
         json!({
             "fileRows": 1,
             "runLabel": "Split PDF",
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
             "result": {
-                "title": "3 PDFs and a ZIP",
-                "meta": "4 files · 2.4 KiB · verified locally",
+                "title": title,
+                "meta": format!("{files} files · 2.4 KiB · verified locally"),
                 "rows": [
-                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Pages", "value": pages_row },
                     { "label": "Annotations", "value": "0 \u{2192} 0" },
                     { "label": "Verification", "value": "ok" },
                 ],
             },
-            "outputs": [
-                {
-                    "kind": "pdf",
-                    "name": "report-pages-1-1.pdf",
-                    "pages": 1,
-                    "declaredBytes": 601,
-                    "bytes": 601,
-                    "blob": true,
-                    "previewBlob": true,
-                    "downloadName": "report-pages-1-1.pdf",
-                    "header": "%PDF-",
-                    "zip": false,
-                },
-                {
-                    "kind": "pdf",
-                    "name": "report-pages-2-2.pdf",
-                    "pages": 1,
-                    "declaredBytes": 602,
-                    "bytes": 602,
-                    "blob": true,
-                    "previewBlob": true,
-                    "downloadName": "report-pages-2-2.pdf",
-                    "header": "%PDF-",
-                    "zip": false,
-                },
-                {
-                    "kind": "pdf",
-                    "name": "report-pages-3-3.pdf",
-                    "pages": 1,
-                    "declaredBytes": 603,
-                    "bytes": 603,
-                    "blob": true,
-                    "previewBlob": true,
-                    "downloadName": "report-pages-3-3.pdf",
-                    "header": "%PDF-",
-                    "zip": false,
-                },
-                {
-                    "kind": "zip",
-                    "name": "report-split.zip",
-                    "pages": 0,
-                    "declaredBytes": 1200,
-                    "bytes": 1200,
-                    "blob": true,
-                    "previewBlob": Json::Null,
-                    "downloadName": "report-split.zip",
-                    "header": "PK",
-                    "zip": true,
-                },
-            ],
+            "outputs": outputs,
             "network": {
                 "origin": "http://127.0.0.1:1234",
                 "resources": 1,
@@ -4579,6 +4663,40 @@ mod tests {
                 "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
             },
         })
+    }
+
+    fn real_tools_split_leg() -> Json {
+        real_tools_split_leg_for(
+            &[
+                "report-pages-1-1.pdf",
+                "report-pages-2-2.pdf",
+                "report-pages-3-3.pdf",
+            ],
+            "report-split.zip",
+            "3 PDFs and a ZIP",
+            "3 \u{2192} 3",
+            false,
+        )
+    }
+
+    fn real_tools_size_split_leg() -> Json {
+        real_tools_split_leg_for(
+            &["outlined-size-1-1.pdf", "outlined-size-2-2.pdf"],
+            "outlined-split.zip",
+            "2 PDFs and a ZIP",
+            "2 \u{2192} 2",
+            true,
+        )
+    }
+
+    fn real_tools_bookmark_split_leg() -> Json {
+        real_tools_split_leg_for(
+            &["outlined-bookmarks-1-1.pdf", "outlined-bookmarks-2-2.pdf"],
+            "outlined-split.zip",
+            "2 PDFs and a ZIP",
+            "2 \u{2192} 2",
+            false,
+        )
     }
 
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
@@ -4627,6 +4745,8 @@ mod tests {
                 ],
             },
             "split": real_tools_split_leg(),
+            "splitSize": real_tools_size_split_leg(),
+            "splitBookmarks": real_tools_bookmark_split_leg(),
             "sw": {
                 "registration": "registered",
                 "script": "http://127.0.0.1:1234/sw.js",
@@ -4674,6 +4794,8 @@ mod tests {
                     ],
                 },
                 "split": real_tools_split_leg(),
+                "splitSize": real_tools_size_split_leg(),
+                "splitBookmarks": real_tools_bookmark_split_leg(),
             },
         })
     }
@@ -4810,6 +4932,47 @@ mod tests {
         assert!(
             verdict_tools_page(&split_missing_output).is_err(),
             "a split without the ZIP output must not pass"
+        );
+
+        let mut no_size_split = report.clone();
+        no_size_split
+            .as_object_mut()
+            .expect("report object")
+            .remove("splitSize");
+        assert!(
+            verdict_tools_page(&no_size_split).is_err(),
+            "a run that never exercised split-by-size must not pass the Phase 1A.1 gate"
+        );
+
+        let mut size_flag_lost = report.clone();
+        *size_flag_lost
+            .pointer_mut("/splitSize/outputs/0/overTarget")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&size_flag_lost).is_err(),
+            "a size split that hid an over-target part must not pass"
+        );
+
+        let mut no_bookmark_split = report.clone();
+        no_bookmark_split
+            .as_object_mut()
+            .expect("report object")
+            .remove("splitBookmarks");
+        assert!(
+            verdict_tools_page(&no_bookmark_split).is_err(),
+            "a run that never exercised split-by-bookmarks must not pass the Phase 1A.1 gate"
+        );
+
+        let mut offline_no_size_split = report.clone();
+        offline_no_size_split
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("splitSize");
+        assert!(
+            verdict_tools_page(&offline_no_size_split).is_err(),
+            "an offline run without split-by-size must not pass the Phase 1A.1 gate"
         );
 
         let mut offline_no_split = report.clone();

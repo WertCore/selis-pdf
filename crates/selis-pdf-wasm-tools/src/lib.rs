@@ -290,6 +290,7 @@ struct Produced {
     output: String,
     name: String,
     verification: Verification,
+    over_target: bool,
 }
 
 /// Aggregate verification, per-output JSON records, and the wire files.
@@ -363,6 +364,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: "merged.pdf".to_string(),
                 verification: selis_pdf_tools::merge(&inputs, "out.pdf")?,
+                over_target: false,
             }]
         }
         Op::Split => run_split(&options, &stem)?,
@@ -374,6 +376,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-rotated.pdf"),
                 verification: selis_pdf_tools::rotate("in/0", angle, pages.as_deref(), "out.pdf")?,
+                over_target: false,
             }]
         }
         Op::Delete => {
@@ -383,6 +386,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-trimmed.pdf"),
                 verification: selis_pdf_tools::delete("in/0", &pages, "out.pdf")?,
+                over_target: false,
             }]
         }
         Op::Reorder => {
@@ -392,6 +396,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-reordered.pdf"),
                 verification: selis_pdf_tools::reorder("in/0", &order, "out.pdf")?,
+                over_target: false,
             }]
         }
         Op::SetMetadata => {
@@ -404,6 +409,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-metadata.pdf"),
                 verification: selis_pdf_tools::set_metadata("in/0", &refs, "out.pdf")?,
+                over_target: false,
             }]
         }
     };
@@ -425,6 +431,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             "pages": part.verification.pages_out,
             "bytes": bytes.len(),
             "verdict": part.verification.verdict,
+            "overTarget": part.over_target,
         }));
         outputs.push((part.name.clone(), bytes));
     }
@@ -467,6 +474,7 @@ fn run_split(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, T
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-pages.pdf"),
                 verification: selis_pdf_tools::split("in/0", first, last, "out.pdf")?,
+                over_target: false,
             }])
         }
         "every" => {
@@ -476,33 +484,21 @@ fn run_split(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, T
             )
             .map_err(|_| ToolError("split interval is out of range".to_string()))?;
             let parts = selis_pdf_tools::split_every("in/0", every, "out/")?;
-            Ok(parts
-                .into_iter()
-                .map(|part| Produced {
-                    name: format!(
-                        "{stem}-pages-{}-{}.pdf",
-                        part.first.saturating_add(1),
-                        part.last.saturating_add(1)
-                    ),
-                    output: part.output,
-                    verification: part.verification,
-                })
-                .collect())
+            Ok(named_parts(parts, stem, "pages"))
         }
         "half" => {
             let parts = selis_pdf_tools::split_half("in/0", "out/")?;
-            Ok(parts
-                .into_iter()
-                .map(|part| Produced {
-                    name: format!(
-                        "{stem}-pages-{}-{}.pdf",
-                        part.first.saturating_add(1),
-                        part.last.saturating_add(1)
-                    ),
-                    output: part.output,
-                    verification: part.verification,
-                })
-                .collect())
+            Ok(named_parts(parts, stem, "pages"))
+        }
+        "size" => {
+            let target_bytes = option_u64(options, "targetBytes")
+                .ok_or_else(|| ToolError("split by size needs a target in bytes".to_string()))?;
+            let parts = selis_pdf_tools::split_by_size("in/0", target_bytes, "out/")?;
+            Ok(named_parts(parts, stem, "size"))
+        }
+        "bookmarks" => {
+            let parts = selis_pdf_tools::split_by_bookmarks("in/0", "out/")?;
+            Ok(named_parts(parts, stem, "bookmarks"))
         }
         "extract" => {
             let pages = option_str(options, "pages")
@@ -511,10 +507,28 @@ fn run_split(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, T
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-extracted.pdf"),
                 verification: selis_pdf_tools::extract_pages("in/0", &pages, "out.pdf")?,
+                over_target: false,
             }])
         }
         other => Err(ToolError(format!("unknown split mode `{other}`"))),
     }
+}
+
+/// Give each backend split part a bounded, human-readable download name.
+fn named_parts(parts: Vec<selis_pdf_tools::SplitPart>, stem: &str, label: &str) -> Vec<Produced> {
+    parts
+        .into_iter()
+        .map(|part| Produced {
+            name: format!(
+                "{stem}-{label}-{}-{}.pdf",
+                part.first.saturating_add(1),
+                part.last.saturating_add(1)
+            ),
+            output: part.output,
+            verification: part.verification,
+            over_target: part.over_target,
+        })
+        .collect()
 }
 
 fn aggregate_verifications(parts: &[Verification]) -> Result<Verification, ToolError> {
@@ -768,6 +782,17 @@ mod tests {
         request(2, options.as_bytes(), &[("doc.pdf", &pdf)])
     }
 
+    fn error_text(response: &[u8]) -> String {
+        let status = u32::from_le_bytes(response[4..8].try_into().expect("status"));
+        assert_eq!(status, 1, "expected an error response");
+        let message_len =
+            usize::try_from(u32::from_le_bytes(response[8..12].try_into().expect("len")))
+                .expect("message length");
+        std::str::from_utf8(&response[12..12 + message_len])
+            .expect("error text")
+            .to_string()
+    }
+
     #[test]
     fn split_every_returns_named_parts_and_a_zip() {
         let response = run_request(&split_request(r#"{"mode":"every","every":2}"#, 5));
@@ -825,6 +850,60 @@ mod tests {
         assert_eq!(outputs[0].0, "doc-pages.pdf");
         assert_eq!(message["pages_out"], 3);
         assert_eq!(message["outputs"][0]["kind"], "pdf");
+    }
+
+    #[test]
+    fn size_split_flags_parts_that_cannot_meet_the_target() {
+        let response = run_request(&split_request(r#"{"mode":"size","targetBytes":1}"#, 2));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "size split failed: {message}");
+        assert_eq!(outputs.len(), 3, "two PDFs and one ZIP");
+        let reports = message["outputs"].as_array().expect("reports");
+        assert_eq!(reports[0]["overTarget"], true);
+        assert_eq!(reports[1]["overTarget"], true);
+        assert_eq!(reports[0]["pages"], 1);
+        assert_eq!(reports[1]["pages"], 1);
+        assert_eq!(reports[2]["kind"], "zip");
+        assert_eq!(outputs[0].0, "doc-size-1-1.pdf");
+        assert_eq!(outputs[1].0, "doc-size-2-2.pdf");
+
+        let response = run_request(&split_request(r#"{"mode":"size"}"#, 2));
+        assert!(
+            error_text(&response).contains("target"),
+            "missing target is reported"
+        );
+        let response = run_request(&split_request(r#"{"mode":"size","targetBytes":0}"#, 2));
+        assert!(
+            error_text(&response).contains("at least one byte"),
+            "a zero target is refused"
+        );
+    }
+
+    #[test]
+    fn bookmarks_split_uses_the_fixture_outline() {
+        let fixture: &[u8] = include_bytes!("../../../corpus/fixtures/tagged_structure.pdf");
+        let response = run_request(&request(
+            2,
+            br#"{"mode":"bookmarks"}"#,
+            &[("doc.pdf", fixture)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "bookmark split failed: {message}");
+        assert_eq!(outputs.len(), 3, "two PDFs and one ZIP");
+        assert_eq!(outputs[0].0, "doc-bookmarks-1-1.pdf");
+        assert_eq!(outputs[1].0, "doc-bookmarks-2-2.pdf");
+        assert_eq!(outputs[2].0, "doc-split.zip");
+        assert_eq!(message["pages_in"], 2);
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(message["outputs"][0]["pages"], 1);
+        assert_eq!(message["outputs"][1]["pages"], 1);
+        assert_eq!(message["outputs"][0]["overTarget"], false);
+
+        let response = run_request(&split_request(r#"{"mode":"bookmarks"}"#, 2));
+        assert!(
+            error_text(&response).contains("no bookmarks"),
+            "a document without bookmarks is refused"
+        );
     }
 
     #[test]

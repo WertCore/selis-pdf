@@ -81,6 +81,28 @@ export function pageCount(input: string, label: string): number {
 	return positiveNumber(input, label);
 }
 
+/**
+ * Convert a fractional megabyte target to the exact byte count the
+ * split-by-size option expects. A megabyte here is 1024 × 1024 bytes, matching
+ * the size the page displays for files; the result must still be a safe JSON
+ * integer.
+ */
+export function sizeBytes(input: string, label: string): number {
+	const trimmed = input.trim();
+	if (!/^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$/.test(trimmed)) {
+		throw new ToolInputError(`${label} must be a positive number of MB`);
+	}
+	const megabytes = Number(trimmed);
+	if (!Number.isFinite(megabytes) || megabytes <= 0) {
+		throw new ToolInputError(`${label} must be greater than zero`);
+	}
+	const bytes = Math.round(megabytes * 1024 * 1024);
+	if (!Number.isSafeInteger(bytes) || bytes < 1) {
+		throw new ToolInputError(`${label} is outside the supported range`);
+	}
+	return bytes;
+}
+
 /** Whether the file begins with a PDF header. `%PDF-` is the only signature. */
 export function hasPdfHeader(bytes: Uint8Array): boolean {
 	if (bytes.length < 5) {

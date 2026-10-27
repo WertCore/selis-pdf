@@ -20,6 +20,7 @@ import {
 	pageCount,
 	pageIndex,
 	shiftPageSelection,
+	sizeBytes,
 } from "./inputs.js";
 import {
 	type ToolOp,
@@ -55,7 +56,7 @@ const TOOLS: readonly ToolDef[] = [
 		id: "split",
 		mark: "✂",
 		title: "Split PDF",
-		blurb: "Split by range, every N pages, in half, or extract pages.",
+		blurb: "Split by range, every N pages, in half, by size, by bookmarks, or extract pages.",
 		verb: "Split PDF",
 		multiple: false,
 	},
@@ -100,7 +101,7 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 
 type Control = HTMLInputElement | HTMLSelectElement;
 type StatusKind = "info" | "error" | "ok";
-type SplitMode = "range" | "every" | "half" | "extract";
+type SplitMode = "range" | "every" | "half" | "size" | "bookmarks" | "extract";
 
 function byId<T extends HTMLElement>(id: string): T {
 	const element = document.getElementById(id);
@@ -304,7 +305,10 @@ function init(): void {
 
 	function splitModeValue(): SplitMode {
 		const mode = optionValue("mode");
-		if (mode === "every" || mode === "half" || mode === "extract") {
+		if (mode === "every" || mode === "half" || mode === "size" || mode === "bookmarks") {
+			return mode;
+		}
+		if (mode === "extract") {
 			return mode;
 		}
 		return "range";
@@ -315,17 +319,27 @@ function init(): void {
 		setOptionFieldVisible("from", mode === "range");
 		setOptionFieldVisible("to", mode === "range");
 		setOptionFieldVisible("every", mode === "every");
+		setOptionFieldVisible("target", mode === "size");
 		setOptionFieldVisible("pages", mode === "extract");
 		const note = document.getElementById("split-note");
-		if (note !== null) {
+		if (note === null) {
+			return;
+		}
+		if (mode === "range") {
+			note.textContent = "The selected range becomes one PDF.";
+		} else if (mode === "every") {
 			note.textContent =
-				mode === "range"
-					? "The selected range becomes one PDF."
-					: mode === "every"
-						? "Each group becomes its own PDF. Multiple outputs also come as one ZIP."
-						: mode === "half"
-							? "The document splits into two PDFs at the middle page."
-							: "The selected pages become one PDF in document order.";
+				"Each group becomes its own PDF. Multiple outputs also come as one ZIP.";
+		} else if (mode === "half") {
+			note.textContent = "The document splits into two PDFs at the middle page.";
+		} else if (mode === "size") {
+			note.textContent =
+				"Each PDF stays at or below the target. A single page that cannot fit is kept on its own and flagged.";
+		} else if (mode === "bookmarks") {
+			note.textContent =
+				"Top-level bookmarks become boundaries. Pages before the first bookmark become their own PDF.";
+		} else {
+			note.textContent = "The selected pages become one PDF in document order.";
 		}
 	}
 
@@ -345,6 +359,8 @@ function init(): void {
 				["range", "Page range"],
 				["every", "Every N pages"],
 				["half", "Split in half"],
+				["size", "By target size"],
+				["bookmarks", "By bookmarks"],
 				["extract", "Extract pages"],
 			] as const) {
 				const choice = document.createElement("option");
@@ -378,6 +394,15 @@ function init(): void {
 				"Each output gets this many pages, except the last.",
 			);
 			(every as HTMLInputElement).value = "2";
+			const target = addField(
+				"target",
+				"Target size (MB)",
+				textInput("target", "number", "1"),
+				"Fractions of an MB are allowed. Output groups are measured after writing.",
+			);
+			(target as HTMLInputElement).min = "0.001";
+			(target as HTMLInputElement).step = "0.001";
+			target.value = "1";
 			addField(
 				"pages",
 				"Pages to extract",
@@ -616,6 +641,8 @@ function init(): void {
 				}
 			} else if (mode === "every") {
 				splitOptions.every = pageCount(optionValue("every"), "Pages per file");
+			} else if (mode === "size") {
+				splitOptions.targetBytes = sizeBytes(optionValue("target"), "Target size");
 			} else if (mode === "extract") {
 				splitOptions.pages = shiftPageSelection(optionValue("pages"));
 			}
@@ -721,14 +748,16 @@ function init(): void {
 			row.dataset.name = output.name;
 			row.dataset.bytes = String(output.bytes.byteLength);
 			row.dataset.pages = String(report.pages);
+			row.dataset.overTarget = report.overTarget === true ? "true" : "false";
 			const info = make("div", "output-info");
 			const name = make("span", "output-name");
 			name.textContent = output.name;
 			const meta = make("span", "output-meta");
+			const overTarget = report.overTarget === true ? " · over target" : "";
 			meta.textContent =
 				report.kind === "zip"
 					? `ZIP bundle · ${formatBytes(output.bytes.byteLength)}`
-					: `${report.pages} page${report.pages === 1 ? "" : "s"} · ${formatBytes(output.bytes.byteLength)} · ${report.verdict}`;
+					: `${report.pages} page${report.pages === 1 ? "" : "s"} · ${formatBytes(output.bytes.byteLength)} · ${report.verdict}${overTarget}`;
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
@@ -823,7 +852,13 @@ function init(): void {
 		for (const control of optionControls.values()) {
 			if (control instanceof HTMLInputElement && control.type === "number") {
 				control.value =
-					control.name === "from" ? "1" : control.name === "every" ? "2" : "";
+					control.name === "from"
+						? "1"
+						: control.name === "every"
+							? "2"
+							: control.name === "target"
+								? "1"
+								: "";
 			} else if (control instanceof HTMLInputElement) {
 				control.value = "";
 			} else if (control instanceof HTMLSelectElement) {

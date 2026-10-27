@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the first Phase 1A.1 slice, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split slice, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -44,6 +44,8 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Split PDF (range) | yes | yes | **Live** | 1-based UI, inclusive range, empty "to" = last page. |
 | Split every N pages | yes | yes | **Live** | One PDF per group, capped at 64 parts; multi-part runs add a deterministic ZIP bundle. |
 | Split in half | — | yes | **Live** | Two PDFs split at the middle page, plus the ZIP bundle. |
+| Split by target size | — | yes | **Live** | Target entered in MB; exact measured output bytes; deterministic ranges; a one-page part that cannot fit is marked "over target". |
+| Split by bookmarks | — | yes | **Live** | Top-level outline destinations; front matter stays separate; refuses an absent outline or a single resulting part. |
 | Extract pages | yes | yes | **Live** | One PDF containing the selected pages in document order. |
 | Rotate PDF | yes | yes | **Live** | 90/180/270, all pages or 1-based selection. |
 | Delete pages | yes | yes | **Live** | 1-based selection; refuses to delete every page. |
@@ -60,7 +62,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 150 313 B).
+      (currently 300 000 B brotli; baseline 156 334 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -83,8 +85,8 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Split by range | yes | yes | 1A.0 | Live. |
 | Split every N pages | yes | yes | 1A.1 | Live. One PDF per group plus a ZIP bundle; capped at 64 PDF parts. |
 | Split in half | — | yes | 1A.1 | Live. Two PDFs plus the ZIP bundle. |
-| Split by size | — | yes | 1A.1 | Target bytes; deterministic split points; report on the result card. |
-| Split by bookmarks | — | yes | 1A.1 | Needs outline reader; already in the document model. |
+| Split by size | — | yes | 1A.1 | Live. Target MB converted to bytes; exact measured boundaries; over-target parts flagged. |
+| Split by bookmarks | — | yes | 1A.1 | Live. Top-level outline targets; front matter separate; one-part results refused. |
 | Split by text | — | yes | Text | Needs text extraction and a boundary rule; show the chosen boundaries before committing. |
 | Remove pages | yes | yes | 1A.0 | Live as Delete pages. |
 | Organize / reorder | yes | yes | 1A.0 | Live with buttons. Drag-to-reorder remains a UI enhancement, not a correctness gap. |
@@ -222,15 +224,16 @@ watermark, headers/footers, Bates, compression lossless, repair, metadata strip,
 bookmarks, page labels, CSV/Markdown/HTML→PDF, image→PDF for owned codecs, multi-output + ZIP,
 batch queue, unlock/protect/clear-permissions (crypto-enabled chunk).
 
-**Shipped 2026-10-27:** split every N pages, split in half, extract pages, per-output metadata and
-downloads, the owned deterministic ZIP bundle, and the matching protocol/browser coverage. The
-browser check runs the split path online and after an offline reload and reads the actual PDF and
-ZIP bytes.
+**Shipped 2026-10-27:** split every N pages, split in half, split by target size, split by
+bookmarks, extract pages, per-output metadata and downloads, the owned deterministic ZIP bundle,
+and the matching protocol/browser coverage. The browser check runs every split mode online and
+after an offline reload, reads the actual PDF and ZIP bytes, and checks the per-part over-target
+flag for a target no single page can meet.
 
-**Remaining in 1A.1:** split by size and by bookmarks, organize/insert/duplicate, crop/resize,
-N-up/flip/alternate/mix, page numbers, watermark, headers/footers, Bates, lossless compression,
-repair, metadata strip, attachments, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue,
-and the crypto-enabled security tools.
+**Remaining in 1A.1:** organize/insert/duplicate, crop/resize, N-up/flip/alternate/mix, page
+numbers, watermark, headers/footers, Bates, lossless compression, repair, metadata strip,
+attachments, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled
+security tools.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
 size budget; no raster feature is claimed yet.

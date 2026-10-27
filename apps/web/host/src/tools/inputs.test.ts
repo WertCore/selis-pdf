@@ -4,6 +4,7 @@ import {
 	pageCount,
 	pageIndex,
 	shiftPageSelection,
+	sizeBytes,
 	ToolInputError,
 } from "./inputs.js";
 
@@ -49,6 +50,32 @@ describe("pageCount", () => {
 		expect(() => pageCount("0", "Pages per file")).toThrow(/Pages per file/);
 		expect(() => pageCount("1.5", "Pages per file")).toThrow(ToolInputError);
 		expect(() => pageCount("two", "Pages per file")).toThrow(ToolInputError);
+	});
+});
+
+describe("sizeBytes", () => {
+	it("converts fractional megabytes to binary bytes", () => {
+		expect(sizeBytes("1", "Target size")).toBe(1024 * 1024);
+		expect(sizeBytes("0.5", "Target size")).toBe(512 * 1024);
+		expect(sizeBytes("1.25", "Target size")).toBe(1280 * 1024);
+		expect(sizeBytes(".5", "Target size")).toBe(512 * 1024);
+		expect(sizeBytes(" 2 ", "Target size")).toBe(2 * 1024 * 1024);
+	});
+
+	it("rejects zero, negatives, and prose", () => {
+		for (const value of ["0", "0.0", "-1", "two", "1 MB", "1e3", "1."]) {
+			expect(() => sizeBytes(value, "Target size")).toThrow(ToolInputError);
+		}
+		expect(() => sizeBytes("0", "Target size")).toThrow(/Target size/);
+	});
+
+	it("rejects targets that cannot be a safe byte count", () => {
+		expect(() => sizeBytes("9007199254740992", "Target size")).toThrow(
+			/outside the supported range/,
+		);
+		expect(() => sizeBytes("0.0000001", "Target size")).toThrow(
+			/outside the supported range/,
+		);
 	});
 });
 

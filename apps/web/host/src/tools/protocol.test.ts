@@ -133,7 +133,14 @@ describe("decodeToolResponse", () => {
 			bytes_out: 19,
 			outputs: [
 				{ name: "doc-pages-1-2.pdf", kind: "pdf", pages: 2, bytes: 6, verdict: "ok" },
-				{ name: "doc-pages-3-5.pdf", kind: "pdf", pages: 3, bytes: 8, verdict: "ok" },
+				{
+					name: "doc-pages-3-5.pdf",
+					kind: "pdf",
+					pages: 3,
+					bytes: 8,
+					verdict: "ok",
+					overTarget: true,
+				},
 				{ name: "doc-split.zip", kind: "zip", pages: 0, bytes: 5, verdict: "bundle" },
 			],
 		};
@@ -151,6 +158,30 @@ describe("decodeToolResponse", () => {
 		]);
 		expect(result.reports.map((report) => report.kind)).toEqual(["pdf", "pdf", "zip"]);
 		expect(result.reports.map((report) => report.pages)).toEqual([2, 3, 0]);
+		expect(result.reports.map((report) => report.overTarget)).toEqual([false, true, false]);
+	});
+
+	it("rejects a non-boolean overTarget flag", () => {
+		const message = {
+			...verification,
+			outputs: [
+				{
+					name: "out.pdf",
+					kind: "pdf",
+					pages: 2,
+					bytes: 4,
+					verdict: "ok",
+					overTarget: "yes",
+				},
+			],
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(message), [
+					{ name: "out.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/malformed output metadata/);
 	});
 
 	it("rejects output metadata that does not match the wire outputs", () => {

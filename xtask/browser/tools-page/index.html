@@ -22,10 +22,12 @@
       // different claims (SL-4.TOOLS.05):
       //
       //   1. load the real page, wait for its own worker registration to claim
-      //      it, then merge two PDFs;
+      //      it, then merge two PDFs and run the split-every, split-size, and
+      //      split-bookmark modes against the real page controls;
       //   2. flip the harness origin's offline switch, reload the SAME page,
-      //      and merge again. Every module, the CSS, and the tools WASM chunk
-      //      must come back from the worker's cache; the origin answers 503.
+      //      and repeat those runs. Every module, the CSS, and the tools WASM
+      //      chunk must come back from the worker's cache; the origin answers
+      //      503.
       const out = { schema: 1, check: "tools-page" };
       let posted = false;
 
@@ -134,6 +136,7 @@
           kind: row.dataset.kind || "",
           name: row.dataset.name || "",
           pages: Number(row.dataset.pages || "0"),
+          overTarget: row.dataset.overTarget === "true",
           declaredBytes: Number(row.dataset.bytes || "0"),
           blob: href.startsWith("blob:"),
           previewBlob: preview
@@ -241,7 +244,7 @@
         };
       }
 
-      async function splitEveryInFrame(frame, fixture, label, every) {
+      async function splitInFrame(frame, fixture, fixtureName, label, splitMode, inputs) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
         if (doc.getElementById("tools").hidden) {
@@ -262,13 +265,20 @@
         );
 
         const mode = doc.getElementById("option-mode");
-        mode.value = "every";
+        mode.value = splitMode;
         mode.dispatchEvent(new win.Event("change", { bubbles: true }));
-        const everyInput = doc.getElementById("option-every");
-        everyInput.value = String(every);
-        everyInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+        if (inputs.every !== undefined) {
+          const everyInput = doc.getElementById("option-every");
+          everyInput.value = String(inputs.every);
+          everyInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+        }
+        if (inputs.target !== undefined) {
+          const targetInput = doc.getElementById("option-target");
+          targetInput.value = String(inputs.target);
+          targetInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+        }
 
-        const fileRows = await attachFiles(frame, fixture, "report.pdf", label, 1);
+        const fileRows = await attachFiles(frame, fixture, fixtureName, label, 1);
         const run = doc.getElementById("run-tool");
         await waitFor(() => !run.disabled, 5_000, "the Split button to enable (" + label + ")");
         const runLabel = run.textContent.trim();
@@ -345,6 +355,10 @@
           if (!r.ok) throw new Error("report.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        const outlinedFixture = await fetch("outlined.pdf").then((r) => {
+          if (!r.ok) throw new Error("outlined.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
 
         const online = await mergeInFrame(frame, fixture, "online");
         out.fileRows = online.fileRows;
@@ -356,7 +370,14 @@
         out.outputs = online.outputs;
         out.network = online.network;
 
-        const onlineSplit = await splitEveryInFrame(frame, splitFixture, "online split", 1);
+        const onlineSplit = await splitInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online split",
+          "every",
+          { every: 1 },
+        );
         out.split = {
           fileRows: onlineSplit.fileRows,
           runLabel: onlineSplit.runLabel,
@@ -365,6 +386,42 @@
           result: onlineSplit.result,
           outputs: onlineSplit.outputs,
           network: onlineSplit.network,
+        };
+
+        const onlineSize = await splitInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online size split",
+          "size",
+          { target: "0.001" },
+        );
+        out.splitSize = {
+          fileRows: onlineSize.fileRows,
+          runLabel: onlineSize.runLabel,
+          noUpload: onlineSize.noUpload,
+          status: onlineSize.status,
+          result: onlineSize.result,
+          outputs: onlineSize.outputs,
+          network: onlineSize.network,
+        };
+
+        const onlineBookmarks = await splitInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online bookmark split",
+          "bookmarks",
+          {},
+        );
+        out.splitBookmarks = {
+          fileRows: onlineBookmarks.fileRows,
+          runLabel: onlineBookmarks.runLabel,
+          noUpload: onlineBookmarks.noUpload,
+          status: onlineBookmarks.status,
+          result: onlineBookmarks.result,
+          outputs: onlineBookmarks.outputs,
+          network: onlineBookmarks.network,
         };
 
         // Cut the harness origin. The worker still has the complete tools page;
@@ -385,11 +442,29 @@
           "the worker to claim the offline tools page",
         );
         const offline = await mergeInFrame(frame, fixture, "offline");
-        const offlineSplit = await splitEveryInFrame(
+        const offlineSplit = await splitInFrame(
           frame,
           splitFixture,
+          "report.pdf",
           "offline split",
-          1,
+          "every",
+          { every: 1 },
+        );
+        const offlineSize = await splitInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline size split",
+          "size",
+          { target: "0.001" },
+        );
+        const offlineBookmarks = await splitInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline bookmark split",
+          "bookmarks",
+          {},
         );
         out.offline = {
           cards: offlineCards,
@@ -412,6 +487,24 @@
             result: offlineSplit.result,
             outputs: offlineSplit.outputs,
             network: offlineSplit.network,
+          },
+          splitSize: {
+            fileRows: offlineSize.fileRows,
+            runLabel: offlineSize.runLabel,
+            noUpload: offlineSize.noUpload,
+            status: offlineSize.status,
+            result: offlineSize.result,
+            outputs: offlineSize.outputs,
+            network: offlineSize.network,
+          },
+          splitBookmarks: {
+            fileRows: offlineBookmarks.fileRows,
+            runLabel: offlineBookmarks.runLabel,
+            noUpload: offlineBookmarks.noUpload,
+            status: offlineBookmarks.status,
+            result: offlineBookmarks.result,
+            outputs: offlineBookmarks.outputs,
+            network: offlineBookmarks.network,
           },
         };
 

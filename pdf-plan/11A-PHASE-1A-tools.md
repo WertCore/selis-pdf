@@ -207,8 +207,13 @@ operation is available identically in the CLI, the web app, and the extension.
     pages returns one PDF in document order. Multi-output modes are capped at 64 PDF parts and add
     a deterministic owned ZIP bundle (`store`, flat validated names, fixed timestamp) so the batch
     is one download. Per-output rows carry pages, bytes, kind, and verdict; the aggregate
-    verification claims only page and annotation totals. By-size / by-bookmark modes and
-    resource-pruning measurement remain refinements.
+    verification claims only page and annotation totals. **By-size and by-bookmark modes shipped
+    2026-10-27** through the same Split workspace: the size target is entered in MB, converted to
+    bytes, and bounded by exact measured output sizes with deterministic greedy ranges (a
+    single-page part that cannot fit is marked over target rather than refused); bookmark split
+    uses top-level outline destinations, keeps front matter separate, and refuses an absent
+    outline or a split that would produce only one part. Resource-pruning measurement remains a
+    refinement.
 - [x] **SL-1A.TOOL.03 — Page operations** · deps: WRITE.02 · owner: AI+
   - **Do:** Rotate, delete, reorder, duplicate, and insert blank pages — as **incremental updates**
     where the input is a single document, so a 200 MB file rotates one page in milliseconds and
@@ -496,39 +501,44 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Done:** `selis-pdf-tools` owns the six operations over an in-memory backend and a native
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
-    capabilities/chunk_id`. The built chunk is 618 544 B raw with **0 imports**; after wasm-opt
-    and custom-section stripping it is 453 471 B raw / 150 313 B brotli.
+    capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
+    custom-section stripping it is 474 134 B raw / 156 334 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the six-tool chunk does not.
 - [x] **SL-4.TOOLS.02 — Tool-first page and six live tools**
   - **Done:** `/tools.html` (merge, split, rotate, delete, reorder, metadata), 1-based page input,
     drag/drop file selection, ordered merge list with ↑/↓, browser-native Blob preview and download,
     verification rows, responsive external CSS. **Split modes shipped 2026-10-27:** range, every N
-    pages, in half, and extract pages; multi-output runs render one row per PDF and a final
-    "Download all (.zip)" row. `xtask/browser/tools-page` drives a real merge and a real
-    split-every-1 leg in Edge, fetches every Blob, requires `%PDF-` headers, Pages `2 → 2` /
-    `3 → 3`, a `PK\x03\x04` ZIP header, and proves the no-upload assertion ran before each result
-    appeared — both online and after an offline reload.
-  - **Deferred within this task:** drag-to-reorder (buttons ship), target-size and bookmark split,
-    and the raster/forms/edit features in `34-TOOLS-SITE-ROADMAP.md`.
+    pages, in half, by target size, by bookmarks, and extract pages; multi-output runs render one
+    row per PDF and a final "Download all (.zip)" row. A two-page outlined fixture makes the size
+    target fail per part instead of silently widening: both one-page parts carry "over target" and
+    `data-over-target="true"` in the browser report. `xtask/browser/tools-page` drives real merge,
+    split-every-1, split-size, and split-bookmarks legs in Edge, fetches every Blob, requires
+    `%PDF-` headers, asserts one-page PDFs and ZIP headers for every multi-output leg, and proves
+    the no-upload assertion ran before each result appeared — both online and after an offline
+    reload.
+  - **Deferred within this task:** drag-to-reorder (buttons ship) and the raster/forms/edit
+    features in `34-TOOLS-SITE-ROADMAP.md`.
 - [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
   - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
     the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
-    builds it with the other chunks; budget 300 000 B brotli, current baseline 150 313 B. CI builds
+    builds it with the other chunks; budget 300 000 B brotli, current baseline 156 334 B. CI builds
     it in `test-fast` and `browser-check`.
 - [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
     raster/OCR, Phase 3 text/layout/convert, Phase 4 forms/security, Phase 5 editing, Phase 8
     AI/collaboration/verticals, Phase 9 compliance. No feature advertised before its phase gate.
-  - **Phase 1A.1 progress (2026-10-27):** split every N pages, split in half, extract pages, and
-    the owned multi-output ZIP bundle are live with per-output metadata and browser coverage.
-    Split by size, split by bookmarks, and the remaining object-graph tools stay unchecked.
+  - **Phase 1A.1 progress (2026-10-27):** split every N pages, split in half, split by target
+    size, split by bookmarks, extract pages, and the owned multi-output ZIP bundle are live with
+    per-output metadata, over-target reporting, and online/offline browser coverage. The remaining
+    object-graph tools stay unchecked.
 - [x] **SL-4.TOOLS.05 — Tools-page offline promotion**
   - **Done (2026-10-27):** `SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS` are one atomic
     install list; `CACHE_VERSION` is 2, so the old shell cache is purged. The tools page imports
     the same `sw-register` module as the viewer (copied into `/assets/host/`), and the browser
-    check proves the offline reload, merge, and split-every/ZIP path. Node tests cover the new
-    shell/runtime split, the offline tools navigation, all graph assets, and the unchanged
+    check proves the offline reload and the merge, split-every, split-size, and split-bookmarks
+    paths. Node tests cover the new shell/runtime split, the offline tools navigation, all graph
+    assets, and the unchanged
     invariant: the worker fetches only bodyless GETs from the declared list, and no document
     response is ever stored.
 
