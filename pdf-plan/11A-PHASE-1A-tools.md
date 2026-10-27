@@ -220,10 +220,14 @@ operation is available identically in the CLI, the web app, and the extension.
     keeps its signatures valid.
   - **DoD:** Rotating one page in a 200 MB document appends < 2 KB and meets the
     `03-CONVENTIONS.md §12` incremental-save budget.
-  - **Note:** Shipped as `selis rotate`/`delete`/`reorder` on the WRITE.01 full-rewrite path:
-    rotate adds to any existing `/Rotate` (mod 360) with page selection, delete refuses to remove
-    every page, reorder validates a full permutation. Duplicate/insert-blank and the incremental
-    (WRITE.02) path with its < 2 KB append budget are refinements pending the incremental writer.
+  - **Note:** Shipped as `selis rotate`/`delete`/`reorder` and the `duplicate-pages`/`insert-blank`
+    commands on the WRITE.01 full-rewrite path: rotate adds to any existing `/Rotate` (mod 360) with
+    page selection, delete refuses to remove every page, reorder validates a full permutation.
+    Duplicate places each selected page immediately after its original and carries content,
+    resources, annotations, forms/layers, and one tagged-structure owner; insert-blank takes a
+    1-based boundary (0 = before page 1, omit = append) and copies the neighbouring page's media box
+    and rotation, capped at 100 pages per request. The incremental (WRITE.02) path with its < 2 KB
+    append budget remains the refinement pending an incremental writer.
 - [x] **SL-1A.TOOL.04 — Unlock: remove password** · deps: WRITE.01, `SL-1.ENC.02` · owner: HUMAN
   - **Note:** Shipped as `selis unlock <input> --output <out> [--password <pw>]`
     (defaults to the empty user password). Opens via the engine, walks the
@@ -502,27 +506,30 @@ operation is available identically in the CLI, the web app, and the extension.
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
     capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
-    custom-section stripping it is 474 134 B raw / 156 334 B brotli.
+    custom-section stripping it is 485 741 B raw / 160 207 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the six-tool chunk does not.
 - [x] **SL-4.TOOLS.02 — Tool-first page and six live tools**
-  - **Done:** `/tools.html` (merge, split, rotate, delete, reorder, metadata), 1-based page input,
-    drag/drop file selection, ordered merge list with ↑/↓, browser-native Blob preview and download,
-    verification rows, responsive external CSS. **Split modes shipped 2026-10-27:** range, every N
-    pages, in half, by target size, by bookmarks, and extract pages; multi-output runs render one
-    row per PDF and a final "Download all (.zip)" row. A two-page outlined fixture makes the size
-    target fail per part instead of silently widening: both one-page parts carry "over target" and
-    `data-over-target="true"` in the browser report. `xtask/browser/tools-page` drives real merge,
-    split-every-1, split-size, and split-bookmarks legs in Edge, fetches every Blob, requires
-    `%PDF-` headers, asserts one-page PDFs and ZIP headers for every multi-output leg, and proves
-    the no-upload assertion ran before each result appeared — both online and after an offline
-    reload.
+  - **Done:** `/tools.html` (merge, split, rotate, delete, organize pages, metadata), 1-based page
+    input, drag/drop file selection, ordered merge list with ↑/↓, browser-native Blob preview and
+    download, verification rows, responsive external CSS. **Split modes shipped 2026-10-27:**
+    range, every N pages, in half, by target size, by bookmarks, and extract pages; multi-output
+    runs render one row per PDF and a final "Download all (.zip)" row. A two-page outlined fixture
+    makes the size target fail per part instead of silently widening: both one-page parts carry
+    "over target" and `data-over-target="true"` in the browser report. `xtask/browser/tools-page`
+    drives real merge, split-every-1, split-size, and split-bookmarks legs in Edge, fetches every
+    Blob, requires `%PDF-` headers, asserts one-page PDFs and ZIP headers for every multi-output
+    leg, and proves the no-upload assertion ran before each result appeared. **Page organization
+    shipped 2026-10-27:** the existing reorder workspace now has reorder, duplicate, and
+    insert-blank modes over one wire operation. The same harness drives duplicate and blank
+    insertion online and offline, asserts one PDF named `outlined-duplicated.pdf` /
+    `outlined-blanks.pdf`, and proves Pages `2 → 3` for both.
   - **Deferred within this task:** drag-to-reorder (buttons ship) and the raster/forms/edit
     features in `34-TOOLS-SITE-ROADMAP.md`.
 - [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
   - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
     the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
-    builds it with the other chunks; budget 300 000 B brotli, current baseline 156 334 B. CI builds
+    builds it with the other chunks; budget 300 000 B brotli, current baseline 160 207 B. CI builds
     it in `test-fast` and `browser-check`.
 - [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2

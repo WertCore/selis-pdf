@@ -746,11 +746,171 @@ fn check_split_leg(leg: &Json, label: &str, expected: &SplitExpectation) -> Resu
     Ok(())
 }
 
-/// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split
-/// modes): the real `/tools.html` merges two PDFs and splits a three-page PDF
-/// one page at a time online, then the harness cuts the origin, reloads the
-/// same page, and repeats both runs with every byte coming from the worker's
-/// cache.
+/// One page-organization leg: a duplicate or blank insertion run against the
+/// two-page outlined fixture. Both add exactly one page and produce one PDF.
+fn check_organize_leg(leg: &Json, label: &str, expected_name: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} organize run did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} organize run never set data-no-upload=verified; the local request check \
+             did not pass"
+        ));
+    }
+    let run_label = string_field(leg, "runLabel")?;
+    if run_label != "Organize pages" {
+        return Err(format!(
+            "the {label} organize button was labelled {run_label:?}, expected \"Organize pages\""
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} organize status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} organize run reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} organize result was named {:?}, expected {expected_name:?}",
+            result.get("title")
+        ));
+    }
+    let meta = result
+        .get("meta")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} organize result had no summary"))?;
+    if !meta.contains("1 file") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} organize summary did not describe one verified file (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} organize result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "2 \u{2192} 3" {
+        return Err(format!(
+            "the {label} organize run reported Pages {:?}, expected \"2 \u{2192} 3\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} organize run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} organize run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} organize run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = &outputs[0];
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} organize output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} organize output was named {:?}, expected {expected_name:?}",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the {label} organize output reported {:?} pages, expected 3",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} organize output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} organize output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} organize download was named {:?}, expected {expected_name:?}",
+            output.get("downloadName")
+        ));
+    }
+    let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if bytes <= 500 {
+        return Err(format!(
+            "the {label} organize PDF is only {bytes} bytes; a two-page result should be larger"
+        ));
+    }
+    let top_output = leg
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} organize run exposed no selected PDF"))?;
+    if top_output.get("name").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} organize result exposed {:?}, expected {expected_name:?}",
+            top_output.get("name")
+        ));
+    }
+    if top_output.get("downloadName").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} organize result download was named {:?}, expected {expected_name:?}",
+            top_output.get("downloadName")
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} organize run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} organize run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} organize run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
+/// page-organization modes): the real `/tools.html` merges two PDFs, splits a
+/// three-page PDF one page at a time, duplicates a page, and inserts a blank
+/// page online, then the harness cuts the origin, reloads the same page, and
+/// repeats those runs with every byte coming from the worker's cache.
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
@@ -765,11 +925,13 @@ fn check_split_leg(leg: &Json, label: &str, expected: &SplitExpectation) -> Resu
 /// * the size leg measures the outlined fixture against a 1 KiB target and
 ///   shows two over-target PDFs plus the ZIP, while the bookmark leg shows two
 ///   bookmark-bounded PDFs with no over-target flag;
+/// * the duplicate leg and the blank-page leg each add one page to the outlined
+///   fixture, naming the one PDF result and proving page mode dispatch;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
-/// * the offline leg repeats the card grid, merge, every-size-bookmark splits
-///   after the origin has answered 503, while the page is worker-controlled and
-///   still sees zero foreign resources.
+/// * the offline leg repeats the card grid, merge, every-size-bookmark splits,
+///   and both organize runs after the origin has answered 503, while the page is
+///   worker-controlled and still sees zero foreign resources.
 ///
 /// The last two points are why the page cannot pass on a fixture: the fixture
 /// would not fetch the real module graph, and a page that silently skipped the
@@ -919,6 +1081,19 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     })?;
     check_split_leg(split_bookmarks, "online bookmarks", &SPLIT_BOOKMARKS)?;
 
+    // Phase 1A.1 continuation: the same Organize pages workspace adds one
+    // duplicate and one blank page to the two-page outlined fixture. The
+    // result page count is the proof that the mode dispatch reached the real
+    // backend, not just that the controls rendered.
+    let duplicate = report
+        .get("duplicate")
+        .ok_or_else(|| "the page reported no duplicate page leg (duplicate = None)".to_string())?;
+    check_organize_leg(duplicate, "online duplicate", "outlined-duplicated.pdf")?;
+    let blanks = report
+        .get("blanks")
+        .ok_or_else(|| "the page reported no blank-page leg (blanks = None)".to_string())?;
+    check_organize_leg(blanks, "online blank pages", "outlined-blanks.pdf")?;
+
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
     // module, never reaches the card grid: the harness gets the worker's 503.
@@ -1054,6 +1229,18 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline bookmarks",
         &SPLIT_BOOKMARKS,
     )?;
+    let offline_duplicate = offline.get("duplicate").ok_or_else(|| {
+        "the offline leg reported no duplicate-page result (duplicate = None)".to_string()
+    })?;
+    check_organize_leg(
+        offline_duplicate,
+        "offline duplicate",
+        "outlined-duplicated.pdf",
+    )?;
+    let offline_blanks = offline.get("blanks").ok_or_else(|| {
+        "the offline leg reported no blank-page result (blanks = None)".to_string()
+    })?;
+    check_organize_leg(offline_blanks, "offline blank pages", "outlined-blanks.pdf")?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -4699,6 +4886,48 @@ mod tests {
         )
     }
 
+    /// A duplicate or blank-insertion leg shared by the online and offline
+    /// halves of the tools-page report. Both add one page to the two-page
+    /// outlined fixture and produce one PDF.
+    fn real_tools_organize_leg(name: &str) -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": name,
+            "pages": 3,
+            "declaredBytes": 780,
+            "bytes": 780,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": name,
+            "header": "%PDF-",
+            "zip": false,
+            "overTarget": false,
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Organize pages",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": name,
+                "meta": "1 file \u{00b7} 780 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "2 \u{2192} 3" },
+                    { "label": "Annotations", "value": "0 \u{2192} 0" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
     /// a real merge and a split-every run. The numbers are representative; the
     /// assertions are about the shape and the claims, not about a particular
@@ -4747,6 +4976,8 @@ mod tests {
             "split": real_tools_split_leg(),
             "splitSize": real_tools_size_split_leg(),
             "splitBookmarks": real_tools_bookmark_split_leg(),
+            "duplicate": real_tools_organize_leg("outlined-duplicated.pdf"),
+            "blanks": real_tools_organize_leg("outlined-blanks.pdf"),
             "sw": {
                 "registration": "registered",
                 "script": "http://127.0.0.1:1234/sw.js",
@@ -4796,6 +5027,8 @@ mod tests {
                 "split": real_tools_split_leg(),
                 "splitSize": real_tools_size_split_leg(),
                 "splitBookmarks": real_tools_bookmark_split_leg(),
+                "duplicate": real_tools_organize_leg("outlined-duplicated.pdf"),
+                "blanks": real_tools_organize_leg("outlined-blanks.pdf"),
             },
         })
     }
@@ -5004,6 +5237,46 @@ mod tests {
         assert!(
             verdict_tools_page(&offline_no_split).is_err(),
             "an online-only split must not pass the offline gate"
+        );
+
+        let mut no_duplicate = report.clone();
+        no_duplicate
+            .as_object_mut()
+            .expect("report object")
+            .remove("duplicate");
+        assert!(
+            verdict_tools_page(&no_duplicate).is_err(),
+            "a run that never duplicated a page must not pass the Phase 1A.1 organize gate"
+        );
+
+        let mut duplicate_wrong_pages = report.clone();
+        *duplicate_wrong_pages
+            .pointer_mut("/duplicate/result/rows/0/value")
+            .unwrap() = json!("2 \u{2192} 2");
+        assert!(
+            verdict_tools_page(&duplicate_wrong_pages).is_err(),
+            "a duplicate run that did not add a page must not pass"
+        );
+
+        let mut blank_wrong_name = report.clone();
+        *blank_wrong_name
+            .pointer_mut("/blanks/output/downloadName")
+            .unwrap() = json!("outlined-duplicated.pdf");
+        assert!(
+            verdict_tools_page(&blank_wrong_name).is_err(),
+            "a blank-page download with the wrong name must not pass"
+        );
+
+        let mut offline_no_duplicate = report.clone();
+        offline_no_duplicate
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("duplicate");
+        assert!(
+            verdict_tools_page(&offline_no_duplicate).is_err(),
+            "an online-only duplicate must not pass the offline organize gate"
         );
     }
 

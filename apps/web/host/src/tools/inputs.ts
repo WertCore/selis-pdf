@@ -82,6 +82,23 @@ export function pageCount(input: string, label: string): number {
 }
 
 /**
+ * Parse a page boundary where `0` is meaningful: it names the position before
+ * the first page, `1` the position after page 1, and so on. Used by the
+ * insert-blank field; an empty field is handled by the caller as "append".
+ */
+export function pageBoundary(input: string, label: string): number {
+	const trimmed = input.trim();
+	if (!/^[0-9]+$/.test(trimmed)) {
+		throw new ToolInputError(`${label} must be a whole number, 0 or greater`);
+	}
+	const value = Number(trimmed);
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw new ToolInputError(`${label} is outside the supported range`);
+	}
+	return value;
+}
+
+/**
  * Convert a fractional megabyte target to the exact byte count the
  * split-by-size option expects. A megabyte here is 1024 × 1024 bytes, matching
  * the size the page displays for files; the result must still be a safe JSON

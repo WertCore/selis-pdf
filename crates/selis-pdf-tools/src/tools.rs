@@ -1151,10 +1151,58 @@ fn reconcile_single_input(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(), String> {
+    let new_idx_by_old = output_index_by_source(kept);
+    reconcile_single_input_mapped(
+        out,
+        src,
+        doc,
+        all_pages,
+        kept,
+        &new_idx_by_old,
+        carry_metadata,
+        budget,
+        g,
+    )
+}
+
+/// The output index of each source page's first occurrence.
+///
+/// Reorder and delete have one output per source page, so this is simply a
+/// permutation/injection. Duplicate-page plans deliberately repeat a source
+/// page; destinations and labels then point at the first copy, while the
+/// later copies remain independently visible pages.
+fn output_index_by_source(kept: &[KeptPage]) -> std::collections::HashMap<usize, usize> {
+    let mut map = std::collections::HashMap::new();
+    for (new_idx, (old_idx, _, _)) in kept.iter().enumerate() {
+        map.entry(*old_idx).or_insert(new_idx);
+    }
+    map
+}
+
+/// Reconcile against an explicit source-to-output page map.
+///
+/// `new_idx_by_old` is separate from `kept` because duplicate and blank-page
+/// plans change the output page count without changing the source page count.
+/// It maps each source page to its first output occurrence; source pages that
+/// were removed are absent.
+#[allow(clippy::too_many_arguments)]
+fn reconcile_single_input_mapped(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    all_pages: &[Ref],
+    kept: &[KeptPage],
+    new_idx_by_old: &std::collections::HashMap<usize, usize>,
+    carry_metadata: bool,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
     use selis_pdf_cos::reconcile as rec;
 
-    let page_map: std::collections::HashMap<u32, Ref> =
-        kept.iter().map(|(_, old, new)| (*old, *new)).collect();
+    let mut page_map: std::collections::HashMap<u32, Ref> = std::collections::HashMap::new();
+    for (_, old, new) in kept {
+        page_map.entry(*old).or_insert(*new);
+    }
     let deleted: std::collections::HashSet<u32> = all_pages
         .iter()
         .map(|r| r.num)
@@ -1196,17 +1244,12 @@ fn reconcile_single_input(
     }
 
     // Page labels: re-keyed at the surviving pages' new indices.
-    let mut new_idx_by_old: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
-    for (new_idx, (old_idx, _, _)) in kept.iter().enumerate() {
-        new_idx_by_old.insert(*old_idx, new_idx);
-    }
     if let Some(labels) =
         rec::catalog_entry(src, doc, b"PageLabels", budget, g).map_err(|e| e.to_string())?
     {
         let labels = resolve_shallow(src, doc, labels, budget, g);
         if let Ok(pairs) = rec::number_tree_pairs(&labels, src, doc, budget, g) {
-            let remapped = remap_page_label_keys(&pairs, &new_idx_by_old, all_pages.len());
+            let remapped = remap_page_label_keys(&pairs, new_idx_by_old, all_pages.len());
             if !remapped.is_empty() {
                 let tree = rec::merge_number_trees(&[(remapped, 0)]);
                 let num = out.allocate();
@@ -2141,8 +2184,16 @@ fn carry_struct_tree_single(
     }
 
     // Kept pages retain their struct-parents ids (single input: no shift).
+    // A duplicated source page appears more than once in `kept`; only its first
+    // output copy owns the original tagged structure, because the structure
+    // tree still points at that copy. Reusing the id on a later duplicate would
+    // name a parent-tree entry anchored at another page.
     let mut kept_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut tagged_pages: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for (_, old_num, new_ref) in kept {
+        if !tagged_pages.insert(*old_num) {
+            continue;
+        }
         let page = resolve_shallow(src, doc, Obj::Ref(Ref::new(*old_num, 0)), budget, g);
         let Obj::Dict(pp) = &page else { continue };
         let Some(sp) = pp
@@ -3113,10 +3164,21 @@ fn copy_page(
     g: &mut BudgetGuard<'_>,
     _next_num: &mut u32,
 ) -> Result<Ref, String> {
-    copy_page_extra(merged, src, page_ref, budget, g, _next_num, Vec::new())
+    copy_page_inner(
+        merged,
+        src,
+        page_ref,
+        budget,
+        g,
+        _next_num,
+        Vec::new(),
+        true,
+    )
 }
 
-/// Copy a leaf page with extra page-dictionary entries appended.
+/// Copy a leaf page with caller-supplied page-dictionary entries appended.
+/// The caller owns the rotation entry (the rotate operation computes the new
+/// value), so this path does not copy the source `/Rotate` automatically.
 #[allow(unused_variables)]
 fn copy_page_extra(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
@@ -3127,6 +3189,20 @@ fn copy_page_extra(
     _next_num: &mut u32,
     extra: Vec<(Vec<u8>, Obj)>,
 ) -> Result<Ref, String> {
+    copy_page_inner(merged, src, page_ref, budget, g, _next_num, extra, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_page_inner(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    page_ref: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    _next_num: &mut u32,
+    extra: Vec<(Vec<u8>, Obj)>,
+    preserve_rotation: bool,
+) -> Result<Ref, String> {
     let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
         .map_err(|e| format!("cannot open: {e}"))?;
@@ -3135,7 +3211,7 @@ fn copy_page_extra(
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
     let _ = rev;
-    let (media, content_refs, resources, _rotate, annots) =
+    let (media, content_refs, resources, rotate, annots) =
         page_info(src, &doc, page_ref, budget, g)?;
     let (objects, remap) =
         selis_pdf_cos::copy::collect_objects(src, &content_refs, merged.next_num_mut(), budget, g)
@@ -3148,9 +3224,13 @@ fn copy_page_extra(
         .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
         .collect();
     let new_resources = materialize_resources(merged, src, resources, budget, g)?;
-    // Carry the page's annotations (WRITE.03 DoD) alongside the caller's extra
-    // page-dictionary entries.
+    // Page order must not change how a page is read, so a plain copy keeps
+    // its rotation. The rotate operation supplies its own computed value and
+    // opts out to avoid writing `/Rotate` twice.
     let mut extra = extra;
+    if preserve_rotation {
+        extra.extend(rotate_extra(rotate));
+    }
     if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
@@ -3542,11 +3622,112 @@ pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<Verific
     Ok(verification)
 }
 
+/// One page in an output plan: a copy of a source page, or a blank page whose
+/// media box and rotation come from a source template page.
+enum PlannedPage {
+    /// Copy source page `index` (zero-based) into the output.
+    Source(usize),
+    /// Add a blank page using source page `template` for `/MediaBox` and
+    /// `/Rotate`.
+    Blank { template: usize },
+}
+
+/// Build one output from an explicit source-page plan.
+///
+/// Unlike the older one-to-one selection helpers, a plan may repeat a source
+/// page (duplicate) or add pages with no source counterpart (blank). The
+/// output-to-source map used by reconciliation is therefore derived from the
+/// actual plan, with the first occurrence winning for destinations and labels.
+#[allow(clippy::too_many_arguments)]
+fn rewrite_with_plan(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    plan: &[PlannedPage],
+    output: &str,
+    action: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    let mut new_idx_by_old: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut annotation_pages: Vec<Ref> = Vec::new();
+    let mut blank_templates: std::collections::HashMap<usize, ((f64, f64), i64)> =
+        std::collections::HashMap::new();
+
+    for (new_idx, planned) in plan.iter().enumerate() {
+        match *planned {
+            PlannedPage::Source(idx) => {
+                let page_ref = page_refs
+                    .get(idx)
+                    .copied()
+                    .ok_or_else(|| CliError(format!("page {idx} out of range")))?;
+                let merged_ref = copy_page(&mut out, src, page_ref, budget, g, &mut next_num)
+                    .map_err(|e| CliError(format!("{path}: {e}")))?;
+                kept.push((idx, page_ref.num, merged_ref));
+                new_idx_by_old.entry(idx).or_insert(new_idx);
+                annotation_pages.push(page_ref);
+            }
+            PlannedPage::Blank { template } => {
+                let (media, rotate) = if let Some(spec) = blank_templates.get(&template) {
+                    *spec
+                } else {
+                    let template_ref = page_refs.get(template).copied().ok_or_else(|| {
+                        CliError(format!("blank-page template page {template} out of range"))
+                    })?;
+                    let (media, _, _, rotate, _) = page_info(src, doc, template_ref, budget, g)
+                        .map_err(|e| CliError(format!("{path}: {e}")))?;
+                    let spec = (media, rotate);
+                    blank_templates.insert(template, spec);
+                    spec
+                };
+                out.add_page_with_extra(media.0, media.1, &[], None, rotate_extra(rotate));
+            }
+        }
+    }
+
+    // WRITE.07: catalog-level structures carry through the rewrite; page
+    // labels re-key at the new indices, destinations remap at the pages.
+    reconcile_single_input_mapped(
+        &mut out,
+        src,
+        doc,
+        page_refs,
+        &kept,
+        &new_idx_by_old,
+        true,
+        budget,
+        g,
+    )
+    .map_err(CliError)?;
+    // Duplicated pages repeat their annotations, so the expectation is the
+    // exact total over the planned source pages, not the input's total.
+    let annotations = annots_on_pages(src, doc, &annotation_pages, budget, g);
+    let verification = write_document(
+        out,
+        output,
+        Some(src),
+        PRESERVE_ALL,
+        Some(u64::try_from(plan.len()).unwrap_or(u64::MAX)),
+        Some(annotations),
+        in_bytes,
+        budget,
+        g,
+    )?;
+    eprintln!("{action} -> {output}");
+    verification.emit_line();
+    Ok(verification)
+}
+
 /// Reorder the pages of a PDF (SL-1A.TOOL.03). `order` is a permutation such
 /// as `2,0,1` or `3-5,0-2`. Returns the operation's verification display.
 pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<Verification> {
     let src = read_file(path)?;
-    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
     let clock = crate::shell_clock();
     let mut g = crate::runtime::cli_guard(&budget, &clock);
@@ -3557,38 +3738,107 @@ pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<Verifi
         page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let order =
         parse_page_order(order, page_refs.len()).map_err(|e| CliError(format!("{path}: {e}")))?;
-    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
-    let mut next_num = 3u32;
-    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
-    for idx in &order {
-        let page_ref = page_refs
-            .get(*idx)
-            .copied()
-            .ok_or_else(|| CliError(format!("page {idx} out of range")))?;
-        let merged_ref = copy_page(&mut out, &src, page_ref, &budget, &mut g, &mut next_num)
-            .map_err(|e| CliError(format!("{path}: {e}")))?;
-        kept.push((*idx, page_ref.num, merged_ref));
-    }
-    // WRITE.07: catalog-level structures carry through the rewrite; page
-    // labels re-key at the new indices, destinations remap at the pages.
-    reconcile_single_input(
-        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    let plan: Vec<PlannedPage> = order.into_iter().map(PlannedPage::Source).collect();
+    let action = format!("reordered {} page(s)", plan.len());
+    rewrite_with_plan(
+        path, &src, &doc, &page_refs, &plan, output, &action, &budget, &mut g,
     )
-    .map_err(CliError)?;
-    let verification = write_document(
-        out,
-        output,
-        Some(&src),
-        PRESERVE_ALL,
-        Some(u64::try_from(order.len()).unwrap_or(u64::MAX)),
-        None,
-        in_bytes,
-        &budget,
-        &mut g,
-    )?;
-    eprintln!("reordered {} page(s) -> {output}", order.len());
-    verification.emit_line();
-    Ok(verification)
+}
+
+/// Duplicate each selected page immediately after its original (SL-1A.TOOL.03).
+///
+/// The selection is zero-based (`0,2,5-7`), matching the CLI's other page
+/// operations. Each page is copied once, in source order, even if the selection
+/// repeats an index. Content, resources, and annotations travel with the copy.
+pub(crate) fn duplicate_pages(path: &str, pages: &str, output: &str) -> CliResult<Verification> {
+    let src = read_file(path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected = parse_page_selection(pages, page_refs.len())
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected_count = selected.len();
+    let selected: std::collections::HashSet<usize> = selected.into_iter().collect();
+    let mut plan = Vec::with_capacity(page_refs.len().saturating_add(selected_count));
+    for idx in 0..page_refs.len() {
+        plan.push(PlannedPage::Source(idx));
+        if selected.contains(&idx) {
+            plan.push(PlannedPage::Source(idx));
+        }
+    }
+    let action = format!("duplicated {selected_count} page(s)");
+    rewrite_with_plan(
+        path, &src, &doc, &page_refs, &plan, output, &action, &budget, &mut g,
+    )
+}
+
+/// Insert blank pages into a PDF (SL-1A.TOOL.03).
+///
+/// `after` is the 1-based page after which the blanks go; `0` inserts before
+/// the first page and `None` appends. Every blank page uses the template page's
+/// media box and rotation: the page at `after - 1`, or the first page when
+/// `after == 0`, or the last page when appending. At most
+/// [`crate::MAX_BLANK_PAGES`] pages may be added per request.
+pub(crate) fn insert_blank_pages(
+    path: &str,
+    after: Option<usize>,
+    count: usize,
+    output: &str,
+) -> CliResult<Verification> {
+    if count == 0 {
+        return Err(CliError("insert at least one blank page".to_string()));
+    }
+    if count > crate::MAX_BLANK_PAGES {
+        return Err(CliError(format!(
+            "at most {} blank pages can be inserted at once",
+            crate::MAX_BLANK_PAGES
+        )));
+    }
+    let src = read_file(path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    if page_refs.is_empty() {
+        return Err(CliError(format!("{path}: document has no pages")));
+    }
+    let after = after.unwrap_or(page_refs.len());
+    if after > page_refs.len() {
+        return Err(CliError(format!(
+            "{path}: insert position {after} is out of range (document has {} pages; use 0 to insert before the first page)",
+            page_refs.len()
+        )));
+    }
+    let template = after
+        .saturating_sub(1)
+        .min(page_refs.len().saturating_sub(1));
+    let mut plan = Vec::with_capacity(page_refs.len().saturating_add(count));
+    for idx in 0..page_refs.len() {
+        if idx == after {
+            for _ in 0..count {
+                plan.push(PlannedPage::Blank { template });
+            }
+        }
+        plan.push(PlannedPage::Source(idx));
+    }
+    if after == page_refs.len() {
+        for _ in 0..count {
+            plan.push(PlannedPage::Blank { template });
+        }
+    }
+    let action = format!("inserted {count} blank page(s) after page {after}");
+    rewrite_with_plan(
+        path, &src, &doc, &page_refs, &plan, output, &action, &budget, &mut g,
+    )
 }
 
 /// Total `/Annots` items across a subset of pages (used by split/delete:
@@ -4523,6 +4773,283 @@ mod tests {
         let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
         let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
         u64::try_from(refs.len()).unwrap()
+    }
+
+    /// A three-page document with page labels, one outline item on page 2,
+    /// and one annotation on that page. Its middle page is 200×300 and
+    /// rotated 90°, so blank-page placement can be checked against a
+    /// non-default template.
+    fn labeled_outlined_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (
+                1,
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /PageLabels 12 0 R >>\nendobj\n",
+            ),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (
+                4,
+                b"4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 8 0 R /Rotate 90 /Annots [13 0 R] >>\nendobj\n",
+            ),
+            (
+                5,
+                b"5 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 8 0 R >>\nendobj\n",
+            ),
+            (8, b"8 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                10,
+                b"10 0 obj\n<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>\nendobj\n",
+            ),
+            (
+                11,
+                b"11 0 obj\n<< /Title (Second) /Parent 10 0 R /Dest [4 0 R /Fit] >>\nendobj\n",
+            ),
+            (12, b"12 0 obj\n<< /Nums [0 << /S /r >> 2 << /S /D >>] >>\nendobj\n"),
+            (
+                13,
+                b"13 0 obj\n<< /Type /Annot /Subtype /Square /Rect [10 10 50 50] >>\nendobj\n",
+            ),
+        ];
+        numbered_source(numbered)
+    }
+
+    /// (media box, rotation, whether content streams are present, annotation
+    /// count) for every output page, in page-tree order.
+    fn page_summaries(path: &std::path::Path) -> Vec<((f64, f64), i64, bool, usize)> {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        refs.iter()
+            .map(|page_ref| {
+                let (media, contents, _, rotate, annots) =
+                    super::page_info(&bytes, &doc, *page_ref, &budget, &mut g).expect("page info");
+                let annot_count = match annots {
+                    Some(Obj::Ref(r)) => {
+                        match super::resolve_ref_obj(&bytes, &doc, r, &budget, &mut g)
+                            .unwrap_or(Obj::Null)
+                        {
+                            Obj::Array(items) => items.len(),
+                            _ => 0,
+                        }
+                    }
+                    Some(Obj::Array(items)) => items.len(),
+                    _ => 0,
+                };
+                (media, rotate, !contents.is_empty(), annot_count)
+            })
+            .collect()
+    }
+
+    /// The output page index an outline item's `/Dest` points at.
+    fn outline_target_page(path: &std::path::Path) -> usize {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
+        let page_refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        let resolve = |r: Ref, g: &mut _| {
+            selis_pdf_cos::copy::resolve_ref(&bytes, &doc, r, &budget, g).expect("resolve")
+        };
+        let root_ref = doc
+            .revisions()
+            .iter()
+            .rev()
+            .find_map(|rev| rev.root)
+            .expect("trailer root");
+        let catalog = resolve(root_ref, &mut g);
+        let outlines_ref = match dict_entry(pairs_of(&catalog), b"Outlines").expect("/Outlines") {
+            Obj::Ref(r) => *r,
+            _ => panic!("outline root ref"),
+        };
+        let outlines = resolve(outlines_ref, &mut g);
+        let first_ref = match dict_entry(pairs_of(&outlines), b"First").expect("/First") {
+            Obj::Ref(r) => *r,
+            _ => panic!("outline item ref"),
+        };
+        let first = resolve(first_ref, &mut g);
+        let dest = dict_entry(pairs_of(&first), b"Dest").expect("/Dest");
+        let target = match dest {
+            Obj::Array(items) => match items.first() {
+                Some(Obj::Ref(r)) => r.num,
+                _ => panic!("outline destination page"),
+            },
+            _ => panic!("outline destination array"),
+        };
+        page_refs
+            .iter()
+            .position(|r| r.num == target)
+            .expect("outline destination is a page")
+    }
+
+    #[test]
+    fn duplicate_pages_places_copies_after_originals_and_remaps_structures() {
+        let dir = temp_dir("duplicate-pages");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+        let verification =
+            super::duplicate_pages(input.to_str().unwrap(), "1,1", output.to_str().unwrap())
+                .expect("duplicate");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_in, Some(3));
+        assert_eq!(verification.pages_out, 4);
+        assert_eq!(verification.annotations_in, Some(1));
+        assert_eq!(verification.annotations_out, 2);
+        assert_eq!(verification.outline_entries_out, 1);
+        assert!(verification.checked.contains(&"annotations"));
+        assert_eq!(pages_in_file(&output), 4);
+
+        let pages = page_summaries(&output);
+        assert_eq!(pages.len(), 4);
+        assert_eq!(pages[0].0, (100.0, 100.0));
+        assert_eq!(pages[1].0, (200.0, 300.0));
+        assert_eq!(pages[1].1, 90);
+        assert_eq!(pages[2].0, (200.0, 300.0));
+        assert_eq!(pages[2].1, 90);
+        assert_eq!(pages[3].0, (100.0, 100.0));
+        assert_eq!(pages[1].3, 1);
+        assert_eq!(pages[2].3, 1);
+        assert_eq!(
+            outline_target_page(&output),
+            1,
+            "the bookmark targets the first copy"
+        );
+
+        let out_bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&out_bytes);
+        assert!(
+            text.contains("[0 <</S /r>> 3 <</S /D>>]"),
+            "labels re-key around the duplicate: {text}"
+        );
+    }
+
+    #[test]
+    fn insert_blank_pages_uses_the_boundary_template_and_remaps_structures() {
+        let dir = temp_dir("insert-blank-middle");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+        let verification = super::insert_blank_pages(
+            input.to_str().unwrap(),
+            Some(2),
+            2,
+            output.to_str().unwrap(),
+        )
+        .expect("insert blanks");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_in, Some(3));
+        assert_eq!(verification.pages_out, 5);
+        assert_eq!(verification.annotations_out, 1);
+        assert_eq!(pages_in_file(&output), 5);
+
+        let pages = page_summaries(&output);
+        assert_eq!(pages.len(), 5);
+        assert_eq!(pages[0].0, (100.0, 100.0));
+        assert_eq!(pages[1].0, (200.0, 300.0));
+        assert_eq!(pages[1].1, 90);
+        assert!(pages[1].2, "the original page keeps its content");
+        assert_eq!(pages[1].3, 1);
+        assert_eq!(pages[2].0, (200.0, 300.0));
+        assert_eq!(pages[2].1, 90);
+        assert!(!pages[2].2, "inserted page has no content");
+        assert_eq!(pages[3].0, (200.0, 300.0));
+        assert_eq!(pages[3].1, 90);
+        assert!(!pages[3].2, "second inserted page has no content");
+        assert_eq!(pages[4].0, (100.0, 100.0));
+        assert_eq!(
+            outline_target_page(&output),
+            1,
+            "the bookmark stays on its original page before the insertion"
+        );
+
+        let out_bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&out_bytes);
+        assert!(
+            text.contains("[0 <</S /r>> 4 <</S /D>>]"),
+            "labels re-key after inserted pages: {text}"
+        );
+    }
+
+    #[test]
+    fn insert_blank_pages_supports_start_and_append_boundaries() {
+        let dir = temp_dir("insert-blank-ends");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+
+        let start = dir.join("start.pdf");
+        let verification =
+            super::insert_blank_pages(input.to_str().unwrap(), Some(0), 1, start.to_str().unwrap())
+                .expect("insert at start");
+        assert_eq!(verification.pages_out, 4);
+        let pages = page_summaries(&start);
+        assert_eq!(pages[0].0, (100.0, 100.0));
+        assert!(!pages[0].2);
+        assert_eq!(pages[1].0, (100.0, 100.0));
+        assert_eq!(pages[3].0, (100.0, 100.0));
+        assert_eq!(outline_target_page(&start), 2);
+
+        let end = dir.join("end.pdf");
+        let verification =
+            super::insert_blank_pages(input.to_str().unwrap(), None, 1, end.to_str().unwrap())
+                .expect("append blank");
+        assert_eq!(verification.pages_out, 4);
+        let pages = page_summaries(&end);
+        assert_eq!(pages[3].0, (100.0, 100.0));
+        assert!(!pages[3].2);
+        assert_eq!(outline_target_page(&end), 1);
+    }
+
+    #[test]
+    fn insert_blank_pages_rejects_invalid_counts_and_boundaries() {
+        let dir = temp_dir("insert-blank-invalid");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+        let output = dir.join("out.pdf");
+        let path = input.to_str().unwrap();
+        let out = output.to_str().unwrap();
+
+        let error = super::insert_blank_pages(path, Some(1), 0, out).expect_err("zero count");
+        assert!(error.0.contains("at least one"));
+        let error = super::insert_blank_pages(path, Some(1), crate::MAX_BLANK_PAGES + 1, out)
+            .expect_err("too many blanks");
+        assert!(error.0.contains("at most"));
+        let error = super::insert_blank_pages(path, Some(4), 1, out).expect_err("bad boundary");
+        assert!(error.0.contains("out of range"));
+    }
+
+    #[test]
+    fn duplicate_pages_preserves_forms_and_keeps_one_tagged_parent() {
+        let dir = temp_dir("duplicate-forms");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, formed_tagged_source()).expect("write input");
+        let verification =
+            super::duplicate_pages(input.to_str().unwrap(), "0", output.to_str().unwrap())
+                .expect("duplicate tagged page");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_out, 2);
+        assert_eq!(verification.fields_in, Some(1));
+        assert_eq!(verification.fields_out, 1);
+        assert_eq!(verification.ocgs_out, 1);
+        assert_eq!(pages_in_file(&output), 2);
+        let out_bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&out_bytes);
+        assert_eq!(text.matches("/Type /StructTreeRoot").count(), 1);
+        assert_eq!(
+            text.matches("/StructParents").count(),
+            1,
+            "the duplicate does not reuse the first copy's parent-tree id: {text}"
+        );
     }
 
     #[test]

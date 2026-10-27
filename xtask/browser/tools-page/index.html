@@ -22,8 +22,8 @@
       // different claims (SL-4.TOOLS.05):
       //
       //   1. load the real page, wait for its own worker registration to claim
-      //      it, then merge two PDFs and run the split-every, split-size, and
-      //      split-bookmark modes against the real page controls;
+      //      it, then merge two PDFs, run the split-every, split-size, and
+      //      split-bookmark modes, duplicate a page, and insert a blank page;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -306,9 +306,67 @@
         };
       }
 
+      async function organizeInFrame(frame, fixture, fixtureName, label, organizeMode, inputs) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const organize = doc.querySelector('[data-tool="reorder"]');
+        if (!organize) throw new Error("the page offered no Organize pages card");
+        organize.click();
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the organize workspace (" + label + ")",
+        );
+
+        const mode = doc.getElementById("option-mode");
+        mode.value = organizeMode;
+        mode.dispatchEvent(new win.Event("change", { bubbles: true }));
+        for (const [key, value] of Object.entries(inputs)) {
+          const field = doc.getElementById("option-" + key);
+          if (!field) throw new Error("the organize page offered no " + key + " field");
+          field.value = String(value);
+          field.dispatchEvent(new win.Event("input", { bubbles: true }));
+        }
+
+        const fileRows = await attachFiles(frame, fixture, fixtureName, label, 1);
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the Organize button to enable (" + label + ")");
+        const runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the organize result and the no-upload assertion (" + label + ")",
+        );
+
+        const read = await readResult(frame, label);
+        return {
+          win,
+          fileRows,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+        };
+      }
+
       const watchdog = setTimeout(
-        () => fail(new Error("the tools page did not finish inside 50s")),
-        50_000,
+        () => fail(new Error("the tools page did not finish inside 90s")),
+        90_000,
       );
 
       (async () => {
@@ -424,6 +482,44 @@
           network: onlineBookmarks.network,
         };
 
+        const onlineDuplicate = await organizeInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online duplicate",
+          "duplicate",
+          { pages: "1" },
+        );
+        out.duplicate = {
+          fileRows: onlineDuplicate.fileRows,
+          runLabel: onlineDuplicate.runLabel,
+          noUpload: onlineDuplicate.noUpload,
+          status: onlineDuplicate.status,
+          result: onlineDuplicate.result,
+          outputs: onlineDuplicate.outputs,
+          output: onlineDuplicate.output,
+          network: onlineDuplicate.network,
+        };
+
+        const onlineBlanks = await organizeInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online blank pages",
+          "blank",
+          { after: "1", count: "1" },
+        );
+        out.blanks = {
+          fileRows: onlineBlanks.fileRows,
+          runLabel: onlineBlanks.runLabel,
+          noUpload: onlineBlanks.noUpload,
+          status: onlineBlanks.status,
+          result: onlineBlanks.result,
+          outputs: onlineBlanks.outputs,
+          output: onlineBlanks.output,
+          network: onlineBlanks.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -466,6 +562,22 @@
           "bookmarks",
           {},
         );
+        const offlineDuplicate = await organizeInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline duplicate",
+          "duplicate",
+          { pages: "1" },
+        );
+        const offlineBlanks = await organizeInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline blank pages",
+          "blank",
+          { after: "1", count: "1" },
+        );
         out.offline = {
           cards: offlineCards,
           controlled: offlineWin.navigator.serviceWorker.controller !== null,
@@ -505,6 +617,26 @@
             result: offlineBookmarks.result,
             outputs: offlineBookmarks.outputs,
             network: offlineBookmarks.network,
+          },
+          duplicate: {
+            fileRows: offlineDuplicate.fileRows,
+            runLabel: offlineDuplicate.runLabel,
+            noUpload: offlineDuplicate.noUpload,
+            status: offlineDuplicate.status,
+            result: offlineDuplicate.result,
+            outputs: offlineDuplicate.outputs,
+            output: offlineDuplicate.output,
+            network: offlineDuplicate.network,
+          },
+          blanks: {
+            fileRows: offlineBlanks.fileRows,
+            runLabel: offlineBlanks.runLabel,
+            noUpload: offlineBlanks.noUpload,
+            status: offlineBlanks.status,
+            result: offlineBlanks.result,
+            outputs: offlineBlanks.outputs,
+            output: offlineBlanks.output,
+            network: offlineBlanks.network,
           },
         };
 

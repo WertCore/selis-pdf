@@ -17,6 +17,7 @@ import { registerServiceWorker } from "../sw-register.js";
 import {
 	ToolInputError,
 	hasPdfHeader,
+	pageBoundary,
 	pageCount,
 	pageIndex,
 	shiftPageSelection,
@@ -79,9 +80,9 @@ const TOOLS: readonly ToolDef[] = [
 	{
 		id: "reorder",
 		mark: "⇅",
-		title: "Reorder pages",
-		blurb: "Put pages in a new order without touching their content.",
-		verb: "Reorder pages",
+		title: "Organize pages",
+		blurb: "Reorder pages, duplicate pages, or insert blank pages.",
+		verb: "Organize pages",
 		multiple: false,
 	},
 	{
@@ -102,6 +103,7 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 type Control = HTMLInputElement | HTMLSelectElement;
 type StatusKind = "info" | "error" | "ok";
 type SplitMode = "range" | "every" | "half" | "size" | "bookmarks" | "extract";
+type OrganizeMode = "reorder" | "duplicate" | "blank";
 
 function byId<T extends HTMLElement>(id: string): T {
 	const element = document.getElementById(id);
@@ -343,6 +345,35 @@ function init(): void {
 		}
 	}
 
+	function organizeModeValue(): OrganizeMode {
+		const mode = optionValue("mode");
+		if (mode === "duplicate" || mode === "blank") {
+			return mode;
+		}
+		return "reorder";
+	}
+
+	function syncOrganizeFields(): void {
+		const mode = organizeModeValue();
+		setOptionFieldVisible("order", mode === "reorder");
+		setOptionFieldVisible("pages", mode === "duplicate");
+		setOptionFieldVisible("after", mode === "blank");
+		setOptionFieldVisible("count", mode === "blank");
+		const note = document.getElementById("organize-note");
+		if (note === null) {
+			return;
+		}
+		if (mode === "duplicate") {
+			note.textContent =
+				"Each selected page is copied immediately after its original. Content and annotations come with it.";
+		} else if (mode === "blank") {
+			note.textContent =
+				"Blank pages use the neighboring page's size and rotation. Enter 0 to insert before page 1; leave the page empty to append.";
+		} else {
+			note.textContent = "List every page once, in the order you want.";
+		}
+	}
+
 	function renderOptions(tool: ToolDef): void {
 		options.replaceChildren();
 		optionControls.clear();
@@ -443,12 +474,50 @@ function init(): void {
 			return;
 		}
 		if (tool.id === "reorder") {
+			const mode = make("select", "control");
+			for (const [value, label] of [
+				["reorder", "Reorder pages"],
+				["duplicate", "Duplicate pages"],
+				["blank", "Insert blank pages"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				mode.append(choice);
+			}
+			addField("mode", "Page action", mode);
 			addField(
 				"order",
 				"New page order",
 				textInput("order", "text", "e.g. 2, 1, 4, 3"),
-				"List every page once, in the order you want.",
+				"1-based pages. List every page once.",
 			);
+			addField(
+				"pages",
+				"Pages to duplicate",
+				textInput("pages", "text", "e.g. 1, 3-4"),
+				"1-based pages or ranges. Each copy follows its original.",
+			);
+			const after = addField(
+				"after",
+				"Insert after page",
+				textInput("after", "number", "Blank = end"),
+				"Use 0 to insert before page 1; leave empty to append.",
+			) as HTMLInputElement;
+			after.min = "0";
+			const count = addField(
+				"count",
+				"Number of blank pages",
+				textInput("count", "number", "1"),
+				"Up to 100 blank pages per run.",
+			) as HTMLInputElement;
+			count.value = "1";
+			count.max = "100";
+			const note = make("p", "option-note");
+			note.id = "organize-note";
+			options.append(note);
+			syncOrganizeFields();
+			mode.addEventListener("change", syncOrganizeFields);
 			return;
 		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
@@ -668,9 +737,34 @@ function init(): void {
 			};
 		}
 		if (tool.id === "reorder") {
+			const mode = organizeModeValue();
+			if (mode === "duplicate") {
+				return {
+					op: "reorder",
+					options: {
+						mode,
+						pages: shiftPageSelection(optionValue("pages")),
+					},
+					files: wireFiles,
+				};
+			}
+			if (mode === "blank") {
+				const options: Record<string, unknown> = {
+					mode,
+					count: pageCount(optionValue("count"), "Number of blank pages"),
+				};
+				const afterText = optionValue("after").trim();
+				if (afterText !== "") {
+					options.after = pageBoundary(afterText, "Insert after page");
+				}
+				return { op: "reorder", options, files: wireFiles };
+			}
 			return {
 				op: "reorder",
-				options: { order: shiftPageSelection(optionValue("order")) },
+				options: {
+					mode,
+					order: shiftPageSelection(optionValue("order")),
+				},
 				files: wireFiles,
 			};
 		}
@@ -858,7 +952,9 @@ function init(): void {
 							? "2"
 							: control.name === "target"
 								? "1"
-								: "";
+								: control.name === "count"
+									? "1"
+									: "";
 			} else if (control instanceof HTMLInputElement) {
 				control.value = "";
 			} else if (control instanceof HTMLSelectElement) {
@@ -867,6 +963,8 @@ function init(): void {
 		}
 		if (selectedTool === "split") {
 			syncSplitFields();
+		} else if (selectedTool === "reorder") {
+			syncOrganizeFields();
 		}
 		updateRunState();
 		setStatus("Files stay on this device.", "info");

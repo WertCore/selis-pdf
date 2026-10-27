@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split slice, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split and organize slice, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -49,7 +49,9 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Extract pages | yes | yes | **Live** | One PDF containing the selected pages in document order. |
 | Rotate PDF | yes | yes | **Live** | 90/180/270, all pages or 1-based selection. |
 | Delete pages | yes | yes | **Live** | 1-based selection; refuses to delete every page. |
-| Reorder pages | yes (Organize) | yes | **Live** | Full permutation, 1-based input. |
+| Organize pages | yes | yes | **Live** | One workspace with reorder, duplicate, and insert-blank modes; full permutation, 1-based input. |
+| Duplicate pages | — | yes | **Live** | Copies follow their originals; content, resources, and annotations travel with each copy. |
+| Insert blank pages | — | yes | **Live** | 1-based boundary (0 = before page 1, empty = append); copies the neighbouring page's media box and rotation; up to 100 blanks per run. |
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP and strip are next. |
 | Browser-native preview | — | — | **Live** | Inputs and outputs open as Blob URLs in the browser's PDF viewer. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
@@ -62,7 +64,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 156 334 B).
+      (currently 300 000 B brotli; baseline 160 207 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -90,8 +92,8 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Split by text | — | yes | Text | Needs text extraction and a boundary rule; show the chosen boundaries before committing. |
 | Remove pages | yes | yes | 1A.0 | Live as Delete pages. |
 | Organize / reorder | yes | yes | 1A.0 | Live with buttons. Drag-to-reorder remains a UI enhancement, not a correctness gap. |
-| Insert blank pages | — | yes | 1A.1 | Writer page insertion; no renderer. |
-| Duplicate pages | — | yes | 1A.1 | Object copy; verify resource identity and annotations. |
+| Insert blank pages | - | yes | 1A.1 | Live. Boundary insertion copies the neighbouring page's media box and rotation; capped at 100 per run. |
+| Duplicate pages | - | yes | 1A.1 | Live. Object copy carries content, resources, and annotations; labels, destinations, and tagged structure keep their first occurrence. |
 | Rotate | yes | yes | 1A.0 | Live. |
 | Crop | — | yes | 1A.1 | Page boxes + content transform; preview via browser PDF viewer. |
 | Resize / scale to page size | — | yes | 1A.1 | Content matrix + media box; preserve annotations. |
@@ -228,12 +230,14 @@ batch queue, unlock/protect/clear-permissions (crypto-enabled chunk).
 bookmarks, extract pages, per-output metadata and downloads, the owned deterministic ZIP bundle,
 and the matching protocol/browser coverage. The browser check runs every split mode online and
 after an offline reload, reads the actual PDF and ZIP bytes, and checks the per-part over-target
-flag for a target no single page can meet.
+flag for a target no single page can meet. The same slice adds duplicate pages and insert-blank
+pages to the Organize pages workspace; duplicate and blank legs run online and offline too.
 
-**Remaining in 1A.1:** organize/insert/duplicate, crop/resize, N-up/flip/alternate/mix, page
-numbers, watermark, headers/footers, Bates, lossless compression, repair, metadata strip,
-attachments, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled
-security tools.
+**Remaining in 1A.1:** crop/resize, N-up/flip/alternate/mix, page numbers, watermark,
+headers/footers, Bates, lossless compression, repair, metadata strip, attachments, page labels,
+CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
+incremental writer for page edits remains deferred; these page operations use the verified
+full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
 size budget; no raster feature is claimed yet.

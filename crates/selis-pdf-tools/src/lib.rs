@@ -51,6 +51,13 @@ pub use verify_report::Verification;
 /// range instead.
 pub const MAX_SPLIT_OUTPUTS: usize = 64;
 
+/// The most blank pages one insert request may add.
+///
+/// The cap keeps a single edit from producing an unbounded output; a document
+/// that already needs more blank pages can be built in successive, verified
+/// requests.
+pub const MAX_BLANK_PAGES: usize = 100;
+
 /// One PDF produced by a multi-output split.
 #[derive(Debug, Clone)]
 pub struct SplitPart {
@@ -286,4 +293,39 @@ pub fn delete(path: &str, pages: &str, output: &str) -> ToolResult<Verification>
 /// As [`merge`].
 pub fn reorder(path: &str, order: &str, output: &str) -> ToolResult<Verification> {
     tools::reorder(path, order, output)
+}
+
+/// Duplicate each selected page immediately after its original.
+///
+/// `pages` uses the CLI's zero-based selection syntax (`0,2,5-7`). The
+/// selection is deduplicated and applied in source order; content, resources,
+/// and annotations are copied with each page. Outlines and named destinations
+/// keep targeting the first copy, while page labels re-key to the new page
+/// sequence.
+///
+/// # Errors
+///
+/// As [`merge`], plus an empty or malformed page selection.
+pub fn duplicate_pages(path: &str, pages: &str, output: &str) -> ToolResult<Verification> {
+    tools::duplicate_pages(path, pages, output)
+}
+
+/// Insert `count` blank pages at a page boundary.
+///
+/// `after` is the 1-based page after which the blanks go: `0` inserts before
+/// the first page, and `None` appends. Each blank uses the template page's
+/// media box and rotation (the page at `after - 1`, the first page at `0`, or
+/// the last page when appending).
+///
+/// # Errors
+///
+/// As [`merge`], plus `count == 0`, a count above [`MAX_BLANK_PAGES`], a
+/// boundary outside the document, or a document with no pages.
+pub fn insert_blank_pages(
+    path: &str,
+    after: Option<usize>,
+    count: usize,
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::insert_blank_pages(path, after, count, output)
 }

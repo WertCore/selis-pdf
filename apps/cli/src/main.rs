@@ -102,6 +102,23 @@ mod tools {
     pub(crate) fn reorder(path: &str, order: &str, output: &str) -> CliResult<Verification> {
         selis_pdf_tools::reorder(path, order, output).map_err(CliError::from)
     }
+
+    pub(crate) fn duplicate_pages(
+        path: &str,
+        pages: &str,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::duplicate_pages(path, pages, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn insert_blank_pages(
+        path: &str,
+        after: Option<usize>,
+        count: usize,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::insert_blank_pages(path, after, count, output).map_err(CliError::from)
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +302,38 @@ enum Command {
         /// The new page order, every page exactly once (`2,0,1` or `3-5,0`).
         #[arg(long, required = true)]
         order: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Duplicate selected pages, each immediately after its original.
+    DuplicatePages {
+        /// The input PDF.
+        path: String,
+        /// The pages to duplicate (`0,2,5-7`; 0-based).
+        #[arg(long, required = true)]
+        pages: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Insert blank pages into a PDF.
+    InsertBlank {
+        /// The input PDF.
+        path: String,
+        /// Insert after this 1-based page; `0` inserts before page 1.
+        /// Omit to append at the end.
+        #[arg(long)]
+        after: Option<usize>,
+        /// Number of blank pages to insert (maximum 100).
+        #[arg(long, default_value_t = 1)]
+        count: usize,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
@@ -557,6 +606,22 @@ fn main() {
             output,
             json,
         } => finish(tools::reorder(&path, &order, &output), json),
+        Command::DuplicatePages {
+            path,
+            pages,
+            output,
+            json,
+        } => finish(tools::duplicate_pages(&path, &pages, &output), json),
+        Command::InsertBlank {
+            path,
+            after,
+            count,
+            output,
+            json,
+        } => finish(
+            tools::insert_blank_pages(&path, after, count, &output),
+            json,
+        ),
         Command::Img2Pdf {
             inputs,
             output,

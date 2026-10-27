@@ -389,16 +389,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
-        Op::Reorder => {
-            let order = option_str(&options, "order")
-                .ok_or_else(|| ToolError("reorder needs a page order".to_string()))?;
-            vec![Produced {
-                output: "out.pdf".to_string(),
-                name: format!("{stem}-reordered.pdf"),
-                verification: selis_pdf_tools::reorder("in/0", &order, "out.pdf")?,
-                over_target: false,
-            }]
-        }
+        Op::Reorder => run_organize(&options, &stem)?,
         Op::SetMetadata => {
             let fields = option_fields(&options)?;
             let refs: Vec<(&str, &str)> = fields
@@ -454,6 +445,56 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
     }
 
     Ok((verification, reports, outputs))
+}
+
+/// Page organization: the existing reorder operation plus duplicate and
+/// insert-blank modes. Keeping one wire op means the capability mask and card
+/// count do not change when a mode is added.
+fn run_organize(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, ToolError> {
+    let mode = option_str(options, "mode").unwrap_or_else(|| "reorder".to_string());
+    match mode.as_str() {
+        "reorder" => {
+            let order = option_str(options, "order")
+                .ok_or_else(|| ToolError("reorder needs a page order".to_string()))?;
+            Ok(vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-reordered.pdf"),
+                verification: selis_pdf_tools::reorder("in/0", &order, "out.pdf")?,
+                over_target: false,
+            }])
+        }
+        "duplicate" => {
+            let pages = option_str(options, "pages")
+                .ok_or_else(|| ToolError("duplicate needs a page selection".to_string()))?;
+            Ok(vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-duplicated.pdf"),
+                verification: selis_pdf_tools::duplicate_pages("in/0", &pages, "out.pdf")?,
+                over_target: false,
+            }])
+        }
+        "blank" => {
+            let after =
+                match option_u64(options, "after") {
+                    Some(value) => Some(usize::try_from(value).map_err(|_| {
+                        ToolError("blank insert position is out of range".to_string())
+                    })?),
+                    None => None,
+                };
+            let count = usize::try_from(
+                option_u64(options, "count")
+                    .ok_or_else(|| ToolError("blank insert needs a page count".to_string()))?,
+            )
+            .map_err(|_| ToolError("blank page count is out of range".to_string()))?;
+            Ok(vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-blanks.pdf"),
+                verification: selis_pdf_tools::insert_blank_pages("in/0", after, count, "out.pdf")?,
+                over_target: false,
+            }])
+        }
+        other => Err(ToolError(format!("unknown organize mode `{other}`"))),
+    }
 }
 
 fn run_split(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, ToolError> {
@@ -780,6 +821,72 @@ mod tests {
     fn split_request(options: &str, pages: usize) -> Vec<u8> {
         let pdf = multipage_pdf(pages);
         request(2, options.as_bytes(), &[("doc.pdf", &pdf)])
+    }
+
+    fn organize_request(options: &str, pages: usize) -> Vec<u8> {
+        let pdf = multipage_pdf(pages);
+        request(5, options.as_bytes(), &[("doc.pdf", &pdf)])
+    }
+
+    #[test]
+    fn organize_modes_duplicate_and_insert_blanks() {
+        let (status, message, outputs) = parse_response(&run_request(&organize_request(
+            r#"{"mode":"reorder","order":"2,0,1"}"#,
+            3,
+        )));
+        assert_eq!(status, 0, "reorder failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(outputs[0].0, "doc-reordered.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+
+        let (status, message, outputs) = parse_response(&run_request(&organize_request(
+            r#"{"mode":"duplicate","pages":"1"}"#,
+            3,
+        )));
+        assert_eq!(status, 0, "duplicate failed: {message}");
+        assert_eq!(message["pages_in"], 3);
+        assert_eq!(message["pages_out"], 4);
+        assert_eq!(outputs[0].0, "doc-duplicated.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+
+        let (status, message, outputs) = parse_response(&run_request(&organize_request(
+            r#"{"mode":"blank","after":1,"count":2}"#,
+            3,
+        )));
+        assert_eq!(status, 0, "blank insert failed: {message}");
+        assert_eq!(message["pages_in"], 3);
+        assert_eq!(message["pages_out"], 5);
+        assert_eq!(outputs[0].0, "doc-blanks.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+    }
+
+    #[test]
+    fn organize_blank_mode_supports_start_and_append() {
+        let (status, message, _) = parse_response(&run_request(&organize_request(
+            r#"{"mode":"blank","after":0,"count":1}"#,
+            3,
+        )));
+        assert_eq!(status, 0, "blank at start failed: {message}");
+        assert_eq!(message["pages_out"], 4);
+
+        let (status, message, _) = parse_response(&run_request(&organize_request(
+            r#"{"mode":"blank","count":1}"#,
+            3,
+        )));
+        assert_eq!(status, 0, "blank append failed: {message}");
+        assert_eq!(message["pages_out"], 4);
+    }
+
+    #[test]
+    fn organize_rejects_unknown_modes_and_bad_requests() {
+        let response = run_request(&organize_request(r#"{"mode":"shuffle"}"#, 3));
+        assert!(error_text(&response).contains("unknown organize mode"));
+
+        let response = run_request(&organize_request(r#"{"mode":"duplicate"}"#, 3));
+        assert!(error_text(&response).contains("page selection"));
+
+        let response = run_request(&organize_request(r#"{"mode":"blank","count":0}"#, 3));
+        assert!(error_text(&response).contains("at least one"));
     }
 
     fn error_text(response: &[u8]) -> String {

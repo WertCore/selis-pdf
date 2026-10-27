@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	ToolInputError,
 	hasPdfHeader,
+	pageBoundary,
 	pageCount,
 	pageIndex,
 	shiftPageSelection,
 	sizeBytes,
-	ToolInputError,
 } from "./inputs.js";
 
 describe("shiftPageSelection", () => {
@@ -50,6 +51,21 @@ describe("pageCount", () => {
 		expect(() => pageCount("0", "Pages per file")).toThrow(/Pages per file/);
 		expect(() => pageCount("1.5", "Pages per file")).toThrow(ToolInputError);
 		expect(() => pageCount("two", "Pages per file")).toThrow(ToolInputError);
+	});
+});
+
+describe("pageBoundary", () => {
+	it("keeps zero as the position before the first page", () => {
+		expect(pageBoundary("0", "Insert after page")).toBe(0);
+		expect(pageBoundary("1", "Insert after page")).toBe(1);
+		expect(pageBoundary(" 12 ", "Insert after page")).toBe(12);
+	});
+
+	it("rejects an empty field, negatives, fractions, and prose", () => {
+		expect(() => pageBoundary("", "Insert after page")).toThrow(/Insert after page/);
+		expect(() => pageBoundary("-1", "Insert after page")).toThrow(ToolInputError);
+		expect(() => pageBoundary("1.5", "Insert after page")).toThrow(ToolInputError);
+		expect(() => pageBoundary("end", "Insert after page")).toThrow(ToolInputError);
 	});
 });
 
