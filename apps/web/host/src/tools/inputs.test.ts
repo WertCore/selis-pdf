@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { hasPdfHeader, pageIndex, shiftPageSelection, ToolInputError } from "./inputs.js";
+import {
+	hasPdfHeader,
+	pageCount,
+	pageIndex,
+	shiftPageSelection,
+	ToolInputError,
+} from "./inputs.js";
 
 describe("shiftPageSelection", () => {
 	it("converts 1-based pages and ranges to the engine's 0-based syntax", () => {
@@ -30,6 +36,19 @@ describe("pageIndex", () => {
 
 	it("names the field in the error", () => {
 		expect(() => pageIndex("0", "From page")).toThrow(/From page/);
+	});
+});
+
+describe("pageCount", () => {
+	it("keeps a count as-is rather than shifting it", () => {
+		expect(pageCount("1", "Pages per file")).toBe(1);
+		expect(pageCount("12", "Pages per file")).toBe(12);
+	});
+
+	it("rejects zero, fractions, and prose", () => {
+		expect(() => pageCount("0", "Pages per file")).toThrow(/Pages per file/);
+		expect(() => pageCount("1.5", "Pages per file")).toThrow(ToolInputError);
+		expect(() => pageCount("two", "Pages per file")).toThrow(ToolInputError);
 	});
 });
 

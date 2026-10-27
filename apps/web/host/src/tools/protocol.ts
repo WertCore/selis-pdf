@@ -23,6 +23,8 @@ export const RESPONSE_MAGIC = 0x52544c53;
 export const PROTOCOL_VERSION = 1;
 /** The maximum number of inputs the chunk accepts. */
 export const MAX_FILES = 64;
+/** The maximum outputs (up to 64 PDF parts plus the ZIP bundle). */
+export const MAX_OUTPUTS = MAX_FILES + 1;
 /** The maximum request name length the chunk accepts. */
 export const MAX_NAME_BYTES = 128;
 /** The maximum options JSON length the chunk accepts. */
@@ -80,10 +82,20 @@ export interface ToolOutput {
 	readonly bytes: Uint8Array;
 }
 
+/** Per-file metadata emitted alongside the aggregate verification. */
+export interface ToolOutputReport {
+	readonly name: string;
+	readonly kind: "pdf" | "zip";
+	readonly pages: number;
+	readonly bytes: number;
+	readonly verdict: string;
+}
+
 /** A successful operation. */
 export interface ToolResult {
 	readonly verification: Verification;
-	readonly output: ToolOutput;
+	readonly reports: readonly ToolOutputReport[];
+	readonly outputs: readonly ToolOutput[];
 }
 
 /** The guest exports this page uses. */
@@ -222,6 +234,67 @@ function readBytes(cursor: Cursor): Uint8Array {
 	return bytes;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function decodeReports(
+	raw: unknown,
+	outputs: readonly ToolOutput[],
+	verification: Verification,
+): ToolOutputReport[] {
+	if (raw === undefined) {
+		if (outputs.length !== 1) {
+			throw new ToolProtocolError(
+				"the tool chunk returned multiple outputs without per-file metadata",
+			);
+		}
+		const output = outputs[0];
+		if (output === undefined) {
+			throw new ToolProtocolError("the tool chunk returned no output");
+		}
+		const zip = output.name.toLowerCase().endsWith(".zip");
+		return [
+			{
+				name: output.name,
+				kind: zip ? "zip" : "pdf",
+				pages: zip ? 0 : verification.pages_out,
+				bytes: output.bytes.length,
+				verdict: verification.verdict,
+			},
+		];
+	}
+	if (!Array.isArray(raw) || raw.length !== outputs.length) {
+		throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
+	}
+	return raw.map((item, index) => {
+		if (!isRecord(item)) {
+			throw new ToolProtocolError("the tool chunk returned malformed output metadata");
+		}
+		const output = outputs[index];
+		const { name, kind, pages, bytes, verdict } = item;
+		if (output === undefined || typeof name !== "string" || name !== output.name) {
+			throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
+		}
+		if (kind !== "pdf" && kind !== "zip") {
+			throw new ToolProtocolError("the tool chunk returned an unknown output kind");
+		}
+		if (
+			typeof pages !== "number" ||
+			!Number.isInteger(pages) ||
+			pages < 0 ||
+			typeof bytes !== "number" ||
+			!Number.isInteger(bytes) ||
+			bytes < 0 ||
+			bytes !== output.bytes.length ||
+			typeof verdict !== "string"
+		) {
+			throw new ToolProtocolError("the tool chunk returned malformed output metadata");
+		}
+		return { name, kind, pages, bytes, verdict };
+	});
+}
+
 /**
  * Decode one response. The caller has already copied the bytes out of guest
  * memory, so the returned arrays are safe to retain after the chunk grows.
@@ -238,7 +311,7 @@ export function decodeToolResponse(response: Uint8Array): ToolResult {
 	const status = readU32(cursor);
 	const message = new TextDecoder().decode(readBytes(cursor));
 	const outputCount = readU32(cursor);
-	if (outputCount > MAX_FILES) {
+	if (outputCount > MAX_OUTPUTS) {
 		throw new ToolProtocolError("the tool chunk returned too many outputs");
 	}
 	const outputs: ToolOutput[] = [];
@@ -253,20 +326,21 @@ export function decodeToolResponse(response: Uint8Array): ToolResult {
 	if (status !== 0) {
 		throw new ToolProtocolError(message === "" ? "the tool operation failed" : message);
 	}
-	if (outputs.length !== 1) {
+	if (outputs.length === 0) {
 		throw new ToolProtocolError("the tool chunk returned no output");
 	}
-	let verification: Verification;
+	let parsed: unknown;
 	try {
-		verification = JSON.parse(message) as Verification;
+		parsed = JSON.parse(message);
 	} catch {
 		throw new ToolProtocolError("the tool chunk returned malformed verification data");
 	}
-	const output = outputs[0];
-	if (output === undefined) {
-		throw new ToolProtocolError("the tool chunk returned no output");
+	if (!isRecord(parsed)) {
+		throw new ToolProtocolError("the tool chunk returned malformed verification data");
 	}
-	return { verification, output };
+	const verification = parsed as unknown as Verification;
+	const reports = decodeReports(parsed.outputs, outputs, verification);
+	return { verification, reports, outputs };
 }
 
 /**

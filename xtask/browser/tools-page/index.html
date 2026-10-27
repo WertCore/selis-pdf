@@ -125,6 +125,82 @@
         return frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length;
       }
 
+      async function readOutput(win, row, label) {
+        const download = row.querySelector("a.primary-link");
+        if (!download) throw new Error("a result row had no download link (" + label + ")");
+        const preview = row.querySelector("a.text-button");
+        const href = download.getAttribute("href") || "";
+        const output = {
+          kind: row.dataset.kind || "",
+          name: row.dataset.name || "",
+          pages: Number(row.dataset.pages || "0"),
+          declaredBytes: Number(row.dataset.bytes || "0"),
+          blob: href.startsWith("blob:"),
+          previewBlob: preview
+            ? (preview.getAttribute("href") || "").startsWith("blob:")
+            : null,
+          downloadName: download.getAttribute("download"),
+        };
+        if (!output.blob) throw new Error("the download was not a Blob URL (" + label + ")");
+        const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
+        output.bytes = bytes.length;
+        output.header = new TextDecoder().decode(bytes.subarray(0, 5));
+        output.zip =
+          bytes.length >= 4 &&
+          bytes[0] === 0x50 &&
+          bytes[1] === 0x4b &&
+          bytes[2] === 0x03 &&
+          bytes[3] === 0x04;
+        return output;
+      }
+
+      async function readResult(frame, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        const result = {
+          title: doc.getElementById("result-title").textContent.trim(),
+          meta: doc.getElementById("result-meta").textContent.trim(),
+          rows: Array.from(doc.querySelectorAll("#result-rows .result-row")).map(
+            (row) => ({
+              label: row.querySelector("dt").textContent.trim(),
+              value: row.querySelector("dd").textContent.trim(),
+            }),
+          ),
+        };
+        const outputs = [];
+        for (const row of doc.querySelectorAll("#result-outputs .output-row")) {
+          outputs.push(await readOutput(win, row, label));
+        }
+        return {
+          result,
+          outputs,
+          output: outputs.find((output) => output.kind === "pdf") || null,
+        };
+      }
+
+      async function attachFiles(frame, fixture, name, label, count) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        const makeFile = (fileName) =>
+          new win.File([fixture.slice(0)], fileName, { type: "application/pdf" });
+        const transfer = new win.DataTransfer();
+        if (count === 1) {
+          transfer.items.add(makeFile(name));
+        } else {
+          transfer.items.add(makeFile("alpha.pdf"));
+          transfer.items.add(makeFile("beta.pdf"));
+        }
+        const input = doc.getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll("#file-list .file-row").length === count,
+          5_000,
+          count + " selected PDF(s) (" + label + ")",
+        );
+        return doc.querySelectorAll("#file-list .file-row").length;
+      }
+
       async function mergeInFrame(frame, fixture, label) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -137,21 +213,7 @@
           "the merge workspace (" + label + ")",
         );
 
-        const makeFile = (name) =>
-          new win.File([fixture.slice(0)], name, { type: "application/pdf" });
-        const transfer = new win.DataTransfer();
-        transfer.items.add(makeFile("alpha.pdf"));
-        transfer.items.add(makeFile("beta.pdf"));
-        const input = doc.getElementById("file-input");
-        input.files = transfer.files;
-        input.dispatchEvent(new win.Event("change", { bubbles: true }));
-
-        await waitFor(
-          () => doc.querySelectorAll("#file-list .file-row").length === 2,
-          5_000,
-          "two selected PDFs (" + label + ")",
-        );
-        const fileRows = doc.querySelectorAll("#file-list .file-row").length;
+        const fileRows = await attachFiles(frame, fixture, "alpha.pdf", label, 2);
         const run = doc.getElementById("run-tool");
         await waitFor(() => !run.disabled, 5_000, "the Merge button to enable (" + label + ")");
         const runLabel = run.textContent.trim();
@@ -165,37 +227,71 @@
           "the merge result and the no-upload assertion (" + label + ")",
         );
 
-        const result = {
-          title: doc.getElementById("result-title").textContent.trim(),
-          meta: doc.getElementById("result-meta").textContent.trim(),
-          rows: Array.from(doc.querySelectorAll("#result-rows .result-row")).map(
-            (row) => ({
-              label: row.querySelector("dt").textContent.trim(),
-              value: row.querySelector("dd").textContent.trim(),
-            }),
-          ),
-        };
-        const preview = doc.getElementById("result-preview");
-        const download = doc.getElementById("result-download");
-        const href = download.getAttribute("href") || "";
-        const output = {
-          blob: href.startsWith("blob:"),
-          previewBlob: (preview.getAttribute("href") || "").startsWith("blob:"),
-          downloadName: download.getAttribute("download"),
-        };
-        if (!output.blob) throw new Error("the download was not a Blob URL (" + label + ")");
-        const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
-        output.bytes = bytes.length;
-        output.header = new TextDecoder().decode(bytes.subarray(0, 5));
-
+        const read = await readResult(frame, label);
         return {
           win,
           fileRows,
           runLabel,
           noUpload: doc.documentElement.dataset.noUpload,
           status: doc.getElementById("status").textContent.trim(),
-          result,
-          output,
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+        };
+      }
+
+      async function splitEveryInFrame(frame, fixture, label, every) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const split = doc.querySelector('[data-tool="split"]');
+        if (!split) throw new Error("the page offered no Split card");
+        split.click();
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the split workspace (" + label + ")",
+        );
+
+        const mode = doc.getElementById("option-mode");
+        mode.value = "every";
+        mode.dispatchEvent(new win.Event("change", { bubbles: true }));
+        const everyInput = doc.getElementById("option-every");
+        everyInput.value = String(every);
+        everyInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+
+        const fileRows = await attachFiles(frame, fixture, "report.pdf", label, 1);
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the Split button to enable (" + label + ")");
+        const runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the split result and the no-upload assertion (" + label + ")",
+        );
+
+        const read = await readResult(frame, label);
+        return {
+          win,
+          fileRows,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
           network: readNetwork(win),
         };
       }
@@ -245,6 +341,10 @@
           if (!r.ok) throw new Error("one.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        const splitFixture = await fetch("report.pdf").then((r) => {
+          if (!r.ok) throw new Error("report.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
 
         const online = await mergeInFrame(frame, fixture, "online");
         out.fileRows = online.fileRows;
@@ -253,7 +353,19 @@
         out.status = online.status;
         out.result = online.result;
         out.output = online.output;
+        out.outputs = online.outputs;
         out.network = online.network;
+
+        const onlineSplit = await splitEveryInFrame(frame, splitFixture, "online split", 1);
+        out.split = {
+          fileRows: onlineSplit.fileRows,
+          runLabel: onlineSplit.runLabel,
+          noUpload: onlineSplit.noUpload,
+          status: onlineSplit.status,
+          result: onlineSplit.result,
+          outputs: onlineSplit.outputs,
+          network: onlineSplit.network,
+        };
 
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
@@ -273,6 +385,12 @@
           "the worker to claim the offline tools page",
         );
         const offline = await mergeInFrame(frame, fixture, "offline");
+        const offlineSplit = await splitEveryInFrame(
+          frame,
+          splitFixture,
+          "offline split",
+          1,
+        );
         out.offline = {
           cards: offlineCards,
           controlled: offlineWin.navigator.serviceWorker.controller !== null,
@@ -283,8 +401,18 @@
           noUpload: offline.noUpload,
           status: offline.status,
           result: offline.result,
+          outputs: offline.outputs,
           output: offline.output,
           network: offline.network,
+          split: {
+            fileRows: offlineSplit.fileRows,
+            runLabel: offlineSplit.runLabel,
+            noUpload: offlineSplit.noUpload,
+            status: offlineSplit.status,
+            result: offlineSplit.result,
+            outputs: offlineSplit.outputs,
+            network: offlineSplit.network,
+          },
         };
 
         clearTimeout(watchdog);

@@ -14,7 +14,13 @@
 
 import { installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
-import { ToolInputError, hasPdfHeader, pageIndex, shiftPageSelection } from "./inputs.js";
+import {
+	ToolInputError,
+	hasPdfHeader,
+	pageCount,
+	pageIndex,
+	shiftPageSelection,
+} from "./inputs.js";
 import {
 	type ToolOp,
 	ToolProtocolError,
@@ -49,7 +55,7 @@ const TOOLS: readonly ToolDef[] = [
 		id: "split",
 		mark: "✂",
 		title: "Split PDF",
-		blurb: "Keep one range of pages as a new document.",
+		blurb: "Split by range, every N pages, in half, or extract pages.",
 		verb: "Split PDF",
 		multiple: false,
 	},
@@ -92,11 +98,9 @@ const TOOL_BY_ID = new Map<ToolOp, ToolDef>(TOOLS.map((tool) => [tool.id, tool])
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 
-/** The page's default last-page sentinel, matching the CLI. */
-const LAST_PAGE = 0xffff_ffff;
-
 type Control = HTMLInputElement | HTMLSelectElement;
 type StatusKind = "info" | "error" | "ok";
+type SplitMode = "range" | "every" | "half" | "extract";
 
 function byId<T extends HTMLElement>(id: string): T {
 	const element = document.getElementById(id);
@@ -157,8 +161,7 @@ function init(): void {
 	const resultCard = byId<HTMLElement>("result");
 	const resultTitle = byId<HTMLHeadingElement>("result-title");
 	const resultMeta = byId<HTMLParagraphElement>("result-meta");
-	const resultPreview = byId<HTMLAnchorElement>("result-preview");
-	const resultDownload = byId<HTMLAnchorElement>("result-download");
+	const resultOutputs = byId<HTMLUListElement>("result-outputs");
 	const resultRows = byId<HTMLDListElement>("result-rows");
 	const againButton = byId<HTMLButtonElement>("result-again");
 	// The page is local-only by construction (CSP connect-src 'self', no form
@@ -173,8 +176,9 @@ function init(): void {
 	let files: File[] = [];
 	let busy = false;
 	let wasmPromise: Promise<ToolsWasm> | null = null;
-	let resultUrl: string | null = null;
+	let resultUrls: string[] = [];
 	const optionControls = new Map<string, Control>();
+	const optionFields = new Map<string, HTMLElement>();
 
 	function currentTool(): ToolDef | null {
 		return selectedTool === null ? null : (TOOL_BY_ID.get(selectedTool) ?? null);
@@ -196,13 +200,12 @@ function init(): void {
 	}
 
 	function clearResult(): void {
-		if (resultUrl !== null) {
-			URL.revokeObjectURL(resultUrl);
-			resultUrl = null;
+		for (const url of resultUrls) {
+			URL.revokeObjectURL(url);
 		}
+		resultUrls = [];
 		resultCard.hidden = true;
-		resultDownload.removeAttribute("href");
-		resultPreview.removeAttribute("href");
+		resultOutputs.replaceChildren();
 		resultRows.replaceChildren();
 	}
 
@@ -257,6 +260,8 @@ function init(): void {
 		control.id = `option-${key}`;
 		optionControls.set(key, control);
 		const field = make("div", "field");
+		field.dataset.option = key;
+		optionFields.set(key, field);
 		const label = make("label", "field-label");
 		label.htmlFor = control.id;
 		label.textContent = labelText;
@@ -290,9 +295,44 @@ function init(): void {
 		return input;
 	}
 
+	function setOptionFieldVisible(key: string, visible: boolean): void {
+		const field = optionFields.get(key);
+		if (field !== undefined) {
+			field.hidden = !visible;
+		}
+	}
+
+	function splitModeValue(): SplitMode {
+		const mode = optionValue("mode");
+		if (mode === "every" || mode === "half" || mode === "extract") {
+			return mode;
+		}
+		return "range";
+	}
+
+	function syncSplitFields(): void {
+		const mode = splitModeValue();
+		setOptionFieldVisible("from", mode === "range");
+		setOptionFieldVisible("to", mode === "range");
+		setOptionFieldVisible("every", mode === "every");
+		setOptionFieldVisible("pages", mode === "extract");
+		const note = document.getElementById("split-note");
+		if (note !== null) {
+			note.textContent =
+				mode === "range"
+					? "The selected range becomes one PDF."
+					: mode === "every"
+						? "Each group becomes its own PDF. Multiple outputs also come as one ZIP."
+						: mode === "half"
+							? "The document splits into two PDFs at the middle page."
+							: "The selected pages become one PDF in document order.";
+		}
+	}
+
 	function renderOptions(tool: ToolDef): void {
 		options.replaceChildren();
 		optionControls.clear();
+		optionFields.clear();
 		if (tool.id === "merge") {
 			const note = make("p", "option-note");
 			note.textContent = "Files are merged top to bottom. Use ↑ and ↓ to change the order.";
@@ -300,6 +340,24 @@ function init(): void {
 			return;
 		}
 		if (tool.id === "split") {
+			const mode = make("select", "control");
+			for (const [value, label] of [
+				["range", "Page range"],
+				["every", "Every N pages"],
+				["half", "Split in half"],
+				["extract", "Extract pages"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				mode.append(choice);
+			}
+			addField(
+				"mode",
+				"Split mode",
+				mode,
+				"Choose what each downloaded file should contain.",
+			);
 			const from = addField(
 				"from",
 				"From page",
@@ -313,6 +371,24 @@ function init(): void {
 				textInput("to", "number", "Last page"),
 				"Leave empty to keep through the final page.",
 			);
+			const every = addField(
+				"every",
+				"Pages per file",
+				textInput("every", "number", "2"),
+				"Each output gets this many pages, except the last.",
+			);
+			(every as HTMLInputElement).value = "2";
+			addField(
+				"pages",
+				"Pages to extract",
+				textInput("pages", "text", "e.g. 1-3, 5"),
+				"1-based pages or ranges; they stay in document order.",
+			);
+			const note = make("p", "option-note");
+			note.id = "split-note";
+			options.append(note);
+			syncSplitFields();
+			mode.addEventListener("change", syncSplitFields);
 			return;
 		}
 		if (tool.id === "rotate") {
@@ -393,6 +469,7 @@ function init(): void {
 		files = [];
 		clearResult();
 		optionControls.clear();
+		optionFields.clear();
 		options.replaceChildren();
 		renderFiles();
 		workspace.hidden = true;
@@ -521,17 +598,28 @@ function init(): void {
 			return { op: "merge", files: wireFiles };
 		}
 		if (tool.id === "split") {
-			const fromText = optionValue("from").trim() === "" ? "1" : optionValue("from");
-			const from = pageIndex(fromText, "From page");
-			const toText = optionValue("to").trim();
-			let to = LAST_PAGE;
-			if (toText !== "") {
-				to = pageIndex(toText, "To page");
-				if (to < from) {
-					throw new ToolInputError("The last page must not come before the first page.");
+			const mode = splitModeValue();
+			const splitOptions: Record<string, unknown> = { mode };
+			if (mode === "range") {
+				const fromText = optionValue("from").trim() === "" ? "1" : optionValue("from");
+				const from = pageIndex(fromText, "From page");
+				splitOptions.from = from;
+				const toText = optionValue("to").trim();
+				if (toText !== "") {
+					const to = pageIndex(toText, "To page");
+					if (to < from) {
+						throw new ToolInputError(
+							"The last page must not come before the first page.",
+						);
+					}
+					splitOptions.to = to;
 				}
+			} else if (mode === "every") {
+				splitOptions.every = pageCount(optionValue("every"), "Pages per file");
+			} else if (mode === "extract") {
+				splitOptions.pages = shiftPageSelection(optionValue("pages"));
 			}
-			return { op: "split", options: { from, to }, files: wireFiles };
+			return { op: "split", options: splitOptions, files: wireFiles };
 		}
 		if (tool.id === "rotate") {
 			const angle = Number(optionValue("angle"));
@@ -601,15 +689,72 @@ function init(): void {
 
 	function showResult(result: ReturnType<typeof runTool>): void {
 		clearResult();
-		const copy = new Uint8Array(result.output.bytes.byteLength);
-		copy.set(result.output.bytes);
-		const blob = new Blob([copy.buffer], { type: "application/pdf" });
-		resultUrl = URL.createObjectURL(blob);
-		resultTitle.textContent = result.output.name;
-		resultMeta.textContent = `${formatBytes(result.output.bytes.byteLength)} · verified locally`;
-		resultPreview.href = resultUrl;
-		resultDownload.href = resultUrl;
-		resultDownload.download = result.output.name;
+		const totalBytes = result.outputs.reduce(
+			(total, output) => total + output.bytes.byteLength,
+			0,
+		);
+		const pdfCount = result.reports.filter((report) => report.kind === "pdf").length;
+		const hasZip = result.reports.some((report) => report.kind === "zip");
+		const single = result.outputs.length === 1 ? result.outputs[0] : undefined;
+		resultTitle.textContent =
+			single !== undefined
+				? single.name
+				: `${pdfCount} PDF${pdfCount === 1 ? "" : "s"}${hasZip ? " and a ZIP" : ""}`;
+		resultMeta.textContent = `${result.outputs.length} file${result.outputs.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)} · verified locally`;
+
+		const outputRows: HTMLElement[] = [];
+		result.outputs.forEach((output, index) => {
+			const report = result.reports[index];
+			if (report === undefined) {
+				throw new ToolProtocolError("the tool chunk returned no metadata for an output");
+			}
+			const copy = new Uint8Array(output.bytes.byteLength);
+			copy.set(output.bytes);
+			const blob = new Blob([copy.buffer], {
+				type: report.kind === "zip" ? "application/zip" : "application/pdf",
+			});
+			const url = URL.createObjectURL(blob);
+			resultUrls.push(url);
+
+			const row = make("li", "output-row");
+			row.dataset.kind = report.kind;
+			row.dataset.name = output.name;
+			row.dataset.bytes = String(output.bytes.byteLength);
+			row.dataset.pages = String(report.pages);
+			const info = make("div", "output-info");
+			const name = make("span", "output-name");
+			name.textContent = output.name;
+			const meta = make("span", "output-meta");
+			meta.textContent =
+				report.kind === "zip"
+					? `ZIP bundle · ${formatBytes(output.bytes.byteLength)}`
+					: `${report.pages} page${report.pages === 1 ? "" : "s"} · ${formatBytes(output.bytes.byteLength)} · ${report.verdict}`;
+			info.append(name, meta);
+
+			const actions = make("div", "output-actions");
+			if (report.kind === "pdf") {
+				const preview = make("a", "text-button");
+				preview.href = url;
+				preview.target = "_blank";
+				preview.rel = "noopener";
+				preview.textContent = "Preview";
+				actions.append(preview);
+			}
+			const download = make("a", "primary-link");
+			download.href = url;
+			download.download = output.name;
+			download.textContent =
+				report.kind === "zip" ? "Download all (.zip)" : "Download";
+			download.addEventListener("click", () => {
+				// The href is the Blob URL; no network request is made by a download.
+				setStatus("Saved to your download folder by the browser.", "ok");
+			});
+			actions.append(download);
+			row.append(info, actions);
+			outputRows.push(row);
+		});
+		resultOutputs.replaceChildren(...outputRows);
+
 		const rows: HTMLElement[] = [];
 		for (const row of verificationRows(result.verification)) {
 			const wrapper = make("div", "result-row");
@@ -677,12 +822,16 @@ function init(): void {
 		renderFiles();
 		for (const control of optionControls.values()) {
 			if (control instanceof HTMLInputElement && control.type === "number") {
-				control.value = control.name === "from" ? "1" : "";
+				control.value =
+					control.name === "from" ? "1" : control.name === "every" ? "2" : "";
 			} else if (control instanceof HTMLInputElement) {
 				control.value = "";
 			} else if (control instanceof HTMLSelectElement) {
 				control.selectedIndex = 0;
 			}
+		}
+		if (selectedTool === "split") {
+			syncSplitFields();
 		}
 		updateRunState();
 		setStatus("Files stay on this device.", "info");
@@ -694,15 +843,6 @@ function init(): void {
 		void run();
 	});
 	againButton.addEventListener("click", resetForAnother);
-	resultPreview.addEventListener("click", (event) => {
-		if (resultUrl === null) {
-			event.preventDefault();
-		}
-	});
-	resultDownload.addEventListener("click", () => {
-		// The href is the Blob URL; no network request is made by a download.
-		setStatus("Saved to your download folder by the browser.", "ok");
-	});
 
 	dropzone.addEventListener("click", () => {
 		if (!busy) {
@@ -743,8 +883,8 @@ function init(): void {
 		}
 	});
 	window.addEventListener("beforeunload", () => {
-		if (resultUrl !== null) {
-			URL.revokeObjectURL(resultUrl);
+		for (const url of resultUrls) {
+			URL.revokeObjectURL(url);
 		}
 	});
 

@@ -31,6 +31,11 @@
 //!   data_len (u32), data bytes
 //! ```
 //!
+//! On success the message JSON also carries an `outputs` array with one
+//! `{name, kind, pages, bytes, verdict}` record per output. Multi-output split
+//! appends a deterministic ZIP after the PDF parts; its kind is `zip` and its
+//! page count is zero.
+//!
 //! The host allocates request and length buffers with [`selis_tools_alloc`],
 //! calls [`selis_tools_run`], copies the response out, and frees both with
 //! [`selis_tools_free`].
@@ -238,9 +243,14 @@ fn run_request(request: &[u8]) -> Vec<u8> {
     let result = parse_and_run(request);
     selis_pdf_tools::clear();
     match result {
-        Ok((verification, name, bytes)) => {
-            let message = serde_json::to_vec(&verification).unwrap_or_default();
-            build_response(0, &message, &[(name, bytes)])
+        Ok((verification, reports, outputs)) => {
+            let mut message =
+                serde_json::to_value(&verification).unwrap_or(serde_json::Value::Null);
+            if let Some(object) = message.as_object_mut() {
+                object.insert("outputs".to_string(), serde_json::Value::Array(reports));
+            }
+            let message = serde_json::to_vec(&message).unwrap_or_default();
+            build_response(0, &message, &outputs)
         }
         Err(error) => build_response(1, error.to_string().as_bytes(), &[]),
     }
@@ -276,7 +286,16 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn parse_and_run(request: &[u8]) -> Result<(Verification, String, Vec<u8>), ToolError> {
+struct Produced {
+    output: String,
+    name: String,
+    verification: Verification,
+}
+
+/// Aggregate verification, per-output JSON records, and the wire files.
+type RunOutput = (Verification, Vec<serde_json::Value>, Vec<(String, Vec<u8>)>);
+
+fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
     let mut cursor = Cursor::new(request);
     let magic = cursor
         .u32()
@@ -336,40 +355,44 @@ fn parse_and_run(request: &[u8]) -> Result<(Verification, String, Vec<u8>), Tool
         return Err(ToolError("trailing bytes in tool request".to_string()));
     }
 
-    const OUTPUT: &str = "out.pdf";
-    let verification = match op {
+    let stem = file_stem(&first_name);
+    let produced = match op {
         Op::Merge => {
             let inputs: Vec<String> = (0..file_count).map(|i| format!("in/{i}")).collect();
-            selis_pdf_tools::merge(&inputs, OUTPUT)?
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: "merged.pdf".to_string(),
+                verification: selis_pdf_tools::merge(&inputs, "out.pdf")?,
+            }]
         }
-        Op::Split => {
-            let first = usize::try_from(
-                option_u64(&options, "from")
-                    .ok_or_else(|| ToolError("split needs a from page".to_string()))?,
-            )
-            .map_err(|_| ToolError("split from is out of range".to_string()))?;
-            let last = usize::try_from(
-                option_u64(&options, "to")
-                    .ok_or_else(|| ToolError("split needs a to page".to_string()))?,
-            )
-            .map_err(|_| ToolError("split to is out of range".to_string()))?;
-            selis_pdf_tools::split("in/0", first, last, OUTPUT)?
-        }
+        Op::Split => run_split(&options, &stem)?,
         Op::Rotate => {
             let angle = option_i64(&options, "angle")
                 .ok_or_else(|| ToolError("rotate needs an angle".to_string()))?;
             let pages = option_str(&options, "pages");
-            selis_pdf_tools::rotate("in/0", angle, pages.as_deref(), OUTPUT)?
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-rotated.pdf"),
+                verification: selis_pdf_tools::rotate("in/0", angle, pages.as_deref(), "out.pdf")?,
+            }]
         }
         Op::Delete => {
             let pages = option_str(&options, "pages")
                 .ok_or_else(|| ToolError("delete needs a page selection".to_string()))?;
-            selis_pdf_tools::delete("in/0", &pages, OUTPUT)?
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-trimmed.pdf"),
+                verification: selis_pdf_tools::delete("in/0", &pages, "out.pdf")?,
+            }]
         }
         Op::Reorder => {
             let order = option_str(&options, "order")
                 .ok_or_else(|| ToolError("reorder needs a page order".to_string()))?;
-            selis_pdf_tools::reorder("in/0", &order, OUTPUT)?
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-reordered.pdf"),
+                verification: selis_pdf_tools::reorder("in/0", &order, "out.pdf")?,
+            }]
         }
         Op::SetMetadata => {
             let fields = option_fields(&options)?;
@@ -377,36 +400,195 @@ fn parse_and_run(request: &[u8]) -> Result<(Verification, String, Vec<u8>), Tool
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.as_str()))
                 .collect();
-            selis_pdf_tools::set_metadata("in/0", &refs, OUTPUT)?
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-metadata.pdf"),
+                verification: selis_pdf_tools::set_metadata("in/0", &refs, "out.pdf")?,
+            }]
         }
     };
 
-    let bytes = selis_pdf_tools::take_output(OUTPUT)
-        .ok_or_else(|| ToolError("operation produced no output".to_string()))?;
-    let stem = {
-        let stem = file_stem(&first_name);
-        if stem.is_empty() {
-            "document".to_string()
-        } else {
-            stem
-        }
-    };
-    let output_name = match op {
-        Op::Merge => "merged.pdf".to_string(),
-        Op::Split => format!("{stem}-pages.pdf"),
-        Op::Rotate => format!("{stem}-rotated.pdf"),
-        Op::Delete => format!("{stem}-trimmed.pdf"),
-        Op::Reorder => format!("{stem}-reordered.pdf"),
-        Op::SetMetadata => format!("{stem}-metadata.pdf"),
-    };
-    Ok((verification, output_name, bytes))
+    let verifications: Vec<Verification> = produced
+        .iter()
+        .map(|part| part.verification.clone())
+        .collect();
+    let verification = aggregate_verifications(&verifications)?;
+
+    let mut reports = Vec::with_capacity(produced.len().saturating_add(1));
+    let mut outputs = Vec::with_capacity(produced.len().saturating_add(1));
+    for part in &produced {
+        let bytes = selis_pdf_tools::take_output(&part.output)
+            .ok_or_else(|| ToolError("operation produced no output".to_string()))?;
+        reports.push(serde_json::json!({
+            "name": part.name,
+            "kind": "pdf",
+            "pages": part.verification.pages_out,
+            "bytes": bytes.len(),
+            "verdict": part.verification.verdict,
+        }));
+        outputs.push((part.name.clone(), bytes));
+    }
+
+    if op == Op::Split && produced.len() > 1 {
+        let entries: Vec<(&str, &[u8])> = outputs
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect();
+        let zip = selis_pdf_tools::bundle_zip(&entries)?;
+        let zip_name = format!("{stem}-split.zip");
+        reports.push(serde_json::json!({
+            "name": zip_name,
+            "kind": "zip",
+            "pages": 0,
+            "bytes": zip.len(),
+            "verdict": "bundle",
+        }));
+        outputs.push((zip_name, zip));
+    }
+
+    Ok((verification, reports, outputs))
 }
 
+fn run_split(options: &serde_json::Value, stem: &str) -> Result<Vec<Produced>, ToolError> {
+    let mode = option_str(options, "mode").unwrap_or_else(|| "range".to_string());
+    match mode.as_str() {
+        "range" => {
+            let first = usize::try_from(
+                option_u64(options, "from")
+                    .ok_or_else(|| ToolError("split needs a from page".to_string()))?,
+            )
+            .map_err(|_| ToolError("split from is out of range".to_string()))?;
+            let last = match option_u64(options, "to") {
+                Some(value) => usize::try_from(value)
+                    .map_err(|_| ToolError("split to is out of range".to_string()))?,
+                None => usize::MAX,
+            };
+            Ok(vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-pages.pdf"),
+                verification: selis_pdf_tools::split("in/0", first, last, "out.pdf")?,
+            }])
+        }
+        "every" => {
+            let every = usize::try_from(
+                option_u64(options, "every")
+                    .ok_or_else(|| ToolError("split every needs a page interval".to_string()))?,
+            )
+            .map_err(|_| ToolError("split interval is out of range".to_string()))?;
+            let parts = selis_pdf_tools::split_every("in/0", every, "out/")?;
+            Ok(parts
+                .into_iter()
+                .map(|part| Produced {
+                    name: format!(
+                        "{stem}-pages-{}-{}.pdf",
+                        part.first.saturating_add(1),
+                        part.last.saturating_add(1)
+                    ),
+                    output: part.output,
+                    verification: part.verification,
+                })
+                .collect())
+        }
+        "half" => {
+            let parts = selis_pdf_tools::split_half("in/0", "out/")?;
+            Ok(parts
+                .into_iter()
+                .map(|part| Produced {
+                    name: format!(
+                        "{stem}-pages-{}-{}.pdf",
+                        part.first.saturating_add(1),
+                        part.last.saturating_add(1)
+                    ),
+                    output: part.output,
+                    verification: part.verification,
+                })
+                .collect())
+        }
+        "extract" => {
+            let pages = option_str(options, "pages")
+                .ok_or_else(|| ToolError("extract needs a page selection".to_string()))?;
+            Ok(vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-extracted.pdf"),
+                verification: selis_pdf_tools::extract_pages("in/0", &pages, "out.pdf")?,
+            }])
+        }
+        other => Err(ToolError(format!("unknown split mode `{other}`"))),
+    }
+}
+
+fn aggregate_verifications(parts: &[Verification]) -> Result<Verification, ToolError> {
+    let first = parts
+        .first()
+        .ok_or_else(|| ToolError("operation produced no verification".to_string()))?;
+    if parts.len() == 1 {
+        return Ok(first.clone());
+    }
+    let mut checked = Vec::new();
+    for label in &first.checked {
+        if (*label == "pages" || *label == "annotations")
+            && parts.iter().all(|part| part.checked.contains(label))
+        {
+            checked.push(*label);
+        }
+    }
+    Ok(Verification {
+        pages_in: first.pages_in,
+        pages_out: parts
+            .iter()
+            .fold(0u64, |total, part| total.saturating_add(part.pages_out)),
+        annotations_in: first.annotations_in,
+        annotations_out: parts.iter().fold(0u64, |total, part| {
+            total.saturating_add(part.annotations_out)
+        }),
+        // Per-part counts for these structures are not additive (each part
+        // carries its own catalog-level copy). The aggregate only claims the
+        // counts that are meaningful across the whole split.
+        fields_in: None,
+        fields_out: 0,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: None,
+        embedded_files_out: 0,
+        bytes_in: first.bytes_in,
+        bytes_out: parts
+            .iter()
+            .fold(0u64, |total, part| total.saturating_add(part.bytes_out)),
+        verdict: if parts.iter().all(|part| part.verdict == "ok") {
+            "ok".to_string()
+        } else {
+            "failed".to_string()
+        },
+        checked,
+    })
+}
+
+/// A bounded, single-component download stem.
+///
+/// Dots are replaced rather than preserved so a name such as `a..b.pdf`
+/// cannot become a parent-directory marker inside the ZIP. Unicode letters
+/// survive; separators, control characters, and punctuation become `_`.
 fn file_stem(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    match base.rsplit_once('.') {
-        Some((stem, _)) => stem.to_string(),
-        None => base.to_string(),
+    let stem = match base.rsplit_once('.') {
+        Some((stem, _)) => stem,
+        None => base,
+    };
+    let mut out = String::new();
+    for ch in stem.chars().take(80) {
+        if ch.is_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(|ch: char| ch == ' ' || ch == '_');
+    if trimmed.is_empty() {
+        "document".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -510,5 +692,165 @@ mod tests {
                 .as_bytes(),
         );
         out
+    }
+
+    fn multipage_pdf(pages: usize) -> Vec<u8> {
+        let kids = (0..pages)
+            .map(|index| format!("{} 0 R", index.saturating_add(3)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut objects = vec![
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_string(),
+            format!("2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {pages} >>\nendobj\n"),
+        ];
+        for index in 0..pages {
+            objects.push(format!(
+                "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj\n",
+                index.saturating_add(3)
+            ));
+        }
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    fn read_u32(bytes: &[u8], pos: &mut usize) -> u32 {
+        let end = pos.saturating_add(4);
+        let slice: [u8; 4] = bytes[*pos..end].try_into().expect("four bytes");
+        *pos = end;
+        u32::from_le_bytes(slice)
+    }
+
+    fn parse_response(bytes: &[u8]) -> (u32, serde_json::Value, Vec<(String, Vec<u8>)>) {
+        assert_eq!(bytes[0..4], RESPONSE_MAGIC.to_le_bytes());
+        let status = u32::from_le_bytes(bytes[4..8].try_into().expect("status"));
+        let mut pos = 8usize;
+        let message_len = usize::try_from(read_u32(bytes, &mut pos)).expect("message len");
+        let message_end = pos.saturating_add(message_len);
+        let message: serde_json::Value =
+            serde_json::from_slice(&bytes[pos..message_end]).expect("message JSON");
+        pos = message_end;
+        let count = usize::try_from(read_u32(bytes, &mut pos)).expect("output count");
+        let mut outputs = Vec::with_capacity(count);
+        for _ in 0..count {
+            let name_len = usize::try_from(read_u32(bytes, &mut pos)).expect("name len");
+            let name_end = pos.saturating_add(name_len);
+            let name = std::str::from_utf8(&bytes[pos..name_end])
+                .expect("name UTF-8")
+                .to_string();
+            pos = name_end;
+            let data_len = usize::try_from(read_u32(bytes, &mut pos)).expect("data len");
+            let data_end = pos.saturating_add(data_len);
+            outputs.push((name, bytes[pos..data_end].to_vec()));
+            pos = data_end;
+        }
+        assert_eq!(pos, bytes.len(), "trailing response bytes");
+        (status, message, outputs)
+    }
+
+    fn split_request(options: &str, pages: usize) -> Vec<u8> {
+        let pdf = multipage_pdf(pages);
+        request(2, options.as_bytes(), &[("doc.pdf", &pdf)])
+    }
+
+    #[test]
+    fn split_every_returns_named_parts_and_a_zip() {
+        let response = run_request(&split_request(r#"{"mode":"every","every":2}"#, 5));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "split every failed: {message}");
+        assert_eq!(outputs.len(), 4, "three PDFs and one ZIP");
+        let reports = message["outputs"].as_array().expect("outputs metadata");
+        assert_eq!(reports.len(), 4);
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["kind"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            vec!["pdf", "pdf", "pdf", "zip"]
+        );
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["pages"].as_u64().unwrap_or(999))
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1, 0]
+        );
+        assert_eq!(outputs[0].0, "doc-pages-1-2.pdf");
+        assert_eq!(outputs[1].0, "doc-pages-3-4.pdf");
+        assert_eq!(outputs[2].0, "doc-pages-5-5.pdf");
+        assert_eq!(outputs[3].0, "doc-split.zip");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        assert_eq!(&outputs[3].1[0..4], b"PK\x03\x04");
+        assert_eq!(message["pages_in"], 5);
+        assert_eq!(message["pages_out"], 5);
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(
+            message["checked"],
+            serde_json::json!(["pages", "annotations"])
+        );
+    }
+
+    #[test]
+    fn split_half_and_range_without_to_are_both_bounded() {
+        let (status, message, outputs) =
+            parse_response(&run_request(&split_request(r#"{"mode":"half"}"#, 5)));
+        assert_eq!(status, 0, "split half failed: {message}");
+        assert_eq!(outputs.len(), 3, "two PDFs and one ZIP");
+        let reports = message["outputs"].as_array().expect("reports");
+        assert_eq!(reports[0]["pages"], 2);
+        assert_eq!(reports[1]["pages"], 3);
+        assert_eq!(reports[2]["kind"], "zip");
+
+        let (status, message, outputs) = parse_response(&run_request(&split_request(
+            r#"{"mode":"range","from":2}"#,
+            5,
+        )));
+        assert_eq!(status, 0, "range split failed: {message}");
+        assert_eq!(outputs.len(), 1, "range mode produces one PDF");
+        assert_eq!(outputs[0].0, "doc-pages.pdf");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["outputs"][0]["kind"], "pdf");
+    }
+
+    #[test]
+    fn extract_mode_returns_one_pdf_in_document_order() {
+        let response = run_request(&split_request(r#"{"mode":"extract","pages":"4,1-2"}"#, 6));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "extract failed: {message}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "doc-extracted.pdf");
+        assert_eq!(message["pages_in"], 6);
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["outputs"][0]["pages"], 3);
+    }
+
+    #[test]
+    fn split_every_reports_the_part_limit() {
+        let response = run_request(&split_request(r#"{"mode":"every","every":1}"#, 65));
+        let status = u32::from_le_bytes(response[4..8].try_into().expect("status"));
+        assert_eq!(status, 1);
+        let message_len =
+            usize::try_from(u32::from_le_bytes(response[8..12].try_into().expect("len")))
+                .expect("message length");
+        let message = std::str::from_utf8(&response[12..12 + message_len]).expect("error text");
+        assert!(
+            message.contains("64"),
+            "error should name the limit: {message}"
+        );
     }
 }

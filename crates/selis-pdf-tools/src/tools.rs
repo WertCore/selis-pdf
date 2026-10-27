@@ -15,7 +15,7 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::verify_report::Verification;
 use crate::write_gate::{self, Preserved, PRESERVE_ALL, PRESERVE_EXCEPT_PAGES};
-use crate::{read_file, CliError, CliResult};
+use crate::{read_file, CliError, CliResult, SplitPart, MAX_SPLIT_OUTPUTS};
 
 /// A parsed merge input with its source-page → merged-page mapping.
 struct MergeInput {
@@ -2125,16 +2125,13 @@ fn document_id(inputs: &[MergeInput]) -> [u8; 16] {
     id
 }
 
-/// Split a PDF: extract the pages in `page_range` (inclusive, 0-based) into a
-/// new file (SL-1A.TOOL.02). Returns the operation's verification display.
-pub(crate) fn split(
-    path: &str,
-    first: usize,
-    last: usize,
-    output: &str,
-) -> CliResult<Verification> {
+/// Open a document once for a page selection or split.
+///
+/// The returned budget is reusable by the caller's guard; it owns no borrow
+/// of the source bytes, and the parsed document/page list stay valid for the
+/// rest of the operation.
+fn open_for_split(path: &str) -> CliResult<(Vec<u8>, selis_pdf_cos::Doc, Vec<Ref>, Budget)> {
     let src = read_file(path)?;
-    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let budget = Budget::unlimited();
     let clock = crate::shell_clock();
     let mut g = crate::runtime::cli_guard(&budget, &clock);
@@ -2143,55 +2140,245 @@ pub(crate) fn split(
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
         page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    drop(g);
+    Ok((src, doc, page_refs, budget))
+}
+
+/// Write one page selection through the full writer and verification gate.
+///
+/// `selected` is a list of zero-based source page indexes in output order. The
+/// caller has already validated every index against `page_refs`.
+#[allow(clippy::too_many_arguments)]
+fn write_selection(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    selected: &[usize],
+    output: &str,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
+    if selected.is_empty() {
+        return Err(CliError("no pages were selected".to_string()));
+    }
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::with_capacity(selected.len());
+    for &idx in selected {
+        let page_ref = page_refs.get(idx).ok_or_else(|| {
+            CliError(format!(
+                "page {idx} out of range (document has {} pages)",
+                page_refs.len()
+            ))
+        })?;
+        let merged_ref = copy_page(&mut out, src, *page_ref, budget, g, &mut next_num)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    // WRITE.07: carry the input's catalog-level structures through the page
+    // selection, pruning what only referenced the deleted pages.
+    reconcile_single_input(&mut out, src, doc, page_refs, &kept, true, budget, g)
+        .map_err(CliError)?;
+    let expected_pages = u64::try_from(kept.len()).unwrap_or(u64::MAX);
+    // The annotation expectation counts the surviving ORIGINAL pages (the
+    // merged page numbers do not exist in the input document).
+    let kept_annots = annots_on_pages(
+        src,
+        doc,
+        &kept
+            .iter()
+            .map(|(_, old_num, _)| Ref::new(*old_num, 0))
+            .collect::<Vec<_>>(),
+        budget,
+        g,
+    );
+    write_document(
+        out,
+        output,
+        Some(src),
+        PRESERVE_EXCEPT_PAGES,
+        Some(expected_pages),
+        Some(kept_annots),
+        in_bytes,
+        budget,
+        g,
+    )
+}
+
+/// Write consecutive page ranges as independent verified PDFs.
+#[allow(clippy::too_many_arguments)]
+fn write_ranges(
+    path: &str,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_refs: &[Ref],
+    ranges: &[(usize, usize)],
+    output_prefix: &str,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Vec<SplitPart>> {
+    if ranges.is_empty() {
+        return Err(CliError("split needs at least one page range".to_string()));
+    }
+    if ranges.len() > MAX_SPLIT_OUTPUTS {
+        return Err(CliError(format!(
+            "split would produce {} parts; the limit is {MAX_SPLIT_OUTPUTS}",
+            ranges.len()
+        )));
+    }
+    let count = page_refs.len();
+    let mut parts = Vec::with_capacity(ranges.len());
+    for (index, &(first, last)) in ranges.iter().enumerate() {
+        if first > last || last >= count {
+            return Err(CliError(format!(
+                "page range {first}..{last} out of range (document has {count} pages)"
+            )));
+        }
+        let output = format!("{output_prefix}{index}.pdf");
+        let selected: Vec<usize> = (first..=last).collect();
+        let verification = write_selection(
+            path, src, doc, page_refs, &selected, &output, in_bytes, budget, g,
+        )?;
+        eprintln!("split pages {first}..{last} into {output}");
+        verification.emit_line();
+        parts.push(SplitPart {
+            first,
+            last,
+            output,
+            verification,
+        });
+    }
+    Ok(parts)
+}
+
+/// Split a PDF: extract the pages in `page_range` (inclusive, 0-based) into a
+/// new file (SL-1A.TOOL.02). Returns the operation's verification display.
+///
+/// `last == usize::MAX` means "through the final page"; that is the CLI's
+/// default and the browser omits its `to` option for the same case.
+pub(crate) fn split(
+    path: &str,
+    first: usize,
+    last: usize,
+    output: &str,
+) -> CliResult<Verification> {
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let last = if last == usize::MAX {
+        page_refs.len().saturating_sub(1)
+    } else {
+        last
+    };
     if last >= page_refs.len() || first > last {
         return Err(CliError(format!(
             "page range {first}..{last} out of range (document has {} pages)",
             page_refs.len()
         )));
     }
-    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
-    let mut next_num = 3u32;
-    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
-    for (idx, page_ref) in page_refs.iter().enumerate() {
-        if idx < first || idx > last {
-            continue;
-        }
-        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
-            .map_err(|e| CliError(format!("{path}: {e}")))?;
-        kept.push((idx, page_ref.num, merged_ref));
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let selected: Vec<usize> = (first..=last).collect();
+    let verification = write_selection(
+        path, &src, &doc, &page_refs, &selected, output, in_bytes, &budget, &mut g,
+    )?;
+    eprintln!("split pages {first}..{last} into {output}");
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// Split `path` into consecutive groups of `every` pages (SL-1A.TOOL.02
+/// every-N mode). Each part is separately verified; the caller receives the
+/// backend key and source range for naming and download.
+pub(crate) fn split_every(
+    path: &str,
+    every: usize,
+    output_prefix: &str,
+) -> CliResult<Vec<SplitPart>> {
+    if every == 0 {
+        return Err(CliError(
+            "split interval must be at least 1 page".to_string(),
+        ));
     }
-    // WRITE.07: carry the input's catalog-level structures through the page
-    // selection (structure tree, output intents, metadata, …), pruning what
-    // only referenced the deleted pages.
-    reconcile_single_input(
-        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
-    )
-    .map_err(CliError)?;
-    let expected_pages = u64::try_from(kept.len()).unwrap_or(u64::MAX);
-    // The annotation expectation counts the surviving ORIGINAL pages (the
-    // merged page numbers do not exist in the input document).
-    let kept_annots = annots_on_pages(
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let count = page_refs.len();
+    if count == 0 {
+        return Err(CliError(format!("{path}: document has no pages")));
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while start < count {
+        let end = start.saturating_add(every).saturating_sub(1).min(count - 1);
+        ranges.push((start, end));
+        if ranges.len() > MAX_SPLIT_OUTPUTS {
+            return Err(CliError(format!(
+                "split every {every} page(s) would produce more than {MAX_SPLIT_OUTPUTS} parts"
+            )));
+        }
+        start = end.saturating_add(1);
+    }
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    write_ranges(
+        path,
         &src,
         &doc,
-        &kept
-            .iter()
-            .map(|(_, old_num, _)| Ref::new(*old_num, 0))
-            .collect::<Vec<_>>(),
-        &budget,
-        &mut g,
-    );
-    let verification = write_document(
-        out,
-        output,
-        Some(&src),
-        PRESERVE_EXCEPT_PAGES,
-        Some(expected_pages),
-        Some(kept_annots),
+        &page_refs,
+        &ranges,
+        output_prefix,
         in_bytes,
         &budget,
         &mut g,
+    )
+}
+
+/// Split `path` in half at the middle page (SL-1A.TOOL.02 half mode).
+pub(crate) fn split_half(path: &str, output_prefix: &str) -> CliResult<Vec<SplitPart>> {
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let count = page_refs.len();
+    if count < 2 {
+        return Err(CliError(
+            "split in half needs a document with at least two pages".to_string(),
+        ));
+    }
+    let middle = count
+        .checked_div(2)
+        .ok_or_else(|| CliError("cannot split this page count".to_string()))?;
+    let ranges = [(0, middle.saturating_sub(1)), (middle, count - 1)];
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    write_ranges(
+        path,
+        &src,
+        &doc,
+        &page_refs,
+        &ranges,
+        output_prefix,
+        in_bytes,
+        &budget,
+        &mut g,
+    )
+}
+
+/// Extract the pages in `selection` into one PDF, keeping document order
+/// (SL-1A.TOOL.02 extract mode).
+pub(crate) fn extract_pages(path: &str, selection: &str, output: &str) -> CliResult<Verification> {
+    let (src, doc, page_refs, budget) = open_for_split(path)?;
+    let count = page_refs.len();
+    let mut selected = parse_page_selection(selection, count).map_err(CliError)?;
+    selected.sort_unstable();
+    selected.dedup();
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let verification = write_selection(
+        path, &src, &doc, &page_refs, &selected, output, in_bytes, &budget, &mut g,
     )?;
-    eprintln!("split pages {first}..{last} into {output}");
+    eprintln!("extracted {} page(s) into {output}", selected.len());
     verification.emit_line();
     Ok(verification)
 }
@@ -3256,7 +3443,7 @@ fn emit(out: &mut Vec<u8>, toks: &[selis_pdf_cos::Token]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-    use super::{Obj, Ref};
+    use super::{Budget, Obj, Ref};
 
     /// Build a one-page PDF whose page carries an inline `/Resources` and an
     /// `/Annots` array referencing one annotation object. Offsets are computed
@@ -3703,5 +3890,116 @@ mod tests {
             Obj::Dict(p) => p.as_slice(),
             other => panic!("expected dict, got {}", other.type_name()),
         }
+    }
+
+    fn multipage_source(pages: usize) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        for index in 0..pages {
+            let content = format!("q 1 0 0 1 {index} 0 cm Q");
+            builder.add_page(100.0, 100.0, content.as_bytes());
+        }
+        builder
+            .write(&budget, &mut g)
+            .expect("write multipage source")
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("selis-tools-{}-{name}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn pages_in_file(path: &std::path::Path) -> u64 {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        u64::try_from(refs.len()).unwrap()
+    }
+
+    #[test]
+    fn split_every_groups_pages_and_verifies_each_part() {
+        let dir = temp_dir("split-every");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(5)).expect("write input");
+        let prefix = format!("{}\\part-", dir.display());
+        let parts = super::split_every(input.to_str().unwrap(), 2, &prefix).expect("split every");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| (part.first, part.last))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (2, 3), (4, 4)]
+        );
+        assert_eq!(pages_in_file(std::path::Path::new(&parts[0].output)), 2);
+        assert_eq!(pages_in_file(std::path::Path::new(&parts[1].output)), 2);
+        assert_eq!(pages_in_file(std::path::Path::new(&parts[2].output)), 1);
+        for part in &parts {
+            assert_eq!(part.verification.verdict, "ok");
+            assert_eq!(part.verification.pages_in, Some(5));
+            assert_eq!(
+                part.verification.pages_out,
+                u64::try_from(part.last - part.first + 1).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn split_half_uses_the_middle_page() {
+        let dir = temp_dir("split-half");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(5)).expect("write input");
+        let prefix = format!("{}\\half-", dir.display());
+        let parts = super::split_half(input.to_str().unwrap(), &prefix).expect("split half");
+        assert_eq!(parts.len(), 2);
+        assert_eq!((parts[0].first, parts[0].last), (0, 1));
+        assert_eq!((parts[1].first, parts[1].last), (2, 4));
+        assert_eq!(pages_in_file(std::path::Path::new(&parts[0].output)), 2);
+        assert_eq!(pages_in_file(std::path::Path::new(&parts[1].output)), 3);
+    }
+
+    #[test]
+    fn extract_pages_deduplicates_and_keeps_document_order() {
+        let dir = temp_dir("extract-pages");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(6)).expect("write input");
+        let output = dir.join("extracted.pdf");
+        let verification =
+            super::extract_pages(input.to_str().unwrap(), "5,2-3,2", output.to_str().unwrap())
+                .expect("extract");
+        assert_eq!(verification.pages_in, Some(6));
+        assert_eq!(verification.pages_out, 3);
+        assert_eq!(pages_in_file(&output), 3);
+    }
+
+    #[test]
+    fn split_sentinel_keeps_the_final_page_and_rejects_bad_ranges() {
+        let dir = temp_dir("split-sentinel");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, multipage_source(5)).expect("write input");
+        let output = dir.join("tail.pdf");
+        let verification = super::split(
+            input.to_str().unwrap(),
+            2,
+            usize::MAX,
+            output.to_str().unwrap(),
+        )
+        .expect("split to the end");
+        assert_eq!(verification.pages_out, 3);
+        assert_eq!(pages_in_file(&output), 3);
+
+        let error = super::split(input.to_str().unwrap(), 3, 2, output.to_str().unwrap())
+            .expect_err("reversed range");
+        assert!(error.0.contains("out of range"), "{error:?}");
+        assert!(super::split_every(input.to_str().unwrap(), 0, "").is_err());
+        let single = dir.join("single.pdf");
+        std::fs::write(&single, multipage_source(1)).expect("write single-page input");
+        assert!(super::split_half(single.to_str().unwrap(), "").is_err());
     }
 }

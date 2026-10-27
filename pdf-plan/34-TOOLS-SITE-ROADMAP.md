@@ -36,12 +36,15 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the first Phase 1A.1 slice, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
 | Merge PDF | yes | yes | **Live** | Multi-file, ordered list, up/down reorder, annotation/form/OCG/outline reconciliation, verification rows. |
 | Split PDF (range) | yes | yes | **Live** | 1-based UI, inclusive range, empty "to" = last page. |
+| Split every N pages | yes | yes | **Live** | One PDF per group, capped at 64 parts; multi-part runs add a deterministic ZIP bundle. |
+| Split in half | — | yes | **Live** | Two PDFs split at the middle page, plus the ZIP bundle. |
+| Extract pages | yes | yes | **Live** | One PDF containing the selected pages in document order. |
 | Rotate PDF | yes | yes | **Live** | 90/180/270, all pages or 1-based selection. |
 | Delete pages | yes | yes | **Live** | 1-based selection; refuses to delete every page. |
 | Reorder pages | yes (Organize) | yes | **Live** | Full permutation, 1-based input. |
@@ -57,7 +60,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 137 074 B).
+      (currently 300 000 B brotli; baseline 150 313 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -78,8 +81,8 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 |---|---|---|---|---|
 | Merge | yes | yes | 1A.0 | Live. |
 | Split by range | yes | yes | 1A.0 | Live. |
-| Split every N pages | yes | yes | 1A.1 | Writer + protocol must return multiple outputs; one ZIP download. |
-| Split in half | — | yes | 1A.1 | Same multi-output path. |
+| Split every N pages | yes | yes | 1A.1 | Live. One PDF per group plus a ZIP bundle; capped at 64 PDF parts. |
+| Split in half | — | yes | 1A.1 | Live. Two PDFs plus the ZIP bundle. |
 | Split by size | — | yes | 1A.1 | Target bytes; deterministic split points; report on the result card. |
 | Split by bookmarks | — | yes | 1A.1 | Needs outline reader; already in the document model. |
 | Split by text | — | yes | Text | Needs text extraction and a boundary rule; show the chosen boundaries before committing. |
@@ -93,7 +96,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | N-up (2/4/6/9) | — | yes | 1A.1 | Content placement; needs a page-content builder, already owned. |
 | Flip horizontal/vertical | — | yes | 1A.1 | Content matrix; verify against original pixels only when raster exists. |
 | Alternate / mix pages | — | yes | 1A.1 | Interleave two documents; preserve page-level resources. |
-| Extract pages | yes | yes | 1A.1 | Split path with a multi-output response. |
+| Extract pages | yes | yes | 1A.1 | Live. One PDF, selected pages in document order. |
 | Page numbers | yes | yes | 1A.1 | Content builder + font subset; placement, start, format, skip-first. |
 | Watermark | yes | yes | 1A.1 | Text/image watermark; image path needs `selis-image`; keep flatten as an option. |
 | Headers and footers | — | yes | 1A.1 | Same text layout primitives as page numbers. |
@@ -105,7 +108,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Flatten annotations | — | yes | Raster | Requires appearance-stream rendering; never claim flatten without a render check. |
 | Flatten forms | — | yes | Raster/Forms | Same; form appearance generation is its own correctness surface. |
 | Invert colors | — | yes | Raster | Content-stream transform or render-to-image; prefer the latter only with an owned raster path. |
-| PDF → ZIP | — | yes | 1A.1 | Multi-output path; ZIP writer is a small owned container, not a PDF library. |
+| PDF → ZIP | — | yes | 1A.1 | Live as the multi-output split bundle; the ZIP writer is a small owned container, not a PDF library. Generic attachment bundles are next. |
 
 ### 3.2 Compression, repair, and privacy
 
@@ -201,16 +204,16 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 
 ## 4. Phases and exit gates
 
-### Phase 1A.0 — this slice (done when the branch is green)
+### Phase 1A.0 — initial six-tool slice (shipped)
 
-- Six live tools: merge, split, rotate, delete, reorder, metadata.
+- Six live tools: merge, split by range, rotate, delete, reorder, metadata.
 - Tool-first page, browser-native preview, verification rows, download.
 - `selis-pdf-tools` shared by CLI and browser; in-memory backend has no filesystem names.
 - `selis-pdf-wasm-tools` protocol chunk: zero imports, lazy, size-budgeted, no-upload asserted.
 - Unit tests for protocol/input parsing; browser check for merge, output download, verification,
   and no document bytes in any request.
-- **Exit:** `cargo test` targeted suites, web tests, browser check, size-check, lint, and the
-  no-upload network assertions pass. No claim of feature parity.
+- **Exit:** green targeted suites, web tests, browser check, size-check, lint, and the no-upload
+  network assertions. No claim of feature parity.
 
 ### Phase 1A.1 — the rest of the object-graph toolkit
 
@@ -218,6 +221,17 @@ Ship: split modes, organize/insert/duplicate, crop/resize, N-up/flip/alternate/m
 watermark, headers/footers, Bates, compression lossless, repair, metadata strip, attachments,
 bookmarks, page labels, CSV/Markdown/HTML→PDF, image→PDF for owned codecs, multi-output + ZIP,
 batch queue, unlock/protect/clear-permissions (crypto-enabled chunk).
+
+**Shipped 2026-10-27:** split every N pages, split in half, extract pages, per-output metadata and
+downloads, the owned deterministic ZIP bundle, and the matching protocol/browser coverage. The
+browser check runs the split path online and after an offline reload and reads the actual PDF and
+ZIP bytes.
+
+**Remaining in 1A.1:** split by size and by bookmarks, organize/insert/duplicate, crop/resize,
+N-up/flip/alternate/mix, page numbers, watermark, headers/footers, Bates, lossless compression,
+repair, metadata strip, attachments, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue,
+and the crypto-enabled security tools.
+
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
 size budget; no raster feature is claimed yet.
 

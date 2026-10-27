@@ -36,11 +36,33 @@ pub mod runtime;
 mod tools;
 mod verify_report;
 pub mod write_gate;
+mod zip;
 
 use selis_sandbox::Clock;
 
 pub use memory::{clear, insert_input, take_output, MemorySession};
 pub use verify_report::Verification;
+
+/// The most PDF parts one split request may produce.
+///
+/// The browser page can display a bounded number of downloads, and the tools
+/// protocol is sized for one in-memory result. A split that would exceed this
+/// limit is refused before any part is written; choose a larger interval or a
+/// range instead.
+pub const MAX_SPLIT_OUTPUTS: usize = 64;
+
+/// One PDF produced by a multi-output split.
+#[derive(Debug, Clone)]
+pub struct SplitPart {
+    /// The inclusive first source page (zero-based).
+    pub first: usize,
+    /// The inclusive last source page (zero-based).
+    pub last: usize,
+    /// The backend key the verified bytes were written to.
+    pub output: String,
+    /// The verification display for this part.
+    pub verification: Verification,
+}
 
 /// A tool operation failure.
 ///
@@ -113,6 +135,58 @@ pub fn merge(inputs: &[String], output: &str) -> ToolResult<Verification> {
 /// As [`merge`].
 pub fn split(path: &str, first: usize, last: usize, output: &str) -> ToolResult<Verification> {
     tools::split(path, first, last, output)
+}
+
+/// Split `path` into consecutive groups of `every` pages.
+///
+/// Outputs are written as `{output_prefix}0.pdf`, `{output_prefix}1.pdf`, and
+/// so on; the returned [`SplitPart`] values name the source range and the
+/// exact backend key for each one. At most [`MAX_SPLIT_OUTPUTS`] parts are
+/// produced, and each part is written only after its own verification passes;
+/// a failing part aborts the request.
+///
+/// # Errors
+///
+/// As [`split`], plus `every == 0` and a part count above the limit.
+pub fn split_every(path: &str, every: usize, output_prefix: &str) -> ToolResult<Vec<SplitPart>> {
+    tools::split_every(path, every, output_prefix)
+}
+
+/// Split `path` in half at the middle page.
+///
+/// A document with `n` pages produces a first part with `n / 2` pages and a
+/// second part with the remainder. A one-page document is refused rather than
+/// pretending it was split.
+///
+/// # Errors
+///
+/// As [`split_every`].
+pub fn split_half(path: &str, output_prefix: &str) -> ToolResult<Vec<SplitPart>> {
+    tools::split_half(path, output_prefix)
+}
+
+/// Extract the pages in `selection` (the CLI's `0,2,5-7` syntax) into one
+/// PDF. The selected pages keep document order.
+///
+/// # Errors
+///
+/// As [`split`].
+pub fn extract_pages(path: &str, selection: &str, output: &str) -> ToolResult<Verification> {
+    tools::extract_pages(path, selection, output)
+}
+
+/// Bundle flat files into a deterministic, store-method ZIP.
+///
+/// This is the multi-output download path: names are validated (no
+/// separators, control characters, or `..` markers), every entry is copied
+/// once, and an oversized archive fails instead of truncating.
+///
+/// # Errors
+///
+/// [`ToolError`] when `entries` is empty, a name is unsafe, or the archive
+/// exceeds the ZIP format's 4 GiB/65535-entry limits.
+pub fn bundle_zip(entries: &[(&str, &[u8])]) -> ToolResult<Vec<u8>> {
+    zip::store_bundle(entries).map_err(ToolError)
 }
 
 /// Set the standard document information fields (`Title`, `Author`, ...).

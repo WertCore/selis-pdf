@@ -15,7 +15,7 @@ export class ToolInputError extends Error {
 	}
 }
 
-function positivePage(text: string, label: string): number {
+function positiveNumber(text: string, label: string): number {
 	const trimmed = text.trim();
 	if (!/^[0-9]+$/.test(trimmed)) {
 		throw new ToolInputError(`${label} must be a whole number, 1 or greater`);
@@ -24,7 +24,11 @@ function positivePage(text: string, label: string): number {
 	if (!Number.isSafeInteger(value) || value < 1) {
 		throw new ToolInputError(`${label} must be 1 or greater`);
 	}
-	return value - 1;
+	return value;
+}
+
+function positivePage(text: string, label: string): number {
+	return positiveNumber(text, label) - 1;
 }
 
 /**
@@ -70,6 +74,11 @@ export function shiftPageSelection(input: string): string {
 /** Convert one 1-based page number to a 0-based index. */
 export function pageIndex(input: string, label: string): number {
 	return positivePage(input, label);
+}
+
+/** Parse a positive whole number that is a count, not a page index. */
+export function pageCount(input: string, label: string): number {
+	return positiveNumber(input, label);
 }
 
 /** Whether the file begins with a PDF header. `%PDF-` is the only signature. */

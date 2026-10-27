@@ -117,9 +117,56 @@ describe("decodeToolResponse", () => {
 				{ name: "out.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
 			]),
 		);
-		expect(result.output.name).toBe("out.pdf");
-		expect(Array.from(result.output.bytes)).toEqual([0x25, 0x50, 0x44, 0x46]);
+		expect(result.outputs[0]?.name).toBe("out.pdf");
+		expect(Array.from(result.outputs[0]?.bytes ?? [])).toEqual([0x25, 0x50, 0x44, 0x46]);
 		expect(result.verification.verdict).toBe("ok");
+		expect(result.reports).toHaveLength(1);
+		expect(result.reports[0]?.kind).toBe("pdf");
+		expect(result.reports[0]?.pages).toBe(2);
+		expect(result.reports[0]?.bytes).toBe(4);
+	});
+
+	it("keeps every output and its per-file report", () => {
+		const message = {
+			...verification,
+			pages_out: 5,
+			bytes_out: 19,
+			outputs: [
+				{ name: "doc-pages-1-2.pdf", kind: "pdf", pages: 2, bytes: 6, verdict: "ok" },
+				{ name: "doc-pages-3-5.pdf", kind: "pdf", pages: 3, bytes: 8, verdict: "ok" },
+				{ name: "doc-split.zip", kind: "zip", pages: 0, bytes: 5, verdict: "bundle" },
+			],
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [
+				{ name: "doc-pages-1-2.pdf", bytes: [1, 2, 3, 4, 5, 6] },
+				{ name: "doc-pages-3-5.pdf", bytes: [7, 8, 9, 10, 11, 12, 13, 14] },
+				{ name: "doc-split.zip", bytes: [15, 16, 17, 18, 19] },
+			]),
+		);
+		expect(result.outputs.map((output) => output.name)).toEqual([
+			"doc-pages-1-2.pdf",
+			"doc-pages-3-5.pdf",
+			"doc-split.zip",
+		]);
+		expect(result.reports.map((report) => report.kind)).toEqual(["pdf", "pdf", "zip"]);
+		expect(result.reports.map((report) => report.pages)).toEqual([2, 3, 0]);
+	});
+
+	it("rejects output metadata that does not match the wire outputs", () => {
+		const message = {
+			...verification,
+			outputs: [
+				{ name: "other.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" },
+			],
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(message), [
+					{ name: "out.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/metadata/);
 	});
 
 	it("surfaces a guest error message", () => {

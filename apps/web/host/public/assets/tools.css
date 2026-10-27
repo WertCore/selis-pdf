@@ -824,18 +824,63 @@ main {
 	font-size: 0.68rem;
 }
 
-.result-actions {
+.result-outputs {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 0.45rem;
-	justify-content: flex-end;
+	flex-direction: column;
+	margin: 1rem 0 0;
+	padding: 0;
+	border-top: 1px solid #bedfd4;
+	list-style: none;
 }
 
-.result-actions .primary-link,
-.result-actions .secondary-link {
-	min-height: 2.3rem;
+.output-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.65rem 0;
+	border-bottom: 1px solid rgba(11, 107, 94, 0.13);
+}
+
+.output-info {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.output-name {
+	overflow-wrap: anywhere;
+	font-size: 0.86rem;
+	font-weight: 600;
+}
+
+.output-meta {
+	margin-top: 0.12rem;
+	color: var(--muted);
+	font-family: var(--mono);
+	font-size: 0.65rem;
+}
+
+.output-actions {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.4rem;
+	flex-shrink: 0;
+}
+
+.output-actions .text-button {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.2rem;
+	text-decoration: none;
+}
+
+.output-actions .primary-link {
+	min-height: 2.2rem;
 	padding: 0.4rem 0.8rem;
-	font-size: 0.8rem;
+	font-size: 0.78rem;
 }
 
 .result-rows {
@@ -1023,6 +1068,7 @@ main {
 	.section-head,
 	.result-head,
 	.result-foot,
+	.output-row,
 	.site-footer {
 		align-items: flex-start;
 		flex-direction: column;

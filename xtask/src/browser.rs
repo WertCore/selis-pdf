@@ -471,9 +471,214 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
     Ok(())
 }
 
-/// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05): the real `/tools.html`
-/// merges two PDFs online, then the harness cuts the origin, reloads the same
-/// page, and merges again with every byte coming from the worker's cache.
+fn check_split_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} split did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} split never set data-no-upload=verified; the local request check did \
+             not pass"
+        ));
+    }
+    let run_label = string_field(leg, "runLabel")?;
+    if run_label != "Split PDF" {
+        return Err(format!(
+            "the {label} split button was labelled {run_label:?}, expected \"Split PDF\""
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} split status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} split reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("3 PDFs and a ZIP") {
+        return Err(format!(
+            "the {label} split result was named {:?}, expected \"3 PDFs and a ZIP\"",
+            result.get("title")
+        ));
+    }
+    let meta = result
+        .get("meta")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} split result had no summary"))?;
+    if !meta.contains("4 files") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} split summary did not describe four verified files (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} split result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "3 \u{2192} 3" {
+        return Err(format!(
+            "the {label} split reported Pages {:?}, expected \"3 \u{2192} 3\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} split did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} split reported no output list"))?;
+    if outputs.len() != 4 {
+        return Err(format!(
+            "the {label} split produced {} outputs, expected three PDFs and one ZIP",
+            outputs.len()
+        ));
+    }
+    let mut pdf_names = Vec::new();
+    let mut zip_names = Vec::new();
+    let mut total_pages = 0u64;
+    for output in outputs {
+        let kind = output
+            .get("kind")
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("the {label} split output had no kind"))?;
+        let name = output.get("name").and_then(Json::as_str).unwrap_or("");
+        let download_name = output
+            .get("downloadName")
+            .and_then(Json::as_str)
+            .unwrap_or("");
+        if output.get("blob").and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "the {label} split output {name:?} was not a Blob URL"
+            ));
+        }
+        let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+        if output.get("declaredBytes").and_then(Json::as_u64) != Some(bytes) || bytes == 0 {
+            return Err(format!(
+                "the {label} split output {name:?} had inconsistent byte counts (declared = {:?}, \
+                 actual = {bytes})",
+                output.get("declaredBytes")
+            ));
+        }
+        match kind {
+            "pdf" => {
+                if !name.ends_with(".pdf") || download_name != name {
+                    return Err(format!(
+                        "the {label} split PDF {name:?} did not use a matching PDF download name \
+                         (download = {download_name:?})"
+                    ));
+                }
+                if output.get("previewBlob").and_then(Json::as_bool) != Some(true) {
+                    return Err(format!(
+                        "the {label} split PDF {name:?} was not previewable from a Blob URL"
+                    ));
+                }
+                if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+                    return Err(format!(
+                        "the {label} split PDF {name:?} did not begin with %PDF- (header = {:?})",
+                        output.get("header")
+                    ));
+                }
+                let pages = output.get("pages").and_then(Json::as_u64).unwrap_or(0);
+                if pages == 0 {
+                    return Err(format!("the {label} split PDF {name:?} reported no pages"));
+                }
+                total_pages = total_pages.saturating_add(pages);
+                pdf_names.push(name.to_string());
+            }
+            "zip" => {
+                if !name.ends_with(".zip") || download_name != name {
+                    return Err(format!(
+                        "the {label} split ZIP {name:?} did not use a matching ZIP download name \
+                         (download = {download_name:?})"
+                    ));
+                }
+                if output.get("previewBlob") != Some(&Json::Null) {
+                    return Err(format!(
+                        "the {label} split ZIP {name:?} should not have a preview link"
+                    ));
+                }
+                if output.get("zip").and_then(Json::as_bool) != Some(true) {
+                    return Err(format!(
+                        "the {label} split ZIP {name:?} did not begin with a ZIP local-file header"
+                    ));
+                }
+                if output.get("pages").and_then(Json::as_u64) != Some(0) {
+                    return Err(format!(
+                        "the {label} split ZIP {name:?} reported {:?} pages, expected 0",
+                        output.get("pages")
+                    ));
+                }
+                zip_names.push(name.to_string());
+            }
+            other => {
+                return Err(format!(
+                    "the {label} split returned an unknown output kind {other:?}"
+                ));
+            }
+        }
+    }
+    if pdf_names.len() != 3 || zip_names.len() != 1 {
+        return Err(format!(
+            "the {label} split returned {:?} PDF(s) and {:?} ZIP(s), expected three and one",
+            pdf_names.len(),
+            zip_names.len()
+        ));
+    }
+    let mut unique = pdf_names.clone();
+    unique.extend(zip_names.iter().cloned());
+    unique.sort();
+    unique.dedup();
+    if unique.len() != 4 {
+        return Err(format!(
+            "the {label} split output names were not unique: {unique:?}"
+        ));
+    }
+    if total_pages != 3 {
+        return Err(format!(
+            "the {label} split PDFs carried {total_pages} pages, expected 3"
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} split reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} split reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} split fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split
+/// modes): the real `/tools.html` merges two PDFs and splits a three-page PDF
+/// one page at a time online, then the harness cuts the origin, reloads the
+/// same page, and repeats both runs with every byte coming from the worker's
+/// cache.
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
@@ -481,13 +686,14 @@ fn verdict_chrome(report: &Json) -> Result<(), String> {
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
-/// * the result card shows Pages `2 → 2` and an `ok` verdict;
-/// * the download href is a Blob URL and the bytes behind it begin `%PDF-` and
-///   are larger than the two 423-byte inputs;
+/// * the merge result shows Pages `2 → 2` and an `ok` verdict, and its Blob
+///   begins `%PDF-` and is larger than the two 423-byte inputs;
+/// * the split-every leg shows one selected PDF, Pages `3 → 3`, three PDF rows
+///   with one page each, and a fourth ZIP row whose actual Blob starts `PK`;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
-/// * the offline leg repeats the card grid and merge after the origin has
-///   answered 503, while the page is worker-controlled and still sees zero
+/// * the offline leg repeats the card grid, merge, and split after the origin
+///   has answered 503, while the page is worker-controlled and still sees zero
 ///   foreign resources.
 ///
 /// The last two points are why the page cannot pass on a fixture: the fixture
@@ -620,6 +826,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         );
     }
 
+    // Phase 1A.1. The same page splits the three-page fixture one page at a
+    // time. The proof is structural: three PDFs with one page each plus a ZIP
+    // whose local-file header is read from the actual Blob bytes.
+    let split = report
+        .get("split")
+        .ok_or_else(|| "the page reported no split leg (split = None)".to_string())?;
+    check_split_leg(split, "online")?;
+
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
     // module, never reaches the card grid: the harness gets the worker's 503.
@@ -739,6 +953,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
                 .collect::<Vec<_>>()
         ));
     }
+    let offline_split = offline
+        .get("split")
+        .ok_or_else(|| "the offline leg reported no split result".to_string())?;
+    check_split_leg(offline_split, "offline")?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -4285,9 +4503,88 @@ mod tests {
         })
     }
 
+    /// The split-every leg shared by the online and offline halves of the
+    /// tools-page report. The byte counts are representative; the verdict
+    /// checks headers, kinds, names, and page totals rather than a particular
+    /// compressor output.
+    fn real_tools_split_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Split PDF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "3 PDFs and a ZIP",
+                "meta": "4 files · 2.4 KiB · verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Annotations", "value": "0 \u{2192} 0" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [
+                {
+                    "kind": "pdf",
+                    "name": "report-pages-1-1.pdf",
+                    "pages": 1,
+                    "declaredBytes": 601,
+                    "bytes": 601,
+                    "blob": true,
+                    "previewBlob": true,
+                    "downloadName": "report-pages-1-1.pdf",
+                    "header": "%PDF-",
+                    "zip": false,
+                },
+                {
+                    "kind": "pdf",
+                    "name": "report-pages-2-2.pdf",
+                    "pages": 1,
+                    "declaredBytes": 602,
+                    "bytes": 602,
+                    "blob": true,
+                    "previewBlob": true,
+                    "downloadName": "report-pages-2-2.pdf",
+                    "header": "%PDF-",
+                    "zip": false,
+                },
+                {
+                    "kind": "pdf",
+                    "name": "report-pages-3-3.pdf",
+                    "pages": 1,
+                    "declaredBytes": 603,
+                    "bytes": 603,
+                    "blob": true,
+                    "previewBlob": true,
+                    "downloadName": "report-pages-3-3.pdf",
+                    "header": "%PDF-",
+                    "zip": false,
+                },
+                {
+                    "kind": "zip",
+                    "name": "report-split.zip",
+                    "pages": 0,
+                    "declaredBytes": 1200,
+                    "bytes": 1200,
+                    "blob": true,
+                    "previewBlob": Json::Null,
+                    "downloadName": "report-split.zip",
+                    "header": "PK",
+                    "zip": true,
+                },
+            ],
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
-    /// a real merge. The numbers are representative; the assertions are about
-    /// the shape and the claims, not about a particular compression ratio.
+    /// a real merge and a split-every run. The numbers are representative; the
+    /// assertions are about the shape and the claims, not about a particular
+    /// compression ratio.
     fn real_tools_page_report() -> Json {
         json!({
             "schema": SCHEMA,
@@ -4329,6 +4626,7 @@ mod tests {
                     "/wasm/selis_pdf_wasm_tools.wasm",
                 ],
             },
+            "split": real_tools_split_leg(),
             "sw": {
                 "registration": "registered",
                 "script": "http://127.0.0.1:1234/sw.js",
@@ -4375,6 +4673,7 @@ mod tests {
                         "/wasm/selis_pdf_wasm_tools.wasm",
                     ],
                 },
+                "split": real_tools_split_leg(),
             },
         })
     }
@@ -4471,6 +4770,77 @@ mod tests {
         assert!(
             verdict_tools_page(&offline_wrong_pages).is_err(),
             "an offline merge that did not add the second page must not pass"
+        );
+
+        let mut no_split = report.clone();
+        no_split
+            .as_object_mut()
+            .expect("report object")
+            .remove("split");
+        assert!(
+            verdict_tools_page(&no_split).is_err(),
+            "a run that never split a document must not pass the Phase 1A.1 gate"
+        );
+
+        let mut split_without_zip = report.clone();
+        *split_without_zip
+            .pointer_mut("/split/outputs/3/zip")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&split_without_zip).is_err(),
+            "a multi-output split without a real ZIP header must not pass"
+        );
+
+        let mut split_wrong_pages = report.clone();
+        *split_wrong_pages
+            .pointer_mut("/split/result/rows/0/value")
+            .unwrap() = json!("2 \u{2192} 2");
+        assert!(
+            verdict_tools_page(&split_wrong_pages).is_err(),
+            "a split that dropped a page must not pass"
+        );
+
+        let mut split_missing_output = report.clone();
+        split_missing_output
+            .pointer_mut("/split/outputs")
+            .unwrap()
+            .as_array_mut()
+            .expect("outputs array")
+            .pop();
+        assert!(
+            verdict_tools_page(&split_missing_output).is_err(),
+            "a split without the ZIP output must not pass"
+        );
+
+        let mut offline_no_split = report.clone();
+        *offline_no_split.pointer_mut("/offline").unwrap() = json!({
+            "cards": 6,
+            "controlled": true,
+            "script": "http://127.0.0.1:1234/sw.js",
+            "pageTitle": "Selis Tools",
+            "fileRows": 2,
+            "runLabel": "Merge PDFs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "merged.pdf",
+                "rows": [
+                    { "label": "Pages", "value": "2 \u{2192} 2" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "output": {
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "merged.pdf",
+                "bytes": 848,
+                "header": "%PDF-",
+            },
+            "network": { "origin": "http://127.0.0.1:1234", "resources": 9, "foreign": [], "paths": [] },
+        });
+        assert!(
+            verdict_tools_page(&offline_no_split).is_err(),
+            "an online-only split must not pass the offline gate"
         );
     }
 
