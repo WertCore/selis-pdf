@@ -1082,6 +1082,165 @@ fn check_stamp_leg(
     Ok(())
 }
 
+/// One attachment-extraction leg. The page must expose two decoded files and
+/// one ZIP, and the file rows must not be presented as PDFs or previews.
+fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Extract attachments" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Extract attachments\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    let title = result.get("title").and_then(Json::as_str).unwrap_or("");
+    if title != "2 attachments and a ZIP" {
+        return Err(format!(
+            "the {label} result was named {title:?}, expected \"2 attachments and a ZIP\""
+        ));
+    }
+    let meta = result.get("meta").and_then(Json::as_str).unwrap_or("");
+    if !meta.contains("3 files") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe three verified files (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Embedded files") != "2 \u{2192} 2" {
+        return Err(format!(
+            "the {label} run reported Embedded files {:?}, expected \"2 \u{2192} 2\"",
+            row_value("Embedded files")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing extraction verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+    if !row_value("Pages").is_empty() {
+        return Err(format!(
+            "the {label} attachment result showed a Pages row ({:?}); no PDF was produced",
+            row_value("Pages")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != expected.len() + 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected {} files and a ZIP",
+            outputs.len(),
+            expected.len()
+        ));
+    }
+    let find = |name: &str| {
+        outputs
+            .iter()
+            .find(|output| output.get("name").and_then(Json::as_str) == Some(name))
+    };
+    for (name, contents) in expected {
+        let output = find(name).ok_or_else(|| format!("the {label} run lost {name}"))?;
+        if output.get("kind").and_then(Json::as_str) != Some("file") {
+            return Err(format!(
+                "the {label} output {name} had kind {:?}, expected \"file\"",
+                output.get("kind")
+            ));
+        }
+        if output.get("pages").and_then(Json::as_u64) != Some(0) {
+            return Err(format!(
+                "the {label} output {name} reported pages, but it is not a PDF"
+            ));
+        }
+        if output.get("blob").and_then(Json::as_bool) != Some(true) {
+            return Err(format!("the {label} output {name} was not a Blob URL"));
+        }
+        if output.get("previewBlob").and_then(Json::as_bool).is_some() {
+            return Err(format!("the {label} output {name} offered a PDF preview"));
+        }
+        if output.get("downloadName").and_then(Json::as_str) != Some(name) {
+            return Err(format!(
+                "the {label} download for {name} was named {:?}",
+                output.get("downloadName")
+            ));
+        }
+        if output.get("text").and_then(Json::as_str) != Some(contents) {
+            return Err(format!(
+                "the {label} output {name} contained {:?}, expected {contents:?}",
+                output.get("text")
+            ));
+        }
+    }
+    let zip = find("bundle-attachments.zip")
+        .ok_or_else(|| format!("the {label} run produced no attachment ZIP"))?;
+    if zip.get("kind").and_then(Json::as_str) != Some("zip") {
+        return Err(format!(
+            "the {label} bundle had kind {:?}, expected \"zip\"",
+            zip.get("kind")
+        ));
+    }
+    if zip.get("zip").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} bundle did not begin with a ZIP local-file header"
+        ));
+    }
+    if zip.get("downloadName").and_then(Json::as_str) != Some("bundle-attachments.zip") {
+        return Err(format!(
+            "the {label} bundle download was named {:?}",
+            zip.get("downloadName")
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
 /// page-organization modes): the real `/tools.html` merges two PDFs, splits a
 /// three-page PDF one page at a time, duplicates a page, and inserts a blank
@@ -1090,7 +1249,7 @@ fn check_stamp_leg(
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * eleven cards render, and choosing Merge opens the workspace;
+/// * twelve cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1106,6 +1265,8 @@ fn check_stamp_leg(
 /// * page numbers, watermark, header/footer, and Bates legs each stamp the real
 ///   output stream, read back from the Blob, and the compress leg rewrites the
 ///   report without changing its page count;
+/// * the attachment leg downloads both embedded files with their decoded bytes
+///   and a ZIP, without offering either file as a PDF preview;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
 /// * the offline leg repeats the card grid, merge, every-size-bookmark splits,
@@ -1121,9 +1282,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(11) {
+    if report.get("cards").and_then(Json::as_u64) != Some(12) {
         return Err(format!(
-            "the tools grid did not render eleven cards (cards = {:?})",
+            "the tools grid did not render twelve cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1328,6 +1489,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &[],
     )?;
+    let attachments = report.get("attachments").ok_or_else(|| {
+        "the page reported no attachment-extraction leg (attachments = None)".to_string()
+    })?;
+    check_attachments_leg(
+        attachments,
+        "online attachments",
+        &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
+    )?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -1348,9 +1517,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(11) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(12) {
         return Err(format!(
-            "the offline tools page did not render eleven cards (cards = {:?})",
+            "the offline tools page did not render twelve cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1531,6 +1700,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "Compress PDF",
         3,
         &[],
+    )?;
+    let offline_attachments = offline
+        .get("attachments")
+        .ok_or_else(|| "the offline leg reported no attachment-extraction result".to_string())?;
+    check_attachments_leg(
+        offline_attachments,
+        "offline attachments",
+        &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
     )?;
 
     let status = string_field(report, "status")?;
@@ -5261,6 +5438,71 @@ mod tests {
         })
     }
 
+    /// Two decoded embedded files and the attachment ZIP, in the shape the
+    /// attachment leg reports. File outputs have no preview and no page count.
+    fn real_tools_attachments_leg() -> Json {
+        let notes = json!({
+            "kind": "file",
+            "name": "notes.txt",
+            "pages": 0,
+            "declaredBytes": 16,
+            "bytes": 16,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "notes.txt",
+            "header": "hello",
+            "zip": false,
+            "text": "hello attachment",
+        });
+        let evil = json!({
+            "kind": "file",
+            "name": "evil.txt",
+            "pages": 0,
+            "declaredBytes": 9,
+            "bytes": 9,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "evil.txt",
+            "header": "safe ",
+            "zip": false,
+            "text": "safe name",
+        });
+        let zip = json!({
+            "kind": "zip",
+            "name": "bundle-attachments.zip",
+            "pages": 0,
+            "declaredBytes": 500,
+            "bytes": 500,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "bundle-attachments.zip",
+            "header": "PK",
+            "zip": true,
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract attachments",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "2 attachments and a ZIP",
+                "meta": "3 files \u{00b7} 525 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Embedded files", "value": "2 \u{2192} 2" },
+                    { "label": "Size", "value": "925 B \u{2192} 25 B" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [notes, evil, zip],
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
     /// a real merge and a split-every run. The numbers are representative; the
     /// assertions are about the shape and the claims, not about a particular
@@ -5270,7 +5512,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 11,
+            "cards": 12,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5317,7 +5559,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 11,
+                "cards": 12,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -5390,12 +5632,14 @@ mod tests {
             &["(ABC-0009) Tj", "(ABC-0010) Tj"],
         );
         report["compress"] = real_tools_stamp_leg("report-compressed.pdf", "Compress PDF", 3, &[]);
+        report["attachments"] = real_tools_attachments_leg();
 
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
         report["offline"]["watermark"] = report["watermark"].clone();
         report["offline"]["headerFooter"] = report["headerFooter"].clone();
         report["offline"]["bates"] = report["bates"].clone();
         report["offline"]["compress"] = report["compress"].clone();
+        report["offline"]["attachments"] = report["attachments"].clone();
         report
     }
 
@@ -5576,7 +5820,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 11,
+            "cards": 12,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -5666,6 +5910,10 @@ mod tests {
                 "compress",
                 "a run that never compressed a PDF must not pass",
             ),
+            (
+                "attachments",
+                "a run that never extracted attachments must not pass",
+            ),
         ] {
             let mut missing = report.clone();
             missing
@@ -5700,6 +5948,45 @@ mod tests {
         assert!(
             verdict_tools_page(&compress_wrong_pages).is_err(),
             "a compress run that changed the page count must not pass"
+        );
+
+        let mut attachment_as_pdf = report.clone();
+        *attachment_as_pdf
+            .pointer_mut("/attachments/outputs/0/kind")
+            .unwrap() = json!("pdf");
+        assert!(
+            verdict_tools_page(&attachment_as_pdf).is_err(),
+            "an attachment presented as a PDF must not pass"
+        );
+
+        let mut attachment_wrong_bytes = report.clone();
+        *attachment_wrong_bytes
+            .pointer_mut("/attachments/outputs/0/text")
+            .unwrap() = json!("not the embedded file");
+        assert!(
+            verdict_tools_page(&attachment_wrong_bytes).is_err(),
+            "an attachment with the wrong decoded bytes must not pass"
+        );
+
+        let mut attachment_no_zip = report.clone();
+        *attachment_no_zip
+            .pointer_mut("/attachments/outputs/2/zip")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&attachment_no_zip).is_err(),
+            "an attachment leg without a real ZIP header must not pass"
+        );
+
+        let mut no_offline_attachments = report.clone();
+        no_offline_attachments
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("attachments");
+        assert!(
+            verdict_tools_page(&no_offline_attachments).is_err(),
+            "an online-only attachment extraction must not pass the offline gate"
         );
 
         let mut offline_no_watermark = report.clone();

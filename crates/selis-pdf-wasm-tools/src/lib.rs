@@ -76,6 +76,7 @@ enum Op {
     HeaderFooter,
     Bates,
     Compress,
+    Attachments,
 }
 
 impl Op {
@@ -92,6 +93,7 @@ impl Op {
             9 => Some(Self::HeaderFooter),
             10 => Some(Self::Bates),
             11 => Some(Self::Compress),
+            12 => Some(Self::Attachments),
             _ => None,
         }
     }
@@ -123,10 +125,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 }
 
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
-/// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress.
+/// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
+/// 11 extract attachments.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b111_1111_1111
+    0b1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -346,6 +349,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         return Err(ToolError("too many input files".to_string()));
     }
     let mut first_name = String::new();
+    let mut first_input_len = 0usize;
     for index in 0..file_count {
         let name = cursor
             .bytes(MAX_NAME_BYTES)
@@ -361,6 +365,9 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         let data = cursor
             .bytes(u32::MAX)
             .ok_or_else(|| ToolError("truncated input bytes".to_string()))?;
+        if index == 0 {
+            first_input_len = data.len();
+        }
         selis_pdf_tools::insert_input(&format!("in/{index}"), data.to_vec());
     }
     if cursor.pos != request.len() {
@@ -460,6 +467,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             verification: selis_pdf_tools::compress("in/0", "out.pdf")?,
             over_target: false,
         }],
+        Op::Attachments => return run_attachments(&stem, first_input_len),
     };
 
     let verifications: Vec<Verification> = produced
@@ -499,6 +507,84 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             "verdict": "bundle",
         }));
         outputs.push((zip_name, zip));
+    }
+
+    Ok((verification, reports, outputs))
+}
+
+/// Extract embedded files into ordinary wire outputs. One attachment yields
+/// one file; two or more also yield a deterministic ZIP. The result metadata
+/// marks these outputs as `file`, so the page never treats an attachment as a
+/// PDF to preview.
+fn run_attachments(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
+    let attachments = selis_pdf_tools::attachments::extract("in/0")?;
+    let count = attachments.len();
+    let total = attachments.iter().fold(0u64, |sum, attachment| {
+        sum.saturating_add(u64::try_from(attachment.bytes.len()).unwrap_or(u64::MAX))
+    });
+
+    let zip = if count > 1 {
+        let entries: Vec<(&str, &[u8])> = attachments
+            .iter()
+            .map(|attachment| (attachment.name.as_str(), attachment.bytes.as_slice()))
+            .collect();
+        let base = format!("{stem}-attachments");
+        let mut zip_name = format!("{base}.zip");
+        let mut suffix = 2u32;
+        while attachments
+            .iter()
+            .any(|attachment| attachment.name.eq_ignore_ascii_case(&zip_name))
+        {
+            zip_name = format!("{base}-{suffix}.zip");
+            suffix = suffix.saturating_add(1);
+        }
+        Some((zip_name, selis_pdf_tools::bundle_zip(&entries)?))
+    } else {
+        None
+    };
+
+    let verification = Verification {
+        pages_in: None,
+        pages_out: 0,
+        annotations_in: None,
+        annotations_out: 0,
+        fields_in: None,
+        fields_out: 0,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: Some(u64::try_from(count).unwrap_or(u64::MAX)),
+        embedded_files_out: u64::try_from(count).unwrap_or(u64::MAX),
+        bytes_in: u64::try_from(bytes_in).unwrap_or(u64::MAX),
+        bytes_out: total,
+        verdict: "ok".to_string(),
+        checked: vec!["embedded_files"],
+    };
+
+    let extra = if zip.is_some() { 1 } else { 0 };
+    let mut reports = Vec::with_capacity(count.saturating_add(extra));
+    let mut outputs = Vec::with_capacity(count.saturating_add(extra));
+    for attachment in attachments {
+        let bytes = attachment.bytes.len();
+        reports.push(serde_json::json!({
+            "name": attachment.name,
+            "kind": "file",
+            "pages": 0,
+            "bytes": bytes,
+            "verdict": "extracted",
+        }));
+        outputs.push((attachment.name, attachment.bytes));
+    }
+    if let Some((name, bytes)) = zip {
+        reports.push(serde_json::json!({
+            "name": name,
+            "kind": "zip",
+            "pages": 0,
+            "bytes": bytes.len(),
+            "verdict": "bundle",
+        }));
+        outputs.push((name, bytes));
     }
 
     Ok((verification, reports, outputs))
@@ -765,7 +851,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111);
     }
 
     #[test]
@@ -834,6 +920,67 @@ mod tests {
     }
 
     #[test]
+    fn attachments_operation_returns_files_and_a_zip() {
+        let pdf = attachment_pdf();
+        let response = run_request(&request(12, b"", &[("bundle.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "attachments failed: {message}");
+        assert_eq!(message["embedded_files_in"], 2);
+        assert_eq!(message["embedded_files_out"], 2);
+        assert!(message.get("pages_in").is_none());
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(outputs.len(), 3);
+
+        let notes = outputs
+            .iter()
+            .find(|(name, _)| name == "notes.txt")
+            .expect("notes attachment");
+        assert_eq!(notes.1, b"hello attachment");
+        let evil = outputs
+            .iter()
+            .find(|(name, _)| name == "evil.txt")
+            .expect("sanitized attachment name");
+        assert_eq!(evil.1, b"safe name");
+        let zip = outputs
+            .iter()
+            .find(|(name, _)| name == "bundle-attachments.zip")
+            .expect("attachment bundle");
+        assert_eq!(&zip.1[0..4], b"PK\x03\x04");
+
+        let reports = message["outputs"].as_array().expect("output reports");
+        assert_eq!(reports.len(), 3);
+        assert!(reports
+            .iter()
+            .filter(|report| report["kind"] == "file")
+            .all(|report| report["pages"] == 0));
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|report| report["kind"] == "zip")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn attachment_zip_name_does_not_collide_with_a_file() {
+        let pdf = attachment_pdf_named("bundle-attachments.zip", "notes.txt");
+        let response = run_request(&request(12, b"", &[("bundle.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "attachments failed: {message}");
+        assert!(outputs
+            .iter()
+            .any(|(name, _)| name == "bundle-attachments-2.zip"));
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|(name, _)| name == "bundle-attachments.zip")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn rejects_bad_magic_without_panicking() {
         let mut bytes = request(1, b"", &[]);
         bytes[0] ^= 0xFF;
@@ -876,6 +1023,61 @@ mod tests {
             format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
                 .as_bytes(),
         );
+        out
+    }
+
+    fn attachment_pdf() -> Vec<u8> {
+        attachment_pdf_named("../../evil.txt", "notes.txt")
+    }
+
+    fn attachment_pdf_named(first: &str, second: &str) -> Vec<u8> {
+        let mut objects: Vec<Vec<u8>> = vec![
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Names 4 0 R >>\nendobj\n".to_vec(),
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec(),
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj\n"
+                .to_vec(),
+            b"4 0 obj\n<< /EmbeddedFiles 5 0 R >>\nendobj\n".to_vec(),
+            format!("5 0 obj\n<< /Names [({first}) 6 0 R ({second}) 7 0 R] >>\nendobj\n")
+                .into_bytes(),
+            format!(
+                "6 0 obj\n<< /Type /Filespec /UF ({first}) /F ({first}) /EF << /F 8 0 R >> >>\nendobj\n"
+            )
+            .into_bytes(),
+            format!(
+                "7 0 obj\n<< /Type /Filespec /UF ({second}) /F ({second}) /EF << /F 9 0 R >> >>\nendobj\n"
+            )
+            .into_bytes(),
+        ];
+        objects.push(stream_object(8, b"safe name"));
+        objects.push(stream_object(9, b"hello attachment"));
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object);
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    fn stream_object(number: usize, data: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "{number} 0 obj\n<< /Type /EmbeddedFile /Length {} >>\nstream\n",
+            data.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(data);
+        out.extend_from_slice(b"\nendstream\nendobj\n");
         out
     }
 

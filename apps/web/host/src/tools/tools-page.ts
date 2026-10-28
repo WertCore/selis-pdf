@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Eleven browser-local operations, one page. The only fetch this module makes is
+ * Twelve browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -131,6 +131,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Compress PDF",
 		blurb: "Lossless cleanup: drop unreachable objects and re-encode streams.",
 		verb: "Compress PDF",
+		multiple: false,
+	},
+	{
+		id: "attachments",
+		mark: "A",
+		title: "Extract attachments",
+		blurb: "Download the files embedded inside a PDF, individually or as a ZIP.",
+		verb: "Extract attachments",
 		multiple: false,
 	},
 ];
@@ -771,6 +779,13 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "attachments") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Reads /Names /EmbeddedFiles and decodes each file locally. Unsafe names are flattened, and encrypted PDFs are refused.";
+			options.append(note);
+			return;
+		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
 		addField("author", "Author", textInput("author", "text", "Author name"));
 		addField("subject", "Subject", textInput("subject", "text", "Short subject"));
@@ -1097,6 +1112,9 @@ function init(): void {
 		if (tool.id === "compress") {
 			return { op: "compress", files: wireFiles };
 		}
+		if (tool.id === "attachments") {
+			return { op: "attachments", files: wireFiles };
+		}
 		if (tool.id !== "metadata") {
 			throw new ToolInputError("This tool is not wired into the local engine yet.");
 		}
@@ -1147,12 +1165,15 @@ function init(): void {
 			0,
 		);
 		const pdfCount = result.reports.filter((report) => report.kind === "pdf").length;
+		const fileCount = result.reports.filter((report) => report.kind === "file").length;
 		const hasZip = result.reports.some((report) => report.kind === "zip");
 		const single = result.outputs.length === 1 ? result.outputs[0] : undefined;
 		resultTitle.textContent =
 			single !== undefined
 				? single.name
-				: `${pdfCount} PDF${pdfCount === 1 ? "" : "s"}${hasZip ? " and a ZIP" : ""}`;
+				: fileCount > 0
+					? `${fileCount} attachment${fileCount === 1 ? "" : "s"}${hasZip ? " and a ZIP" : ""}`
+					: `${pdfCount} PDF${pdfCount === 1 ? "" : "s"}${hasZip ? " and a ZIP" : ""}`;
 		resultMeta.textContent = `${result.outputs.length} file${result.outputs.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)} · verified locally`;
 
 		const outputRows: HTMLElement[] = [];
@@ -1164,7 +1185,12 @@ function init(): void {
 			const copy = new Uint8Array(output.bytes.byteLength);
 			copy.set(output.bytes);
 			const blob = new Blob([copy.buffer], {
-				type: report.kind === "zip" ? "application/zip" : "application/pdf",
+				type:
+					report.kind === "zip"
+						? "application/zip"
+						: report.kind === "file"
+							? "application/octet-stream"
+							: "application/pdf",
 			});
 			const url = URL.createObjectURL(blob);
 			resultUrls.push(url);
@@ -1184,6 +1210,9 @@ function init(): void {
 				report.kind === "zip"
 					? `ZIP bundle · ${formatBytes(output.bytes.byteLength)}`
 					: `${report.pages} page${report.pages === 1 ? "" : "s"} · ${formatBytes(output.bytes.byteLength)} · ${report.verdict}${overTarget}`;
+			if (report.kind === "file") {
+				meta.textContent = `Attachment | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
+			}
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");

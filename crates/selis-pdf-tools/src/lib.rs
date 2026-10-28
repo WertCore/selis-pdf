@@ -28,6 +28,7 @@
     )
 )]
 
+pub mod attachments;
 pub mod compress;
 mod io;
 mod memory;

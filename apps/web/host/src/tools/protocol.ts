@@ -23,7 +23,7 @@ export const RESPONSE_MAGIC = 0x52544c53;
 export const PROTOCOL_VERSION = 1;
 /** The maximum number of inputs the chunk accepts. */
 export const MAX_FILES = 64;
-/** The maximum outputs (up to 64 PDF parts plus the ZIP bundle). */
+/** The maximum outputs (up to 64 PDF parts or attachments plus a ZIP bundle). */
 export const MAX_OUTPUTS = MAX_FILES + 1;
 /** The maximum request name length the chunk accepts. */
 export const MAX_NAME_BYTES = 128;
@@ -42,7 +42,8 @@ export type ToolOp =
 	| "watermark"
 	| "header_footer"
 	| "bates"
-	| "compress";
+	| "compress"
+	| "attachments";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -57,6 +58,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	header_footer: 9,
 	bates: 10,
 	compress: 11,
+	attachments: 12,
 };
 
 /** One input file on the wire. */
@@ -101,7 +103,7 @@ export interface ToolOutput {
 /** Per-file metadata emitted alongside the aggregate verification. */
 export interface ToolOutputReport {
 	readonly name: string;
-	readonly kind: "pdf" | "zip";
+	readonly kind: "pdf" | "zip" | "file";
 	readonly pages: number;
 	readonly bytes: number;
 	readonly verdict: string;
@@ -295,7 +297,7 @@ function decodeReports(
 		if (output === undefined || typeof name !== "string" || name !== output.name) {
 			throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
 		}
-		if (kind !== "pdf" && kind !== "zip") {
+		if (kind !== "pdf" && kind !== "zip" && kind !== "file") {
 			throw new ToolProtocolError("the tool chunk returned an unknown output kind");
 		}
 		if (

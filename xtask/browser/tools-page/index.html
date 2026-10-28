@@ -24,8 +24,8 @@
       //   1. load the real page, wait for its own worker registration to claim
       //      it, then merge two PDFs, run the split-every, split-size, and
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
-      //      page numbers, a watermark, a header/footer and Bates numbers, and
-      //      compress a PDF;
+      //      page numbers, a watermark, a header/footer and Bates numbers,
+      //      compress a PDF, and extract embedded attachments;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -122,7 +122,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 11,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 12,
           15_000,
           label,
         );
@@ -150,6 +150,9 @@
         const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
         output.bytes = bytes.length;
         output.header = new TextDecoder().decode(bytes.subarray(0, 5));
+        if (output.kind === "file") {
+          output.text = new TextDecoder("latin1").decode(bytes.subarray(0, 256));
+        }
         output.zip =
           bytes.length >= 4 &&
           bytes[0] === 0x50 &&
@@ -446,7 +449,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the eleven tool cards");
+        out.cards = await waitForCards(frame, "the twelve tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -485,6 +488,10 @@
         });
         const outlinedFixture = await fetch("outlined.pdf").then((r) => {
           if (!r.ok) throw new Error("outlined.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const attachmentsFixture = await fetch("attachments.pdf").then((r) => {
+          if (!r.ok) throw new Error("attachments.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
 
@@ -694,6 +701,25 @@
           network: onlineCompress.network,
         };
 
+        const onlineAttachments = await toolInFrame(
+          frame,
+          attachmentsFixture,
+          "bundle.pdf",
+          "online attachments",
+          "attachments",
+          {},
+          [],
+        );
+        out.attachments = {
+          fileRows: onlineAttachments.fileRows,
+          runLabel: onlineAttachments.runLabel,
+          noUpload: onlineAttachments.noUpload,
+          status: onlineAttachments.status,
+          result: onlineAttachments.result,
+          outputs: onlineAttachments.outputs,
+          network: onlineAttachments.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -705,7 +731,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the eleven offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twelve offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -798,6 +824,15 @@
           "report.pdf",
           "offline compress",
           "compress",
+          {},
+          [],
+        );
+        const offlineAttachments = await toolInFrame(
+          frame,
+          attachmentsFixture,
+          "bundle.pdf",
+          "offline attachments",
+          "attachments",
           {},
           [],
         );
@@ -910,6 +945,15 @@
             outputs: offlineCompress.outputs,
             output: offlineCompress.output,
             network: offlineCompress.network,
+          },
+          attachments: {
+            fileRows: offlineAttachments.fileRows,
+            runLabel: offlineAttachments.runLabel,
+            noUpload: offlineAttachments.noUpload,
+            status: offlineAttachments.status,
+            result: offlineAttachments.result,
+            outputs: offlineAttachments.outputs,
+            network: offlineAttachments.network,
           },
         };
 

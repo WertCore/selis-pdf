@@ -161,6 +161,34 @@ describe("decodeToolResponse", () => {
 		expect(result.reports.map((report) => report.overTarget)).toEqual([false, true, false]);
 	});
 
+	it("keeps attachment files distinct from PDFs and the ZIP bundle", () => {
+		const message = {
+			...verification,
+			pages_in: undefined,
+			pages_out: 0,
+			bytes_out: 17,
+			checked: ["embedded_files"],
+			embedded_files_in: 2,
+			embedded_files_out: 2,
+			outputs: [
+				{ name: "notes.txt", kind: "file", pages: 0, bytes: 6, verdict: "extracted" },
+				{ name: "evil.txt", kind: "file", pages: 0, bytes: 4, verdict: "extracted" },
+				{ name: "bundle-attachments.zip", kind: "zip", pages: 0, bytes: 7, verdict: "bundle" },
+			],
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [
+				{ name: "notes.txt", bytes: [1, 2, 3, 4, 5, 6] },
+				{ name: "evil.txt", bytes: [7, 8, 9, 10] },
+				{ name: "bundle-attachments.zip", bytes: [11, 12, 13, 14, 15, 16, 17] },
+			]),
+		);
+		expect(result.reports.map((report) => report.kind)).toEqual(["file", "file", "zip"]);
+		expect(result.reports.map((report) => report.pages)).toEqual([0, 0, 0]);
+		expect(result.verification.embedded_files_in).toBe(2);
+		expect(result.verification.embedded_files_out).toBe(2);
+	});
+
 	it("rejects a non-boolean overTarget flag", () => {
 		const message = {
 			...verification,
