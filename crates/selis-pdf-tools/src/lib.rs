@@ -28,8 +28,10 @@
     )
 )]
 
+pub mod compress;
 mod io;
 mod memory;
+pub mod overlay;
 #[cfg(feature = "native-fs")]
 mod progress;
 pub mod runtime;
@@ -40,6 +42,7 @@ mod zip;
 
 use selis_sandbox::Clock;
 
+pub use compress::{compress, compress_file, CompressionReport};
 pub use memory::{clear, insert_input, take_output, MemorySession};
 pub use verify_report::Verification;
 

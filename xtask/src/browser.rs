@@ -906,6 +906,182 @@ fn check_organize_leg(leg: &Json, label: &str, expected_name: &str) -> Result<()
     Ok(())
 }
 
+/// One overlay or compression leg. These operations preserve the page count,
+/// so the proof is the same shape as the organize legs plus the marker text the
+/// operation itself appended to the real output bytes.
+fn check_stamp_leg(
+    leg: &Json,
+    label: &str,
+    expected_name: &str,
+    expected_run_label: &str,
+    expected_pages: u64,
+    needles: &[&str],
+) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    let run_label = string_field(leg, "runLabel")?;
+    if run_label != expected_run_label {
+        return Err(format!(
+            "the {label} button was labelled {run_label:?}, expected {expected_run_label:?}"
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {expected_name:?}",
+            result.get("title")
+        ));
+    }
+    let meta = result
+        .get("meta")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} result had no summary"))?;
+    if !meta.contains("1 file") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe one verified file (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    let expected_pages_row = format!("{expected_pages} \u{2192} {expected_pages}");
+    if row_value("Pages") != expected_pages_row {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected {expected_pages_row:?}",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = &outputs[0];
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} output was named {:?}, expected {expected_name:?}",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(expected_pages) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected {expected_pages}",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} download was named {:?}, expected {expected_name:?}",
+            output.get("downloadName")
+        ));
+    }
+    let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if bytes <= 300 {
+        return Err(format!(
+            "the {label} PDF is only {bytes} bytes; a {expected_pages}-page result should be larger"
+        ));
+    }
+    let top_output = leg
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run exposed no selected PDF"))?;
+    if top_output.get("name").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} result exposed {:?}, expected {expected_name:?}",
+            top_output.get("name")
+        ));
+    }
+
+    if !needles.is_empty() {
+        let found = output
+            .get("found")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("the {label} output did not report its marker checks"))?;
+        if found.len() != needles.len() || !found.iter().all(|value| value.as_bool() == Some(true))
+        {
+            return Err(format!(
+                "the {label} output did not contain every operation marker {needles:?} (found = {:?})",
+                found
+            ));
+        }
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
 /// page-organization modes): the real `/tools.html` merges two PDFs, splits a
 /// three-page PDF one page at a time, duplicates a page, and inserts a blank
@@ -914,7 +1090,7 @@ fn check_organize_leg(leg: &Json, label: &str, expected_name: &str) -> Result<()
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * six cards render, and choosing Merge opens the workspace;
+/// * eleven cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -927,6 +1103,9 @@ fn check_organize_leg(leg: &Json, label: &str, expected_name: &str) -> Result<()
 ///   bookmark-bounded PDFs with no over-target flag;
 /// * the duplicate leg and the blank-page leg each add one page to the outlined
 ///   fixture, naming the one PDF result and proving page mode dispatch;
+/// * page numbers, watermark, header/footer, and Bates legs each stamp the real
+///   output stream, read back from the Blob, and the compress leg rewrites the
+///   report without changing its page count;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
 /// * the offline leg repeats the card grid, merge, every-size-bookmark splits,
@@ -942,9 +1121,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(6) {
+    if report.get("cards").and_then(Json::as_u64) != Some(11) {
         return Err(format!(
-            "the tools grid did not render six cards (cards = {:?})",
+            "the tools grid did not render eleven cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1094,6 +1273,62 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .ok_or_else(|| "the page reported no blank-page leg (blanks = None)".to_string())?;
     check_organize_leg(blanks, "online blank pages", "outlined-blanks.pdf")?;
 
+    let page_numbers = report
+        .get("pageNumbers")
+        .ok_or_else(|| "the page reported no page-number leg (pageNumbers = None)".to_string())?;
+    check_stamp_leg(
+        page_numbers,
+        "online page numbers",
+        "report-numbered.pdf",
+        "Add page numbers",
+        3,
+        &["(5/3) Tj", "(6/3) Tj"],
+    )?;
+    let watermark = report
+        .get("watermark")
+        .ok_or_else(|| "the page reported no watermark leg (watermark = None)".to_string())?;
+    check_stamp_leg(
+        watermark,
+        "online watermark",
+        "outlined-watermarked.pdf",
+        "Add watermark",
+        2,
+        &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+    )?;
+    let header_footer = report.get("headerFooter").ok_or_else(|| {
+        "the page reported no header/footer leg (headerFooter = None)".to_string()
+    })?;
+    check_stamp_leg(
+        header_footer,
+        "online header/footer",
+        "report-header-footer.pdf",
+        "Add header & footer",
+        3,
+        &["(Page 1 of 3) Tj", "(Center) Tj", "(Draft) Tj"],
+    )?;
+    let bates = report
+        .get("bates")
+        .ok_or_else(|| "the page reported no Bates leg (bates = None)".to_string())?;
+    check_stamp_leg(
+        bates,
+        "online Bates",
+        "report-bates.pdf",
+        "Add Bates numbers",
+        3,
+        &["(ABC-0009) Tj", "(ABC-0010) Tj"],
+    )?;
+    let compress = report
+        .get("compress")
+        .ok_or_else(|| "the page reported no compress leg (compress = None)".to_string())?;
+    check_stamp_leg(
+        compress,
+        "online compress",
+        "report-compressed.pdf",
+        "Compress PDF",
+        3,
+        &[],
+    )?;
+
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
     // module, never reaches the card grid: the harness gets the worker's 503.
@@ -1113,9 +1348,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(6) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(11) {
         return Err(format!(
-            "the offline tools page did not render six cards (cards = {:?})",
+            "the offline tools page did not render eleven cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1241,6 +1476,62 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the offline leg reported no blank-page result (blanks = None)".to_string()
     })?;
     check_organize_leg(offline_blanks, "offline blank pages", "outlined-blanks.pdf")?;
+
+    let offline_page_numbers = offline.get("pageNumbers").ok_or_else(|| {
+        "the offline leg reported no page-number result (pageNumbers = None)".to_string()
+    })?;
+    check_stamp_leg(
+        offline_page_numbers,
+        "offline page numbers",
+        "report-numbered.pdf",
+        "Add page numbers",
+        3,
+        &["(5/3) Tj", "(6/3) Tj"],
+    )?;
+    let offline_watermark = offline.get("watermark").ok_or_else(|| {
+        "the offline leg reported no watermark result (watermark = None)".to_string()
+    })?;
+    check_stamp_leg(
+        offline_watermark,
+        "offline watermark",
+        "outlined-watermarked.pdf",
+        "Add watermark",
+        2,
+        &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+    )?;
+    let offline_header_footer = offline.get("headerFooter").ok_or_else(|| {
+        "the offline leg reported no header/footer result (headerFooter = None)".to_string()
+    })?;
+    check_stamp_leg(
+        offline_header_footer,
+        "offline header/footer",
+        "report-header-footer.pdf",
+        "Add header & footer",
+        3,
+        &["(Page 1 of 3) Tj", "(Center) Tj", "(Draft) Tj"],
+    )?;
+    let offline_bates = offline
+        .get("bates")
+        .ok_or_else(|| "the offline leg reported no Bates result (bates = None)".to_string())?;
+    check_stamp_leg(
+        offline_bates,
+        "offline Bates",
+        "report-bates.pdf",
+        "Add Bates numbers",
+        3,
+        &["(ABC-0009) Tj", "(ABC-0010) Tj"],
+    )?;
+    let offline_compress = offline.get("compress").ok_or_else(|| {
+        "the offline leg reported no compress result (compress = None)".to_string()
+    })?;
+    check_stamp_leg(
+        offline_compress,
+        "offline compress",
+        "report-compressed.pdf",
+        "Compress PDF",
+        3,
+        &[],
+    )?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -4928,16 +5219,58 @@ mod tests {
         })
     }
 
+    /// A stamp or compression leg: one PDF in, one PDF out, same page count.
+    fn real_tools_stamp_leg(name: &str, run_label: &str, pages: u64, needles: &[&str]) -> Json {
+        let found: Vec<bool> = needles.iter().map(|_| true).collect();
+        let output = json!({
+            "kind": "pdf",
+            "name": name,
+            "pages": pages,
+            "declaredBytes": 900,
+            "bytes": 900,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": name,
+            "header": "%PDF-",
+            "zip": false,
+            "overTarget": false,
+            "found": found,
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": run_label,
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": name,
+                "meta": "1 file \u{00b7} 900 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": format!("{pages} \u{2192} {pages}") },
+                    { "label": "Annotations", "value": "0 \u{2192} 0" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
     /// a real merge and a split-every run. The numbers are representative; the
     /// assertions are about the shape and the claims, not about a particular
     /// compression ratio.
     fn real_tools_page_report() -> Json {
-        json!({
+        let mut report = json!({
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 6,
+            "cards": 11,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -4984,7 +5317,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 6,
+                "cards": 11,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -5030,7 +5363,40 @@ mod tests {
                 "duplicate": real_tools_organize_leg("outlined-duplicated.pdf"),
                 "blanks": real_tools_organize_leg("outlined-blanks.pdf"),
             },
-        })
+        });
+
+        report["pageNumbers"] = real_tools_stamp_leg(
+            "report-numbered.pdf",
+            "Add page numbers",
+            3,
+            &["(5/3) Tj", "(6/3) Tj"],
+        );
+        report["watermark"] = real_tools_stamp_leg(
+            "outlined-watermarked.pdf",
+            "Add watermark",
+            2,
+            &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+        );
+        report["headerFooter"] = real_tools_stamp_leg(
+            "report-header-footer.pdf",
+            "Add header & footer",
+            3,
+            &["(Page 1 of 3) Tj", "(Center) Tj", "(Draft) Tj"],
+        );
+        report["bates"] = real_tools_stamp_leg(
+            "report-bates.pdf",
+            "Add Bates numbers",
+            3,
+            &["(ABC-0009) Tj", "(ABC-0010) Tj"],
+        );
+        report["compress"] = real_tools_stamp_leg("report-compressed.pdf", "Compress PDF", 3, &[]);
+
+        report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
+        report["offline"]["watermark"] = report["watermark"].clone();
+        report["offline"]["headerFooter"] = report["headerFooter"].clone();
+        report["offline"]["bates"] = report["bates"].clone();
+        report["offline"]["compress"] = report["compress"].clone();
+        report
     }
 
     #[test]
@@ -5210,7 +5576,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 6,
+            "cards": 11,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -5277,6 +5643,75 @@ mod tests {
         assert!(
             verdict_tools_page(&offline_no_duplicate).is_err(),
             "an online-only duplicate must not pass the offline organize gate"
+        );
+
+        for (field, message) in [
+            (
+                "pageNumbers",
+                "a run that never numbered pages must not pass",
+            ),
+            (
+                "watermark",
+                "a run that never watermarked a page must not pass",
+            ),
+            (
+                "headerFooter",
+                "a run that never wrote a header/footer must not pass",
+            ),
+            (
+                "bates",
+                "a run that never applied Bates numbers must not pass",
+            ),
+            (
+                "compress",
+                "a run that never compressed a PDF must not pass",
+            ),
+        ] {
+            let mut missing = report.clone();
+            missing
+                .as_object_mut()
+                .expect("report object")
+                .remove(field);
+            assert!(verdict_tools_page(&missing).is_err(), "{message}");
+        }
+
+        let mut marker_missing = report.clone();
+        *marker_missing
+            .pointer_mut("/pageNumbers/outputs/0/found/0")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&marker_missing).is_err(),
+            "a page-number output without the stamped text must not pass"
+        );
+
+        let mut bates_wrong_name = report.clone();
+        *bates_wrong_name
+            .pointer_mut("/bates/outputs/0/downloadName")
+            .unwrap() = json!("outlined.pdf");
+        assert!(
+            verdict_tools_page(&bates_wrong_name).is_err(),
+            "a Bates download with the input's name must not pass"
+        );
+
+        let mut compress_wrong_pages = report.clone();
+        *compress_wrong_pages
+            .pointer_mut("/compress/result/rows/0/value")
+            .unwrap() = json!("2 \u{2192} 2");
+        assert!(
+            verdict_tools_page(&compress_wrong_pages).is_err(),
+            "a compress run that changed the page count must not pass"
+        );
+
+        let mut offline_no_watermark = report.clone();
+        offline_no_watermark
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("watermark");
+        assert!(
+            verdict_tools_page(&offline_no_watermark).is_err(),
+            "an online-only watermark must not pass the offline gate"
         );
     }
 

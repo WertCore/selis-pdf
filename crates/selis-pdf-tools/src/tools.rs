@@ -1141,7 +1141,7 @@ fn attach_ocproperties(
 // carry actually reads. The arity stays and the allow is scoped to this
 // function (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
-fn reconcile_single_input(
+pub(crate) fn reconcile_single_input(
     out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
@@ -3057,7 +3057,7 @@ fn open_page_refs(
 }
 
 /// The leaf page references of an already-parsed document.
-fn page_refs_of(
+pub(crate) fn page_refs_of(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     budget: &Budget,
@@ -3156,7 +3156,7 @@ fn walk_pages(
 /// Copy a leaf page (content + resources) into the output document, with
 /// optional extra page-dictionary entries (e.g. `/Rotate`). Returns the
 /// merged page's reference (needed by reconciliation, SL-1A.WRITE.04).
-fn copy_page(
+pub(crate) fn copy_page(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
     page_ref: Ref,
@@ -3331,7 +3331,7 @@ fn collect_refs_in(obj: &Obj, out: &mut Vec<Ref>) {
 /// annotations value). The resources and annotations values are the raw page
 /// entries: an indirect reference, an inline dictionary/array, or absent.
 /// (old page index, old page object number, merged page reference).
-type KeptPage = (usize, u32, Ref);
+pub(crate) type KeptPage = (usize, u32, Ref);
 
 /// What `page_info` reads off one page (SL-0.WS.11): its media box, the
 /// annotation references, the (possibly indirect) `/StructParents`, the
@@ -3339,7 +3339,7 @@ type KeptPage = (usize, u32, Ref);
 /// five-tuple is a contract every page-tree caller reads positionally.
 type PageInfo = ((f64, f64), Vec<Ref>, Option<Obj>, i64, Option<Obj>);
 
-fn page_info(
+pub(crate) fn page_info(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     page_ref: Ref,
@@ -3350,22 +3350,17 @@ fn page_info(
     let Obj::Dict(pairs) = &page else {
         return Err("page is not a dict".to_string());
     };
-    let media = match pairs.iter().find(|(k, _)| k.as_slice() == b"MediaBox") {
-        Some((_, Obj::Array(items))) if items.len() >= 4 => {
-            let n = |i: usize| match items.get(i) {
-                Some(Obj::Int(v)) => Some(*v as f64),
-                Some(Obj::Real { scaled, scale }) => {
-                    Some(*scaled as f64 / 10f64.powi(*scale as i32))
-                }
-                _ => None,
-            };
-            (
-                n(2).unwrap_or(0.0).max(n(0).unwrap_or(0.0)),
-                n(3).unwrap_or(0.0).max(n(1).unwrap_or(0.0)),
-            )
-        }
-        _ => (612.0, 792.0),
-    };
+    // `/MediaBox`, `/Resources` and `/Rotate` are inheritable: a leaf page may
+    // omit them and take them from an ancestor `/Pages` node. Reading only the
+    // leaf silently substituted Letter/Forest sizes, dropped fonts, and lost
+    // rotation on real documents written that way.
+    let media = media_size(
+        src,
+        doc,
+        inherited_page_value(src, doc, page_ref, b"MediaBox", budget, g, 0)?,
+        budget,
+        g,
+    )?;
     let contents = match pairs.iter().find(|(k, _)| k.as_slice() == b"Contents") {
         Some((_, Obj::Ref(r))) => vec![*r],
         Some((_, Obj::Array(items))) => items
@@ -3377,23 +3372,87 @@ fn page_info(
             .collect(),
         _ => Vec::new(),
     };
-    let resources = pairs
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Resources")
-        .map(|(_, v)| v.clone());
+    let resources = inherited_page_value(src, doc, page_ref, b"Resources", budget, g, 0)?;
     let annots = pairs
         .iter()
         .find(|(k, _)| k.as_slice() == b"Annots")
         .map(|(_, v)| v.clone());
-    let rotate = pairs
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Rotate")
-        .and_then(|(_, v)| match v {
-            Obj::Int(v) => Some(*v),
-            _ => None,
-        })
-        .unwrap_or(0);
+    let rotate = match inherited_page_value(src, doc, page_ref, b"Rotate", budget, g, 0)? {
+        Some(Obj::Int(v)) => v,
+        Some(Obj::Ref(r)) => match resolve_ref_obj(src, doc, r, budget, g)? {
+            Obj::Int(v) => v,
+            _ => 0,
+        },
+        _ => 0,
+    };
     Ok((media, contents, resources, rotate, annots))
+}
+
+/// Walk a leaf page and its `/Parent` chain for an inheritable page-tree
+/// attribute. PDF 32000-1 7.7.3.4 makes `/Resources`, `/MediaBox`, `/CropBox`
+/// and `/Rotate` inheritable; the leaf's own entry wins.
+fn inherited_page_value(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    node: Ref,
+    key: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    depth: usize,
+) -> Result<Option<Obj>, String> {
+    if depth > 32 {
+        return Err("page tree too deep".to_string());
+    }
+    let obj = resolve_ref_obj(src, doc, node, budget, g)?;
+    let Obj::Dict(pairs) = &obj else {
+        return Ok(None);
+    };
+    if let Some((_, value)) = pairs.iter().find(|(k, _)| k.as_slice() == key) {
+        return Ok(Some(value.clone()));
+    }
+    let parent = pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Parent")
+        .and_then(|(_, value)| match value {
+            Obj::Ref(r) => Some(*r),
+            _ => None,
+        });
+    match parent {
+        Some(parent) => inherited_page_value(src, doc, parent, key, budget, g, depth + 1),
+        None => Ok(None),
+    }
+}
+
+/// The page size from a (possibly indirect) `/MediaBox`, defaulting to US
+/// Letter when the tree does not carry a usable box. The box may have a
+/// non-zero origin, so size is `upper - lower`, not the upper coordinate.
+fn media_size(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    value: Option<Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(f64, f64), String> {
+    let value = match value {
+        Some(Obj::Ref(r)) => resolve_ref_obj(src, doc, r, budget, g)?,
+        Some(value) => value,
+        None => return Ok((612.0, 792.0)),
+    };
+    let Obj::Array(items) = value else {
+        return Ok((612.0, 792.0));
+    };
+    if items.len() < 4 {
+        return Ok((612.0, 792.0));
+    }
+    let n = |i: usize| match items.get(i) {
+        Some(Obj::Int(v)) => Some(*v as f64),
+        Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+        _ => None,
+    };
+    let (Some(x0), Some(y0), Some(x1), Some(y1)) = (n(0), n(1), n(2), n(3)) else {
+        return Ok((612.0, 792.0));
+    };
+    Ok(((x1 - x0).abs(), (y1 - y0).abs()))
 }
 
 /// Copy a page, appending black rects over `rects` and stripping text that
@@ -3889,7 +3948,7 @@ fn annots_on_pages(
 // That is the point of a commit surface — one place that knows all of it —
 // so the arity stays and the allow is scoped to this function (SL-0.WS.11).
 #[allow(clippy::too_many_arguments)]
-fn write_document(
+pub(crate) fn write_document(
     builder: selis_pdf_cos::doc_writer::DocumentBuilder,
     output: &str,
     input: Option<&[u8]>,
@@ -4236,6 +4295,94 @@ mod tests {
         out.extend_from_slice(format!("{xref_at}\n").as_bytes());
         out.extend_from_slice(b"%%EOF\n");
         out
+    }
+
+    /// A page that inherits its box from the root `/Pages` node and its
+    /// resources and rotation from an intermediate `/Pages` node, as PDF
+    /// 32000-1 7.7.3.4 permits.
+    fn inherited_page_source() -> Vec<u8> {
+        let numbered: &[(u32, &[u8])] = &[
+            (1, b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"),
+            (
+                2,
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [10 20 210 320] >>\nendobj\n",
+            ),
+            (
+                3,
+                b"3 0 obj\n<< /Type /Pages /Parent 2 0 R /Kids [4 0 R] /Count 1 /Rotate 90 /Resources << /Font << /F1 6 0 R >> >> >>\nendobj\n",
+            ),
+            (
+                4,
+                b"4 0 obj\n<< /Type /Page /Parent 3 0 R /Contents 5 0 R >>\nendobj\n",
+            ),
+            (5, b"5 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"),
+            (
+                6,
+                b"6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+            ),
+        ];
+        numbered_source(numbered)
+    }
+
+    /// Inheritable page attributes survive both a read and the copy path that
+    /// rotation uses; a leaf-only read used to substitute Letter and lose the
+    /// font or inherited rotation.
+    #[test]
+    fn inherited_page_attributes_are_read_and_copied() {
+        let bytes = inherited_page_source();
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        assert_eq!(refs.len(), 1);
+        let (media, contents, resources, rotate, _) =
+            super::page_info(&bytes, &doc, refs[0], &budget, &mut g).expect("page info");
+        assert_eq!(media, (200.0, 300.0), "inherited /MediaBox size");
+        assert_eq!(contents.len(), 1, "page content");
+        assert_eq!(rotate, 90, "inherited /Rotate");
+        let Obj::Dict(resource_pairs) = resources.expect("inherited /Resources") else {
+            panic!("resources should be a dictionary");
+        };
+        assert!(
+            resource_pairs.iter().any(|(k, _)| k.as_slice() == b"Font"),
+            "inherited /Resources must carry the font dictionary"
+        );
+
+        let dir = temp_dir("inherited-page-attributes");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, &bytes).unwrap();
+        super::rotate(
+            &input.display().to_string(),
+            90,
+            None,
+            &output.display().to_string(),
+        )
+        .expect("rotate");
+        let out = std::fs::read(&output).expect("read output");
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&out, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&out, sx, &budget, &mut g).expect("parse out");
+        let refs = super::page_refs_of(&out, &doc, &budget, &mut g).expect("page refs out");
+        let (media, _, resources, rotate, _) =
+            super::page_info(&out, &doc, refs[0], &budget, &mut g).expect("page info out");
+        assert_eq!(media, (200.0, 300.0), "copied page keeps its media box");
+        assert_eq!(rotate, 180, "rotation is added to the inherited value");
+        // The writer materializes copied resources as an indirect object, so
+        // resolve the page's `/Resources` reference before checking its keys.
+        let resources = match resources.expect("copied /Resources") {
+            Obj::Ref(r) => super::resolve_ref_obj(&out, &doc, r, &budget, &mut g)
+                .expect("resolve copied resources"),
+            value => value,
+        };
+        let Obj::Dict(resource_pairs) = resources else {
+            panic!("copied resources should be a dictionary");
+        };
+        assert!(
+            resource_pairs.iter().any(|(k, _)| k.as_slice() == b"Font"),
+            "the copied page must keep the inherited font resources"
+        );
     }
 
     /// Merging a page must carry its annotations (WRITE.03 DoD): the output

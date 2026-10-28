@@ -17,4 +17,5 @@ workspace = true
 [dependencies]
 # No `native-fs`: every path is a key in the in-memory tool session.
 selis-pdf-tools = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

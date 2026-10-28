@@ -23,7 +23,9 @@
       //
       //   1. load the real page, wait for its own worker registration to claim
       //      it, then merge two PDFs, run the split-every, split-size, and
-      //      split-bookmark modes, duplicate a page, and insert a blank page;
+      //      split-bookmark modes, duplicate a page, insert a blank page, stamp
+      //      page numbers, a watermark, a header/footer and Bates numbers, and
+      //      compress a PDF;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -120,14 +122,14 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 6,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 11,
           15_000,
           label,
         );
         return frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length;
       }
 
-      async function readOutput(win, row, label) {
+      async function readOutput(win, row, label, needles) {
         const download = row.querySelector("a.primary-link");
         if (!download) throw new Error("a result row had no download link (" + label + ")");
         const preview = row.querySelector("a.text-button");
@@ -154,10 +156,14 @@
           bytes[1] === 0x4b &&
           bytes[2] === 0x03 &&
           bytes[3] === 0x04;
+        if (needles && needles.length > 0) {
+          const text = new TextDecoder("latin1").decode(bytes);
+          output.found = needles.map((needle) => text.includes(needle));
+        }
         return output;
       }
 
-      async function readResult(frame, label) {
+      async function readResult(frame, label, needles) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
         const result = {
@@ -172,7 +178,7 @@
         };
         const outputs = [];
         for (const row of doc.querySelectorAll("#result-outputs .output-row")) {
-          outputs.push(await readOutput(win, row, label));
+          outputs.push(await readOutput(win, row, label, needles));
         }
         return {
           result,
@@ -364,9 +370,73 @@
         };
       }
 
+      async function toolInFrame(
+        frame,
+        fixture,
+        fixtureName,
+        label,
+        toolId,
+        inputs,
+        needles,
+      ) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const card = doc.querySelector('[data-tool="' + toolId + '"]');
+        if (!card) throw new Error("the page offered no " + toolId + " card");
+        card.click();
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the " + toolId + " workspace (" + label + ")",
+        );
+
+        for (const [key, value] of Object.entries(inputs || {})) {
+          const field = doc.getElementById("option-" + key);
+          if (!field) throw new Error("the " + toolId + " page offered no " + key + " field");
+          field.value = String(value);
+          field.dispatchEvent(new win.Event("input", { bubbles: true }));
+          field.dispatchEvent(new win.Event("change", { bubbles: true }));
+        }
+
+        const fileRows = await attachFiles(frame, fixture, fixtureName, label, 1);
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the " + toolId + " button to enable");
+        const runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the " + toolId + " result and the no-upload assertion (" + label + ")",
+        );
+
+        const read = await readResult(frame, label, needles);
+        return {
+          win,
+          fileRows,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+        };
+      }
+
       const watchdog = setTimeout(
-        () => fail(new Error("the tools page did not finish inside 90s")),
-        90_000,
+        () => fail(new Error("the tools page did not finish inside 180s")),
+        180_000,
       );
 
       (async () => {
@@ -376,7 +446,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the six tool cards");
+        out.cards = await waitForCards(frame, "the eleven tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -520,6 +590,110 @@
           network: onlineBlanks.network,
         };
 
+        const onlineNumbers = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online page numbers",
+          "page_numbers",
+          { pages: "1,3", start: "5", format: "fraction" },
+          ["(5/3) Tj", "(6/3) Tj"],
+        );
+        out.pageNumbers = {
+          fileRows: onlineNumbers.fileRows,
+          runLabel: onlineNumbers.runLabel,
+          noUpload: onlineNumbers.noUpload,
+          status: onlineNumbers.status,
+          result: onlineNumbers.result,
+          outputs: onlineNumbers.outputs,
+          output: onlineNumbers.output,
+          network: onlineNumbers.network,
+        };
+
+        const onlineWatermark = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online watermark",
+          "watermark",
+          { text: "CONFIDENTIAL", opacity: "0.35", pages: "2" },
+          ["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+        );
+        out.watermark = {
+          fileRows: onlineWatermark.fileRows,
+          runLabel: onlineWatermark.runLabel,
+          noUpload: onlineWatermark.noUpload,
+          status: onlineWatermark.status,
+          result: onlineWatermark.result,
+          outputs: onlineWatermark.outputs,
+          output: onlineWatermark.output,
+          network: onlineWatermark.network,
+        };
+
+        const onlineHeaderFooter = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online header/footer",
+          "header_footer",
+          {
+            "header-left": "Page {page} of {pages}",
+            "header-center": "Center",
+            "footer-right": "Draft",
+          },
+          ["(Page 1 of 3) Tj", "(Center) Tj", "(Draft) Tj"],
+        );
+        out.headerFooter = {
+          fileRows: onlineHeaderFooter.fileRows,
+          runLabel: onlineHeaderFooter.runLabel,
+          noUpload: onlineHeaderFooter.noUpload,
+          status: onlineHeaderFooter.status,
+          result: onlineHeaderFooter.result,
+          outputs: onlineHeaderFooter.outputs,
+          output: onlineHeaderFooter.output,
+          network: onlineHeaderFooter.network,
+        };
+
+        const onlineBates = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online Bates",
+          "bates",
+          { prefix: "ABC-", start: "9", digits: "4", pages: "2-3" },
+          ["(ABC-0009) Tj", "(ABC-0010) Tj"],
+        );
+        out.bates = {
+          fileRows: onlineBates.fileRows,
+          runLabel: onlineBates.runLabel,
+          noUpload: onlineBates.noUpload,
+          status: onlineBates.status,
+          result: onlineBates.result,
+          outputs: onlineBates.outputs,
+          output: onlineBates.output,
+          network: onlineBates.network,
+        };
+
+        const onlineCompress = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online compress",
+          "compress",
+          {},
+          [],
+        );
+        out.compress = {
+          fileRows: onlineCompress.fileRows,
+          runLabel: onlineCompress.runLabel,
+          noUpload: onlineCompress.noUpload,
+          status: onlineCompress.status,
+          result: onlineCompress.result,
+          outputs: onlineCompress.outputs,
+          output: onlineCompress.output,
+          network: onlineCompress.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -531,7 +705,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the six offline tool cards");
+        const offlineCards = await waitForCards(frame, "the eleven offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -577,6 +751,55 @@
           "offline blank pages",
           "blank",
           { after: "1", count: "1" },
+        );
+        const offlineNumbers = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline page numbers",
+          "page_numbers",
+          { pages: "1,3", start: "5", format: "fraction" },
+          ["(5/3) Tj", "(6/3) Tj"],
+        );
+        const offlineWatermark = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline watermark",
+          "watermark",
+          { text: "CONFIDENTIAL", opacity: "0.35", pages: "2" },
+          ["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+        );
+        const offlineHeaderFooter = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline header/footer",
+          "header_footer",
+          {
+            "header-left": "Page {page} of {pages}",
+            "header-center": "Center",
+            "footer-right": "Draft",
+          },
+          ["(Page 1 of 3) Tj", "(Center) Tj", "(Draft) Tj"],
+        );
+        const offlineBates = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline Bates",
+          "bates",
+          { prefix: "ABC-", start: "9", digits: "4", pages: "2-3" },
+          ["(ABC-0009) Tj", "(ABC-0010) Tj"],
+        );
+        const offlineCompress = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline compress",
+          "compress",
+          {},
+          [],
         );
         out.offline = {
           cards: offlineCards,
@@ -637,6 +860,56 @@
             outputs: offlineBlanks.outputs,
             output: offlineBlanks.output,
             network: offlineBlanks.network,
+          },
+          pageNumbers: {
+            fileRows: offlineNumbers.fileRows,
+            runLabel: offlineNumbers.runLabel,
+            noUpload: offlineNumbers.noUpload,
+            status: offlineNumbers.status,
+            result: offlineNumbers.result,
+            outputs: offlineNumbers.outputs,
+            output: offlineNumbers.output,
+            network: offlineNumbers.network,
+          },
+          watermark: {
+            fileRows: offlineWatermark.fileRows,
+            runLabel: offlineWatermark.runLabel,
+            noUpload: offlineWatermark.noUpload,
+            status: offlineWatermark.status,
+            result: offlineWatermark.result,
+            outputs: offlineWatermark.outputs,
+            output: offlineWatermark.output,
+            network: offlineWatermark.network,
+          },
+          headerFooter: {
+            fileRows: offlineHeaderFooter.fileRows,
+            runLabel: offlineHeaderFooter.runLabel,
+            noUpload: offlineHeaderFooter.noUpload,
+            status: offlineHeaderFooter.status,
+            result: offlineHeaderFooter.result,
+            outputs: offlineHeaderFooter.outputs,
+            output: offlineHeaderFooter.output,
+            network: offlineHeaderFooter.network,
+          },
+          bates: {
+            fileRows: offlineBates.fileRows,
+            runLabel: offlineBates.runLabel,
+            noUpload: offlineBates.noUpload,
+            status: offlineBates.status,
+            result: offlineBates.result,
+            outputs: offlineBates.outputs,
+            output: offlineBates.output,
+            network: offlineBates.network,
+          },
+          compress: {
+            fileRows: offlineCompress.fileRows,
+            runLabel: offlineCompress.runLabel,
+            noUpload: offlineCompress.noUpload,
+            status: offlineCompress.status,
+            result: offlineCompress.result,
+            outputs: offlineCompress.outputs,
+            output: offlineCompress.output,
+            network: offlineCompress.network,
           },
         };
 

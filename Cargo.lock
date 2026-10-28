@@ -1870,8 +1870,10 @@ dependencies = [
  "proptest",
  "selis-bytes",
  "selis-error",
+ "selis-font",
  "selis-io",
  "selis-pdf-cos",
+ "selis-pdf-filter",
  "selis-sandbox",
  "serde",
  "serde_json",
@@ -1953,6 +1955,7 @@ name = "selis-pdf-wasm-tools"
 version = "0.1.0"
 dependencies = [
  "selis-pdf-tools",
+ "serde",
  "serde_json",
 ]
 

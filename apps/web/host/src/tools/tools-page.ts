@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Six browser-local operations, one page. The only fetch this module makes is
+ * Eleven browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -91,6 +91,46 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Edit metadata",
 		blurb: "Set the title, author, subject, and keywords.",
 		verb: "Save metadata",
+		multiple: false,
+	},
+	{
+		id: "page_numbers",
+		mark: "1",
+		title: "Add page numbers",
+		blurb: "Stamp page numbers on every page or a selection.",
+		verb: "Add page numbers",
+		multiple: false,
+	},
+	{
+		id: "watermark",
+		mark: "W",
+		title: "Watermark PDF",
+		blurb: "Add a translucent diagonal or horizontal text watermark.",
+		verb: "Add watermark",
+		multiple: false,
+	},
+	{
+		id: "header_footer",
+		mark: "HF",
+		title: "Header & footer",
+		blurb: "Add header and footer lines with page placeholders.",
+		verb: "Add header & footer",
+		multiple: false,
+	},
+	{
+		id: "bates",
+		mark: "B",
+		title: "Bates numbering",
+		blurb: "Apply sequential legal-style numbers with a prefix and padding.",
+		verb: "Add Bates numbers",
+		multiple: false,
+	},
+	{
+		id: "compress",
+		mark: "Z",
+		title: "Compress PDF",
+		blurb: "Lossless cleanup: drop unreachable objects and re-encode streams.",
+		verb: "Compress PDF",
 		multiple: false,
 	},
 ];
@@ -296,6 +336,38 @@ function init(): void {
 			input.step = "1";
 		}
 		return input;
+	}
+
+	function numberInRange(
+		key: string,
+		label: string,
+		minimum: number,
+		maximum: number,
+		fallback: number,
+		integer = false,
+	): number {
+		const raw = optionValue(key).trim();
+		if (raw === "") {
+			return fallback;
+		}
+		const value = Number(raw);
+		if (
+			!Number.isFinite(value) ||
+			value < minimum ||
+			value > maximum ||
+			(integer && !Number.isInteger(value))
+		) {
+			throw new ToolInputError(
+				`${label} must be ${integer ? "a whole number" : "a number"} between ${minimum} and ${maximum}.`,
+			);
+		}
+		return value;
+	}
+
+	/** Overlay selections are 1-based; the Rust option parser validates them. */
+	function overlayPages(): string | undefined {
+		const text = optionValue("pages").trim();
+		return text === "" ? undefined : text;
 	}
 
 	function setOptionFieldVisible(key: string, visible: boolean): void {
@@ -518,6 +590,185 @@ function init(): void {
 			options.append(note);
 			syncOrganizeFields();
 			mode.addEventListener("change", syncOrganizeFields);
+			return;
+		}
+		if (tool.id === "page_numbers") {
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges. Leave blank to number every page.",
+			);
+			const position = make("select", "control");
+			for (const [value, label] of [
+				["bottom_center", "Bottom center"],
+				["bottom_left", "Bottom left"],
+				["bottom_right", "Bottom right"],
+				["top_center", "Top center"],
+				["top_left", "Top left"],
+				["top_right", "Top right"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				position.append(choice);
+			}
+			addField("position", "Position", position);
+			const format = make("select", "control");
+			for (const [value, label] of [
+				["plain", "1"],
+				["fraction", "1 / total"],
+				["page_of_pages", "Page 1 of total"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				format.append(choice);
+			}
+			addField("format", "Number format", format);
+			const start = addField(
+				"start",
+				"First number",
+				textInput("start", "number", "1"),
+			) as HTMLInputElement;
+			start.value = "1";
+			const fontSize = addField(
+				"font-size",
+				"Font size (pt)",
+				textInput("font-size", "number", "10"),
+			) as HTMLInputElement;
+			fontSize.value = "10";
+			fontSize.step = "0.5";
+			fontSize.max = "400";
+			return;
+		}
+		if (tool.id === "watermark") {
+			addField(
+				"text",
+				"Watermark text",
+				textInput("text", "text", "CONFIDENTIAL"),
+				"WinAnsi text. Unknown glyphs are refused rather than replaced.",
+			);
+			const orientation = make("select", "control");
+			for (const [value, label] of [
+				["diagonal", "Diagonal"],
+				["horizontal", "Horizontal"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				orientation.append(choice);
+			}
+			addField("orientation", "Orientation", orientation);
+			const opacity = addField(
+				"opacity",
+				"Opacity",
+				textInput("opacity", "number", "0.2"),
+				"Between 0 and 1. Values below 1 add a local graphics state.",
+			) as HTMLInputElement;
+			opacity.value = "0.2";
+			opacity.min = "0";
+			opacity.max = "1";
+			opacity.step = "0.05";
+			const fontSize = addField(
+				"font-size",
+				"Font size (pt)",
+				textInput("font-size", "number", "48"),
+			) as HTMLInputElement;
+			fontSize.value = "48";
+			fontSize.step = "0.5";
+			fontSize.max = "400";
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges.",
+			);
+			return;
+		}
+		if (tool.id === "header_footer") {
+			addField(
+				"header-left",
+				"Header left",
+				textInput("header-left", "text", "Page {page} of {pages}"),
+				"Supports {page} and {pages}.",
+			);
+			addField(
+				"header-center",
+				"Header center",
+				textInput("header-center", "text", "Optional"),
+				"Left empty when unused.",
+			);
+			addField(
+				"header-right",
+				"Header right",
+				textInput("header-right", "text", "Optional"),
+				"Left empty when unused.",
+			);
+			addField(
+				"footer-left",
+				"Footer left",
+				textInput("footer-left", "text", "Optional"),
+				"Supports {page} and {pages}.",
+			);
+			addField(
+				"footer-center",
+				"Footer center",
+				textInput("footer-center", "text", "Optional"),
+				"Left empty when unused.",
+			);
+			addField(
+				"footer-right",
+				"Footer right",
+				textInput("footer-right", "text", "Optional"),
+				"At least one header or footer slot must be filled.",
+			);
+			const fontSize = addField(
+				"font-size",
+				"Font size (pt)",
+				textInput("font-size", "number", "9"),
+			) as HTMLInputElement;
+			fontSize.value = "9";
+			fontSize.step = "0.5";
+			fontSize.max = "400";
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges.",
+			);
+			return;
+		}
+		if (tool.id === "bates") {
+			addField("prefix", "Prefix", textInput("prefix", "text", "e.g. ABC-"));
+			addField("suffix", "Suffix", textInput("suffix", "text", "Optional"));
+			const start = addField(
+				"start",
+				"First number",
+				textInput("start", "number", "1"),
+			) as HTMLInputElement;
+			start.value = "1";
+			const digits = addField(
+				"digits",
+				"Minimum digits",
+				textInput("digits", "number", "6"),
+				"1 to 20. A wider number is printed in full.",
+			) as HTMLInputElement;
+			digits.value = "6";
+			digits.max = "20";
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges.",
+			);
+			return;
+		}
+		if (tool.id === "compress") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Lossless only: unreachable objects are removed and streams are re-encoded. Images and fonts are not downsampled. Encrypted files are refused.";
+			options.append(note);
 			return;
 		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
@@ -768,6 +1019,87 @@ function init(): void {
 				files: wireFiles,
 			};
 		}
+		if (tool.id === "page_numbers") {
+			const options: Record<string, unknown> = {
+				position: optionValue("position"),
+				format: optionValue("format"),
+				start: numberInRange("start", "First number", 1, 1_000_000_000, 1, true),
+				font_size: numberInRange("font-size", "Font size", 0.1, 400, 10),
+			};
+			const pages = overlayPages();
+			if (pages !== undefined) {
+				options.pages = pages;
+			}
+			return { op: "page_numbers", options, files: wireFiles };
+		}
+		if (tool.id === "watermark") {
+			const text = optionValue("text").trim();
+			if (text === "") {
+				throw new ToolInputError("Enter the watermark text.");
+			}
+			const options: Record<string, unknown> = {
+				text,
+				orientation: optionValue("orientation"),
+				opacity: numberInRange("opacity", "Opacity", 0, 1, 0.2),
+				font_size: numberInRange("font-size", "Font size", 0.1, 400, 48),
+			};
+			const pages = overlayPages();
+			if (pages !== undefined) {
+				options.pages = pages;
+			}
+			return { op: "watermark", options, files: wireFiles };
+		}
+		if (tool.id === "header_footer") {
+			const header = {
+				left: optionValue("header-left").trim(),
+				center: optionValue("header-center").trim(),
+				right: optionValue("header-right").trim(),
+			};
+			const footer = {
+				left: optionValue("footer-left").trim(),
+				center: optionValue("footer-center").trim(),
+				right: optionValue("footer-right").trim(),
+			};
+			if (
+				header.left === "" &&
+				header.center === "" &&
+				header.right === "" &&
+				footer.left === "" &&
+				footer.center === "" &&
+				footer.right === ""
+			) {
+				throw new ToolInputError("Fill in at least one header or footer slot.");
+			}
+			const options: Record<string, unknown> = {
+				header,
+				footer,
+				font_size: numberInRange("font-size", "Font size", 0.1, 400, 9),
+			};
+			const pages = overlayPages();
+			if (pages !== undefined) {
+				options.pages = pages;
+			}
+			return { op: "header_footer", options, files: wireFiles };
+		}
+		if (tool.id === "bates") {
+			const options: Record<string, unknown> = {
+				prefix: optionValue("prefix").trim(),
+				suffix: optionValue("suffix").trim(),
+				start: numberInRange("start", "First number", 1, 1_000_000_000, 1, true),
+				digits: numberInRange("digits", "Minimum digits", 1, 20, 6, true),
+			};
+			const pages = overlayPages();
+			if (pages !== undefined) {
+				options.pages = pages;
+			}
+			return { op: "bates", options, files: wireFiles };
+		}
+		if (tool.id === "compress") {
+			return { op: "compress", files: wireFiles };
+		}
+		if (tool.id !== "metadata") {
+			throw new ToolInputError("This tool is not wired into the local engine yet.");
+		}
 		const fields: Record<string, string> = {};
 		for (const [key, label] of [
 			["Title", "title"],
@@ -942,30 +1274,11 @@ function init(): void {
 	function resetForAnother(): void {
 		files = [];
 		clearResult();
+		const tool = currentTool();
+		if (tool !== null) {
+			renderOptions(tool);
+		}
 		renderFiles();
-		for (const control of optionControls.values()) {
-			if (control instanceof HTMLInputElement && control.type === "number") {
-				control.value =
-					control.name === "from"
-						? "1"
-						: control.name === "every"
-							? "2"
-							: control.name === "target"
-								? "1"
-								: control.name === "count"
-									? "1"
-									: "";
-			} else if (control instanceof HTMLInputElement) {
-				control.value = "";
-			} else if (control instanceof HTMLSelectElement) {
-				control.selectedIndex = 0;
-			}
-		}
-		if (selectedTool === "split") {
-			syncSplitFields();
-		} else if (selectedTool === "reorder") {
-			syncOrganizeFields();
-		}
 		updateRunState();
 		setStatus("Files stay on this device.", "info");
 		dropzone.focus();

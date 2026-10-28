@@ -1,6 +1,6 @@
 # 34 — Tools Site Roadmap: iLovePDF and ihatepdf.cv Feature Matrix
 
-**Status:** execution plan, 27 October 2026. Supersedes the six-tool MVP framing.
+**Status:** execution plan, updated 28 October 2026. Supersedes the six-tool MVP framing.
 **Scope:** every feature offered by iLovePDF and ihatepdf.cv, with editing explicitly deferred to
 Phase 5. Browser-native PDF display is the display strategy; a custom viewer is not a launch gate.
 **Related:** `11A-PHASE-1A-tools.md`, `28-FIRST-RELEASE-SCOPE.md`, `22-SECURITY-AND-SUPPLY-CHAIN.md`,
@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split and organize slice, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, and compression slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -52,6 +52,11 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Organize pages | yes | yes | **Live** | One workspace with reorder, duplicate, and insert-blank modes; full permutation, 1-based input. |
 | Duplicate pages | — | yes | **Live** | Copies follow their originals; content, resources, and annotations travel with each copy. |
 | Insert blank pages | — | yes | **Live** | 1-based boundary (0 = before page 1, empty = append); copies the neighbouring page's media box and rotation; up to 100 blanks per run. |
+| Page numbers | yes | yes | **Live** | 1-based selection, corner/edge placement, starting number, `n`, `n of total`, and `Page n` formats, font/color/margins. |
+| Text watermark | yes | yes | **Live (text)** | Diagonal or horizontal centered text, opacity via `ExtGState`, 1-based selection. Image and tiled watermarks are not claimed. |
+| Headers and footers | — | yes | **Live** | Three independently aligned slots each, `{page}`/`{pages}` placeholders, margins, font/color. |
+| Bates numbering | — | yes | **Live** | Prefix, suffix, start, zero-padding, placement, 1-based selection; advances only over selected pages. |
+| Compress PDF (lossless) | yes | yes | **Live** | Reachable-object GC, Flate re-encode, byte-identical-object dedup, inherited page attributes, trailer-level `/Info`; encrypted files are refused. |
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP and strip are next. |
 | Browser-native preview | — | — | **Live** | Inputs and outputs open as Blob URLs in the browser's PDF viewer. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
@@ -64,7 +69,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 160 207 B).
+      (currently 300 000 B brotli; baseline 218 276 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -101,10 +106,10 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Flip horizontal/vertical | — | yes | 1A.1 | Content matrix; verify against original pixels only when raster exists. |
 | Alternate / mix pages | — | yes | 1A.1 | Interleave two documents; preserve page-level resources. |
 | Extract pages | yes | yes | 1A.1 | Live. One PDF, selected pages in document order. |
-| Page numbers | yes | yes | 1A.1 | Content builder + font subset; placement, start, format, skip-first. |
-| Watermark | yes | yes | 1A.1 | Text/image watermark; image path needs `selis-image`; keep flatten as an option. |
-| Headers and footers | — | yes | 1A.1 | Same text layout primitives as page numbers. |
-| Bates numbering | — | yes | 1A.1 | Deterministic prefix/suffix, start, padding, position. |
+| Page numbers | yes | yes | 1A.1 | Live. Standard-14 Helvetica overlay; placement, start, `n`/`n of total`/`Page n`, 1-based selection. Skip-first is not implemented. |
+| Watermark | yes | yes | 1A.1 | Live for centered text (diagonal/horizontal, opacity, selection). Image/tiled watermarks need `selis-image`; flatten remains an option. |
+| Headers and footers | — | yes | 1A.1 | Live. Three aligned slots each with `{page}`/`{pages}` placeholders. |
+| Bates numbering | — | yes | 1A.1 | Live. Deterministic prefix/suffix, start, padding, placement, selection. |
 | Bookmarks / outline editing | — | yes | 1A.1 | Outline reader/writer exists; add UI and verification. |
 | Attachments extract | — | yes | 1A.1 | CLI exists. Browser protocol needs a multi-output response and per-file download. |
 | Attachment add/remove | — | yes | 1A.1 | Writer `/Names/EmbeddedFiles`; sanitize names. |
@@ -118,7 +123,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 
 | Feature | iLovePDF | ihp | Phase | Status / constraint |
 |---|---|---|---|---|
-| Compress (lossless) | yes | yes | 1A.1 | CLI exists. Bring to browser: object stream/GC/dedup/flate; no raster needed. |
+| Compress (lossless) | yes | yes | 1A.1 | Live in CLI and browser. Reachable-object GC, Flate re-encode, byte-identical-object dedup, trailer `/Info` preservation; encrypted files are refused rather than silently unlocked. |
 | Compress (target size / lossy) | yes | yes | Raster | Needs image decode/re-encode and a quality/size search. Show measured result. |
 | Repair | yes | yes | 1A.1 | Reader recovery exists; browser must expose salvage vs. strict mode and never silently "repair" by dropping pages. |
 | Metadata strip | — | yes | 1A.1 | Info + XMP removal; keep an explicit list of what was removed. |
@@ -233,11 +238,18 @@ after an offline reload, reads the actual PDF and ZIP bytes, and checks the per-
 flag for a target no single page can meet. The same slice adds duplicate pages and insert-blank
 pages to the Organize pages workspace; duplicate and blank legs run online and offline too.
 
-**Remaining in 1A.1:** crop/resize, N-up/flip/alternate/mix, page numbers, watermark,
-headers/footers, Bates, lossless compression, repair, metadata strip, attachments, page labels,
-CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
-incremental writer for page edits remains deferred; these page operations use the verified
-full-rewrite path.
+**Shipped 2026-10-28:** page numbers, centered text watermark, headers/footers with
+`{page}`/`{pages}` placeholders, Bates numbering, and lossless compression. All five operations
+are exposed through the CLI and the browser and use the verified full-rewrite path. The browser
+check now drives eleven cards online and after an offline reload, reads the stamped marker strings
+from the downloaded PDF bytes, and measures the compressed output's page count and size. Overlay
+placement follows inherited `/MediaBox`, `/Resources`, and `/Rotate` values, and compression
+preserves trailer-level `/Info`.
+
+**Remaining in 1A.1:** crop/resize, N-up/flip/alternate/mix, image/tiled watermark, repair,
+metadata strip, attachments, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the
+crypto-enabled security tools. The incremental writer for page edits remains deferred; these page
+operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
 size budget; no raster feature is claimed yet.
@@ -288,11 +300,11 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The six live tools are
-   object-graph operations; keeping the renderer out is why the chunk is 137 KB brotli instead of
+3. **No page renderer in the tools chunk unless a tool needs it.** The current eleven tools are
+   object-graph operations; keeping the renderer out is why the chunk is 218 KB brotli instead of
    the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
-   feature. Native and viewer builds enable it; the six live tools disable it so `getrandom`'s
+   feature. Native and viewer builds enable it; the object-graph tools disable it so `getrandom`'s
    wasm-bindgen glue cannot sneak in. Security tools will use a separate crypto-enabled chunk.
 5. **Browser-native display.** Blob URLs, browser PDF viewer, no custom viewer gate. A tool may
    preview its output this way; it may not upload one.
@@ -307,20 +319,22 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Six live operations with 1-based page input.
+- [x] Eleven live operations with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for inputs and outputs.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives merge end-to-end, downloads the output, and asserts the network log.
-      `xtask/browser/tools-page` passed in Edge: 6 same-origin resources, 0 foreign, Pages
-      `2 → 2`, `%PDF-` download, `data-no-upload="verified"` before the result appeared.
+- [x] Browser check drives all eleven cards end-to-end, downloads every output, asserts the
+      network log, and reads the stamped marker strings from the downloaded PDF bytes.
+      `xtask/browser/tools-page` passed in Edge with 11 cards, 0 foreign resources,
+      `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
-      The `tools-page` browser check now merges online, cuts the origin, reloads the page, and
-      merges again with zero foreign resources. The document cache exclusion is unchanged.
+      The `tools-page` browser check now runs every leg online, cuts the origin, reloads the page,
+      and runs every leg again with zero foreign resources. The document cache exclusion is
+      unchanged.
 - [ ] CI green on `feature/tools-site`; fast-forward `origin/main`; no worktree/build on `C:`.
 
 ---

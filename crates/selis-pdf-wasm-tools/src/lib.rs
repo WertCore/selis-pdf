@@ -71,6 +71,11 @@ enum Op {
     Delete,
     Reorder,
     SetMetadata,
+    PageNumbers,
+    Watermark,
+    HeaderFooter,
+    Bates,
+    Compress,
 }
 
 impl Op {
@@ -82,6 +87,11 @@ impl Op {
             4 => Some(Self::Delete),
             5 => Some(Self::Reorder),
             6 => Some(Self::SetMetadata),
+            7 => Some(Self::PageNumbers),
+            8 => Some(Self::Watermark),
+            9 => Some(Self::HeaderFooter),
+            10 => Some(Self::Bates),
+            11 => Some(Self::Compress),
             _ => None,
         }
     }
@@ -112,10 +122,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
     ptr
 }
 
-/// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata.
+/// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
+/// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b11_1111
+    0b111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -403,6 +414,52 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::PageNumbers => {
+            let options: selis_pdf_tools::overlay::PageNumberOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-numbered.pdf"),
+                verification: selis_pdf_tools::overlay::add_page_numbers(
+                    "in/0", &options, "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
+        Op::Watermark => {
+            let options: selis_pdf_tools::overlay::WatermarkOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-watermarked.pdf"),
+                verification: selis_pdf_tools::overlay::add_watermark("in/0", &options, "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::HeaderFooter => {
+            let options: selis_pdf_tools::overlay::HeaderFooterOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-header-footer.pdf"),
+                verification: selis_pdf_tools::overlay::add_header_footer(
+                    "in/0", &options, "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
+        Op::Bates => {
+            let options: selis_pdf_tools::overlay::BatesOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-bates.pdf"),
+                verification: selis_pdf_tools::overlay::add_bates("in/0", &options, "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::Compress => vec![Produced {
+            output: "out.pdf".to_string(),
+            name: format!("{stem}-compressed.pdf"),
+            verification: selis_pdf_tools::compress("in/0", "out.pdf")?,
+            over_target: false,
+        }],
     };
 
     let verifications: Vec<Verification> = produced
@@ -647,6 +704,14 @@ fn file_stem(name: &str) -> String {
     }
 }
 
+fn parse_options<T>(options: &serde_json::Value) -> Result<T, ToolError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(options.clone())
+        .map_err(|e| ToolError(format!("invalid tool options: {e}")))
+}
+
 fn option_u64(options: &serde_json::Value, key: &str) -> Option<u64> {
     options.get(key)?.as_u64()
 }
@@ -699,8 +764,73 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_cover_the_six_operations() {
-        assert_eq!(selis_tools_capabilities(), 0b11_1111);
+    fn capabilities_cover_every_operation() {
+        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111);
+    }
+
+    #[test]
+    fn page_number_operation_stamps_the_selected_pages() {
+        let pdf = multipage_pdf(3);
+        let response = run_request(&request(
+            7,
+            br#"{"pages":"1,3","start":5,"format":"fraction","position":"bottom_center"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "page numbers failed: {message}");
+        assert_eq!(message["pages_in"], 3);
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(outputs[0].0, "doc-numbered.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+    }
+
+    #[test]
+    fn watermark_and_bates_operations_are_dispatched() {
+        let pdf = multipage_pdf(2);
+        let response = run_request(&request(
+            8,
+            br#"{"text":"CONFIDENTIAL","opacity":0.3,"pages":"2"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "watermark failed: {message}");
+        assert_eq!(outputs[0].0, "doc-watermarked.pdf");
+
+        let response = run_request(&request(
+            10,
+            br#"{"prefix":"ABC-","start":9,"digits":4,"pages":"1-2"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "bates failed: {message}");
+        assert_eq!(outputs[0].0, "doc-bates.pdf");
+    }
+
+    #[test]
+    fn header_footer_operation_requires_at_least_one_slot() {
+        let pdf = multipage_pdf(1);
+        let response = run_request(&request(
+            9,
+            br#"{"header":{"left":"Page {page} of {pages}"}}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "header/footer failed: {message}");
+        assert_eq!(outputs[0].0, "doc-header-footer.pdf");
+
+        let response = run_request(&request(9, b"{}", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("at least one"));
+    }
+
+    #[test]
+    fn compress_operation_returns_a_verified_pdf() {
+        let pdf = multipage_pdf(1);
+        let response = run_request(&request(11, b"{}", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "compress failed: {message}");
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(outputs[0].0, "doc-compressed.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
     }
 
     #[test]

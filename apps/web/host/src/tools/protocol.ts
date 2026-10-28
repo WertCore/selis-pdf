@@ -31,7 +31,18 @@ export const MAX_NAME_BYTES = 128;
 export const MAX_OPTIONS_BYTES = 64 * 1024;
 
 /** Operations this chunk implements today. */
-export type ToolOp = "merge" | "split" | "rotate" | "delete" | "reorder" | "metadata";
+export type ToolOp =
+	| "merge"
+	| "split"
+	| "rotate"
+	| "delete"
+	| "reorder"
+	| "metadata"
+	| "page_numbers"
+	| "watermark"
+	| "header_footer"
+	| "bates"
+	| "compress";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -41,6 +52,11 @@ const OP_CODE: Record<ToolOp, number> = {
 	delete: 4,
 	reorder: 5,
 	metadata: 6,
+	page_numbers: 7,
+	watermark: 8,
+	header_footer: 9,
+	bates: 10,
+	compress: 11,
 };
 
 /** One input file on the wire. */

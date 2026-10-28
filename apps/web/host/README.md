@@ -23,8 +23,9 @@ one thing this app must never do is upload a document.
 and `/wasm/selis_pdf_wasm_tools.wasm`). `addAll` is atomic, so one missing asset
 fails the install and the browser keeps the previous worker rather than
 activating a half-cached app. The two groups live in
-`SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS`; the tools chunk is 137 KB
-brotli, not the viewer's 3 MB core, which is why promoting it is affordable.
+`SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS`; the eleven-operation tools
+chunk is 218 KB brotli, not the viewer's multi-megabyte core, which is why
+promoting it is affordable.
 
 **Runtime-cached (first use, cache-first):** `/assets/…` (the built UI and its
 code-split chunks) and `/wasm/…` (the WASM.02 chunks the manifest points at).
