@@ -22,7 +22,7 @@
       // different claims (SL-4.TOOLS.05):
       //
       //   1. load the real page, wait for its own worker registration to claim
-      //      it, then merge two PDFs, run the split-every, split-size, and
+      //      it, then merge and mix PDFs, run the split-every, split-size, and
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
       //      compress a PDF, and extract embedded attachments;
@@ -122,7 +122,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 12,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 13,
           15_000,
           label,
         );
@@ -213,6 +213,27 @@
         return doc.querySelectorAll("#file-list .file-row").length;
       }
 
+      async function attachPair(frame, first, firstName, second, secondName, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        const transfer = new win.DataTransfer();
+        transfer.items.add(
+          new win.File([first.slice(0)], firstName, { type: "application/pdf" }),
+        );
+        transfer.items.add(
+          new win.File([second.slice(0)], secondName, { type: "application/pdf" }),
+        );
+        const input = doc.getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll("#file-list .file-row").length === 2,
+          5_000,
+          "two selected PDFs (" + label + ")",
+        );
+        return doc.querySelectorAll("#file-list .file-row").length;
+      }
+
       async function mergeInFrame(frame, fixture, label) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -237,6 +258,54 @@
             !doc.getElementById("result").hidden,
           30_000,
           "the merge result and the no-upload assertion (" + label + ")",
+        );
+
+        const read = await readResult(frame, label);
+        return {
+          win,
+          fileRows,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+        };
+      }
+
+      async function mixInFrame(frame, first, firstName, second, secondName, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const mix = doc.querySelector('[data-tool="mix"]');
+        if (!mix) throw new Error("the page offered no Mix pages card");
+        mix.click();
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the mix workspace (" + label + ")",
+        );
+
+        const fileRows = await attachPair(frame, first, firstName, second, secondName, label);
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the Mix pages button to enable (" + label + ")");
+        const runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the mix result and the no-upload assertion (" + label + ")",
         );
 
         const read = await readResult(frame, label);
@@ -449,7 +518,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twelve tool cards");
+        out.cards = await waitForCards(frame, "the thirteen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -504,6 +573,25 @@
         out.output = online.output;
         out.outputs = online.outputs;
         out.network = online.network;
+
+        const onlineMix = await mixInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          fixture,
+          "one.pdf",
+          "online mix",
+        );
+        out.mix = {
+          fileRows: onlineMix.fileRows,
+          runLabel: onlineMix.runLabel,
+          noUpload: onlineMix.noUpload,
+          status: onlineMix.status,
+          result: onlineMix.result,
+          outputs: onlineMix.outputs,
+          output: onlineMix.output,
+          network: onlineMix.network,
+        };
 
         const onlineSplit = await splitInFrame(
           frame,
@@ -731,13 +819,21 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twelve offline tool cards");
+        const offlineCards = await waitForCards(frame, "the thirteen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
           "the worker to claim the offline tools page",
         );
         const offline = await mergeInFrame(frame, fixture, "offline");
+        const offlineMix = await mixInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          fixture,
+          "one.pdf",
+          "offline mix",
+        );
         const offlineSplit = await splitInFrame(
           frame,
           splitFixture,
@@ -849,6 +945,16 @@
           outputs: offline.outputs,
           output: offline.output,
           network: offline.network,
+          mix: {
+            fileRows: offlineMix.fileRows,
+            runLabel: offlineMix.runLabel,
+            noUpload: offlineMix.noUpload,
+            status: offlineMix.status,
+            result: offlineMix.result,
+            outputs: offlineMix.outputs,
+            output: offlineMix.output,
+            network: offlineMix.network,
+          },
           split: {
             fileRows: offlineSplit.fileRows,
             runLabel: offlineSplit.runLabel,

@@ -54,6 +54,14 @@ const TOOLS: readonly ToolDef[] = [
 		multiple: true,
 	},
 	{
+		id: "mix",
+		mark: "⇆",
+		title: "Mix pages",
+		blurb: "Interleave pages from two or more PDFs, round-robin, into one document.",
+		verb: "Mix pages",
+		multiple: true,
+	},
+	{
 		id: "split",
 		mark: "✂",
 		title: "Split PDF",
@@ -458,9 +466,12 @@ function init(): void {
 		options.replaceChildren();
 		optionControls.clear();
 		optionFields.clear();
-		if (tool.id === "merge") {
+		if (tool.id === "merge" || tool.id === "mix") {
 			const note = make("p", "option-note");
-			note.textContent = "Files are merged top to bottom. Use ↑ and ↓ to change the order.";
+			note.textContent =
+				tool.id === "merge"
+					? "Files are merged top to bottom. Use ↑ and ↓ to change the order."
+					: "Pages alternate round-robin: page 1 of each file, then page 2, and so on. Use ↑ and ↓ to change the rotation order.";
 			options.append(note);
 			return;
 		}
@@ -956,6 +967,9 @@ function init(): void {
 	function buildRequest(tool: ToolDef, wireFiles: readonly WireFile[]): ToolRequest {
 		if (tool.id === "merge") {
 			return { op: "merge", files: wireFiles };
+		}
+		if (tool.id === "mix") {
+			return { op: "mix", files: wireFiles };
 		}
 		if (tool.id === "split") {
 			const mode = splitModeValue();

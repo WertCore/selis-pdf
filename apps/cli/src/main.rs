@@ -61,6 +61,10 @@ mod tools {
         selis_pdf_tools::merge(inputs, output).map_err(CliError::from)
     }
 
+    pub(crate) fn mix(inputs: &[String], output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::mix(inputs, output).map_err(CliError::from)
+    }
+
     pub(crate) fn split(
         path: &str,
         first: usize,
@@ -210,6 +214,18 @@ enum Command {
     /// Merge several PDFs into one.
     Merge {
         /// The input PDFs.
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Interleave the pages of two or more PDFs into one.
+    Mix {
+        /// The input PDFs, in round-robin order.
         #[arg(required = true)]
         inputs: Vec<String>,
         /// The output PDF.
@@ -546,6 +562,11 @@ fn main() {
             output,
             json,
         } => finish(tools::merge(&inputs, &output), json),
+        Command::Mix {
+            inputs,
+            output,
+            json,
+        } => finish(tools::mix(&inputs, &output), json),
         Command::Split {
             path,
             first,

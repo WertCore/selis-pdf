@@ -18,11 +18,48 @@ use crate::write_gate::{self, Preserved, PRESERVE_ALL, PRESERVE_EXCEPT_PAGES};
 use crate::{read_file, CliError, CliResult, SplitPart, MAX_SPLIT_OUTPUTS};
 
 /// A parsed merge input with its source-page → merged-page mapping.
-struct MergeInput {
-    src: Vec<u8>,
-    doc: selis_pdf_cos::Doc,
-    page_map: std::collections::HashMap<u32, Ref>,
-    pages: usize,
+pub(crate) struct MergeInput {
+    pub(crate) path: String,
+    pub(crate) src: Vec<u8>,
+    pub(crate) doc: selis_pdf_cos::Doc,
+    pub(crate) page_refs: Vec<Ref>,
+    pub(crate) page_map: std::collections::HashMap<u32, Ref>,
+    pub(crate) pages: usize,
+    /// For a non-contiguous output plan (page mixing), the output index of
+    /// each source page, in source order. Merge leaves this `None` and shifts
+    /// page-label keys by the running page offset instead.
+    pub(crate) page_label_indices: Option<Vec<usize>>,
+    /// When mixing documents that have page labels, an input without labels
+    /// contributes its own default decimal numbering so another input's label
+    /// style cannot leak across the interleaved pages.
+    pub(crate) materialize_default_labels: bool,
+}
+
+/// Parse one merge input and collect its leaf pages without copying anything.
+///
+/// Page copying is deliberately separate: merge copies the inputs one after
+/// another, while page mixing copies them round-robin.
+pub(crate) fn open_merge_input(
+    path: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<MergeInput> {
+    let src = read_file(path)?;
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, budget, g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, budget, g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    Ok(MergeInput {
+        path: path.to_string(),
+        pages: page_refs.len(),
+        src,
+        doc,
+        page_refs,
+        page_map: std::collections::HashMap::new(),
+        page_label_indices: None,
+        materialize_default_labels: false,
+    })
 }
 
 /// Merge several PDFs into one (SL-1A.TOOL.01 + SL-1A.WRITE.04: outlines,
@@ -41,42 +78,63 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> 
 
     let mut parsed: Vec<MergeInput> = Vec::with_capacity(inputs.len());
     for path in inputs {
-        let src = read_file(path)?;
-        let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
-        let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
-            .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
-        let page_refs =
-            open_page_refs(&src, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
-        let mut page_map = std::collections::HashMap::new();
-        for page_ref in &page_refs {
-            let merged_ref =
-                copy_page(&mut merged, &src, *page_ref, &budget, &mut g, &mut next_num)
-                    .map_err(|e| CliError(format!("{path}: {e}")))?;
-            page_map.insert(page_ref.num, merged_ref);
+        parsed.push(open_merge_input(path, &budget, &mut g)?);
+    }
+    for input in &mut parsed {
+        for &page_ref in &input.page_refs {
+            let merged_ref = copy_page(
+                &mut merged,
+                &input.src,
+                page_ref,
+                &budget,
+                &mut g,
+                &mut next_num,
+            )
+            .map_err(|e| CliError(format!("{}: {e}", input.path)))?;
+            input.page_map.insert(page_ref.num, merged_ref);
         }
-        parsed.push(MergeInput {
-            src,
-            doc,
-            page_map,
-            pages: page_refs.len(),
-        });
     }
 
     // WRITE.04: reconcile document-level structures across the inputs.
     reconcile_inputs(&mut merged, &parsed, &budget, &mut g).map_err(CliError)?;
 
+    let (verification, deduplicated) = write_merged(&mut merged, &parsed, output, &budget, &mut g)?;
+    eprintln!(
+        "merged {} file(s) into {output} ({} duplicate object(s) removed)",
+        inputs.len(),
+        deduplicated
+    );
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// Serialise a reconciled multi-input document through the verification gate.
+///
+/// Merge and page mixing share this commit surface: deduplicate identical
+/// resources, write the full document, sum the inputs' surveyed structures as
+/// the preservation expectation, verify, and build the display. Mixing reuses
+/// the merge reconciliation guarantees by construction — it differs only in
+/// the page order the inputs were copied in.
+pub(crate) fn write_merged(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    inputs: &[MergeInput],
+    output: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<(Verification, usize)> {
     // WRITE.03: identical resources across inputs collapse to one object.
-    let deduplicated = merged.dedup(&budget, &mut g);
+    let deduplicated = merged.dedup(budget, g);
     let bytes = merged
-        .write(&budget, &mut g)
+        .write(budget, g)
         .map_err(|e| CliError(format!("write failed: {e}")))?;
     // WRITE.05: structural verification before the output reaches disk.
-    // Merge preserves every input's structure (collisions are renamed, never
-    // dropped), so the expectation is the sum of the inputs' surveyed counts.
+    // Merge and mix preserve every input's structure (collisions are renamed,
+    // never dropped), so the expectation is the sum of the inputs' surveyed
+    // counts.
     let mut input_observed = selis_pdf_cos::verify::Observed::default();
-    for (idx, input) in parsed.iter().enumerate() {
-        let observed = selis_pdf_cos::verify::survey(&input.src, &budget, &mut g)
-            .map_err(|e| CliError(format!("{}: {e}", inputs[idx])))?;
+    for input in inputs {
+        let observed = selis_pdf_cos::verify::survey(&input.src, budget, g)
+            .map_err(|e| CliError(format!("{}: {e}", input.path)))?;
         input_observed.pages = input_observed.pages.saturating_add(observed.pages);
         input_observed.annotations = input_observed
             .annotations
@@ -89,11 +147,11 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> 
             .saturating_add(observed.embedded_files);
     }
     let expected = write_gate::expectations_from(&input_observed, &PRESERVE_ALL);
-    let in_bytes = parsed
+    let in_bytes = inputs
         .iter()
         .map(|i| i.src.len())
         .fold(0usize, usize::saturating_add);
-    let verdict = write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+    let verdict = write_gate::write_verified(&bytes, output, &expected, budget, g)?;
     let verification = Verification::from_gate(
         Some(&input_observed),
         &verdict,
@@ -101,8 +159,102 @@ pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> 
         u64::try_from(in_bytes).unwrap_or(u64::MAX),
         u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     );
+    Ok((verification, deduplicated))
+}
+
+/// Interleave the pages of two or more PDFs.
+///
+/// Round one contributes page 1 of every input, round two page 2, and so on;
+/// shorter inputs simply stop contributing. The page copy, document-level
+/// reconciliation, and verification gate are the merge path, so annotations,
+/// forms, outlines, named destinations, embedded files, and structure survive
+/// with the same guarantees.
+///
+/// Page labels cannot use merge's contiguous offset once pages are interleaved,
+/// so every page gets its own materialised label. When any input carries
+/// `/PageLabels`, inputs without labels contribute explicit decimal defaults;
+/// otherwise another input's prefix or numbering style would leak across the
+/// mixed pages.
+pub(crate) fn mix(inputs: &[String], output: &str) -> CliResult<Verification> {
+    if inputs.len() < 2 {
+        return Err(CliError("mix needs at least two input files".to_string()));
+    }
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let mut merged = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+
+    let mut parsed: Vec<MergeInput> = Vec::with_capacity(inputs.len());
+    for path in inputs {
+        parsed.push(open_merge_input(path, &budget, &mut g)?);
+    }
+
+    let has_labels = parsed.iter().any(|input| {
+        matches!(
+            selis_pdf_cos::reconcile::catalog_entry(
+                &input.src,
+                &input.doc,
+                b"PageLabels",
+                &budget,
+                &mut g,
+            ),
+            Ok(Some(_))
+        )
+    });
+
+    let max_pages = parsed.iter().map(|input| input.pages).max().unwrap_or(0);
+    let mut indices: Vec<Vec<usize>> = parsed
+        .iter()
+        .map(|input| vec![usize::MAX; input.pages])
+        .collect();
+    let mut plan: Vec<(usize, usize)> = Vec::new();
+    for page_idx in 0..max_pages {
+        for (input_idx, input) in parsed.iter().enumerate() {
+            if page_idx >= input.pages {
+                continue;
+            }
+            let output_idx = plan.len();
+            if let Some(slot) = indices
+                .get_mut(input_idx)
+                .and_then(|row| row.get_mut(page_idx))
+            {
+                *slot = output_idx;
+            }
+            plan.push((input_idx, page_idx));
+        }
+    }
+
+    for (input_idx, input) in parsed.iter_mut().enumerate() {
+        if let Some(row) = indices.get_mut(input_idx) {
+            input.page_label_indices = Some(std::mem::take(row));
+        }
+        input.materialize_default_labels = has_labels;
+    }
+
+    for (input_idx, page_idx) in plan {
+        let input = parsed
+            .get_mut(input_idx)
+            .ok_or_else(|| CliError("mix page plan references a missing input".to_string()))?;
+        let page_ref = input.page_refs.get(page_idx).copied().ok_or_else(|| {
+            CliError(format!("{}: page {} disappeared", input.path, page_idx + 1))
+        })?;
+        let merged_ref = copy_page(
+            &mut merged,
+            &input.src,
+            page_ref,
+            &budget,
+            &mut g,
+            &mut next_num,
+        )
+        .map_err(|e| CliError(format!("{}: {e}", input.path)))?;
+        input.page_map.insert(page_ref.num, merged_ref);
+    }
+
+    reconcile_inputs(&mut merged, &parsed, &budget, &mut g).map_err(CliError)?;
+    let (verification, deduplicated) = write_merged(&mut merged, &parsed, output, &budget, &mut g)?;
     eprintln!(
-        "merged {} file(s) into {output} ({} duplicate object(s) removed)",
+        "mixed {} file(s) into {output} ({} duplicate object(s) removed)",
         inputs.len(),
         deduplicated
     );
@@ -196,7 +348,7 @@ pub(crate) fn warn_if_digital_signature(
 /// form fields, the structure tree (ADR-P0031 — a merged document stays
 /// tagged), optional-content groups, and the trailer `/ID`. Each input's
 /// page references are redirected at the merged pages.
-fn reconcile_inputs(
+pub(crate) fn reconcile_inputs(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     inputs: &[MergeInput],
     budget: &Budget,
@@ -269,13 +421,35 @@ fn reconcile_inputs(
             }
         }
 
-        // Page labels: shift each input's keys by the pages merged before it.
+        // Page labels: merge shifts each input's keys by the pages merged
+        // before it. Mixing interleaves the pages, so it materialises one
+        // label per output page instead: a shifted range would let one
+        // input's prefix/style leak into the other input's pages.
+        let mut labels_materialized = false;
         if let Some(labels) = rec::catalog_entry(&input.src, &input.doc, b"PageLabels", budget, g)
             .map_err(|e| e.to_string())?
         {
             if let Ok(pairs) = rec::number_tree_pairs(&labels, &input.src, &input.doc, budget, g) {
                 if !pairs.is_empty() {
-                    label_trees.push((pairs, page_offset));
+                    if let Some(indices) = &input.page_label_indices {
+                        let remapped = materialize_page_labels(&pairs, indices, input.pages);
+                        if !remapped.is_empty() {
+                            label_trees.push((remapped, 0));
+                            labels_materialized = true;
+                        }
+                    } else {
+                        label_trees.push((pairs, page_offset));
+                    }
+                }
+            }
+        }
+        if !labels_materialized {
+            if let Some(indices) = &input.page_label_indices {
+                if input.materialize_default_labels {
+                    let defaults = default_page_labels(indices);
+                    if !defaults.is_empty() {
+                        label_trees.push((defaults, 0));
+                    }
                 }
             }
         }
@@ -1309,6 +1483,121 @@ fn remap_page_label_keys(
         }
     }
     out
+}
+
+/// Materialise one page-label dictionary per output page for an interleaved
+/// plan.
+///
+/// A page-label range keyed at `k` covers every page until the next key, and
+/// its `/St` number advances with the page's offset from `k`. Interleaving
+/// destroys that contiguity: a range from one input would otherwise also
+/// cover the other input's pages. Expanding every source page to its own
+/// output entry — with `/St` advanced by `page - k` — preserves each page's
+/// label exactly, and leaves no gap for a neighbouring input's style to leak
+/// into.
+pub(crate) fn materialize_page_labels(
+    pairs: &[(i64, Obj)],
+    output_indices: &[usize],
+    page_count: usize,
+) -> Vec<(i64, Obj)> {
+    let mut sorted: Vec<(i64, Obj)> = pairs.to_vec();
+    sorted.sort_by_key(|(key, _)| *key);
+    let mut out = Vec::new();
+    for src_idx in 0..page_count {
+        let Some(&out_idx) = output_indices.get(src_idx) else {
+            continue;
+        };
+        if out_idx == usize::MAX {
+            continue;
+        }
+        let Ok(out_key) = i64::try_from(out_idx) else {
+            continue;
+        };
+        let target = i64::try_from(src_idx).unwrap_or(i64::MAX);
+        let label = match sorted.iter().rev().find(|(key, _)| *key <= target) {
+            Some((key, Obj::Dict(dict))) => {
+                let mut dict = dict.clone();
+                advance_page_label(&mut dict, target.saturating_sub(*key));
+                Obj::Dict(dict)
+            }
+            // No entry covers this page (or the covering value is malformed):
+            // fall back to the default decimal label for the source position.
+            _ => default_page_label(src_idx),
+        };
+        out.push((out_key, label));
+    }
+    out
+}
+
+/// Default decimal page labels for every page in a mixed input.
+pub(crate) fn default_page_labels(output_indices: &[usize]) -> Vec<(i64, Obj)> {
+    let mut out = Vec::new();
+    for (src_idx, &out_idx) in output_indices.iter().enumerate() {
+        if out_idx == usize::MAX {
+            continue;
+        }
+        if let Ok(key) = i64::try_from(out_idx) {
+            out.push((key, default_page_label(src_idx)));
+        }
+    }
+    out
+}
+
+/// The label a page would carry without an explicit `/PageLabels` entry:
+/// decimal numbering starting at 1 for the input's first page.
+fn default_page_label(src_idx: usize) -> Obj {
+    let start = i64::try_from(src_idx).unwrap_or(i64::MAX).saturating_add(1);
+    Obj::Dict(vec![
+        (
+            selis_bytes::Bytes::copy_from_slice(b"S"),
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(b"D")),
+        ),
+        (selis_bytes::Bytes::copy_from_slice(b"St"), Obj::Int(start)),
+    ])
+}
+
+/// Advance a page-label dictionary's `/St` by `offset` pages.
+///
+/// `/S /None` generates no number, so its start value is left untouched.
+/// An entry without `/S` is decimal by default and is made explicit; an entry
+/// without `/St` starts at 1. A malformed `/S` is replaced rather than
+/// duplicated, so the materialised dictionary has one authoritative style.
+fn advance_page_label(dict: &mut Vec<(selis_bytes::Bytes, Obj)>, offset: i64) {
+    let style = dict
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"S")
+        .and_then(|(_, value)| match value {
+            Obj::Name(name) => Some(name.as_slice().to_vec()),
+            _ => None,
+        });
+    if style.as_deref() == Some(b"None") {
+        return;
+    }
+    if style.is_none() {
+        let decimal = Obj::Name(selis_bytes::Bytes::copy_from_slice(b"D"));
+        if let Some((_, slot)) = dict.iter_mut().find(|(key, _)| key.as_slice() == b"S") {
+            *slot = decimal;
+        } else {
+            dict.push((selis_bytes::Bytes::copy_from_slice(b"S"), decimal));
+        }
+    }
+    let base = dict
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"St")
+        .and_then(|(_, value)| match value {
+            Obj::Int(start) => Some(*start),
+            _ => None,
+        })
+        .unwrap_or(1);
+    let advanced = base.saturating_add(offset);
+    if let Some((_, slot)) = dict.iter_mut().find(|(key, _)| key.as_slice() == b"St") {
+        *slot = Obj::Int(advanced);
+    } else {
+        dict.push((
+            selis_bytes::Bytes::copy_from_slice(b"St"),
+            Obj::Int(advanced),
+        ));
+    }
 }
 
 /// Flatten a name tree without native recursion or trusting document-chosen
@@ -3044,18 +3333,6 @@ pub(crate) fn redact(
     Ok(verification)
 }
 
-/// Open a document and return its leaf page references.
-fn open_page_refs(
-    src: &[u8],
-    budget: &Budget,
-    g: &mut BudgetGuard<'_>,
-) -> Result<Vec<Ref>, String> {
-    let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
-    let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
-        .map_err(|e| format!("cannot open: {e}"))?;
-    page_refs_of(src, &doc, budget, g)
-}
-
 /// The leaf page references of an already-parsed document.
 pub(crate) fn page_refs_of(
     src: &[u8],
@@ -4514,6 +4791,104 @@ mod tests {
         assert_eq!(doc.revisions().len(), 1);
     }
 
+    #[test]
+    fn mix_interleaves_pages_in_round_robin_order() {
+        let dir = temp_dir("mix-order");
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out = dir.join("out.pdf");
+        std::fs::write(&a, sized_pages_source(&[100.0, 110.0, 120.0])).unwrap();
+        std::fs::write(&b, sized_pages_source(&[200.0])).unwrap();
+        super::mix(
+            &[a.display().to_string(), b.display().to_string()],
+            &out.display().to_string(),
+        )
+        .expect("mix");
+
+        let bytes = std::fs::read(&out).expect("output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, sx, &budget, &mut g).expect("parse");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        let widths: Vec<f64> = refs
+            .iter()
+            .map(|page| {
+                super::page_info(&bytes, &doc, *page, &budget, &mut g)
+                    .expect("page info")
+                    .0
+                     .0
+            })
+            .collect();
+        assert_eq!(
+            widths,
+            vec![100.0, 200.0, 110.0, 120.0],
+            "page 1 of each input, then page 2 of the inputs that still have one"
+        );
+    }
+
+    #[test]
+    fn mix_materializes_labels_so_styles_cannot_leak() {
+        let dir = temp_dir("mix-labels");
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out = dir.join("out.pdf");
+        std::fs::write(&a, outlined_source()).unwrap();
+        std::fs::write(&b, sized_pages_source(&[100.0])).unwrap();
+        super::mix(
+            &[a.display().to_string(), b.display().to_string()],
+            &out.display().to_string(),
+        )
+        .expect("mix");
+
+        let bytes = std::fs::read(&out).expect("output");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/PageLabels"), "mixed labels are present");
+        assert!(text.contains("/S /r"), "the labeled input keeps its style");
+        assert!(
+            text.contains("/S /D"),
+            "the unlabeled input gets explicit decimal defaults"
+        );
+    }
+
+    #[test]
+    fn materialized_page_labels_advance_the_number_and_keep_output_keys() {
+        let pairs = vec![(
+            0i64,
+            Obj::Dict(vec![
+                (
+                    selis_bytes::Bytes::copy_from_slice(b"S"),
+                    Obj::Name(selis_bytes::Bytes::copy_from_slice(b"D")),
+                ),
+                (selis_bytes::Bytes::copy_from_slice(b"St"), Obj::Int(5)),
+                (
+                    selis_bytes::Bytes::copy_from_slice(b"P"),
+                    Obj::String(selis_bytes::Bytes::copy_from_slice(b"A-")),
+                ),
+            ]),
+        )];
+        let out = super::materialize_page_labels(&pairs, &[0, 2, 1], 3);
+        assert_eq!(
+            out.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
+        let keyed_starts: Vec<(i64, i64)> = out
+            .iter()
+            .map(|(key, value)| {
+                let start = match dict_entry(pairs_of(value), b"St") {
+                    Some(Obj::Int(start)) => *start,
+                    other => panic!("missing /St: {other:?}"),
+                };
+                (*key, start)
+            })
+            .collect();
+        assert_eq!(
+            keyed_starts,
+            vec![(0, 5), (2, 6), (1, 7)],
+            "each source page advances the range's start by its source offset, under its output key"
+        );
+    }
+
     /// A one-page tagged, formed PDF: an `/AcroForm` with one text field
     /// (widget on the page), a `/StructTreeRoot` whose element covers the
     /// page via `/Pg` and the parent tree via `/StructParents 0`, and one
@@ -4804,6 +5179,18 @@ mod tests {
         builder
             .write(&budget, &mut g)
             .expect("write multipage source")
+    }
+
+    /// A PDF whose pages have distinct widths, so page order is observable
+    /// after a copy operation without decoding content streams.
+    fn sized_pages_source(widths: &[f64]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        for width in widths {
+            builder.add_page(*width, 100.0, b"");
+        }
+        builder.write(&budget, &mut g).expect("write sized source")
     }
 
     /// A numbered PDF assembled with a valid xref table.

@@ -1082,6 +1082,145 @@ fn check_stamp_leg(
     Ok(())
 }
 
+/// One page-mixing leg: two selected PDFs become one interleaved PDF with the
+/// first input's name, and the result reports the sum of the input pages.
+fn check_mix_leg(
+    leg: &Json,
+    label: &str,
+    expected_name: &str,
+    expected_pages: u64,
+) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the {label} leg did not show two selected PDFs (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Mix pages" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Mix pages\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {expected_name:?}",
+            result.get("title")
+        ));
+    }
+    let meta = result.get("meta").and_then(Json::as_str).unwrap_or("");
+    if !meta.contains("1 file") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe one verified file (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    let expected_pages_row = format!("{expected_pages} \u{2192} {expected_pages}");
+    if row_value("Pages") != expected_pages_row {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected {expected_pages_row:?}",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let output = leg
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run exposed no selected PDF"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} output was named {:?}, expected {expected_name:?}",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(expected_pages) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected {expected_pages}",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some(expected_name) {
+        return Err(format!(
+            "the {label} download was named {:?}, expected {expected_name:?}",
+            output.get("downloadName")
+        ));
+    }
+    if output.get("bytes").and_then(Json::as_u64).unwrap_or(0) <= 500 {
+        return Err(format!(
+            "the {label} PDF is only {:?} bytes; a four-page result should be larger",
+            output.get("bytes")
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// One attachment-extraction leg. The page must expose two decoded files and
 /// one ZIP, and the file rows must not be presented as PDFs or previews.
 fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> Result<(), String> {
@@ -1242,19 +1381,21 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 }
 
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
-/// page-organization modes): the real `/tools.html` merges two PDFs, splits a
-/// three-page PDF one page at a time, duplicates a page, and inserts a blank
-/// page online, then the harness cuts the origin, reloads the same page, and
-/// repeats those runs with every byte coming from the worker's cache.
+/// page-organization modes): the real `/tools.html` merges and mixes two PDFs,
+/// splits a three-page PDF one page at a time, duplicates a page, and inserts a
+/// blank page online, then the harness cuts the origin, reloads the same page,
+/// and repeats those runs with every byte coming from the worker's cache.
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twelve cards render, and choosing Merge opens the workspace;
+/// * thirteen cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
 /// * the merge result shows Pages `2 → 2` and an `ok` verdict, and its Blob
 ///   begins `%PDF-` and is larger than the two 423-byte inputs;
+/// * the mix leg interleaves the three-page report with the one-page fixture,
+///   naming the result `report-mixed.pdf` and reporting Pages `4 → 4`;
 /// * the split-every leg shows one selected PDF, Pages `3 → 3`, three PDF rows
 ///   with one page each, and a fourth ZIP row whose actual Blob starts `PK`;
 /// * the size leg measures the outlined fixture against a 1 KiB target and
@@ -1282,9 +1423,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(12) {
+    if report.get("cards").and_then(Json::as_u64) != Some(13) {
         return Err(format!(
-            "the tools grid did not render twelve cards (cards = {:?})",
+            "the tools grid did not render thirteen cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1403,6 +1544,11 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         );
     }
 
+    let mix = report
+        .get("mix")
+        .ok_or_else(|| "the page reported no mix leg (mix = None)".to_string())?;
+    check_mix_leg(mix, "online mix", "report-mixed.pdf", 4)?;
+
     // Phase 1A.1. The same page splits the three-page fixture one page at a
     // time, then measures a size target and the outline fixture. The proof is
     // structural: every PDF has one page, each leg has a ZIP whose local-file
@@ -1517,9 +1663,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(12) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(13) {
         return Err(format!(
-            "the offline tools page did not render twelve cards (cards = {:?})",
+            "the offline tools page did not render thirteen cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1617,6 +1763,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
                 .collect::<Vec<_>>()
         ));
     }
+    let offline_mix = offline
+        .get("mix")
+        .ok_or_else(|| "the offline leg reported no mix result (mix = None)".to_string())?;
+    check_mix_leg(offline_mix, "offline mix", "report-mixed.pdf", 4)?;
     let offline_split = offline
         .get("split")
         .ok_or_else(|| "the offline leg reported no split-every result".to_string())?;
@@ -5503,6 +5653,53 @@ mod tests {
         })
     }
 
+    fn real_tools_mix_leg() -> Json {
+        json!({
+            "fileRows": 2,
+            "runLabel": "Mix pages",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report-mixed.pdf",
+                "meta": "1 file \u{00b7} 1.2 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "4 \u{2192} 4" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [{
+                "kind": "pdf",
+                "name": "report-mixed.pdf",
+                "pages": 4,
+                "declaredBytes": 1200,
+                "bytes": 1200,
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "report-mixed.pdf",
+                "header": "%PDF-",
+                "zip": false,
+            }],
+            "output": {
+                "kind": "pdf",
+                "name": "report-mixed.pdf",
+                "pages": 4,
+                "declaredBytes": 1200,
+                "bytes": 1200,
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "report-mixed.pdf",
+                "header": "%PDF-",
+                "zip": false,
+            },
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// A report in the shape `xtask/browser/tools-page/index.html` emits after
     /// a real merge and a split-every run. The numbers are representative; the
     /// assertions are about the shape and the claims, not about a particular
@@ -5512,7 +5709,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 12,
+            "cards": 13,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5559,7 +5756,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 12,
+                "cards": 13,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -5607,6 +5804,7 @@ mod tests {
             },
         });
 
+        report["mix"] = real_tools_mix_leg();
         report["pageNumbers"] = real_tools_stamp_leg(
             "report-numbered.pdf",
             "Add page numbers",
@@ -5634,6 +5832,7 @@ mod tests {
         report["compress"] = real_tools_stamp_leg("report-compressed.pdf", "Compress PDF", 3, &[]);
         report["attachments"] = real_tools_attachments_leg();
 
+        report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
         report["offline"]["watermark"] = report["watermark"].clone();
         report["offline"]["headerFooter"] = report["headerFooter"].clone();
@@ -5737,6 +5936,34 @@ mod tests {
             "an offline merge that did not add the second page must not pass"
         );
 
+        let mut no_mix = report.clone();
+        no_mix.as_object_mut().expect("report object").remove("mix");
+        assert!(
+            verdict_tools_page(&no_mix).is_err(),
+            "a run that never interleaved two PDFs must not pass the mix gate"
+        );
+
+        let mut mix_wrong_pages = report.clone();
+        *mix_wrong_pages
+            .pointer_mut("/mix/result/rows/0/value")
+            .unwrap() = json!("3 \u{2192} 3");
+        assert!(
+            verdict_tools_page(&mix_wrong_pages).is_err(),
+            "a mix that dropped a page must not pass"
+        );
+
+        let mut offline_no_mix = report.clone();
+        offline_no_mix
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("mix");
+        assert!(
+            verdict_tools_page(&offline_no_mix).is_err(),
+            "an online-only mix must not pass the offline gate"
+        );
+
         let mut no_split = report.clone();
         no_split
             .as_object_mut()
@@ -5820,7 +6047,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 12,
+            "cards": 13,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",

@@ -33,6 +33,7 @@ export const MAX_OPTIONS_BYTES = 64 * 1024;
 /** Operations this chunk implements today. */
 export type ToolOp =
 	| "merge"
+	| "mix"
 	| "split"
 	| "rotate"
 	| "delete"
@@ -59,6 +60,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	bates: 10,
 	compress: 11,
 	attachments: 12,
+	mix: 13,
 };
 
 /** One input file on the wire. */

@@ -66,6 +66,7 @@ const MAX_OPTIONS_BYTES: u32 = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
     Merge,
+    Mix,
     Split,
     Rotate,
     Delete,
@@ -94,6 +95,7 @@ impl Op {
             10 => Some(Self::Bates),
             11 => Some(Self::Compress),
             12 => Some(Self::Attachments),
+            13 => Some(Self::Mix),
             _ => None,
         }
     }
@@ -126,10 +128,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
-/// 11 extract attachments.
+/// 11 extract attachments, 12 mix pages.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1111_1111_1111
+    0b1_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -382,6 +384,15 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: "merged.pdf".to_string(),
                 verification: selis_pdf_tools::merge(&inputs, "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::Mix => {
+            let inputs: Vec<String> = (0..file_count).map(|i| format!("in/{i}")).collect();
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-mixed.pdf"),
+                verification: selis_pdf_tools::mix(&inputs, "out.pdf")?,
                 over_target: false,
             }]
         }
@@ -851,7 +862,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111);
     }
 
     #[test]
@@ -978,6 +989,20 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn mix_operation_interleaves_and_reports_the_combined_page_count() {
+        let a = multipage_pdf(2);
+        let b = multipage_pdf(3);
+        let response = run_request(&request(13, b"", &[("a.pdf", &a), ("b.pdf", &b)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "mix failed: {message}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "a-mixed.pdf");
+        assert_eq!(message["pages_in"], 5);
+        assert_eq!(message["pages_out"], 5);
+        assert_eq!(message["verdict"], "ok");
     }
 
     #[test]

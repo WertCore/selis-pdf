@@ -145,6 +145,21 @@ pub fn merge(inputs: &[String], output: &str) -> ToolResult<Verification> {
     tools::merge(inputs, output)
 }
 
+/// Interleave the pages of two or more PDFs into `output`.
+///
+/// The first output page comes from the first input, the second from the
+/// second input, and so on, cycling through the inputs until each is
+/// exhausted. Document-level structures are reconciled exactly as in
+/// [`merge`], and interleaved page labels are materialised per page so one
+/// input's numbering style cannot leak into another input's pages.
+///
+/// # Errors
+///
+/// As [`merge`].
+pub fn mix(inputs: &[String], output: &str) -> ToolResult<Verification> {
+    tools::mix(inputs, output)
+}
+
 /// Extract the inclusive, zero-based page range `first..=last` into `output`.
 ///
 /// # Errors

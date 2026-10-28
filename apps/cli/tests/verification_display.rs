@@ -401,6 +401,45 @@ fn json_twin_carries_the_same_fields() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The `mix` command shares the merge reconciliation and verification path,
+/// and its JSON twin reports the sum of the input pages.
+#[test]
+fn mix_command_produces_a_verified_document() {
+    let dir = temp_dir("mix");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("features.pdf");
+    let output = dir.join("mixed.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+
+    let out = selis()
+        .args([
+            "mix",
+            input.to_str().unwrap(),
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_in"), 4);
+    assert_eq!(jget(v, "pages_out"), 4);
+    assert_eq!(jget(v, "annotations_out"), 4);
+    assert_eq!(jget(v, "verdict"), "ok");
+    let bytes = std::fs::read(&output).expect("read mixed output");
+    assert!(bytes.starts_with(b"%PDF-"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A page selection shows the changed counts honestly (`pages 2->1`,
 /// outlines pruned with their pages) and asserts exactly the promises that
 /// still hold.
