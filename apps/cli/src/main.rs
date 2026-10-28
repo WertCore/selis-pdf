@@ -99,6 +99,24 @@ mod tools {
         selis_pdf_tools::rotate(path, angle, pages, output).map_err(CliError::from)
     }
 
+    pub(crate) fn crop(
+        path: &str,
+        margins: selis_pdf_tools::CropMargins,
+        pages: Option<&str>,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::crop(path, margins, pages, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn flip(
+        path: &str,
+        axis: selis_pdf_tools::FlipAxis,
+        pages: Option<&str>,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::flip(path, axis, pages, output).map_err(CliError::from)
+    }
+
     pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<Verification> {
         selis_pdf_tools::delete(path, pages, output).map_err(CliError::from)
     }
@@ -288,6 +306,49 @@ enum Command {
         #[arg(short, long)]
         angle: i64,
         /// The pages to rotate (`0,2,5-7`; 0-based); default: all pages.
+        #[arg(long)]
+        pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Crop pages by visual margins in points.
+    Crop {
+        /// The input PDF.
+        path: String,
+        /// Points removed from the reader-visible left edge.
+        #[arg(long, default_value_t = 0.0)]
+        left: f64,
+        /// Points removed from the reader-visible top edge.
+        #[arg(long, default_value_t = 0.0)]
+        top: f64,
+        /// Points removed from the reader-visible right edge.
+        #[arg(long, default_value_t = 0.0)]
+        right: f64,
+        /// Points removed from the reader-visible bottom edge.
+        #[arg(long, default_value_t = 0.0)]
+        bottom: f64,
+        /// The pages to crop (`0,2,5-7`; 0-based); default: all pages.
+        #[arg(long)]
+        pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mirror the painted content of pages.
+    Flip {
+        /// The input PDF.
+        path: String,
+        /// The visual axis: horizontal or vertical.
+        #[arg(long, default_value = "horizontal")]
+        axis: String,
+        /// The pages to flip (`0,2,5-7`; 0-based); default: all pages.
         #[arg(long)]
         pages: Option<String>,
         /// The output PDF.
@@ -522,6 +583,30 @@ environment variables. They are never logged and never stored anywhere except
 inside the encrypted document itself.";
 
 fn main() {
+    // Clap builds the whole subcommand tree while parsing, and with this many
+    // commands its recursive builder overflows the 1 MiB stack Windows gives
+    // the main thread (observed on the fifteenth tool, before any PDF is
+    // opened). Run the CLI on a thread with a reserve that matches the tree;
+    // virtual address space is not committed until it is used.
+    const CLI_STACK_BYTES: usize = 16 * 1024 * 1024;
+    let worker = match std::thread::Builder::new()
+        .name("selis-cli".to_string())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(run)
+    {
+        Ok(worker) => worker,
+        Err(error) => {
+            eprintln!("cannot start the selis CLI thread: {error}");
+            std::process::exit(1);
+        }
+    };
+    match worker.join() {
+        Ok(()) => {}
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+fn run() {
     let cli = Cli::parse();
     // SL-1A.UI.06: the Ctrl-C hook feeds the CLI's cancel token, so every
     // tool operation can stop cleanly at the next budget tick or output
@@ -615,6 +700,48 @@ fn main() {
             output,
             json,
         } => finish(tools::rotate(&path, angle, pages.as_deref(), &output), json),
+        Command::Crop {
+            path,
+            left,
+            top,
+            right,
+            bottom,
+            pages,
+            output,
+            json,
+        } => finish(
+            tools::crop(
+                &path,
+                selis_pdf_tools::CropMargins {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                },
+                pages.as_deref(),
+                &output,
+            ),
+            json,
+        ),
+        Command::Flip {
+            path,
+            axis,
+            pages,
+            output,
+            json,
+        } => {
+            let axis = match axis.to_ascii_lowercase().as_str() {
+                "horizontal" | "h" => Some(selis_pdf_tools::FlipAxis::Horizontal),
+                "vertical" | "v" => Some(selis_pdf_tools::FlipAxis::Vertical),
+                _ => None,
+            };
+            match axis {
+                Some(axis) => finish(tools::flip(&path, axis, pages.as_deref(), &output), json),
+                None => Err(CliError(
+                    "flip axis must be `horizontal` or `vertical`".to_string(),
+                )),
+            }
+        }
         Command::Delete {
             path,
             pages,

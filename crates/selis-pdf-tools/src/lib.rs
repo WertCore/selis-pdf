@@ -296,6 +296,50 @@ pub fn rotate(
     tools::rotate(path, angle, pages, output)
 }
 
+pub use tools::{CropMargins, FlipAxis};
+
+/// Crop pages by visual margins in points.
+///
+/// The margins are measured in each page's displayed orientation (rotation
+/// applied), so a `/Rotate 90` page removes the edge the reader sees as left,
+/// top, right, or bottom. The new rectangle becomes both `/MediaBox` and
+/// `/CropBox`; `/BleedBox`, `/TrimBox`, and `/ArtBox` outside it are dropped.
+/// `pages` is `None` for all pages or a zero-based selection (`0,2,5-7`).
+///
+/// # Errors
+///
+/// As [`merge`], plus negative or non-finite margins, all-zero margins, a page
+/// whose margins leave no area, or a page rotation that is not a multiple of
+/// 90 degrees.
+pub fn crop(
+    path: &str,
+    margins: CropMargins,
+    pages: Option<&str>,
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::crop(path, margins, pages, output)
+}
+
+/// Mirror the painted content of pages horizontally or vertically.
+///
+/// The axis is relative to each page's displayed orientation. Page boxes,
+/// rotation, resources, annotations, and form fields are carried unchanged;
+/// annotations are not mirrored because the operation transforms painted
+/// content only. `pages` is `None` for all pages or a zero-based selection.
+///
+/// # Errors
+///
+/// As [`merge`], plus a page rotation that is not a multiple of 90 degrees, or
+/// a page `/Contents` entry that is neither a stream reference nor an array.
+pub fn flip(
+    path: &str,
+    axis: FlipAxis,
+    pages: Option<&str>,
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::flip(path, axis, pages, output)
+}
+
 /// Delete the selected pages.
 ///
 /// # Errors

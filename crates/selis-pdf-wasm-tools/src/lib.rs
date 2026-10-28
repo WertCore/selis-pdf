@@ -78,6 +78,8 @@ enum Op {
     Bates,
     Compress,
     Attachments,
+    Crop,
+    Flip,
 }
 
 impl Op {
@@ -96,6 +98,8 @@ impl Op {
             11 => Some(Self::Compress),
             12 => Some(Self::Attachments),
             13 => Some(Self::Mix),
+            14 => Some(Self::Crop),
+            15 => Some(Self::Flip),
             _ => None,
         }
     }
@@ -128,10 +132,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
-/// 11 extract attachments, 12 mix pages.
+/// 11 extract attachments, 12 mix pages, 13 crop, 14 flip.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1_1111_1111_1111
+    0b111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -479,6 +483,39 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             over_target: false,
         }],
         Op::Attachments => return run_attachments(&stem, first_input_len),
+        Op::Crop => {
+            let pages = option_str(&options, "pages");
+            let margins = selis_pdf_tools::CropMargins {
+                left: option_f64(&options, "left").unwrap_or(0.0),
+                top: option_f64(&options, "top").unwrap_or(0.0),
+                right: option_f64(&options, "right").unwrap_or(0.0),
+                bottom: option_f64(&options, "bottom").unwrap_or(0.0),
+            };
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-cropped.pdf"),
+                verification: selis_pdf_tools::crop("in/0", margins, pages.as_deref(), "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::Flip => {
+            let axis = match option_str(&options, "axis").as_deref() {
+                None | Some("horizontal") => selis_pdf_tools::FlipAxis::Horizontal,
+                Some("vertical") => selis_pdf_tools::FlipAxis::Vertical,
+                Some(other) => {
+                    return Err(ToolError(format!(
+                        "flip axis must be horizontal or vertical (got {other})"
+                    )))
+                }
+            };
+            let pages = option_str(&options, "pages");
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-flipped.pdf"),
+                verification: selis_pdf_tools::flip("in/0", axis, pages.as_deref(), "out.pdf")?,
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -817,6 +854,10 @@ fn option_i64(options: &serde_json::Value, key: &str) -> Option<i64> {
     options.get(key)?.as_i64()
 }
 
+fn option_f64(options: &serde_json::Value, key: &str) -> Option<f64> {
+    options.get(key)?.as_f64()
+}
+
 fn option_str(options: &serde_json::Value, key: &str) -> Option<String> {
     options.get(key)?.as_str().map(ToString::to_string)
 }
@@ -862,7 +903,39 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111);
+    }
+
+    #[test]
+    fn crop_and_flip_operations_are_dispatched() {
+        let pdf = multipage_pdf(2);
+        let response = run_request(&request(
+            14,
+            br#"{"left":10,"top":5,"right":10,"bottom":5,"pages":"0"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "crop failed: {message}");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-cropped.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+
+        let response = run_request(&request(
+            15,
+            br#"{"axis":"vertical","pages":"1"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "flip failed: {message}");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-flipped.pdf");
+
+        let response = run_request(&request(
+            15,
+            br#"{"axis":"diagonal"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        assert!(error_text(&response).contains("horizontal or vertical"));
     }
 
     #[test]

@@ -44,7 +44,9 @@ export type ToolOp =
 	| "header_footer"
 	| "bates"
 	| "compress"
-	| "attachments";
+	| "attachments"
+	| "crop"
+	| "flip";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -61,6 +63,8 @@ const OP_CODE: Record<ToolOp, number> = {
 	compress: 11,
 	attachments: 12,
 	mix: 13,
+	crop: 14,
+	flip: 15,
 };
 
 /** One input file on the wire. */

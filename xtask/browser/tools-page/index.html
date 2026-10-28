@@ -25,7 +25,7 @@
       //      it, then merge and mix PDFs, run the split-every, split-size, and
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
-      //      compress a PDF, and extract embedded attachments;
+      //      compress a PDF, crop and flip pages, and extract embedded attachments;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -122,7 +122,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 13,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 15,
           15_000,
           label,
         );
@@ -518,7 +518,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the thirteen tool cards");
+        out.cards = await waitForCards(frame, "the fifteen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -789,6 +789,46 @@
           network: onlineCompress.network,
         };
 
+        const onlineCrop = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online crop",
+          "crop",
+          { left: "18", top: "12", right: "18", bottom: "12" },
+          [],
+        );
+        out.crop = {
+          fileRows: onlineCrop.fileRows,
+          runLabel: onlineCrop.runLabel,
+          noUpload: onlineCrop.noUpload,
+          status: onlineCrop.status,
+          result: onlineCrop.result,
+          outputs: onlineCrop.outputs,
+          output: onlineCrop.output,
+          network: onlineCrop.network,
+        };
+
+        const onlineFlip = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online flip",
+          "flip",
+          { axis: "horizontal", pages: "1" },
+          [],
+        );
+        out.flip = {
+          fileRows: onlineFlip.fileRows,
+          runLabel: onlineFlip.runLabel,
+          noUpload: onlineFlip.noUpload,
+          status: onlineFlip.status,
+          result: onlineFlip.result,
+          outputs: onlineFlip.outputs,
+          output: onlineFlip.output,
+          network: onlineFlip.network,
+        };
+
         const onlineAttachments = await toolInFrame(
           frame,
           attachmentsFixture,
@@ -819,7 +859,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the thirteen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the fifteen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -921,6 +961,24 @@
           "offline compress",
           "compress",
           {},
+          [],
+        );
+        const offlineCrop = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline crop",
+          "crop",
+          { left: "18", top: "12", right: "18", bottom: "12" },
+          [],
+        );
+        const offlineFlip = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline flip",
+          "flip",
+          { axis: "horizontal", pages: "1" },
           [],
         );
         const offlineAttachments = await toolInFrame(
@@ -1051,6 +1109,26 @@
             outputs: offlineCompress.outputs,
             output: offlineCompress.output,
             network: offlineCompress.network,
+          },
+          crop: {
+            fileRows: offlineCrop.fileRows,
+            runLabel: offlineCrop.runLabel,
+            noUpload: offlineCrop.noUpload,
+            status: offlineCrop.status,
+            result: offlineCrop.result,
+            outputs: offlineCrop.outputs,
+            output: offlineCrop.output,
+            network: offlineCrop.network,
+          },
+          flip: {
+            fileRows: offlineFlip.fileRows,
+            runLabel: offlineFlip.runLabel,
+            noUpload: offlineFlip.noUpload,
+            status: offlineFlip.status,
+            result: offlineFlip.result,
+            outputs: offlineFlip.outputs,
+            output: offlineFlip.output,
+            network: offlineFlip.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

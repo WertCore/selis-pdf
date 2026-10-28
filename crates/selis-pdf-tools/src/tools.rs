@@ -3488,6 +3488,7 @@ fn copy_page_inner(
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
     let _ = rev;
+    let boxes = page_boxes(src, &doc, page_ref, budget, g)?;
     let (media, content_refs, resources, rotate, annots) =
         page_info(src, &doc, page_ref, budget, g)?;
     let (objects, remap) =
@@ -3511,7 +3512,9 @@ fn copy_page_inner(
     if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
-    Ok(merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra))
+    let page = merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra);
+    apply_page_boxes(merged, page, boxes);
+    Ok(page)
 }
 
 /// Carry a page's `/Resources` into `merged`, returning the reference the
@@ -3732,6 +3735,165 @@ fn media_size(
     Ok(((x1 - x0).abs(), (y1 - y0).abs()))
 }
 
+/// The boxes that describe one page, normalized to `[x0, y0, x1, y1]`.
+///
+/// The page copy path used to rebuild every page as `[0 0 width height]`,
+/// which moved content on any page whose `/MediaBox` had a non-zero origin and
+/// silently dropped `/CropBox` and the print boxes. Reading the full boxes and
+/// writing them back keeps every copied page's visible geometry intact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PageBoxes {
+    media: [f64; 4],
+    crop: Option<[f64; 4]>,
+    bleed: Option<[f64; 4]>,
+    trim: Option<[f64; 4]>,
+    art: Option<[f64; 4]>,
+}
+
+impl PageBoxes {
+    /// The box a viewer displays by default: `/CropBox` when present and
+    /// usable, otherwise `/MediaBox`.
+    fn visible(self) -> [f64; 4] {
+        self.crop.unwrap_or(self.media)
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn real_object(value: f64) -> Obj {
+    Obj::Real {
+        scaled: (value * 1000.0).round() as i64,
+        scale: 3,
+    }
+}
+
+fn box_array(rect: [f64; 4]) -> Obj {
+    Obj::Array(rect.into_iter().map(real_object).collect())
+}
+
+fn parse_box(value: &Obj) -> Option<[f64; 4]> {
+    let Obj::Array(items) = value else {
+        return None;
+    };
+    if items.len() < 4 {
+        return None;
+    }
+    let number = |i: usize| match items.get(i) {
+        Some(Obj::Int(v)) => Some(*v as f64),
+        Some(Obj::Real { scaled, scale }) => Some(*scaled as f64 / 10f64.powi(i32::from(*scale))),
+        _ => None,
+    };
+    let (Some(x0), Some(y0), Some(x1), Some(y1)) = (number(0), number(1), number(2), number(3))
+    else {
+        return None;
+    };
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return None;
+    }
+    Some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
+}
+
+fn read_page_box(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_ref: Ref,
+    key: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<[f64; 4]>, String> {
+    let value = inherited_page_value(src, doc, page_ref, key, budget, g, 0)?;
+    let value = match value {
+        Some(Obj::Ref(r)) => resolve_ref_obj(src, doc, r, budget, g)?,
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    Ok(parse_box(&value))
+}
+
+fn intersect_box(a: [f64; 4], b: [f64; 4]) -> Option<[f64; 4]> {
+    let x0 = a[0].max(b[0]);
+    let y0 = a[1].max(b[1]);
+    let x1 = a[2].min(b[2]);
+    let y1 = a[3].min(b[3]);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
+}
+
+fn page_boxes(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_ref: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<PageBoxes, String> {
+    let media = read_page_box(src, doc, page_ref, b"MediaBox", budget, g)?
+        .unwrap_or([0.0, 0.0, 612.0, 792.0]);
+    let mut raw = |key: &[u8]| read_page_box(src, doc, page_ref, key, budget, g);
+    let crop = raw(b"CropBox")?.and_then(|rect| intersect_box(rect, media));
+    let bleed = raw(b"BleedBox")?.and_then(|rect| intersect_box(rect, media));
+    let trim = raw(b"TrimBox")?.and_then(|rect| intersect_box(rect, media));
+    let art = raw(b"ArtBox")?.and_then(|rect| intersect_box(rect, media));
+    Ok(PageBoxes {
+        media,
+        crop,
+        bleed,
+        trim,
+        art,
+    })
+}
+
+fn is_page_box_key(key: &[u8]) -> bool {
+    matches!(
+        key,
+        b"MediaBox" | b"CropBox" | b"BleedBox" | b"TrimBox" | b"ArtBox"
+    )
+}
+
+/// Replace a copied page's box entries with `boxes`.
+///
+/// The builder writes `/MediaBox` while creating the page, so this must
+/// replace that entry instead of appending a second one with the same key.
+fn apply_page_boxes(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    page_ref: Ref,
+    boxes: PageBoxes,
+) {
+    let Some((_, Obj::Dict(pairs))) = merged
+        .objects_mut()
+        .iter_mut()
+        .find(|(num, _)| *num == page_ref.num)
+    else {
+        return;
+    };
+    pairs.retain(|(key, _)| !is_page_box_key(key));
+    pairs.push((
+        selis_bytes::Bytes::copy_from_slice(b"MediaBox"),
+        box_array(boxes.media),
+    ));
+    if let Some(rect) = boxes.crop {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"CropBox"),
+            box_array(rect),
+        ));
+    }
+    if let Some(rect) = boxes.bleed {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"BleedBox"),
+            box_array(rect),
+        ));
+    }
+    if let Some(rect) = boxes.trim {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"TrimBox"),
+            box_array(rect),
+        ));
+    }
+    if let Some(rect) = boxes.art {
+        pairs.push((
+            selis_bytes::Bytes::copy_from_slice(b"ArtBox"),
+            box_array(rect),
+        ));
+    }
+}
+
 /// Copy a page, appending black rects over `rects` and stripping text that
 /// falls within them. Returns the redacted page's reference in `merged`.
 fn copy_page_redacted(
@@ -3749,6 +3911,7 @@ fn copy_page_redacted(
     if doc.revisions().last().is_none() {
         return Err("no revisions".to_string());
     }
+    let boxes = page_boxes(src, &doc, page_ref, budget, g)?;
     let (media, content_refs, resources_ref, rotate, annots) =
         page_info(src, &doc, page_ref, budget, g)?;
 
@@ -3787,13 +3950,15 @@ fn copy_page_redacted(
     if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
-    Ok(merged.add_page_with_extra(
+    let page = merged.add_page_with_extra(
         media.0,
         media.1,
         &[Ref::new(content_num, 0)],
         new_resources,
         extra,
-    ))
+    );
+    apply_page_boxes(merged, page, boxes);
+    Ok(page)
 }
 
 /// The `/Rotate` page-dict entry when a non-zero rotation is present.
@@ -3880,6 +4045,351 @@ pub(crate) fn rotate(
         selected.len(),
         norm
     );
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// The four visual margins removed by [`crop`], in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CropMargins {
+    /// Points removed from the reader-visible left edge.
+    pub left: f64,
+    /// Points removed from the reader-visible top edge.
+    pub top: f64,
+    /// Points removed from the reader-visible right edge.
+    pub right: f64,
+    /// Points removed from the reader-visible bottom edge.
+    pub bottom: f64,
+}
+
+impl CropMargins {
+    fn validate(self) -> Result<(), String> {
+        let values = [self.left, self.top, self.right, self.bottom];
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err("crop margins must be finite and non-negative".to_string());
+        }
+        if values.iter().all(|value| *value == 0.0) {
+            return Err("crop needs at least one non-zero margin".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// The visual axis mirrored by [`flip`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlipAxis {
+    /// Mirror left to right in the displayed orientation.
+    Horizontal,
+    /// Mirror top to bottom in the displayed orientation.
+    Vertical,
+}
+
+fn quarter_turn(rotation: i64) -> Result<i64, String> {
+    let rotation = rotation.rem_euclid(360);
+    if matches!(rotation, 0 | 90 | 180 | 270) {
+        Ok(rotation)
+    } else {
+        Err(format!(
+            "page rotation {rotation} is not a multiple of 90 degrees"
+        ))
+    }
+}
+
+fn display_point_to_user(u: f64, v: f64, base: [f64; 4], rotation: i64) -> (f64, f64) {
+    let width = base[2] - base[0];
+    let height = base[3] - base[1];
+    let (x, y) = match rotation {
+        90 => (width - v, u),
+        180 => (width - u, height - v),
+        270 => (v, height - u),
+        _ => (u, v),
+    };
+    (base[0] + x, base[1] + y)
+}
+
+fn cropped_user_rect(
+    base: [f64; 4],
+    rotation: i64,
+    margins: CropMargins,
+) -> Result<[f64; 4], String> {
+    let width = base[2] - base[0];
+    let height = base[3] - base[1];
+    let (display_width, display_height) = if matches!(rotation, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let left = margins.left;
+    let bottom = margins.bottom;
+    let right = display_width - margins.right;
+    let top = display_height - margins.top;
+    if right <= left || top <= bottom {
+        return Err(format!(
+            "crop margins leave no page area (page is {display_width} x {display_height} points)"
+        ));
+    }
+    let corners = [
+        display_point_to_user(left, bottom, base, rotation),
+        display_point_to_user(left, top, base, rotation),
+        display_point_to_user(right, bottom, base, rotation),
+        display_point_to_user(right, top, base, rotation),
+    ];
+    let mut rect = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (x, y) in corners {
+        rect[0] = rect[0].min(x);
+        rect[1] = rect[1].min(y);
+        rect[2] = rect[2].max(x);
+        rect[3] = rect[3].max(y);
+    }
+    Ok(rect)
+}
+
+fn trim_number(value: f64) -> String {
+    if value.abs() < 0.000_05 {
+        return "0".to_string();
+    }
+    let text = format!("{value:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn add_content_stream(merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder, data: &[u8]) -> Ref {
+    let num = merged.allocate();
+    merged.add_object(
+        num,
+        Obj::Stream {
+            dict: vec![(
+                selis_bytes::Bytes::copy_from_slice(b"Length"),
+                Obj::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)),
+            )],
+            data: selis_bytes::Bytes::copy_from_slice(data),
+        },
+    );
+    Ref::new(num, 0)
+}
+
+/// Wrap a copied page's content streams in `q`/`Q` around `matrix`.
+///
+/// The copied page keeps its annotations and page boxes; this only transforms
+/// the painted content, matching the page-flip contract documented for the
+/// tool.
+fn wrap_page_transform(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    page_ref: Ref,
+    matrix: [f64; 6],
+) -> Result<(), String> {
+    let prefix = format!(
+        "q\n{} {} {} {} {} {} cm\n",
+        trim_number(matrix[0]),
+        trim_number(matrix[1]),
+        trim_number(matrix[2]),
+        trim_number(matrix[3]),
+        trim_number(matrix[4]),
+        trim_number(matrix[5]),
+    );
+    let prefix_ref = add_content_stream(merged, prefix.as_bytes());
+    let suffix_ref = add_content_stream(merged, b"Q\n");
+    let Some((_, Obj::Dict(pairs))) = merged
+        .objects_mut()
+        .iter_mut()
+        .find(|(num, _)| *num == page_ref.num)
+    else {
+        return Err("copied page disappeared".to_string());
+    };
+    let old = pairs
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"Contents")
+        .map(|(_, value)| value.clone());
+    pairs.retain(|(key, _)| key.as_slice() != b"Contents");
+    let mut contents = vec![Obj::Ref(prefix_ref)];
+    match old {
+        Some(Obj::Array(items)) => contents.extend(items),
+        Some(Obj::Ref(r)) => contents.push(Obj::Ref(r)),
+        Some(Obj::Null) | None => {}
+        Some(_) => {
+            return Err("page /Contents is neither a stream reference nor an array".to_string());
+        }
+    }
+    contents.push(Obj::Ref(suffix_ref));
+    pairs.push((
+        selis_bytes::Bytes::copy_from_slice(b"Contents"),
+        Obj::Array(contents),
+    ));
+    Ok(())
+}
+
+fn flip_matrix(visible: [f64; 4], rotation: i64, axis: FlipAxis) -> [f64; 6] {
+    let mirror_x = match (axis, rotation) {
+        (FlipAxis::Horizontal, 0 | 180) => true,
+        (FlipAxis::Horizontal, 90 | 270) => false,
+        (FlipAxis::Vertical, 0 | 180) => false,
+        (FlipAxis::Vertical, 90 | 270) => true,
+        _ => true,
+    };
+    if mirror_x {
+        [-1.0, 0.0, 0.0, 1.0, visible[0] + visible[2], 0.0]
+    } else {
+        [1.0, 0.0, 0.0, -1.0, 0.0, visible[1] + visible[3]]
+    }
+}
+
+/// Crop pages by visual margins in points.
+///
+/// The margins are measured in the page's displayed orientation, so a page
+/// with `/Rotate 90` crops the edge the reader sees as the left edge. The new
+/// box becomes both `/MediaBox` and `/CropBox`; print boxes outside it are
+/// dropped rather than left invalid. Unselected pages are copied unchanged.
+pub(crate) fn crop(
+    path: &str,
+    margins: CropMargins,
+    pages: Option<&str>,
+    output: &str,
+) -> CliResult<Verification> {
+    margins
+        .validate()
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected: std::collections::HashSet<usize> = match pages {
+        Some(spec) => parse_page_selection(spec, page_refs.len())
+            .map_err(|e| CliError(format!("{path}: {e}")))?
+            .into_iter()
+            .collect(),
+        None => (0..page_refs.len()).collect(),
+    };
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        if selected.contains(&idx) {
+            let boxes = page_boxes(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let (_, _, _, rotation, _) = page_info(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let rotation = quarter_turn(rotation)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let rect = cropped_user_rect(boxes.visible(), rotation, margins)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            apply_page_boxes(
+                &mut out,
+                merged_ref,
+                PageBoxes {
+                    media: rect,
+                    crop: Some(rect),
+                    bleed: None,
+                    trim: None,
+                    art: None,
+                },
+            );
+        }
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    eprintln!("cropped {} page(s) -> {output}", selected.len());
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// Mirror the painted content of each selected page horizontally or
+/// vertically, in the page's displayed orientation.
+///
+/// Annotations and form fields are carried unchanged (they are not painted
+/// page content), so a page with interactive annotations keeps them at their
+/// original coordinates. The page boxes, rotation, resources, and document
+/// structures are preserved by the normal copy/reconcile path.
+pub(crate) fn flip(
+    path: &str,
+    axis: FlipAxis,
+    pages: Option<&str>,
+    output: &str,
+) -> CliResult<Verification> {
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected: std::collections::HashSet<usize> = match pages {
+        Some(spec) => parse_page_selection(spec, page_refs.len())
+            .map_err(|e| CliError(format!("{path}: {e}")))?
+            .into_iter()
+            .collect(),
+        None => (0..page_refs.len()).collect(),
+    };
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        if selected.contains(&idx) {
+            let boxes = page_boxes(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let (_, _, _, rotation, _) = page_info(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let rotation = quarter_turn(rotation)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let matrix = flip_matrix(boxes.visible(), rotation, axis);
+            wrap_page_transform(&mut out, merged_ref, matrix)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+        }
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    let axis = match axis {
+        FlipAxis::Horizontal => "horizontally",
+        FlipAxis::Vertical => "vertically",
+    };
+    eprintln!("flipped {} page(s) {axis} -> {output}", selected.len());
     verification.emit_line();
     Ok(verification)
 }
@@ -5804,5 +6314,248 @@ mod tests {
         let single = dir.join("single.pdf");
         std::fs::write(&single, multipage_source(1)).expect("write single-page input");
         assert!(super::split_half(single.to_str().unwrap(), "").is_err());
+    }
+
+    fn custom_box_source(pages: &[([f64; 4], Option<[f64; 4]>, i64)]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        for (media, crop, rotate) in pages {
+            let width = media[2] - media[0];
+            let height = media[3] - media[1];
+            let page = builder.add_page(width, height, b"q 1 0 0 1 0 0 cm Q");
+            let Some((_, Obj::Dict(pairs))) = builder
+                .objects_mut()
+                .iter_mut()
+                .find(|(num, _)| *num == page.num)
+            else {
+                panic!("page object missing");
+            };
+            pairs.retain(|(key, _)| !super::is_page_box_key(key));
+            pairs.push((
+                selis_bytes::Bytes::copy_from_slice(b"MediaBox"),
+                super::box_array(*media),
+            ));
+            if let Some(crop) = crop {
+                pairs.push((
+                    selis_bytes::Bytes::copy_from_slice(b"CropBox"),
+                    super::box_array(*crop),
+                ));
+            }
+            if *rotate != 0 {
+                pairs.push((
+                    selis_bytes::Bytes::copy_from_slice(b"Rotate"),
+                    Obj::Int(rotate.rem_euclid(360)),
+                ));
+            }
+        }
+        builder.write(&budget, &mut g).expect("write box source")
+    }
+
+    fn output_boxes(path: &std::path::Path) -> Vec<super::PageBoxes> {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, startxref, &budget, &mut g)
+            .expect("parse output");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        refs.iter()
+            .map(|page| {
+                super::page_boxes(&bytes, &doc, *page, &budget, &mut g).expect("page boxes")
+            })
+            .collect()
+    }
+
+    fn output_page_streams(path: &std::path::Path) -> Vec<Vec<Vec<u8>>> {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, startxref, &budget, &mut g)
+            .expect("parse output");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        refs.iter()
+            .map(|page| {
+                let (_, content_refs, _, _, _) =
+                    super::page_info(&bytes, &doc, *page, &budget, &mut g).expect("page info");
+                content_refs
+                    .into_iter()
+                    .map(|content| {
+                        let value = super::resolve_ref_obj(&bytes, &doc, content, &budget, &mut g)
+                            .expect("resolve content");
+                        match value {
+                            Obj::Stream { data, .. } => data.to_vec(),
+                            _ => panic!("page content is not a stream"),
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn crop_uses_display_edges_and_replaces_print_boxes() {
+        let dir = temp_dir("crop-rotated");
+        let input = dir.join("in.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[
+                ([10.0, 20.0, 210.0, 320.0], None, 0),
+                ([10.0, 20.0, 210.0, 320.0], None, 90),
+            ]),
+        )
+        .expect("write input");
+        let output = dir.join("out.pdf");
+        let verification = super::crop(
+            input.to_str().unwrap(),
+            super::CropMargins {
+                left: 10.0,
+                top: 20.0,
+                right: 30.0,
+                bottom: 40.0,
+            },
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect("crop");
+        assert_eq!(verification.pages_out, 2);
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes[0].media, [20.0, 60.0, 180.0, 300.0]);
+        assert_eq!(boxes[0].crop, Some(boxes[0].media));
+        assert_eq!(boxes[1].media, [30.0, 30.0, 170.0, 290.0]);
+        assert_eq!(boxes[1].crop, Some(boxes[1].media));
+        let pages = pages_in_file(&output);
+        assert_eq!(pages, 2);
+    }
+
+    #[test]
+    fn crop_only_touches_selected_pages_and_preserves_their_crop_box() {
+        let dir = temp_dir("crop-selection");
+        let input = dir.join("in.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[
+                ([10.0, 20.0, 210.0, 320.0], None, 0),
+                (
+                    [10.0, 20.0, 210.0, 320.0],
+                    Some([20.0, 30.0, 200.0, 310.0]),
+                    0,
+                ),
+            ]),
+        )
+        .expect("write input");
+        let output = dir.join("out.pdf");
+        super::crop(
+            input.to_str().unwrap(),
+            super::CropMargins {
+                left: 5.0,
+                top: 5.0,
+                right: 5.0,
+                bottom: 5.0,
+            },
+            Some("0"),
+            output.to_str().unwrap(),
+        )
+        .expect("crop first page");
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes[0].media, [15.0, 25.0, 205.0, 315.0]);
+        assert_eq!(boxes[1].media, [10.0, 20.0, 210.0, 320.0]);
+        assert_eq!(boxes[1].crop, Some([20.0, 30.0, 200.0, 310.0]));
+    }
+
+    #[test]
+    fn crop_refuses_a_selection_that_consumes_the_page() {
+        let dir = temp_dir("crop-no-area");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, sized_pages_source(&[100.0])).expect("write input");
+        let output = dir.join("out.pdf");
+        let error = super::crop(
+            input.to_str().unwrap(),
+            super::CropMargins {
+                left: 60.0,
+                top: 0.0,
+                right: 50.0,
+                bottom: 0.0,
+            },
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("no page area");
+        assert!(error.0.contains("leave no page area"), "{error:?}");
+        assert!(!output.exists(), "a failed crop writes no output");
+    }
+
+    #[test]
+    fn flip_wraps_content_and_keeps_page_boxes() {
+        let dir = temp_dir("flip-content");
+        let input = dir.join("in.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[([10.0, 20.0, 210.0, 320.0], None, 0)]),
+        )
+        .expect("write input");
+        let output = dir.join("out.pdf");
+        let verification = super::flip(
+            input.to_str().unwrap(),
+            super::FlipAxis::Horizontal,
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect("flip");
+        assert_eq!(verification.pages_out, 1);
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes[0].media, [10.0, 20.0, 210.0, 320.0]);
+        let streams = output_page_streams(&output);
+        assert_eq!(
+            streams[0].first().map(Vec::as_slice),
+            Some(b"q\n-1 0 0 1 220 0 cm\n".as_slice())
+        );
+        assert_eq!(
+            streams[0].last().map(Vec::as_slice),
+            Some(b"Q\n".as_slice())
+        );
+    }
+
+    #[test]
+    fn flip_axis_is_display_relative_for_quarter_turns() {
+        let visible = [0.0, 0.0, 100.0, 200.0];
+        assert_eq!(
+            super::flip_matrix(visible, 0, super::FlipAxis::Horizontal),
+            [-1.0, 0.0, 0.0, 1.0, 100.0, 0.0]
+        );
+        assert_eq!(
+            super::flip_matrix(visible, 90, super::FlipAxis::Horizontal),
+            [1.0, 0.0, 0.0, -1.0, 0.0, 200.0]
+        );
+        assert_eq!(
+            super::flip_matrix(visible, 90, super::FlipAxis::Vertical),
+            [-1.0, 0.0, 0.0, 1.0, 100.0, 0.0]
+        );
+        assert_eq!(
+            super::flip_matrix(visible, 180, super::FlipAxis::Horizontal),
+            [-1.0, 0.0, 0.0, 1.0, 100.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn rotate_now_keeps_media_origin_and_crop_box() {
+        let dir = temp_dir("copy-boxes");
+        let input = dir.join("in.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[(
+                [10.0, 20.0, 210.0, 320.0],
+                Some([20.0, 30.0, 200.0, 310.0]),
+                0,
+            )]),
+        )
+        .expect("write input");
+        let output = dir.join("out.pdf");
+        super::rotate(input.to_str().unwrap(), 180, None, output.to_str().unwrap())
+            .expect("rotate");
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes[0].media, [10.0, 20.0, 210.0, 320.0]);
+        assert_eq!(boxes[0].crop, Some([20.0, 30.0, 200.0, 310.0]));
     }
 }

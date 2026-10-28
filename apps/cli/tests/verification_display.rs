@@ -440,6 +440,42 @@ fn mix_command_produces_a_verified_document() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn crop_and_flip_commands_produce_verified_documents() {
+    let dir = temp_dir("crop-flip");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("features.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+
+    for (command, name) in [("crop", "cropped.pdf"), ("flip", "flipped.pdf")] {
+        let output = dir.join(name);
+        let mut args = vec![command, input.to_str().unwrap()];
+        if command == "crop" {
+            args.extend(["--left", "5", "--top", "6", "--right", "7", "--bottom", "8"]);
+        } else {
+            args.extend(["--axis", "vertical", "--pages", "1"]);
+        }
+        args.extend(["-o", output.to_str().unwrap(), "--json"]);
+        let out = selis().args(&args).output().expect("run selis");
+        assert!(
+            out.status.success(),
+            "{command} stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let value: serde_json::Value = serde_json::from_str(stdout.trim())
+            .expect("the --json twin is one JSON object on stdout");
+        let v = value.get("verification").expect("verification envelope");
+        assert_eq!(jget(v, "pages_in"), 2);
+        assert_eq!(jget(v, "pages_out"), 2);
+        assert_eq!(jget(v, "annotations_out"), 2);
+        assert_eq!(jget(v, "verdict"), "ok");
+        let bytes = std::fs::read(&output).expect("read output");
+        assert!(bytes.starts_with(b"%PDF-"));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A page selection shows the changed counts honestly (`pages 2->1`,
 /// outlines pruned with their pages) and asserts exactly the promises that
 /// still hold.

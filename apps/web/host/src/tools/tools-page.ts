@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Twelve browser-local operations, one page. The only fetch this module makes is
+ * Fifteen browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -75,6 +75,22 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Rotate PDF",
 		blurb: "Turn all pages or a selection by 90, 180, or 270 degrees.",
 		verb: "Rotate PDF",
+		multiple: false,
+	},
+	{
+		id: "crop",
+		mark: "⌗",
+		title: "Crop PDF",
+		blurb: "Trim page edges by points, measured in the page's displayed orientation.",
+		verb: "Crop PDF",
+		multiple: false,
+	},
+	{
+		id: "flip",
+		mark: "⇋",
+		title: "Flip PDF",
+		blurb: "Mirror page content horizontally or vertically.",
+		verb: "Flip PDF",
 		multiple: false,
 	},
 	{
@@ -555,6 +571,59 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "crop") {
+			for (const [key, label] of [
+				["left", "Left margin (pt)"],
+				["top", "Top margin (pt)"],
+				["right", "Right margin (pt)"],
+				["bottom", "Bottom margin (pt)"],
+			] as const) {
+				const input = addField(
+					key,
+					label,
+					textInput(key, "number", "0"),
+					key === "left" ? "1 point = 1/72 inch. At least one margin must be non-zero." : undefined,
+				) as HTMLInputElement;
+				input.min = "0";
+				input.step = "0.5";
+				input.value = "0";
+			}
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges. Leave blank to crop every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Margins follow the page as displayed, so rotated pages crop the edge you see. The new box becomes the visible page; print boxes outside it are dropped.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "flip") {
+			const axis = make("select", "control");
+			for (const [value, label] of [
+				["horizontal", "Horizontal (left ↔ right)"],
+				["vertical", "Vertical (top ↕ bottom)"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				axis.append(choice);
+			}
+			addField("axis", "Flip axis", axis);
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges. Leave blank to flip every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Mirrors painted page content. Annotations and form fields are carried unchanged, so they keep their original coordinates.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "delete") {
 			addField(
 				"pages",
@@ -1008,6 +1077,29 @@ function init(): void {
 				options.pages = shiftPageSelection(pagesText);
 			}
 			return { op: "rotate", options, files: wireFiles };
+		}
+		if (tool.id === "crop") {
+			const left = numberInRange("left", "Left margin", 0, 10_000, 0);
+			const top = numberInRange("top", "Top margin", 0, 10_000, 0);
+			const right = numberInRange("right", "Right margin", 0, 10_000, 0);
+			const bottom = numberInRange("bottom", "Bottom margin", 0, 10_000, 0);
+			if (left === 0 && top === 0 && right === 0 && bottom === 0) {
+				throw new ToolInputError("Enter at least one non-zero crop margin.");
+			}
+			const options: Record<string, unknown> = { left, top, right, bottom };
+			const pagesText = optionValue("pages").trim();
+			if (pagesText !== "") {
+				options.pages = shiftPageSelection(pagesText);
+			}
+			return { op: "crop", options, files: wireFiles };
+		}
+		if (tool.id === "flip") {
+			const options: Record<string, unknown> = { axis: optionValue("axis") };
+			const pagesText = optionValue("pages").trim();
+			if (pagesText !== "") {
+				options.pages = shiftPageSelection(pagesText);
+			}
+			return { op: "flip", options, files: wireFiles };
 		}
 		if (tool.id === "delete") {
 			return {
