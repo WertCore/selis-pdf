@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 19,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 21,
           15_000,
           label,
         );
@@ -515,6 +515,69 @@
         };
       }
 
+      async function attachInFrame(frame, fixture, fixtureName, payload, payloadName, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const card = doc.querySelector('[data-tool="attach"]');
+        if (!card) throw new Error("the page offered no attach card");
+        card.click();
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the attach workspace (" + label + ")",
+        );
+
+        const transfer = new win.DataTransfer();
+        transfer.items.add(
+          new win.File([fixture.slice(0)], fixtureName, { type: "application/pdf" }),
+        );
+        transfer.items.add(
+          new win.File([payload.slice(0)], payloadName, { type: "text/plain" }),
+        );
+        const input = doc.getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll("#file-list .file-row").length === 2,
+          5_000,
+          "a PDF and one payload file (" + label + ")",
+        );
+
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the embed button to enable (" + label + ")");
+        const runLabel = run.textContent.trim();
+        run.click();
+
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the attach result and the no-upload assertion (" + label + ")",
+        );
+
+        const read = await readResult(frame, label, ["/EmbeddedFiles", "note.txt"], []);
+        return {
+          win,
+          fileRows: 2,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+        };
+      }
+
       const watchdog = setTimeout(
         () => fail(new Error("the tools page did not finish inside 180s")),
         180_000,
@@ -527,7 +590,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the nineteen tool cards");
+        out.cards = await waitForCards(frame, "the twenty-one tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -942,6 +1005,46 @@
           network: onlineAttachments.network,
         };
 
+        const onlineAttach = await attachInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          new TextEncoder().encode("local note bytes"),
+          "note.txt",
+          "online attach",
+        );
+        out.attach = {
+          fileRows: onlineAttach.fileRows,
+          runLabel: onlineAttach.runLabel,
+          noUpload: onlineAttach.noUpload,
+          status: onlineAttach.status,
+          result: onlineAttach.result,
+          outputs: onlineAttach.outputs,
+          output: onlineAttach.output,
+          network: onlineAttach.network,
+        };
+
+        const onlineDetach = await toolInFrame(
+          frame,
+          attachmentsFixture,
+          "attachments.pdf",
+          "online detach",
+          "detach",
+          {},
+          [],
+          ["/EmbeddedFiles", "notes.txt", "evil.txt", "hello attachment", "safe name"],
+        );
+        out.detach = {
+          fileRows: onlineDetach.fileRows,
+          runLabel: onlineDetach.runLabel,
+          noUpload: onlineDetach.noUpload,
+          status: onlineDetach.status,
+          result: onlineDetach.result,
+          outputs: onlineDetach.outputs,
+          output: onlineDetach.output,
+          network: onlineDetach.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -953,7 +1056,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the nineteen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-one offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1110,6 +1213,24 @@
           "attachments",
           {},
           [],
+        );
+        const offlineAttach = await attachInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          new TextEncoder().encode("local note bytes"),
+          "note.txt",
+          "offline attach",
+        );
+        const offlineDetach = await toolInFrame(
+          frame,
+          attachmentsFixture,
+          "attachments.pdf",
+          "offline detach",
+          "detach",
+          {},
+          [],
+          ["/EmbeddedFiles", "notes.txt", "evil.txt", "hello attachment", "safe name"],
         );
         const offlineStripMetadata = await toolInFrame(
           frame,
@@ -1309,6 +1430,26 @@
             result: offlineAttachments.result,
             outputs: offlineAttachments.outputs,
             network: offlineAttachments.network,
+          },
+          attach: {
+            fileRows: offlineAttach.fileRows,
+            runLabel: offlineAttach.runLabel,
+            noUpload: offlineAttach.noUpload,
+            status: offlineAttach.status,
+            result: offlineAttach.result,
+            outputs: offlineAttach.outputs,
+            output: offlineAttach.output,
+            network: offlineAttach.network,
+          },
+          detach: {
+            fileRows: offlineDetach.fileRows,
+            runLabel: offlineDetach.runLabel,
+            noUpload: offlineDetach.noUpload,
+            status: offlineDetach.status,
+            result: offlineDetach.result,
+            outputs: offlineDetach.outputs,
+            output: offlineDetach.output,
+            network: offlineDetach.network,
           },
         };
 

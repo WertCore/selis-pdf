@@ -50,7 +50,9 @@ export type ToolOp =
 	| "page_labels"
 	| "strip_metadata"
 	| "resize"
-	| "nup";
+	| "nup"
+	| "attach"
+	| "detach";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -73,6 +75,8 @@ const OP_CODE: Record<ToolOp, number> = {
 	strip_metadata: 17,
 	resize: 18,
 	nup: 19,
+	attach: 20,
+	detach: 21,
 };
 
 /** One input file on the wire. */

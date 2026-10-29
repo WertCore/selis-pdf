@@ -93,6 +93,63 @@ impl DocumentBuilder {
         self.catalog_extra.push((key.to_vec(), value));
     }
 
+    /// Mutable access to the catalog entries collected for write time.
+    ///
+    /// A tool that replaces a document-level structure (e.g. swaps the
+    /// `/Names /EmbeddedFiles` tree) edits the entry here instead of adding a
+    /// second one, then calls [`retain_reachable`](DocumentBuilder::retain_reachable)
+    /// to drop the superseded subgraph.
+    pub fn catalog_extra_mut(&mut self) -> &mut Vec<(Vec<u8>, Obj)> {
+        &mut self.catalog_extra
+    }
+
+    /// Drop every object no root can reach, returning how many were removed.
+    ///
+    /// Roots are the catalog (object 1), the collected catalog entries, the
+    /// `/Info` values, and the page references. [`write`](DocumentBuilder::write)
+    /// emits every object it holds, so a replaced structure must be pruned or
+    /// its objects would linger as unreachable bytes in the output.
+    ///
+    /// # Budget
+    ///
+    /// No charge: the walk visits builder-owned objects only.
+    ///
+    /// # Malformed Input
+    ///
+    /// None: a reference to a missing object is simply not followed.
+    pub fn retain_reachable(&mut self) -> usize {
+        use std::collections::{HashMap, HashSet};
+
+        let index: HashMap<u32, usize> = self
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(slot, (num, _))| (*num, slot))
+            .collect();
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut stack: Vec<u32> = vec![1];
+        for (_, value) in self.catalog_extra.iter().chain(self.info.iter()) {
+            collect_refs(value, &mut stack);
+        }
+        for page in &self.page_refs {
+            stack.push(page.num);
+        }
+        while let Some(num) = stack.pop() {
+            if !seen.insert(num) {
+                continue;
+            }
+            let Some(&slot) = index.get(&num) else {
+                continue;
+            };
+            if let Some((_, obj)) = self.objects.get(slot) {
+                collect_refs(obj, &mut stack);
+            }
+        }
+        let before = self.objects.len();
+        self.objects.retain(|(num, _)| seen.contains(num));
+        before.saturating_sub(self.objects.len())
+    }
+
     /// Set the trailer `/ID` pair (two byte strings; conventionally the file
     /// identifier at creation time and its value at the last modification).
     pub fn set_id(&mut self, first: Vec<u8>, second: Vec<u8>) {
@@ -1017,6 +1074,29 @@ pub fn write_objects_as_document_encrypted(
     Ok(out)
 }
 
+/// Push every indirect reference directly under `obj` onto `out`.
+fn collect_refs(obj: &Obj, out: &mut Vec<u32>) {
+    match obj {
+        Obj::Ref(reference) => out.push(reference.num),
+        Obj::Array(items) => {
+            for item in items {
+                collect_refs(item, out);
+            }
+        }
+        Obj::Dict(pairs) => {
+            for (_, value) in pairs {
+                collect_refs(value, out);
+            }
+        }
+        Obj::Stream { dict, .. } => {
+            for (_, value) in dict {
+                collect_refs(value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A real number object.
 fn real(v: f64) -> Obj {
     let max = 9_223_372_036_854_775_807i64;
@@ -1151,6 +1231,61 @@ mod tests {
             rev.entries.get(&2),
             None | Some(crate::XrefEntry::Free { .. })
         ));
+    }
+
+    #[test]
+    fn retain_reachable_drops_a_replaced_catalog_subtree() {
+        let mut b = DocumentBuilder::new();
+        b.add_page(100.0, 100.0, b"");
+
+        let stream = b.allocate();
+        b.add_object(
+            stream,
+            Obj::Stream {
+                dict: vec![(bytes(b"Length"), Obj::Int(2))],
+                data: bytes(b"hi"),
+            },
+        );
+        let filespec = b.allocate();
+        b.add_object(
+            filespec,
+            dict(&[
+                (b"Type".to_vec(), Obj::Name(bytes(b"Filespec"))),
+                (b"EF".to_vec(), Obj::Ref(Ref::new(stream, 0))),
+            ]),
+        );
+        let old_tree = b.allocate();
+        b.add_object(
+            old_tree,
+            dict(&[(
+                b"Names".to_vec(),
+                Obj::Array(vec![
+                    Obj::String(bytes(b"a.txt")),
+                    Obj::Ref(Ref::new(filespec, 0)),
+                ]),
+            )]),
+        );
+        let names = b.allocate();
+        b.add_object(
+            names,
+            dict(&[(b"EmbeddedFiles".to_vec(), Obj::Ref(Ref::new(old_tree, 0)))]),
+        );
+        b.add_catalog_entry(b"Names", Obj::Ref(Ref::new(names, 0)));
+
+        // Everything hangs off the catalog entry: nothing is dropped yet.
+        assert_eq!(b.retain_reachable(), 0);
+
+        // Replacing the entry orphans the whole old subtree, and pruning
+        // removes exactly those four objects (the names dict included).
+        let replacement = b.allocate();
+        b.add_object(replacement, dict(&[]));
+        b.add_catalog_entry(b"Names", Obj::Ref(Ref::new(replacement, 0)));
+        assert_eq!(b.retain_reachable(), 4);
+        let numbers: Vec<u32> = b.objects_mut().iter().map(|(num, _)| *num).collect();
+        for gone in [stream, filespec, old_tree, names] {
+            assert!(!numbers.contains(&gone), "object {gone} should be pruned");
+        }
+        assert!(numbers.contains(&replacement), "the new entry survives");
     }
 
     #[test]

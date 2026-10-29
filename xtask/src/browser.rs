@@ -1449,6 +1449,310 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
     Ok(())
 }
 
+/// One attach leg: a PDF plus an opaque payload. The proof is the page count
+/// staying put, the embedded-file count rising to one, and the real Blob
+/// carrying both the name tree and the payload's name.
+fn check_attach_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the {label} leg did not show a PDF and one payload file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Embed files" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Embed files\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("report-attached.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"report-attached.pdf\"",
+            result.get("title")
+        ));
+    }
+    let meta = result.get("meta").and_then(Json::as_str).unwrap_or("");
+    if !meta.contains("1 file") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe one verified file (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "3 \u{2192} 3" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"3 \u{2192} 3\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Embedded files") != "0 \u{2192} 1" {
+        return Err(format!(
+            "the {label} run reported Embedded files {:?}, expected \"0 \u{2192} 1\"",
+            row_value("Embedded files")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("report-attached.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"report-attached.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 3",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("report-attached.pdf") {
+        return Err(format!(
+            "the {label} download was named {:?}, expected \"report-attached.pdf\"",
+            output.get("downloadName")
+        ));
+    }
+    if output.get("bytes").and_then(Json::as_u64).unwrap_or(0) <= 500 {
+        return Err(format!(
+            "the {label} PDF is only {:?} bytes; a three-page result with an embedded file should be larger",
+            output.get("bytes")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its needle checks"))?;
+    if found.len() != 2 || found.iter().any(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output did not carry both /EmbeddedFiles and note.txt (found = {found:?})"
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// One detach leg: every embedded file is gone, the page count is unchanged,
+/// and the negative witnesses confirm the name tree and payload bytes are
+/// absent from the real Blob.
+fn check_detach_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Remove attachments" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Remove attachments\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("attachments-detached.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"attachments-detached.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "1 \u{2192} 1" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"1 \u{2192} 1\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Embedded files") != "2 \u{2192} 0" {
+        return Err(format!(
+            "the {label} run reported Embedded files {:?}, expected \"2 \u{2192} 0\"",
+            row_value("Embedded files")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("attachments-detached.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"attachments-detached.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 1",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("attachments-detached.pdf") {
+        return Err(format!(
+            "the {label} download was named {:?}, expected \"attachments-detached.pdf\"",
+            output.get("downloadName")
+        ));
+    }
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
+    if absent.len() != 5 || absent.iter().any(|item| item.as_bool() != Some(false)) {
+        return Err(format!(
+            "the {label} output still carries removed attachment bytes (absentFound = {absent:?})"
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
 /// page-organization modes): the real `/tools.html` merges and mixes two PDFs,
 /// splits a three-page PDF one page at a time, duplicates a page, and inserts a
@@ -1457,7 +1761,7 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * nineteen cards render, and choosing Merge opens the workspace;
+/// * twenty-one cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1497,9 +1801,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(19) {
+    if report.get("cards").and_then(Json::as_u64) != Some(21) {
         return Err(format!(
-            "the tools grid did not render nineteen cards (cards = {:?})",
+            "the tools grid did not render twenty-one cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1773,6 +2077,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "online attachments",
         &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
     )?;
+    let attach = report
+        .get("attach")
+        .ok_or_else(|| "the page reported no attach leg (attach = None)".to_string())?;
+    check_attach_leg(attach, "online attach")?;
+    let detach = report
+        .get("detach")
+        .ok_or_else(|| "the page reported no detach leg (detach = None)".to_string())?;
+    check_detach_leg(detach, "online detach")?;
     let strip_metadata = report.get("stripMetadata").ok_or_else(|| {
         "the page reported no metadata-strip leg (stripMetadata = None)".to_string()
     })?;
@@ -1797,9 +2109,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(19) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(21) {
         return Err(format!(
-            "the offline tools page did not render nineteen cards (cards = {:?})",
+            "the offline tools page did not render twenty-one cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -2049,6 +2361,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline attachments",
         &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
     )?;
+    let offline_attach = offline
+        .get("attach")
+        .ok_or_else(|| "the offline leg reported no attach result".to_string())?;
+    check_attach_leg(offline_attach, "offline attach")?;
+    let offline_detach = offline
+        .get("detach")
+        .ok_or_else(|| "the offline leg reported no detach result".to_string())?;
+    check_detach_leg(offline_detach, "offline detach")?;
     let offline_strip_metadata = offline.get("stripMetadata").ok_or_else(|| {
         "the offline leg reported no metadata-strip result (stripMetadata = None)".to_string()
     })?;
@@ -5858,6 +6178,88 @@ mod tests {
         })
     }
 
+    /// The attach leg: a PDF plus one opaque payload. The verdict requires the
+    /// page count to hold and the embedded-file count to rise.
+    fn real_tools_attach_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "report-attached.pdf",
+            "pages": 3,
+            "declaredBytes": 900,
+            "bytes": 900,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "report-attached.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true, true],
+        });
+        json!({
+            "fileRows": 2,
+            "runLabel": "Embed files",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report-attached.pdf",
+                "meta": "1 file \u{00b7} 900 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Embedded files", "value": "0 \u{2192} 1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
+    /// The detach leg: every embedded file is removed. The negative witnesses
+    /// are all false, which is the pass.
+    fn real_tools_detach_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "attachments-detached.pdf",
+            "pages": 1,
+            "declaredBytes": 700,
+            "bytes": 700,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "attachments-detached.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "absentFound": [false, false, false, false, false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Remove attachments",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "attachments-detached.pdf",
+                "meta": "1 file \u{00b7} 700 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1 \u{2192} 1" },
+                    { "label": "Embedded files", "value": "2 \u{2192} 0" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
     /// negative witness the verdict requires (`absentFound` all false).
     fn real_tools_strip_metadata_leg() -> Json {
@@ -5965,7 +6367,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 19,
+            "cards": 21,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -6012,7 +6414,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 19,
+                "cards": 21,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -6108,6 +6510,8 @@ mod tests {
             &["/Subtype /Form", "/Type /XObject"],
         );
         report["attachments"] = real_tools_attachments_leg();
+        report["attach"] = real_tools_attach_leg();
+        report["detach"] = real_tools_detach_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
@@ -6122,6 +6526,8 @@ mod tests {
         report["offline"]["resize"] = report["resize"].clone();
         report["offline"]["nup"] = report["nup"].clone();
         report["offline"]["attachments"] = report["attachments"].clone();
+        report["offline"]["attach"] = report["attach"].clone();
+        report["offline"]["detach"] = report["detach"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report
     }
@@ -6331,7 +6737,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 19,
+            "cards": 21,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6433,6 +6839,11 @@ mod tests {
                 "attachments",
                 "a run that never extracted attachments must not pass",
             ),
+            ("attach", "a run that never embedded a file must not pass"),
+            (
+                "detach",
+                "a run that never removed embedded files must not pass",
+            ),
             (
                 "stripMetadata",
                 "a run that never removed metadata must not pass",
@@ -6510,6 +6921,57 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_attachments).is_err(),
             "an online-only attachment extraction must not pass the offline gate"
+        );
+
+        let mut attach_marker_missing = report.clone();
+        *attach_marker_missing
+            .pointer_mut("/attach/outputs/0/found/1")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&attach_marker_missing).is_err(),
+            "an attach output without the embedded file name must not pass"
+        );
+
+        let mut attach_count_unchanged = report.clone();
+        *attach_count_unchanged
+            .pointer_mut("/attach/result/rows/1/value")
+            .unwrap() = json!("0 \u{2192} 0");
+        assert!(
+            verdict_tools_page(&attach_count_unchanged).is_err(),
+            "an attach run that embedded nothing must not pass"
+        );
+
+        let mut detach_payload_left = report.clone();
+        *detach_payload_left
+            .pointer_mut("/detach/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&detach_payload_left).is_err(),
+            "a detach output that still carries /EmbeddedFiles must not pass"
+        );
+
+        let mut no_offline_attach = report.clone();
+        no_offline_attach
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("attach");
+        assert!(
+            verdict_tools_page(&no_offline_attach).is_err(),
+            "an online-only attach must not pass the offline gate"
+        );
+
+        let mut no_offline_detach = report.clone();
+        no_offline_detach
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("detach");
+        assert!(
+            verdict_tools_page(&no_offline_detach).is_err(),
+            "an online-only detach must not pass the offline gate"
         );
 
         let mut resize_no_target = report.clone();

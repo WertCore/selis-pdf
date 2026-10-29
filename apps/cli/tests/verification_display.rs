@@ -700,6 +700,76 @@ fn nup_command_places_pages_on_one_sheet() {
 }
 
 #[test]
+fn attach_and_detach_commands_round_trip_embedded_files() {
+    let dir = temp_dir("attach");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("report.pdf");
+    let note = dir.join("note.txt");
+    let attached = dir.join("attached.pdf");
+    let detached = dir.join("detached.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+    std::fs::write(&note, b"local note bytes").expect("write note");
+
+    let out = selis()
+        .args([
+            "attach",
+            input.to_str().unwrap(),
+            "--file",
+            note.to_str().unwrap(),
+            "-o",
+            attached.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "attach stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+            .expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "embedded_files_out"), 3);
+    assert_eq!(jget(v, "verdict"), "ok");
+    let bytes = std::fs::read(&attached).expect("read attached");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/EmbeddedFiles"), "the name tree is written");
+    assert!(text.contains("note.txt"), "the embedded name is written");
+
+    let out = selis()
+        .args([
+            "detach",
+            attached.to_str().unwrap(),
+            "-o",
+            detached.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "detach stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+            .expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "embedded_files_out"), 0);
+    let bytes = std::fs::read(&detached).expect("read detached");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("/EmbeddedFiles"),
+        "the detached output carries no embedded-file tree"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn strip_metadata_command_removes_info_and_keeps_the_pages() {
     let dir = temp_dir("strip-metadata");
     std::fs::create_dir_all(&dir).expect("mkdir");

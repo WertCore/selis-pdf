@@ -17,7 +17,7 @@ use selis_pdf_cos::{self, Obj, Ref};
 use selis_pdf_filter::DecodeParms;
 use selis_sandbox::{Budget, BudgetGuard};
 
-use crate::{read_file, CliError, CliResult};
+use crate::{read_file, CliError, CliResult, Verification};
 
 /// The most embedded files one request may extract.
 pub const MAX_ATTACHMENTS: usize = 64;
@@ -393,10 +393,542 @@ fn truncate_chars(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// One file to embed in a PDF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentInput {
+    /// The file name readers show and extract.
+    pub name: String,
+    /// The file's bytes, stored Flate-compressed inside the PDF.
+    pub bytes: Vec<u8>,
+}
+
+/// Embed `files` in `path` and write the result to `output`.
+///
+/// Every page, annotation, form field, outline, label, destination, and
+/// existing attachment is carried through the verified full rewrite; the new
+/// files are added to the catalog's `/Names /EmbeddedFiles` tree as
+/// `/Type /Filespec` entries pointing at Flate-compressed
+/// `/Type /EmbeddedFile` streams. A name that already exists is replaced, so
+/// the tree never carries duplicate keys.
+///
+/// # Errors
+///
+/// [`ToolError`](crate::ToolError) when the input cannot be read or parsed, is
+/// encrypted, a name is empty/over 255 bytes/contains a control character, the
+/// per-file or total size limit is exceeded, the count limit is exceeded, or
+/// the output fails structural verification. No output is committed on error.
+pub fn attach(path: &str, files: &[AttachmentInput], output: &str) -> CliResult<Verification> {
+    validate_attachments(files)?;
+    rewrite_with_attachments(path, output, |out| {
+        let mut pairs = existing_embedded_pairs(out);
+        let mut keys: HashSet<Vec<u8>> = pairs
+            .iter()
+            .map(|(key, _)| key.as_slice().to_vec())
+            .collect();
+        for file in files {
+            keys.insert(file.name.as_bytes().to_vec());
+        }
+        if keys.len() > MAX_ATTACHMENTS {
+            return Err(CliError(format!(
+                "{path}: {} embedded files would exceed the {MAX_ATTACHMENTS}-file limit",
+                keys.len()
+            )));
+        }
+        for file in files {
+            let key = Bytes::copy_from_slice(file.name.as_bytes());
+            let filespec = add_embedded_file(out, &file.name, &file.bytes);
+            if let Some((_, value)) = pairs
+                .iter_mut()
+                .find(|(existing, _)| existing.as_slice() == key.as_slice())
+            {
+                *value = filespec;
+            } else {
+                pairs.push((key, filespec));
+            }
+        }
+        let count = pairs.len();
+        replace_embedded_tree(out, pairs);
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    })
+}
+
+/// Browser entry point: embed the session inputs named by `files` in `pdf_key`.
+///
+/// Each tuple is `(display name, session key)`. The keys address the in-memory
+/// session table, so no filesystem path ever leaves the page. This is the same
+/// operation as [`attach`]; it only resolves the extra files from the session.
+///
+/// # Errors
+///
+/// Every error [`attach`] can return, plus a read failure when one of the
+/// session keys is missing.
+pub fn attach_session(
+    pdf_key: &str,
+    files: &[(String, String)],
+    output: &str,
+) -> CliResult<Verification> {
+    let mut inputs = Vec::with_capacity(files.len());
+    for (name, key) in files {
+        inputs.push(AttachmentInput {
+            name: name.clone(),
+            bytes: read_file(key)?,
+        });
+    }
+    attach(pdf_key, &inputs, output)
+}
+
+/// Remove every embedded file from `path` and write the result to `output`.
+///
+/// The rewrite carries every page and document structure; only the
+/// `/Names /EmbeddedFiles` entry is dropped. The filespec, embedded-file
+/// stream, and name-tree objects it reached are pruned, so their bytes do not
+/// linger in the output. A document with no attachments is rewritten cleanly
+/// and reports `0 → 0` rather than failing.
+///
+/// # Errors
+///
+/// [`ToolError`](crate::ToolError) when the input cannot be read or parsed, is
+/// encrypted, or the output fails structural verification. No output is
+/// committed on error.
+pub fn detach(path: &str, output: &str) -> CliResult<Verification> {
+    rewrite_with_attachments(path, output, |out| {
+        remove_embedded_tree(out);
+        Ok(0)
+    })
+}
+
+/// Rewrite every page of `path` into `output`, letting `plan` replace the
+/// embedded-file tree and return the count the verification gate must expect.
+fn rewrite_with_attachments<F>(path: &str, output: &str, plan: F) -> CliResult<Verification>
+where
+    F: FnOnce(&mut selis_pdf_cos::doc_writer::DocumentBuilder) -> CliResult<u64>,
+{
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    if doc
+        .revisions()
+        .last()
+        .is_some_and(|revision| revision.encrypt.is_some())
+    {
+        return Err(CliError(format!(
+            "{path}: document is encrypted; remove the password with unlock first"
+        )));
+    }
+    let page_refs = crate::tools::page_refs_of(&src, &doc, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<crate::tools::KeptPage> = Vec::with_capacity(page_refs.len());
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let copied =
+            crate::tools::copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+                .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, copied));
+    }
+    crate::tools::reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+
+    let expected_files = plan(&mut out)?;
+    // The replaced tree and any filespec/stream it alone reached would
+    // otherwise be emitted as unreachable bytes.
+    out.retain_reachable();
+
+    crate::tools::write_document_with_embedded(
+        out,
+        output,
+        Some(&src),
+        crate::write_gate::PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        Some(expected_files),
+        in_bytes,
+        &budget,
+        &mut g,
+    )
+}
+
+/// Refuse an attachment set the writer cannot represent honestly.
+fn validate_attachments(files: &[AttachmentInput]) -> CliResult<()> {
+    if files.is_empty() {
+        return Err(CliError("attach at least one file".to_string()));
+    }
+    if files.len() > MAX_ATTACHMENTS {
+        return Err(CliError(format!(
+            "at most {MAX_ATTACHMENTS} files can be attached at once"
+        )));
+    }
+    let mut total = 0u64;
+    for file in files {
+        if file.name.is_empty() {
+            return Err(CliError("an attachment name cannot be empty".to_string()));
+        }
+        if file.name.len() > 255 {
+            return Err(CliError(format!(
+                "attachment name {:?} exceeds 255 bytes",
+                file.name
+            )));
+        }
+        if file.name.chars().any(char::is_control) {
+            return Err(CliError(format!(
+                "attachment name {:?} contains a control character",
+                file.name
+            )));
+        }
+        let size = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
+        if size > MAX_ATTACHMENT_BYTES {
+            return Err(CliError(format!(
+                "attachment {:?} exceeds the {MAX_ATTACHMENT_BYTES}-byte limit",
+                file.name
+            )));
+        }
+        total = total.saturating_add(size);
+        if total > MAX_TOTAL_ATTACHMENT_BYTES {
+            return Err(CliError(format!(
+                "attachments exceed the {MAX_TOTAL_ATTACHMENT_BYTES}-byte total limit"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The builder's `/Names` catalog entry, when it has one.
+fn catalog_names_ref(out: &mut selis_pdf_cos::doc_writer::DocumentBuilder) -> Option<Ref> {
+    out.catalog_extra_mut()
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"Names")
+        .and_then(|(_, value)| match value {
+            Obj::Ref(reference) => Some(*reference),
+            _ => None,
+        })
+}
+
+fn find_object(objects: &[(u32, Obj)], num: u32) -> Option<&Obj> {
+    objects
+        .iter()
+        .find(|(number, _)| *number == num)
+        .map(|(_, obj)| obj)
+}
+
+fn find_object_mut(objects: &mut [(u32, Obj)], num: u32) -> Option<&mut Obj> {
+    objects
+        .iter_mut()
+        .find(|(number, _)| *number == num)
+        .map(|(_, obj)| obj)
+}
+
+fn dict_value<'a>(pairs: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+    pairs
+        .iter()
+        .find(|(name, _)| name.as_slice() == key)
+        .map(|(_, value)| value)
+}
+
+/// The key/value pairs of the builder's current embedded-file tree.
+fn existing_embedded_pairs(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+) -> Vec<(Bytes, Obj)> {
+    let Some(names_ref) = catalog_names_ref(out) else {
+        return Vec::new();
+    };
+    let objects = out.objects_mut().as_slice();
+    let Some(Obj::Dict(names)) = find_object(objects, names_ref.num) else {
+        return Vec::new();
+    };
+    let Some(Obj::Ref(tree)) = dict_value(names, b"EmbeddedFiles") else {
+        return Vec::new();
+    };
+    let Some(Obj::Dict(tree)) = find_object(objects, tree.num) else {
+        return Vec::new();
+    };
+    let Some(Obj::Array(items)) = dict_value(tree, b"Names") else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    for pair in items.chunks_exact(2) {
+        let (Some(Obj::String(key)), Some(value)) = (pair.first(), pair.get(1)) else {
+            continue;
+        };
+        pairs.push((key.clone(), value.clone()));
+    }
+    pairs
+}
+
+/// Point the names dictionary at a fresh tree (creating the dictionary and its
+/// catalog entry when the document had none).
+fn replace_embedded_tree(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    pairs: Vec<(Bytes, Obj)>,
+) {
+    let tree = selis_pdf_cos::reconcile::build_name_tree(pairs);
+    let tree_num = out.allocate();
+    out.add_object(tree_num, tree);
+    let tree_ref = Obj::Ref(Ref::new(tree_num, 0));
+    if let Some(names_ref) = catalog_names_ref(out) {
+        if let Some(Obj::Dict(names)) =
+            find_object_mut(out.objects_mut().as_mut_slice(), names_ref.num)
+        {
+            set_dict_value(names, b"EmbeddedFiles", tree_ref);
+            return;
+        }
+    }
+    let names_num = out.allocate();
+    out.add_object(
+        names_num,
+        Obj::Dict(vec![(Bytes::copy_from_slice(b"EmbeddedFiles"), tree_ref)]),
+    );
+    out.add_catalog_entry(b"Names", Obj::Ref(Ref::new(names_num, 0)));
+}
+
+fn set_dict_value(pairs: &mut Vec<(Bytes, Obj)>, key: &[u8], value: Obj) {
+    if let Some((_, slot)) = pairs.iter_mut().find(|(name, _)| name.as_slice() == key) {
+        *slot = value;
+    } else {
+        pairs.push((Bytes::copy_from_slice(key), value));
+    }
+}
+
+/// Drop `/EmbeddedFiles` from the names dictionary, and the `/Names` entry
+/// itself when nothing else lives there.
+fn remove_embedded_tree(out: &mut selis_pdf_cos::doc_writer::DocumentBuilder) {
+    let Some(names_ref) = catalog_names_ref(out) else {
+        return;
+    };
+    let mut names_empty = false;
+    if let Some(Obj::Dict(names)) = find_object_mut(out.objects_mut().as_mut_slice(), names_ref.num)
+    {
+        names.retain(|(key, _)| key.as_slice() != b"EmbeddedFiles");
+        names_empty = names.is_empty();
+    }
+    if names_empty {
+        out.catalog_extra_mut()
+            .retain(|(key, _)| key.as_slice() != b"Names");
+    }
+}
+
+/// Add one Flate-compressed embedded file and its filespec; return the
+/// filespec reference for the name tree.
+fn add_embedded_file(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    name: &str,
+    bytes: &[u8],
+) -> Obj {
+    let encoded = selis_pdf_filter::flate_encode(bytes, 6);
+    let stream_num = out.allocate();
+    out.add_object(
+        stream_num,
+        Obj::Stream {
+            dict: vec![
+                (
+                    Bytes::copy_from_slice(b"Type"),
+                    Obj::Name(Bytes::copy_from_slice(b"EmbeddedFile")),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Subtype"),
+                    Obj::Name(Bytes::copy_from_slice(b"application/octet-stream")),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Filter"),
+                    Obj::Name(Bytes::copy_from_slice(b"FlateDecode")),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Params"),
+                    Obj::Dict(vec![(
+                        Bytes::copy_from_slice(b"Size"),
+                        Obj::Int(i64::try_from(bytes.len()).unwrap_or(i64::MAX)),
+                    )]),
+                ),
+            ],
+            data: Bytes::copy_from_slice(&encoded),
+        },
+    );
+    let stream_ref = Ref::new(stream_num, 0);
+    let name_bytes = Bytes::copy_from_slice(name.as_bytes());
+    let filespec_num = out.allocate();
+    out.add_object(
+        filespec_num,
+        Obj::Dict(vec![
+            (
+                Bytes::copy_from_slice(b"Type"),
+                Obj::Name(Bytes::copy_from_slice(b"Filespec")),
+            ),
+            (
+                Bytes::copy_from_slice(b"F"),
+                Obj::String(name_bytes.clone()),
+            ),
+            (Bytes::copy_from_slice(b"UF"), Obj::String(name_bytes)),
+            (
+                Bytes::copy_from_slice(b"EF"),
+                Obj::Dict(vec![
+                    (Bytes::copy_from_slice(b"F"), Obj::Ref(stream_ref)),
+                    (Bytes::copy_from_slice(b"UF"), Obj::Ref(stream_ref)),
+                ]),
+            ),
+        ]),
+    );
+    Obj::Ref(Ref::new(filespec_num, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{insert_input, MemorySession};
+    use crate::{insert_input, take_output, MemorySession};
+
+    #[test]
+    fn attach_embeds_files_and_detach_removes_them() {
+        let _session = MemorySession::activate();
+        crate::clear();
+        insert_input("attachments-test/in.pdf", minimal_pdf());
+        let files = [
+            AttachmentInput {
+                name: "notes.txt".to_string(),
+                bytes: b"hello attachment".to_vec(),
+            },
+            AttachmentInput {
+                name: "data.bin".to_string(),
+                bytes: vec![0, 1, 2, 255],
+            },
+        ];
+        let verification = attach(
+            "attachments-test/in.pdf",
+            &files,
+            "attachments-test/out.pdf",
+        )
+        .expect("attach");
+        assert_eq!(verification.embedded_files_out, 2);
+        assert_eq!(verification.pages_out, 1);
+        assert_eq!(verification.verdict, "ok");
+
+        let extracted = extract("attachments-test/out.pdf").expect("extract attached");
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].name, "data.bin");
+        assert_eq!(extracted[0].bytes, vec![0, 1, 2, 255]);
+        assert_eq!(extracted[1].name, "notes.txt");
+        assert_eq!(extracted[1].bytes, b"hello attachment");
+
+        let verification =
+            detach("attachments-test/out.pdf", "attachments-test/clean.pdf").expect("detach");
+        assert_eq!(verification.embedded_files_out, 0);
+        assert_eq!(verification.pages_out, 1);
+        let error = extract("attachments-test/clean.pdf").expect_err("no attachments remain");
+        assert!(error.0.contains("no embedded files"), "{error:?}");
+
+        let bytes = take_output("attachments-test/clean.pdf").expect("clean output");
+        for needle in [b"/EmbeddedFiles".as_slice(), b"hello attachment".as_slice()] {
+            assert!(
+                !bytes.windows(needle.len()).any(|window| window == needle),
+                "the detached output still carries {:?}",
+                String::from_utf8_lossy(needle)
+            );
+        }
+    }
+
+    #[test]
+    fn attach_replaces_a_same_named_attachment_without_growing_the_tree() {
+        let _session = MemorySession::activate();
+        crate::clear();
+        insert_input("attachments-test/fixture.pdf", fixture_pdf());
+        let files = [AttachmentInput {
+            name: "notes.txt".to_string(),
+            bytes: b"replacement".to_vec(),
+        }];
+        let verification = attach(
+            "attachments-test/fixture.pdf",
+            &files,
+            "attachments-test/replaced.pdf",
+        )
+        .expect("attach over an existing name");
+        assert_eq!(verification.embedded_files_in, Some(2));
+        assert_eq!(verification.embedded_files_out, 2);
+
+        let extracted = extract("attachments-test/replaced.pdf").expect("extract");
+        let notes = extracted
+            .iter()
+            .find(|attachment| attachment.name == "notes.txt")
+            .expect("notes.txt survives");
+        assert_eq!(notes.bytes, b"replacement");
+        let evil = extracted
+            .iter()
+            .find(|attachment| attachment.name == "evil.txt")
+            .expect("the other attachment survives");
+        assert_eq!(evil.bytes, b"safe name");
+    }
+
+    #[test]
+    fn detach_without_attachments_is_a_clean_rewrite() {
+        let _session = MemorySession::activate();
+        crate::clear();
+        insert_input("attachments-test/plain.pdf", minimal_pdf());
+        let verification = detach(
+            "attachments-test/plain.pdf",
+            "attachments-test/plain-out.pdf",
+        )
+        .expect("detach a document with no attachments");
+        assert_eq!(verification.embedded_files_in, Some(0));
+        assert_eq!(verification.embedded_files_out, 0);
+        assert_eq!(verification.pages_out, 1);
+    }
+
+    #[test]
+    fn attach_and_detach_refuse_encrypted_inputs() {
+        let _session = MemorySession::activate();
+        crate::clear();
+        let mut bytes = minimal_pdf();
+        let trailer_at = bytes
+            .windows(b"trailer".len())
+            .position(|window| window == b"trailer")
+            .expect("trailer");
+        let insert_at = trailer_at + b"trailer\n<<".len();
+        bytes.splice(insert_at..insert_at, b" /Encrypt 99 0 R".iter().copied());
+        insert_input("attachments-test/encrypted.pdf", bytes);
+
+        let files = [AttachmentInput {
+            name: "notes.txt".to_string(),
+            bytes: b"hello".to_vec(),
+        }];
+        let error = attach(
+            "attachments-test/encrypted.pdf",
+            &files,
+            "attachments-test/encrypted-out.pdf",
+        )
+        .expect_err("encrypted attach");
+        assert!(error.0.contains("encrypted"), "{error:?}");
+        let error = detach(
+            "attachments-test/encrypted.pdf",
+            "attachments-test/encrypted-out.pdf",
+        )
+        .expect_err("encrypted detach");
+        assert!(error.0.contains("encrypted"), "{error:?}");
+        assert!(take_output("attachments-test/encrypted-out.pdf").is_none());
+    }
+
+    #[test]
+    fn attach_validates_names_and_sizes() {
+        let empty = validate_attachments(&[]).expect_err("no files");
+        assert!(empty.0.contains("at least one"), "{empty:?}");
+
+        let control = [AttachmentInput {
+            name: "a\nb.txt".to_string(),
+            bytes: vec![0],
+        }];
+        let error = validate_attachments(&control).expect_err("control character");
+        assert!(error.0.contains("control"), "{error:?}");
+
+        let long = [AttachmentInput {
+            name: "x".repeat(256),
+            bytes: vec![0],
+        }];
+        let error = validate_attachments(&long).expect_err("long name");
+        assert!(error.0.contains("255"), "{error:?}");
+    }
 
     #[test]
     fn extracts_decoded_files_with_safe_unique_names() {

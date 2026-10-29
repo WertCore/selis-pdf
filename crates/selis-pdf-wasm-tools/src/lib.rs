@@ -84,6 +84,8 @@ enum Op {
     StripMetadata,
     Resize,
     Nup,
+    Attach,
+    Detach,
 }
 
 impl Op {
@@ -108,6 +110,8 @@ impl Op {
             17 => Some(Self::StripMetadata),
             18 => Some(Self::Resize),
             19 => Some(Self::Nup),
+            20 => Some(Self::Attach),
+            21 => Some(Self::Detach),
             _ => None,
         }
     }
@@ -141,10 +145,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
-/// 16 strip metadata, 17 resize, 18 N-up.
+/// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
+/// attachments.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b111_1111_1111_1111_1111
+    0b1_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -365,6 +370,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
     }
     let mut first_name = String::new();
     let mut first_input_len = 0usize;
+    let mut input_names: Vec<String> = Vec::new();
     for index in 0..file_count {
         let name = cursor
             .bytes(MAX_NAME_BYTES)
@@ -372,6 +378,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         let name = std::str::from_utf8(name)
             .map_err(|_| ToolError("input name is not UTF-8".to_string()))?
             .to_string();
+        input_names.push(name.clone());
         if index == 0 {
             first_name = name;
         }
@@ -606,6 +613,34 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Attach => {
+            if file_count < 2 {
+                return Err(ToolError(
+                    "attach needs a PDF and at least one file to embed".to_string(),
+                ));
+            }
+            let count = usize::try_from(file_count).unwrap_or(0);
+            let files: Vec<(String, String)> = (1..count)
+                .map(|index| {
+                    let name = input_names.get(index).cloned().unwrap_or_default();
+                    (name, format!("in/{index}"))
+                })
+                .collect();
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-attached.pdf"),
+                verification: selis_pdf_tools::attachments::attach_session(
+                    "in/0", &files, "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
+        Op::Detach => vec![Produced {
+            output: "out.pdf".to_string(),
+            name: format!("{stem}-detached.pdf"),
+            verification: selis_pdf_tools::attachments::detach("in/0", "out.pdf")?,
+            over_target: false,
+        }],
     };
 
     let verifications: Vec<Verification> = produced
@@ -993,7 +1028,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1060,8 +1095,42 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(20, b"", &[("doc.pdf", &pdf)]));
+        let response = run_request(&request(22, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
+    }
+
+    #[test]
+    fn attach_and_detach_operations_are_dispatched() {
+        let pdf = multipage_pdf(3);
+        let note = b"local note bytes".to_vec();
+        let response = run_request(&request(
+            20,
+            b"",
+            &[("report.pdf", &pdf), ("note.txt", &note)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "attach failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["embedded_files_out"], 1);
+        assert_eq!(outputs[0].0, "report-attached.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        let attached = String::from_utf8_lossy(&outputs[0].1);
+        assert!(attached.contains("/EmbeddedFiles"), "the tree is written");
+        assert!(attached.contains("note.txt"), "the file name is written");
+
+        let response = run_request(&request(21, b"", &[("report-attached.pdf", &outputs[0].1)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "detach failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["embedded_files_out"], 0);
+        assert_eq!(outputs[0].0, "report-attached-detached.pdf");
+        assert!(
+            !String::from_utf8_lossy(&outputs[0].1).contains("/EmbeddedFiles"),
+            "the embedded-file tree is gone"
+        );
+
+        let response = run_request(&request(20, b"", &[("report.pdf", &pdf)]));
+        assert!(error_text(&response).contains("at least one file"));
     }
 
     #[test]

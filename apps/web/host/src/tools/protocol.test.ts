@@ -99,6 +99,15 @@ describe("encodeToolRequest", () => {
 		expect(Array.from(encoded.subarray(offset))).toEqual([0x25, 0x50, 0x44, 0x46, 0x2d]);
 	});
 
+	it("encodes the attach and detach operations at 20 and 21", () => {
+		const files = [
+			{ name: "a.pdf", bytes: new Uint8Array([0x25]) },
+			{ name: "note.txt", bytes: new Uint8Array([0x68]) },
+		];
+		expect(readU32(encodeToolRequest({ op: "attach", files }), 8)).toBe(20);
+		expect(readU32(encodeToolRequest({ op: "detach", files }), 8)).toBe(21);
+	});
+
 	it("rejects an empty file list and malformed operations before calling the guest", () => {
 		expect(() => encodeToolRequest({ op: "merge", files: [] })).toThrow(ToolProtocolError);
 		expect(() =>

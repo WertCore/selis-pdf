@@ -5567,6 +5567,37 @@ pub(crate) fn write_document(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> CliResult<Verification> {
+    write_document_with_embedded(
+        builder,
+        output,
+        input,
+        preserved,
+        expected_pages,
+        annotations_override,
+        None,
+        in_bytes,
+        budget,
+        g,
+    )
+}
+
+/// As [`write_document`], with an explicit expected embedded-file count.
+///
+/// Attaching and detaching change the count deliberately, so the gate must be
+/// told the number this run intends rather than the input's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_document_with_embedded(
+    builder: selis_pdf_cos::doc_writer::DocumentBuilder,
+    output: &str,
+    input: Option<&[u8]>,
+    preserved: Preserved,
+    expected_pages: Option<u64>,
+    annotations_override: Option<u64>,
+    embedded_files_override: Option<u64>,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
     let mut builder = builder;
     let bytes = builder
         .write(budget, g)
@@ -5587,6 +5618,9 @@ pub(crate) fn write_document(
     }
     if let Some(annots) = annotations_override {
         expected.annotations = Some(annots);
+    }
+    if let Some(files) = embedded_files_override {
+        expected.embedded_files = Some(files);
     }
     let verdict = write_gate::write_verified(&bytes, output, &expected, budget, g)?;
     let verification = Verification::from_gate(

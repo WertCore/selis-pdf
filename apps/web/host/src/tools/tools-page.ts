@@ -197,6 +197,22 @@ const TOOLS: readonly ToolDef[] = [
 		verb: "Extract attachments",
 		multiple: false,
 	},
+	{
+		id: "attach",
+		mark: "＋",
+		title: "Embed files",
+		blurb: "Attach files inside a PDF so they travel with it.",
+		verb: "Embed files",
+		multiple: true,
+	},
+	{
+		id: "detach",
+		mark: "－",
+		title: "Remove attachments",
+		blurb: "Delete every file embedded inside a PDF.",
+		verb: "Remove attachments",
+		multiple: false,
+	},
 ];
 
 const TOOL_BY_ID = new Map<ToolOp, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
@@ -777,6 +793,20 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "attach") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Choose the PDF first, then the files to embed. Extra files are stored inside the PDF and travel with it; use the arrows to keep the PDF first.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "detach") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every embedded file is removed. Pages, annotations, forms, and bookmarks are kept unchanged.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "delete") {
 			addField(
 				"pages",
@@ -1051,14 +1081,19 @@ function init(): void {
 		workspaceTitle.textContent = tool.title;
 		workspaceBlurb.textContent = tool.blurb;
 		fileInput.multiple = tool.multiple;
+		// Attach accepts opaque payloads after the first file, so the picker
+		// must not restrict the whole selection to PDFs.
+		fileInput.accept = id === "attach" ? "" : "application/pdf,.pdf";
 		fileInput.value = "";
 		toolsSection.hidden = true;
 		workspace.hidden = false;
 		history.replaceState(null, "", `#${id}`);
 		setStatus(
-			tool.multiple
-				? "Choose two or more PDFs. They are read here, not sent anywhere."
-				: "Choose a PDF. It is read here, not sent anywhere.",
+			id === "attach"
+				? "Choose the PDF first, then the files to embed. They are read here, not sent anywhere."
+				: tool.multiple
+					? "Choose two or more PDFs. They are read here, not sent anywhere."
+					: "Choose a PDF. It is read here, not sent anywhere.",
 			"info",
 		);
 		dropzone.focus();
@@ -1433,6 +1468,12 @@ function init(): void {
 		if (tool.id === "attachments") {
 			return { op: "attachments", files: wireFiles };
 		}
+		if (tool.id === "attach") {
+			return { op: "attach", files: wireFiles };
+		}
+		if (tool.id === "detach") {
+			return { op: "detach", files: wireFiles };
+		}
 		if (tool.id === "strip_metadata") {
 			return { op: "strip_metadata", files: wireFiles };
 		}
@@ -1458,10 +1499,14 @@ function init(): void {
 	}
 
 	async function readWireFiles(): Promise<WireFile[]> {
+		const tool = currentTool();
+		// Attach takes the PDF first and treats the remaining files as opaque
+		// payloads, so only index 0 has to be a PDF.
+		const payloadsAfterFirst = tool?.id === "attach";
 		const wireFiles: WireFile[] = [];
-		for (const file of files) {
+		for (const [index, file] of files.entries()) {
 			const bytes = new Uint8Array(await file.arrayBuffer());
-			if (!hasPdfHeader(bytes)) {
+			if (!(payloadsAfterFirst && index > 0) && !hasPdfHeader(bytes)) {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			wireFiles.push({ name: file.name, bytes });
@@ -1584,7 +1629,14 @@ function init(): void {
 			return;
 		}
 		if (files.length < (tool.multiple ? 2 : 1)) {
-			setStatus(tool.multiple ? "Choose at least two PDFs first." : "Choose a PDF first.", "error");
+			setStatus(
+				tool.id === "attach"
+					? "Choose a PDF and at least one file to embed first."
+					: tool.multiple
+						? "Choose at least two PDFs first."
+						: "Choose a PDF first.",
+				"error",
+			);
 			return;
 		}
 		setBusy(true);

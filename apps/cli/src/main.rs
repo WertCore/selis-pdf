@@ -138,6 +138,18 @@ mod tools {
         selis_pdf_tools::nup(path, *options, output).map_err(CliError::from)
     }
 
+    pub(crate) fn attach(
+        path: &str,
+        files: &[selis_pdf_tools::attachments::AttachmentInput],
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::attachments::attach(path, files, output).map_err(CliError::from)
+    }
+
+    pub(crate) fn detach(path: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::attachments::detach(path, output).map_err(CliError::from)
+    }
+
     pub(crate) fn page_labels(
         path: &str,
         options: &selis_pdf_tools::PageLabelOptions,
@@ -455,6 +467,31 @@ enum Command {
         /// Pages per sheet: 2, 4, 6, or 9.
         #[arg(long, default_value_t = 2)]
         per_sheet: usize,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Embed one or more files inside a PDF.
+    Attach {
+        /// The input PDF.
+        path: String,
+        /// A file to embed; repeat for several files.
+        #[arg(long = "file", required = true)]
+        file: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove every file embedded in a PDF.
+    Detach {
+        /// The input PDF.
+        path: String,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
@@ -931,6 +968,27 @@ fn run() {
             tools::nup(&path, &selis_pdf_tools::NupOptions { per_sheet }, &output),
             json,
         ),
+        Command::Attach {
+            path,
+            file,
+            output,
+            json,
+        } => {
+            let mut inputs = Vec::with_capacity(file.len());
+            for entry in &file {
+                let bytes = match std::fs::read(entry) {
+                    Ok(bytes) => bytes,
+                    Err(e) => return Err(CliError(format!("cannot read {entry}: {e}"))),
+                };
+                let name = std::path::Path::new(entry)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.clone());
+                inputs.push(selis_pdf_tools::attachments::AttachmentInput { name, bytes });
+            }
+            finish(tools::attach(&path, &inputs, &output), json)
+        }
+        Command::Detach { path, output, json } => finish(tools::detach(&path, &output), json),
         Command::Delete {
             path,
             pages,
