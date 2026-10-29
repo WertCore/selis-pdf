@@ -25,7 +25,8 @@
       //      it, then merge and mix PDFs, run the split-every, split-size, and
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
-      //      compress a PDF, crop and flip pages, and extract embedded attachments;
+      //      compress a PDF, crop and flip pages, set page labels, extract
+      //      embedded attachments, and remove metadata;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -122,14 +123,14 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 16,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 17,
           15_000,
           label,
         );
         return frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length;
       }
 
-      async function readOutput(win, row, label, needles) {
+      async function readOutput(win, row, label, needles, absent) {
         const download = row.querySelector("a.primary-link");
         if (!download) throw new Error("a result row had no download link (" + label + ")");
         const preview = row.querySelector("a.text-button");
@@ -163,10 +164,17 @@
           const text = new TextDecoder("latin1").decode(bytes);
           output.found = needles.map((needle) => text.includes(needle));
         }
+        if (absent && absent.length > 0) {
+          const text = new TextDecoder("latin1").decode(bytes);
+          // Each entry records whether the removed text is STILL present, so a
+          // `false` is the pass: the browser-side output proves the bytes the
+          // operation was supposed to drop are gone from the actual download.
+          output.absentFound = absent.map((needle) => text.includes(needle));
+        }
         return output;
       }
 
-      async function readResult(frame, label, needles) {
+      async function readResult(frame, label, needles, absent) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
         const result = {
@@ -181,7 +189,7 @@
         };
         const outputs = [];
         for (const row of doc.querySelectorAll("#result-outputs .output-row")) {
-          outputs.push(await readOutput(win, row, label, needles));
+          outputs.push(await readOutput(win, row, label, needles, absent));
         }
         return {
           result,
@@ -450,6 +458,7 @@
         toolId,
         inputs,
         needles,
+        absent,
       ) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -492,7 +501,7 @@
           "the " + toolId + " result and the no-upload assertion (" + label + ")",
         );
 
-        const read = await readResult(frame, label, needles);
+        const read = await readResult(frame, label, needles, absent);
         return {
           win,
           fileRows,
@@ -518,7 +527,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the sixteen tool cards");
+        out.cards = await waitForCards(frame, "the seventeen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -561,6 +570,10 @@
         });
         const attachmentsFixture = await fetch("attachments.pdf").then((r) => {
           if (!r.ok) throw new Error("attachments.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const metadataFixture = await fetch("metadata.pdf").then((r) => {
+          if (!r.ok) throw new Error("metadata.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
 
@@ -849,6 +862,27 @@
           network: onlinePageLabels.network,
         };
 
+        const onlineStripMetadata = await toolInFrame(
+          frame,
+          metadataFixture,
+          "metadata.pdf",
+          "online strip metadata",
+          "strip_metadata",
+          {},
+          [],
+          ["/Info", "Secret Title", "Secret Author", "Secret Producer"],
+        );
+        out.stripMetadata = {
+          fileRows: onlineStripMetadata.fileRows,
+          runLabel: onlineStripMetadata.runLabel,
+          noUpload: onlineStripMetadata.noUpload,
+          status: onlineStripMetadata.status,
+          result: onlineStripMetadata.result,
+          outputs: onlineStripMetadata.outputs,
+          output: onlineStripMetadata.output,
+          network: onlineStripMetadata.network,
+        };
+
         const onlineAttachments = await toolInFrame(
           frame,
           attachmentsFixture,
@@ -879,7 +913,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the sixteen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the seventeen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1018,6 +1052,16 @@
           "attachments",
           {},
           [],
+        );
+        const offlineStripMetadata = await toolInFrame(
+          frame,
+          metadataFixture,
+          "metadata.pdf",
+          "offline strip metadata",
+          "strip_metadata",
+          {},
+          [],
+          ["/Info", "Secret Title", "Secret Author", "Secret Producer"],
         );
         out.offline = {
           cards: offlineCards,
@@ -1168,6 +1212,16 @@
             outputs: offlinePageLabels.outputs,
             output: offlinePageLabels.output,
             network: offlinePageLabels.network,
+          },
+          stripMetadata: {
+            fileRows: offlineStripMetadata.fileRows,
+            runLabel: offlineStripMetadata.runLabel,
+            noUpload: offlineStripMetadata.noUpload,
+            status: offlineStripMetadata.status,
+            result: offlineStripMetadata.result,
+            outputs: offlineStripMetadata.outputs,
+            output: offlineStripMetadata.output,
+            network: offlineStripMetadata.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Sixteen browser-local operations, one page. The only fetch this module makes is
+ * Seventeen browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -123,6 +123,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Edit metadata",
 		blurb: "Set the title, author, subject, and keywords.",
 		verb: "Save metadata",
+		multiple: false,
+	},
+	{
+		id: "strip_metadata",
+		mark: "×",
+		title: "Remove metadata",
+		blurb: "Strip the Info dictionary and the XMP packet from the document.",
+		verb: "Remove metadata",
 		multiple: false,
 	},
 	{
@@ -916,6 +924,13 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "strip_metadata") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Removes the Info dictionary and the XMP packet. Pages, annotations, forms, outlines, page labels, attachments, and tags are kept. PDF/A conformance and digital signatures may be invalidated.";
+			options.append(note);
+			return;
+		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
 		addField("author", "Author", textInput("author", "text", "Author name"));
 		addField("subject", "Subject", textInput("subject", "text", "Short subject"));
@@ -1282,6 +1297,9 @@ function init(): void {
 		}
 		if (tool.id === "attachments") {
 			return { op: "attachments", files: wireFiles };
+		}
+		if (tool.id === "strip_metadata") {
+			return { op: "strip_metadata", files: wireFiles };
 		}
 		if (tool.id !== "metadata") {
 			throw new ToolInputError("This tool is not wired into the local engine yet.");

@@ -267,6 +267,21 @@ pub fn set_metadata(path: &str, fields: &[(&str, &str)], output: &str) -> ToolRe
     tools::set_metadata(path, fields, output)
 }
 
+/// Remove the `/Info` dictionary and the catalog's XMP `/Metadata` packet.
+///
+/// Visible and structural features survive: pages, annotations, form fields,
+/// optional-content groups, outlines, page labels, embedded files, and the
+/// tagged structure tree. Removing metadata invalidates PDF/A conformance and
+/// any signature that covers the catalog, so a caller should say so rather
+/// than presenting the result as a lossless edit.
+///
+/// # Errors
+///
+/// As [`merge`], plus an encrypted input.
+pub fn strip_metadata(path: &str, output: &str) -> ToolResult<Verification> {
+    tools::strip_metadata(path, output)
+}
+
 /// Apply rectangle redactions to every page.
 ///
 /// # Errors

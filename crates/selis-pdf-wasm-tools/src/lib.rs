@@ -81,6 +81,7 @@ enum Op {
     Crop,
     Flip,
     PageLabels,
+    StripMetadata,
 }
 
 impl Op {
@@ -102,6 +103,7 @@ impl Op {
             14 => Some(Self::Crop),
             15 => Some(Self::Flip),
             16 => Some(Self::PageLabels),
+            17 => Some(Self::StripMetadata),
             _ => None,
         }
     }
@@ -134,10 +136,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
-/// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels.
+/// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
+/// 16 strip metadata.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1111_1111_1111_1111
+    0b1_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -553,6 +556,14 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::StripMetadata => {
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-metadata-removed.pdf"),
+                verification: selis_pdf_tools::strip_metadata("in/0", "out.pdf")?,
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -940,7 +951,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111_1111);
     }
 
     #[test]
@@ -991,6 +1002,24 @@ mod tests {
 
         let response = run_request(&request(16, br#"{"style":"roman"}"#, &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("page label style"));
+    }
+
+    #[test]
+    fn strip_metadata_operation_is_dispatched() {
+        let pdf = multipage_pdf(2);
+        let response = run_request(&request(17, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "strip metadata failed: {message}");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-metadata-removed.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        assert!(
+            !String::from_utf8_lossy(&outputs[0].1).contains("/Metadata"),
+            "the XMP stream is removed"
+        );
+
+        let response = run_request(&request(18, b"", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("unknown tool operation"));
     }
 
     #[test]

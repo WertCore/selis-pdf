@@ -82,6 +82,10 @@ mod tools {
         selis_pdf_tools::set_metadata(path, fields, output).map_err(CliError::from)
     }
 
+    pub(crate) fn strip_metadata(path: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::strip_metadata(path, output).map_err(CliError::from)
+    }
+
     pub(crate) fn redact(
         path: &str,
         rects: &[(f64, f64, f64, f64)],
@@ -286,6 +290,17 @@ enum Command {
         /// A `Key=Value` metadata field (repeatable).
         #[arg(long = "field")]
         fields: Vec<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the Info dictionary and XMP metadata from a PDF.
+    StripMetadata {
+        /// The input PDF.
+        path: String,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
@@ -701,6 +716,11 @@ fn run() {
                 fields.iter().filter_map(|f| f.split_once('=')).collect();
             finish(tools::set_metadata(&path, &parsed, &output), json)
         }
+        Command::StripMetadata {
+            path,
+            output,
+            json,
+        } => finish(tools::strip_metadata(&path, &output), json),
         Command::Redact {
             path,
             rects,

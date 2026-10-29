@@ -3279,6 +3279,98 @@ pub(crate) fn set_metadata(
     Ok(verification)
 }
 
+/// Remove document metadata: the `/Info` dictionary and the catalog's XMP
+/// `/Metadata` packet.
+///
+/// Everything visible or structural survives the rewrite — pages, content,
+/// annotations, form fields, optional-content groups, outlines, page labels,
+/// embedded files, and the tagged structure tree. What does not survive is
+/// metadata: no new `/Info` is written and the XMP packet is never carried,
+/// so authoring application, producer, timestamps, and document identifiers
+/// held there are gone.
+///
+/// Removing metadata invalidates PDF/A conformance (whose XMP packet is
+/// required) and any digital signature that covers the catalog, so callers
+/// should surface that consequence rather than promising a lossless edit.
+///
+/// # Errors
+///
+/// As [`merge`], plus an encrypted input (its objects cannot be rewritten
+/// safely without the file key).
+pub(crate) fn strip_metadata(path: &str, output: &str) -> CliResult<Verification> {
+    use selis_pdf_cos::reconcile as rec;
+
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let revision = doc
+        .revisions()
+        .last()
+        .ok_or_else(|| CliError(format!("{path}: no revisions")))?;
+    if revision.encrypt.is_some() {
+        return Err(CliError(format!(
+            "{path}: document is encrypted; remove the password with unlock first"
+        )));
+    }
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+
+    // Report honestly what was there: an empty removal still rewrites, so the
+    // caller receives the same clean structure rather than a special case.
+    let trailer_info = revision
+        .trailer
+        .iter()
+        .any(|(key, _)| key.as_slice() == b"Info");
+    let catalog_info = rec::catalog_entry(&src, &doc, b"Info", &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: {e}")))?
+        .is_some();
+    let xmp = rec::catalog_entry(&src, &doc, b"Metadata", &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: {e}")))?
+        .is_some();
+
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    // No `set_info` call and `carry_metadata: false`: the output has neither
+    // an Info dictionary nor an XMP packet, while every catalog structure the
+    // rewrite knows how to carry still comes through.
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, false, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+
+    let removed = match (trailer_info || catalog_info, xmp) {
+        (true, true) => "removed /Info and XMP metadata",
+        (true, false) => "removed /Info metadata",
+        (false, true) => "removed XMP metadata",
+        (false, false) => "no document metadata found; rewrote clean output",
+    };
+    eprintln!("{removed} -> {output}");
+    verification.emit_line();
+    Ok(verification)
+}
+
 /// Redact regions: cover them with black and strip text that falls within
 /// them (SL-0.LEGAL.05). Returns the operation's verification display.
 pub(crate) fn redact(
@@ -6771,6 +6863,118 @@ mod tests {
         )
         .expect_err("encrypted input");
         assert!(error.0.contains("encrypted"), "{error:?}");
+    }
+
+    /// A one-page PDF carrying both an `/Info` dictionary and a catalogue
+    /// XMP `/Metadata` stream, the two things metadata removal must drop.
+    fn metadata_source() -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        builder.add_page(200.0, 300.0, b"q Q");
+        builder.set_info(b"Title", "Secret Title");
+        builder.set_info(b"Author", "Secret Author");
+        let packet = b"<x:xmpmeta>secret-packet</x:xmpmeta>";
+        let xmp_num = *builder.next_num_mut();
+        builder.add_object(
+            xmp_num,
+            Obj::Stream {
+                dict: vec![
+                    (
+                        selis_bytes::Bytes::copy_from_slice(b"Type"),
+                        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"Metadata")),
+                    ),
+                    (
+                        selis_bytes::Bytes::copy_from_slice(b"Subtype"),
+                        Obj::Name(selis_bytes::Bytes::copy_from_slice(b"XML")),
+                    ),
+                    (
+                        selis_bytes::Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(packet.len()).unwrap_or(i64::MAX)),
+                    ),
+                ],
+                data: selis_bytes::Bytes::copy_from_slice(packet),
+            },
+        );
+        builder.add_catalog_entry(b"Metadata", Obj::Ref(Ref::new(xmp_num, 0)));
+        builder
+            .write(&budget, &mut g)
+            .expect("write metadata source")
+    }
+
+    #[test]
+    fn strip_metadata_drops_info_and_the_xmp_packet() {
+        let dir = temp_dir("strip-metadata");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, metadata_source()).expect("write input");
+        let verification = super::strip_metadata(input.to_str().unwrap(), output.to_str().unwrap())
+            .expect("strip metadata");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_out, 1);
+        let bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("/Info"), "no Info reference remains: {text}");
+        assert!(
+            !text.contains("Secret Title"),
+            "Title value is gone: {text}"
+        );
+        assert!(
+            !text.contains("Secret Author"),
+            "Author value is gone: {text}"
+        );
+        assert!(!text.contains("/Metadata"), "catalog XMP is gone: {text}");
+        assert!(!text.contains("xmpmeta"), "XMP bytes are gone: {text}");
+        // The page and its content still open.
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, startxref, &budget, &mut g)
+            .expect("parse output");
+        let refs = super::page_refs_of(&bytes, &doc, &budget, &mut g).expect("page refs");
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn strip_metadata_keeps_visible_and_structural_features() {
+        let dir = temp_dir("strip-metadata-structures");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+        let verification = super::strip_metadata(input.to_str().unwrap(), output.to_str().unwrap())
+            .expect("strip metadata");
+        assert_eq!(verification.pages_out, 3);
+        let text =
+            String::from_utf8_lossy(&std::fs::read(&output).expect("read output")).into_owned();
+        assert!(text.contains("/PageLabels"), "page labels survive: {text}");
+        assert!(text.contains("/Outlines"), "outlines survive: {text}");
+        assert!(text.contains("/Annots"), "annotations survive: {text}");
+    }
+
+    #[test]
+    fn strip_metadata_refuses_encrypted_inputs_and_accepts_clean_ones() {
+        let dir = temp_dir("strip-metadata-edges");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+
+        let mut encrypted = metadata_source();
+        let trailer_at = encrypted
+            .windows(b"trailer".len())
+            .position(|window| window == b"trailer")
+            .expect("trailer");
+        let insert_at = trailer_at + b"trailer\n<<".len();
+        encrypted.splice(insert_at..insert_at, b" /Encrypt 99 0 R".iter().copied());
+        std::fs::write(&input, encrypted).expect("write encrypted");
+        let error = super::strip_metadata(input.to_str().unwrap(), output.to_str().unwrap())
+            .expect_err("encrypted input");
+        assert!(error.0.contains("encrypted"), "{error:?}");
+
+        // A document with nothing to remove still produces a verified rewrite.
+        std::fs::write(&input, sized_pages_source(&[100.0, 100.0])).expect("write clean");
+        let verification = super::strip_metadata(input.to_str().unwrap(), output.to_str().unwrap())
+            .expect("strip clean");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_out, 2);
     }
 
     #[test]

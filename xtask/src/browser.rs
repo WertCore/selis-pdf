@@ -1082,6 +1082,54 @@ fn check_stamp_leg(
     Ok(())
 }
 
+/// The strings the metadata-strip leg requires to be ABSENT from the real
+/// downloaded bytes. Removal is only proven by the negative: a page that
+/// rewrote the file but carried `/Info` through would still pass a page-count
+/// check.
+const STRIP_METADATA_ABSENT: [&str; 4] =
+    ["/Info", "Secret Title", "Secret Author", "Secret Producer"];
+
+/// One metadata-removal leg. The shape is the page-preserving stamp shape, plus
+/// the negative witness: none of the removed fields may appear in the Blob.
+fn check_strip_metadata_leg(leg: &Json, label: &str) -> Result<(), String> {
+    check_stamp_leg(
+        leg,
+        label,
+        "metadata-metadata-removed.pdf",
+        "Remove metadata",
+        3,
+        &[],
+    )?;
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
+    if absent.len() != STRIP_METADATA_ABSENT.len() {
+        return Err(format!(
+            "the {label} output reported {} absence checks, expected {}",
+            absent.len(),
+            STRIP_METADATA_ABSENT.len()
+        ));
+    }
+    if let Some(index) = absent
+        .iter()
+        .position(|value| value.as_bool() != Some(false))
+    {
+        return Err(format!(
+            "the {label} output still contains {:?}; metadata removal did not reach the bytes",
+            STRIP_METADATA_ABSENT[index]
+        ));
+    }
+    Ok(())
+}
+
 /// One page-mixing leg: two selected PDFs become one interleaved PDF with the
 /// first input's name, and the result reports the sum of the input pages.
 fn check_mix_leg(
@@ -1388,7 +1436,7 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * sixteen cards render, and choosing Merge opens the workspace;
+/// * seventeen cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1406,9 +1454,10 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 /// * page numbers, watermark, header/footer, and Bates legs each stamp the real
 ///   output stream, read back from the Blob, and the compress leg rewrites the
 ///   report without changing its page count;
-/// * the crop and flip legs rewrite page geometry, and the page-label leg
+/// * the crop and flip legs rewrite page geometry, the page-label leg
 ///   writes an explicit `/PageLabels` tree whose prefix is visible in the real
-///   Blob;
+///   Blob, and the metadata-strip leg proves `/Info` and its values are absent
+///   from the bytes;
 /// * the attachment leg downloads both embedded files with their decoded bytes
 ///   and a ZIP, without offering either file as a PDF preview;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
@@ -1426,9 +1475,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(16) {
+    if report.get("cards").and_then(Json::as_u64) != Some(17) {
         return Err(format!(
-            "the tools grid did not render sixteen cards (cards = {:?})",
+            "the tools grid did not render seventeen cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1679,6 +1728,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "online attachments",
         &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
     )?;
+    let strip_metadata = report.get("stripMetadata").ok_or_else(|| {
+        "the page reported no metadata-strip leg (stripMetadata = None)".to_string()
+    })?;
+    check_strip_metadata_leg(strip_metadata, "online strip metadata")?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -1699,9 +1752,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(16) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(17) {
         return Err(format!(
-            "the offline tools page did not render sixteen cards (cards = {:?})",
+            "the offline tools page did not render seventeen cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1928,6 +1981,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline attachments",
         &[("notes.txt", "hello attachment"), ("evil.txt", "safe name")],
     )?;
+    let offline_strip_metadata = offline.get("stripMetadata").ok_or_else(|| {
+        "the offline leg reported no metadata-strip result (stripMetadata = None)".to_string()
+    })?;
+    check_strip_metadata_leg(offline_strip_metadata, "offline strip metadata")?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -5722,6 +5779,57 @@ mod tests {
         })
     }
 
+    /// The metadata-strip leg: the page-preserving stamp shape, plus the
+    /// negative witness the verdict requires (`absentFound` all false).
+    fn real_tools_strip_metadata_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Remove metadata",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "metadata-metadata-removed.pdf",
+                "meta": "1 file \u{00b7} 700 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [{
+                "kind": "pdf",
+                "name": "metadata-metadata-removed.pdf",
+                "pages": 3,
+                "declaredBytes": 700,
+                "bytes": 700,
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "metadata-metadata-removed.pdf",
+                "header": "%PDF-",
+                "zip": false,
+                "absentFound": [false, false, false, false],
+            }],
+            "output": {
+                "kind": "pdf",
+                "name": "metadata-metadata-removed.pdf",
+                "pages": 3,
+                "declaredBytes": 700,
+                "bytes": 700,
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "metadata-metadata-removed.pdf",
+                "header": "%PDF-",
+                "zip": false,
+                "absentFound": [false, false, false, false],
+            },
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     fn real_tools_mix_leg() -> Json {
         json!({
             "fileRows": 2,
@@ -5778,7 +5886,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 16,
+            "cards": 17,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5825,7 +5933,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 16,
+                "cards": 17,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -5908,6 +6016,7 @@ mod tests {
             &["/PageLabels", "(A-)"],
         );
         report["attachments"] = real_tools_attachments_leg();
+        report["stripMetadata"] = real_tools_strip_metadata_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
@@ -5919,6 +6028,7 @@ mod tests {
         report["offline"]["flip"] = report["flip"].clone();
         report["offline"]["pageLabels"] = report["pageLabels"].clone();
         report["offline"]["attachments"] = report["attachments"].clone();
+        report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report
     }
 
@@ -6127,7 +6237,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 16,
+            "cards": 17,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6227,6 +6337,10 @@ mod tests {
                 "attachments",
                 "a run that never extracted attachments must not pass",
             ),
+            (
+                "stripMetadata",
+                "a run that never removed metadata must not pass",
+            ),
         ] {
             let mut missing = report.clone();
             missing
@@ -6300,6 +6414,39 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_attachments).is_err(),
             "an online-only attachment extraction must not pass the offline gate"
+        );
+
+        let mut metadata_left_behind = report.clone();
+        *metadata_left_behind
+            .pointer_mut("/stripMetadata/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&metadata_left_behind).is_err(),
+            "an output that still contains /Info must not pass metadata removal"
+        );
+
+        let mut metadata_wrong_count = report.clone();
+        metadata_wrong_count
+            .pointer_mut("/stripMetadata/outputs/0/absentFound")
+            .unwrap()
+            .as_array_mut()
+            .expect("absence checks")
+            .pop();
+        assert!(
+            verdict_tools_page(&metadata_wrong_count).is_err(),
+            "a metadata leg that skipped an absence check must not pass"
+        );
+
+        let mut no_offline_metadata = report.clone();
+        no_offline_metadata
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("stripMetadata");
+        assert!(
+            verdict_tools_page(&no_offline_metadata).is_err(),
+            "an online-only metadata removal must not pass the offline gate"
         );
 
         let mut offline_no_watermark = report.clone();

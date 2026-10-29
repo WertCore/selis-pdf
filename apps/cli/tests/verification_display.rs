@@ -542,6 +542,55 @@ fn page_labels_command_writes_an_explicit_label_tree() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn strip_metadata_command_removes_info_and_keeps_the_pages() {
+    let dir = temp_dir("strip-metadata");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("with-info.pdf");
+    let output = dir.join("clean.pdf");
+
+    let budget = Budget::unlimited();
+    let mut g = guard();
+    let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    builder.add_page(100.0, 100.0, b"");
+    builder.add_page(100.0, 100.0, b"");
+    builder.set_info(b"Title", "Removed Title");
+    builder.set_info(b"Producer", "Removed Producer");
+    std::fs::write(&input, builder.write(&budget, &mut g).expect("write input"))
+        .expect("write fixture");
+
+    let out = selis()
+        .args([
+            "strip-metadata",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "strip-metadata stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_in"), 2);
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "verdict"), "ok");
+
+    let bytes = std::fs::read(&output).expect("read output");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(!text.contains("/Info"), "{text}");
+    assert!(!text.contains("Removed Title"), "{text}");
+    assert!(!text.contains("Removed Producer"), "{text}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A page selection shows the changed counts honestly (`pages 2->1`,
 /// outlines pruned with their pages) and asserts exactly the promises that
 /// still hold.
