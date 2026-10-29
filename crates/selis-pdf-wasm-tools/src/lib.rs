@@ -80,6 +80,7 @@ enum Op {
     Attachments,
     Crop,
     Flip,
+    PageLabels,
 }
 
 impl Op {
@@ -100,6 +101,7 @@ impl Op {
             13 => Some(Self::Mix),
             14 => Some(Self::Crop),
             15 => Some(Self::Flip),
+            16 => Some(Self::PageLabels),
             _ => None,
         }
     }
@@ -132,10 +134,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
-/// 11 extract attachments, 12 mix pages, 13 crop, 14 flip.
+/// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b111_1111_1111_1111
+    0b1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -513,6 +515,41 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-flipped.pdf"),
                 verification: selis_pdf_tools::flip("in/0", axis, pages.as_deref(), "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::PageLabels => {
+            let style = match option_str(&options, "style").as_deref() {
+                None | Some("D") => selis_pdf_tools::PageLabelStyle::Decimal,
+                Some("r") => selis_pdf_tools::PageLabelStyle::LowerRoman,
+                Some("R") => selis_pdf_tools::PageLabelStyle::UpperRoman,
+                Some("a") => selis_pdf_tools::PageLabelStyle::LowerLetters,
+                Some("A") => selis_pdf_tools::PageLabelStyle::UpperLetters,
+                Some("None") => selis_pdf_tools::PageLabelStyle::None,
+                Some(other) => {
+                    return Err(ToolError(format!(
+                        "page label style must be D, r, R, a, A, or None (got {other})"
+                    )))
+                }
+            };
+            let start = option_u64(&options, "start").unwrap_or(1);
+            let start = u32::try_from(start).map_err(|_| {
+                ToolError("page label start is outside the supported range".to_string())
+            })?;
+            let pages = option_str(&options, "pages");
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-labeled.pdf"),
+                verification: selis_pdf_tools::page_labels(
+                    "in/0",
+                    &selis_pdf_tools::PageLabelOptions {
+                        style,
+                        start,
+                        prefix: option_str(&options, "prefix").unwrap_or_default(),
+                    },
+                    pages.as_deref(),
+                    "out.pdf",
+                )?,
                 over_target: false,
             }]
         }
@@ -903,7 +940,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111_1111);
     }
 
     #[test]
@@ -936,6 +973,24 @@ mod tests {
             &[("doc.pdf", &pdf)],
         ));
         assert!(error_text(&response).contains("horizontal or vertical"));
+    }
+
+    #[test]
+    fn page_labels_operation_is_dispatched() {
+        let pdf = multipage_pdf(3);
+        let response = run_request(&request(
+            16,
+            br#"{"style":"R","start":4,"prefix":"A-","pages":"0,2"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "page labels failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(outputs[0].0, "doc-labeled.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+
+        let response = run_request(&request(16, br#"{"style":"roman"}"#, &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("page label style"));
     }
 
     #[test]

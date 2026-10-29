@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, and flip slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, and page-label slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -61,6 +61,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Bates numbering | — | yes | **Live** | Prefix, suffix, start, zero-padding, placement, 1-based selection; advances only over selected pages. |
 | Compress PDF (lossless) | yes | yes | **Live** | Reachable-object GC, Flate re-encode, byte-identical-object dedup, inherited page attributes, trailer-level `/Info`; encrypted files are refused. |
 | Extract attachments | — | yes | **Live** | Reads `/Names/EmbeddedFiles`, decodes the filter chain, and downloads each file; two or more files also get a deterministic ZIP. Names are flattened and deduplicated, encrypted PDFs are refused, and limits are 64 files / 256 MiB each. |
+| Page labels | — | yes | **Live** | Decimal, lower/upper Roman, lower/upper letter, or prefix-only numbering with a starting number; 1-based selection renumbered in document order. Unselected pages keep the label they already carried; every output page gets an explicit `/PageLabels` entry. Encrypted inputs are refused. |
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP and strip are next. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
@@ -74,7 +75,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 233 238 B).
+      (currently 300 000 B brotli; baseline 235 011 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -117,7 +118,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Bates numbering | — | yes | 1A.1 | Live. Deterministic prefix/suffix, start, padding, placement, selection. |
 | Bookmarks / outline editing | — | yes | 1A.1 | Outline reader/writer exists; add UI and verification. |
 | Attachment add/remove | — | yes | 1A.1 | Writer `/Names/EmbeddedFiles`; sanitize names. |
-| Page labels | — | yes | 1A.1 | Preserve/shift on merge; edit as a separate operation. |
+| Page labels | — | yes | 1A.1 | Live. Decimal/Roman/letter/prefix-only styles, start number, 1-based selection; every output page gets an explicit `/PageLabels` entry. |
 | Flatten annotations | — | yes | Raster | Requires appearance-stream rendering; never claim flatten without a render check. |
 | Flatten forms | — | yes | Raster/Forms | Same; form appearance generation is its own correctness surface. |
 | Invert colors | — | yes | Raster | Content-stream transform or render-to-image; prefer the latter only with an owned raster path. |
@@ -244,24 +245,28 @@ pages to the Organize pages workspace; duplicate and blank legs run online and o
 
 **Shipped 2026-10-28:** page numbers, centered text watermark, headers/footers with
 `{page}`/`{pages}` placeholders, Bates numbering, lossless compression, attachment extraction,
-round-robin page mixing, visual-edge cropping, and display-relative flipping. All nine operations
-are exposed through the CLI and the browser and use the verified full-rewrite path (extraction is
-read-only). The browser check now drives fifteen cards online and after an offline reload, reads
-the stamped marker strings and extracted file bytes, checks the ZIP local header, measures the
-compressed output's page count and size, and interleaves the three-page report with the one-page
-fixture to require Pages `4 → 4`. Crop and flip run on the three-page report and require Pages
-`3 → 3`. Overlay placement follows inherited `/MediaBox`, `/Resources`, and `/Rotate` values;
-compression preserves trailer-level `/Info`; attachment names are flattened and deduplicated, and
-attachment outputs never offer a PDF preview. Mixing reuses merge reconciliation and materialises
-page labels per output page when any input carries `/PageLabels`. Cropping measures margins in
-display orientation, replaces `/MediaBox` and `/CropBox`, and drops print boxes outside the new
-rectangle; flipping wraps painted content in a display-relative mirror and leaves annotations and
-form fields unmirrored, as documented.
+round-robin page mixing, visual-edge cropping, display-relative flipping, and page labels. All ten
+operations are exposed through the CLI and the browser and use the verified full-rewrite path
+(extraction is read-only). The browser check now drives sixteen cards online and after an offline
+reload, reads the stamped marker strings, attachment bytes, and the written `/PageLabels` tree,
+checks the ZIP local header, measures the compressed output's page count and size, and interleaves
+the three-page report with the one-page fixture to require Pages `4 → 4`. Crop, flip, and page
+labels run on the three-page report and require Pages `3 → 3`; the label leg requires
+`report-labeled.pdf` with `/PageLabels` and the `(A-)` prefix visible in the downloaded bytes.
+Overlay placement follows inherited `/MediaBox`, `/Resources`, and `/Rotate` values; compression
+preserves trailer-level `/Info`; attachment names are flattened and deduplicated, and attachment
+outputs never offer a PDF preview. Mixing reuses merge reconciliation and materialises page labels
+per output page when any input carries `/PageLabels`. Cropping measures margins in display
+orientation, replaces `/MediaBox` and `/CropBox`, and drops print boxes outside the new rectangle;
+flipping wraps painted content in a display-relative mirror and leaves annotations and form fields
+unmirrored, as documented. Page labelling rewrites the label tree so each output page has an
+explicit entry, advancing the selected pages' numbers without letting a stale range leak across
+unselected pages.
 
 **Remaining in 1A.1:** resize, N-up, image/tiled watermark, repair, metadata strip, attachment
-add/remove, page labels, CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled
-security tools. The incremental writer for page edits remains deferred; these page operations use
-the verified full-rewrite path.
+add/remove, CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools.
+The incremental writer for page edits remains deferred; these page operations use the verified
+full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
 size budget; no raster feature is claimed yet.
@@ -312,8 +317,8 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The current fifteen tools are
-   object-graph operations; keeping the renderer out is why the chunk is 233 KB brotli instead of
+3. **No page renderer in the tools chunk unless a tool needs it.** The current sixteen tools are
+   object-graph operations; keeping the renderer out is why the chunk is 235 KB brotli instead of
    the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
    feature. Native and viewer builds enable it; the object-graph tools disable it so `getrandom`'s
@@ -331,18 +336,18 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Fifteen live operations with 1-based page input.
+- [x] Sixteen live operations with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all fifteen cards end-to-end, downloads every output, asserts the
-      network log, reads the stamped marker strings from downloaded PDF bytes, and checks extracted
-      attachment bytes plus the ZIP header. `xtask/browser/tools-page` passed in Edge with 15 cards,
-      0 foreign resources, `data-no-upload="verified"` before results appeared, and `%PDF-`
-      downloads.
+- [x] Browser check drives all sixteen cards end-to-end, downloads every output, asserts the
+      network log, reads the stamped marker strings and written label tree from downloaded PDF
+      bytes, and checks extracted attachment bytes plus the ZIP header.
+      `xtask/browser/tools-page` passed in Edge with 16 cards online and offline, 0 foreign
+      resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
       The `tools-page` browser check now runs every leg online, cuts the origin, reloads the page,

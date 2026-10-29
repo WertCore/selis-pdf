@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Fifteen browser-local operations, one page. The only fetch this module makes is
+ * Sixteen browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -91,6 +91,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Flip PDF",
 		blurb: "Mirror page content horizontally or vertically.",
 		verb: "Flip PDF",
+		multiple: false,
+	},
+	{
+		id: "page_labels",
+		mark: "L",
+		title: "Page labels",
+		blurb: "Set the numbering readers show: decimal, roman, letters, or a prefix.",
+		verb: "Apply page labels",
 		multiple: false,
 	},
 	{
@@ -624,6 +632,48 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "page_labels") {
+			const style = make("select", "control");
+			for (const [value, label] of [
+				["D", "Decimal (1, 2, 3)"],
+				["r", "Lower-case roman (i, ii, iii)"],
+				["R", "Upper-case roman (I, II, III)"],
+				["a", "Lower-case letters (a, b, c)"],
+				["A", "Upper-case letters (A, B, C)"],
+				["None", "No number (prefix only)"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				style.append(choice);
+			}
+			addField("style", "Numbering style", style);
+			const start = addField(
+				"start",
+				"First number",
+				textInput("start", "number", "1"),
+				"The number shown on the first selected page.",
+			) as HTMLInputElement;
+			start.min = "1";
+			start.value = "1";
+			addField(
+				"prefix",
+				"Prefix (optional)",
+				textInput("prefix", "text", "e.g. A-"),
+				"Up to 64 printable ASCII characters, placed before every number.",
+			);
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges. Leave blank to relabel every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Selected pages are renumbered in document order. Other pages keep the label they already show. Every output page gets an explicit label.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "delete") {
 			addField(
 				"pages",
@@ -1100,6 +1150,18 @@ function init(): void {
 				options.pages = shiftPageSelection(pagesText);
 			}
 			return { op: "flip", options, files: wireFiles };
+		}
+		if (tool.id === "page_labels") {
+			const options: Record<string, unknown> = {
+				style: optionValue("style"),
+				start: numberInRange("start", "First number", 1, 1_000_000, 1, true),
+				prefix: optionValue("prefix"),
+			};
+			const pagesText = optionValue("pages").trim();
+			if (pagesText !== "") {
+				options.pages = shiftPageSelection(pagesText);
+			}
+			return { op: "page_labels", options, files: wireFiles };
 		}
 		if (tool.id === "delete") {
 			return {

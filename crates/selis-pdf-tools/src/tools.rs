@@ -4087,6 +4087,109 @@ pub enum FlipAxis {
     Vertical,
 }
 
+/// The numbering style of a page label, written as the `/S` entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageLabelStyle {
+    /// Decimal numbering: 1, 2, 3.
+    Decimal,
+    /// Lower-case roman: i, ii, iii.
+    LowerRoman,
+    /// Upper-case roman: I, II, III.
+    UpperRoman,
+    /// Lower-case letters: a, b, c.
+    LowerLetters,
+    /// Upper-case letters: A, B, C.
+    UpperLetters,
+    /// No generated number; the prefix alone is the label.
+    None,
+}
+
+impl PageLabelStyle {
+    /// Parse the PDF style code or a descriptive alias.
+    ///
+    /// Accepts the spec's `/S` values (`D`, `r`, `R`, `a`, `A`, `None`) and the
+    /// names the CLI and web card use. Returns `None` for anything else so the
+    /// caller can reject it with its own surface-specific message.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "D" | "d" | "decimal" => Some(Self::Decimal),
+            "r" | "lower_roman" | "lower-roman" | "lowerRoman" => Some(Self::LowerRoman),
+            "R" | "upper_roman" | "upper-roman" | "upperRoman" => Some(Self::UpperRoman),
+            "a" | "lower_letters" | "lower-letters" | "lowerLetters" => Some(Self::LowerLetters),
+            "A" | "upper_letters" | "upper-letters" | "upperLetters" => Some(Self::UpperLetters),
+            "None" | "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// The PDF `/S` name for this style, or `None` for prefix-only labels.
+    const fn spec_name(self) -> &'static [u8] {
+        match self {
+            Self::Decimal => b"D",
+            Self::LowerRoman => b"r",
+            Self::UpperRoman => b"R",
+            Self::LowerLetters => b"a",
+            Self::UpperLetters => b"A",
+            Self::None => b"None",
+        }
+    }
+}
+
+/// Settings for [`page_labels`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageLabelOptions {
+    /// The numbering style applied to every selected page.
+    pub style: PageLabelStyle,
+    /// The number shown on the first selected page. Must be at least 1.
+    pub start: u32,
+    /// ASCII printable text placed before every number. May be empty.
+    pub prefix: String,
+}
+
+impl PageLabelOptions {
+    fn validate(&self) -> Result<(), String> {
+        if self.start == 0 {
+            return Err("page label start must be at least 1".to_string());
+        }
+        if self.start > 1_000_000 {
+            return Err("page label start must be at most 1000000".to_string());
+        }
+        if self.prefix.len() > 64 {
+            return Err("page label prefix must be at most 64 characters".to_string());
+        }
+        if !self
+            .prefix
+            .bytes()
+            .all(|byte| (0x20..=0x7e).contains(&byte))
+        {
+            return Err("page label prefix must contain printable ASCII only".to_string());
+        }
+        Ok(())
+    }
+
+    /// Build one materialised label dictionary.
+    fn dict(&self, number: u32) -> Obj {
+        let mut pairs = vec![(
+            selis_bytes::Bytes::copy_from_slice(b"S"),
+            Obj::Name(selis_bytes::Bytes::copy_from_slice(self.style.spec_name())),
+        )];
+        if !self.prefix.is_empty() {
+            pairs.push((
+                selis_bytes::Bytes::copy_from_slice(b"P"),
+                Obj::String(selis_bytes::Bytes::copy_from_slice(self.prefix.as_bytes())),
+            ));
+        }
+        if self.style != PageLabelStyle::None {
+            pairs.push((
+                selis_bytes::Bytes::copy_from_slice(b"St"),
+                Obj::Int(i64::from(number)),
+            ));
+        }
+        Obj::Dict(pairs)
+    }
+}
+
 fn quarter_turn(rotation: i64) -> Result<i64, String> {
     let rotation = rotation.rem_euclid(360);
     if matches!(rotation, 0 | 90 | 180 | 270) {
@@ -4390,6 +4493,119 @@ pub(crate) fn flip(
         FlipAxis::Vertical => "vertically",
     };
     eprintln!("flipped {} page(s) {axis} -> {output}", selected.len());
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// Read the input's `/PageLabels` number tree as `(page index, label dict)`
+/// pairs, or nothing when the catalog has no explicit labels.
+fn read_page_labels(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<(i64, Obj)>, String> {
+    use selis_pdf_cos::reconcile as rec;
+    let Some(labels) =
+        rec::catalog_entry(src, doc, b"PageLabels", budget, g).map_err(|e| e.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    let labels = resolve_shallow(src, doc, labels, budget, g);
+    rec::number_tree_pairs(&labels, src, doc, budget, g).map_err(|e| e.to_string())
+}
+
+/// Replace the document's page labels.
+///
+/// Every output page receives an explicit `/PageLabels` entry, so the label a
+/// reader shows never depends on a neighbouring range. Selected pages are
+/// renumbered in document order from `options.start`, with `options.style` and
+/// `options.prefix`; unselected pages keep the label they already carried
+/// (materialised from the input's number tree, or its default decimal number).
+///
+/// # Errors
+///
+/// As [`merge`], plus a zero or huge start, a prefix longer than 64 printable
+/// ASCII bytes, a malformed page selection, or an encrypted input (whose page
+/// labels cannot be read safely).
+pub(crate) fn page_labels(
+    path: &str,
+    options: &PageLabelOptions,
+    pages: Option<&str>,
+    output: &str,
+) -> CliResult<Verification> {
+    options
+        .validate()
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let revision = doc
+        .revisions()
+        .last()
+        .ok_or_else(|| CliError(format!("{path}: no revisions")))?;
+    if revision.encrypt.is_some() {
+        return Err(CliError(format!(
+            "{path}: document is encrypted; remove the password with unlock first"
+        )));
+    }
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected: std::collections::HashSet<usize> = match pages {
+        Some(spec) => parse_page_selection(spec, page_refs.len())
+            .map_err(|e| CliError(format!("{path}: {e}")))?
+            .into_iter()
+            .collect(),
+        None => (0..page_refs.len()).collect(),
+    };
+
+    let existing = read_page_labels(&src, &doc, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot read page labels: {e}")))?;
+    let identity: Vec<usize> = (0..page_refs.len()).collect();
+    let mut entries = materialize_page_labels(&existing, &identity, page_refs.len());
+    let mut number = options.start;
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        if !selected.contains(&idx) {
+            continue;
+        }
+        *entry = (entry.0, options.dict(number));
+        number = number.checked_add(1).ok_or_else(|| {
+            CliError("page label number exceeds the PDF integer range".to_string())
+        })?;
+    }
+
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    // Replacing (not merging) the reconciled labels keeps every page explicit.
+    attach_page_labels(&mut out, &[(entries, 0)]);
+
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    eprintln!("labeled {} page(s) -> {output}", selected.len());
     verification.emit_line();
     Ok(verification)
 }
@@ -6392,6 +6608,169 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// The output document's explicit page labels, as `(page index, dict)`.
+    fn output_page_labels(path: &std::path::Path) -> Vec<(i64, Obj)> {
+        let bytes = std::fs::read(path).expect("read output");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&bytes, startxref, &budget, &mut g)
+            .expect("parse output");
+        super::read_page_labels(&bytes, &doc, &budget, &mut g).expect("read labels")
+    }
+
+    type LabelFields = (i64, Option<String>, Option<String>, Option<i64>);
+
+    fn label_fields(entries: &[(i64, Obj)]) -> Vec<LabelFields> {
+        entries
+            .iter()
+            .map(|(key, obj)| {
+                let pairs = pairs_of(obj);
+                let style = dict_entry(pairs, b"S").and_then(|value| match value {
+                    Obj::Name(name) => Some(String::from_utf8_lossy(name.as_slice()).into_owned()),
+                    _ => None,
+                });
+                let prefix = dict_entry(pairs, b"P").and_then(|value| match value {
+                    Obj::String(text) => {
+                        Some(String::from_utf8_lossy(text.as_slice()).into_owned())
+                    }
+                    _ => None,
+                });
+                let start = dict_entry(pairs, b"St").and_then(|value| match value {
+                    Obj::Int(number) => Some(*number),
+                    _ => None,
+                });
+                (*key, style, prefix, start)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn page_labels_renumber_selection_and_keep_existing_labels_for_the_rest() {
+        let dir = temp_dir("page-labels-selection");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, labeled_outlined_source()).expect("write input");
+        let output = dir.join("out.pdf");
+        let options = super::PageLabelOptions {
+            style: super::PageLabelStyle::UpperRoman,
+            start: 5,
+            prefix: "A-".to_string(),
+        };
+        let verification = super::page_labels(
+            input.to_str().unwrap(),
+            &options,
+            Some("0"),
+            output.to_str().unwrap(),
+        )
+        .expect("page labels");
+        assert_eq!(verification.pages_out, 3);
+        let labels = label_fields(&output_page_labels(&output));
+        assert_eq!(
+            labels,
+            vec![
+                (0, Some("R".to_string()), Some("A-".to_string()), Some(5)),
+                (1, Some("r".to_string()), None, Some(2)),
+                (2, Some("D".to_string()), None, Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn page_labels_materialize_unlabeled_pages_and_advance_the_selection() {
+        let dir = temp_dir("page-labels-defaults");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, sized_pages_source(&[100.0, 100.0, 100.0])).expect("write input");
+        let output = dir.join("out.pdf");
+        let options = super::PageLabelOptions {
+            style: super::PageLabelStyle::Decimal,
+            start: 10,
+            prefix: "P".to_string(),
+        };
+        super::page_labels(
+            input.to_str().unwrap(),
+            &options,
+            Some("1,2"),
+            output.to_str().unwrap(),
+        )
+        .expect("page labels");
+        let labels = label_fields(&output_page_labels(&output));
+        assert_eq!(
+            labels,
+            vec![
+                (0, Some("D".to_string()), None, Some(1)),
+                (1, Some("D".to_string()), Some("P".to_string()), Some(10)),
+                (2, Some("D".to_string()), Some("P".to_string()), Some(11)),
+            ]
+        );
+    }
+
+    #[test]
+    fn page_labels_reject_invalid_options_and_encrypted_inputs() {
+        let dir = temp_dir("page-labels-invalid");
+        let input = dir.join("in.pdf");
+        std::fs::write(&input, sized_pages_source(&[100.0])).expect("write input");
+        let output = dir.join("out.pdf");
+        let base = super::PageLabelOptions {
+            style: super::PageLabelStyle::Decimal,
+            start: 1,
+            prefix: String::new(),
+        };
+        let mut zero = base.clone();
+        zero.start = 0;
+        let error = super::page_labels(
+            input.to_str().unwrap(),
+            &zero,
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("zero start");
+        assert!(error.0.contains("at least 1"), "{error:?}");
+
+        let mut long_prefix = base.clone();
+        long_prefix.prefix = "x".repeat(65);
+        let error = super::page_labels(
+            input.to_str().unwrap(),
+            &long_prefix,
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("long prefix");
+        assert!(error.0.contains("at most 64"), "{error:?}");
+
+        let mut non_ascii = base;
+        non_ascii.prefix = "é".to_string();
+        let error = super::page_labels(
+            input.to_str().unwrap(),
+            &non_ascii,
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("non-ASCII prefix");
+        assert!(error.0.contains("printable ASCII"), "{error:?}");
+
+        let mut encrypted = sized_pages_source(&[100.0]);
+        let trailer_at = encrypted
+            .windows(b"trailer".len())
+            .position(|window| window == b"trailer")
+            .expect("trailer");
+        let insert_at = trailer_at + b"trailer\n<<".len();
+        encrypted.splice(insert_at..insert_at, b" /Encrypt 99 0 R".iter().copied());
+        let encrypted_input = dir.join("encrypted.pdf");
+        std::fs::write(&encrypted_input, encrypted).expect("write encrypted");
+        let error = super::page_labels(
+            encrypted_input.to_str().unwrap(),
+            &super::PageLabelOptions {
+                style: super::PageLabelStyle::Decimal,
+                start: 1,
+                prefix: String::new(),
+            },
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("encrypted input");
+        assert!(error.0.contains("encrypted"), "{error:?}");
     }
 
     #[test]

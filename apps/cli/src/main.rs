@@ -117,6 +117,15 @@ mod tools {
         selis_pdf_tools::flip(path, axis, pages, output).map_err(CliError::from)
     }
 
+    pub(crate) fn page_labels(
+        path: &str,
+        options: &selis_pdf_tools::PageLabelOptions,
+        pages: Option<&str>,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::page_labels(path, options, pages, output).map_err(CliError::from)
+    }
+
     pub(crate) fn delete(path: &str, pages: &str, output: &str) -> CliResult<Verification> {
         selis_pdf_tools::delete(path, pages, output).map_err(CliError::from)
     }
@@ -349,6 +358,29 @@ enum Command {
         #[arg(long, default_value = "horizontal")]
         axis: String,
         /// The pages to flip (`0,2,5-7`; 0-based); default: all pages.
+        #[arg(long)]
+        pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set the page labels readers show for the document.
+    PageLabels {
+        /// The input PDF.
+        path: String,
+        /// Numbering style: D, r, R, a, A, or None.
+        #[arg(long, default_value = "D")]
+        style: String,
+        /// The number shown on the first selected page (1 or more).
+        #[arg(long, default_value_t = 1)]
+        start: u32,
+        /// Text placed before every generated number.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// The pages to renumber (`0,2,5-7`; 0-based); default: all pages.
         #[arg(long)]
         pages: Option<String>,
         /// The output PDF.
@@ -739,6 +771,35 @@ fn run() {
                 Some(axis) => finish(tools::flip(&path, axis, pages.as_deref(), &output), json),
                 None => Err(CliError(
                     "flip axis must be `horizontal` or `vertical`".to_string(),
+                )),
+            }
+        }
+        Command::PageLabels {
+            path,
+            style,
+            start,
+            prefix,
+            pages,
+            output,
+            json,
+        } => {
+            let style = selis_pdf_tools::PageLabelStyle::parse(&style);
+            match style {
+                Some(style) => finish(
+                    tools::page_labels(
+                        &path,
+                        &selis_pdf_tools::PageLabelOptions {
+                            style,
+                            start,
+                            prefix,
+                        },
+                        pages.as_deref(),
+                        &output,
+                    ),
+                    json,
+                ),
+                None => Err(CliError(
+                    "page label style must be D, r, R, a, A, or None".to_string(),
                 )),
             }
         }

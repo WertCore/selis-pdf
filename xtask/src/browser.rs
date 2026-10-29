@@ -1388,7 +1388,7 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * fifteen cards render, and choosing Merge opens the workspace;
+/// * sixteen cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1406,6 +1406,9 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 /// * page numbers, watermark, header/footer, and Bates legs each stamp the real
 ///   output stream, read back from the Blob, and the compress leg rewrites the
 ///   report without changing its page count;
+/// * the crop and flip legs rewrite page geometry, and the page-label leg
+///   writes an explicit `/PageLabels` tree whose prefix is visible in the real
+///   Blob;
 /// * the attachment leg downloads both embedded files with their decoded bytes
 ///   and a ZIP, without offering either file as a PDF preview;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
@@ -1423,9 +1426,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(15) {
+    if report.get("cards").and_then(Json::as_u64) != Some(16) {
         return Err(format!(
-            "the tools grid did not render fifteen cards (cards = {:?})",
+            "the tools grid did not render sixteen cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1657,6 +1660,17 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &[],
     )?;
+    let page_labels = report
+        .get("pageLabels")
+        .ok_or_else(|| "the page reported no page-label leg (pageLabels = None)".to_string())?;
+    check_stamp_leg(
+        page_labels,
+        "online page labels",
+        "report-labeled.pdf",
+        "Apply page labels",
+        3,
+        &["/PageLabels", "(A-)"],
+    )?;
     let attachments = report.get("attachments").ok_or_else(|| {
         "the page reported no attachment-extraction leg (attachments = None)".to_string()
     })?;
@@ -1685,9 +1699,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(15) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(16) {
         return Err(format!(
-            "the offline tools page did not render fifteen cards (cards = {:?})",
+            "the offline tools page did not render sixteen cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1894,6 +1908,17 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "Flip PDF",
         3,
         &[],
+    )?;
+    let offline_page_labels = offline
+        .get("pageLabels")
+        .ok_or_else(|| "the offline leg reported no page-label result".to_string())?;
+    check_stamp_leg(
+        offline_page_labels,
+        "offline page labels",
+        "report-labeled.pdf",
+        "Apply page labels",
+        3,
+        &["/PageLabels", "(A-)"],
     )?;
     let offline_attachments = offline
         .get("attachments")
@@ -5753,7 +5778,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 15,
+            "cards": 16,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5800,7 +5825,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 15,
+                "cards": 16,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -5876,6 +5901,12 @@ mod tests {
         report["compress"] = real_tools_stamp_leg("report-compressed.pdf", "Compress PDF", 3, &[]);
         report["crop"] = real_tools_stamp_leg("report-cropped.pdf", "Crop PDF", 3, &[]);
         report["flip"] = real_tools_stamp_leg("report-flipped.pdf", "Flip PDF", 3, &[]);
+        report["pageLabels"] = real_tools_stamp_leg(
+            "report-labeled.pdf",
+            "Apply page labels",
+            3,
+            &["/PageLabels", "(A-)"],
+        );
         report["attachments"] = real_tools_attachments_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
@@ -5886,6 +5917,7 @@ mod tests {
         report["offline"]["compress"] = report["compress"].clone();
         report["offline"]["crop"] = report["crop"].clone();
         report["offline"]["flip"] = report["flip"].clone();
+        report["offline"]["pageLabels"] = report["pageLabels"].clone();
         report["offline"]["attachments"] = report["attachments"].clone();
         report
     }
@@ -6095,7 +6127,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 15,
+            "cards": 16,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6187,6 +6219,10 @@ mod tests {
             ),
             ("crop", "a run that never cropped a page must not pass"),
             ("flip", "a run that never flipped a page must not pass"),
+            (
+                "pageLabels",
+                "a run that never set page labels must not pass",
+            ),
             (
                 "attachments",
                 "a run that never extracted attachments must not pass",

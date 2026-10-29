@@ -122,7 +122,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 15,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 16,
           15_000,
           label,
         );
@@ -518,7 +518,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the fifteen tool cards");
+        out.cards = await waitForCards(frame, "the sixteen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -829,6 +829,26 @@
           network: onlineFlip.network,
         };
 
+        const onlinePageLabels = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online page labels",
+          "page_labels",
+          { style: "R", start: "4", prefix: "A-", pages: "1,3" },
+          ["/PageLabels", "(A-)"],
+        );
+        out.pageLabels = {
+          fileRows: onlinePageLabels.fileRows,
+          runLabel: onlinePageLabels.runLabel,
+          noUpload: onlinePageLabels.noUpload,
+          status: onlinePageLabels.status,
+          result: onlinePageLabels.result,
+          outputs: onlinePageLabels.outputs,
+          output: onlinePageLabels.output,
+          network: onlinePageLabels.network,
+        };
+
         const onlineAttachments = await toolInFrame(
           frame,
           attachmentsFixture,
@@ -859,7 +879,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the fifteen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the sixteen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -980,6 +1000,15 @@
           "flip",
           { axis: "horizontal", pages: "1" },
           [],
+        );
+        const offlinePageLabels = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline page labels",
+          "page_labels",
+          { style: "R", start: "4", prefix: "A-", pages: "1,3" },
+          ["/PageLabels", "(A-)"],
         );
         const offlineAttachments = await toolInFrame(
           frame,
@@ -1129,6 +1158,16 @@
             outputs: offlineFlip.outputs,
             output: offlineFlip.output,
             network: offlineFlip.network,
+          },
+          pageLabels: {
+            fileRows: offlinePageLabels.fileRows,
+            runLabel: offlinePageLabels.runLabel,
+            noUpload: offlinePageLabels.noUpload,
+            status: offlinePageLabels.status,
+            result: offlinePageLabels.result,
+            outputs: offlinePageLabels.outputs,
+            output: offlinePageLabels.output,
+            network: offlinePageLabels.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

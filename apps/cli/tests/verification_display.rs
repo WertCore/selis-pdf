@@ -476,6 +476,72 @@ fn crop_and_flip_commands_produce_verified_documents() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn page_labels_command_writes_an_explicit_label_tree() {
+    let dir = temp_dir("page-labels");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("features.pdf");
+    let output = dir.join("labeled.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+
+    let out = selis()
+        .args([
+            "page-labels",
+            input.to_str().unwrap(),
+            "--style",
+            "R",
+            "--start",
+            "4",
+            "--prefix",
+            "A-",
+            "--pages",
+            "0",
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "page-labels stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_in"), 2);
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "verdict"), "ok");
+
+    let bytes = std::fs::read(&output).expect("read output");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/PageLabels"), "{text}");
+    assert!(text.contains("/S /R"), "{text}");
+    assert!(text.contains("(A-)"), "{text}");
+
+    let bad = selis()
+        .args([
+            "page-labels",
+            input.to_str().unwrap(),
+            "--style",
+            "roman",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("page label style"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A page selection shows the changed counts honestly (`pages 2->1`,
 /// outlines pruned with their pages) and asserts exactly the promises that
 /// still hold.

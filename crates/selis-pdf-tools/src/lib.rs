@@ -296,7 +296,7 @@ pub fn rotate(
     tools::rotate(path, angle, pages, output)
 }
 
-pub use tools::{CropMargins, FlipAxis};
+pub use tools::{CropMargins, FlipAxis, PageLabelOptions, PageLabelStyle};
 
 /// Crop pages by visual margins in points.
 ///
@@ -338,6 +338,27 @@ pub fn flip(
     output: &str,
 ) -> ToolResult<Verification> {
     tools::flip(path, axis, pages, output)
+}
+
+/// Set the page labels shown by readers.
+///
+/// `pages` is `None` for every page or a zero-based selection (`0,2,5-7`).
+/// Selected pages are renumbered in document order from the options' start,
+/// using its style and prefix. Unselected pages keep the label they already
+/// carried, materialised from the input's `/PageLabels` tree or its default
+/// decimal numbering. Every output page gets an explicit label entry.
+///
+/// # Errors
+///
+/// As [`merge`], plus an invalid start, prefix, or page selection, or an
+/// encrypted input.
+pub fn page_labels(
+    path: &str,
+    options: &PageLabelOptions,
+    pages: Option<&str>,
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::page_labels(path, options, pages, output)
 }
 
 /// Delete the selected pages.
