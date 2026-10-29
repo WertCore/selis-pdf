@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Eighteen browser-local operations, one page. The only fetch this module makes is
+ * Nineteen browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -107,6 +107,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Resize pages",
 		blurb: "Scale pages to A4, Letter, or a custom size in points.",
 		verb: "Resize pages",
+		multiple: false,
+	},
+	{
+		id: "nup",
+		mark: "▦",
+		title: "N-up pages",
+		blurb: "Place 2, 4, 6, or 9 pages on each sheet.",
+		verb: "Place pages",
 		multiple: false,
 	},
 	{
@@ -749,6 +757,26 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "nup") {
+			const perSheet = make("select", "control");
+			for (const [value, label] of [
+				["2", "2 pages per sheet (1 × 2)"],
+				["4", "4 pages per sheet (2 × 2)"],
+				["6", "6 pages per sheet (2 × 3)"],
+				["9", "9 pages per sheet (3 × 3)"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				perSheet.append(choice);
+			}
+			addField("per_sheet", "Pages per sheet", perSheet);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every sheet takes the first page's size and orientation. Each page keeps its aspect ratio, and annotations, links, and form fields are not painted on the sheet.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "delete") {
 			addField(
 				"pages",
@@ -1273,6 +1301,17 @@ function init(): void {
 				options.pages = shiftPageSelection(pagesText);
 			}
 			return { op: "resize", options, files: wireFiles };
+		}
+		if (tool.id === "nup") {
+			const perSheet = Number(optionValue("per_sheet"));
+			if (![2, 4, 6, 9].includes(perSheet)) {
+				throw new ToolInputError("Pages per sheet must be 2, 4, 6, or 9.");
+			}
+			return {
+				op: "nup",
+				options: { per_sheet: perSheet },
+				files: wireFiles,
+			};
 		}
 		if (tool.id === "delete") {
 			return {

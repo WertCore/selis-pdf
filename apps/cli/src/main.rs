@@ -130,6 +130,14 @@ mod tools {
         selis_pdf_tools::resize(path, *options, pages, output).map_err(CliError::from)
     }
 
+    pub(crate) fn nup(
+        path: &str,
+        options: &selis_pdf_tools::NupOptions,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::nup(path, *options, output).map_err(CliError::from)
+    }
+
     pub(crate) fn page_labels(
         path: &str,
         options: &selis_pdf_tools::PageLabelOptions,
@@ -433,6 +441,20 @@ enum Command {
         /// The pages to resize (`0,2,5-7`; 0-based); default: all pages.
         #[arg(long)]
         pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Place several pages on each sheet (N-up).
+    Nup {
+        /// The input PDF.
+        path: String,
+        /// Pages per sheet: 2, 4, 6, or 9.
+        #[arg(long, default_value_t = 2)]
+        per_sheet: usize,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
@@ -900,6 +922,15 @@ fn run() {
                 json,
             )
         }
+        Command::Nup {
+            path,
+            per_sheet,
+            output,
+            json,
+        } => finish(
+            tools::nup(&path, &selis_pdf_tools::NupOptions { per_sheet }, &output),
+            json,
+        ),
         Command::Delete {
             path,
             pages,

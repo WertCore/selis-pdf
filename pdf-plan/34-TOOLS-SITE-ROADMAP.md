@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, and resize slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, and N-up slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -63,6 +63,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Extract attachments | — | yes | **Live** | Reads `/Names/EmbeddedFiles`, decodes the filter chain, and downloads each file; two or more files also get a deterministic ZIP. Names are flattened and deduplicated, encrypted PDFs are refused, and limits are 64 files / 256 MiB each. |
 | Page labels | — | yes | **Live** | Decimal, lower/upper Roman, lower/upper letter, or prefix-only numbering with a starting number; 1-based selection renumbered in document order. Unselected pages keep the label they already carried; every output page gets an explicit `/PageLabels` entry. Encrypted inputs are refused. |
 | Resize pages | — | yes | **Live** | A4/A5/Letter/Legal/A3 presets or custom points, with fit (keeps aspect ratio, centred) or stretch. Selected pages get `/MediaBox` and `/CropBox` of exactly the target size and a normalized `/Rotate 0`; content is scaled in displayed orientation. Unselected pages are copied unchanged and annotations keep their coordinates. Encrypted inputs are refused. |
+| N-up pages | — | yes | **Live** | 2, 4, 6, or 9 pages per sheet (1×2, 2×2, 2×3, 3×3). Every sheet takes the first page's displayed size; each page keeps its aspect ratio and displayed orientation and is centred in its cell. Content is placed through Form XObjects that keep the source page's resources and clip to its visible box. Annotations, links, and form fields are not painted; outlines, page labels, attachments, and layers are reconciled to the sheets. Encrypted inputs are refused. |
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP writing is not exposed yet. |
 | Remove metadata | — | yes | **Live** | Drops the trailer/catalog `/Info` and the catalog XMP `/Metadata`; pages, annotations, forms, outlines, page labels, attachments, and tags survive. Encrypted inputs are refused. PDF/A conformance and signatures may be invalidated, and the UI says so. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
@@ -77,7 +78,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 235 665 B).
+      (currently 300 000 B brotli; baseline 241 473 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -110,7 +111,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Rotate | yes | yes | 1A.0 | Live. |
 | Crop | — | yes | 1A.1 | Live. Visual-edge margins replace `/MediaBox` and `/CropBox`; print boxes outside the new rectangle are dropped. Content is clipped by the page box, never rasterized. |
 | Resize / scale to page size | — | yes | 1A.1 | Live. A4/A5/Letter/Legal/A3 presets or custom points, fit or stretch in displayed orientation; selected pages get fresh `/MediaBox` and `/CropBox` and normalized `/Rotate 0`, unselected pages are unchanged, and annotations keep their coordinates. |
-| N-up (2/4/6/9) | — | yes | 1A.1 | Content placement; needs a page-content builder, already owned. |
+| N-up (2/4/6/9) | - | yes | 1A.1 | Live. Grid placement through Form XObjects on the first page's displayed sheet size; aspect ratio and displayed orientation are kept, and outlines, labels, attachments, and layers are reconciled. |
 | Flip horizontal/vertical | — | yes | 1A.1 | Live. Display-relative content-transform wrapper; page boxes, rotation, annotations, and form fields are unchanged and are not mirrored. Pixel comparison waits for the raster path. |
 | Alternate / mix pages | — | yes | 1A.1 | Live. Round-robin interleave; page labels are expanded per output page when any input has them. |
 | Extract pages | yes | yes | 1A.1 | Live. One PDF, selected pages in document order. |
@@ -248,15 +249,18 @@ pages to the Organize pages workspace; duplicate and blank legs run online and o
 **Shipped 2026-10-28:** page numbers, centered text watermark, headers/footers with
 `{page}`/`{pages}` placeholders, Bates numbering, lossless compression, attachment extraction,
 round-robin page mixing, visual-edge cropping, display-relative flipping, page labels, metadata
-removal, and page resizing. All twelve operations are exposed through the CLI and the browser and
-use the verified full-rewrite path (extraction is read-only). The browser check now drives eighteen
+removal, page resizing, and N-up placement. All thirteen operations are exposed through the CLI and the browser and
+use the verified full-rewrite path (extraction is read-only). The browser check now drives nineteen
 cards online and after an offline reload, reads the stamped marker strings, attachment bytes, the
-written `/PageLabels` tree, the A4 `/MediaBox` from the resize output, and the absence of `/Info`,
+written `/PageLabels` tree, the A4 `/MediaBox` from the resize output, the Form XObjects from the
+N-up output, and the absence of `/Info`,
 checks the ZIP local header, measures the compressed output's page count and size, and interleaves
 the three-page report with the one-page fixture to require Pages `4 → 4`. Crop, flip, page labels,
 resize, and metadata removal run on the three-page report and require Pages `3 → 3`; the label leg
 requires `report-labeled.pdf` with `/PageLabels` and the `(A-)` prefix visible in the downloaded
-bytes, the resize leg requires `report-resized.pdf` with `595.28`/`841.89` in the bytes, and the
+bytes, the resize leg requires `report-resized.pdf` with `595.28`/`841.89` in the bytes, the N-up
+leg requires `report-n-up.pdf` with Pages `3 → 2` and `/Subtype /Form` plus `/Type /XObject` in the
+bytes, and the
 metadata leg requires `metadata-metadata-removed.pdf` whose bytes contain neither `/Info` nor the
 removed title, author, or producer. Overlay placement follows inherited `/MediaBox`, `/Resources`,
 and `/Rotate` values; compression preserves trailer-level `/Info`; attachment names are flattened
@@ -268,10 +272,13 @@ and leaves annotations and form fields unmirrored, as documented. Page labelling
 tree so each output page has an explicit entry, advancing the selected pages' numbers without
 letting a stale range leak across unselected pages. Resizing wraps painted content in a
 display-relative scale/centre matrix, normalizes rotation on selected pages, and copies unselected
-pages untouched. Metadata removal is the same rewrite with `carry_metadata: false`: no `/Info` and
+pages untouched. N-up turns each page's copied content stream into a Form XObject with the page's
+own resources and a rotation-baked matrix, then paints those forms into grid cells on a sheet that
+takes the first page's displayed size; page-label keys are remapped many-to-one and deduplicated.
+Metadata removal is the same rewrite with `carry_metadata: false`: no `/Info` and
 no XMP packet are written, while every visible and structural feature still comes through.
 
-**Remaining in 1A.1:** N-up, image/tiled watermark, repair, attachment add/remove,
+**Remaining in 1A.1:** image/tiled watermark, repair, attachment add/remove,
 CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
 incremental writer for page edits remains deferred; these page operations use the verified
 full-rewrite path.
@@ -325,8 +332,8 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The current eighteen tools are
-   object-graph operations; keeping the renderer out is why the chunk is 236 KB brotli instead of
+3. **No page renderer in the tools chunk unless a tool needs it.** The current nineteen tools are
+   object-graph operations; keeping the renderer out is why the chunk is 235 KB brotli instead of
    the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
    feature. Native and viewer builds enable it; the object-graph tools disable it so `getrandom`'s
@@ -344,18 +351,19 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Eighteen live operations with 1-based page input.
+- [x] Nineteen live operations with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all eighteen cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all nineteen cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
-      bytes, proves the A4 page box landed in the resize output, proves removed metadata is absent
+      bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
+      Form XObjects, proves removed metadata is absent
       from the Blob, and checks extracted attachment bytes plus the ZIP header.
-      `xtask/browser/tools-page` passed in Edge with 18 cards online and offline, 0 foreign
+      `xtask/browser/tools-page` passed in Edge with 19 cards online and offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.

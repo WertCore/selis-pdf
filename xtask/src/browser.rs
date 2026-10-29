@@ -917,6 +917,27 @@ fn check_stamp_leg(
     expected_pages: u64,
     needles: &[&str],
 ) -> Result<(), String> {
+    check_page_count_leg(
+        leg,
+        label,
+        expected_name,
+        expected_run_label,
+        expected_pages,
+        expected_pages,
+        needles,
+    )
+}
+
+/// The same proof for a leg that deliberately changes the page count (N-up).
+fn check_page_count_leg(
+    leg: &Json,
+    label: &str,
+    expected_name: &str,
+    expected_run_label: &str,
+    expected_in: u64,
+    expected_out: u64,
+    needles: &[&str],
+) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
             "the {label} leg did not show one selected PDF (fileRows = {:?})",
@@ -971,7 +992,7 @@ fn check_stamp_leg(
             .and_then(Json::as_str)
             .unwrap_or("")
     };
-    let expected_pages_row = format!("{expected_pages} \u{2192} {expected_pages}");
+    let expected_pages_row = format!("{expected_in} \u{2192} {expected_out}");
     if row_value("Pages") != expected_pages_row {
         return Err(format!(
             "the {label} run reported Pages {:?}, expected {expected_pages_row:?}",
@@ -1008,9 +1029,9 @@ fn check_stamp_leg(
             output.get("name")
         ));
     }
-    if output.get("pages").and_then(Json::as_u64) != Some(expected_pages) {
+    if output.get("pages").and_then(Json::as_u64) != Some(expected_out) {
         return Err(format!(
-            "the {label} output reported {:?} pages, expected {expected_pages}",
+            "the {label} output reported {:?} pages, expected {expected_out}",
             output.get("pages")
         ));
     }
@@ -1036,7 +1057,7 @@ fn check_stamp_leg(
     let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
     if bytes <= 300 {
         return Err(format!(
-            "the {label} PDF is only {bytes} bytes; a {expected_pages}-page result should be larger"
+            "the {label} PDF is only {bytes} bytes; a {expected_out}-page result should be larger"
         ));
     }
     let top_output = leg
@@ -1436,7 +1457,7 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * eighteen cards render, and choosing Merge opens the workspace;
+/// * nineteen cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1454,9 +1475,10 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 /// * page numbers, watermark, header/footer, and Bates legs each stamp the real
 ///   output stream, read back from the Blob, and the compress leg rewrites the
 ///   report without changing its page count;
-/// * the crop and flip legs rewrite page geometry, the page-label leg
-///   writes an explicit `/PageLabels` tree whose prefix is visible in the real
-///   Blob, the resize leg writes the A4 `/MediaBox` into the bytes, and the
+/// * the crop, flip, resize, and N-up legs rewrite page layout, the page-label
+///   leg writes an explicit `/PageLabels` tree whose prefix is visible in the
+///   real Blob, the resize leg writes the A4 `/MediaBox` into the bytes, the
+///   N-up leg places three pages on two sheets through Form XObjects, and the
 ///   metadata-strip leg proves `/Info` and its values are absent from the bytes;
 /// * the attachment leg downloads both embedded files with their decoded bytes
 ///   and a ZIP, without offering either file as a PDF preview;
@@ -1475,9 +1497,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(18) {
+    if report.get("cards").and_then(Json::as_u64) != Some(19) {
         return Err(format!(
-            "the tools grid did not render eighteen cards (cards = {:?})",
+            "the tools grid did not render nineteen cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1731,6 +1753,18 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &["595.28", "841.89"],
     )?;
+    let nup = report
+        .get("nup")
+        .ok_or_else(|| "the page reported no N-up leg (nup = None)".to_string())?;
+    check_page_count_leg(
+        nup,
+        "online N-up",
+        "report-n-up.pdf",
+        "Place pages",
+        3,
+        2,
+        &["/Subtype /Form", "/Type /XObject"],
+    )?;
     let attachments = report.get("attachments").ok_or_else(|| {
         "the page reported no attachment-extraction leg (attachments = None)".to_string()
     })?;
@@ -1763,9 +1797,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(18) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(19) {
         return Err(format!(
-            "the offline tools page did not render eighteen cards (cards = {:?})",
+            "the offline tools page did not render nineteen cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1994,6 +2028,18 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "Resize pages",
         3,
         &["595.28", "841.89"],
+    )?;
+    let offline_nup = offline
+        .get("nup")
+        .ok_or_else(|| "the offline leg reported no N-up result".to_string())?;
+    check_page_count_leg(
+        offline_nup,
+        "offline N-up",
+        "report-n-up.pdf",
+        "Place pages",
+        3,
+        2,
+        &["/Subtype /Form", "/Type /XObject"],
     )?;
     let offline_attachments = offline
         .get("attachments")
@@ -5696,11 +5742,22 @@ mod tests {
 
     /// A stamp or compression leg: one PDF in, one PDF out, same page count.
     fn real_tools_stamp_leg(name: &str, run_label: &str, pages: u64, needles: &[&str]) -> Json {
+        real_tools_count_leg(name, run_label, pages, pages, needles)
+    }
+
+    /// The same shape for a leg that changes the page count (N-up).
+    fn real_tools_count_leg(
+        name: &str,
+        run_label: &str,
+        pages_in: u64,
+        pages_out: u64,
+        needles: &[&str],
+    ) -> Json {
         let found: Vec<bool> = needles.iter().map(|_| true).collect();
         let output = json!({
             "kind": "pdf",
             "name": name,
-            "pages": pages,
+            "pages": pages_out,
             "declaredBytes": 900,
             "bytes": 900,
             "blob": true,
@@ -5720,7 +5777,7 @@ mod tests {
                 "title": name,
                 "meta": "1 file \u{00b7} 900 B \u{00b7} verified locally",
                 "rows": [
-                    { "label": "Pages", "value": format!("{pages} \u{2192} {pages}") },
+                    { "label": "Pages", "value": format!("{pages_in} \u{2192} {pages_out}") },
                     { "label": "Annotations", "value": "0 \u{2192} 0" },
                     { "label": "Verification", "value": "ok" },
                 ],
@@ -5908,7 +5965,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 18,
+            "cards": 19,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5955,7 +6012,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 18,
+                "cards": 19,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -6043,6 +6100,13 @@ mod tests {
             3,
             &["595.28", "841.89"],
         );
+        report["nup"] = real_tools_count_leg(
+            "report-n-up.pdf",
+            "Place pages",
+            3,
+            2,
+            &["/Subtype /Form", "/Type /XObject"],
+        );
         report["attachments"] = real_tools_attachments_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
 
@@ -6056,6 +6120,7 @@ mod tests {
         report["offline"]["flip"] = report["flip"].clone();
         report["offline"]["pageLabels"] = report["pageLabels"].clone();
         report["offline"]["resize"] = report["resize"].clone();
+        report["offline"]["nup"] = report["nup"].clone();
         report["offline"]["attachments"] = report["attachments"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report
@@ -6266,7 +6331,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 18,
+            "cards": 19,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6363,6 +6428,7 @@ mod tests {
                 "a run that never set page labels must not pass",
             ),
             ("resize", "a run that never resized a page must not pass"),
+            ("nup", "a run that never placed pages N-up must not pass"),
             (
                 "attachments",
                 "a run that never extracted attachments must not pass",
@@ -6465,6 +6531,25 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_resize).is_err(),
             "an online-only resize must not pass the offline gate"
+        );
+
+        let mut nup_no_form = report.clone();
+        *nup_no_form.pointer_mut("/nup/outputs/0/found/0").unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&nup_no_form).is_err(),
+            "an N-up output without a Form XObject must not pass"
+        );
+
+        let mut no_offline_nup = report.clone();
+        no_offline_nup
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("nup");
+        assert!(
+            verdict_tools_page(&no_offline_nup).is_err(),
+            "an online-only N-up run must not pass the offline gate"
         );
 
         let mut metadata_left_behind = report.clone();

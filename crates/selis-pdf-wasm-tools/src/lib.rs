@@ -83,6 +83,7 @@ enum Op {
     PageLabels,
     StripMetadata,
     Resize,
+    Nup,
 }
 
 impl Op {
@@ -106,6 +107,7 @@ impl Op {
             16 => Some(Self::PageLabels),
             17 => Some(Self::StripMetadata),
             18 => Some(Self::Resize),
+            19 => Some(Self::Nup),
             _ => None,
         }
     }
@@ -139,10 +141,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
-/// 16 strip metadata, 17 resize.
+/// 16 strip metadata, 17 resize, 18 N-up.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b11_1111_1111_1111_1111
+    0b111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -588,6 +590,22 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Nup => {
+            let per_sheet = option_u64(&options, "per_sheet")
+                .ok_or_else(|| ToolError("N-up needs a per_sheet".to_string()))?;
+            let per_sheet = usize::try_from(per_sheet)
+                .map_err(|_| ToolError("N-up per_sheet is out of range".to_string()))?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-n-up.pdf"),
+                verification: selis_pdf_tools::nup(
+                    "in/0",
+                    selis_pdf_tools::NupOptions { per_sheet },
+                    "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -975,7 +993,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b11_1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1042,7 +1060,7 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(19, b"", &[("doc.pdf", &pdf)]));
+        let response = run_request(&request(20, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1071,6 +1089,26 @@ mod tests {
 
         let response = run_request(&request(18, br#"{"width":300}"#, &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("height"));
+    }
+
+    #[test]
+    fn nup_operation_is_dispatched() {
+        let pdf = content_pdf(3);
+        let response = run_request(&request(19, br#"{"per_sheet":2}"#, &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "N-up failed: {message}");
+        assert_eq!(message["pages_in"], 3);
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-n-up.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(
+            text.contains("/Subtype /Form"),
+            "the placed pages are forms: {text}"
+        );
+
+        let response = run_request(&request(19, br#"{"per_sheet":3}"#, &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("2, 4, 6, or 9"));
     }
 
     #[test]
@@ -1327,6 +1365,50 @@ mod tests {
             objects.push(format!(
                 "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj\n",
                 index.saturating_add(3)
+            ));
+        }
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    fn content_pdf(pages: usize) -> Vec<u8> {
+        let kids = (0..pages)
+            .map(|index| format!("{} 0 R", index.saturating_add(3)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut objects = vec![
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_string(),
+            format!("2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {pages} >>\nendobj\n"),
+        ];
+        for index in 0..pages {
+            objects.push(format!(
+                "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents {} 0 R >>\nendobj\n",
+                index.saturating_add(3),
+                index.saturating_add(3).saturating_add(pages),
+            ));
+        }
+        let stream = "q 1 0 0 1 0 0 cm Q";
+        for index in 0..pages {
+            objects.push(format!(
+                "{} 0 obj\n<< /Length {} >>\nstream\n{stream}\nendstream\nendobj\n",
+                index.saturating_add(3).saturating_add(pages),
+                stream.len()
             ));
         }
         let mut out = b"%PDF-1.4\n".to_vec();

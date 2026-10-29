@@ -1454,6 +1454,10 @@ fn reconcile_single_input_mapped(
 /// starting at key `k` covers `[k, next key)`; it survives anchored at the
 /// first kept page in that span, under that page's new index. Labels whose
 /// span holds no kept page are dropped.
+///
+/// A many-to-one plan (N-up) can map several source pages to one output page;
+/// only the first such label can apply there, so later duplicates are skipped
+/// rather than emitted as extra entries for the same key.
 fn remap_page_label_keys(
     pairs: &[(i64, Obj)],
     new_idx_by_old: &std::collections::HashMap<usize, usize>,
@@ -1476,7 +1480,10 @@ fn remap_page_label_keys(
         while old <= end {
             let idx = usize::try_from(old).unwrap_or(usize::MAX);
             if let Some(&new_idx) = new_idx_by_old.get(&idx) {
-                out.push((i64::try_from(new_idx).unwrap_or(i64::MAX), value.clone()));
+                let new_key = i64::try_from(new_idx).unwrap_or(i64::MAX);
+                if out.last().map(|(key, _)| *key) != Some(new_key) {
+                    out.push((new_key, value.clone()));
+                }
                 break;
             }
             old = old.saturating_add(1);
@@ -3458,6 +3465,22 @@ pub(crate) fn page_refs_of(
     walk_pages(src, doc, pages_ref, budget, g, 0)
 }
 
+/// Refuse an encrypted input before any object copying: the rewrite copies
+/// stream bytes verbatim, so an encrypted file would come out with unreadable
+/// content and no `/Encrypt` entry.
+fn refuse_encrypted_input(path: &str, doc: &selis_pdf_cos::Doc) -> Result<(), CliError> {
+    let encrypted = doc
+        .revisions()
+        .last()
+        .is_some_and(|revision| revision.encrypt.is_some());
+    if encrypted {
+        return Err(CliError(format!(
+            "{path}: document is encrypted; remove the password with unlock first"
+        )));
+    }
+    Ok(())
+}
+
 /// Resolve an object by its revision xref entry (handles compressed objects).
 fn resolve_ref_obj(
     src: &[u8],
@@ -4719,6 +4742,7 @@ pub(crate) fn resize(
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    refuse_encrypted_input(path, &doc)?;
     let page_refs =
         page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
     let selected: std::collections::HashSet<usize> = match pages {
@@ -4808,6 +4832,271 @@ pub(crate) fn resize(
         selected.len(),
         trim_number(options.width),
         trim_number(options.height)
+    );
+    verification.emit_line();
+    Ok(verification)
+}
+
+/// The sheet grid for [`nup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NupOptions {
+    /// Pages placed on each output sheet: 2, 4, 6, or 9.
+    pub per_sheet: usize,
+}
+
+impl NupOptions {
+    /// `(columns, rows)` for the chosen page count, or a typed refusal.
+    fn grid(self) -> Result<(usize, usize), String> {
+        match self.per_sheet {
+            2 => Ok((1, 2)),
+            4 => Ok((2, 2)),
+            6 => Ok((2, 3)),
+            9 => Ok((3, 3)),
+            other => Err(format!(
+                "N-up needs 2, 4, 6, or 9 pages per sheet (got {other})"
+            )),
+        }
+    }
+}
+
+/// The number of sheets a page count needs at `per_sheet` pages each.
+fn nup_sheet_count(page_count: usize, per_sheet: usize) -> usize {
+    if per_sheet == 0 {
+        return 0;
+    }
+    page_count.div_ceil(per_sheet)
+}
+
+/// The display-space matrix that centres one displayed page in a grid cell.
+///
+/// Slots fill left to right, then top to bottom. The page keeps its aspect
+/// ratio, so a cell wider or taller than the page leaves a gap rather than
+/// distorting the content.
+fn nup_cell_matrix(
+    display: (f64, f64),
+    sheet: (f64, f64),
+    grid: (usize, usize),
+    slot: usize,
+) -> [f64; 6] {
+    let (display_width, display_height) = display;
+    let (columns, rows) = grid;
+    let cell_width = sheet.0 / columns as f64;
+    let cell_height = sheet.1 / rows as f64;
+    let scale = (cell_width / display_width).min(cell_height / display_height);
+    let column = slot % columns;
+    let row = slot.div_euclid(columns);
+    let cell_x = column as f64 * cell_width;
+    let cell_y = sheet.1 - (row + 1) as f64 * cell_height;
+    [
+        scale,
+        0.0,
+        0.0,
+        scale,
+        cell_x + (cell_width - display_width * scale) / 2.0,
+        cell_y + (cell_height - display_height * scale) / 2.0,
+    ]
+}
+
+/// Turn a copied page-content stream into a Form XObject.
+///
+/// The form keeps the page's own resource dictionary and clips to the visible
+/// page box, so painted content outside the page disappears exactly as it does
+/// on the source page. `matrix` maps the page's user space into the displayed
+/// frame with the origin at `(0, 0)`, which bakes the source `/Rotate` in.
+fn make_page_form(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    content: Ref,
+    resources: Option<Ref>,
+    bbox: [f64; 4],
+    matrix: [f64; 6],
+) -> Result<(), String> {
+    let Some((_, Obj::Stream { dict, .. })) = out
+        .objects_mut()
+        .iter_mut()
+        .find(|(num, _)| *num == content.num)
+    else {
+        return Err("copied page content disappeared".to_string());
+    };
+    dict.retain(|(key, _)| {
+        !matches!(
+            key.as_slice(),
+            b"Type" | b"Subtype" | b"BBox" | b"Matrix" | b"Resources"
+        )
+    });
+    let key = |name: &[u8]| selis_bytes::Bytes::copy_from_slice(name);
+    dict.push((key(b"Type"), Obj::Name(key(b"XObject"))));
+    dict.push((key(b"Subtype"), Obj::Name(key(b"Form"))));
+    dict.push((key(b"BBox"), box_array(bbox)));
+    dict.push((
+        key(b"Matrix"),
+        Obj::Array(matrix.iter().copied().map(real_object).collect()),
+    ));
+    // Never let the form inherit the sheet's resources: the page's own
+    // dictionary is what its content names were compiled against.
+    dict.push((
+        key(b"Resources"),
+        resources.map_or_else(|| Obj::Dict(Vec::new()), Obj::Ref),
+    ));
+    Ok(())
+}
+
+/// Place several pages on each sheet.
+///
+/// This is a print layout, not a page edit: `per_sheet` pages are scaled to
+/// fit a grid of cells on one sheet, keeping their aspect ratio and their
+/// displayed orientation. Each sheet takes the displayed size of the first
+/// page, so a normal document keeps its page size while gaining fewer pages.
+/// Painted content is copied through Form XObjects that keep the source page's
+/// resources and clip to its visible box; annotations, links, and form fields
+/// are not painted on the sheet (their document-level structures still carry
+/// through). Outlines, page labels, attachments, and optional-content groups
+/// are reconciled to the sheets.
+///
+/// # Errors
+///
+/// As [`merge`], plus a `per_sheet` that is not 2, 4, 6, or 9, a page with no
+/// displayed area, a rotation that is not a multiple of 90 degrees, or an
+/// encrypted input (the rewrite refuses it upstream).
+pub(crate) fn nup(path: &str, options: NupOptions, output: &str) -> CliResult<Verification> {
+    let grid = options
+        .grid()
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    refuse_encrypted_input(path, &doc)?;
+    let sheets = nup_sheet_count(page_refs.len(), options.per_sheet);
+    if sheets == 0 {
+        return Err(CliError(format!("{path}: the document has no pages")));
+    }
+    // Every sheet uses the first page's displayed size, so the output keeps the
+    // document's own paper size instead of inventing one.
+    let first_boxes = page_boxes(&src, &doc, page_refs[0], &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: page 1: {e}")))?;
+    let (_, _, _, first_rotation, _) = page_info(&src, &doc, page_refs[0], &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: page 1: {e}")))?;
+    let first_rotation =
+        quarter_turn(first_rotation).map_err(|e| CliError(format!("{path}: page 1: {e}")))?;
+    let sheet = display_extent(first_boxes.visible(), first_rotation);
+    if sheet.0 <= 0.0 || sheet.1 <= 0.0 {
+        return Err(CliError(format!(
+            "{path}: page 1 has no displayed area to lay out"
+        )));
+    }
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut kept: Vec<KeptPage> = Vec::new();
+    for (sheet_index, chunk) in page_refs.chunks(options.per_sheet).enumerate() {
+        let mut content = String::from("q\n");
+        let mut placed: Vec<(usize, Vec<Ref>)> = Vec::new();
+        for (slot, page_ref) in chunk.iter().enumerate() {
+            let boxes = page_boxes(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", sheet_index + 1)))?;
+            let (_, content_refs, resources, rotation, _) =
+                page_info(&src, &doc, *page_ref, &budget, &mut g)
+                    .map_err(|e| CliError(format!("{path}: page {}: {e}", sheet_index + 1)))?;
+            let rotation = quarter_turn(rotation)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", sheet_index + 1)))?;
+            let visible = boxes.visible();
+            let display = display_extent(visible, rotation);
+            if display.0 <= 0.0 || display.1 <= 0.0 {
+                return Err(CliError(format!(
+                    "{path}: page {} has no displayed area",
+                    sheet_index * options.per_sheet + slot + 1
+                )));
+            }
+            let (objects, remap) = selis_pdf_cos::copy::collect_objects(
+                &src,
+                &content_refs,
+                out.next_num_mut(),
+                &budget,
+                &mut g,
+            )
+            .map_err(|e| CliError(format!("{path}: copy page content: {e}")))?;
+            for (num, obj) in objects {
+                out.add_object(num, obj);
+            }
+            let new_contents: Vec<Ref> = content_refs
+                .iter()
+                .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
+                .collect();
+            let new_resources = materialize_resources(&mut out, &src, resources, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page resources: {e}")))?;
+            // Bakes `/Rotate` into the form: the sheet itself stays upright.
+            let form_matrix = resize_matrix(visible, rotation, display.0, display.1, false);
+            for content_ref in &new_contents {
+                make_page_form(&mut out, *content_ref, new_resources, visible, form_matrix)
+                    .map_err(|e| CliError(format!("{path}: page form: {e}")))?;
+            }
+            let cell = nup_cell_matrix(display, sheet, grid, slot);
+            content.push_str(&format!(
+                "{} {} {} {} {} {} cm\n",
+                trim_number(cell[0]),
+                trim_number(cell[1]),
+                trim_number(cell[2]),
+                trim_number(cell[3]),
+                trim_number(cell[4]),
+                trim_number(cell[5]),
+            ));
+            for stream in 0..new_contents.len() {
+                content.push_str(&format!("q /P{slot}_{stream} Do Q\n"));
+            }
+            placed.push((slot, new_contents));
+        }
+        content.push_str("Q\n");
+        let content_ref = add_content_stream(&mut out, content.as_bytes());
+        let mut xobjects: Vec<(selis_bytes::Bytes, Obj)> = Vec::new();
+        for (slot, forms) in &placed {
+            for (stream, form) in forms.iter().enumerate() {
+                xobjects.push((
+                    selis_bytes::Bytes::copy_from_slice(format!("P{slot}_{stream}").as_bytes()),
+                    Obj::Ref(*form),
+                ));
+            }
+        }
+        let resources = Obj::Dict(vec![(
+            selis_bytes::Bytes::copy_from_slice(b"XObject"),
+            Obj::Dict(xobjects),
+        )]);
+        let resources_num = out.allocate();
+        out.add_object(resources_num, resources);
+        let sheet_ref = out.add_page_with(
+            sheet.0,
+            sheet.1,
+            &[content_ref],
+            Some(Ref::new(resources_num, 0)),
+        );
+        let first_index = sheet_index * options.per_sheet;
+        for (slot, page_ref) in chunk.iter().enumerate() {
+            kept.push((first_index + slot, page_ref.num, sheet_ref));
+        }
+    }
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(sheets).unwrap_or(u64::MAX)),
+        Some(0),
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    eprintln!(
+        "placed {} page(s) on {} sheet(s) ({}-up) -> {output}",
+        page_refs.len(),
+        sheets,
+        options.per_sheet
     );
     verification.emit_line();
     Ok(verification)
@@ -7462,6 +7751,101 @@ mod tests {
     }
 
     #[test]
+    fn nup_cells_centre_pages_and_fill_left_to_right() {
+        // 2-up: one column, two rows on a portrait sheet.
+        assert_eq!(
+            super::nup_cell_matrix((100.0, 100.0), (200.0, 400.0), (1, 2), 0),
+            [2.0, 0.0, 0.0, 2.0, 0.0, 200.0]
+        );
+        assert_eq!(
+            super::nup_cell_matrix((100.0, 100.0), (200.0, 400.0), (1, 2), 1),
+            [2.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+        );
+        // 4-up: the fourth slot is bottom-right.
+        assert_eq!(
+            super::nup_cell_matrix((100.0, 100.0), (200.0, 200.0), (2, 2), 0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 100.0]
+        );
+        assert_eq!(
+            super::nup_cell_matrix((100.0, 100.0), (200.0, 200.0), (2, 2), 3),
+            [1.0, 0.0, 0.0, 1.0, 100.0, 0.0]
+        );
+        // The aspect ratio is kept, so a short page is centred in its cell.
+        assert_eq!(
+            super::nup_cell_matrix((100.0, 50.0), (100.0, 100.0), (1, 1), 0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 25.0]
+        );
+        assert_eq!(super::nup_sheet_count(3, 2), 2);
+        assert_eq!(super::nup_sheet_count(4, 4), 1);
+        assert_eq!(super::nup_sheet_count(10, 9), 2);
+    }
+
+    #[test]
+    fn nup_writes_forms_on_compacted_sheets() {
+        let dir = temp_dir("nup");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[
+                ([0.0, 0.0, 200.0, 200.0], None, 0),
+                ([0.0, 0.0, 200.0, 200.0], None, 90),
+                ([0.0, 0.0, 200.0, 200.0], None, 0),
+            ]),
+        )
+        .expect("write input");
+
+        let verification = super::nup(
+            input.to_str().unwrap(),
+            super::NupOptions { per_sheet: 2 },
+            output.to_str().unwrap(),
+        )
+        .expect("n-up");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_in, Some(3));
+        assert_eq!(verification.pages_out, 2);
+
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0].media, [0.0, 0.0, 200.0, 200.0]);
+        assert_eq!(boxes[1].media, [0.0, 0.0, 200.0, 200.0]);
+
+        let text =
+            String::from_utf8_lossy(&std::fs::read(&output).expect("read output")).into_owned();
+        assert!(
+            text.contains("/Subtype /Form"),
+            "each placed page becomes a form: {text}"
+        );
+        assert!(
+            text.contains("/Type /XObject"),
+            "the copied content streams are XObjects: {text}"
+        );
+        assert!(
+            text.contains("/P0_0 Do") && text.contains("/P1_0 Do"),
+            "the sheet paints both placed pages: {text}"
+        );
+        // The rotated page's form bakes the quarter turn into its matrix.
+        assert!(
+            text.contains("/Matrix [0.000 -1.000 1.000 0.000 0.000 200.000]"),
+            "the 90-degree page carries its own display matrix: {text}"
+        );
+        // 2-up halves each page into a half-height cell; the first page sits in
+        // the top cell.
+        assert!(
+            text.contains("0.5 0 0 0.5 50 100 cm"),
+            "the top cell is placed by the sheet matrix: {text}"
+        );
+
+        let error = super::nup(
+            input.to_str().unwrap(),
+            super::NupOptions { per_sheet: 3 },
+            output.to_str().unwrap(),
+        )
+        .expect_err("3-up is not offered");
+        assert!(error.0.contains("2, 4, 6, or 9"), "{error:?}");
+    }
+
+    #[test]
     fn resize_rejects_invalid_sizes() {
         let dir = temp_dir("resize-invalid");
         let input = dir.join("in.pdf");
@@ -7481,6 +7865,43 @@ mod tests {
             .expect_err("invalid target");
             assert!(error.0.contains("page"), "{error:?}");
         }
+    }
+
+    #[test]
+    fn resize_and_nup_refuse_encrypted_inputs() {
+        let dir = temp_dir("encrypted-layout");
+        let output = dir.join("out.pdf");
+        let mut encrypted = sized_pages_source(&[100.0]);
+        let trailer_at = encrypted
+            .windows(b"trailer".len())
+            .position(|window| window == b"trailer")
+            .expect("trailer");
+        let insert_at = trailer_at + b"trailer\n<<".len();
+        encrypted.splice(insert_at..insert_at, b" /Encrypt 99 0 R".iter().copied());
+        let input = dir.join("encrypted.pdf");
+        std::fs::write(&input, encrypted).expect("write encrypted");
+
+        let error = super::resize(
+            input.to_str().unwrap(),
+            super::ResizeOptions {
+                width: 300.0,
+                height: 300.0,
+                fit: true,
+            },
+            None,
+            output.to_str().unwrap(),
+        )
+        .expect_err("encrypted resize input");
+        assert!(error.0.contains("encrypted"), "{error:?}");
+
+        let error = super::nup(
+            input.to_str().unwrap(),
+            super::NupOptions { per_sheet: 2 },
+            output.to_str().unwrap(),
+        )
+        .expect_err("encrypted N-up input");
+        assert!(error.0.contains("encrypted"), "{error:?}");
+        assert!(!output.exists(), "a refused run must write no output");
     }
 
     #[test]

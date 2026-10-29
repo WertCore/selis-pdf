@@ -635,6 +635,71 @@ fn resize_command_scales_to_a_preset_and_keeps_the_pages() {
 }
 
 #[test]
+fn nup_command_places_pages_on_one_sheet() {
+    let dir = temp_dir("nup");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("features.pdf");
+    let output = dir.join("two-up.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+
+    let out = selis()
+        .args([
+            "nup",
+            input.to_str().unwrap(),
+            "--per-sheet",
+            "2",
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "nup stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_in"), 2);
+    assert_eq!(jget(v, "pages_out"), 1);
+    assert_eq!(jget(v, "verdict"), "ok");
+
+    let bytes = std::fs::read(&output).expect("read output");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("/Subtype /Form"),
+        "each source page is placed through a form: {text}"
+    );
+    assert!(
+        text.contains("/XObject"),
+        "the sheet carries an XObject resource dictionary: {text}"
+    );
+
+    let bad = selis()
+        .args([
+            "nup",
+            input.to_str().unwrap(),
+            "--per-sheet",
+            "3",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("2, 4, 6, or 9"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn strip_metadata_command_removes_info_and_keeps_the_pages() {
     let dir = temp_dir("strip-metadata");
     std::fs::create_dir_all(&dir).expect("mkdir");

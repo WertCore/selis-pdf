@@ -26,7 +26,7 @@
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
       //      compress a PDF, crop and flip pages, set page labels, resize pages,
-      //      extract embedded attachments, and remove metadata;
+      //      place them N-up, extract embedded attachments, and remove metadata;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 18,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 19,
           15_000,
           label,
         );
@@ -527,7 +527,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the eighteen tool cards");
+        out.cards = await waitForCards(frame, "the nineteen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -882,6 +882,26 @@
           network: onlineResize.network,
         };
 
+        const onlineNup = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online N-up",
+          "nup",
+          { per_sheet: "2" },
+          ["/Subtype /Form", "/Type /XObject"],
+        );
+        out.nup = {
+          fileRows: onlineNup.fileRows,
+          runLabel: onlineNup.runLabel,
+          noUpload: onlineNup.noUpload,
+          status: onlineNup.status,
+          result: onlineNup.result,
+          outputs: onlineNup.outputs,
+          output: onlineNup.output,
+          network: onlineNup.network,
+        };
+
         const onlineStripMetadata = await toolInFrame(
           frame,
           metadataFixture,
@@ -933,7 +953,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the eighteen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the nineteen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1072,6 +1092,15 @@
           "resize",
           { preset: "a4", size_mode: "fit", pages: "1" },
           ["595.28", "841.89"],
+        );
+        const offlineNup = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline N-up",
+          "nup",
+          { per_sheet: "2" },
+          ["/Subtype /Form", "/Type /XObject"],
         );
         const offlineAttachments = await toolInFrame(
           frame,
@@ -1251,6 +1280,16 @@
             outputs: offlineResize.outputs,
             output: offlineResize.output,
             network: offlineResize.network,
+          },
+          nup: {
+            fileRows: offlineNup.fileRows,
+            runLabel: offlineNup.runLabel,
+            noUpload: offlineNup.noUpload,
+            status: offlineNup.status,
+            result: offlineNup.result,
+            outputs: offlineNup.outputs,
+            output: offlineNup.output,
+            network: offlineNup.network,
           },
           stripMetadata: {
             fileRows: offlineStripMetadata.fileRows,

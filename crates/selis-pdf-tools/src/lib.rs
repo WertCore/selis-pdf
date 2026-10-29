@@ -311,7 +311,9 @@ pub fn rotate(
     tools::rotate(path, angle, pages, output)
 }
 
-pub use tools::{CropMargins, FlipAxis, PageLabelOptions, PageLabelStyle, ResizeOptions};
+pub use tools::{
+    CropMargins, FlipAxis, NupOptions, PageLabelOptions, PageLabelStyle, ResizeOptions,
+};
 
 /// Crop pages by visual margins in points.
 ///
@@ -375,6 +377,24 @@ pub fn resize(
     output: &str,
 ) -> ToolResult<Verification> {
     tools::resize(path, options, pages, output)
+}
+
+/// Place several pages on each sheet (N-up).
+///
+/// `options.per_sheet` pages are scaled into a grid of cells on one sheet:
+/// 2 (1 x 2), 4 (2 x 2), 6 (2 x 3), or 9 (3 x 3). Every sheet takes the
+/// first page's displayed size, and each page keeps its aspect ratio and its
+/// displayed orientation. Content is placed through Form XObjects, so the
+/// source pages' own resources are preserved, and annotations, links, and
+/// form fields are not painted on the sheets.
+///
+/// # Errors
+///
+/// As [`merge`], plus a `per_sheet` that is not 2, 4, 6, or 9, a page with no
+/// displayed area, a rotation that is not a multiple of 90 degrees, or an
+/// encrypted input.
+pub fn nup(path: &str, options: NupOptions, output: &str) -> ToolResult<Verification> {
+    tools::nup(path, options, output)
 }
 
 /// Set the page labels shown by readers.

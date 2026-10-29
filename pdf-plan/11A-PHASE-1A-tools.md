@@ -427,7 +427,7 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-28, partial):** `/tools.html` is the tool-first surface: eighteen live cards,
+  - **Status (2026-10-28, partial):** `/tools.html` is the tool-first surface: nineteen live cards,
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not
@@ -479,7 +479,7 @@ operation is available identically in the CLI, the web app, and the extension.
     tools chunk alongside the viewer shell. The tools page registers the origin-wide worker itself,
     so a first visit that lands on `/tools.html` is enough. `xtask/browser/tools-page` runs every
     leg online, cuts the origin (the harness answers 503), reloads the same page, and runs every
-    leg again: 18 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
+    leg again: 19 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
     `data-no-upload="verified"`. The viewer's core engine remains runtime-cached; the document
     cache exclusion is unchanged.
 - [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
@@ -511,17 +511,17 @@ operation is available identically in the CLI, the web app, and the extension.
 ## 1A.WEBTOOLS — The browser tools surface (updated 2026-10-28)
 
 - [x] **SL-4.TOOLS.01 — Shared byte-oriented tools library + WASM protocol**
-  - **Done:** `selis-pdf-tools` owns the eighteen operations over an in-memory backend and a native
+  - **Done:** `selis-pdf-tools` owns the nineteen operations over an in-memory backend and a native
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
     capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
-    custom-section stripping it is 763 981 B raw / 235 665 B brotli.
+    custom-section stripping it is 775 589 B raw / 241 473 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the object-graph tools chunk does not.
-- [x] **SL-4.TOOLS.02 — Tool-first page and eighteen live tools**
+- [x] **SL-4.TOOLS.02 — Tool-first page and nineteen live tools**
   - **Done:** `/tools.html` (merge, mix pages, split, rotate, crop, flip, delete, organize pages,
     metadata, remove metadata, page numbers, watermark, header/footer, Bates, compress, extract
-    attachments, page labels, resize), 1-based page input, drag/drop
+    attachments, page labels, resize, N-up), 1-based page input, drag/drop
     file selection,
     ordered merge list with ↑/↓, browser-native Blob preview and download, verification rows,
     responsive external CSS. **Split modes shipped 2026-10-27:** range, every N pages, in half, by
@@ -534,12 +534,12 @@ operation is available identically in the CLI, the web app, and the extension.
     the no-upload assertion ran before each result appeared. **Page organization shipped
     2026-10-27:** the existing reorder workspace now has reorder, duplicate, and insert-blank modes
     over one wire operation. **Overlay, compression, attachment extraction, page mixing, crop,
-    flip, page labels, metadata removal, and resizing shipped 2026-10-28:** page numbers, centered
+    flip, page labels, metadata removal, resizing, and N-up shipped 2026-10-28:** page numbers, centered
     text watermark, header/footer slots, Bates numbering, lossless compression, embedded-file
     extraction, round-robin page interleaving, visual-edge cropping, display-relative flipping,
-    explicit page labels, `/Info`/XMP removal, and A4/A5/Letter/Legal/A3 or custom-point page
-    resizing;
-    the harness now drives all eighteen cards online and offline, reads marker strings from
+    explicit page labels, `/Info`/XMP removal, A4/A5/Letter/Legal/A3 or custom-point page
+    resizing, and 2/4/6/9-up sheet placement;
+    the harness now drives all nineteen cards online and offline, reads marker strings from
     downloaded PDF bytes, verifies compression preserved the page count, checks both extracted
     files plus the ZIP header, and mixes the three-page report with the one-page fixture to require
     Pages `4 → 4` and `report-mixed.pdf`. The same harness drives duplicate and blank insertion
@@ -550,16 +550,18 @@ operation is available identically in the CLI, the web app, and the extension.
     `metadata-metadata-removed.pdf`, and require Pages `3 → 3`; the label leg also requires
     `/PageLabels` and the `(A-)` prefix inside the downloaded bytes, the resize leg requires
     `595.28`/`841.89` in the bytes, and the metadata leg requires the removed `/Info`, title, author,
-    and producer to be absent. Unit tests cover the rotation-relative box math, flip and resize
-    matrices, target-box placement, and label materialisation/renumbering, and CLI tests write an
-    explicit label tree, a resized A4 document, and a stripped metadata document through the real
+    and producer to be absent. The N-up legs require `report-n-up.pdf` with Pages `3 → 2` and both
+    `/Subtype /Form` and `/Type /XObject` in the downloaded bytes. Unit tests cover the
+    rotation-relative box math, flip, resize, and N-up matrices, target-box placement, label
+    materialisation/renumbering, and Form XObject placement, and CLI tests write an explicit label
+    tree, a resized A4 document, a two-up sheet, and a stripped metadata document through the real
     binary.
   - **Deferred within this task:** drag-to-reorder (buttons ship), image/tiled watermark, and the
     raster/forms/edit features in `34-TOOLS-SITE-ROADMAP.md`.
 - [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
   - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
     the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
-    builds it with the other chunks; budget 300 000 B brotli, current baseline 235 665 B. CI builds
+    builds it with the other chunks; budget 300 000 B brotli, current baseline 241 473 B. CI builds
     it in `test-fast` and `browser-check`.
 - [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
@@ -569,15 +571,15 @@ operation is available identically in the CLI, the web app, and the extension.
     size, split by bookmarks, extract pages, the owned multi-output ZIP bundle, duplicate/blank
     pages, page numbers, text watermark, header/footer, Bates numbering, lossless compression,
     embedded-file extraction, round-robin page mixing, visual-edge cropping, display-relative
-    flipping, page labels, and metadata removal are live with verification and online/offline
-    browser coverage. The remaining object-graph tools stay unchecked.
+    flipping, page labels, metadata removal, page resizing, and N-up are live with verification
+    and online/offline browser coverage. The remaining object-graph tools stay unchecked.
 - [x] **SL-4.TOOLS.05 — Tools-page offline promotion**
   - **Done (updated 2026-10-28):** `SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS` are one
     atomic install list; `CACHE_VERSION` is 2, so the old shell cache is purged. The tools page
     imports the same `sw-register` module as the viewer (copied into `/assets/host/`), and the
     browser check proves the offline reload for every leg, including split modes, organize modes,
     page mixing, crop, flip, page labels, metadata removal, page numbers, watermark, header/footer,
-    Bates, compression, and attachment extraction. Node
+    Bates, compression, attachment extraction, resizing, and N-up. Node
     tests cover the new
     shell/runtime split, the offline tools navigation, all graph assets, and the unchanged
     invariant: the worker fetches only bodyless GETs from the declared list, and no document
