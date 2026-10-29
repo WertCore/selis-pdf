@@ -1436,7 +1436,7 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * seventeen cards render, and choosing Merge opens the workspace;
+/// * eighteen cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1456,8 +1456,8 @@ fn check_attachments_leg(leg: &Json, label: &str, expected: &[(&str, &str)]) -> 
 ///   report without changing its page count;
 /// * the crop and flip legs rewrite page geometry, the page-label leg
 ///   writes an explicit `/PageLabels` tree whose prefix is visible in the real
-///   Blob, and the metadata-strip leg proves `/Info` and its values are absent
-///   from the bytes;
+///   Blob, the resize leg writes the A4 `/MediaBox` into the bytes, and the
+///   metadata-strip leg proves `/Info` and its values are absent from the bytes;
 /// * the attachment leg downloads both embedded files with their decoded bytes
 ///   and a ZIP, without offering either file as a PDF preview;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
@@ -1475,9 +1475,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(17) {
+    if report.get("cards").and_then(Json::as_u64) != Some(18) {
         return Err(format!(
-            "the tools grid did not render seventeen cards (cards = {:?})",
+            "the tools grid did not render eighteen cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -1720,6 +1720,17 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &["/PageLabels", "(A-)"],
     )?;
+    let resize = report
+        .get("resize")
+        .ok_or_else(|| "the page reported no resize leg (resize = None)".to_string())?;
+    check_stamp_leg(
+        resize,
+        "online resize",
+        "report-resized.pdf",
+        "Resize pages",
+        3,
+        &["595.28", "841.89"],
+    )?;
     let attachments = report.get("attachments").ok_or_else(|| {
         "the page reported no attachment-extraction leg (attachments = None)".to_string()
     })?;
@@ -1752,9 +1763,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(17) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(18) {
         return Err(format!(
-            "the offline tools page did not render seventeen cards (cards = {:?})",
+            "the offline tools page did not render eighteen cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -1972,6 +1983,17 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "Apply page labels",
         3,
         &["/PageLabels", "(A-)"],
+    )?;
+    let offline_resize = offline
+        .get("resize")
+        .ok_or_else(|| "the offline leg reported no resize result".to_string())?;
+    check_stamp_leg(
+        offline_resize,
+        "offline resize",
+        "report-resized.pdf",
+        "Resize pages",
+        3,
+        &["595.28", "841.89"],
     )?;
     let offline_attachments = offline
         .get("attachments")
@@ -5886,7 +5908,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 17,
+            "cards": 18,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -5933,7 +5955,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 17,
+                "cards": 18,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -6015,6 +6037,12 @@ mod tests {
             3,
             &["/PageLabels", "(A-)"],
         );
+        report["resize"] = real_tools_stamp_leg(
+            "report-resized.pdf",
+            "Resize pages",
+            3,
+            &["595.28", "841.89"],
+        );
         report["attachments"] = real_tools_attachments_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
 
@@ -6027,6 +6055,7 @@ mod tests {
         report["offline"]["crop"] = report["crop"].clone();
         report["offline"]["flip"] = report["flip"].clone();
         report["offline"]["pageLabels"] = report["pageLabels"].clone();
+        report["offline"]["resize"] = report["resize"].clone();
         report["offline"]["attachments"] = report["attachments"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report
@@ -6237,7 +6266,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 17,
+            "cards": 18,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6333,6 +6362,7 @@ mod tests {
                 "pageLabels",
                 "a run that never set page labels must not pass",
             ),
+            ("resize", "a run that never resized a page must not pass"),
             (
                 "attachments",
                 "a run that never extracted attachments must not pass",
@@ -6414,6 +6444,27 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_attachments).is_err(),
             "an online-only attachment extraction must not pass the offline gate"
+        );
+
+        let mut resize_no_target = report.clone();
+        *resize_no_target
+            .pointer_mut("/resize/outputs/0/found/0")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&resize_no_target).is_err(),
+            "a resize output without the A4 MediaBox must not pass"
+        );
+
+        let mut no_offline_resize = report.clone();
+        no_offline_resize
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("resize");
+        assert!(
+            verdict_tools_page(&no_offline_resize).is_err(),
+            "an online-only resize must not pass the offline gate"
         );
 
         let mut metadata_left_behind = report.clone();

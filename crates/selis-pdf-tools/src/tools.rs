@@ -4589,6 +4589,230 @@ pub(crate) fn flip(
     Ok(verification)
 }
 
+/// The target page size and fitting mode for [`resize`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResizeOptions {
+    /// New page width in points.
+    pub width: f64,
+    /// New page height in points.
+    pub height: f64,
+    /// Preserve the source aspect ratio and centre it; otherwise stretch to
+    /// fill both dimensions.
+    pub fit: bool,
+}
+
+impl ResizeOptions {
+    fn validate(&self) -> Result<(), String> {
+        for (label, value) in [("width", self.width), ("height", self.height)] {
+            if !value.is_finite() || value < 1.0 {
+                return Err(format!("page {label} must be at least 1 point"));
+            }
+            if value > 14_400.0 {
+                return Err(format!("page {label} must be at most 14400 points"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A page's displayed width and height, accounting for quarter turns.
+fn display_extent(base: [f64; 4], rotation: i64) -> (f64, f64) {
+    let width = base[2] - base[0];
+    let height = base[3] - base[1];
+    if rotation == 90 || rotation == 270 {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
+/// The user-space transform that maps a page's displayed content into a new
+/// `width` x `height` page whose rotation is normalized to 0.
+///
+/// `base` is the source's visible box in user space. The callers reject pages
+/// with no displayed area before this runs, so the divisions are safe.
+fn resize_matrix(base: [f64; 4], rotation: i64, width: f64, height: f64, fit: bool) -> [f64; 6] {
+    let (display_width, display_height) = display_extent(base, rotation);
+    let (scale_x, scale_y, offset_x, offset_y) = if fit {
+        let scale = (width / display_width).min(height / display_height);
+        (
+            scale,
+            scale,
+            (width - display_width * scale) / 2.0,
+            (height - display_height * scale) / 2.0,
+        )
+    } else {
+        (width / display_width, height / display_height, 0.0, 0.0)
+    };
+    let (bx0, by0, bx1, by1) = (base[0], base[1], base[2], base[3]);
+    match rotation {
+        // Display (u, v) is (x - bx0, y - by0).
+        90 => [
+            0.0,
+            -scale_y,
+            scale_x,
+            0.0,
+            offset_x - scale_x * by0,
+            offset_y + scale_y * bx1,
+        ],
+        // Display (u, v) is (bx1 - x, by1 - y).
+        180 => [
+            -scale_x,
+            0.0,
+            0.0,
+            -scale_y,
+            offset_x + scale_x * bx1,
+            offset_y + scale_y * by1,
+        ],
+        // Display (u, v) is (by1 - y, x - bx0): a quarter turn the other way,
+        // so the display axes swap the user ones (as in `display_point_to_user`).
+        270 => [
+            0.0,
+            scale_y,
+            -scale_x,
+            0.0,
+            offset_x + scale_x * by1,
+            offset_y - scale_y * bx0,
+        ],
+        // Display (u, v) is (x - bx0, y - by0).
+        _ => [
+            scale_x,
+            0.0,
+            0.0,
+            scale_y,
+            offset_x - scale_x * bx0,
+            offset_y - scale_y * by0,
+        ],
+    }
+}
+
+/// Scale selected pages to a new page size, in the page's displayed
+/// orientation.
+///
+/// `fit` preserves the source aspect ratio and centres the result, so no
+/// content is cropped; the alternative fills both dimensions and therefore
+/// distorts. Selected pages get a fresh `/MediaBox` and `/CropBox` of exactly
+/// the requested size and a normalized `/Rotate 0`, with painted content
+/// wrapped in the corresponding scale/placement matrix. Annotations and form
+/// fields are carried unchanged, so they keep their original user-space
+/// coordinates; unselected pages are copied without changes.
+///
+/// # Errors
+///
+/// As [`merge`], plus a width or height outside 1..=14400 points, a page with
+/// no displayed area, a non-quarter-turn rotation, or an encrypted input (the
+/// rewrite refuses it upstream).
+pub(crate) fn resize(
+    path: &str,
+    options: ResizeOptions,
+    pages: Option<&str>,
+    output: &str,
+) -> CliResult<Verification> {
+    options
+        .validate()
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let src = read_file(path)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    let page_refs =
+        page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    let selected: std::collections::HashSet<usize> = match pages {
+        Some(spec) => parse_page_selection(spec, page_refs.len())
+            .map_err(|e| CliError(format!("{path}: {e}")))?
+            .into_iter()
+            .collect(),
+        None => (0..page_refs.len()).collect(),
+    };
+    let target = [0.0, 0.0, options.width, options.height];
+    let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
+    for (idx, page_ref) in page_refs.iter().enumerate() {
+        let merged_ref = if selected.contains(&idx) {
+            let boxes = page_boxes(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let (_, _, _, rotation, _) = page_info(&src, &doc, *page_ref, &budget, &mut g)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let rotation = quarter_turn(rotation)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let visible = boxes.visible();
+            let (display_width, display_height) = display_extent(visible, rotation);
+            if display_width <= 0.0 || display_height <= 0.0 {
+                return Err(CliError(format!(
+                    "{path}: page {} has no displayed area to resize",
+                    idx + 1
+                )));
+            }
+            // `copy_page_extra` opts out of copying `/Rotate`; the matrix bakes
+            // the old rotation into the new upright page.
+            let copied = copy_page_extra(
+                &mut out,
+                &src,
+                *page_ref,
+                &budget,
+                &mut g,
+                &mut next_num,
+                Vec::new(),
+            )
+            .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            let matrix = resize_matrix(
+                visible,
+                rotation,
+                options.width,
+                options.height,
+                options.fit,
+            );
+            wrap_page_transform(&mut out, copied, matrix)
+                .map_err(|e| CliError(format!("{path}: page {}: {e}", idx + 1)))?;
+            apply_page_boxes(
+                &mut out,
+                copied,
+                PageBoxes {
+                    media: target,
+                    crop: Some(target),
+                    bleed: None,
+                    trim: None,
+                    art: None,
+                },
+            );
+            copied
+        } else {
+            copy_page(&mut out, &src, *page_ref, &budget, &mut g, &mut next_num)
+                .map_err(|e| CliError(format!("{path}: {e}")))?
+        };
+        kept.push((idx, page_ref.num, merged_ref));
+    }
+    reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    let verification = write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_ALL,
+        Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )?;
+    let mode = if options.fit { "fit" } else { "stretch" };
+    eprintln!(
+        "resized {} page(s) to {} x {} pt ({mode}) -> {output}",
+        selected.len(),
+        trim_number(options.width),
+        trim_number(options.height)
+    );
+    verification.emit_line();
+    Ok(verification)
+}
+
 /// Read the input's `/PageLabels` number tree as `(page index, label dict)`
 /// pairs, or nothing when the catalog has no explicit labels.
 fn read_page_labels(
@@ -7098,6 +7322,165 @@ mod tests {
             streams[0].last().map(Vec::as_slice),
             Some(b"Q\n".as_slice())
         );
+    }
+
+    #[test]
+    fn resize_matrix_fits_and_stretches_in_display_space() {
+        let visible = [0.0, 0.0, 100.0, 200.0];
+        assert_eq!(
+            super::resize_matrix(visible, 0, 300.0, 300.0, true),
+            [1.5, 0.0, 0.0, 1.5, 75.0, 0.0]
+        );
+        assert_eq!(
+            super::resize_matrix(visible, 0, 300.0, 400.0, false),
+            [3.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+        );
+        // A quarter turn swaps the displayed extents before fitting.
+        assert_eq!(
+            super::resize_matrix(visible, 90, 300.0, 300.0, true),
+            [0.0, -1.5, 1.5, 0.0, 0.0, 225.0]
+        );
+        // Half a turn mirrors both display axes.
+        assert_eq!(
+            super::resize_matrix(visible, 180, 300.0, 300.0, true),
+            [-1.5, 0.0, 0.0, -1.5, 225.0, 300.0]
+        );
+        // The other quarter turn maps display u from user y and v from user x;
+        // treating it as a plain vertical flip would leave the page sideways.
+        assert_eq!(
+            super::resize_matrix(visible, 270, 300.0, 300.0, true),
+            [0.0, 1.5, -1.5, 0.0, 300.0, 75.0]
+        );
+        // A non-zero origin is folded into the offsets.
+        assert_eq!(
+            super::resize_matrix([10.0, 20.0, 110.0, 220.0], 0, 200.0, 200.0, false),
+            [2.0, 0.0, 0.0, 1.0, -20.0, -20.0]
+        );
+    }
+
+    /// Every quarter turn's matrix must agree with `display_point_to_user`:
+    /// taking a user-space point, mapping it to the display frame and applying
+    /// the resize matrix has to land on the same scaled, centred display point.
+    #[test]
+    fn resize_matrix_agrees_with_display_point_mapping() {
+        let base = [10.0, 20.0, 210.0, 420.0];
+        for rotation in [0, 90, 180, 270] {
+            let (display_width, display_height) = super::display_extent(base, rotation);
+            for (target_width, target_height, fit) in [(300.0, 300.0, true), (360.0, 240.0, false)]
+            {
+                let matrix = super::resize_matrix(base, rotation, target_width, target_height, fit);
+                let (scale_x, scale_y, offset_x, offset_y) = if fit {
+                    let scale = (target_width / display_width).min(target_height / display_height);
+                    (
+                        scale,
+                        scale,
+                        (target_width - display_width * scale) / 2.0,
+                        (target_height - display_height * scale) / 2.0,
+                    )
+                } else {
+                    (
+                        target_width / display_width,
+                        target_height / display_height,
+                        0.0,
+                        0.0,
+                    )
+                };
+                for (index, (u, v)) in [
+                    (0.0, 0.0),
+                    (0.0, display_height),
+                    (display_width, 0.0),
+                    (display_width, display_height),
+                    (display_width * 0.3, display_height * 0.7),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let (x, y) = super::display_point_to_user(u, v, base, rotation);
+                    let mapped_u = matrix[0] * x + matrix[2] * y + matrix[4];
+                    let mapped_v = matrix[1] * x + matrix[3] * y + matrix[5];
+                    let expected_u = offset_x + scale_x * u;
+                    let expected_v = offset_y + scale_y * v;
+                    for (label, actual, expected) in
+                        [("u", mapped_u, expected_u), ("v", mapped_v, expected_v)]
+                    {
+                        assert!(
+                            (actual - expected).abs() < 1e-9,
+                            "rotation {rotation} {label} corner {index}: {actual} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resize_writes_the_target_boxes_and_keeps_unselected_pages() {
+        let dir = temp_dir("resize-boxes");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(
+            &input,
+            custom_box_source(&[
+                ([0.0, 0.0, 100.0, 200.0], None, 0),
+                ([0.0, 0.0, 200.0, 100.0], None, 90),
+            ]),
+        )
+        .expect("write input");
+
+        let verification = super::resize(
+            input.to_str().unwrap(),
+            super::ResizeOptions {
+                width: 300.0,
+                height: 300.0,
+                fit: true,
+            },
+            Some("0"),
+            output.to_str().unwrap(),
+        )
+        .expect("resize");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_out, 2);
+
+        let boxes = output_boxes(&output);
+        assert_eq!(boxes[0].media, [0.0, 0.0, 300.0, 300.0]);
+        assert_eq!(boxes[0].crop, Some([0.0, 0.0, 300.0, 300.0]));
+        assert_eq!(
+            boxes[1].media,
+            [0.0, 0.0, 200.0, 100.0],
+            "an unselected page keeps its box"
+        );
+        let text =
+            String::from_utf8_lossy(&std::fs::read(&output).expect("read output")).into_owned();
+        assert!(
+            text.contains("1.5 0 0 1.5 75 0 cm"),
+            "the fit matrix is written: {text}"
+        );
+        assert!(
+            text.contains("/Rotate 90"),
+            "the unselected page keeps its rotation"
+        );
+    }
+
+    #[test]
+    fn resize_rejects_invalid_sizes() {
+        let dir = temp_dir("resize-invalid");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, sized_pages_source(&[100.0])).expect("write input");
+        for (width, height) in [(0.0, 100.0), (100.0, f64::NAN), (20_000.0, 100.0)] {
+            let error = super::resize(
+                input.to_str().unwrap(),
+                super::ResizeOptions {
+                    width,
+                    height,
+                    fit: true,
+                },
+                None,
+                output.to_str().unwrap(),
+            )
+            .expect_err("invalid target");
+            assert!(error.0.contains("page"), "{error:?}");
+        }
     }
 
     #[test]

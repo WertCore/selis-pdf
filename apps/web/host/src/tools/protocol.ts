@@ -48,7 +48,8 @@ export type ToolOp =
 	| "crop"
 	| "flip"
 	| "page_labels"
-	| "strip_metadata";
+	| "strip_metadata"
+	| "resize";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -69,6 +70,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	flip: 15,
 	page_labels: 16,
 	strip_metadata: 17,
+	resize: 18,
 };
 
 /** One input file on the wire. */

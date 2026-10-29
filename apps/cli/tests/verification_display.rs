@@ -543,6 +543,98 @@ fn page_labels_command_writes_an_explicit_label_tree() {
 }
 
 #[test]
+fn resize_command_scales_to_a_preset_and_keeps_the_pages() {
+    let dir = temp_dir("resize");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("features.pdf");
+    let output = dir.join("a4.pdf");
+    std::fs::write(&input, verification_features_pdf()).expect("write input");
+
+    let out = selis()
+        .args([
+            "resize",
+            input.to_str().unwrap(),
+            "--preset",
+            "a4",
+            "--pages",
+            "0",
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "resize stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_in"), 2);
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "verdict"), "ok");
+
+    let bytes = std::fs::read(&output).expect("read output");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("595.28"), "the A4 width is written: {text}");
+    assert!(text.contains("841.89"), "the A4 height is written: {text}");
+    assert!(
+        text.contains("5.9528"),
+        "the fit matrix scales the 100pt page: {text}"
+    );
+    // The unselected second page keeps its 100 x 100 box and gains no CropBox.
+    assert!(
+        text.contains("/MediaBox [0.000 0.000 100.000 100.000]"),
+        "the unselected page keeps its box: {text}"
+    );
+    assert!(
+        text.contains(
+            "/MediaBox [0.000 0.000 595.280 841.890]/CropBox [0.000 0.000 595.280 841.890]"
+        ),
+        "the selected page gets both target boxes: {text}"
+    );
+
+    let bad = selis()
+        .args([
+            "resize",
+            input.to_str().unwrap(),
+            "--preset",
+            "tabloid",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("resize preset"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+
+    let missing_height = selis()
+        .args([
+            "resize",
+            input.to_str().unwrap(),
+            "--width",
+            "300",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        !missing_height.status.success(),
+        "a width without a height must be refused"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn strip_metadata_command_removes_info_and_keeps_the_pages() {
     let dir = temp_dir("strip-metadata");
     std::fs::create_dir_all(&dir).expect("mkdir");

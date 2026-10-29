@@ -121,6 +121,15 @@ mod tools {
         selis_pdf_tools::flip(path, axis, pages, output).map_err(CliError::from)
     }
 
+    pub(crate) fn resize(
+        path: &str,
+        options: &selis_pdf_tools::ResizeOptions,
+        pages: Option<&str>,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::resize(path, *options, pages, output).map_err(CliError::from)
+    }
+
     pub(crate) fn page_labels(
         path: &str,
         options: &selis_pdf_tools::PageLabelOptions,
@@ -396,6 +405,32 @@ enum Command {
         #[arg(long, default_value = "")]
         prefix: String,
         /// The pages to renumber (`0,2,5-7`; 0-based); default: all pages.
+        #[arg(long)]
+        pages: Option<String>,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Scale pages to a new page size.
+    Resize {
+        /// The input PDF.
+        path: String,
+        /// A standard page size: a3, a4, a5, letter, or legal.
+        #[arg(long, conflicts_with_all = ["width", "height"])]
+        preset: Option<String>,
+        /// Target page width in points.
+        #[arg(long, requires = "height", required_unless_present = "preset")]
+        width: Option<f64>,
+        /// Target page height in points.
+        #[arg(long, requires = "width", required_unless_present = "preset")]
+        height: Option<f64>,
+        /// Fill both dimensions instead of preserving the aspect ratio.
+        #[arg(long)]
+        stretch: bool,
+        /// The pages to resize (`0,2,5-7`; 0-based); default: all pages.
         #[arg(long)]
         pages: Option<String>,
         /// The output PDF.
@@ -823,6 +858,48 @@ fn run() {
                 )),
             }
         }
+        Command::Resize {
+            path,
+            preset,
+            width,
+            height,
+            stretch,
+            pages,
+            output,
+            json,
+        } => {
+            let (width, height) = match preset {
+                Some(name) => match resize_preset(&name) {
+                    Some(size) => size,
+                    None => {
+                        return Err(CliError(
+                            "resize preset must be a3, a4, a5, letter, or legal".to_string(),
+                        ))
+                    }
+                },
+                None => match (width, height) {
+                    (Some(width), Some(height)) => (width, height),
+                    _ => {
+                        return Err(CliError(
+                            "resize needs --preset or both --width and --height".to_string(),
+                        ))
+                    }
+                },
+            };
+            finish(
+                tools::resize(
+                    &path,
+                    &selis_pdf_tools::ResizeOptions {
+                        width,
+                        height,
+                        fit: !stretch,
+                    },
+                    pages.as_deref(),
+                    &output,
+                ),
+                json,
+            )
+        }
         Command::Delete {
             path,
             pages,
@@ -965,6 +1042,21 @@ fn finish(result: CliResult<verify_report::Verification>, json: bool) -> CliResu
         verification.print_json()?;
     }
     Ok(())
+}
+
+/// A standard page size in points for `--preset`.
+///
+/// The values are the ISO/ANSI sizes in PDF points (1/72 inch); A4 is the
+/// classic 595.28 x 841.89, which keeps the browser harness readable.
+fn resize_preset(name: &str) -> Option<(f64, f64)> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "a3" => Some((841.89, 1190.55)),
+        "a4" => Some((595.28, 841.89)),
+        "a5" => Some((419.53, 595.28)),
+        "letter" => Some((612.0, 792.0)),
+        "legal" => Some((612.0, 1008.0)),
+        _ => None,
+    }
 }
 
 /// A readable error for the CLI.

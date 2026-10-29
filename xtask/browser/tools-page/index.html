@@ -25,8 +25,8 @@
       //      it, then merge and mix PDFs, run the split-every, split-size, and
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
-      //      compress a PDF, crop and flip pages, set page labels, extract
-      //      embedded attachments, and remove metadata;
+      //      compress a PDF, crop and flip pages, set page labels, resize pages,
+      //      extract embedded attachments, and remove metadata;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 17,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 18,
           15_000,
           label,
         );
@@ -527,7 +527,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the seventeen tool cards");
+        out.cards = await waitForCards(frame, "the eighteen tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -862,6 +862,26 @@
           network: onlinePageLabels.network,
         };
 
+        const onlineResize = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online resize",
+          "resize",
+          { preset: "a4", size_mode: "fit", pages: "1" },
+          ["595.28", "841.89"],
+        );
+        out.resize = {
+          fileRows: onlineResize.fileRows,
+          runLabel: onlineResize.runLabel,
+          noUpload: onlineResize.noUpload,
+          status: onlineResize.status,
+          result: onlineResize.result,
+          outputs: onlineResize.outputs,
+          output: onlineResize.output,
+          network: onlineResize.network,
+        };
+
         const onlineStripMetadata = await toolInFrame(
           frame,
           metadataFixture,
@@ -913,7 +933,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the seventeen offline tool cards");
+        const offlineCards = await waitForCards(frame, "the eighteen offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1043,6 +1063,15 @@
           "page_labels",
           { style: "R", start: "4", prefix: "A-", pages: "1,3" },
           ["/PageLabels", "(A-)"],
+        );
+        const offlineResize = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline resize",
+          "resize",
+          { preset: "a4", size_mode: "fit", pages: "1" },
+          ["595.28", "841.89"],
         );
         const offlineAttachments = await toolInFrame(
           frame,
@@ -1212,6 +1241,16 @@
             outputs: offlinePageLabels.outputs,
             output: offlinePageLabels.output,
             network: offlinePageLabels.network,
+          },
+          resize: {
+            fileRows: offlineResize.fileRows,
+            runLabel: offlineResize.runLabel,
+            noUpload: offlineResize.noUpload,
+            status: offlineResize.status,
+            result: offlineResize.result,
+            outputs: offlineResize.outputs,
+            output: offlineResize.output,
+            network: offlineResize.network,
           },
           stripMetadata: {
             fileRows: offlineStripMetadata.fileRows,

@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Seventeen browser-local operations, one page. The only fetch this module makes is
+ * Eighteen browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -99,6 +99,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Page labels",
 		blurb: "Set the numbering readers show: decimal, roman, letters, or a prefix.",
 		verb: "Apply page labels",
+		multiple: false,
+	},
+	{
+		id: "resize",
+		mark: "⤢",
+		title: "Resize pages",
+		blurb: "Scale pages to A4, Letter, or a custom size in points.",
+		verb: "Resize pages",
 		multiple: false,
 	},
 	{
@@ -682,6 +690,65 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "resize") {
+			const preset = make("select", "control");
+			for (const [value, label] of [
+				["a4", "A4 (210 × 297 mm)"],
+				["a5", "A5 (148 × 210 mm)"],
+				["letter", "US Letter (8.5 × 11 in)"],
+				["legal", "US Legal (8.5 × 14 in)"],
+				["a3", "A3 (297 × 420 mm)"],
+				["custom", "Custom size in points"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				preset.append(choice);
+			}
+			addField("preset", "Page size", preset);
+			const width = addField(
+				"width",
+				"Width (pt, custom only)",
+				textInput("width", "number", "595.28"),
+				"1 to 14400 points. Used when the page size is Custom.",
+			) as HTMLInputElement;
+			width.min = "1";
+			width.max = "14400";
+			width.step = "0.01";
+			width.value = "595.28";
+			const height = addField(
+				"height",
+				"Height (pt, custom only)",
+				textInput("height", "number", "841.89"),
+				"1 to 14400 points. Used when the page size is Custom.",
+			) as HTMLInputElement;
+			height.min = "1";
+			height.max = "14400";
+			height.step = "0.01";
+			height.value = "841.89";
+			const mode = make("select", "control");
+			for (const [value, label] of [
+				["fit", "Fit (keep the aspect ratio)"],
+				["stretch", "Stretch (fill both dimensions)"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				mode.append(choice);
+			}
+			addField("size_mode", "Scaling", mode);
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges. Leave blank to resize every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Selected pages get the new size in their displayed orientation, with rotation normalized. Other pages are copied unchanged; annotations keep their coordinates.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "delete") {
 			addField(
 				"pages",
@@ -1177,6 +1244,35 @@ function init(): void {
 				options.pages = shiftPageSelection(pagesText);
 			}
 			return { op: "page_labels", options, files: wireFiles };
+		}
+		if (tool.id === "resize") {
+			const sizes: Record<string, readonly [number, number]> = {
+				a3: [841.89, 1190.55],
+				a4: [595.28, 841.89],
+				a5: [419.53, 595.28],
+				letter: [612, 792],
+				legal: [612, 1008],
+			};
+			const preset = optionValue("preset");
+			const size = sizes[preset];
+			let width: number;
+			let height: number;
+			if (size !== undefined) {
+				[width, height] = size;
+			} else {
+				width = numberInRange("width", "Page width", 1, 14_400, 595.28);
+				height = numberInRange("height", "Page height", 1, 14_400, 841.89);
+			}
+			const options: Record<string, unknown> = {
+				width,
+				height,
+				fit: optionValue("size_mode") !== "stretch",
+			};
+			const pagesText = optionValue("pages").trim();
+			if (pagesText !== "") {
+				options.pages = shiftPageSelection(pagesText);
+			}
+			return { op: "resize", options, files: wireFiles };
 		}
 		if (tool.id === "delete") {
 			return {

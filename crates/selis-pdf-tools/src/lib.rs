@@ -311,7 +311,7 @@ pub fn rotate(
     tools::rotate(path, angle, pages, output)
 }
 
-pub use tools::{CropMargins, FlipAxis, PageLabelOptions, PageLabelStyle};
+pub use tools::{CropMargins, FlipAxis, PageLabelOptions, PageLabelStyle, ResizeOptions};
 
 /// Crop pages by visual margins in points.
 ///
@@ -353,6 +353,28 @@ pub fn flip(
     output: &str,
 ) -> ToolResult<Verification> {
     tools::flip(path, axis, pages, output)
+}
+
+/// Scale pages to a new page size in points.
+///
+/// The page size is applied in each page's displayed orientation: selected
+/// pages get a fresh `/MediaBox` and `/CropBox` of exactly `options.width` x
+/// `options.height` and a normalized `/Rotate 0`. With `options.fit` the
+/// content keeps its aspect ratio and is centred; otherwise it fills both
+/// dimensions. Annotations and form fields are carried unchanged, and
+/// unselected pages are copied as they were.
+///
+/// # Errors
+///
+/// As [`merge`], plus a width or height outside 1..=14400 points, a page with
+/// no displayed area, or a rotation that is not a multiple of 90 degrees.
+pub fn resize(
+    path: &str,
+    options: ResizeOptions,
+    pages: Option<&str>,
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::resize(path, options, pages, output)
 }
 
 /// Set the page labels shown by readers.

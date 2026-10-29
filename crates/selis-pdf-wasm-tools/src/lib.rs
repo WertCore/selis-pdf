@@ -82,6 +82,7 @@ enum Op {
     Flip,
     PageLabels,
     StripMetadata,
+    Resize,
 }
 
 impl Op {
@@ -104,6 +105,7 @@ impl Op {
             15 => Some(Self::Flip),
             16 => Some(Self::PageLabels),
             17 => Some(Self::StripMetadata),
+            18 => Some(Self::Resize),
             _ => None,
         }
     }
@@ -137,10 +139,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// Bit 0 merge, 1 split, 2 rotate, 3 delete, 4 reorder, 5 metadata,
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
-/// 16 strip metadata.
+/// 16 strip metadata, 17 resize.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1_1111_1111_1111_1111
+    0b11_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -564,6 +566,28 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Resize => {
+            let width = option_f64(&options, "width")
+                .ok_or_else(|| ToolError("resize needs a width".to_string()))?;
+            let height = option_f64(&options, "height")
+                .ok_or_else(|| ToolError("resize needs a height".to_string()))?;
+            let fit = options
+                .get("fit")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            let pages = option_str(&options, "pages");
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-resized.pdf"),
+                verification: selis_pdf_tools::resize(
+                    "in/0",
+                    selis_pdf_tools::ResizeOptions { width, height, fit },
+                    pages.as_deref(),
+                    "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -951,7 +975,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b11_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1018,8 +1042,35 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(18, b"", &[("doc.pdf", &pdf)]));
+        let response = run_request(&request(19, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
+    }
+
+    #[test]
+    fn resize_operation_is_dispatched() {
+        let pdf = multipage_pdf(3);
+        let response = run_request(&request(
+            18,
+            br#"{"width":300,"height":400,"fit":true,"pages":"0"}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "resize failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(outputs[0].0, "doc-resized.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(
+            text.contains("300.000"),
+            "the target width is written: {text}"
+        );
+        assert!(
+            text.contains("400.000"),
+            "the target height is written: {text}"
+        );
+
+        let response = run_request(&request(18, br#"{"width":300}"#, &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("height"));
     }
 
     #[test]
