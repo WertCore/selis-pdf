@@ -36,6 +36,32 @@ pub fn collect_objects(
 ) -> Result<Copied> {
     let startxref = crate::xref::find_startxref(src, 4096).unwrap_or(0);
     let doc = crate::parse_revisions(src, startxref, budget, g)?;
+    collect_objects_with_doc(src, &doc, roots, next_num, budget, g)
+}
+
+/// The same copy as [`collect_objects`], resolving through a document the
+/// caller already opened.
+///
+/// Repair recovers damaged files through a fallback parser; re-opening the
+/// source strictly here would reject exactly the bytes repair just salvaged.
+/// Every other caller should use [`collect_objects`], which parses the source
+/// itself.
+///
+/// # Budget
+///
+/// Bounded by the number of objects resolved and the budget.
+///
+/// # Malformed Input
+///
+/// `OBJ_UNEXPECTED` when a reachable object cannot be resolved.
+pub fn collect_objects_with_doc(
+    src: &[u8],
+    doc: &crate::revision::Doc,
+    roots: &[Ref],
+    next_num: &mut u32,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Copied> {
     let mut remap: HashMap<u32, u32> = HashMap::new();
     let mut pending: Vec<Ref> = roots.to_vec();
     let mut resolved: Vec<(u32, Obj)> = Vec::new();
@@ -47,7 +73,7 @@ pub fn collect_objects(
         if !visited.insert((r.num, r.gen)) {
             continue;
         }
-        let obj = resolve_ref(src, &doc, r, budget, g)?;
+        let obj = resolve_ref(src, doc, r, budget, g)?;
         let new_num = *remap.entry(r.num).or_insert_with(|| {
             let n = *next_num;
             *next_num = next_num.saturating_add(1);

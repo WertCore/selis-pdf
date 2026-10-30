@@ -52,7 +52,8 @@ export type ToolOp =
 	| "resize"
 	| "nup"
 	| "attach"
-	| "detach";
+	| "detach"
+	| "repair";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -77,6 +78,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	nup: 19,
 	attach: 20,
 	detach: 21,
+	repair: 22,
 };
 
 /** One input file on the wire. */
@@ -110,6 +112,8 @@ export interface Verification {
 	readonly bytes_out: number;
 	readonly verdict: string;
 	readonly checked: readonly string[];
+	/** How a damaged input was recovered, when the operation is repair. */
+	readonly repair_mode?: string;
 }
 
 /** One produced file. */
@@ -535,6 +539,9 @@ export function verificationRows(verification: Verification): VerificationRow[] 
 		label: "Size",
 		value: `${formatBytes(verification.bytes_in)} → ${formatBytes(verification.bytes_out)}`,
 	});
+	if (verification.repair_mode !== undefined) {
+		rows.push({ label: "Recovery", value: verification.repair_mode });
+	}
 	rows.push({ label: "Verification", value: verification.verdict });
 	return rows;
 }

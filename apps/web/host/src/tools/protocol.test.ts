@@ -108,6 +108,11 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "detach", files }), 8)).toBe(21);
 	});
 
+	it("encodes repair at 22", () => {
+		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
+		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);
+	});
+
 	it("rejects an empty file list and malformed operations before calling the guest", () => {
 		expect(() => encodeToolRequest({ op: "merge", files: [] })).toThrow(ToolProtocolError);
 		expect(() =>
@@ -270,6 +275,18 @@ describe("verificationRows", () => {
 		expect(rows.find((row) => row.label === "Form fields")?.value).toBe("1 → 1");
 		expect(rows.find((row) => row.label === "Size")?.value).toBe("2.0 KiB → 1.0 KiB");
 		expect(rows.at(-1)).toEqual({ label: "Verification", value: "ok" });
+	});
+
+	it("shows the recovery strategy only when one is reported", () => {
+		const plain = verificationRows(verification);
+		expect(plain.some((row) => row.label === "Recovery")).toBe(false);
+		const recovered = verificationRows({
+			...verification,
+			repair_mode: "reconstructed index",
+		});
+		expect(recovered.find((row) => row.label === "Recovery")?.value).toBe(
+			"reconstructed index",
+		);
 	});
 });
 

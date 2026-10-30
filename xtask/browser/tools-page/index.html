@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 21,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 22,
           15_000,
           label,
         );
@@ -590,7 +590,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-one tool cards");
+        out.cards = await waitForCards(frame, "the twenty-two tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -639,6 +639,27 @@
           if (!r.ok) throw new Error("metadata.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        // The repair leg needs a document whose cross-reference table is
+        // unreadable, not merely mis-aimed: a wrong startxref is tolerated by
+        // the parser, so the `xref` keyword itself has to be destroyed.
+        const damagedFixture = (() => {
+          const bytes = new Uint8Array(splitFixture.slice(0));
+          for (let i = 0; i + 4 <= bytes.length; i += 1) {
+            if (
+              bytes[i] === 0x78 &&
+              bytes[i + 1] === 0x72 &&
+              bytes[i + 2] === 0x65 &&
+              bytes[i + 3] === 0x66
+            ) {
+              bytes[i] = 0x7a;
+              bytes[i + 1] = 0x7a;
+              bytes[i + 2] = 0x7a;
+              bytes[i + 3] = 0x7a;
+              return bytes;
+            }
+          }
+          throw new Error("the report fixture has no xref keyword to damage");
+        })();
 
         const online = await mergeInFrame(frame, fixture, "online");
         out.fileRows = online.fileRows;
@@ -1045,6 +1066,27 @@
           network: onlineDetach.network,
         };
 
+        const onlineRepair = await toolInFrame(
+          frame,
+          damagedFixture,
+          "damaged.pdf",
+          "online repair",
+          "repair",
+          {},
+          ["/Type /Pages"],
+          ["zzzz"],
+        );
+        out.repair = {
+          fileRows: onlineRepair.fileRows,
+          runLabel: onlineRepair.runLabel,
+          noUpload: onlineRepair.noUpload,
+          status: onlineRepair.status,
+          result: onlineRepair.result,
+          outputs: onlineRepair.outputs,
+          output: onlineRepair.output,
+          network: onlineRepair.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1056,7 +1098,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-one offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-two offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1231,6 +1273,16 @@
           {},
           [],
           ["/EmbeddedFiles", "notes.txt", "evil.txt", "hello attachment", "safe name"],
+        );
+        const offlineRepair = await toolInFrame(
+          frame,
+          damagedFixture,
+          "damaged.pdf",
+          "offline repair",
+          "repair",
+          {},
+          ["/Type /Pages"],
+          ["zzzz"],
         );
         const offlineStripMetadata = await toolInFrame(
           frame,
@@ -1450,6 +1502,16 @@
             outputs: offlineDetach.outputs,
             output: offlineDetach.output,
             network: offlineDetach.network,
+          },
+          repair: {
+            fileRows: offlineRepair.fileRows,
+            runLabel: offlineRepair.runLabel,
+            noUpload: offlineRepair.noUpload,
+            status: offlineRepair.status,
+            result: offlineRepair.result,
+            outputs: offlineRepair.outputs,
+            output: offlineRepair.output,
+            network: offlineRepair.network,
           },
         };
 

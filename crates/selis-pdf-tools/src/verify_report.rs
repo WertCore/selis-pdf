@@ -72,6 +72,14 @@ pub struct Verification {
     /// a subset of `pages`, `annotations`, `fields`, `ocgs`,
     /// `outline_entries`, `embedded_files`.
     pub checked: Vec<&'static str>,
+    /// How a damaged input was recovered, when the operation had to recover
+    /// one (`strict`, `rolled-back revision`, or `reconstructed index`).
+    ///
+    /// Absent for every operation that opened its input normally: an honest
+    /// repair reports the path it took rather than silently presenting a
+    /// salvaged document as an ordinary rewrite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_mode: Option<String>,
 }
 
 /// The stable check labels used in `checked`.
@@ -154,6 +162,7 @@ impl Verification {
             bytes_out,
             verdict: verdict_text,
             checked,
+            repair_mode: None,
         }
     }
 
@@ -178,6 +187,7 @@ impl Verification {
             bytes_out: bytes,
             verdict: "copied".to_string(),
             checked: Vec::new(),
+            repair_mode: None,
         }
     }
 
@@ -212,6 +222,8 @@ impl Verification {
         parts.push(format!("bytes {}->{}", self.bytes_in, self.bytes_out));
         let tail = if self.verdict == "copied" {
             "copied unchanged (no rewrite, nothing to verify)".to_string()
+        } else if let Some(mode) = &self.repair_mode {
+            format!("structural check {} (recovered: {mode})", self.verdict)
         } else {
             format!("structural check {}", self.verdict)
         };
@@ -357,6 +369,33 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("bytes 4424->4424"), "{line}");
+    }
+
+    /// A recovered document says which recovery path produced it, in both the
+    /// line and the JSON twin; an ordinary run omits the field entirely.
+    #[test]
+    fn repair_mode_is_reported_and_optional() {
+        let verdict = ok_verdict(observed(3, 0, 0, 0, 0, 0));
+        let expected = Expectations {
+            pages: Some(3),
+            ..Expectations::none()
+        };
+        let mut v = Verification::from_gate(None, &verdict, &expected, 700, 900);
+        assert_eq!(v.repair_mode, None);
+        let plain = v.line();
+        assert!(!plain.contains("recovered:"), "{plain}");
+
+        v.repair_mode = Some("reconstructed index".to_string());
+        let line = v.line();
+        assert!(
+            line.contains("structural check ok (recovered: reconstructed index)"),
+            "{line}"
+        );
+        let json = serde_json::to_string(&v).expect("serialise");
+        assert!(
+            json.contains("\"repair_mode\":\"reconstructed index\""),
+            "{json}"
+        );
     }
 
     /// The JSON twin round-trips the same fields the line shows, under the

@@ -150,6 +150,10 @@ mod tools {
         selis_pdf_tools::attachments::detach(path, output).map_err(CliError::from)
     }
 
+    pub(crate) fn repair(path: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::repair(path, output).map_err(CliError::from)
+    }
+
     pub(crate) fn page_labels(
         path: &str,
         options: &selis_pdf_tools::PageLabelOptions,
@@ -491,6 +495,17 @@ enum Command {
     /// Remove every file embedded in a PDF.
     Detach {
         /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Recover a damaged PDF into a clean, self-consistent file.
+    Repair {
+        /// The input PDF (possibly damaged).
         path: String,
         /// The output PDF.
         #[arg(short, long)]
@@ -989,6 +1004,7 @@ fn run() {
             finish(tools::attach(&path, &inputs, &output), json)
         }
         Command::Detach { path, output, json } => finish(tools::detach(&path, &output), json),
+        Command::Repair { path, output, json } => finish(tools::repair(&path, &output), json),
         Command::Delete {
             path,
             pages,

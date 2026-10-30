@@ -228,6 +228,12 @@ operation is available identically in the CLI, the web app, and the extension.
     1-based boundary (0 = before page 1, omit = append) and copies the neighbouring page's media box
     and rotation, capped at 100 pages per request. The incremental (WRITE.02) path with its < 2 KB
     append budget remains the refinement pending an incremental writer.
+  - **Repair (2026-10-30):** `selis repair` and browser card 22 open a damaged input through the
+    strongest strategy that succeeds — the ordinary parser, then the last intact revision, then a
+    rebuilt object index — and rewrite every recovered page through the same writer and structural
+    gate. The recovered page count is asserted on the output, so a repair cannot silently drop
+    pages, and the strategy is reported as `strict`, `rolled-back revision`, or
+    `reconstructed index`. Encrypted inputs are refused.
 - [x] **SL-1A.TOOL.04 — Unlock: remove password** · deps: WRITE.01, `SL-1.ENC.02` · owner: HUMAN
   - **Note:** Shipped as `selis unlock <input> --output <out> [--password <pw>]`
     (defaults to the empty user password). Opens via the engine, walks the
@@ -436,7 +442,7 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-29, partial):** `/tools.html` is the tool-first surface: twenty-one live cards,
+  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-two live cards,
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not
@@ -488,7 +494,7 @@ operation is available identically in the CLI, the web app, and the extension.
     tools chunk alongside the viewer shell. The tools page registers the origin-wide worker itself,
     so a first visit that lands on `/tools.html` is enough. `xtask/browser/tools-page` runs every
     leg online, cuts the origin (the harness answers 503), reloads the same page, and runs every
-    leg again: 21 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
+    leg again: 22 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
     `data-no-upload="verified"`. The viewer's core engine remains runtime-cached; the document
     cache exclusion is unchanged.
 - [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
@@ -517,20 +523,20 @@ operation is available identically in the CLI, the web app, and the extension.
 
 ---
 
-## 1A.WEBTOOLS — The browser tools surface (updated 2026-10-29)
+## 1A.WEBTOOLS — The browser tools surface (updated 2026-10-30)
 
 - [x] **SL-4.TOOLS.01 — Shared byte-oriented tools library + WASM protocol**
-  - **Done:** `selis-pdf-tools` owns the twenty-one operations over an in-memory backend and a native
+  - **Done:** `selis-pdf-tools` owns the twenty-two operations over an in-memory backend and a native
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
     capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
-    custom-section stripping it is 792 136 B raw / 245 611 B brotli.
+    custom-section stripping it is 804 886 B raw / 247 784 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the object-graph tools chunk does not.
-- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-one live tools**
+- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-two live tools**
   - **Done:** `/tools.html` (merge, mix pages, split, rotate, crop, flip, delete, organize pages,
     metadata, remove metadata, page numbers, watermark, header/footer, Bates, compress, extract
-    attachments, page labels, resize, N-up, embed files, remove attachments), 1-based page input, drag/drop
+    attachments, page labels, resize, N-up, embed files, remove attachments, repair), 1-based page input, drag/drop
     file selection,
     ordered merge list with ↑/↓, browser-native Blob preview and download, verification rows,
     responsive external CSS. **Split modes shipped 2026-10-27:** range, every N pages, in half, by
@@ -548,7 +554,7 @@ operation is available identically in the CLI, the web app, and the extension.
     extraction, round-robin page interleaving, visual-edge cropping, display-relative flipping,
     explicit page labels, `/Info`/XMP removal, A4/A5/Letter/Legal/A3 or custom-point page
     resizing, and 2/4/6/9-up sheet placement;
-    the harness now drives all twenty-one cards online and offline, reads marker strings from
+    the harness now drives all twenty-two cards online and offline, reads marker strings from
     downloaded PDF bytes, verifies compression preserved the page count, checks both extracted
     files plus the ZIP header, and mixes the three-page report with the one-page fixture to require
     Pages `4 → 4` and `report-mixed.pdf`. The same harness drives duplicate and blank insertion
@@ -560,7 +566,10 @@ operation is available identically in the CLI, the web app, and the extension.
     `/PageLabels` and the `(A-)` prefix inside the downloaded bytes, the resize leg requires
     `595.28`/`841.89` in the bytes, and the metadata leg requires the removed `/Info`, title, author,
     and producer to be absent. The N-up legs require `report-n-up.pdf` with Pages `3 → 2` and both
-    `/Subtype /Form` and `/Type /XObject` in the downloaded bytes. Unit tests cover the
+    `/Subtype /Form` and `/Type /XObject` in the downloaded bytes. The repair leg damages the real
+    fixture's `xref` keyword, requires `damaged-repaired.pdf` with Pages `3 → 3` and a
+    `reconstructed index` Recovery row, and proves the damaged marker is absent from the download,
+    online and offline. Unit tests cover the
     rotation-relative box math, flip, resize, and N-up matrices, target-box placement, label
     materialisation/renumbering, and Form XObject placement, and CLI tests write an explicit label
     tree, a resized A4 document, a two-up sheet, and a stripped metadata document through the real
@@ -570,7 +579,7 @@ operation is available identically in the CLI, the web app, and the extension.
 - [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
   - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
     the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
-    builds it with the other chunks; budget 300 000 B brotli, current baseline 245 611 B. CI builds
+    builds it with the other chunks; budget 300 000 B brotli, current baseline 247 784 B. CI builds
     it in `test-fast` and `browser-check`.
 - [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
@@ -580,8 +589,8 @@ operation is available identically in the CLI, the web app, and the extension.
     size, split by bookmarks, extract pages, the owned multi-output ZIP bundle, duplicate/blank
     pages, page numbers, text watermark, header/footer, Bates numbering, lossless compression,
     embedded-file extraction, round-robin page mixing, visual-edge cropping, display-relative
-    flipping, page labels, metadata removal, page resizing, N-up, file embedding, and attachment
-    removal are live with verification and online/offline browser coverage. The remaining
+    flipping, page labels, metadata removal, page resizing, N-up, file embedding, attachment
+    removal, and repair are live with verification and online/offline browser coverage. The remaining
     object-graph tools stay unchecked.
 - [x] **SL-4.TOOLS.05 — Tools-page offline promotion**
   - **Done (updated 2026-10-28):** `SHELL_PRECACHE_PATHS` and `TOOLS_PRECACHE_PATHS` are one

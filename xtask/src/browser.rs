@@ -1753,6 +1753,152 @@ fn check_detach_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One repair leg: a damaged cross-reference table is rebuilt, every page is
+/// kept, the recovery strategy is shown, and the damaged marker is gone from
+/// the real Blob.
+fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Repair PDF" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Repair PDF\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("damaged-repaired.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"damaged-repaired.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "3 \u{2192} 3" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"3 \u{2192} 3\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Recovery") != "reconstructed index" {
+        return Err(format!(
+            "the {label} run reported Recovery {:?}, expected \"reconstructed index\"",
+            row_value("Recovery")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("damaged-repaired.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"damaged-repaired.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 3",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("damaged-repaired.pdf") {
+        return Err(format!(
+            "the {label} download was named {:?}, expected \"damaged-repaired.pdf\"",
+            output.get("downloadName")
+        ));
+    }
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
+    if absent.len() != 1 || absent.iter().any(|item| item.as_bool() != Some(false)) {
+        return Err(format!(
+            "the {label} output still carries the damaged index marker (absentFound = {absent:?})"
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
 /// page-organization modes): the real `/tools.html` merges and mixes two PDFs,
 /// splits a three-page PDF one page at a time, duplicates a page, and inserts a
@@ -1761,7 +1907,7 @@ fn check_detach_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twenty-one cards render, and choosing Merge opens the workspace;
+/// * twenty-two cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -1801,9 +1947,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(21) {
+    if report.get("cards").and_then(Json::as_u64) != Some(22) {
         return Err(format!(
-            "the tools grid did not render twenty-one cards (cards = {:?})",
+            "the tools grid did not render twenty-two cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -2085,6 +2231,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("detach")
         .ok_or_else(|| "the page reported no detach leg (detach = None)".to_string())?;
     check_detach_leg(detach, "online detach")?;
+    let repair = report
+        .get("repair")
+        .ok_or_else(|| "the page reported no repair leg (repair = None)".to_string())?;
+    check_repair_leg(repair, "online repair")?;
     let strip_metadata = report.get("stripMetadata").ok_or_else(|| {
         "the page reported no metadata-strip leg (stripMetadata = None)".to_string()
     })?;
@@ -2109,9 +2259,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(21) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(22) {
         return Err(format!(
-            "the offline tools page did not render twenty-one cards (cards = {:?})",
+            "the offline tools page did not render twenty-two cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -2369,6 +2519,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("detach")
         .ok_or_else(|| "the offline leg reported no detach result".to_string())?;
     check_detach_leg(offline_detach, "offline detach")?;
+    let offline_repair = offline
+        .get("repair")
+        .ok_or_else(|| "the offline leg reported no repair result".to_string())?;
+    check_repair_leg(offline_repair, "offline repair")?;
     let offline_strip_metadata = offline.get("stripMetadata").ok_or_else(|| {
         "the offline leg reported no metadata-strip result (stripMetadata = None)".to_string()
     })?;
@@ -6260,6 +6414,47 @@ mod tests {
         })
     }
 
+    /// The repair leg: a damaged cross-reference table is rebuilt, the page
+    /// count holds, and the damaged marker is absent from the rewritten bytes.
+    fn real_tools_repair_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "damaged-repaired.pdf",
+            "pages": 3,
+            "declaredBytes": 800,
+            "bytes": 800,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "damaged-repaired.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Repair PDF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "damaged-repaired.pdf",
+                "meta": "1 file \u{00b7} 800 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Recovery", "value": "reconstructed index" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
     /// negative witness the verdict requires (`absentFound` all false).
     fn real_tools_strip_metadata_leg() -> Json {
@@ -6367,7 +6562,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 21,
+            "cards": 22,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -6414,7 +6609,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 21,
+                "cards": 22,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -6512,6 +6707,7 @@ mod tests {
         report["attachments"] = real_tools_attachments_leg();
         report["attach"] = real_tools_attach_leg();
         report["detach"] = real_tools_detach_leg();
+        report["repair"] = real_tools_repair_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
@@ -6528,6 +6724,7 @@ mod tests {
         report["offline"]["attachments"] = report["attachments"].clone();
         report["offline"]["attach"] = report["attach"].clone();
         report["offline"]["detach"] = report["detach"].clone();
+        report["offline"]["repair"] = report["repair"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report
     }
@@ -6737,7 +6934,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 21,
+            "cards": 22,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -6972,6 +7169,45 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_detach).is_err(),
             "an online-only detach must not pass the offline gate"
+        );
+
+        let mut repair_marker_left = report.clone();
+        *repair_marker_left
+            .pointer_mut("/repair/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&repair_marker_left).is_err(),
+            "a repaired output that still carries the damaged index must not pass"
+        );
+
+        let mut repair_dropped_a_page = report.clone();
+        *repair_dropped_a_page
+            .pointer_mut("/repair/result/rows/0/value")
+            .unwrap() = json!("3 \u{2192} 2");
+        assert!(
+            verdict_tools_page(&repair_dropped_a_page).is_err(),
+            "a repair that dropped a page must not pass"
+        );
+
+        let mut repair_hid_the_strategy = report.clone();
+        *repair_hid_the_strategy
+            .pointer_mut("/repair/result/rows/1/value")
+            .unwrap() = json!("strict");
+        assert!(
+            verdict_tools_page(&repair_hid_the_strategy).is_err(),
+            "a repair that did not report the reconstructed strategy must not pass"
+        );
+
+        let mut no_offline_repair = report.clone();
+        no_offline_repair
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("repair");
+        assert!(
+            verdict_tools_page(&no_offline_repair).is_err(),
+            "an online-only repair must not pass the offline gate"
         );
 
         let mut resize_no_target = report.clone();

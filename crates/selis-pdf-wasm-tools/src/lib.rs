@@ -86,6 +86,7 @@ enum Op {
     Nup,
     Attach,
     Detach,
+    Repair,
 }
 
 impl Op {
@@ -112,6 +113,7 @@ impl Op {
             19 => Some(Self::Nup),
             20 => Some(Self::Attach),
             21 => Some(Self::Detach),
+            22 => Some(Self::Repair),
             _ => None,
         }
     }
@@ -146,10 +148,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
-/// attachments.
+/// attachments, 21 repair.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1_1111_1111_1111_1111_1111
+    0b11_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -641,6 +643,12 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             verification: selis_pdf_tools::attachments::detach("in/0", "out.pdf")?,
             over_target: false,
         }],
+        Op::Repair => vec![Produced {
+            output: "out.pdf".to_string(),
+            name: format!("{stem}-repaired.pdf"),
+            verification: selis_pdf_tools::repair("in/0", "out.pdf")?,
+            over_target: false,
+        }],
     };
 
     let verifications: Vec<Verification> = produced
@@ -733,6 +741,7 @@ fn run_attachments(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
         bytes_out: total,
         verdict: "ok".to_string(),
         checked: vec!["embedded_files"],
+        repair_mode: None,
     };
 
     let extra = if zip.is_some() { 1 } else { 0 };
@@ -933,6 +942,7 @@ fn aggregate_verifications(parts: &[Verification]) -> Result<Verification, ToolE
             "failed".to_string()
         },
         checked,
+        repair_mode: first.repair_mode.clone(),
     })
 }
 
@@ -1028,7 +1038,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b1_1111_1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b11_1111_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1095,7 +1105,7 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(22, b"", &[("doc.pdf", &pdf)]));
+        let response = run_request(&request(23, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1131,6 +1141,26 @@ mod tests {
 
         let response = run_request(&request(20, b"", &[("report.pdf", &pdf)]));
         assert!(error_text(&response).contains("at least one file"));
+    }
+
+    #[test]
+    fn repair_operation_is_dispatched() {
+        let mut pdf = multipage_pdf(3);
+        // Destroy the cross-reference keyword, not just its offset: the parser
+        // tolerates a mis-aimed startxref, so only a genuinely unreadable
+        // table forces the reconstruction path.
+        let at = pdf
+            .windows(4)
+            .position(|window| window == b"xref".as_slice())
+            .expect("xref keyword");
+        pdf[at..at + 4].copy_from_slice(b"zzzz");
+        let response = run_request(&request(22, b"", &[("broken.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "repair failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["repair_mode"], "reconstructed index");
+        assert_eq!(outputs[0].0, "broken-repaired.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
     }
 
     #[test]

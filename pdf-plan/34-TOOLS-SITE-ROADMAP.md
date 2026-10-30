@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, N-up, attach, and detach slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, N-up, attach, detach, and repair slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -68,6 +68,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | N-up pages | — | yes | **Live** | 2, 4, 6, or 9 pages per sheet (1×2, 2×2, 2×3, 3×3). Every sheet takes the first page's displayed size; each page keeps its aspect ratio and displayed orientation and is centred in its cell. Content is placed through Form XObjects that keep the source page's resources and clip to its visible box. Annotations, links, and form fields are not painted; outlines, page labels, attachments, and layers are reconciled to the sheets. Encrypted inputs are refused. |
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP writing is not exposed yet. |
 | Remove metadata | — | yes | **Live** | Drops the trailer/catalog `/Info` and the catalog XMP `/Metadata`; pages, annotations, forms, outlines, page labels, attachments, and tags survive. Encrypted inputs are refused. PDF/A conformance and signatures may be invalidated, and the UI says so. |
+| Repair PDF | — | yes | **Live** | Opens the strongest way the file allows: the ordinary parser, then the last intact revision, then a rebuilt object index. Every recovered page is rewritten through the same writer and structural gate, the recovered page count is asserted on the output, and the strategy is shown as a Recovery row. Encrypted inputs are refused. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
 | Local-only guard | — | — | **Live** | `data-no-upload="verified"` after every successful run; request recorder + CSP + import-free chunk. |
@@ -80,7 +81,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 245 611 B).
+      (currently 300 000 B brotli; baseline 247 784 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -135,7 +136,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 |---|---|---|---|---|
 | Compress (lossless) | yes | yes | 1A.1 | Live in CLI and browser. Reachable-object GC, Flate re-encode, byte-identical-object dedup, trailer `/Info` preservation; encrypted files are refused rather than silently unlocked. |
 | Compress (target size / lossy) | yes | yes | Raster | Needs image decode/re-encode and a quality/size search. Show measured result. |
-| Repair | yes | yes | 1A.1 | Reader recovery exists; browser must expose salvage vs. strict mode and never silently "repair" by dropping pages. |
+| Repair | yes | yes | 1A.1 | Live in CLI and browser. Strict parse → last intact revision → reconstructed object index; every recovered page is rewritten and the recovered count is asserted on the output, so a repair cannot silently drop pages. The strategy is reported (`strict`, `rolled-back revision`, `reconstructed index`); encrypted inputs are refused. |
 | Metadata strip | — | yes | 1A.1 | Live in CLI and browser. Removes `/Info` and the XMP packet while keeping pages, annotations, forms, outlines, page labels, attachments, and tags; encrypted inputs are refused. |
 | Privacy risk scanner | — | yes | 1A.1 | Revision history, metadata/author trails, hidden OC layers, embedded files, JavaScript, external references, text under images (last needs raster). Report only; no auto-fix. |
 | Fingerprinting report | — | yes | Raster | Producer/creator, IDs, timestamps, embedded fonts, image hashes, incremental revisions. Structural portion can ship in 1A.1. |
@@ -252,7 +253,7 @@ pages to the Organize pages workspace; duplicate and blank legs run online and o
 `{page}`/`{pages}` placeholders, Bates numbering, lossless compression, attachment extraction,
 round-robin page mixing, visual-edge cropping, display-relative flipping, page labels, metadata
 removal, page resizing, N-up placement, file embedding, and attachment removal. All fifteen operations are exposed through the CLI and the browser and
-use the verified full-rewrite path (extraction is read-only). The browser check now drives twenty-one
+use the verified full-rewrite path (extraction is read-only). The browser check now drives twenty-two
 cards online and after an offline reload, reads the stamped marker strings, attachment bytes, the
 written `/PageLabels` tree, the A4 `/MediaBox` from the resize output, the Form XObjects from the
 N-up output, and the absence of `/Info`,
@@ -279,8 +280,15 @@ own resources and a rotation-baked matrix, then paints those forms into grid cel
 takes the first page's displayed size; page-label keys are remapped many-to-one and deduplicated.
 Metadata removal is the same rewrite with `carry_metadata: false`: no `/Info` and
 no XMP packet are written, while every visible and structural feature still comes through.
+Repair opens a damaged input through the strongest strategy that succeeds — the ordinary parser,
+then the last intact revision, then a rebuilt object index — and rewrites every recovered page
+through the same writer and structural gate. The recovered page count is the gate's expected
+count, so a repair that loses a page fails rather than shipping, and the strategy appears as a
+Recovery row (`strict`, `rolled-back revision`, or `reconstructed index`). The browser leg damages
+the real fixture's `xref` keyword, requires Pages `3 → 3` and `reconstructed index`, and proves
+the damaged marker is absent from the downloaded bytes, online and after an offline reload.
 
-**Remaining in 1A.1:** image/tiled watermark, repair,
+**Remaining in 1A.1:** image/tiled watermark,
 CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
 incremental writer for page edits remains deferred; these page operations use the verified
 full-rewrite path.
@@ -334,8 +342,8 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-one tools are
-   object-graph operations; keeping the renderer out is why the chunk is 240 KB brotli instead of
+3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-two tools are
+   object-graph operations; keeping the renderer out is why the chunk is 248 KB brotli instead of
    the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
    feature. Native and viewer builds enable it; the object-graph tools disable it so `getrandom`'s
@@ -353,20 +361,20 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Twenty-one live operations with 1-based page input.
+- [x] Twenty-two live operations with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all twenty-one cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all twenty-two cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
       from the Blob, proves an embedded file's name tree and name are present after attach, proves
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
-      `xtask/browser/tools-page` passed in Edge with 21 cards online and offline, 0 foreign
+      `xtask/browser/tools-page` passed in Edge with 22 cards online and offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.

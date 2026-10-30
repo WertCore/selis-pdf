@@ -35,6 +35,7 @@ mod memory;
 pub mod overlay;
 #[cfg(feature = "native-fs")]
 mod progress;
+pub mod repair;
 pub mod runtime;
 mod tools;
 mod verify_report;
@@ -396,6 +397,25 @@ pub fn resize(
 pub fn nup(path: &str, options: NupOptions, output: &str) -> ToolResult<Verification> {
     tools::nup(path, options, output)
 }
+
+/// Rebuild a damaged PDF from the strongest recovery that succeeds.
+///
+/// The output is a clean rewrite of every recovered page through the same
+/// writer and structural gate as the other tools. The verification object's
+/// `repair_mode` says which strategy produced it (`strict`,
+/// `rolled-back revision`, or `reconstructed index`), and the recovered page
+/// count is asserted on the output, so a repair never silently drops pages.
+/// Encrypted inputs are refused; remove the password with unlock first.
+///
+/// # Errors
+///
+/// As [`merge`], plus an input whose object table cannot be recovered at all,
+/// a recovered document with no pages, or an encrypted input.
+pub fn repair(path: &str, output: &str) -> ToolResult<Verification> {
+    repair::repair(path, output)
+}
+
+pub use repair::RepairMode;
 
 /// Set the page labels shown by readers.
 ///

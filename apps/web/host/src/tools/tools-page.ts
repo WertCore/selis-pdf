@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Nineteen browser-local operations, one page. The only fetch this module makes is
+ * Twenty-two browser-local operations, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -211,6 +211,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Remove attachments",
 		blurb: "Delete every file embedded inside a PDF.",
 		verb: "Remove attachments",
+		multiple: false,
+	},
+	{
+		id: "repair",
+		mark: "R",
+		title: "Repair PDF",
+		blurb: "Recover the pages of a damaged PDF into a clean, consistent file.",
+		verb: "Repair PDF",
 		multiple: false,
 	},
 ];
@@ -804,6 +812,13 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent =
 				"Every embedded file is removed. Pages, annotations, forms, and bookmarks are kept unchanged.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "repair") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Tries the ordinary parser first, then the last intact revision, then a rebuilt object index. Every recovered page is rewritten and counted, so a repair cannot silently drop pages. Encrypted PDFs are refused.";
 			options.append(note);
 			return;
 		}
@@ -1473,6 +1488,9 @@ function init(): void {
 		}
 		if (tool.id === "detach") {
 			return { op: "detach", files: wireFiles };
+		}
+		if (tool.id === "repair") {
+			return { op: "repair", files: wireFiles };
 		}
 		if (tool.id === "strip_metadata") {
 			return { op: "strip_metadata", files: wireFiles };

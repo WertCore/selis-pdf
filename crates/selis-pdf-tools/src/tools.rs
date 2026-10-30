@@ -3468,7 +3468,7 @@ pub(crate) fn page_refs_of(
 /// Refuse an encrypted input before any object copying: the rewrite copies
 /// stream bytes verbatim, so an encrypted file would come out with unreadable
 /// content and no `/Encrypt` entry.
-fn refuse_encrypted_input(path: &str, doc: &selis_pdf_cos::Doc) -> Result<(), CliError> {
+pub(crate) fn refuse_encrypted_input(path: &str, doc: &selis_pdf_cos::Doc) -> Result<(), CliError> {
     let encrypted = doc
         .revisions()
         .last()
@@ -3559,10 +3559,38 @@ pub(crate) fn copy_page(
     copy_page_inner(
         merged,
         src,
+        None,
         page_ref,
         budget,
         g,
         _next_num,
+        Vec::new(),
+        true,
+    )
+}
+
+/// Copy a page using an already-parsed document.
+///
+/// Repair recovers the document through a fallback parser, so the page copy
+/// must not re-open the damaged bytes strictly. The caller owns the recovered
+/// `doc`; this is the same copy path the ordinary tools use.
+pub(crate) fn copy_page_from_doc(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    page_ref: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    next_num: &mut u32,
+) -> Result<Ref, String> {
+    copy_page_inner(
+        merged,
+        src,
+        Some(doc),
+        page_ref,
+        budget,
+        g,
+        next_num,
         Vec::new(),
         true,
     )
@@ -3581,13 +3609,16 @@ fn copy_page_extra(
     _next_num: &mut u32,
     extra: Vec<(Vec<u8>, Obj)>,
 ) -> Result<Ref, String> {
-    copy_page_inner(merged, src, page_ref, budget, g, _next_num, extra, false)
+    copy_page_inner(
+        merged, src, None, page_ref, budget, g, _next_num, extra, false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn copy_page_inner(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
+    doc: Option<&selis_pdf_cos::Doc>,
     page_ref: Ref,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
@@ -3595,20 +3626,33 @@ fn copy_page_inner(
     extra: Vec<(Vec<u8>, Obj)>,
     preserve_rotation: bool,
 ) -> Result<Ref, String> {
-    let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
-    let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
-        .map_err(|e| format!("cannot open: {e}"))?;
+    let parsed;
+    let doc = match doc {
+        Some(doc) => doc,
+        None => {
+            let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
+            parsed = selis_pdf_cos::parse_revisions(src, startxref, budget, g)
+                .map_err(|e| format!("cannot open: {e}"))?;
+            &parsed
+        }
+    };
     let rev = doc
         .revisions()
         .last()
         .ok_or_else(|| "no revisions".to_string())?;
     let _ = rev;
-    let boxes = page_boxes(src, &doc, page_ref, budget, g)?;
+    let boxes = page_boxes(src, doc, page_ref, budget, g)?;
     let (media, content_refs, resources, rotate, annots) =
-        page_info(src, &doc, page_ref, budget, g)?;
-    let (objects, remap) =
-        selis_pdf_cos::copy::collect_objects(src, &content_refs, merged.next_num_mut(), budget, g)
-            .map_err(|e| format!("copy objects: {e}"))?;
+        page_info(src, doc, page_ref, budget, g)?;
+    let (objects, remap) = selis_pdf_cos::copy::collect_objects_with_doc(
+        src,
+        doc,
+        &content_refs,
+        merged.next_num_mut(),
+        budget,
+        g,
+    )
+    .map_err(|e| format!("copy objects: {e}"))?;
     for (num, obj) in objects {
         merged.add_object(num, obj);
     }
@@ -3616,7 +3660,7 @@ fn copy_page_inner(
         .iter()
         .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
         .collect();
-    let new_resources = materialize_resources(merged, src, resources, budget, g)?;
+    let new_resources = materialize_resources(merged, src, doc, resources, budget, g)?;
     // Page order must not change how a page is read, so a plain copy keeps
     // its rotation. The rotate operation supplies its own computed value and
     // opts out to avoid writing `/Rotate` twice.
@@ -3624,7 +3668,7 @@ fn copy_page_inner(
     if preserve_rotation {
         extra.extend(rotate_extra(rotate));
     }
-    if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
+    if let Some(annots_ref) = materialize_object(merged, src, doc, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
     let page = merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra);
@@ -3637,11 +3681,12 @@ fn copy_page_inner(
 fn materialize_resources(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
+    doc: &selis_pdf_cos::Doc,
     resources: Option<Obj>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Ref>, String> {
-    materialize_object(merged, src, resources, budget, g)
+    materialize_object(merged, src, doc, resources, budget, g)
 }
 
 /// Carry an arbitrary page-level value (resources, annotations, group) into
@@ -3655,6 +3700,7 @@ fn materialize_resources(
 fn materialize_object(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
+    doc: &selis_pdf_cos::Doc,
     value: Option<Obj>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
@@ -3664,9 +3710,15 @@ fn materialize_object(
     };
     match val {
         Obj::Ref(r) => {
-            let (objects, remap) =
-                selis_pdf_cos::copy::collect_objects(src, &[r], merged.next_num_mut(), budget, g)
-                    .map_err(|e| format!("copy object: {e}"))?;
+            let (objects, remap) = selis_pdf_cos::copy::collect_objects_with_doc(
+                src,
+                doc,
+                &[r],
+                merged.next_num_mut(),
+                budget,
+                g,
+            )
+            .map_err(|e| format!("copy object: {e}"))?;
             for (num, obj) in objects {
                 merged.add_object(num, obj);
             }
@@ -3681,8 +3733,9 @@ fn materialize_object(
             let remap = if sub_refs.is_empty() {
                 std::collections::HashMap::new()
             } else {
-                let (objects, remap) = selis_pdf_cos::copy::collect_objects(
+                let (objects, remap) = selis_pdf_cos::copy::collect_objects_with_doc(
                     src,
+                    doc,
                     &sub_refs,
                     merged.next_num_mut(),
                     budget,
@@ -4060,9 +4113,9 @@ fn copy_page_redacted(
             data: selis_bytes::Bytes::from(rebuilt),
         },
     );
-    let new_resources = materialize_resources(merged, src, resources_ref, budget, g)?;
+    let new_resources = materialize_resources(merged, src, &doc, resources_ref, budget, g)?;
     let mut extra = rotate_extra(rotate);
-    if let Some(annots_ref) = materialize_object(merged, src, annots, budget, g)? {
+    if let Some(annots_ref) = materialize_object(merged, src, &doc, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
     }
     let page = merged.add_page_with_extra(
@@ -5011,8 +5064,9 @@ pub(crate) fn nup(path: &str, options: NupOptions, output: &str) -> CliResult<Ve
                     sheet_index * options.per_sheet + slot + 1
                 )));
             }
-            let (objects, remap) = selis_pdf_cos::copy::collect_objects(
+            let (objects, remap) = selis_pdf_cos::copy::collect_objects_with_doc(
                 &src,
+                &doc,
                 &content_refs,
                 out.next_num_mut(),
                 &budget,
@@ -5026,8 +5080,9 @@ pub(crate) fn nup(path: &str, options: NupOptions, output: &str) -> CliResult<Ve
                 .iter()
                 .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
                 .collect();
-            let new_resources = materialize_resources(&mut out, &src, resources, &budget, &mut g)
-                .map_err(|e| CliError(format!("{path}: page resources: {e}")))?;
+            let new_resources =
+                materialize_resources(&mut out, &src, &doc, resources, &budget, &mut g)
+                    .map_err(|e| CliError(format!("{path}: page resources: {e}")))?;
             // Bakes `/Rotate` into the form: the sheet itself stays upright.
             let form_matrix = resize_matrix(visible, rotation, display.0, display.1, false);
             for content_ref in &new_contents {

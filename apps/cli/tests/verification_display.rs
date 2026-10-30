@@ -770,6 +770,60 @@ fn attach_and_detach_commands_round_trip_embedded_files() {
 }
 
 #[test]
+fn repair_command_recovers_a_damaged_index() {
+    let dir = temp_dir("repair");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("damaged.pdf");
+    let output = dir.join("repaired.pdf");
+
+    let budget = Budget::unlimited();
+    let mut g = guard();
+    let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    builder.add_page(100.0, 100.0, b"");
+    builder.add_page(100.0, 100.0, b"");
+    let mut bytes = builder.write(&budget, &mut g).expect("write fixture");
+    // Destroy the cross-reference keyword: a merely wrong offset is tolerated,
+    // so the table itself has to be unreadable before the scanner is used.
+    let at = bytes
+        .windows(4)
+        .position(|window| window == b"xref".as_slice())
+        .expect("xref keyword");
+    bytes[at..at + 4].copy_from_slice(b"zzzz");
+    std::fs::write(&input, &bytes).expect("write input");
+
+    let out = selis()
+        .args([
+            "repair",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "repair stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+            .expect("the --json twin is one JSON object on stdout");
+    let v = value.get("verification").expect("verification envelope");
+    assert_eq!(jget(v, "pages_out"), 2);
+    assert_eq!(jget(v, "repair_mode"), "reconstructed index");
+    assert_eq!(jget(v, "verdict"), "ok");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("recovered via reconstructed index"),
+        "stderr names the strategy: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = std::fs::read(&output).expect("read output");
+    assert!(written.starts_with(b"%PDF-"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn strip_metadata_command_removes_info_and_keeps_the_pages() {
     let dir = temp_dir("strip-metadata");
     std::fs::create_dir_all(&dir).expect("mkdir");
