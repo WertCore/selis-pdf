@@ -6678,45 +6678,6 @@ mod tests {
         })
     }
 
-    /// The image->PDF leg: two images, two pages, and the needles that prove
-    /// the pixels were embedded rather than the inputs copied through.
-    fn real_tools_image_leg() -> Json {
-        let output = json!({
-            "kind": "pdf",
-            "name": "one-images.pdf",
-            "pages": 2,
-            "declaredBytes": 1200,
-            "bytes": 1200,
-            "blob": true,
-            "previewBlob": true,
-            "downloadName": "one-images.pdf",
-            "header": "%PDF-",
-            "zip": false,
-            "found": [true, true, true],
-        });
-        json!({
-            "fileRows": 2,
-            "runLabel": "Create PDF",
-            "noUpload": "verified",
-            "status": "Done. The result was verified on this device.",
-            "result": {
-                "title": "one-images.pdf",
-                "meta": "2 files \u{00b7} 1.2 kB \u{00b7} verified locally",
-                "rows": [
-                    { "label": "Pages", "value": "2" },
-                    { "label": "Verification", "value": "ok" },
-                ],
-            },
-            "outputs": [output.clone()],
-            "output": output,
-            "network": {
-                "origin": "http://127.0.0.1:1234",
-                "resources": 1,
-                "foreign": [],
-                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
-            },
-        })
-    }
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
     /// negative witness the verdict requires (`absentFound` all false).
     fn real_tools_strip_metadata_leg() -> Json {
@@ -6759,6 +6720,46 @@ mod tests {
                 "zip": false,
                 "absentFound": [false, false, false, false],
             },
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
+    /// The image→PDF leg: two image files become one PDF with two pages, and the
+    /// real Blob carries Flate-compressed DeviceRGB image XObjects.
+    fn real_tools_image_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "one-images.pdf",
+            "pages": 2,
+            "declaredBytes": 2000,
+            "bytes": 2000,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "one-images.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true, true, true],
+        });
+        json!({
+            "fileRows": 2,
+            "runLabel": "Create PDF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "one-images.pdf",
+                "meta": "1 file \u{00b7} 2.0 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "2" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
             "network": {
                 "origin": "http://127.0.0.1:1234",
                 "resources": 1,
@@ -6991,6 +6992,7 @@ mod tests {
         report["offline"]["detach"] = report["detach"].clone();
         report["offline"]["repair"] = report["repair"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
+        report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
         report
     }
@@ -7315,6 +7317,10 @@ mod tests {
                 "stripMetadata",
                 "a run that never removed metadata must not pass",
             ),
+            (
+                "imageToPdf",
+                "a run that never converted images must not pass",
+            ),
         ] {
             let mut missing = report.clone();
             missing
@@ -7376,6 +7382,45 @@ mod tests {
         assert!(
             verdict_tools_page(&attachment_no_zip).is_err(),
             "an attachment leg without a real ZIP header must not pass"
+        );
+
+        let mut image_wrong_title = report.clone();
+        *image_wrong_title
+            .pointer_mut("/imageToPdf/result/title")
+            .unwrap() = json!("other.pdf");
+        assert!(
+            verdict_tools_page(&image_wrong_title).is_err(),
+            "an image-to-PDF result with the wrong name must not pass"
+        );
+
+        let mut image_wrong_pages = report.clone();
+        *image_wrong_pages
+            .pointer_mut("/imageToPdf/result/rows/0/value")
+            .unwrap() = json!("1");
+        assert!(
+            verdict_tools_page(&image_wrong_pages).is_err(),
+            "an image-to-PDF run that dropped a page must not pass"
+        );
+
+        let mut image_marker_missing = report.clone();
+        *image_marker_missing
+            .pointer_mut("/imageToPdf/outputs/0/found/0")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&image_marker_missing).is_err(),
+            "an image-to-PDF output without the embedded image marker must not pass"
+        );
+
+        let mut no_offline_image = report.clone();
+        no_offline_image
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("imageToPdf");
+        assert!(
+            verdict_tools_page(&no_offline_image).is_err(),
+            "an online-only image conversion must not pass the offline gate"
         );
 
         let mut no_offline_attachments = report.clone();

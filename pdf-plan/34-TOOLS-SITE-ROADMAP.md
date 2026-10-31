@@ -253,8 +253,8 @@ pages to the Organize pages workspace; duplicate and blank legs run online and o
 **Shipped 2026-10-28:** page numbers, centered text watermark, headers/footers with
 `{page}`/`{pages}` placeholders, Bates numbering, lossless compression, attachment extraction,
 round-robin page mixing, visual-edge cropping, display-relative flipping, page labels, metadata
-removal, page resizing, N-up placement, file embedding, and attachment removal. All fifteen operations are exposed through the CLI and the browser and
-use the verified full-rewrite path (extraction is read-only). The browser check now drives twenty-two
+removal, page resizing, N-up placement, file embedding, attachment removal, and image → PDF. All sixteen operations are exposed through the CLI and the browser and
+use the verified full-rewrite path (extraction is read-only). The browser check now drives twenty-three
 cards online and after an offline reload, reads the stamped marker strings, attachment bytes, the
 written `/PageLabels` tree, the A4 `/MediaBox` from the resize output, the Form XObjects from the
 N-up output, and the absence of `/Info`,
