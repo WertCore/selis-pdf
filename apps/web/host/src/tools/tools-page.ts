@@ -16,6 +16,7 @@ import { installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
 import {
 	ToolInputError,
+	hasImageHeader,
 	hasPdfHeader,
 	pageBoundary,
 	pageCount,
@@ -42,6 +43,10 @@ interface ToolDef {
 	readonly blurb: string;
 	readonly verb: string;
 	readonly multiple: boolean;
+	/** The fewest files a run needs; defaults to 2 for multi-file tools. */
+	readonly minimum?: number;
+	/** The input container this tool accepts; defaults to PDF. */
+	readonly accepts?: "pdf" | "image";
 }
 
 const TOOLS: readonly ToolDef[] = [
@@ -221,6 +226,16 @@ const TOOLS: readonly ToolDef[] = [
 		verb: "Repair PDF",
 		multiple: false,
 	},
+	{
+		id: "image_to_pdf",
+		mark: "▣",
+		title: "Image to PDF",
+		blurb: "Turn PNG and JPEG images into a PDF, one page per image.",
+		verb: "Create PDF",
+		multiple: true,
+		minimum: 1,
+		accepts: "image",
+	},
 ];
 
 const TOOL_BY_ID = new Map<ToolOp, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
@@ -346,7 +361,7 @@ function init(): void {
 			runButton.disabled = true;
 			return;
 		}
-		const needed = tool.multiple ? 2 : 1;
+		const needed = tool.minimum ?? (tool.multiple ? 2 : 1);
 		runButton.disabled = busy || files.length < needed;
 		runButton.textContent = busy ? "Working locally…" : tool.verb;
 	}
@@ -1084,6 +1099,39 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "image_to_pdf") {
+			const pageSize = make("select", "control");
+			for (const [value, label] of [
+				["fit", "Fit to image"],
+				["a4", "A4"],
+				["letter", "Letter"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				pageSize.append(choice);
+			}
+			addField(
+				"page_size",
+				"Page size",
+				pageSize,
+				"Fit makes the page the image size plus the margin.",
+			);
+			const margin = addField(
+				"margin",
+				"Margin (pt)",
+				textInput("margin", "number", "36"),
+				"Points on every side. 36 pt is half an inch.",
+			) as HTMLInputElement;
+			margin.min = "0";
+			margin.step = "1";
+			margin.value = "36";
+			const note = make("p", "option-note");
+			note.textContent =
+				"PNG and JPEG are decoded on this device. Each image becomes one page; a fixed page size scales the image down and centres it.";
+			options.append(note);
+			return;
+		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
 		addField("author", "Author", textInput("author", "text", "Author name"));
 		addField("subject", "Subject", textInput("subject", "text", "Short subject"));
@@ -1111,7 +1159,12 @@ function init(): void {
 		fileInput.multiple = tool.multiple;
 		// Attach accepts opaque payloads after the first file, so the picker
 		// must not restrict the whole selection to PDFs.
-		fileInput.accept = id === "attach" ? "" : "application/pdf,.pdf";
+		fileInput.accept =
+			tool.accepts === "image"
+				? "image/png,image/jpeg,.png,.jpg,.jpeg"
+				: id === "attach"
+					? ""
+					: "application/pdf,.pdf";
 		fileInput.value = "";
 		toolsSection.hidden = true;
 		workspace.hidden = false;
@@ -1119,9 +1172,11 @@ function init(): void {
 		setStatus(
 			id === "attach"
 				? "Choose the PDF first, then the files to embed. They are read here, not sent anywhere."
-				: tool.multiple
-					? "Choose two or more PDFs. They are read here, not sent anywhere."
-					: "Choose a PDF. It is read here, not sent anywhere.",
+				: tool.accepts === "image"
+					? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
+					: tool.multiple
+						? "Choose two or more PDFs. They are read here, not sent anywhere."
+						: "Choose a PDF. It is read here, not sent anywhere.",
 			"info",
 		);
 		dropzone.focus();
@@ -1497,6 +1552,16 @@ function init(): void {
 		if (tool.id === "compress") {
 			return { op: "compress", files: wireFiles };
 		}
+		if (tool.id === "image_to_pdf") {
+			return {
+				op: "image_to_pdf",
+				options: {
+					page_size: optionValue("page_size"),
+					margin: numberInRange("margin", "Page margin", 0, 10_000, 36),
+				},
+				files: wireFiles,
+			};
+		}
 		if (tool.id === "attachments") {
 			return { op: "attachments", files: wireFiles };
 		}
@@ -1536,12 +1601,18 @@ function init(): void {
 	async function readWireFiles(): Promise<WireFile[]> {
 		const tool = currentTool();
 		// Attach takes the PDF first and treats the remaining files as opaque
-		// payloads, so only index 0 has to be a PDF.
+		// payloads, so only index 0 has to be a PDF. Image conversion accepts
+		// the two containers `selis-image` decodes and nothing else.
 		const payloadsAfterFirst = tool?.id === "attach";
+		const images = tool?.accepts === "image";
 		const wireFiles: WireFile[] = [];
 		for (const [index, file] of files.entries()) {
 			const bytes = new Uint8Array(await file.arrayBuffer());
-			if (!(payloadsAfterFirst && index > 0) && !hasPdfHeader(bytes)) {
+			if (images) {
+				if (!hasImageHeader(bytes)) {
+					throw new ToolInputError(`${file.name} does not look like a PNG or JPEG.`);
+				}
+			} else if (!(payloadsAfterFirst && index > 0) && !hasPdfHeader(bytes)) {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			wireFiles.push({ name: file.name, bytes });
@@ -1663,13 +1734,16 @@ function init(): void {
 		if (tool === null) {
 			return;
 		}
-		if (files.length < (tool.multiple ? 2 : 1)) {
+		const needed = tool.minimum ?? (tool.multiple ? 2 : 1);
+		if (files.length < needed) {
 			setStatus(
 				tool.id === "attach"
 					? "Choose a PDF and at least one file to embed first."
-					: tool.multiple
-						? "Choose at least two PDFs first."
-						: "Choose a PDF first.",
+					: tool.accepts === "image"
+						? "Choose at least one PNG or JPEG image first."
+						: tool.multiple
+							? "Choose at least two PDFs first."
+							: "Choose a PDF first.",
 				"error",
 			);
 			return;

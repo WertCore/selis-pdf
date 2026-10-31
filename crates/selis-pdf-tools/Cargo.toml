@@ -25,6 +25,7 @@ selis-io = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
+selis-image = { workspace = true }
 selis-font = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 22,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 23,
           15_000,
           label,
         );
@@ -201,6 +201,29 @@
           outputs,
           output: outputs.find((output) => output.kind === "pdf") || null,
         };
+      }
+
+      // Attach an explicit list of files. `toolInFrame` uses this for the
+      // image→PDF leg, where the inputs are a PNG and a JPEG rather than PDFs,
+      // so the MIME type and the count both come from the caller.
+      async function attachList(frame, files, label) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        const transfer = new win.DataTransfer();
+        for (const file of files) {
+          transfer.items.add(
+            new win.File([file.bytes.slice(0)], file.name, { type: file.type }),
+          );
+        }
+        const input = doc.getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll("#file-list .file-row").length === files.length,
+          5_000,
+          files.length + " selected file(s) (" + label + ")",
+        );
+        return doc.querySelectorAll("#file-list .file-row").length;
       }
 
       async function attachFiles(frame, fixture, name, label, count) {
@@ -464,6 +487,7 @@
         inputs,
         needles,
         absent,
+        files,
       ) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -496,7 +520,17 @@
           field.dispatchEvent(new win.Event("change", { bubbles: true }));
         }
 
-        const fileRows = await attachFiles(frame, fixture, fixtureName, label, 1);
+        const selection =
+          files && files.length > 0
+            ? files
+            : [
+                {
+                  name: fixtureName,
+                  bytes: new Uint8Array(fixture),
+                  type: "application/pdf",
+                },
+              ];
+        const fileRows = await attachList(frame, selection, label);
         const run = doc.getElementById("run-tool");
         await waitFor(() => !run.disabled, 5_000, "the " + toolId + " button to enable");
         const runLabel = run.textContent.trim();
@@ -599,7 +633,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-two tool cards");
+        out.cards = await waitForCards(frame, "the twenty-three tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -648,6 +682,20 @@
           if (!r.ok) throw new Error("metadata.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        // Image→PDF inputs: a PNG and a JPEG, so the leg covers both decoders
+        // `selis-image` owns and proves the page accepts images rather than PDFs.
+        const pngFixture = await fetch("one.png").then((r) => {
+          if (!r.ok) throw new Error("one.png fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const jpegFixture = await fetch("one.jpg").then((r) => {
+          if (!r.ok) throw new Error("one.jpg fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const imageFiles = [
+          { name: "one.png", bytes: new Uint8Array(pngFixture), type: "image/png" },
+          { name: "one.jpg", bytes: new Uint8Array(jpegFixture), type: "image/jpeg" },
+        ];
         // The repair leg needs a document whose cross-reference table is
         // unreadable, not merely mis-aimed: a wrong startxref is tolerated by
         // the parser, so the `xref` keyword itself has to be destroyed.
@@ -1116,6 +1164,32 @@
           network: onlineRepair.network,
         };
 
+        // Image→PDF: two images in, two pages out. The needles are read from
+        // the real Blob, so the page must have decoded both containers and
+        // embedded Flate-compressed RGB image XObjects, not merely counted
+        // files.
+        const onlineImage = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online image to PDF",
+          "image_to_pdf",
+          { page_size: "a4", margin: "18" },
+          ["/Subtype /Image", "/Filter /FlateDecode", "/ColorSpace /DeviceRGB"],
+          [],
+          imageFiles,
+        );
+        out.imageToPdf = {
+          fileRows: onlineImage.fileRows,
+          runLabel: onlineImage.runLabel,
+          noUpload: onlineImage.noUpload,
+          status: onlineImage.status,
+          result: onlineImage.result,
+          outputs: onlineImage.outputs,
+          output: onlineImage.output,
+          network: onlineImage.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1127,7 +1201,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-two offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-three offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1321,6 +1395,17 @@
           {},
           ["/Type /Pages"],
           ["zzzz"],
+        );
+        const offlineImage = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline image to PDF",
+          "image_to_pdf",
+          { page_size: "a4", margin: "18" },
+          ["/Subtype /Image", "/Filter /FlateDecode", "/ColorSpace /DeviceRGB"],
+          [],
+          imageFiles,
         );
         const offlineStripMetadata = await toolInFrame(
           frame,
@@ -1521,6 +1606,16 @@
             outputs: offlineStripMetadata.outputs,
             output: offlineStripMetadata.output,
             network: offlineStripMetadata.network,
+          },
+          imageToPdf: {
+            fileRows: offlineImage.fileRows,
+            runLabel: offlineImage.runLabel,
+            noUpload: offlineImage.noUpload,
+            status: offlineImage.status,
+            result: offlineImage.result,
+            outputs: offlineImage.outputs,
+            output: offlineImage.output,
+            network: offlineImage.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

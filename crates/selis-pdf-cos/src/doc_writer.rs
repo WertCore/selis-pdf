@@ -678,6 +678,73 @@ pub fn embed_image_rgba(
     Ref::new(num, 0)
 }
 
+/// Composite RGBA samples over white and drop the alpha channel.
+///
+/// PDF image XObjects have no alpha in the DeviceRGB path this writer emits.
+/// Compositing over white is what a reader shows when the transparent image
+/// sits on a white page; simply dropping alpha would leak whatever colour the
+/// encoder happened to leave in transparent pixels.
+#[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+fn rgba_over_white(rgba8: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba8.len().saturating_div(4).saturating_mul(3));
+    for px in rgba8.chunks_exact(4) {
+        let &[r, g, b, a] = px else {
+            continue;
+        };
+        let alpha = u32::from(a);
+        let inverse = 255u32.saturating_sub(alpha);
+        // `(channel * alpha + 255 * inverse + 127) / 255` rounds to nearest.
+        for channel in [r, g, b] {
+            let value = u32::from(channel)
+                .saturating_mul(alpha)
+                .saturating_add(255u32.saturating_mul(inverse))
+                .saturating_add(127)
+                / 255;
+            rgb.push(u8::try_from(value).unwrap_or(255));
+        }
+    }
+    rgb
+}
+
+/// Embed an RGBA image as a Flate-compressed DeviceRGB XObject.
+///
+/// Unlike [`embed_image_rgba`], which writes the raw RGB plane, this variant
+/// compresses it. Photographic pages are dominated by their image bytes, so
+/// the raw form makes an image-only PDF roughly the size of the decoded
+/// pixels; Flate keeps it near the source file's size.
+///
+/// Alpha is composited over white before compression. Returns the image
+/// object reference (call before writing the document).
+pub fn embed_image_rgba_flate(
+    builder: &mut DocumentBuilder,
+    width: u32,
+    height: u32,
+    rgba8: &[u8],
+    level: u8,
+) -> Ref {
+    let rgb = rgba_over_white(rgba8);
+    let compressed = selis_pdf_filter::flate_encode(&rgb, level);
+    let num = builder.allocate();
+    let img = Obj::Stream {
+        dict: vec![
+            (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+            (bytes(b"Subtype"), Obj::Name(bytes(b"Image"))),
+            (bytes(b"Width"), Obj::Int(i64::from(width))),
+            (bytes(b"Height"), Obj::Int(i64::from(height))),
+            (bytes(b"ColorSpace"), Obj::Name(bytes(b"DeviceRGB"))),
+            (bytes(b"BitsPerComponent"), Obj::Int(8)),
+            (bytes(b"Filter"), Obj::Name(bytes(b"FlateDecode"))),
+            (
+                bytes(b"Length"),
+                Obj::Int(i64::try_from(compressed.len()).unwrap_or(i64::MAX)),
+            ),
+        ],
+        data: bytes(&compressed),
+    };
+    builder.objects.push((num, img));
+    Ref::new(num, 0)
+}
+
 /// Append an incremental update to an existing PDF (SL-1A.WRITE.02).
 ///
 /// The original bytes are preserved verbatim as a prefix; the replacement
@@ -1180,6 +1247,28 @@ mod tests {
         let budget = selis_sandbox::Budget::unlimited();
         let bytes = b.write(&budget, &mut g).expect("write");
         assert!(String::from_utf8_lossy(&bytes).contains("/Subtype /Image"));
+    }
+
+    #[test]
+    fn flate_image_composites_alpha_over_white_and_compresses() {
+        // Opaque red keeps its channels; fully transparent red becomes white.
+        assert_eq!(
+            rgba_over_white(&[255, 0, 0, 255, 255, 0, 0, 0]),
+            vec![255, 0, 0, 255, 255, 255]
+        );
+
+        let mut b = DocumentBuilder::new();
+        let img = embed_image_rgba_flate(&mut b, 1, 1, &[10, 20, 30, 255], 6);
+        let mut c = ContentBuilder::new();
+        c.draw_image(&format!("Im{}", img.num));
+        b.add_page(100.0, 100.0, c.to_bytes().as_slice());
+        let mut g = guard();
+        let budget = selis_sandbox::Budget::unlimited();
+        let bytes = b.write(&budget, &mut g).expect("write");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/Subtype /Image"));
+        assert!(text.contains("/Filter /FlateDecode"));
+        assert!(text.contains("/ColorSpace /DeviceRGB"));
     }
 
     #[test]

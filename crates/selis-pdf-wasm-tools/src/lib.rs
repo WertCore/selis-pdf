@@ -87,6 +87,7 @@ enum Op {
     Attach,
     Detach,
     Repair,
+    ImageToPdf,
 }
 
 impl Op {
@@ -114,6 +115,7 @@ impl Op {
             20 => Some(Self::Attach),
             21 => Some(Self::Detach),
             22 => Some(Self::Repair),
+            23 => Some(Self::ImageToPdf),
             _ => None,
         }
     }
@@ -148,10 +150,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
-/// attachments, 21 repair.
+/// attachments, 21 repair, 22 image to PDF.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b11_1111_1111_1111_1111_1111
+    0b111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -649,6 +651,24 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             verification: selis_pdf_tools::repair("in/0", "out.pdf")?,
             over_target: false,
         }],
+        Op::ImageToPdf => {
+            let page_size = match option_str(&options, "page_size") {
+                Some(value) => selis_pdf_tools::ImagePageSize::parse(&value)?,
+                None => selis_pdf_tools::ImagePageSize::Fit,
+            };
+            let margin = option_f64(&options, "margin").unwrap_or(36.0);
+            let inputs: Vec<String> = (0..file_count).map(|i| format!("in/{i}")).collect();
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-images.pdf"),
+                verification: selis_pdf_tools::image_to_pdf(
+                    &inputs,
+                    selis_pdf_tools::ImageToPdfOptions { page_size, margin },
+                    "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -1038,7 +1058,7 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b11_1111_1111_1111_1111_1111);
+        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1105,7 +1125,7 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(23, b"", &[("doc.pdf", &pdf)]));
+        let response = run_request(&request(24, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1161,6 +1181,38 @@ mod tests {
         assert_eq!(message["repair_mode"], "reconstructed index");
         assert_eq!(outputs[0].0, "broken-repaired.pdf");
         assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+    }
+
+    /// A 1x1 RGBA PNG (colour type 6) used by the image leg. The bytes are a
+    /// fixed encoder output, so the test does not depend on an image crate
+    /// feature being enabled in this build.
+    const ONE_PNG: [u8; 120] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x01, 0x73, 0x52, 0x47, 0x42, 0x00, 0xae, 0xce, 0x1c,
+        0xe9, 0x00, 0x00, 0x00, 0x04, 0x67, 0x41, 0x4d, 0x41, 0x00, 0x00, 0xb1, 0x8f, 0x0b, 0xfc,
+        0x61, 0x05, 0x00, 0x00, 0x00, 0x09, 0x70, 0x48, 0x59, 0x73, 0x00, 0x00, 0x0e, 0xc3, 0x00,
+        0x00, 0x0e, 0xc3, 0x01, 0xc7, 0x6f, 0xa8, 0x64, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x18, 0x57, 0x63, 0xe0, 0x12, 0x91, 0xfb, 0x0f, 0x00, 0x01, 0xa4, 0x01, 0x3c, 0xbc,
+        0x4e, 0xa8, 0xf7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn image_to_pdf_operation_is_dispatched() {
+        let response = run_request(&request(
+            23,
+            br#"{"page_size":"a4","margin":18}"#,
+            &[("photo.png", &ONE_PNG), ("second.png", &ONE_PNG)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "image to pdf failed: {message}");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "photo-images.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(text.contains("/Subtype /Image"));
+        assert!(text.contains("/Filter /FlateDecode"));
+        assert!(text.contains("595.276"), "the A4 page width is written");
     }
 
     #[test]

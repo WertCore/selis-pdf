@@ -1039,8 +1039,8 @@ fn run() {
             page_size,
             margin,
             json,
-        } => match img2pdf::PageFit::parse(&page_size) {
-            Ok(fit) => finish(img2pdf::img2pdf(&inputs, &output, &fit, margin), json),
+        } => match img2pdf::parse_page_size(&page_size) {
+            Ok(fit) => finish(img2pdf::img2pdf(&inputs, &output, fit, margin), json),
             Err(e) => Err(e),
         },
         Command::Topdf {

@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, N-up, attach, detach, and repair slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, N-up, attach, detach, repair, and image-to-PDF slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -69,6 +69,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Edit metadata | yes | yes | **Live** | Info dictionary Title/Author/Subject/Keywords. XMP writing is not exposed yet. |
 | Remove metadata | — | yes | **Live** | Drops the trailer/catalog `/Info` and the catalog XMP `/Metadata`; pages, annotations, forms, outlines, page labels, attachments, and tags survive. Encrypted inputs are refused. PDF/A conformance and signatures may be invalidated, and the UI says so. |
 | Repair PDF | — | yes | **Live** | Opens the strongest way the file allows: the ordinary parser, then the last intact revision, then a rebuilt object index. Every recovered page is rewritten through the same writer and structural gate, the recovered page count is asserted on the output, and the strategy is shown as a Recovery row. Encrypted inputs are refused. |
+| Image to PDF | yes | yes | **Live** | PNG (colour types 0/2/3/4/6, 8-bit, non-interlaced) and baseline/progressive JPEG are decoded on the device through `selis-image`, composited over white, and embedded as a Flate-compressed `/DeviceRGB` image XObject. One image is one page. Page size is fit-to-image (image size plus margin), A4, or Letter, with the image scaled down and centred and never enlarged. The output is generated, so the gate asserts one page per input image rather than an input page count. Encrypted inputs do not apply; unknown containers fail typed `IMAGE_UNSUPPORTED`. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
 | Local-only guard | — | — | **Live** | `data-no-upload="verified"` after every successful run; request recorder + CSP + import-free chunk. |
@@ -81,7 +82,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 249 515 B).
+      (currently 300 000 B brotli; baseline 278 579 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -347,7 +348,7 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-two tools are
+3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-three tools are
    object-graph operations; keeping the renderer out is why the chunk is 248 KB brotli instead of
    the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
@@ -379,7 +380,7 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
       Form XObjects, proves removed metadata is absent
       from the Blob, proves an embedded file's name tree and name are present after attach, proves
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
-      `xtask/browser/tools-page` passed in Edge with 22 cards online and offline, 0 foreign
+      `xtask/browser/tools-page` passed in Edge with 23 cards online and offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.

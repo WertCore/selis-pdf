@@ -384,6 +384,14 @@ operation is available identically in the CLI, the web app, and the extension.
     `--margin`. WebP/HEIC/TIFF need new codec dependencies — held under the "no new dependency
     without proposal" rule (00-INDEX §agent template); file them with a licence justification to
     complete the format list.
+  - **Browser parity (2026-10-31):** the same engine path is now card 23 on `/tools.html`. The
+    CLI's `img2pdf` was refactored into a thin shim over `selis_pdf_tools::image_to_pdf`, so CLI and
+    browser run one implementation; `embed_image_rgba_flate` composites alpha over white and
+    Flate-compresses the DeviceRGB samples instead of writing them raw. WASM op 23
+    (`ImageToPdf`) is the twenty-third capability bit. The page accepts PNG and JPEG only, checks
+    the container header before submitting, and the browser leg proves a PNG + JPEG pair becomes a
+    2-page PDF whose real Blob carries `/Subtype /Image`, `/Filter /FlateDecode` and
+    `/ColorSpace /DeviceRGB` twice each, online and offline with zero foreign requests.
 - [x] **SL-1A.TOOL.09 — Metadata editor** · deps: WRITE.02 · owner: AI
   - **Note:** Shipped as `selis set-metadata --field K=V -o out.pdf` — rewrites the document with
     the Info dict set and the catalog `/Info` wired. XMP editing is a refinement. Metadata removal
@@ -442,7 +450,7 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-two live cards,
+  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-three live cards,
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not
@@ -494,7 +502,7 @@ operation is available identically in the CLI, the web app, and the extension.
     tools chunk alongside the viewer shell. The tools page registers the origin-wide worker itself,
     so a first visit that lands on `/tools.html` is enough. `xtask/browser/tools-page` runs every
     leg online, cuts the origin (the harness answers 503), reloads the same page, and runs every
-    leg again: 22 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
+    leg again: 23 cards, 0 foreign resources, `%PDF-` downloads and decoded attachment files,
     `data-no-upload="verified"`. The viewer's core engine remains runtime-cached; the document
     cache exclusion is unchanged.
 - [x] **SL-1A.UI.06 — Large-file handling UX** · deps: `SL-0.SBX.05` · owner: AI+
@@ -526,14 +534,14 @@ operation is available identically in the CLI, the web app, and the extension.
 ## 1A.WEBTOOLS — The browser tools surface (updated 2026-10-30)
 
 - [x] **SL-4.TOOLS.01 — Shared byte-oriented tools library + WASM protocol**
-  - **Done:** `selis-pdf-tools` owns the twenty-two operations over an in-memory backend and a native
+  - **Done:** `selis-pdf-tools` owns the twenty-three operations over an in-memory backend and a native
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
     capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
     custom-section stripping it is 806 360 B raw / 249 515 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the object-graph tools chunk does not.
-- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-two live tools**
+- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-three live tools**
   - **Done:** `/tools.html` (merge, mix pages, split, rotate, crop, flip, delete, organize pages,
     metadata, remove metadata, page numbers, watermark, header/footer, Bates, compress, extract
     attachments, page labels, resize, N-up, embed files, remove attachments, repair), 1-based page input, drag/drop
@@ -554,7 +562,7 @@ operation is available identically in the CLI, the web app, and the extension.
     extraction, round-robin page interleaving, visual-edge cropping, display-relative flipping,
     explicit page labels, `/Info`/XMP removal, A4/A5/Letter/Legal/A3 or custom-point page
     resizing, and 2/4/6/9-up sheet placement;
-    the harness now drives all twenty-two cards online and offline, reads marker strings from
+    the harness now drives all twenty-three cards online and offline, reads marker strings from
     downloaded PDF bytes, verifies compression preserved the page count, checks both extracted
     files plus the ZIP header, and mixes the three-page report with the one-page fixture to require
     Pages `4 → 4` and `report-mixed.pdf`. The same harness drives duplicate and blank insertion

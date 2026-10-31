@@ -30,6 +30,7 @@
 
 pub mod attachments;
 pub mod compress;
+pub mod images;
 mod io;
 mod memory;
 pub mod overlay;
@@ -45,6 +46,7 @@ mod zip;
 use selis_sandbox::Clock;
 
 pub use compress::{compress, compress_file, CompressionReport};
+pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use memory::{clear, insert_input, take_output, MemorySession};
 pub use verify_report::Verification;
 

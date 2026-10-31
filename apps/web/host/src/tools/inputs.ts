@@ -133,3 +133,24 @@ export function hasPdfHeader(bytes: Uint8Array): boolean {
 		bytes[4] === 0x2d
 	);
 }
+
+/**
+ * Whether the file begins with a PNG or JPEG signature. These are the two
+ * containers `selis-image` decodes; the page refuses anything else before the
+ * bytes reach the engine.
+ */
+export function hasImageHeader(bytes: Uint8Array): boolean {
+	const png =
+		bytes.length >= 8 &&
+		bytes[0] === 0x89 &&
+		bytes[1] === 0x50 &&
+		bytes[2] === 0x4e &&
+		bytes[3] === 0x47 &&
+		bytes[4] === 0x0d &&
+		bytes[5] === 0x0a &&
+		bytes[6] === 0x1a &&
+		bytes[7] === 0x0a;
+	const jpeg =
+		bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+	return png || jpeg;
+}
