@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 use std::alloc::{alloc, dealloc, Layout};
+use std::sync::Mutex;
 
 use selis_bytes::Bytes;
 use selis_error::Result;
@@ -34,15 +35,26 @@ pub const PAGE_LETTER: u32 = 0;
 /// A4 page size.
 pub const PAGE_A4: u32 = 1;
 
-static mut LAST_ERROR: Option<String> = None;
+/// The last error message. A `Mutex` rather than a `static mut`: the page calls
+/// this module from one thread, but a shared reference to a mutable static is
+/// undefined behaviour regardless of how it is used, and the compiler is right
+/// to say so.
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn set_error(message: String) {
-    // SAFETY: single-threaded wasm; no reentrancy across the boundary.
-    unsafe { LAST_ERROR = Some(message) };
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = Some(message);
+    }
 }
 
 fn clear_error() {
-    unsafe { LAST_ERROR = None };
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = None;
+    }
+}
+
+fn last_error() -> Option<String> {
+    LAST_ERROR.lock().ok().and_then(|slot| slot.clone())
 }
 
 /// Allocate guest memory for an output buffer.
@@ -86,6 +98,26 @@ pub unsafe extern "C" fn selis_convert_chunk_id(out_len: *mut u32) -> *mut u8 {
     out
 }
 
+/// Allocate `len` bytes of guest memory for the caller to fill.
+///
+/// The page writes the input document and the two output slots into this
+/// memory, so the chunk has to hand out raw allocations: `selis_convert_run`
+/// takes pointers, not a copy. Returns null on a zero or impossible request,
+/// which the caller must treat as a failure rather than a valid pointer.
+#[no_mangle]
+pub extern "C" fn selis_convert_alloc(len: u32) -> *mut u8 {
+    let Ok(size) = usize::try_from(len) else {
+        return std::ptr::null_mut();
+    };
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
+    let Ok(layout) = Layout::from_size_align(size, 1) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: `layout` has a non-zero size, which `alloc` requires.
+    unsafe { alloc(layout) }
+}
 /// # Safety
 /// `ptr`/`len` must identify a live allocation from this module, freed exactly once.
 #[no_mangle]
@@ -109,7 +141,7 @@ pub unsafe extern "C" fn selis_convert_last_error(out_len: *mut u32) -> *mut u8 
     if out_len.is_null() {
         return std::ptr::null_mut();
     }
-    let message = unsafe { LAST_ERROR.clone() }.unwrap_or_default();
+    let message = last_error().unwrap_or_default();
     if message.is_empty() {
         out_len.write(0);
         return std::ptr::null_mut();

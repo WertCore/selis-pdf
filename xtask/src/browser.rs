@@ -1193,6 +1193,164 @@ const IMAGE_NEEDLES: [&str; 3] = [
     "/Filter /FlateDecode",
     "/ColorSpace /DeviceRGB",
 ];
+/// The strings the convert leg requires to be PRESENT in the real downloaded
+/// bytes: the heading font and the heading text. A page that never rendered
+/// Markdown has neither.
+const CONVERT_NEEDLES: [&str; 2] = ["/BaseFont /Helvetica-Bold", "Parity Report"];
+
+/// One convert leg: a Markdown file becomes a real PDF through the lazy
+/// convert chunk, and the downloaded bytes carry the rendered heading.
+///
+/// This is the only browser proof that the convert chunk is served, links with
+/// no imports, and is wired to the card. The chunk is runtime-cached rather
+/// than precached, so the offline leg additionally proves the second run comes
+/// out of Cache Storage with the origin cut.
+fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Convert to PDF" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Convert to PDF\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("notes-converted.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"notes-converted.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    // A generated document has no input page count, so the row is the output
+    // count alone.
+    if row_value("Pages") != "1" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"1\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("notes-converted.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"notes-converted.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 1",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("notes-converted.pdf") {
+        return Err(format!(
+            "the {label} download was named {:?}, expected \"notes-converted.pdf\"",
+            output.get("downloadName")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+    if found.len() != CONVERT_NEEDLES.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            CONVERT_NEEDLES.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output is missing {:?}; the Markdown was not rendered",
+            CONVERT_NEEDLES[index]
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
 /// One image→PDF leg: two image files (PNG + JPEG) become one PDF with one
 /// page per image, and the real Blob carries Flate-compressed DeviceRGB image
 /// XObjects. The page count row has no input count, because the output is
@@ -2436,6 +2594,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("imageToPdf")
         .ok_or_else(|| "the page reported no image-to-PDF leg (imageToPdf = None)".to_string())?;
     check_image_leg(image_to_pdf, "online image to PDF")?;
+    let convert = report
+        .get("convert")
+        .ok_or_else(|| "the page reported no convert leg (convert = None)".to_string())?;
+    check_convert_leg(convert, "online convert")?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -2732,6 +2894,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the offline leg reported no image-to-PDF result (imageToPdf = None)".to_string()
     })?;
     check_image_leg(offline_image_to_pdf, "offline image to PDF")?;
+    let offline_convert = offline
+        .get("convert")
+        .ok_or_else(|| "the offline leg reported no convert result".to_string())?;
+    check_convert_leg(offline_convert, "offline convert")?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -6678,6 +6844,48 @@ mod tests {
         })
     }
 
+    /// The convert leg: a Markdown file rendered to a one-page PDF, with the
+    /// heading font and text present in the downloaded bytes.
+    fn real_tools_convert_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "notes-converted.pdf",
+            "pages": 1,
+            "declaredBytes": 1500,
+            "bytes": 1500,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "notes-converted.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true, true],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Convert to PDF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "notes-converted.pdf",
+                "meta": "1 file \u{00b7} 1.5 kB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 2,
+                "foreign": [],
+                "paths": [
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                    "/wasm/selis_pdf_wasm_convert.wasm",
+                ],
+            },
+        })
+    }
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
     /// negative witness the verdict requires (`absentFound` all false).
     fn real_tools_strip_metadata_leg() -> Json {
@@ -6825,7 +7033,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 23,
+            "cards": 25,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -6872,7 +7080,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 23,
+                "cards": 25,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -6974,6 +7182,7 @@ mod tests {
         report["repair"] = real_tools_repair_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
         report["imageToPdf"] = real_tools_image_leg();
+        report["convert"] = real_tools_convert_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
@@ -6993,7 +7202,7 @@ mod tests {
         report["offline"]["repair"] = report["repair"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
-        report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
+        report["offline"]["convert"] = report["convert"].clone();
         report
     }
 
@@ -7202,7 +7411,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 23,
+            "cards": 25,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -7421,6 +7630,29 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_image).is_err(),
             "an online-only image conversion must not pass the offline gate"
+        );
+
+        // Convert: the needles are the rendered heading, so a PDF produced
+        // without rendering the Markdown must not pass.
+        let mut unrendered = report.clone();
+        *unrendered
+            .pointer_mut("/convert/outputs/0/found/1")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&unrendered).is_err(),
+            "a convert run whose bytes lack the heading text must not pass"
+        );
+
+        let mut no_offline_convert = report.clone();
+        no_offline_convert
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("convert");
+        assert!(
+            verdict_tools_page(&no_offline_convert).is_err(),
+            "an online-only convert must not pass the offline gate"
         );
 
         let mut no_offline_attachments = report.clone();

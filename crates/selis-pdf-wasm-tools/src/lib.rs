@@ -377,6 +377,9 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
     let mut first_name = String::new();
     let mut first_input_len = 0usize;
     let mut input_names: Vec<String> = Vec::new();
+    // The Zip operation bundles the selected files by their user-visible names,
+    // so it needs the bytes here rather than re-reading the session store.
+    let mut input_files: Vec<(String, Vec<u8>)> = Vec::new();
     for index in 0..file_count {
         let name = cursor
             .bytes(MAX_NAME_BYTES)
@@ -386,7 +389,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             .to_string();
         input_names.push(name.clone());
         if index == 0 {
-            first_name = name;
+            first_name = name.clone();
         }
         // The host never controls the internal session key: a requested name
         // cannot collide with an earlier run or escape a table.
@@ -396,6 +399,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         if index == 0 {
             first_input_len = data.len();
         }
+        input_files.push((name.clone(), data.to_vec()));
         selis_pdf_tools::insert_input(&format!("in/{index}"), data.to_vec());
     }
     if cursor.pos != request.len() {
@@ -672,9 +676,9 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             }]
         }
         Op::Zip => {
-            let entries: Vec<(&str, &[u8])> = files
+            let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
-                .map(|f| (f.0.as_str(), f.1.as_slice()))
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
                 .collect();
             let zip = selis_pdf_tools::bundle_zip(&entries)?;
             let name = format!("{stem}.zip");
@@ -682,7 +686,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             vec![Produced {
                 output: "out.zip".to_string(),
                 name: name.clone(),
-                verification: selis_pdf_tools::verify_report::Verification {
+                verification: selis_pdf_tools::Verification {
                     pages_in: None,
                     pages_out: 0,
                     annotations_in: None,
@@ -1093,7 +1097,9 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        assert_eq!(selis_tools_capabilities(), 0b111_1111_1111_1111_1111_1111);
+        // Ops 1-24: the twenty-three object-graph tools plus Zip. Bit 24 is the
+        // highest set bit, so the mask is twenty-four ones.
+        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111_1111_1111_1111);
     }
 
     #[test]
@@ -1160,7 +1166,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        let response = run_request(&request(24, b"", &[("doc.pdf", &pdf)]));
+        // Op 24 is Zip now, so the unknown-operation probe moves past it.
+        let response = run_request(&request(25, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 

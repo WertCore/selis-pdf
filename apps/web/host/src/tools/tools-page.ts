@@ -1863,6 +1863,10 @@ function init(): void {
 				verdict: "ok",
 			};
 			const output: ToolOutput = { name, bytes: outBytes };
+			// The chunk generates a document rather than rewriting one, so there
+			// is no input page count; it does assert the page count and the
+			// structural gate, and saying so is what puts the Pages row on the
+			// result instead of silently reporting nothing was checked.
 			const verification: Verification = {
 				pages_out: outPages || 1,
 				annotations_out: 0,
@@ -1873,7 +1877,7 @@ function init(): void {
 				bytes_in: bytes.length,
 				bytes_out: outBytes.length,
 				verdict: "ok",
-				checked: [],
+				checked: ["pages"],
 			};
 			const result = { verification, reports: [report], outputs: [output] };
 			try {

@@ -124,6 +124,10 @@ const WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm.wasm";
 const TOOLS_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.opt.wasm";
 /** The unoptimised tools chunk, for developers who only ran `cargo build`. */
 const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm";
+/** The convert chunk, optimised first. Also import-free (checked below). */
+const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
+/** The unoptimised convert chunk, for developers who only ran `cargo build`. */
+const CONVERT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -153,6 +157,17 @@ function findEngine() {
 function findToolsEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [TOOLS_WASM_OPT, TOOLS_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first convert chunk that exists, optimised preferred over raw. */
+function findConvertEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [CONVERT_WASM_OPT, CONVERT_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -519,6 +534,51 @@ if (toolsImports.length > 0) {
 	process.exit(1);
 }
 
+// The convert chunk is the third engine: Markdown/HTML/CSV → PDF. It is lazy,
+// so the tools page never downloads it unless the user picks Convert to PDF,
+// and it must be import-free for the same reason the tools chunk is: an import
+// is a capability, and this chunk is handed the user's document text.
+const convert = findConvertEngine();
+if (convert === null) {
+	console.error(
+		[
+			"place-assets: no convert WASM chunk found - the Convert to PDF card cannot run without one,",
+			"so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-convert --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const convertOut = join(publicRoot, "wasm/selis_pdf_wasm_convert.wasm");
+mkdirSync(dirname(convertOut), { recursive: true });
+copyFileSync(convert, convertOut);
+const convertBytes = readFileSync(convertOut).length;
+let convertImports;
+try {
+	convertImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(convertOut)));
+} catch (error) {
+	console.error(`place-assets: the convert chunk at ${convertOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (convertImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the convert chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...convertImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-convert --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -539,6 +599,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_tools.wasm",
 				bytes: toolsBytes,
 			},
+			convert: {
+				url: "/wasm/selis_pdf_wasm_convert.wasm",
+				bytes: convertBytes,
+			},
 		},
 		null,
 		2,
@@ -549,6 +613,6 @@ writeFileSync(
 console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
-		`tools chunk (${toolsBytes} B, 0 imports, from ${relative(workspaceRoot, tools)}) ` +
+		`tools chunk (${toolsBytes} B, 0 imports) and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );

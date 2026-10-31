@@ -56,13 +56,29 @@ and a size budget; no raster feature is claimed.
       27 wasm-tools tests, 239 web tests, browser leg reports 2 pages with all three markers
       found twice each (once per image) and zero foreign requests, online and offline.
       Tools chunk 278 579 B brotli of 300 000.
-- [ ] **Markdown → PDF** — expose `selis-pdf-convert::markdown_to_pdf` in the browser through a
+- [x] **Markdown → PDF** — expose `selis-pdf-convert::markdown_to_pdf` in the browser through a
       lazy convert chunk; document the supported subset; no HTML engine claim.
       Acceptance: headings/lists/code/links render, page count asserted, CLI and browser agree.
-- [ ] **HTML → PDF** — the documented HTML subset, same convert chunk; refuse unsupported
+      *Shipped:* `selis-pdf-wasm-convert` speaks a pointer ABI (`selis_convert_alloc`,
+      `selis_convert_run`, `selis_convert_last_error`) and the page loads it lazily from
+      `/wasm/selis_pdf_wasm_convert.wasm`. The chunk is **import-free** (0 imports, 62 712 B
+      brotli of 600 000) after dropping `selis-pdf-cos/rng`, which had been dragging
+      `getrandom`'s wasm-bindgen shims in and making the module uninstantiable in a browser.
+      `place-assets` now copies it and fails the build if it is missing or has any import.
+      Evidence: browser leg renders a Markdown heading to a 1-page PDF whose real Blob carries
+      `/BaseFont /Helvetica-Bold` and the heading text, online and offline with zero foreign
+      requests; the offline leg is served from Cache Storage.
+- [x] **HTML → PDF** — the documented HTML subset, same convert chunk; refuse unsupported
       constructs rather than silently dropping them where the subset promises support.
-- [ ] **CSV → PDF** — owned table renderer: delimiter, header row, column widths, page breaks;
+      *Shipped:* `html_to_pdf` in the same chunk, selected by the format option or the file
+      extension. The documented subset is in `selis-pdf-convert`'s crate docs: headings,
+      paragraphs, lists, `pre`, blockquote, bold/italic/code, `a href`, block containers;
+      `<script>`/`<style>` dropped, unknown tags unwrap to text. No general HTML engine claim.
+- [x] **CSV → PDF** — owned table renderer: delimiter, header row, column widths, page breaks;
       no spreadsheet engine claim. Acceptance: a 100-row CSV paginates with repeated headers.
+      *Shipped:* `csv_to_pdf` in the same chunk. Splits on commas with quoted-field support,
+      sizes columns evenly, repeats the header row on every page, and truncates a cell that
+      overflows its column. This is a table dump, not a spreadsheet renderer, and the UI says so.
 - [ ] **Image watermark** — reuse the image→PDF embedding primitive; position, scale, opacity,
       tiled option, 1-based selection. Acceptance: `/Subtype /Image` inside the page resources
       and the expected placement count.
@@ -70,8 +86,13 @@ and a size budget; no raster feature is claimed.
       existing reader/writer; verification counts entries in/out. No drag UI required.
 - [x] **Drag-to-reorder** — pointer/keyboard reordering for the file list and organize order,
       with the existing buttons kept as the accessible path. UI enhancement, not correctness.
-- [ ] **General PDF → ZIP** — a file-picker ZIP over any produced outputs (not only split parts
+- [x] **General PDF → ZIP** — a file-picker ZIP over any produced outputs (not only split parts
       and attachments), deterministic entry order and timestamps.
+      *Shipped:* WASM op 24 `Zip` bundles the selected files by their user-visible names through
+      `selis_pdf_tools::bundle_zip`. This slice also had to repair the tools chunk, which had not
+      compiled since it landed: the `Zip` arm referenced an out-of-scope `files` binding and the
+      private `verify_report` module. The chunk now collects the parsed inputs and uses the
+      re-exported `Verification`.
 - [ ] **PDF → metadata JSON** — read-only export of Info/XMP and structural facts; no mutation.
 - [ ] **Batch queue** — multi-file queue with per-file isolation, per-file results, one failure
       never cancels another, and no cross-file document access. Acceptance: 3 files in, 3

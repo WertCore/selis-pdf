@@ -101,6 +101,15 @@ pub(crate) fn read_input(name: &str) -> Option<Vec<u8>> {
     store().lock().ok()?.get(name).cloned()
 }
 
+/// Store one tool's output bytes under `name`, replacing any earlier value.
+///
+/// This is how an operation hands its finished document back to the caller in
+/// the browser, where there is no filesystem: the tools chunk writes here and
+/// the page reads the bytes out by name.
+///
+/// # Errors
+///
+/// [`CliError`] when the session lock is poisoned.
 pub fn write_output(name: &str, bytes: &[u8]) -> CliResult<()> {
     let mut map = store()
         .lock()

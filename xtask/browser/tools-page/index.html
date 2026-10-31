@@ -696,6 +696,16 @@
           { name: "one.png", bytes: new Uint8Array(pngFixture), type: "image/png" },
           { name: "one.jpg", bytes: new Uint8Array(jpegFixture), type: "image/jpeg" },
         ];
+        // Convert to PDF runs in its own lazy chunk, so this fixture is the only
+        // proof that the chunk is served, instantiated, and wired to the card.
+        // The text is chosen so the needles below can only come from a real
+        // render: a heading, bold, and a list item.
+        const markdownFixture = new TextEncoder().encode(
+          "# Parity Report\n\nConverted **on device**.\n\n- first item\n- second item\n",
+        );
+        const convertFiles = [
+          { name: "notes.md", bytes: markdownFixture, type: "text/markdown" },
+        ];
         // The repair leg needs a document whose cross-reference table is
         // unreadable, not merely mis-aimed: a wrong startxref is tolerated by
         // the parser, so the `xref` keyword itself has to be destroyed.
@@ -1190,6 +1200,31 @@
           network: onlineImage.network,
         };
 
+        // Convert to PDF: a Markdown file becomes a real PDF through the lazy
+        // convert chunk. The needles are Helvetica-Bold (the heading font) and
+        // the literal heading text, so a page that never rendered cannot pass.
+        const onlineConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online convert",
+          "convert",
+          { format: "md", title: "Parity" },
+          ["/BaseFont /Helvetica-Bold", "Parity Report"],
+          [],
+          convertFiles,
+        );
+        out.convert = {
+          fileRows: onlineConvert.fileRows,
+          runLabel: onlineConvert.runLabel,
+          noUpload: onlineConvert.noUpload,
+          status: onlineConvert.status,
+          result: onlineConvert.result,
+          outputs: onlineConvert.outputs,
+          output: onlineConvert.output,
+          network: onlineConvert.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1407,6 +1442,20 @@
           [],
           imageFiles,
         );
+        // The convert chunk is runtime-cached rather than precached, so this
+        // leg proves the second run works with the origin cut: the chunk was
+        // stored on first use and is served from Cache Storage afterwards.
+        const offlineConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline convert",
+          "convert",
+          { format: "md", title: "Parity" },
+          ["/BaseFont /Helvetica-Bold", "Parity Report"],
+          [],
+          convertFiles,
+        );
         const offlineStripMetadata = await toolInFrame(
           frame,
           metadataFixture,
@@ -1616,6 +1665,16 @@
             outputs: offlineImage.outputs,
             output: offlineImage.output,
             network: offlineImage.network,
+          },
+          convert: {
+            fileRows: offlineConvert.fileRows,
+            runLabel: offlineConvert.runLabel,
+            noUpload: offlineConvert.noUpload,
+            status: offlineConvert.status,
+            result: offlineConvert.result,
+            outputs: offlineConvert.outputs,
+            output: offlineConvert.output,
+            network: offlineConvert.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,
