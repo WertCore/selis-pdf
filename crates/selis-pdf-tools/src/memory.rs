@@ -101,7 +101,7 @@ pub(crate) fn read_input(name: &str) -> Option<Vec<u8>> {
     store().lock().ok()?.get(name).cloned()
 }
 
-pub(crate) fn write_output(name: &str, bytes: &[u8]) -> CliResult<()> {
+pub fn write_output(name: &str, bytes: &[u8]) -> CliResult<()> {
     let mut map = store()
         .lock()
         .map_err(|_| CliError("tool session lock is poisoned".to_string()))?;

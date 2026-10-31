@@ -47,7 +47,7 @@ use selis_sandbox::Clock;
 
 pub use compress::{compress, compress_file, CompressionReport};
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
-pub use memory::{clear, insert_input, take_output, MemorySession};
+pub use memory::{clear, insert_input, take_output, MemorySession, write_output};
 pub use verify_report::Verification;
 
 /// The most PDF parts one split request may produce.

@@ -88,6 +88,7 @@ enum Op {
     Detach,
     Repair,
     ImageToPdf,
+    Zip,
 }
 
 impl Op {
@@ -116,6 +117,7 @@ impl Op {
             21 => Some(Self::Detach),
             22 => Some(Self::Repair),
             23 => Some(Self::ImageToPdf),
+            24 => Some(Self::Zip),
             _ => None,
         }
     }
@@ -153,7 +155,7 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// attachments, 21 repair, 22 image to PDF.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b111_1111_1111_1111_1111_1111
+    0b1111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -669,6 +671,39 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Zip => {
+            let entries: Vec<(&str, &[u8])> = files
+                .iter()
+                .map(|f| (f.0.as_str(), f.1.as_slice()))
+                .collect();
+            let zip = selis_pdf_tools::bundle_zip(&entries)?;
+            let name = format!("{stem}.zip");
+            selis_pdf_tools::write_output("out.zip", &zip)?;
+            vec![Produced {
+                output: "out.zip".to_string(),
+                name: name.clone(),
+                verification: selis_pdf_tools::verify_report::Verification {
+                    pages_in: None,
+                    pages_out: 0,
+                    annotations_in: None,
+                    annotations_out: 0,
+                    fields_in: None,
+                    fields_out: 0,
+                    ocgs_in: None,
+                    ocgs_out: 0,
+                    outline_entries_in: None,
+                    outline_entries_out: 0,
+                    embedded_files_in: None,
+                    embedded_files_out: 0,
+                    bytes_in: 0,
+                    bytes_out: u64::try_from(zip.len()).unwrap_or(u64::MAX),
+                    verdict: "ok".to_string(),
+                    checked: vec![],
+                    repair_mode: None,
+                },
+                over_target: false,
+            }]
+        }
     };
 
     let verifications: Vec<Verification> = produced
@@ -684,7 +719,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             .ok_or_else(|| ToolError("operation produced no output".to_string()))?;
         reports.push(serde_json::json!({
             "name": part.name,
-            "kind": "pdf",
+            "kind": if part.name.ends_with(".zip") { "zip" } else { "pdf" },
             "pages": part.verification.pages_out,
             "bytes": bytes.len(),
             "verdict": part.verification.verdict,

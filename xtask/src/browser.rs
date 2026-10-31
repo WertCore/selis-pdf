@@ -2096,7 +2096,7 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twenty-four cards render, and choosing Merge opens the workspace;
+/// * twenty-five cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -2136,9 +2136,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(24) {
+    if report.get("cards").and_then(Json::as_u64) != Some(25) {
         return Err(format!(
-            "the tools grid did not render twenty-four cards (cards = {:?})",
+            "the tools grid did not render twenty-five cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -2456,9 +2456,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(24) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(25) {
         return Err(format!(
-            "the offline tools page did not render twenty-four cards (cards = {:?})",
+            "the offline tools page did not render twenty-five cards (cards = {:?})",
             offline.get("cards")
         ));
     }

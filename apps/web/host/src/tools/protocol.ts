@@ -54,7 +54,8 @@ export type ToolOp =
 	| "attach"
 	| "detach"
 	| "repair"
-	| "image_to_pdf";
+	| "image_to_pdf"
+	| "zip";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -81,6 +82,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	detach: 21,
 	repair: 22,
 	image_to_pdf: 23,
+	zip: 24,
 };
 
 /** One input file on the wire. */

@@ -268,6 +268,16 @@ const TOOLS: readonly ToolDef[] = [
 		multiple: false,
 		accepts: "text",
 	},
+	{
+		id: "zip",
+		mark: "▣",
+		title: "ZIP files",
+		blurb: "Bundle several files into one deterministic ZIP.",
+		verb: "Create ZIP",
+		multiple: true,
+		minimum: 2,
+		accepts: "pdf",
+	},
 ];
 
 const TOOL_BY_ID = new Map<ToolOp | "convert", ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
@@ -1608,6 +1618,9 @@ function init(): void {
 		}
 		if (tool.id === "compress") {
 			return { op: "compress", files: wireFiles };
+		}
+		if (tool.id === "zip") {
+			return { op: "zip", files: wireFiles };
 		}
 		if (tool.id === "image_to_pdf") {
 			return {
