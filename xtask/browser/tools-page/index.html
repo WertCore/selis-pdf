@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 23,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 24,
           15_000,
           label,
         );
@@ -633,7 +633,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-three tool cards");
+        out.cards = await waitForCards(frame, "the twenty-four tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -1201,7 +1201,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-three offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-four offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,

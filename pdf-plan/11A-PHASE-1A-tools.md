@@ -541,10 +541,10 @@ operation is available identically in the CLI, the web app, and the extension.
     custom-section stripping it is 806 360 B raw / 249 515 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the object-graph tools chunk does not.
-- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-three live tools**
+- [x] **SL-4.TOOLS.02 — Tool-first page and twenty-four live tools**
   - **Done:** `/tools.html` (merge, mix pages, split, rotate, crop, flip, delete, organize pages,
     metadata, remove metadata, page numbers, watermark, header/footer, Bates, compress, extract
-    attachments, page labels, resize, N-up, embed files, remove attachments, repair, image to PDF), 1-based page input, drag/drop
+    attachments, page labels, resize, N-up, embed files, remove attachments, repair, image to PDF, convert to PDF), 1-based page input, drag/drop
     file selection,
     ordered merge list with ↑/↓, browser-native Blob preview and download, verification rows,
     responsive external CSS. **Split modes shipped 2026-10-27:** range, every N pages, in half, by

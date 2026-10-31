@@ -1916,6 +1916,7 @@ dependencies = [
  "selis-bytes",
  "selis-error",
  "selis-pdf-convert",
+ "selis-pdf-cos",
  "selis-sandbox",
 ]
 

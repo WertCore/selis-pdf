@@ -27,8 +27,11 @@ import {
 import {
 	type ToolOp,
 	ToolProtocolError,
+	type ToolOutput,
+	type ToolOutputReport,
 	type ToolRequest,
 	type ToolsWasm,
+	type Verification,
 	type WireFile,
 	formatBytes,
 	loadTools,
@@ -36,8 +39,28 @@ import {
 	verificationRows,
 } from "./protocol.js";
 
+interface ConvertWasm {
+	readonly exports: {
+		readonly memory: WebAssembly.Memory;
+		selis_convert_alloc(len: number): number;
+		selis_convert_free(ptr: number, len: number): void;
+		selis_convert_run(
+			format: number,
+			inputPtr: number,
+			inputLen: number,
+			pageSize: number,
+			titlePtr: number,
+			titleLen: number,
+			outLen: number,
+			outPages: number,
+		): number;
+		selis_convert_last_error(outLen: number): number;
+		readonly selis_convert_capabilities: () => number;
+	};
+}
+
 interface ToolDef {
-	readonly id: ToolOp;
+	readonly id: ToolOp | "convert";
 	readonly mark: string;
 	readonly title: string;
 	readonly blurb: string;
@@ -46,7 +69,7 @@ interface ToolDef {
 	/** The fewest files a run needs; defaults to 2 for multi-file tools. */
 	readonly minimum?: number;
 	/** The input container this tool accepts; defaults to PDF. */
-	readonly accepts?: "pdf" | "image";
+	readonly accepts?: "pdf" | "image" | "text";
 }
 
 const TOOLS: readonly ToolDef[] = [
@@ -236,9 +259,18 @@ const TOOLS: readonly ToolDef[] = [
 		minimum: 1,
 		accepts: "image",
 	},
+	{
+		id: "convert",
+		mark: "▾",
+		title: "Convert to PDF",
+		blurb: "Turn Markdown, HTML, or CSV text into a PDF.",
+		verb: "Convert to PDF",
+		multiple: false,
+		accepts: "text",
+	},
 ];
 
-const TOOL_BY_ID = new Map<ToolOp, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
+const TOOL_BY_ID = new Map<ToolOp | "convert", ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -318,7 +350,7 @@ function init(): void {
 	const requestRecorder = installRequestRecorder();
 	document.documentElement.dataset.noUpload = "watching";
 
-	let selectedTool: ToolOp | null = null;
+	let selectedTool: ToolOp | "convert" | null = null;
 	let files: File[] = [];
 	let busy = false;
 	let wasmPromise: Promise<ToolsWasm> | null = null;
@@ -1132,6 +1164,27 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "convert") {
+			const format = make("select", "control");
+			for (const [value, label] of [
+				["auto", "Auto-detect"],
+				["md", "Markdown"],
+				["html", "HTML"],
+				["csv", "CSV"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				format.append(choice);
+			}
+			addField("format", "Format", format, "Auto-detects from the file extension.");
+			addField("title", "Title", textInput("title", "text", "Document title"));
+			const note = make("p", "option-note");
+			note.textContent =
+				"Markdown, HTML and CSV are converted on this device through the owned engine. The output is a generated PDF.";
+			options.append(note);
+			return;
+		}
 		addField("title", "Title", textInput("title", "text", "Document title"));
 		addField("author", "Author", textInput("author", "text", "Author name"));
 		addField("subject", "Subject", textInput("subject", "text", "Short subject"));
@@ -1143,7 +1196,7 @@ function init(): void {
 		);
 	}
 
-	function selectTool(id: ToolOp): void {
+	function selectTool(id: ToolOp | "convert"): void {
 		const tool = TOOL_BY_ID.get(id);
 		if (tool === undefined) {
 			return;
@@ -1162,9 +1215,11 @@ function init(): void {
 		fileInput.accept =
 			tool.accepts === "image"
 				? "image/png,image/jpeg,.png,.jpg,.jpeg"
-				: id === "attach"
-					? ""
-					: "application/pdf,.pdf";
+				: tool.accepts === "text"
+					? ".md,.markdown,.html,.htm,.csv,.txt"
+					: id === "attach"
+						? ""
+						: "application/pdf,.pdf";
 		fileInput.value = "";
 		toolsSection.hidden = true;
 		workspace.hidden = false;
@@ -1174,7 +1229,9 @@ function init(): void {
 				? "Choose the PDF first, then the files to embed. They are read here, not sent anywhere."
 				: tool.accepts === "image"
 					? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
-					: tool.multiple
+					: tool.accepts === "text"
+						? "Choose a Markdown, HTML, or CSV file. It is read here, not sent anywhere."
+						: tool.multiple
 						? "Choose two or more PDFs. They are read here, not sent anywhere."
 						: "Choose a PDF. It is read here, not sent anywhere.",
 			"info",
@@ -1612,6 +1669,10 @@ function init(): void {
 				if (!hasImageHeader(bytes)) {
 					throw new ToolInputError(`${file.name} does not look like a PNG or JPEG.`);
 				}
+			} else if (tool?.accepts === "text") {
+				if (bytes.length === 0) {
+					throw new ToolInputError(`${file.name} is empty.`);
+				}
 			} else if (!(payloadsAfterFirst && index > 0) && !hasPdfHeader(bytes)) {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
@@ -1628,6 +1689,161 @@ function init(): void {
 			});
 		}
 		return wasmPromise;
+	}
+
+	let convertWasmPromise: Promise<ConvertWasm> | null = null;
+	function getConvertWasm(): Promise<ConvertWasm> {
+		if (convertWasmPromise === null) {
+			convertWasmPromise = (async () => {
+				const response = await fetch("/wasm/selis_pdf_wasm_convert.wasm", {
+					credentials: "same-origin",
+				});
+				if (!response.ok) {
+					throw new ToolProtocolError("the convert chunk is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				const module = await WebAssembly.compile(bytes);
+				const instance = await WebAssembly.instantiate(module, {});
+				return instance as unknown as ConvertWasm;
+			})().catch((error: unknown) => {
+				convertWasmPromise = null;
+				throw error;
+			});
+		}
+		return convertWasmPromise;
+	}
+
+	async function runConvert(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your file on this device…", "info");
+		try {
+			const file = files[0];
+			if (file === undefined) {
+				throw new ToolInputError("Choose a file first.");
+			}
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (bytes.length === 0) {
+				throw new ToolInputError(`${file.name} is empty.`);
+			}
+			const formatOption = optionValue("format");
+			let format = 0;
+			const lower = file.name.toLowerCase();
+			if (formatOption === "md") {
+				format = 0;
+			} else if (formatOption === "html") {
+				format = 1;
+			} else if (formatOption === "csv") {
+				format = 2;
+			} else {
+				if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+					format = 1;
+				} else if (lower.endsWith(".csv")) {
+					format = 2;
+				} else {
+					format = 0;
+				}
+			}
+			const titleText = optionValue("title").trim();
+			const titleBytes = new TextEncoder().encode(titleText);
+			const wasm = await getConvertWasm();
+			setStatus("Running locally…", "info");
+			await nextPaint();
+			const exports = wasm.exports;
+			const memory = exports.memory;
+			const inputPtr = exports.selis_convert_alloc(bytes.length);
+			if (inputPtr === 0) {
+				throw new ToolProtocolError("the convert chunk could not allocate input memory");
+			}
+			new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+			let titlePtr = 0;
+			if (titleBytes.length > 0) {
+				titlePtr = exports.selis_convert_alloc(titleBytes.length);
+				if (titlePtr === 0) {
+					throw new ToolProtocolError("the convert chunk could not allocate title memory");
+				}
+				new Uint8Array(memory.buffer, titlePtr, titleBytes.length).set(titleBytes);
+			}
+			const outLenPtr = exports.selis_convert_alloc(4);
+			const outPagesPtr = exports.selis_convert_alloc(4);
+			const pageSize = 1;
+			const resultPtr = exports.selis_convert_run(
+				format,
+				inputPtr,
+				bytes.length,
+				pageSize,
+				titlePtr,
+				titleBytes.length,
+				outLenPtr,
+				outPagesPtr,
+			);
+			exports.selis_convert_free(inputPtr, bytes.length);
+			if (titlePtr !== 0) {
+				exports.selis_convert_free(titlePtr, titleBytes.length);
+			}
+			const outLen = new DataView(memory.buffer).getUint32(outLenPtr, true);
+			const outPages = new DataView(memory.buffer).getUint32(outPagesPtr, true);
+			exports.selis_convert_free(outLenPtr, 4);
+			exports.selis_convert_free(outPagesPtr, 4);
+			if (resultPtr === 0) {
+				const errLenPtr = exports.selis_convert_alloc(4);
+				const errPtr = exports.selis_convert_last_error(errLenPtr);
+				const errLen = new DataView(memory.buffer).getUint32(errLenPtr, true);
+				let message = "The conversion failed.";
+				if (errPtr !== 0 && errLen > 0) {
+					message = new TextDecoder().decode(
+						new Uint8Array(memory.buffer, errPtr, errLen),
+					);
+					exports.selis_convert_free(errPtr, errLen);
+				}
+				exports.selis_convert_free(errLenPtr, 4);
+				throw new ToolProtocolError(message);
+			}
+			const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+			exports.selis_convert_free(resultPtr, outLen);
+			const name = file.name.replace(/\.[^.]+$/, "") + "-converted.pdf";
+			const report: ToolOutputReport = {
+				name,
+				kind: "pdf",
+				pages: outPages || 1,
+				bytes: outBytes.length,
+				verdict: "ok",
+			};
+			const output: ToolOutput = { name, bytes: outBytes };
+			const verification: Verification = {
+				pages_out: outPages || 1,
+				annotations_out: 0,
+				fields_out: 0,
+				ocgs_out: 0,
+				outline_entries_out: 0,
+				embedded_files_out: 0,
+				bytes_in: bytes.length,
+				bytes_out: outBytes.length,
+				verdict: "ok",
+				checked: [],
+			};
+			const result = { verification, reports: [report], outputs: [output] };
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(result);
+			setStatus("Done. The result was verified on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
 	}
 
 	function showResult(result: ReturnType<typeof runTool>): void {
@@ -1752,6 +1968,10 @@ function init(): void {
 		clearResult();
 		setStatus("Reading your PDFs on this device…", "info");
 		try {
+			if (tool.id === "convert") {
+				await runConvert();
+				return;
+			}
 			const wireFiles = await readWireFiles();
 			const request = buildRequest(tool, wireFiles);
 			setStatus("Loading the local tools engine…", "info");
@@ -1852,8 +2072,8 @@ function init(): void {
 	}
 	updateRunState();
 	const hash = window.location.hash.slice(1);
-	if (TOOL_BY_ID.has(hash as ToolOp)) {
-		selectTool(hash as ToolOp);
+	if (TOOL_BY_ID.has(hash as ToolOp | "convert")) {
+		selectTool(hash as ToolOp | "convert");
 	} else {
 		workspace.hidden = true;
 		toolsSection.hidden = false;

@@ -19,3 +19,4 @@ selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-convert = { workspace = true }
+selis-pdf-cos = { workspace = true }
