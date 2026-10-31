@@ -426,6 +426,13 @@ function init(): void {
 		return input;
 	}
 
+	function checkInput(key: string): HTMLInputElement {
+		const input = make("input", "control");
+		input.type = "checkbox";
+		input.name = key;
+		return input;
+	}
+
 	function numberInRange(
 		key: string,
 		label: string,
@@ -970,6 +977,12 @@ function init(): void {
 				textInput("pages", "text", "All pages, or 1-3, 7"),
 				"1-based page numbers or ranges.",
 			);
+			addField(
+				"tiled",
+				"Tile across the page",
+				checkInput("tiled"),
+				"Repeats the line on a staggered grid instead of stamping it once in the center.",
+			);
 			return;
 		}
 		if (tool.id === "header_footer") {
@@ -1429,6 +1442,10 @@ function init(): void {
 			const pages = overlayPages();
 			if (pages !== undefined) {
 				options.pages = pages;
+			}
+			const tiled = optionControls.get("tiled");
+			if (tiled instanceof HTMLInputElement && tiled.checked) {
+				options.tiled = true;
 			}
 			return { op: "watermark", options, files: wireFiles };
 		}

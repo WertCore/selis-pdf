@@ -156,9 +156,8 @@ pub enum WatermarkOrientation {
 
 /// Options for [`add_watermark`].
 ///
-/// The watermark is one text line centered on each selected page. Tiling is
-/// not implemented in this slice and is deliberately absent from the option
-/// shape rather than accepted and ignored.
+/// The watermark is one text line centered on each selected page, or — with
+/// `tiled` — the same line repeated on a staggered grid across the page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WatermarkOptions {
@@ -174,6 +173,8 @@ pub struct WatermarkOptions {
     pub color: OverlayColor,
     /// 1-based page selection; `None` means every page.
     pub pages: Option<String>,
+    /// Repeat the line on a staggered grid instead of stamping it once.
+    pub tiled: bool,
 }
 
 impl Default for WatermarkOptions {
@@ -185,6 +186,7 @@ impl Default for WatermarkOptions {
             font_size: 48.0,
             color: OverlayColor::default(),
             pages: None,
+            tiled: false,
         }
     }
 }
@@ -381,6 +383,7 @@ pub fn add_watermark(
     validate_style(&style).map_err(CliError)?;
     let encoded = encode_win_ansi(&options.text).map_err(CliError)?;
     let orientation = options.orientation;
+    let tiled = options.tiled;
     apply_overlay(
         &OverlayJob {
             path,
@@ -389,7 +392,13 @@ pub fn add_watermark(
             style,
             action: "added watermark",
         },
-        |ctx| Ok(stamp_watermark(ctx, orientation, &encoded)),
+        |ctx| {
+            Ok(if tiled {
+                stamp_watermark_tiled(ctx, orientation, &encoded)
+            } else {
+                stamp_watermark(ctx, orientation, &encoded)
+            })
+        },
     )
 }
 
@@ -820,6 +829,42 @@ fn stamp_watermark(
     let matrix = ctx.geometry.text_matrix(u, v, angle);
     let mut content = Vec::new();
     push_text_block(&mut content, ctx, matrix, encoded);
+    content
+}
+
+/// Render the watermark line on a staggered grid across the page.
+///
+/// Cell spacing is derived from the measured line width and font size, so a
+/// long watermark never overprints itself and a short one still covers the
+/// page. Odd rows are offset by half a cell for the classic tiled look.
+fn stamp_watermark_tiled(
+    ctx: &StampContext<'_>,
+    orientation: WatermarkOrientation,
+    encoded: &[u8],
+) -> Vec<u8> {
+    let font_size = ctx.style.font_size;
+    let width = text_width(encoded, font_size);
+    let (display_width, display_height) = ctx.geometry.display_size();
+    let angle = match orientation {
+        WatermarkOrientation::Horizontal => 0.0,
+        WatermarkOrientation::Diagonal => std::f64::consts::FRAC_PI_4,
+    };
+    let step_x = (width + font_size * 1.5).max(font_size * 4.0);
+    let step_y = (font_size * 3.0).max(step_x * 0.5);
+    let mut content = Vec::new();
+    let mut row = 0u32;
+    let mut v = step_y * 0.5;
+    while v < display_height + step_y {
+        let offset = if row % 2 == 1 { step_x * 0.5 } else { 0.0 };
+        let mut u = -offset;
+        while u < display_width + step_x {
+            let matrix = ctx.geometry.text_matrix(u, v, angle);
+            push_text_block(&mut content, ctx, matrix, encoded);
+            u += step_x;
+        }
+        row = row.saturating_add(1);
+        v += step_y;
+    }
     content
 }
 
@@ -1592,6 +1637,58 @@ mod tests {
             assert!(!stream.contains("/SelisOverlayGS gs"));
             assert!(stream.contains("(DRAFT) Tj"));
         }
+    }
+
+    #[test]
+    fn tiled_watermark_repeats_the_line_across_the_page() {
+        let dir = temp_dir("watermark-tiled");
+        let input = dir.join("in.pdf");
+        let once = dir.join("once.pdf");
+        let tiled = dir.join("tiled.pdf");
+        // A real A4 page, so the grid has room to repeat: the shared 200x300
+        // fixture would fit only a handful of cells.
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = DocumentBuilder::new();
+        for _ in 0..2 {
+            builder.add_page(595.28, 841.89, b"q Q");
+        }
+        std::fs::write(&input, builder.write(&budget, &mut g).expect("fixture"))
+            .expect("write input");
+
+        add_watermark(
+            input.to_str().unwrap(),
+            &WatermarkOptions {
+                text: "CONFIDENTIAL".to_string(),
+                pages: Some("2".to_string()),
+                ..WatermarkOptions::default()
+            },
+            once.to_str().unwrap(),
+        )
+        .expect("single watermark");
+        add_watermark(
+            input.to_str().unwrap(),
+            &WatermarkOptions {
+                text: "CONFIDENTIAL".to_string(),
+                pages: Some("2".to_string()),
+                tiled: true,
+                ..WatermarkOptions::default()
+            },
+            tiled.to_str().unwrap(),
+        )
+        .expect("tiled watermark");
+
+        let once_streams = output_page_streams(&once);
+        let tiled_streams = output_page_streams(&tiled);
+        let count = |haystack: &str| haystack.matches("(CONFIDENTIAL) Tj").count();
+        assert_eq!(count(&once_streams[1]), 1, "one line when not tiled");
+        assert!(
+            count(&tiled_streams[1]) >= 6,
+            "a tiled watermark must repeat across an A4 page, got {}",
+            count(&tiled_streams[1])
+        );
+        // Tiling is confined to the selection, like the single line.
+        assert!(!tiled_streams[0].contains("SelisOverlayFont"));
     }
 
     #[test]

@@ -56,7 +56,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Duplicate pages | — | yes | **Live** | Copies follow their originals; content, resources, and annotations travel with each copy. |
 | Insert blank pages | — | yes | **Live** | 1-based boundary (0 = before page 1, empty = append); copies the neighbouring page's media box and rotation; up to 100 blanks per run. |
 | Page numbers | yes | yes | **Live** | 1-based selection, corner/edge placement, starting number, `n`, `n of total`, and `Page n` formats, font/color/margins. |
-| Text watermark | yes | yes | **Live (text)** | Diagonal or horizontal centered text, opacity via `ExtGState`, 1-based selection. Image and tiled watermarks are not claimed. |
+| Text watermark | yes | yes | **Live (text)** | Diagonal or horizontal centered text, opacity via `ExtGState`, 1-based selection, and an optional tiled grid with staggered rows. Image watermarks are not claimed. |
 | Headers and footers | — | yes | **Live** | Three independently aligned slots each, `{page}`/`{pages}` placeholders, margins, font/color. |
 | Bates numbering | — | yes | **Live** | Prefix, suffix, start, zero-padding, placement, 1-based selection; advances only over selected pages. |
 | Compress PDF (lossless) | yes | yes | **Live** | Reachable-object GC, Flate re-encode, byte-identical-object dedup, inherited page attributes, trailer-level `/Info`; encrypted files are refused. |
@@ -81,7 +81,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 300 000 B brotli; baseline 247 784 B).
+      (currently 300 000 B brotli; baseline 249 515 B).
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.
@@ -119,7 +119,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Alternate / mix pages | — | yes | 1A.1 | Live. Round-robin interleave; page labels are expanded per output page when any input has them. |
 | Extract pages | yes | yes | 1A.1 | Live. One PDF, selected pages in document order. |
 | Page numbers | yes | yes | 1A.1 | Live. Standard-14 Helvetica overlay; placement, start, `n`/`n of total`/`Page n`, 1-based selection. Skip-first is not implemented. |
-| Watermark | yes | yes | 1A.1 | Live for centered text (diagonal/horizontal, opacity, selection). Image/tiled watermarks need `selis-image`; flatten remains an option. |
+| Watermark | yes | yes | 1A.1 | Live for centered text (diagonal/horizontal, opacity, selection) and tiled text (staggered grid, measured cell spacing). Image watermarks need `selis-image`; flatten remains an option. |
 | Headers and footers | — | yes | 1A.1 | Live. Three aligned slots each with `{page}`/`{pages}` placeholders. |
 | Bates numbering | — | yes | 1A.1 | Live. Deterministic prefix/suffix, start, padding, placement, selection. |
 | Bookmarks / outline editing | — | yes | 1A.1 | Outline reader/writer exists; add UI and verification. |
@@ -287,8 +287,13 @@ count, so a repair that loses a page fails rather than shipping, and the strateg
 Recovery row (`strict`, `rolled-back revision`, or `reconstructed index`). The browser leg damages
 the real fixture's `xref` keyword, requires Pages `3 → 3` and `reconstructed index`, and proves
 the damaged marker is absent from the downloaded bytes, online and after an offline reload.
+Tiling repeats the same watermark line on a staggered grid whose cell width and height come from
+the measured line width and font size, so a long line never overprints itself and a short one
+still covers the page. The browser leg enables the checkbox and requires the marker to occur many
+times in the downloaded bytes (15 on the letter fixture), online and after an offline reload; a
+single centered stamp cannot satisfy that count.
 
-**Remaining in 1A.1:** image/tiled watermark,
+**Remaining in 1A.1:** image watermark,
 CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
 incremental writer for page edits remains deferred; these page operations use the verified
 full-rewrite path.

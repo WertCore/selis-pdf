@@ -928,6 +928,39 @@ fn check_stamp_leg(
     )
 }
 
+/// One tiled-watermark leg: the ordinary stamp proof, plus the repetition the
+/// tiling option is supposed to produce. A single centered line would satisfy
+/// every other witness, so the occurrence count is the discriminating one.
+fn check_tiled_watermark_leg(leg: &Json, label: &str) -> Result<(), String> {
+    let marker = "(CONFIDENTIAL) Tj";
+    check_stamp_leg(
+        leg,
+        label,
+        "outlined-watermarked.pdf",
+        "Add watermark",
+        2,
+        &[marker],
+    )?;
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    let counts = output
+        .get("foundCounts")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report marker counts"))?;
+    let count = counts.first().and_then(Json::as_u64).unwrap_or(0);
+    if count < 4 {
+        return Err(format!(
+            "the {label} output stamped {marker} {count} time(s); a tiled watermark must repeat"
+        ));
+    }
+    Ok(())
+}
+
 /// The same proof for a leg that deliberately changes the page count (N-up).
 fn check_page_count_leg(
     leg: &Json,
@@ -2126,6 +2159,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         2,
         &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
     )?;
+    let watermark_tiled = report.get("watermarkTiled").ok_or_else(|| {
+        "the page reported no tiled-watermark leg (watermarkTiled = None)".to_string()
+    })?;
+    check_tiled_watermark_leg(watermark_tiled, "online tiled watermark")?;
     let header_footer = report.get("headerFooter").ok_or_else(|| {
         "the page reported no header/footer leg (headerFooter = None)".to_string()
     })?;
@@ -2414,6 +2451,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         2,
         &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
     )?;
+    let offline_watermark_tiled = offline.get("watermarkTiled").ok_or_else(|| {
+        "the offline leg reported no tiled-watermark result (watermarkTiled = None)".to_string()
+    })?;
+    check_tiled_watermark_leg(offline_watermark_tiled, "offline tiled watermark")?;
     let offline_header_footer = offline.get("headerFooter").ok_or_else(|| {
         "the offline leg reported no header/footer result (headerFooter = None)".to_string()
     })?;
@@ -6219,6 +6260,24 @@ mod tests {
         real_tools_count_leg(name, run_label, pages, pages, needles)
     }
 
+    /// The tiled-watermark leg: the stamp shape plus the occurrence counts the
+    /// verdict reads to prove the line repeats across the page.
+    fn real_tools_tiled_watermark_leg() -> Json {
+        let mut leg = real_tools_stamp_leg(
+            "outlined-watermarked.pdf",
+            "Add watermark",
+            2,
+            &["(CONFIDENTIAL) Tj"],
+        );
+        for pointer in ["/outputs/0", "/output"] {
+            leg.pointer_mut(pointer)
+                .and_then(Json::as_object_mut)
+                .expect("stamp output")
+                .insert("foundCounts".to_string(), json!([12]));
+        }
+        leg
+    }
+
     /// The same shape for a leg that changes the page count (N-up).
     fn real_tools_count_leg(
         name: &str,
@@ -6670,6 +6729,7 @@ mod tests {
             2,
             &["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
         );
+        report["watermarkTiled"] = real_tools_tiled_watermark_leg();
         report["headerFooter"] = real_tools_stamp_leg(
             "report-header-footer.pdf",
             "Add header & footer",
@@ -6713,6 +6773,7 @@ mod tests {
         report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
         report["offline"]["watermark"] = report["watermark"].clone();
+        report["offline"]["watermarkTiled"] = report["watermarkTiled"].clone();
         report["offline"]["headerFooter"] = report["headerFooter"].clone();
         report["offline"]["bates"] = report["bates"].clone();
         report["offline"]["compress"] = report["compress"].clone();
@@ -7013,6 +7074,10 @@ mod tests {
                 "a run that never watermarked a page must not pass",
             ),
             (
+                "watermarkTiled",
+                "a run that never tiled a watermark must not pass",
+            ),
+            (
                 "headerFooter",
                 "a run that never wrote a header/footer must not pass",
             ),
@@ -7293,6 +7358,39 @@ mod tests {
         assert!(
             verdict_tools_page(&offline_no_watermark).is_err(),
             "an online-only watermark must not pass the offline gate"
+        );
+
+        let mut tiled_stamped_once = report.clone();
+        *tiled_stamped_once
+            .pointer_mut("/watermarkTiled/outputs/0/foundCounts/0")
+            .unwrap() = json!(1);
+        assert!(
+            verdict_tools_page(&tiled_stamped_once).is_err(),
+            "a tiled watermark that stamped the line once must not pass"
+        );
+
+        let mut tiled_no_counts = report.clone();
+        tiled_no_counts
+            .pointer_mut("/watermarkTiled/outputs/0")
+            .unwrap()
+            .as_object_mut()
+            .expect("output")
+            .remove("foundCounts");
+        assert!(
+            verdict_tools_page(&tiled_no_counts).is_err(),
+            "a tiled watermark without an occurrence count must not pass"
+        );
+
+        let mut no_offline_tiled = report.clone();
+        no_offline_tiled
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("watermarkTiled");
+        assert!(
+            verdict_tools_page(&no_offline_tiled).is_err(),
+            "an online-only tiled watermark must not pass the offline gate"
         );
     }
 

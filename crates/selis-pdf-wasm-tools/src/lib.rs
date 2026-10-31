@@ -1237,6 +1237,24 @@ mod tests {
         let (status, message, outputs) = parse_response(&response);
         assert_eq!(status, 0, "watermark failed: {message}");
         assert_eq!(outputs[0].0, "doc-watermarked.pdf");
+        let single = String::from_utf8_lossy(&outputs[0].1)
+            .matches("(CONFIDENTIAL) Tj")
+            .count();
+
+        let response = run_request(&request(
+            8,
+            br#"{"text":"CONFIDENTIAL","opacity":0.3,"tiled":true}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "tiled watermark failed: {message}");
+        let tiled = String::from_utf8_lossy(&outputs[0].1)
+            .matches("(CONFIDENTIAL) Tj")
+            .count();
+        assert!(
+            tiled > single,
+            "the tiled option must repeat the line (single = {single}, tiled = {tiled})"
+        );
 
         let response = run_request(&request(
             10,

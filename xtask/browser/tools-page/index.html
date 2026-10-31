@@ -163,6 +163,11 @@
         if (needles && needles.length > 0) {
           const text = new TextDecoder("latin1").decode(bytes);
           output.found = needles.map((needle) => text.includes(needle));
+          // The count proves a repeat: a tiled watermark must appear more than
+          // once, which a plain presence check cannot distinguish.
+          output.foundCounts = needles.map(
+            (needle) => text.split(needle).length - 1,
+          );
         }
         if (absent && absent.length > 0) {
           const text = new TextDecoder("latin1").decode(bytes);
@@ -482,7 +487,11 @@
         for (const [key, value] of Object.entries(inputs || {})) {
           const field = doc.getElementById("option-" + key);
           if (!field) throw new Error("the " + toolId + " page offered no " + key + " field");
-          field.value = String(value);
+          if (field.type === "checkbox") {
+            field.checked = Boolean(value);
+          } else {
+            field.value = String(value);
+          }
           field.dispatchEvent(new win.Event("input", { bubbles: true }));
           field.dispatchEvent(new win.Event("change", { bubbles: true }));
         }
@@ -820,6 +829,26 @@
           outputs: onlineWatermark.outputs,
           output: onlineWatermark.output,
           network: onlineWatermark.network,
+        };
+
+        const onlineWatermarkTiled = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online tiled watermark",
+          "watermark",
+          { text: "CONFIDENTIAL", opacity: "0.35", pages: "2", tiled: true },
+          ["(CONFIDENTIAL) Tj"],
+        );
+        out.watermarkTiled = {
+          fileRows: onlineWatermarkTiled.fileRows,
+          runLabel: onlineWatermarkTiled.runLabel,
+          noUpload: onlineWatermarkTiled.noUpload,
+          status: onlineWatermarkTiled.status,
+          result: onlineWatermarkTiled.result,
+          outputs: onlineWatermarkTiled.outputs,
+          output: onlineWatermarkTiled.output,
+          network: onlineWatermarkTiled.network,
         };
 
         const onlineHeaderFooter = await toolInFrame(
@@ -1171,6 +1200,15 @@
           { text: "CONFIDENTIAL", opacity: "0.35", pages: "2" },
           ["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
         );
+        const offlineWatermarkTiled = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "offline tiled watermark",
+          "watermark",
+          { text: "CONFIDENTIAL", opacity: "0.35", pages: "2", tiled: true },
+          ["(CONFIDENTIAL) Tj"],
+        );
         const offlineHeaderFooter = await toolInFrame(
           frame,
           splitFixture,
@@ -1383,6 +1421,16 @@
             outputs: offlineWatermark.outputs,
             output: offlineWatermark.output,
             network: offlineWatermark.network,
+          },
+          watermarkTiled: {
+            fileRows: offlineWatermarkTiled.fileRows,
+            runLabel: offlineWatermarkTiled.runLabel,
+            noUpload: offlineWatermarkTiled.noUpload,
+            status: offlineWatermarkTiled.status,
+            result: offlineWatermarkTiled.result,
+            outputs: offlineWatermarkTiled.outputs,
+            output: offlineWatermarkTiled.output,
+            network: offlineWatermarkTiled.network,
           },
           headerFooter: {
             fileRows: offlineHeaderFooter.fileRows,

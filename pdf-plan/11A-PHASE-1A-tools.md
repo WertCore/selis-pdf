@@ -530,7 +530,7 @@ operation is available identically in the CLI, the web app, and the extension.
     filesystem backend; the CLI consumes it through re-exports and `From<ToolError>`.
     `selis-pdf-wasm-tools` exposes `sys`/`SLTS`/`SLTR` v1 with `selis_tools_alloc/free/run/
     capabilities/chunk_id`. The built chunk has **0 imports**; after wasm-opt and
-    custom-section stripping it is 804 886 B raw / 247 784 B brotli.
+    custom-section stripping it is 806 360 B raw / 249 515 B brotli.
   - **Guardrail:** optional `rng` features keep wasm-bindgen/getrandom out of this chunk; native
     and viewer builds enable `rng`, the object-graph tools chunk does not.
 - [x] **SL-4.TOOLS.02 — Tool-first page and twenty-two live tools**
@@ -550,7 +550,7 @@ operation is available identically in the CLI, the web app, and the extension.
     2026-10-27:** the existing reorder workspace now has reorder, duplicate, and insert-blank modes
     over one wire operation. **Overlay, compression, attachment extraction, page mixing, crop,
     flip, page labels, metadata removal, resizing, and N-up shipped 2026-10-28:** page numbers, centered
-    text watermark, header/footer slots, Bates numbering, lossless compression, embedded-file
+    or tiled text watermark, header/footer slots, Bates numbering, lossless compression, embedded-file
     extraction, round-robin page interleaving, visual-edge cropping, display-relative flipping,
     explicit page labels, `/Info`/XMP removal, A4/A5/Letter/Legal/A3 or custom-point page
     resizing, and 2/4/6/9-up sheet placement;
@@ -569,17 +569,19 @@ operation is available identically in the CLI, the web app, and the extension.
     `/Subtype /Form` and `/Type /XObject` in the downloaded bytes. The repair leg damages the real
     fixture's `xref` keyword, requires `damaged-repaired.pdf` with Pages `3 → 3` and a
     `reconstructed index` Recovery row, and proves the damaged marker is absent from the download,
-    online and offline. Unit tests cover the
+    online and offline. The tiled-watermark legs enable the new checkbox and require the marker to
+    appear many times in the download (15 on the letter fixture), so a single centered stamp cannot
+    pass. Unit tests cover the
     rotation-relative box math, flip, resize, and N-up matrices, target-box placement, label
     materialisation/renumbering, and Form XObject placement, and CLI tests write an explicit label
     tree, a resized A4 document, a two-up sheet, and a stripped metadata document through the real
     binary.
-  - **Deferred within this task:** drag-to-reorder (buttons ship), image/tiled watermark, and the
+  - **Deferred within this task:** drag-to-reorder (buttons ship), image watermark, and the
     raster/forms/edit features in `34-TOOLS-SITE-ROADMAP.md`.
 - [x] **SL-4.TOOLS.03 — Lazy chunk, asset gate, and size budget**
   - **Done:** `place-assets` copies `tools/tools-page.js`, its module graph, and the lazy chunk;
     the build fails if the chunk is missing, invalid, or declares any import. `xtask/size-check`
-    builds it with the other chunks; budget 300 000 B brotli, current baseline 247 784 B. CI builds
+    builds it with the other chunks; budget 300 000 B brotli, current baseline 249 515 B. CI builds
     it in `test-fast` and `browser-check`.
 - [ ] **SL-4.TOOLS.04 — Full feature-parity matrix**
   - **Do:** execute `34-TOOLS-SITE-ROADMAP.md` in phases: Phase 1A.1 object-graph tools, Phase 2
