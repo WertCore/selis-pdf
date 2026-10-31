@@ -191,7 +191,40 @@ impl Default for WatermarkOptions {
     }
 }
 
-/// One header or footer line: three independently aligned text slots.
+/// Options for an image watermark.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageWatermarkOptions {
+    /// Path to the image file (PNG or JPEG). The CLI reads this path; the
+    /// browser supplies the bytes through the tool session.
+    pub image_path: String,
+    /// Opacity in `0.0..=1.0`.
+    pub opacity: f64,
+    /// Scale factor applied to the image (1.0 = one point per pixel).
+    pub scale: f64,
+    /// Horizontal offset in points from the page's left edge (centred when None).
+    pub x: Option<f64>,
+    /// Vertical offset in points from the page's bottom edge (centred when None).
+    pub y: Option<f64>,
+    /// 1-based page selection; `None` means every page.
+    pub pages: Option<String>,
+    /// Repeat the image on a grid.
+    pub tiled: bool,
+}
+
+impl Default for ImageWatermarkOptions {
+    fn default() -> Self {
+        Self {
+            image_path: String::new(),
+            opacity: 0.3,
+            scale: 1.0,
+            x: None,
+            y: None,
+            pages: None,
+            tiled: false,
+        }
+    }
+}
 ///
 /// Supported placeholders are `{page}` (1-based physical page number) and
 /// `{pages}` (total physical page count). Unknown placeholders are rejected,

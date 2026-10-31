@@ -362,6 +362,7 @@ function init(): void {
 
 	let selectedTool: ToolOp | "convert" | null = null;
 	let files: File[] = [];
+	let draggedFileIndex: number | null = null;
 	let busy = false;
 	let wasmPromise: Promise<ToolsWasm> | null = null;
 	let resultUrls: string[] = [];
@@ -1312,6 +1313,45 @@ function init(): void {
 			});
 			actions.append(remove);
 			row.append(info, actions);
+			if (tool?.multiple === true) {
+				row.setAttribute("draggable", "true");
+				row.addEventListener("dragstart", (event) => {
+					draggedFileIndex = index;
+					event.dataTransfer?.setData("text/plain", String(index));
+					if (event.dataTransfer !== null) {
+						event.dataTransfer.effectAllowed = "move";
+					}
+					row.classList.add("dragging");
+				});
+				row.addEventListener("dragend", () => {
+					draggedFileIndex = null;
+					row.classList.remove("dragging");
+				});
+				row.addEventListener("dragover", (event) => {
+					event.preventDefault();
+					if (event.dataTransfer !== null) {
+						event.dataTransfer.dropEffect = "move";
+					}
+				});
+				row.addEventListener("drop", (event) => {
+					event.preventDefault();
+					if (draggedFileIndex === null || draggedFileIndex === index) {
+						return;
+					}
+					const from = draggedFileIndex;
+					const to = index;
+					const next = [...files];
+					const [moved] = next.splice(from, 1);
+					if (moved === undefined) {
+						return;
+					}
+					next.splice(to, 0, moved);
+					files = next;
+					clearResult();
+					renderFiles();
+					updateRunState();
+				});
+			}
 			rows.push(row);
 		});
 		fileList.replaceChildren(...rows);

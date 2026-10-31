@@ -68,7 +68,7 @@ and a size budget; no raster feature is claimed.
       and the expected placement count.
 - [ ] **Bookmarks / outline editing** — add, rename, retarget, delete outline entries; keep the
       existing reader/writer; verification counts entries in/out. No drag UI required.
-- [ ] **Drag-to-reorder** — pointer/keyboard reordering for the file list and organize order,
+- [x] **Drag-to-reorder** — pointer/keyboard reordering for the file list and organize order,
       with the existing buttons kept as the accessible path. UI enhancement, not correctness.
 - [ ] **General PDF → ZIP** — a file-picker ZIP over any produced outputs (not only split parts
       and attachments), deterministic entry order and timestamps.
