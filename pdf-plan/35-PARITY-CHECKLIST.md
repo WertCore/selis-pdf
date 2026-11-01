@@ -79,9 +79,18 @@ and a size budget; no raster feature is claimed.
       *Shipped:* `csv_to_pdf` in the same chunk. Splits on commas with quoted-field support,
       sizes columns evenly, repeats the header row on every page, and truncates a cell that
       overflows its column. This is a table dump, not a spreadsheet renderer, and the UI says so.
-- [ ] **Image watermark** — reuse the image→PDF embedding primitive; position, scale, opacity,
+- [x] **Image watermark** — reuse the image→PDF embedding primitive; position, scale, opacity,
       tiled option, 1-based selection. Acceptance: `/Subtype /Image` inside the page resources
       and the expected placement count.
+      *Shipped:* `selis-pdf-tools::add_image_watermark` decodes through `selis-image`, embeds
+      one Flate-compressed DeviceRGB XObject for the whole document, and draws it with a
+      placement matrix per stamp (opacity via a local `ExtGState`, display-space offsets that
+      follow page rotation). WASM op 25 takes the PDF and the image as two wire inputs; the web
+      card classifies the pair by header, so pick order does not matter. Evidence: engine tests
+      assert one XObject and one/≥6 placements for single/tiled, the wasm dispatch test asserts
+      the image object, and the browser leg reports the image XObject plus 16 tiled placements
+      in the downloaded bytes, online and offline with zero foreign requests. Tools chunk
+      284 092 B brotli of 300 000.
 - [ ] **Bookmarks / outline editing** — add, rename, retarget, delete outline entries; keep the
       existing reader/writer; verification counts entries in/out. No drag UI required.
 - [x] **Drag-to-reorder** — pointer/keyboard reordering for the file list and organize order,
@@ -240,9 +249,8 @@ document bytes stay local.
 
 ## Next slices, in order
 
-1. Image → PDF (PNG/JPEG) — the next change set.
-2. Markdown → PDF, then HTML → PDF, then CSV → PDF through one lazy convert chunk.
-3. Image watermark on the image→PDF primitive.
-4. Batch queue.
-5. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
-6. Phase 2 raster chunk, starting with PDF → PNG/JPG.
+1. Bookmarks / outline editing.
+2. Batch queue.
+3. Metadata → JSON export.
+4. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
+5. Phase 2 raster chunk, starting with PDF → PNG/JPG.

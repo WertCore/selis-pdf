@@ -375,6 +375,7 @@ pub fn add_page_numbers(
             pages: options.pages.as_deref(),
             style,
             action: "added page numbers",
+            image: None,
         },
         |ctx| {
             let number = u64::from(start).saturating_add(ctx.selected_ordinal as u64);
@@ -424,6 +425,7 @@ pub fn add_watermark(
             pages: options.pages.as_deref(),
             style,
             action: "added watermark",
+            image: None,
         },
         |ctx| {
             Ok(if tiled {
@@ -435,6 +437,82 @@ pub fn add_watermark(
     )
 }
 
+/// Place a PNG or JPEG image on the selected pages as a watermark.
+///
+/// The image is decoded through `selis-image`, composited over white, and
+/// embedded once as a Flate-compressed `DeviceRGB` XObject; every stamped page
+/// points at that one object, so tiling costs placements rather than pixels.
+/// Placement is in display space (the page's rotation applied), so the mark
+/// reads upright on a rotated page.
+///
+/// # Errors
+///
+/// [`ToolError`](crate::ToolError) when the image path is empty, the image
+/// cannot be read or decoded, scale/opacity/offsets are invalid, the document
+/// cannot be parsed, or the output fails structural verification.
+pub fn add_image_watermark(
+    path: &str,
+    options: &ImageWatermarkOptions,
+    output: &str,
+) -> ToolResult<Verification> {
+    if options.image_path.is_empty() {
+        return Err(CliError("watermark image must not be empty".to_string()));
+    }
+    if !options.opacity.is_finite() || !(0.0..=1.0).contains(&options.opacity) {
+        return Err(CliError(format!(
+            "opacity must be between 0 and 1 (got {})",
+            options.opacity
+        )));
+    }
+    if !options.scale.is_finite() || options.scale <= 0.0 {
+        return Err(CliError(format!(
+            "scale must be a positive number (got {})",
+            options.scale
+        )));
+    }
+    for (name, value) in [("x", options.x), ("y", options.y)] {
+        if let Some(value) = value {
+            if !value.is_finite() {
+                return Err(CliError(format!("{name} offset must be a finite number")));
+            }
+        }
+    }
+
+    let data = read_file(&options.image_path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let decoded = selis_image::decode(&data, &mut g)
+        .map_err(|e| CliError(format!("{}: {e}", options.image_path)))?;
+    if decoded.width == 0 || decoded.height == 0 {
+        return Err(CliError(format!("{}: empty image", options.image_path)));
+    }
+    let image = OverlayImage {
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
+    };
+    let style = OverlayStyle {
+        font_size: 0.0,
+        color: OverlayColor::default(),
+        opacity: options.opacity,
+    };
+    let scale = options.scale;
+    let offset_x = options.x;
+    let offset_y = options.y;
+    let tiled = options.tiled;
+    apply_overlay(
+        &OverlayJob {
+            path,
+            output,
+            pages: options.pages.as_deref(),
+            style,
+            action: "added image watermark",
+            image: Some(&image),
+        },
+        |ctx| Ok(stamp_image_watermark(ctx, scale, offset_x, offset_y, tiled)),
+    )
+}
 /// Add header and/or footer text with left, center, and right slots.
 ///
 /// Placeholders `{page}` and `{pages}` expand to the physical page number and
@@ -477,6 +555,7 @@ pub fn add_header_footer(
             pages: options.pages.as_deref(),
             style,
             action: "added header/footer",
+            image: None,
         },
         |ctx| {
             let mut content = Vec::new();
@@ -546,6 +625,7 @@ pub fn add_bates(path: &str, options: &BatesOptions, output: &str) -> ToolResult
             pages: options.pages.as_deref(),
             style,
             action: "added Bates numbers",
+            image: None,
         },
         |ctx| {
             let number = u64::from(start).saturating_add(ctx.selected_ordinal as u64);
@@ -661,6 +741,10 @@ struct StampContext<'a> {
     font_name: &'a str,
     /// The graphics-state resource name, when opacity requires one.
     gs_name: Option<&'a str>,
+    /// The image XObject resource name, for an image watermark.
+    image_name: Option<&'a str>,
+    /// The decoded image, for an image watermark.
+    image: Option<&'a OverlayImage>,
     /// The overlay style.
     style: OverlayStyle,
 }
@@ -672,6 +756,18 @@ struct OverlayJob<'a> {
     pages: Option<&'a str>,
     style: OverlayStyle,
     action: &'a str,
+    /// An image XObject to place on each selected page, when the overlay is an
+    /// image watermark rather than text. The object is written once and every
+    /// stamped page references it, so a tiled image does not multiply the
+    /// pixels in the output.
+    image: Option<&'a OverlayImage>,
+}
+
+/// A decoded image ready to be embedded as a page XObject.
+struct OverlayImage {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 /// Copy the document, append stamps to the selected pages, and verify.
@@ -725,6 +821,18 @@ where
     } else {
         None
     };
+    // One image object for the whole document: a tiled watermark stamps the
+    // same XObject many times per page, and embedding it per stamp would put
+    // the pixels in the file once per placement.
+    let image_ref = job.image.map(|image| {
+        let num = out.allocate();
+        let (obj, _) = image_xobject(image, num);
+        out.add_object(num, obj);
+        Ref::new(num, 0)
+    });
+    let image_name = job
+        .image
+        .map(|_| unique_name("SelisOverlayImage", &used_names));
 
     let mut kept: Vec<crate::tools::KeptPage> = Vec::with_capacity(page_refs.len());
     for (page_index, page_ref) in page_refs.iter().enumerate() {
@@ -745,6 +853,8 @@ where
                 geometry,
                 font_name: &font_name,
                 gs_name: gs_ref.as_ref().map(|_| gs_name.as_str()),
+                image_name: image_name.as_deref(),
+                image: job.image,
                 style: job.style,
             };
             let content = build(&ctx)
@@ -769,6 +879,16 @@ where
                     b"ExtGState",
                     &gs_name,
                     Obj::Ref(gs_ref),
+                )
+                .map_err(|e| CliError(format!("{}: {e}", job.path)))?;
+            }
+            if let (Some(image_ref), Some(image_name)) = (image_ref, image_name.as_deref()) {
+                add_subdict_entry(
+                    &mut out,
+                    resources_ref,
+                    b"XObject",
+                    image_name,
+                    Obj::Ref(image_ref),
                 )
                 .map_err(|e| CliError(format!("{}: {e}", job.path)))?;
             }
@@ -863,6 +983,131 @@ fn stamp_watermark(
     let mut content = Vec::new();
     push_text_block(&mut content, ctx, matrix, encoded);
     content
+}
+
+/// Build the image XObject for one decoded image.
+///
+/// Alpha is flattened over white and the DeviceRGB samples are Flate-compressed,
+/// matching the image-to-PDF embedder: a watermark PNG with transparency must
+/// not paint a black box over the page.
+fn image_xobject(image: &OverlayImage, num: u32) -> (Obj, Ref) {
+    let rgb = rgba_over_white(&image.rgba);
+    let compressed = selis_pdf_filter::flate_encode(&rgb, 6);
+    let obj = Obj::Stream {
+        dict: vec![
+            (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+            (bytes(b"Subtype"), Obj::Name(bytes(b"Image"))),
+            (bytes(b"Width"), Obj::Int(i64::from(image.width))),
+            (bytes(b"Height"), Obj::Int(i64::from(image.height))),
+            (bytes(b"ColorSpace"), Obj::Name(bytes(b"DeviceRGB"))),
+            (bytes(b"BitsPerComponent"), Obj::Int(8)),
+            (bytes(b"Filter"), Obj::Name(bytes(b"FlateDecode"))),
+            (
+                bytes(b"Length"),
+                Obj::Int(i64::try_from(compressed.len()).unwrap_or(i64::MAX)),
+            ),
+        ],
+        data: bytes(&compressed),
+    };
+    (obj, Ref::new(num, 0))
+}
+
+/// Composite RGBA over an opaque white background, returning packed RGB.
+fn rgba_over_white(rgba: &[u8]) -> Vec<u8> {
+    let pixels = rgba.len() / 4;
+    let mut rgb = Vec::with_capacity(pixels.saturating_mul(3));
+    for chunk in rgba.chunks_exact(4) {
+        let alpha = u32::from(chunk[3]);
+        let inverse = 255 - alpha;
+        for channel in &chunk[0..3] {
+            let value = (u32::from(*channel) * alpha + 255 * inverse + 127) / 255;
+            rgb.push(u8::try_from(value.min(255)).unwrap_or(255));
+        }
+    }
+    rgb
+}
+
+/// Stamp the image once, centred, or on a staggered grid when `tiled`.
+///
+/// The placement is expressed in display space and mapped through the page's
+/// rotation, so the mark is upright to a reader on a rotated page.
+fn stamp_image_watermark(
+    ctx: &StampContext<'_>,
+    scale: f64,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
+    tiled: bool,
+) -> Vec<u8> {
+    let Some(image) = ctx.image else {
+        return Vec::new();
+    };
+    let draw_w = f64::from(image.width) * scale;
+    let draw_h = f64::from(image.height) * scale;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return Vec::new();
+    }
+    let (display_width, display_height) = ctx.geometry.display_size();
+    let mut content = Vec::new();
+    if tiled {
+        // Cell spacing is the drawn size plus a gap, so a large mark does not
+        // overprint itself and a small one still covers the page.
+        let step_x = draw_w * 1.5;
+        let step_y = draw_h * 1.5;
+        let mut row = 0u32;
+        let mut v = step_y * 0.5;
+        while v < display_height + step_y {
+            let offset = if row % 2 == 1 { step_x * 0.5 } else { 0.0 };
+            let mut u = -offset;
+            while u < display_width + step_x {
+                push_image_block(&mut content, ctx, u, v, draw_w, draw_h);
+                u += step_x;
+            }
+            row = row.saturating_add(1);
+            v += step_y;
+        }
+    } else {
+        let u = offset_x.unwrap_or((display_width - draw_w) / 2.0);
+        let v = offset_y.unwrap_or((display_height - draw_h) / 2.0);
+        push_image_block(&mut content, ctx, u, v, draw_w, draw_h);
+    }
+    content
+}
+
+/// Emit one Do for the image at display-space (u, v) with the given size.
+fn push_image_block(
+    content: &mut Vec<u8>,
+    ctx: &StampContext<'_>,
+    u: f64,
+    v: f64,
+    draw_w: f64,
+    draw_h: f64,
+) {
+    let Some(name) = ctx.image_name else {
+        return;
+    };
+    // The image occupies its own unit square, so the matrix is the placement:
+    // scale to the draw size, then translate into display space.
+    let (a, b) = ctx.geometry.display_dir_to_user(draw_w, 0.0);
+    let (c, d) = ctx.geometry.display_dir_to_user(0.0, draw_h);
+    let (e, f) = ctx.geometry.display_to_user(u, v);
+    if let Some(gs) = ctx.gs_name {
+        content.extend_from_slice(format!("/{gs} gs\n").as_bytes());
+    }
+    content.extend_from_slice(b"q\n");
+    content.extend_from_slice(
+        format!(
+            "{} {} {} {} {} {} cm\n",
+            number(a),
+            number(b),
+            number(c),
+            number(d),
+            number(e),
+            number(f)
+        )
+        .as_bytes(),
+    );
+    content.extend_from_slice(format!("/{name} Do\n").as_bytes());
+    content.extend_from_slice(b"Q\n");
 }
 
 /// Render the watermark line on a staggered grid across the page.
@@ -1672,6 +1917,138 @@ mod tests {
         }
     }
 
+    /// A tiny opaque PNG, written by hand so the test owns its bytes.
+    fn watermark_png() -> Vec<u8> {
+        // 2x2 RGB PNG: two red pixels and two blue, enough to prove the pixels
+        // reached the output rather than a placeholder.
+        let mut png = Vec::new();
+        png.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+            png.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+            let start = png.len();
+            png.extend_from_slice(kind);
+            png.extend_from_slice(data);
+            let crc = crc32(&png[start..]);
+            png.extend_from_slice(&crc.to_be_bytes());
+        };
+        chunk(b"IHDR", &{
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&2u32.to_be_bytes());
+            ihdr.extend_from_slice(&2u32.to_be_bytes());
+            ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+            ihdr
+        });
+        // Two scanlines, each prefixed with filter byte 0.
+        let mut raw = vec![0u8, 255, 0, 0, 0, 0, 255, 0u8, 0, 0, 255, 255, 0, 0];
+        raw.truncate(14);
+        let mut scanlines = vec![0u8];
+        scanlines.extend_from_slice(&[255, 0, 0, 0, 0, 255]);
+        scanlines.push(0);
+        scanlines.extend_from_slice(&[0, 0, 255, 255, 0, 0]);
+        chunk(b"IDAT", &selis_pdf_filter::flate_encode(&scanlines, 6));
+        chunk(b"IEND", &[]);
+        png
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for byte in data {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn image_watermark_embeds_the_pixels_and_respects_the_selection() {
+        let dir = temp_dir("image-watermark");
+        let input = dir.join("in.pdf");
+        let image = dir.join("mark.png");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, three_page_pdf()).expect("write input");
+        std::fs::write(&image, watermark_png()).expect("write image");
+
+        add_image_watermark(
+            input.to_str().unwrap(),
+            &ImageWatermarkOptions {
+                image_path: image.to_str().unwrap().to_string(),
+                opacity: 1.0,
+                scale: 0.5,
+                pages: Some("2".to_string()),
+                ..ImageWatermarkOptions::default()
+            },
+            output.to_str().unwrap(),
+        )
+        .expect("image watermark");
+
+        let bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&bytes);
+        // The pixels are embedded once, as a Flate RGB image XObject.
+        assert_eq!(text.matches("/Subtype /Image").count(), 1);
+        assert!(text.contains("/Filter /FlateDecode"));
+        assert!(text.contains("/ColorSpace /DeviceRGB"));
+
+        let streams = output_page_streams(&output);
+        // Only the selected page carries the placement.
+        assert!(!streams[0].contains("SelisOverlayImage"));
+        assert!(streams[1].contains("SelisOverlayImage Do"));
+        assert!(!streams[2].contains("SelisOverlayImage"));
+    }
+
+    #[test]
+    fn tiled_image_watermark_repeats_without_duplicating_the_pixels() {
+        let dir = temp_dir("image-watermark-tiled");
+        let input = dir.join("in.pdf");
+        let image = dir.join("mark.png");
+        let once = dir.join("once.pdf");
+        let tiled = dir.join("tiled.pdf");
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = DocumentBuilder::new();
+        for _ in 0..2 {
+            builder.add_page(595.28, 841.89, b"q Q");
+        }
+        std::fs::write(&input, builder.write(&budget, &mut g).expect("fixture"))
+            .expect("write input");
+        std::fs::write(&image, watermark_png()).expect("write image");
+
+        for (path, tiled_flag) in [(&once, false), (&tiled, true)] {
+            add_image_watermark(
+                input.to_str().unwrap(),
+                &ImageWatermarkOptions {
+                    image_path: image.to_str().unwrap().to_string(),
+                    opacity: 1.0,
+                    scale: 0.25,
+                    tiled: tiled_flag,
+                    ..ImageWatermarkOptions::default()
+                },
+                path.to_str().unwrap(),
+            )
+            .expect("image watermark");
+        }
+
+        let once_streams = output_page_streams(&once);
+        let tiled_streams = output_page_streams(&tiled);
+        let count = |haystack: &str| haystack.matches("SelisOverlayImage Do").count();
+        assert_eq!(count(&once_streams[0]), 1, "one placement when not tiled");
+        assert!(
+            count(&tiled_streams[0]) >= 6,
+            "a tiled image must repeat across an A4 page, got {}",
+            count(&tiled_streams[0])
+        );
+        // The pixels are embedded once regardless of how many placements.
+        for path in [&once, &tiled] {
+            let text = String::from_utf8_lossy(&std::fs::read(path).expect("read")).to_string();
+            assert_eq!(
+                text.matches("/Subtype /Image").count(),
+                1,
+                "tiling must not duplicate the image object"
+            );
+        }
+    }
     #[test]
     fn tiled_watermark_repeats_the_line_across_the_page() {
         let dir = temp_dir("watermark-tiled");

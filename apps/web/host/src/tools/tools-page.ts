@@ -68,8 +68,11 @@ interface ToolDef {
 	readonly multiple: boolean;
 	/** The fewest files a run needs; defaults to 2 for multi-file tools. */
 	readonly minimum?: number;
-	/** The input container this tool accepts; defaults to PDF. */
-	readonly accepts?: "pdf" | "image" | "text";
+	/**
+	 * The input containers this tool accepts; defaults to PDF. `pdf-image`
+	 * takes exactly one PDF plus one PNG/JPEG watermark image.
+	 */
+	readonly accepts?: "pdf" | "image" | "text" | "pdf-image";
 }
 
 const TOOLS: readonly ToolDef[] = [
@@ -192,6 +195,16 @@ const TOOLS: readonly ToolDef[] = [
 		blurb: "Add a translucent diagonal or horizontal text watermark.",
 		verb: "Add watermark",
 		multiple: false,
+	},
+	{
+		id: "image_watermark",
+		mark: "IW",
+		title: "Image watermark",
+		blurb: "Stamp a PNG or JPEG logo or seal across the pages you choose.",
+		verb: "Add image watermark",
+		multiple: true,
+		minimum: 2,
+		accepts: "pdf-image",
 	},
 	{
 		id: "header_footer",
@@ -1043,6 +1056,52 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "image_watermark") {
+			const opacity = addField(
+				"opacity",
+				"Opacity",
+				textInput("opacity", "number", "0.3"),
+				"Between 0 and 1. Values below 1 add a local graphics state.",
+			) as HTMLInputElement;
+			opacity.value = "0.3";
+			opacity.min = "0";
+			opacity.max = "1";
+			opacity.step = "0.05";
+			const scale = addField(
+				"scale",
+				"Scale",
+				textInput("scale", "number", "1"),
+				"1 draws one point per image pixel; 0.5 halves the mark.",
+			) as HTMLInputElement;
+			scale.value = "1";
+			scale.min = "0.01";
+			scale.step = "0.05";
+			addField(
+				"x",
+				"Horizontal offset (pt, optional)",
+				textInput("x", "number", "Centered"),
+				"Distance from the page's left edge. Empty centers the mark.",
+			);
+			addField(
+				"y",
+				"Vertical offset (pt, optional)",
+				textInput("y", "number", "Centered"),
+				"Distance from the page's bottom edge. Empty centers the mark.",
+			);
+			addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges.",
+			);
+			addField(
+				"tiled",
+				"Tile across the page",
+				checkInput("tiled"),
+				"Repeats the image on a staggered grid instead of stamping it once in the center.",
+			);
+			return;
+		}
 		if (tool.id === "header_footer") {
 			addField(
 				"header-left",
@@ -1226,11 +1285,13 @@ function init(): void {
 		fileInput.accept =
 			tool.accepts === "image"
 				? "image/png,image/jpeg,.png,.jpg,.jpeg"
-				: tool.accepts === "text"
-					? ".md,.markdown,.html,.htm,.csv,.txt"
-					: id === "attach"
-						? ""
-						: "application/pdf,.pdf";
+				: tool.accepts === "pdf-image"
+					? "application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg"
+					: tool.accepts === "text"
+						? ".md,.markdown,.html,.htm,.csv,.txt"
+						: id === "attach"
+							? ""
+							: "application/pdf,.pdf";
 		fileInput.value = "";
 		toolsSection.hidden = true;
 		workspace.hidden = false;
@@ -1238,7 +1299,9 @@ function init(): void {
 		setStatus(
 			id === "attach"
 				? "Choose the PDF first, then the files to embed. They are read here, not sent anywhere."
-				: tool.accepts === "image"
+				: tool.accepts === "pdf-image"
+					? "Choose the PDF, then the PNG or JPEG watermark. They are read here, not sent anywhere."
+					: tool.accepts === "image"
 					? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
 					: tool.accepts === "text"
 						? "Choose a Markdown, HTML, or CSV file. It is read here, not sent anywhere."
@@ -1611,6 +1674,30 @@ function init(): void {
 			}
 			return { op: "watermark", options, files: wireFiles };
 		}
+		if (tool.id === "image_watermark") {
+			const options: Record<string, unknown> = {
+				opacity: numberInRange("opacity", "Opacity", 0, 1, 0.3),
+				scale: numberInRange("scale", "Scale", 0.01, 1000, 1),
+			};
+			for (const [key, label] of [
+				["x", "Horizontal offset"],
+				["y", "Vertical offset"],
+			] as const) {
+				const raw = optionValue(key).trim();
+				if (raw !== "") {
+					options[key] = numberInRange(key, label, -1_000_000, 1_000_000, 0);
+				}
+			}
+			const pages = overlayPages();
+			if (pages !== undefined) {
+				options.pages = pages;
+			}
+			const tiled = optionControls.get("tiled");
+			if (tiled instanceof HTMLInputElement && tiled.checked) {
+				options.tiled = true;
+			}
+			return { op: "image_watermark", options, files: wireFiles };
+		}
 		if (tool.id === "header_footer") {
 			const header = {
 				left: optionValue("header-left").trim(),
@@ -1712,7 +1799,31 @@ function init(): void {
 		const tool = currentTool();
 		// Attach takes the PDF first and treats the remaining files as opaque
 		// payloads, so only index 0 has to be a PDF. Image conversion accepts
-		// the two containers `selis-image` decodes and nothing else.
+		// the two containers `selis-image` decodes and nothing else. The image
+		// watermark needs one of each, and the wire order is PDF then image, so
+		// the pair is classified by header rather than by pick order.
+		if (tool?.accepts === "pdf-image") {
+			if (files.length !== 2) {
+				throw new ToolInputError(
+					"Choose exactly one PDF and one PNG or JPEG watermark image.",
+				);
+			}
+			const read = await Promise.all(
+				files.map(async (file) => ({
+					name: file.name,
+					bytes: new Uint8Array(await file.arrayBuffer()),
+				})),
+			);
+			const document = read.find((file) => hasPdfHeader(file.bytes));
+			const image = read.find((file) => hasImageHeader(file.bytes));
+			if (document === undefined) {
+				throw new ToolInputError("One of the two files must be a PDF.");
+			}
+			if (image === undefined) {
+				throw new ToolInputError("One of the two files must be a PNG or JPEG.");
+			}
+			return [document, image];
+		}
 		const payloadsAfterFirst = tool?.id === "attach";
 		const images = tool?.accepts === "image";
 		const wireFiles: WireFile[] = [];

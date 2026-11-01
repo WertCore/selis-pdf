@@ -1198,6 +1198,15 @@ const IMAGE_NEEDLES: [&str; 3] = [
 /// Markdown has neither.
 const CONVERT_NEEDLES: [&str; 2] = ["/BaseFont /Helvetica-Bold", "Parity Report"];
 
+/// The strings the image-watermark leg requires to be PRESENT in the real
+/// downloaded bytes: the embedded RGB XObject and at least one placement that
+/// names it. Counting files cannot produce either.
+const IMAGE_WATERMARK_NEEDLES: [&str; 3] = [
+    "/Subtype /Image",
+    "/ColorSpace /DeviceRGB",
+    "SelisOverlayImage Do",
+];
+
 /// One convert leg: a Markdown file becomes a real PDF through the lazy
 /// convert chunk, and the downloaded bytes carry the rendered heading.
 ///
@@ -1479,6 +1488,153 @@ fn check_image_leg(leg: &Json, label: &str) -> Result<(), String> {
         return Err(format!(
             "the {label} output is missing {:?}; the images were not embedded as Flate RGB XObjects",
             IMAGE_NEEDLES[index]
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+/// One image-watermark leg: a PDF plus a PNG produce a PDF whose real Blob
+/// carries the embedded RGB XObject and a placement that names it. The page
+/// count is the input count because the mark rewrites pages in place.
+fn check_image_watermark_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the {label} leg did not show two selected files (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Add image watermark" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Add image watermark\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("one-image-watermarked.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"one-image-watermarked.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} leg reported no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "1 \u{2192} 1" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"1 \u{2192} 1\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("one-image-watermarked.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"one-image-watermarked.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 1",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("one-image-watermarked.pdf") {
+        return Err(format!(
+            "the {label} download was named {:?}, expected \"one-image-watermarked.pdf\"",
+            output.get("downloadName")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its needle checks"))?;
+    if found.len() != IMAGE_WATERMARK_NEEDLES.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            IMAGE_WATERMARK_NEEDLES.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output is missing {:?}; the image was not embedded and drawn",
+            IMAGE_WATERMARK_NEEDLES[index]
         ));
     }
 
@@ -2254,7 +2410,7 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twenty-five cards render, and choosing Merge opens the workspace;
+/// * twenty-six cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -2294,9 +2450,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(25) {
+    if report.get("cards").and_then(Json::as_u64) != Some(26) {
         return Err(format!(
-            "the tools grid did not render twenty-five cards (cards = {:?})",
+            "the tools grid did not render twenty-six cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -2594,6 +2750,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("imageToPdf")
         .ok_or_else(|| "the page reported no image-to-PDF leg (imageToPdf = None)".to_string())?;
     check_image_leg(image_to_pdf, "online image to PDF")?;
+    let image_watermark = report.get("imageWatermark").ok_or_else(|| {
+        "the page reported no image-watermark leg (imageWatermark = None)".to_string()
+    })?;
+    check_image_watermark_leg(image_watermark, "online image watermark")?;
     let convert = report
         .get("convert")
         .ok_or_else(|| "the page reported no convert leg (convert = None)".to_string())?;
@@ -2618,9 +2778,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(25) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(26) {
         return Err(format!(
-            "the offline tools page did not render twenty-five cards (cards = {:?})",
+            "the offline tools page did not render twenty-six cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -2894,6 +3054,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the offline leg reported no image-to-PDF result (imageToPdf = None)".to_string()
     })?;
     check_image_leg(offline_image_to_pdf, "offline image to PDF")?;
+    let offline_image_watermark = offline.get("imageWatermark").ok_or_else(|| {
+        "the offline leg reported no image-watermark result (imageWatermark = None)".to_string()
+    })?;
+    check_image_watermark_leg(offline_image_watermark, "offline image watermark")?;
     let offline_convert = offline
         .get("convert")
         .ok_or_else(|| "the offline leg reported no convert result".to_string())?;
@@ -6977,6 +7141,46 @@ mod tests {
         })
     }
 
+    /// The image-watermark leg: a PDF plus a PNG, with the embedded XObject
+    /// and the placement name present in the downloaded bytes.
+    fn real_tools_image_watermark_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "one-image-watermarked.pdf",
+            "pages": 1,
+            "declaredBytes": 2000,
+            "bytes": 2000,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "one-image-watermarked.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true, true, true],
+        });
+        json!({
+            "fileRows": 2,
+            "runLabel": "Add image watermark",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "one-image-watermarked.pdf",
+                "meta": "1 file \u{00b7} 2.0 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1 \u{2192} 1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     fn real_tools_mix_leg() -> Json {
         json!({
             "fileRows": 2,
@@ -7033,7 +7237,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 25,
+            "cards": 26,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -7080,7 +7284,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 25,
+                "cards": 26,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -7182,6 +7386,7 @@ mod tests {
         report["repair"] = real_tools_repair_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
         report["imageToPdf"] = real_tools_image_leg();
+        report["imageWatermark"] = real_tools_image_watermark_leg();
         report["convert"] = real_tools_convert_leg();
 
         report["offline"]["mix"] = report["mix"].clone();
@@ -7202,6 +7407,7 @@ mod tests {
         report["offline"]["repair"] = report["repair"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
+        report["offline"]["imageWatermark"] = report["imageWatermark"].clone();
         report["offline"]["convert"] = report["convert"].clone();
         report
     }
@@ -7411,7 +7617,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 25,
+            "cards": 26,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -7530,6 +7736,10 @@ mod tests {
                 "imageToPdf",
                 "a run that never converted images must not pass",
             ),
+            (
+                "imageWatermark",
+                "a run that never stamped an image must not pass",
+            ),
         ] {
             let mut missing = report.clone();
             missing
@@ -7630,6 +7840,38 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_image).is_err(),
             "an online-only image conversion must not pass the offline gate"
+        );
+
+        // Image watermark: a run whose bytes never name the placement, or
+        // whose result kept the input's name, must not pass.
+        let mut watermark_no_placement = report.clone();
+        *watermark_no_placement
+            .pointer_mut("/imageWatermark/outputs/0/found/2")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&watermark_no_placement).is_err(),
+            "an image watermark without a placement must not pass"
+        );
+
+        let mut watermark_wrong_name = report.clone();
+        *watermark_wrong_name
+            .pointer_mut("/imageWatermark/outputs/0/downloadName")
+            .unwrap() = json!("one.pdf");
+        assert!(
+            verdict_tools_page(&watermark_wrong_name).is_err(),
+            "an image watermark that kept the input's name must not pass"
+        );
+
+        let mut no_offline_watermark = report.clone();
+        no_offline_watermark
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("imageWatermark");
+        assert!(
+            verdict_tools_page(&no_offline_watermark).is_err(),
+            "an online-only image watermark must not pass the offline gate"
         );
 
         // Convert: the needles are the rendered heading, so a PDF produced

@@ -89,6 +89,7 @@ enum Op {
     Repair,
     ImageToPdf,
     Zip,
+    ImageWatermark,
 }
 
 impl Op {
@@ -118,6 +119,7 @@ impl Op {
             22 => Some(Self::Repair),
             23 => Some(Self::ImageToPdf),
             24 => Some(Self::Zip),
+            25 => Some(Self::ImageWatermark),
             _ => None,
         }
     }
@@ -155,7 +157,7 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// attachments, 21 repair, 22 image to PDF.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1111_1111_1111_1111_1111_1111
+    0b1_1111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -675,6 +677,27 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::ImageWatermark => {
+            // The image is the second input file, not a path: the browser has
+            // no filesystem, so the page hands the bytes over like any other
+            // input and the session store resolves them here.
+            if file_count < 2 {
+                return Err(ToolError(
+                    "an image watermark needs the PDF and the image".to_string(),
+                ));
+            }
+            let mut options: selis_pdf_tools::overlay::ImageWatermarkOptions =
+                parse_options(&options)?;
+            options.image_path = "in/1".to_string();
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-image-watermarked.pdf"),
+                verification: selis_pdf_tools::overlay::add_image_watermark(
+                    "in/0", &options, "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
         Op::Zip => {
             let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
@@ -1097,9 +1120,12 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-24: the twenty-three object-graph tools plus Zip. Bit 24 is the
-        // highest set bit, so the mask is twenty-four ones.
-        assert_eq!(selis_tools_capabilities(), 0b1111_1111_1111_1111_1111_1111);
+        // Ops 1-25: the twenty-three object-graph tools, Zip, and the image
+        // watermark. Bit 25 is the highest set bit, so the mask is 25 ones.
+        assert_eq!(
+            selis_tools_capabilities(),
+            0b1_1111_1111_1111_1111_1111_1111
+        );
     }
 
     #[test]
@@ -1166,8 +1192,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 24 is Zip now, so the unknown-operation probe moves past it.
-        let response = run_request(&request(25, b"", &[("doc.pdf", &pdf)]));
+        // Op 25 is the image watermark now, so the probe moves past it.
+        let response = run_request(&request(26, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1239,6 +1265,78 @@ mod tests {
         0x4e, 0xa8, 0xf7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
+    /// A 2x2 RGB PNG, built here so the test owns its bytes.
+    fn watermark_png() -> Vec<u8> {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut push_chunk = |kind: &[u8; 4], data: &[u8]| {
+            png.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+            let start = png.len();
+            png.extend_from_slice(kind);
+            png.extend_from_slice(data);
+            let mut crc = 0xffff_ffffu32;
+            for byte in &png[start..] {
+                crc ^= u32::from(*byte);
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                }
+            }
+            png.extend_from_slice(&(!crc).to_be_bytes());
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&2u32.to_be_bytes());
+        ihdr.extend_from_slice(&2u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        push_chunk(b"IHDR", &ihdr);
+        let scanlines = vec![0u8, 255, 0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0];
+        // A zlib stream of stored (uncompressed) deflate blocks: no dependency
+        // on the filter crate, and still a valid PNG for the decoder.
+        let mut zlib = vec![0x78, 0x01];
+        let mut remaining = scanlines.as_slice();
+        loop {
+            let take = remaining.len().min(0xffff);
+            let last = take == remaining.len();
+            zlib.push(u8::from(last));
+            zlib.extend_from_slice(&u16::try_from(take).unwrap().to_le_bytes());
+            zlib.extend_from_slice(&(!u16::try_from(take).unwrap()).to_le_bytes());
+            zlib.extend_from_slice(&remaining[..take]);
+            remaining = &remaining[take..];
+            if last {
+                break;
+            }
+        }
+        let (mut a, mut b) = (1u32, 0u32);
+        for byte in &scanlines {
+            a = (a + u32::from(*byte)) % 65521;
+            b = (b + a) % 65521;
+        }
+        zlib.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        push_chunk(b"IDAT", &zlib);
+        push_chunk(b"IEND", &[]);
+        png
+    }
+    #[test]
+    fn image_watermark_operation_is_dispatched() {
+        let pdf = multipage_pdf(2);
+        let png = watermark_png();
+        let response = run_request(&request(
+            25,
+            br#"{"opacity":1.0,"scale":0.5,"pages":"1"}"#,
+            &[("doc.pdf", &pdf), ("mark.png", &png)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "image watermark failed: {message}");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-image-watermarked.pdf");
+        let text = String::from_utf8_lossy(&outputs[0].1).to_string();
+        assert_eq!(text.matches("/Subtype /Image").count(), 1);
+        assert!(text.contains("/ColorSpace /DeviceRGB"));
+
+        // The image is required: a PDF on its own is an error, not a silent
+        // no-op that returns the input unchanged.
+        let response = run_request(&request(25, b"{}", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("needs the PDF and the image"));
+    }
     #[test]
     fn image_to_pdf_operation_is_dispatched() {
         let response = run_request(&request(

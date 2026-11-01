@@ -123,7 +123,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 25,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 26,
           15_000,
           label,
         );
@@ -633,7 +633,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-five tool cards");
+        out.cards = await waitForCards(frame, "the twenty-six tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -695,6 +695,13 @@
         const imageFiles = [
           { name: "one.png", bytes: new Uint8Array(pngFixture), type: "image/png" },
           { name: "one.jpg", bytes: new Uint8Array(jpegFixture), type: "image/jpeg" },
+        ];
+        // Image watermark takes exactly one PDF plus one image. The page
+        // classifies the pair by header, so the pick order here is deliberate:
+        // the image comes first to prove the page reorders it onto the wire.
+        const watermarkFiles = [
+          { name: "one.png", bytes: new Uint8Array(pngFixture), type: "image/png" },
+          { name: "one.pdf", bytes: new Uint8Array(fixture.slice(0)), type: "application/pdf" },
         ];
         // Convert to PDF runs in its own lazy chunk, so this fixture is the only
         // proof that the chunk is served, instantiated, and wired to the card.
@@ -1200,6 +1207,31 @@
           network: onlineImage.network,
         };
 
+        // Image watermark: one PDF plus one PNG. The needles come from the
+        // downloaded bytes, so the leg proves the image was embedded as an
+        // XObject and that a placement actually names it.
+        const onlineImageWatermark = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online image watermark",
+          "image_watermark",
+          { opacity: "0.5", scale: "0.5", pages: "1", tiled: true },
+          ["/Subtype /Image", "/ColorSpace /DeviceRGB", "SelisOverlayImage Do"],
+          [],
+          watermarkFiles,
+        );
+        out.imageWatermark = {
+          fileRows: onlineImageWatermark.fileRows,
+          runLabel: onlineImageWatermark.runLabel,
+          noUpload: onlineImageWatermark.noUpload,
+          status: onlineImageWatermark.status,
+          result: onlineImageWatermark.result,
+          outputs: onlineImageWatermark.outputs,
+          output: onlineImageWatermark.output,
+          network: onlineImageWatermark.network,
+        };
+
         // Convert to PDF: a Markdown file becomes a real PDF through the lazy
         // convert chunk. The needles are Helvetica-Bold (the heading font) and
         // the literal heading text, so a page that never rendered cannot pass.
@@ -1236,7 +1268,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-five offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-six offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1456,6 +1488,17 @@
           [],
           convertFiles,
         );
+        const offlineImageWatermark = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline image watermark",
+          "image_watermark",
+          { opacity: "0.5", scale: "0.5", pages: "1", tiled: true },
+          ["/Subtype /Image", "/ColorSpace /DeviceRGB", "SelisOverlayImage Do"],
+          [],
+          watermarkFiles,
+        );
         const offlineStripMetadata = await toolInFrame(
           frame,
           metadataFixture,
@@ -1665,6 +1708,16 @@
             outputs: offlineImage.outputs,
             output: offlineImage.output,
             network: offlineImage.network,
+          },
+          imageWatermark: {
+            fileRows: offlineImageWatermark.fileRows,
+            runLabel: offlineImageWatermark.runLabel,
+            noUpload: offlineImageWatermark.noUpload,
+            status: offlineImageWatermark.status,
+            result: offlineImageWatermark.result,
+            outputs: offlineImageWatermark.outputs,
+            output: offlineImageWatermark.output,
+            network: offlineImageWatermark.network,
           },
           convert: {
             fileRows: offlineConvert.fileRows,
