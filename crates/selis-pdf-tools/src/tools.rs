@@ -5653,6 +5653,69 @@ pub(crate) fn write_document_with_embedded(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> CliResult<Verification> {
+    write_document_with_counts(
+        builder,
+        output,
+        input,
+        preserved,
+        expected_pages,
+        annotations_override,
+        embedded_files_override,
+        None,
+        in_bytes,
+        budget,
+        g,
+    )
+}
+
+/// As [`write_document_with_embedded`], with an explicit expected outline
+/// entry count.
+///
+/// Editing bookmarks changes the count deliberately (adds, renames and
+/// deletions are all one rewrite), so the gate must be told the number this
+/// run intends rather than the input's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_document_with_outline(
+    builder: selis_pdf_cos::doc_writer::DocumentBuilder,
+    output: &str,
+    input: Option<&[u8]>,
+    preserved: Preserved,
+    expected_pages: Option<u64>,
+    outline_override: Option<u64>,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
+    write_document_with_counts(
+        builder,
+        output,
+        input,
+        preserved,
+        expected_pages,
+        None,
+        None,
+        outline_override,
+        in_bytes,
+        budget,
+        g,
+    )
+}
+
+/// The shared write gate with every count override in one place.
+#[allow(clippy::too_many_arguments)]
+fn write_document_with_counts(
+    builder: selis_pdf_cos::doc_writer::DocumentBuilder,
+    output: &str,
+    input: Option<&[u8]>,
+    preserved: Preserved,
+    expected_pages: Option<u64>,
+    annotations_override: Option<u64>,
+    embedded_files_override: Option<u64>,
+    outline_override: Option<u64>,
+    in_bytes: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<Verification> {
     let mut builder = builder;
     let bytes = builder
         .write(budget, g)
@@ -5676,6 +5739,9 @@ pub(crate) fn write_document_with_embedded(
     }
     if let Some(files) = embedded_files_override {
         expected.embedded_files = Some(files);
+    }
+    if let Some(entries) = outline_override {
+        expected.outlines = Some(entries);
     }
     let verdict = write_gate::write_verified(&bytes, output, &expected, budget, g)?;
     let verification = Verification::from_gate(

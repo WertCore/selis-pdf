@@ -207,6 +207,14 @@ const TOOLS: readonly ToolDef[] = [
 		accepts: "pdf-image",
 	},
 	{
+		id: "outline",
+		mark: "BM",
+		title: "Edit bookmarks",
+		blurb: "Add, rename, retarget, or remove the document's bookmarks.",
+		verb: "Save bookmarks",
+		multiple: false,
+	},
+	{
 		id: "header_footer",
 		mark: "HF",
 		title: "Header & footer",
@@ -298,7 +306,7 @@ const TOOL_BY_ID = new Map<ToolOp | "convert", ToolDef>(TOOLS.map((tool) => [too
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 
-type Control = HTMLInputElement | HTMLSelectElement;
+type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type StatusKind = "info" | "error" | "ok";
 type SplitMode = "range" | "every" | "half" | "size" | "bookmarks" | "extract";
 type OrganizeMode = "reorder" | "duplicate" | "blank";
@@ -1102,6 +1110,19 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "outline") {
+			const entries = make("textarea", "control");
+			entries.rows = 10;
+			entries.spellcheck = false;
+			entries.placeholder = "Chapter 1 | 1\nSection 1.1 | 2 | 1\nChapter 2 | 3";
+			addField(
+				"entries",
+				"Bookmarks",
+				entries,
+				"One per line: Title | page | level. Level is optional and 0-based; indent a child with level 1. Leave empty to remove every bookmark.",
+			);
+			return;
+		}
 		if (tool.id === "header_footer") {
 			addField(
 				"header-left",
@@ -1697,6 +1718,42 @@ function init(): void {
 				options.tiled = true;
 			}
 			return { op: "image_watermark", options, files: wireFiles };
+		}
+		if (tool.id === "outline") {
+			const entries: Array<{ title: string; page: number; level: number }> = [];
+			for (const [index, line] of optionValue("entries").split("\n").entries()) {
+				const trimmed = line.trim();
+				if (trimmed === "") {
+					continue;
+				}
+				const parts = trimmed.split("|").map((part) => part.trim());
+				if (parts.length < 2 || parts.length > 3) {
+					throw new ToolInputError(
+						`Bookmark line ${index + 1}: use "Title | page | level".`,
+					);
+				}
+				const title = parts[0] ?? "";
+				if (title === "") {
+					throw new ToolInputError(`Bookmark line ${index + 1}: the title is empty.`);
+				}
+				const page = Number(parts[1]);
+				if (!Number.isInteger(page) || page < 1) {
+					throw new ToolInputError(
+						`Bookmark line ${index + 1}: the page must be a whole number of 1 or more.`,
+					);
+				}
+				let level = 0;
+				if (parts.length === 3) {
+					level = Number(parts[2]);
+					if (!Number.isInteger(level) || level < 0) {
+						throw new ToolInputError(
+							`Bookmark line ${index + 1}: the level must be a whole number of 0 or more.`,
+						);
+					}
+				}
+				entries.push({ title, page, level });
+			}
+			return { op: "outline", options: { entries }, files: wireFiles };
 		}
 		if (tool.id === "header_footer") {
 			const header = {

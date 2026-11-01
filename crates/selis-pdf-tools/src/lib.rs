@@ -33,6 +33,7 @@ pub mod compress;
 pub mod images;
 mod io;
 mod memory;
+pub mod outline;
 pub mod overlay;
 #[cfg(feature = "native-fs")]
 mod progress;
@@ -48,6 +49,7 @@ use selis_sandbox::Clock;
 pub use compress::{compress, compress_file, CompressionReport};
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
+pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use verify_report::Verification;
 

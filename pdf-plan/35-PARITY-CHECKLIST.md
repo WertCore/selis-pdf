@@ -91,8 +91,21 @@ and a size budget; no raster feature is claimed.
       the image object, and the browser leg reports the image XObject plus 16 tiled placements
       in the downloaded bytes, online and offline with zero foreign requests. Tools chunk
       284 092 B brotli of 300 000.
-- [ ] **Bookmarks / outline editing** — add, rename, retarget, delete outline entries; keep the
+- [x] **Bookmarks / outline editing** — add, rename, retarget, delete outline entries; keep the
       existing reader/writer; verification counts entries in/out. No drag UI required.
+      *Shipped:* `selis-pdf-tools::set_outline` replaces the whole tree from a caller-supplied
+      `entries` list (`title`, 1-based `page`, 0-based `level`), so one rewrite covers add,
+      rename, retarget, reorder, and delete; an empty list removes every bookmark. The builder
+      links `/First`/`/Last`/`/Prev`/`/Next`/`/Parent` with `/Count` for roots and for items with
+      children, points each `/Dest` at the copied page as `[page /Fit]`, and writes ASCII titles as
+      literal strings and non-ASCII titles as UTF-16BE with a BOM. `retain_reachable` drops the
+      input's old tree so a replaced bookmark does not linger as unreachable bytes. Empty titles,
+      0/out-of-range pages, and level jumps are refused before any write. WASM op 26 `Outline`;
+      web card takes `Title | page | level` lines. Evidence: 5 engine tests (nested tree,
+      three-level subtree counts, replacement, clearing, refusals), the wasm dispatch test
+      (3 entries, out-of-range error), and the browser legs — downloaded bytes carry
+      `/Type /Outlines`, `(Chapter 1)`, and `(Section)` with `Outline entries 0 → 2`, online and
+      offline with zero foreign requests. Tools chunk 288 706 B brotli of 300 000.
 - [x] **Drag-to-reorder** — pointer/keyboard reordering for the file list and organize order,
       with the existing buttons kept as the accessible path. UI enhancement, not correctness.
 - [x] **General PDF → ZIP** — a file-picker ZIP over any produced outputs (not only split parts
@@ -249,8 +262,7 @@ document bytes stay local.
 
 ## Next slices, in order
 
-1. Bookmarks / outline editing.
-2. Batch queue.
-3. Metadata → JSON export.
-4. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
-5. Phase 2 raster chunk, starting with PDF → PNG/JPG.
+1. Batch queue.
+2. Metadata → JSON export.
+3. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
+4. Phase 2 raster chunk, starting with PDF → PNG/JPG.

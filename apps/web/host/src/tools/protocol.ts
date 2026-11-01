@@ -56,7 +56,8 @@ export type ToolOp =
 	| "repair"
 	| "image_to_pdf"
 	| "zip"
-	| "image_watermark";
+	| "image_watermark"
+	| "outline";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -85,6 +86,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	image_to_pdf: 23,
 	zip: 24,
 	image_watermark: 25,
+	outline: 26,
 };
 
 /** One input file on the wire. */

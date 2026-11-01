@@ -349,9 +349,9 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 2. **Lazy, import-free tools chunk.** The tools WASM chunk must not depend on the viewer chunk.
    `place-assets` compiles it in Node and fails on any `WebAssembly.Module.imports` entry. The
    loader checks again before instantiation.
-3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-five cards are
-   object-graph operations; keeping the renderer out is why the chunk is 248 KB brotli instead of
-   the multi-megabyte viewer. A raster tool gets its own lazy chunk.
+3. **No page renderer in the tools chunk unless a tool needs it.** The current twenty-seven cards
+   are object-graph operations; keeping the renderer out is why the chunk is 288 KB brotli instead
+   of the multi-megabyte viewer. A raster tool gets its own lazy chunk.
 4. **No RNG in the inert tools chunk.** `selis-crypto`/`selis-pdf-cos` expose an optional `rng`
    feature. Native and viewer builds enable it; the object-graph tools disable it so `getrandom`'s
    wasm-bindgen glue cannot sneak in. Security tools will use a separate crypto-enabled chunk.

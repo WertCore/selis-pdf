@@ -90,6 +90,7 @@ enum Op {
     ImageToPdf,
     Zip,
     ImageWatermark,
+    Outline,
 }
 
 impl Op {
@@ -120,6 +121,7 @@ impl Op {
             23 => Some(Self::ImageToPdf),
             24 => Some(Self::Zip),
             25 => Some(Self::ImageWatermark),
+            26 => Some(Self::Outline),
             _ => None,
         }
     }
@@ -154,10 +156,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 6 page numbers, 7 watermark, 8 header/footer, 9 Bates, 10 compress,
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
-/// attachments, 21 repair, 22 image to PDF.
+/// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
+/// 25 outline editing.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1_1111_1111_1111_1111_1111_1111
+    0b11_1111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -698,6 +701,15 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Outline => {
+            let options: selis_pdf_tools::OutlineOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-outline.pdf"),
+                verification: selis_pdf_tools::set_outline("in/0", &options, "out.pdf")?,
+                over_target: false,
+            }]
+        }
         Op::Zip => {
             let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
@@ -1120,11 +1132,12 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-25: the twenty-three object-graph tools, Zip, and the image
-        // watermark. Bit 25 is the highest set bit, so the mask is 25 ones.
+        // Ops 1-26: the twenty-three object-graph tools, Zip, the image
+        // watermark, and outline editing. Op N sets bit N-1, so the mask is
+        // 26 ones.
         assert_eq!(
             selis_tools_capabilities(),
-            0b1_1111_1111_1111_1111_1111_1111
+            0b11_1111_1111_1111_1111_1111_1111
         );
     }
 
@@ -1192,8 +1205,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 25 is the image watermark now, so the probe moves past it.
-        let response = run_request(&request(26, b"", &[("doc.pdf", &pdf)]));
+        // Op 26 is outline editing now, so the probe moves past it.
+        let response = run_request(&request(27, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1337,6 +1350,35 @@ mod tests {
         let response = run_request(&request(25, b"{}", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("needs the PDF and the image"));
     }
+
+    #[test]
+    fn outline_operation_is_dispatched() {
+        let pdf = multipage_pdf(3);
+        let response = run_request(&request(
+            26,
+            br#"{"entries":[{"title":"Chapter 1","page":1,"level":0},{"title":"Section","page":2,"level":1},{"title":"Chapter 2","page":3,"level":0}]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "outline failed: {message}");
+        assert_eq!(message["pages_out"], 3);
+        assert_eq!(message["outline_entries_out"], 3);
+        assert_eq!(outputs[0].0, "doc-outline.pdf");
+        let text = String::from_utf8_lossy(&outputs[0].1).to_string();
+        assert!(text.contains("/Type /Outlines"));
+        assert!(text.contains("(Chapter 1)"));
+        assert!(text.contains("(Section)"));
+        assert!(text.contains("(Chapter 2)"));
+
+        // An out-of-range page is a typed error, not a silent clamp.
+        let response = run_request(&request(
+            26,
+            br#"{"entries":[{"title":"Past the end","page":9,"level":0}]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        assert!(error_text(&response).contains("document has 3"));
+    }
+
     #[test]
     fn image_to_pdf_operation_is_dispatched() {
         let response = run_request(&request(
