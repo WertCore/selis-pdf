@@ -782,10 +782,13 @@ mod tests {
     use super::*;
     use crate::{insert_input, take_output, MemorySession};
 
+    // The session table is process-wide and these tests run on parallel
+    // threads, so every case keeps its own key namespace: emptying the table
+    // between cases would delete a sibling test's input mid-run.
+
     #[test]
     fn attach_embeds_files_and_detach_removes_them() {
         let _session = MemorySession::activate();
-        crate::clear();
         insert_input("attachments-test/in.pdf", minimal_pdf());
         let files = [
             AttachmentInput {
@@ -834,7 +837,6 @@ mod tests {
     #[test]
     fn attach_replaces_a_same_named_attachment_without_growing_the_tree() {
         let _session = MemorySession::activate();
-        crate::clear();
         insert_input("attachments-test/fixture.pdf", fixture_pdf());
         let files = [AttachmentInput {
             name: "notes.txt".to_string(),
@@ -865,7 +867,6 @@ mod tests {
     #[test]
     fn detach_without_attachments_is_a_clean_rewrite() {
         let _session = MemorySession::activate();
-        crate::clear();
         insert_input("attachments-test/plain.pdf", minimal_pdf());
         let verification = detach(
             "attachments-test/plain.pdf",
@@ -880,7 +881,6 @@ mod tests {
     #[test]
     fn attach_and_detach_refuse_encrypted_inputs() {
         let _session = MemorySession::activate();
-        crate::clear();
         let mut bytes = minimal_pdf();
         let trailer_at = bytes
             .windows(b"trailer".len())
@@ -972,7 +972,7 @@ mod tests {
 
     fn extract_fixture(label: &str, pdf: Vec<u8>) -> CliResult<Vec<ExtractedAttachment>> {
         let _session = MemorySession::activate();
-        let key = format!("attachments-test/{label}.pdf");
+        let key = format!("attachments-extract/{label}.pdf");
         insert_input(&key, pdf);
         extract(&key)
     }
