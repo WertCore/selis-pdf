@@ -25,6 +25,7 @@ import {
 	sizeBytes,
 } from "./inputs.js";
 import {
+	type BatchSummary,
 	type ToolOp,
 	type ToolOutput,
 	type ToolOutputReport,
@@ -280,6 +281,16 @@ const TOOLS: readonly ToolDef[] = [
 		multiple: false,
 	},
 	{
+		id: "batch",
+		mark: "≡",
+		title: "Batch queue",
+		blurb: "Run one tool over several PDFs; each file gets its own verified result.",
+		verb: "Run the queue",
+		multiple: true,
+		minimum: 2,
+		accepts: "pdf",
+	},
+	{
 		id: "image_to_pdf",
 		mark: "▣",
 		title: "Image to PDF",
@@ -472,6 +483,46 @@ function reportRows(
 		return [{ label: "Metadata", value: "the report held no object" }];
 	}
 	return metadataRows(parsed as MetadataReportJson);
+}
+
+/** The longest failure the queue prints in a row; the full text is in the log. */
+const MAX_BATCH_VALUE = 120;
+
+/**
+ * The rows a batch queue adds to the result card: one per file the user
+ * picked, in the order they picked them. A file that failed is shown as a
+ * file that failed, with its reason, because a queue that only lists its
+ * successes would be reporting a run the user did not ask for.
+ */
+function batchRows(batch: BatchSummary | undefined): VerificationRow[] {
+	if (batch === undefined) {
+		return [];
+	}
+	const rows: VerificationRow[] = [
+		{
+			label: "Queue",
+			value: `${batch.tool} · ${batch.ok} of ${batch.total} file${batch.total === 1 ? "" : "s"}${
+				batch.failed === 0 ? "" : ` · ${batch.failed} not processed`
+			}`,
+		},
+	];
+	for (const file of batch.files) {
+		if (file.status === "ok") {
+			rows.push({
+				label: file.input,
+				value: `${file.name ?? "a result"} · ${file.pages ?? 0} page${
+					file.pages === 1 ? "" : "s"
+				} · ${file.verdict ?? "ok"}`,
+			});
+			continue;
+		}
+		const reason = file.error ?? "this file could not be processed";
+		rows.push({
+			label: file.input,
+			value: `not processed — ${reason.length > MAX_BATCH_VALUE ? `${reason.slice(0, MAX_BATCH_VALUE)}…` : reason}`,
+		});
+	}
+	return rows;
 }
 
 function init(): void {
@@ -1343,6 +1394,25 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "batch") {
+			const queueTool = make("select", "control");
+			for (const [value, label] of [
+				["compress", "Compress every PDF"],
+				["strip-metadata", "Strip metadata from every PDF"],
+				["repair", "Repair every PDF"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				queueTool.append(choice);
+			}
+			addField("tool", "Tool to run", queueTool);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every file is processed on its own: one that fails is reported and skipped, and the rest still get their results. Each result is named after the file it came from, and several results arrive together in a ZIP.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "image_to_pdf") {
 			const pageSize = make("select", "control");
 			for (const [value, label] of [
@@ -1951,6 +2021,9 @@ function init(): void {
 		if (tool.id === "metadata_report") {
 			return { op: "metadata_report", files: wireFiles };
 		}
+		if (tool.id === "batch") {
+			return { op: "batch", options: { tool: optionValue("tool") }, files: wireFiles };
+		}
 		if (tool.id !== "metadata") {
 			throw new ToolInputError("This tool is not wired into the local engine yet.");
 		}
@@ -2271,6 +2344,7 @@ function init(): void {
 
 		const rows: HTMLElement[] = [];
 		const shown = [
+			...batchRows(result.batch),
 			...reportRows(result.reports, result.outputs),
 			...verificationRows(result.verification),
 		];

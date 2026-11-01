@@ -446,6 +446,16 @@ operation is available identically in the CLI, the web app, and the extension.
     (an already-encrypted input is ALREADY_ENCRYPTED/E1806, never a batch abort). An empty
     credential set is refused once up front instead of failing identically per file. Passwords
     never appear in the report or the oplog.
+    **Browser queue (2026-11-01):** the isolation rule moved into the engine as
+    `selis_pdf_tools::batch::run_batch`, so the browser and the CLI answer the same way. WASM op 28
+    `Batch` and the 29th `/tools.html` card run one tool over up to 64 picked files; the CLI harness
+    now dispatches `compress`, `strip-metadata`, `repair` and `protect` — the last one CLI-only, and
+    the engine's own tool table refuses it by name because crypto is human-owned. A file the engine
+    refuses is one row with its own typed message: no download, no verification, nothing written,
+    and the queue still reports exit 0. Evidence: 5 engine tests, the wasm dispatch test, a CLI test
+    over `alpha.pdf / broken.pdf / beta.pdf` whose middle failure leaves both survivors on disk with
+    their own page counts, and the browser legs — `compress · 2 of 3 files · 1 not processed` with
+    3-page and 1-page downloads and the ZIP holding both, online and after an offline reload.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
   - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned

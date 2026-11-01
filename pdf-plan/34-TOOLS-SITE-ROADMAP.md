@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, resize, N-up, attach, detach, repair, image-to-PDF, Markdown/HTML/CSV conversion, and ZIP bundling slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling and batch-queue slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -70,6 +70,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Remove metadata | — | yes | **Live** | Drops the trailer/catalog `/Info` and the catalog XMP `/Metadata`; pages, annotations, forms, outlines, page labels, attachments, and tags survive. Encrypted inputs are refused. PDF/A conformance and signatures may be invalidated, and the UI says so. |
 | Read metadata | — | yes | **Live** | `selis metadata-report` and the card share one export (`MetadataReport::to_json`). One read-only JSON export: header version, revision count, page count, first `/MediaBox`, every `/Info` key as text, the catalog XMP packet with its `/Filter` decoded when it can be and named when it cannot, and the structural counts. The document is not rewritten, so the run reports `read` with identical bytes in and out; an encrypted PDF reports only that it is encrypted, because its dictionaries are still ciphertext. |
 | Repair PDF | — | yes | **Live** | Opens the strongest way the file allows: the ordinary parser, then the last intact revision, then a rebuilt object index. Every recovered page is rewritten through the same writer and structural gate, the recovered page count is asserted on the output, and the strategy is shown as a Recovery row. Encrypted inputs are refused. |
+| Batch queue | — | yes | **Live** | One tool run over up to 64 files (`compress`, `strip-metadata`, `repair`; the CLI adds `protect`), each document opened, processed and closed on its own. A file the engine refuses becomes a row naming that file with its own typed message and produces no output, no verification and no file on disk — the rest of the queue still finishes. Results keep queue order, are named after the document they came from and arrive together in `<first-stem>-batch.zip`; the aggregate gate saturates and reports `ok` or `partial`, and a queue where nothing worked is an error rather than an empty success. |
 | Image to PDF | yes | yes | **Live** | PNG (colour types 0/2/3/4/6, 8-bit, non-interlaced) and baseline/progressive JPEG are decoded on the device through `selis-image`, composited over white, and embedded as a Flate-compressed `/DeviceRGB` image XObject. One image is one page. Page size is fit-to-image (image size plus margin), A4, or Letter, with the image scaled down and centred and never enlarged. The output is generated, so the gate asserts one page per input image rather than an input page count. Encrypted inputs do not apply; unknown containers fail typed `IMAGE_UNSUPPORTED`. |
 | Convert to PDF | yes | yes | **Live** | Markdown, an HTML subset, and CSV become a generated PDF through a third, lazy WASM chunk (`/wasm/selis_pdf_wasm_convert.wasm`, 62 712 B brotli, zero imports). Markdown covers ATX headings, paragraphs, bold/italic/code, fenced and indented code, bullet and ordered lists, blockquotes, rules, and links rendered as text with the URL. HTML covers headings, paragraphs, lists, `pre`, blockquote, inline emphasis, `a href`, and block containers; `<script>`/`<style>` are dropped and unknown tags unwrap to text. CSV is a plain table dump: comma-delimited with quoted fields, even column widths, header row repeated on every page. Standard-14 fonts, Letter or A4. The chunk is runtime-cached rather than precached, so the first use needs the network and later runs do not. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
@@ -219,7 +220,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | POS billing | — | yes | AI/Collab/vertical | Separate product track. |
 | P2P share | — | yes | AI/Collab | WebRTC data channels; no relay that sees document bytes; explicit consent and room codes. |
 | Collaborative whiteboard | — | yes | AI/Collab | Separate CRDT surface; PDF export via the writer. |
-| Client-side task queue / batch | — | yes | 1A.1 | CLI batch exists; browser needs a multi-file queue with per-file isolation and no cross-file cancellation. |
+| Client-side task queue / batch | — | yes | 1A.1 | Live. The browser queue runs one tool over up to 64 files with per-file isolation: a refused file is reported with its own reason and never cancels the queue, and the survivors come back as their own verified downloads inside one ZIP. |
 | Offline PWA | — | yes | 1A.1 | Live. Viewer shell and the complete tools page graph are precached; the browser check cuts the origin, reloads `/tools.html`, and merges again from the worker. |
 | SEO landing page per tool | — | — | Ship | One route per operation; the privacy claim in the meta description is the differentiator. |
 
@@ -296,9 +297,27 @@ still covers the page. The browser leg enables the checkbox and requires the mar
 times in the downloaded bytes (15 on the letter fixture), online and after an offline reload; a
 single centered stamp cannot satisfy that count.
 
-**Remaining in 1A.1:** image watermark,
-CSV/Markdown/HTML→PDF, image→PDF, batch queue, and the crypto-enabled security tools. The
-incremental writer for page edits remains deferred; these page operations use the verified
+The batch queue is the same engine rule the CLI already followed, now inside the chunk:
+`run_batch` takes a tool name and up to 64 jobs, opens one document, processes it, writes it and
+releases it before the next begins, so a row's page count is its own. A refusal — a damaged index,
+an encrypted file, a budget exhausted — is recorded as that file's row with its typed message and
+produces no output object at all, which is why the survivors keep their names, their counts and
+their place in queue order. The response carries a `batch` object beside the aggregate verification
+(one row per file, `ok + failed == total`), and the page renders that object rather than its own
+guess: a row that does not name its download and its own result is rejected by the protocol decoder
+before it can be displayed. The aggregate gate saturates and its verdict is `ok` or `partial`; if
+every file failed the run is an error, because an empty success would be a false claim. The browser
+leg queues a 3-page document, a `%PDF-` file whose index cannot be read, and a 1-page document, then
+requires `compress · 2 of 3 files · 1 not processed`, the two survivors as `alpha-compressed.pdf ·
+3 pages · ok` and `beta-compressed.pdf · 1 page · ok`, `Verification = partial`, and a ZIP whose
+bytes contain both documents once each and neither the failed file's marker — online and after an
+offline reload. The page refuses a non-PDF when files are picked, so the queue's deliberate failure
+is a PDF the engine cannot read, not a text file.
+
+**Remaining in 1A.1:** the crypto-enabled security tools (unlock, protect, clear permissions),
+which are human-owned and stay off the browser until that review lands. Image watermark,
+CSV/Markdown/HTML→PDF, image→PDF, the metadata JSON export and the batch queue have all shipped.
+The incremental writer for page edits remains deferred; these page operations use the verified
 full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a

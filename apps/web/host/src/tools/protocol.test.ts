@@ -117,6 +117,16 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "metadata_report", files }), 8)).toBe(27);
 	});
 
+	it("encodes the batch queue at 28", () => {
+		const files = [
+			{ name: "a.pdf", bytes: new Uint8Array([0x25]) },
+			{ name: "b.pdf", bytes: new Uint8Array([0x25]) },
+		];
+		expect(readU32(encodeToolRequest({ op: "batch", options: { tool: "compress" }, files }), 8)).toBe(
+			28,
+		);
+	});
+
 	it("rejects an empty file list and malformed operations before calling the guest", () => {
 		expect(() => encodeToolRequest({ op: "merge", files: [] })).toThrow(ToolProtocolError);
 		expect(() =>
@@ -195,6 +205,146 @@ describe("decodeToolResponse", () => {
 		expect(result.reports[0]?.kind).toBe("report");
 		expect(result.reports[0]?.pages).toBe(0);
 		expect(result.verification.verdict).toBe("read");
+	});
+
+	it("keeps a batch row for every file, including the one that failed", () => {
+		const batch = {
+			tool: "compress",
+			total: 3,
+			ok: 2,
+			failed: 1,
+			files: [
+				{
+					input: "alpha.pdf",
+					name: "alpha-compressed.pdf",
+					status: "ok",
+					pages: 2,
+					bytes: 6,
+					verdict: "ok",
+				},
+				{
+					input: "beta.pdf",
+					name: "beta-compressed.pdf",
+					status: "ok",
+					pages: 3,
+					bytes: 7,
+					verdict: "ok",
+				},
+				{ input: "broken.pdf", name: null, status: "failed", error: "in/2: not a PDF" },
+			],
+		};
+		const message = {
+			...verification,
+			pages_out: 5,
+			verdict: "partial",
+			outputs: [
+				{ name: "alpha-compressed.pdf", kind: "pdf", pages: 2, bytes: 6, verdict: "ok" },
+				{ name: "beta-compressed.pdf", kind: "pdf", pages: 3, bytes: 7, verdict: "ok" },
+				{ name: "alpha-batch.zip", kind: "zip", pages: 0, bytes: 2, verdict: "bundle" },
+			],
+			batch,
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [
+				{ name: "alpha-compressed.pdf", bytes: new Array(6).fill(0x25) },
+				{ name: "beta-compressed.pdf", bytes: new Array(7).fill(0x25) },
+				{ name: "alpha-batch.zip", bytes: [0x50, 0x4b] },
+			]),
+		);
+		expect(result.batch?.tool).toBe("compress");
+		expect(result.batch?.ok).toBe(2);
+		expect(result.batch?.failed).toBe(1);
+		expect(result.batch?.files.map((row) => row.status)).toEqual(["ok", "ok", "failed"]);
+		expect(result.batch?.files[2]?.input).toBe("broken.pdf");
+		expect(result.batch?.files[2]?.name).toBeNull();
+		expect(result.batch?.files[2]?.error).toContain("not a PDF");
+		expect(result.outputs).toHaveLength(3);
+	});
+
+	it("leaves the batch summary absent for a single-document operation", () => {
+		const message = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [
+				{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+			]),
+		);
+		expect(result.batch).toBeUndefined();
+	});
+
+	it("rejects batch data whose counts do not match its rows", () => {
+		const message = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+			batch: { tool: "compress", total: 2, ok: 2, failed: 0, files: [{ input: "a.pdf", name: "doc.pdf", status: "ok" }] },
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(message), [
+					{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/mismatched batch data/);
+	});
+
+	it("rejects a successful batch row with no download and a failed row with no reason", () => {
+		const rowless = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+			batch: { tool: "compress", total: 1, ok: 1, failed: 0, files: [{ input: "a.pdf", name: null, status: "ok" }] },
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(rowless), [
+					{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/must name its download/);
+
+		const reasonless = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+			batch: {
+				tool: "compress",
+				total: 2,
+				ok: 1,
+				failed: 1,
+				files: [
+					{ input: "a.pdf", name: "doc.pdf", status: "ok", pages: 2, bytes: 4, verdict: "ok" },
+					{ input: "b.pdf", name: null, status: "failed" },
+				],
+			},
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(reasonless), [
+					{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/must say why/);
+	});
+
+	it("rejects a successful batch row that does not report its own result", () => {
+		const message = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+			batch: {
+				tool: "compress",
+				total: 1,
+				ok: 1,
+				failed: 0,
+				files: [{ input: "a.pdf", name: "doc.pdf", status: "ok", pages: -1 }],
+			},
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(message), [
+					{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/must report its own result/);
 	});
 
 	it("rejects an unknown output kind", () => {

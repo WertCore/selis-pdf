@@ -16,7 +16,8 @@
 //! 4. a file that exceeds the Viewer depth budget produces the honest typed
 //!    message — which budget, the measured usage, what to do — and exit
 //!    code 1, never a panic or a partial file;
-//! 5. `batch` report.json carries the `verification` object for ok files.
+//! 5. `batch` report.json carries the `verification` object for ok files, and
+//!    a deliberate failure stays one row instead of cancelling the queue.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::path::PathBuf;
@@ -1099,6 +1100,111 @@ fn batch_report_carries_verification_objects() {
     assert!(
         failed.get("error").is_some(),
         "the failure is recorded, not propagated"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A plain N-page document, written by the same writer the CLI ships.
+fn document_pdf(pages: usize) -> Vec<u8> {
+    let budget = Budget::unlimited();
+    let mut g = guard();
+    let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    for _ in 0..pages {
+        builder.add_page(100.0, 100.0, b"");
+    }
+    builder.write(&budget, &mut g).expect("write document")
+}
+
+/// The queue's promise, on the CLI side: three files in, one deliberate
+/// failure, and each row describes only its own document. The middle file
+/// cannot contaminate the counts of its neighbours, and the two survivors
+/// still reach the disk.
+#[test]
+fn batch_queue_isolates_one_bad_file_and_keeps_the_other_results() {
+    let dir = temp_dir("batch-queue");
+    let outdir = dir.join("queue-out");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let alpha = dir.join("alpha.pdf");
+    let beta = dir.join("beta.pdf");
+    let broken = dir.join("broken.pdf");
+    std::fs::write(&alpha, document_pdf(2)).expect("write alpha");
+    std::fs::write(&beta, document_pdf(3)).expect("write beta");
+    std::fs::write(&broken, b"this is not a PDF at all").expect("write broken");
+
+    let out = selis()
+        .args([
+            "batch",
+            "strip-metadata",
+            alpha.to_str().unwrap(),
+            broken.to_str().unwrap(),
+            beta.to_str().unwrap(),
+            "--outdir",
+            outdir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "an isolated failure never cancels the run; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let report = std::fs::read_to_string(outdir.join("report.json")).expect("report.json");
+    let value: serde_json::Value = serde_json::from_str(&report).expect("report parses");
+    assert_eq!(jget(&value, "tool"), "strip-metadata");
+    assert_eq!(jget(&value, "total"), 3);
+    assert_eq!(jget(&value, "ok"), 2);
+    assert_eq!(jget(&value, "failed"), 1);
+    let files = jget(&value, "files").as_array().expect("files");
+    assert_eq!(files.len(), 3, "one row per queued file");
+
+    // Queue order, and a page count that belongs to the row holding it.
+    let row = |index: usize| -> &serde_json::Value {
+        files
+            .get(index)
+            .expect("the queue keeps one row per file, in queue order")
+    };
+    assert_eq!(jget(row(0), "input"), alpha.to_str().unwrap());
+    assert_eq!(jget(row(0), "status"), "ok");
+    assert_eq!(jget(jget(row(0), "verification"), "pages_out"), 2);
+    assert_eq!(jget(row(2), "input"), beta.to_str().unwrap());
+    assert_eq!(jget(row(2), "status"), "ok");
+    assert_eq!(jget(jget(row(2), "verification"), "pages_out"), 3);
+
+    assert_eq!(jget(row(1), "input"), broken.to_str().unwrap());
+    assert_eq!(jget(row(1), "status"), "failed");
+    assert!(
+        jget(row(1), "output").is_null(),
+        "a file that fails claims no result"
+    );
+    assert!(
+        row(1).get("verification").is_none(),
+        "a file that fails reports no verification"
+    );
+    let reason = jget(row(1), "error")
+        .as_str()
+        .expect("a reason")
+        .to_string();
+    assert!(
+        reason.contains("broken.pdf"),
+        "the row names its own file: {reason}"
+    );
+
+    for index in [0usize, 2] {
+        let written = jget(row(index), "output")
+            .as_str()
+            .expect("an ok row names its result")
+            .to_string();
+        let bytes = std::fs::read(&written).expect("the survivor wrote its result");
+        assert!(bytes.starts_with(b"%PDF-"), "{written}");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("/Info"),
+            "{written} still carries metadata"
+        );
+    }
+    assert!(
+        !outdir.join("broken.pdf").exists(),
+        "a file that fails writes nothing"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

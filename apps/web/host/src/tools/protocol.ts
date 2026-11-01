@@ -58,7 +58,8 @@ export type ToolOp =
 	| "zip"
 	| "image_watermark"
 	| "outline"
-	| "metadata_report";
+	| "metadata_report"
+	| "batch";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -89,6 +90,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	image_watermark: 25,
 	outline: 26,
 	metadata_report: 27,
+	batch: 28,
 };
 
 /** One input file on the wire. */
@@ -152,6 +154,35 @@ export interface ToolResult {
 	readonly verification: Verification;
 	readonly reports: readonly ToolOutputReport[];
 	readonly outputs: readonly ToolOutput[];
+	/**
+	 * Present only for a run over several documents: one row per picked file,
+	 * in the order they were picked. The aggregate `verification` describes the
+	 * documents that were produced; this says what happened to the rest.
+	 */
+	readonly batch?: BatchSummary;
+}
+
+/** What happened to one file of a multi-document run. */
+export interface BatchFileRow {
+	/** The name the user picked the file under. */
+	readonly input: string;
+	/** The download this file produced, or null when the file failed. */
+	readonly name: string | null;
+	readonly status: "ok" | "failed";
+	/** The typed failure, with no document bytes in it. */
+	readonly error?: string;
+	readonly pages?: number;
+	readonly bytes?: number;
+	readonly verdict?: string;
+}
+
+/** The per-file summary of a batch queue. */
+export interface BatchSummary {
+	readonly tool: string;
+	readonly total: number;
+	readonly ok: number;
+	readonly failed: number;
+	readonly files: readonly BatchFileRow[];
 }
 
 /** The guest exports this page uses. */
@@ -350,6 +381,72 @@ function decodeReports(
 }
 
 /**
+ * Decode the per-file rows of a batch queue. Absent for every other operation.
+ * The counts are checked against the rows they describe, because a queue that
+ * reports "2 ok, 1 failed" over three files is the whole promise of the tool —
+ * a page must not render a summary the rows do not support.
+ */
+function decodeBatch(raw: unknown): BatchSummary | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	if (!isRecord(raw)) {
+		throw new ToolProtocolError("the tool chunk returned malformed batch data");
+	}
+	const { tool, total, ok, failed, files } = raw;
+	if (
+		typeof tool !== "string" ||
+		!Number.isInteger(total) ||
+		(total as number) < 1 ||
+		!Number.isInteger(ok) ||
+		(ok as number) < 0 ||
+		!Number.isInteger(failed) ||
+		(failed as number) < 0 ||
+		(ok as number) + (failed as number) !== total ||
+		!Array.isArray(files) ||
+		files.length !== total
+	) {
+		throw new ToolProtocolError("the tool chunk returned mismatched batch data");
+	}
+	const rows: BatchFileRow[] = files.map((item) => {
+		if (!isRecord(item) || typeof item.input !== "string") {
+			throw new ToolProtocolError("the tool chunk returned a malformed batch row");
+		}
+		const { name, status } = item;
+		if (status !== "ok" && status !== "failed") {
+			throw new ToolProtocolError("the tool chunk returned a batch row with no outcome");
+		}
+		if (name !== null && typeof name !== "string") {
+			throw new ToolProtocolError("the tool chunk returned a malformed batch row name");
+		}
+		if (status === "failed") {
+			const reason = item.error;
+			if (typeof reason !== "string") {
+				throw new ToolProtocolError("a failed batch row must say why");
+			}
+			return { input: item.input, name, status, error: reason };
+		}
+		if (typeof name !== "string") {
+			throw new ToolProtocolError("a successful batch row must name its download");
+		}
+		const { pages, bytes, verdict } = item;
+		if (
+			typeof pages !== "number" ||
+			!Number.isInteger(pages) ||
+			pages < 0 ||
+			typeof bytes !== "number" ||
+			!Number.isInteger(bytes) ||
+			bytes < 0 ||
+			typeof verdict !== "string"
+		) {
+			throw new ToolProtocolError("a successful batch row must report its own result");
+		}
+		return { input: item.input, name, status, pages, bytes, verdict };
+	});
+	return { tool, total: total as number, ok: ok as number, failed: failed as number, files: rows };
+}
+
+/**
  * Decode one response. The caller has already copied the bytes out of guest
  * memory, so the returned arrays are safe to retain after the chunk grows.
  */
@@ -394,7 +491,10 @@ export function decodeToolResponse(response: Uint8Array): ToolResult {
 	}
 	const verification = parsed as unknown as Verification;
 	const reports = decodeReports(parsed.outputs, outputs, verification);
-	return { verification, reports, outputs };
+	const batch = decodeBatch(parsed.batch);
+	return batch === undefined
+		? { verification, reports, outputs }
+		: { verification, reports, outputs, batch };
 }
 
 /**

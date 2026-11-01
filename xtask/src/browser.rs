@@ -2767,6 +2767,204 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The batch queue's promise, measured on the page: three picked files, two
+/// verified downloads named after their own documents, one row saying which
+/// file was skipped and why, and a ZIP holding both results.
+///
+/// The page reads its rows from the guest's own per-file report, so the two
+/// different page counts below (3 and 1) are the evidence that a queue does
+/// not average or borrow a neighbour's structure.
+fn check_batch_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(3) {
+        return Err(format!(
+            "the {label} leg did not show three selected files (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Run the queue" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Run the queue\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("2 PDFs and a ZIP") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"2 PDFs and a ZIP\"",
+            result.get("title")
+        ));
+    }
+    let meta = result.get("meta").and_then(Json::as_str).unwrap_or("");
+    if !meta.contains("3 files") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe three locally verified files (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Queue") != "compress \u{b7} 2 of 3 files \u{b7} 1 not processed" {
+        return Err(format!(
+            "the {label} card reported the Queue as {:?}, expected \"compress \u{b7} 2 of 3 files \u{b7} 1 not processed\"",
+            row_value("Queue")
+        ));
+    }
+    // One row per picked file, each naming only its own document's result.
+    if row_value("alpha.pdf") != "alpha-compressed.pdf \u{b7} 3 pages \u{b7} ok" {
+        return Err(format!(
+            "the {label} card reported alpha.pdf as {:?}, expected its own 3-page result",
+            row_value("alpha.pdf")
+        ));
+    }
+    if row_value("beta.pdf") != "beta-compressed.pdf \u{b7} 1 page \u{b7} ok" {
+        return Err(format!(
+            "the {label} card reported beta.pdf as {:?}, expected its own 1-page result",
+            row_value("beta.pdf")
+        ));
+    }
+    let skipped = row_value("broken.pdf");
+    if !skipped.starts_with("not processed \u{2014} ") {
+        return Err(format!(
+            "the {label} card did not say the failed file was skipped with a reason (row = {skipped:?})"
+        ));
+    }
+    // The queue's own counts: four pages in, four pages out, and a verdict that
+    // admits one file never ran.
+    if row_value("Pages") != "4 \u{2192} 4" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"4 \u{2192} 4\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "partial" {
+        return Err(format!(
+            "the {label} run reported Verification {:?}, expected the honest \"partial\" verdict",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 3 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected two PDFs and the bundle",
+            outputs.len()
+        ));
+    }
+    let pdf_names: Vec<&str> = outputs
+        .iter()
+        .filter(|output| output.get("kind").and_then(Json::as_str) == Some("pdf"))
+        .filter_map(|output| output.get("name").and_then(Json::as_str))
+        .collect();
+    if pdf_names != ["alpha-compressed.pdf", "beta-compressed.pdf"] {
+        return Err(format!(
+            "the {label} downloads were named {pdf_names:?}, expected one result per surviving file"
+        ));
+    }
+    for (index, expected_pages) in [(0usize, 3u64), (1, 1)] {
+        let output = outputs
+            .get(index)
+            .ok_or_else(|| format!("the {label} run produced no output at {index}"))?;
+        if output.get("pages").and_then(Json::as_u64) != Some(expected_pages) {
+            return Err(format!(
+                "the {label} output {index} reported {:?} pages, expected {expected_pages}",
+                output.get("pages")
+            ));
+        }
+        if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+            return Err(format!(
+                "the {label} output {index} did not begin with %PDF- (header = {:?})",
+                output.get("header")
+            ));
+        }
+        if output.get("blob").and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "the {label} output {index} was not offered as a Blob URL"
+            ));
+        }
+    }
+    let bundle = outputs
+        .get(2)
+        .ok_or_else(|| format!("the {label} run produced no bundle"))?;
+    if bundle.get("kind").and_then(Json::as_str) != Some("zip")
+        || bundle.get("name").and_then(Json::as_str) != Some("alpha-batch.zip")
+        || bundle.get("zip").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} bundle was {:?}, expected a real ZIP named alpha-batch.zip",
+            bundle.get("name")
+        ));
+    }
+    // Both survivors are inside the bundle: the page-tree marker occurs twice
+    // in the stored (uncompressed) archive and once in each single-document
+    // download, so the count also proves the queue did not write one file twice.
+    for (index, expected) in [(0usize, 1u64), (1, 1), (2, 2)] {
+        let output = outputs
+            .get(index)
+            .ok_or_else(|| format!("the {label} run produced no output at {index}"))?;
+        let counts = output
+            .get("foundCounts")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("the {label} output {index} reported no needle counts"))?;
+        if counts.first().and_then(Json::as_u64) != Some(expected) {
+            return Err(format!(
+                "the {label} output {index} held {counts:?}, expected a page tree {expected} time(s)"
+            ));
+        }
+        let absent = output
+            .get("absentFound")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("the {label} output {index} reported no absence checks"))?;
+        if absent.len() != 1 || absent.iter().any(|item| item.as_bool() != Some(false)) {
+            return Err(format!(
+                "the {label} output {index} carries the bytes of the file that failed (absentFound = {absent:?})"
+            ));
+        }
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// `tools-page` (SL-4.TOOLS.02 + SL-4.TOOLS.05 + the Phase 1A.1 split and
 /// page-organization modes): the real `/tools.html` merges and mixes two PDFs,
 /// splits a three-page PDF one page at a time, duplicates a page, and inserts a
@@ -2775,7 +2973,7 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twenty-eight cards render, and choosing Merge opens the workspace;
+/// * twenty-nine cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -2804,6 +3002,10 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///   strip leg rewrites, and the report's rows, its read-only `read` verdict,
 ///   and its downloaded bytes agree — and no PDF is offered, because none was
 ///   made;
+/// * the batch leg queues three files, one of them a PDF whose index the engine
+///   cannot read, and shows the two survivors as their own downloads with their
+///   own page counts, the skipped file as its own row with its reason, and a ZIP
+///   whose bytes hold both;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
 /// * the offline leg repeats the card grid, merge, every-size-bookmark splits,
@@ -2819,9 +3021,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(28) {
+    if report.get("cards").and_then(Json::as_u64) != Some(29) {
         return Err(format!(
-            "the tools grid did not render twenty-eight cards (cards = {:?})",
+            "the tools grid did not render twenty-nine cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -3111,6 +3313,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("repair")
         .ok_or_else(|| "the page reported no repair leg (repair = None)".to_string())?;
     check_repair_leg(repair, "online repair")?;
+    let batch = report
+        .get("batch")
+        .ok_or_else(|| "the page reported no batch-queue leg (batch = None)".to_string())?;
+    check_batch_leg(batch, "online batch queue")?;
     let strip_metadata = report.get("stripMetadata").ok_or_else(|| {
         "the page reported no metadata-strip leg (stripMetadata = None)".to_string()
     })?;
@@ -3155,9 +3361,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(28) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(29) {
         return Err(format!(
-            "the offline tools page did not render twenty-eight cards (cards = {:?})",
+            "the offline tools page did not render twenty-nine cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -3423,6 +3629,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("repair")
         .ok_or_else(|| "the offline leg reported no repair result".to_string())?;
     check_repair_leg(offline_repair, "offline repair")?;
+    let offline_batch = offline.get("batch").ok_or_else(|| {
+        "the offline leg reported no batch-queue result (offline.batch = None)".to_string()
+    })?;
+    check_batch_leg(offline_batch, "offline batch queue")?;
     let offline_strip_metadata = offline.get("stripMetadata").ok_or_else(|| {
         "the offline leg reported no metadata-strip result (stripMetadata = None)".to_string()
     })?;
@@ -7393,6 +7603,92 @@ mod tests {
         })
     }
 
+    /// The batch queue leg: two documents of different sizes and one file that
+    /// is not a PDF. Each survivor is its own download, the skipped file is a
+    /// row with a reason, and the bundle holds both documents.
+    fn real_tools_batch_leg() -> Json {
+        let first = json!({
+            "kind": "pdf",
+            "name": "alpha-compressed.pdf",
+            "pages": 3,
+            "declaredBytes": 900,
+            "bytes": 900,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "alpha-compressed.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "foundCounts": [1],
+            "absentFound": [false],
+        });
+        let second = json!({
+            "kind": "pdf",
+            "name": "beta-compressed.pdf",
+            "pages": 1,
+            "declaredBytes": 500,
+            "bytes": 500,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "beta-compressed.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "foundCounts": [1],
+            "absentFound": [false],
+        });
+        let bundle = json!({
+            "kind": "zip",
+            "name": "alpha-batch.zip",
+            "pages": 0,
+            "declaredBytes": 1450,
+            "bytes": 1450,
+            "blob": true,
+            "previewBlob": null,
+            "downloadName": "alpha-batch.zip",
+            "header": "PK\u{3}\u{4}",
+            "zip": true,
+            "foundCounts": [2],
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 3,
+            "runLabel": "Run the queue",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "2 PDFs and a ZIP",
+                "meta": "3 files \u{00b7} 3.0 KiB \u{00b7} verified locally",
+                "rows": [
+                    {
+                        "label": "Queue",
+                        "value": "compress \u{00b7} 2 of 3 files \u{00b7} 1 not processed"
+                    },
+                    {
+                        "label": "alpha.pdf",
+                        "value": "alpha-compressed.pdf \u{00b7} 3 pages \u{00b7} ok"
+                    },
+                    {
+                        "label": "broken.pdf",
+                        "value": "not processed \u{2014} in/1: [E1101] This PDF's index is damaged. (during xref-int) (at byte 9)"
+                    },
+                    {
+                        "label": "beta.pdf",
+                        "value": "beta-compressed.pdf \u{00b7} 1 page \u{00b7} ok"
+                    },
+                    { "label": "Pages", "value": "4 \u{2192} 4" },
+                    { "label": "Verification", "value": "partial" },
+                ],
+            },
+            "outputs": [first.clone(), second, bundle],
+            "output": first,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// The convert leg: a Markdown file rendered to a one-page PDF, with the
     /// heading font and text present in the downloaded bytes.
     fn real_tools_convert_leg() -> Json {
@@ -7718,7 +8014,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 28,
+            "cards": 29,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -7765,7 +8061,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 28,
+                "cards": 29,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -7865,6 +8161,7 @@ mod tests {
         report["attach"] = real_tools_attach_leg();
         report["detach"] = real_tools_detach_leg();
         report["repair"] = real_tools_repair_leg();
+        report["batch"] = real_tools_batch_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
         report["metadataReport"] = real_tools_metadata_report_leg();
         report["imageToPdf"] = real_tools_image_leg();
@@ -7888,6 +8185,7 @@ mod tests {
         report["offline"]["attach"] = report["attach"].clone();
         report["offline"]["detach"] = report["detach"].clone();
         report["offline"]["repair"] = report["repair"].clone();
+        report["offline"]["batch"] = report["batch"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["metadataReport"] = report["metadataReport"].clone();
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
@@ -8102,7 +8400,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 28,
+            "cards": 29,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -8230,6 +8528,10 @@ mod tests {
                 "a run that never stamped an image must not pass",
             ),
             ("outline", "a run that never wrote bookmarks must not pass"),
+            (
+                "batch",
+                "a queue that never ran over the picked files must not pass",
+            ),
         ] {
             let mut missing = report.clone();
             missing
@@ -8640,6 +8942,75 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_report).is_err(),
             "an online-only metadata report must not pass the offline gate"
+        );
+
+        let mut queue_dropped_the_failed_row = report.clone();
+        queue_dropped_the_failed_row
+            .pointer_mut("/batch/result/rows")
+            .unwrap()
+            .as_array_mut()
+            .expect("batch rows")
+            .remove(2);
+        assert!(
+            verdict_tools_page(&queue_dropped_the_failed_row).is_err(),
+            "a queue that hides the file it skipped must not pass"
+        );
+
+        let mut queue_claimed_every_file_ran = report.clone();
+        *queue_claimed_every_file_ran
+            .pointer_mut("/batch/result/rows/0/value")
+            .unwrap() = json!("compress \u{00b7} 3 of 3 files");
+        assert!(
+            verdict_tools_page(&queue_claimed_every_file_ran).is_err(),
+            "a queue may not report a file that never ran as processed"
+        );
+
+        let mut queue_gave_two_files_one_name = report.clone();
+        *queue_gave_two_files_one_name
+            .pointer_mut("/batch/outputs/1/name")
+            .unwrap() = json!("alpha-compressed.pdf");
+        assert!(
+            verdict_tools_page(&queue_gave_two_files_one_name).is_err(),
+            "two results sharing one name must not pass: the queue would be handing back one document twice"
+        );
+
+        let mut queue_borrowed_a_neighbour_count = report.clone();
+        *queue_borrowed_a_neighbour_count
+            .pointer_mut("/batch/outputs/1/pages")
+            .unwrap() = json!(3);
+        assert!(
+            verdict_tools_page(&queue_borrowed_a_neighbour_count).is_err(),
+            "a 1-page document reported with its neighbour's page count must not pass"
+        );
+
+        let mut bundle_held_one_document = report.clone();
+        *bundle_held_one_document
+            .pointer_mut("/batch/outputs/2/foundCounts/0")
+            .unwrap() = json!(1);
+        assert!(
+            verdict_tools_page(&bundle_held_one_document).is_err(),
+            "a bundle holding one of the two survivors must not pass"
+        );
+
+        let mut survivor_carried_the_broken_bytes = report.clone();
+        *survivor_carried_the_broken_bytes
+            .pointer_mut("/batch/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&survivor_carried_the_broken_bytes).is_err(),
+            "a result carrying the failed file's bytes must not pass"
+        );
+
+        let mut no_offline_queue = report.clone();
+        no_offline_queue
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("batch");
+        assert!(
+            verdict_tools_page(&no_offline_queue).is_err(),
+            "an online-only batch queue must not pass the offline gate"
         );
 
         let mut offline_no_watermark = report.clone();

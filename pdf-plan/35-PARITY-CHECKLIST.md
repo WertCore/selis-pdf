@@ -139,9 +139,36 @@ and a size budget; no raster feature is claimed.
       foreign requests. Tools chunk 300 192 B brotli, baseline refreshed: this slice moved the budget
       from 300 000 to 320 000 in `xtask/size-budgets.toml` rather than cut the feature — compact JSON
       was 458 B cheaper and the report is meant to be read.
-- [ ] **Batch queue** — multi-file queue with per-file isolation, per-file results, one failure
+- [x] **Batch queue** — multi-file queue with per-file isolation, per-file results, one failure
       never cancels another, and no cross-file document access. Acceptance: 3 files in, 3
       independent verified results, one deliberate failure leaves the other two intact.
+      *Shipped:* `selis-pdf-tools::batch::run_batch` opens, processes and closes one document at a
+      time — it holds no second document open, so a row cannot borrow a neighbour's page count —
+      over `BatchTool::{Compress, StripMetadata, Repair}`. A file the engine refuses becomes a row
+      carrying its own typed message and nothing else: no output, no verification, no file on disk.
+      Results keep queue order and are named after the file they came from (`<stem>-compressed.pdf`,
+      `-clean`, `-repaired`, de-duplicated with `-2`/`-3`), and several of them arrive together in
+      `<first-stem>-batch.zip`. The aggregate verification saturates instead of wrapping and its
+      verdict is `ok` or `partial`; a queue where *nothing* worked is an error, not an empty success.
+      Up to 64 files (`MAX_BATCH_FILES`), refused before the first document opens. WASM op 28
+      `Batch`, capability mask now 28 bits. The 29th web card is "Batch queue"; the page reads its
+      rows from the guest's own per-file report, so the Queue line, each file line and the ZIP are
+      the engine's words, not the page's. The CLI twin is `selis batch compress|strip-metadata|
+      repair|protect --outdir …`, whose `report.json` gained the same ok/failed rows.
+      `protect` stays CLI-only and `BatchTool::from_name` refuses it by name: crypto is human-owned.
+      Evidence: 5 engine tests (isolation across 2/3-page documents, damaged-index repair queue,
+      refusals, name dedup, exact tool-name matching), the wasm dispatch test (two named outputs +
+      a ZIP, a failed row naming `in/2` with no download), 23 protocol tests (a row must name its
+      own download and its own result, or it is rejected), a CLI test that the middle bad file
+      leaves its two survivors on disk and claims no output, and the browser legs — 3 files in,
+      `compress · 2 of 3 files · 1 not processed`, `alpha-compressed.pdf · 3 pages · ok`,
+      `beta-compressed.pdf · 1 page · ok`, `broken.pdf` as
+      `not processed — in/1: [E1101] This PDF's index is damaged. …`, `Pages
+      4 → 4`, `Verification = partial`, and a bundle whose bytes hold both documents and neither
+      marker, online and offline with zero foreign requests. The bad file carries a real `%PDF-`
+      header because that is the page's own rule: a non-PDF is refused when it is picked, so the
+      browser can only prove isolation against a PDF that fails inside the engine. Tools chunk
+      304 703 B brotli of 320 000, baseline refreshed from 300 192 (+4 511 B for the queue).
 - [ ] **Unlock / remove password** — crypto-enabled lazy chunk; AESV3/R6; never silently claim
       an unencrypted output when the password was wrong. Human review required.
 - [ ] **Protect with password** — AESV3/R6, separate user/owner passwords, permission copy
@@ -286,7 +313,7 @@ document bytes stay local.
 
 ## Next slices, in order
 
-1. Batch queue.
-2. Metadata → JSON export.
-3. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
-4. Phase 2 raster chunk, starting with PDF → PNG/JPG.
+1. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
+2. Phase 2 raster chunk, starting with PDF → PNG/JPG.
+
+(Metadata → JSON export and the batch queue have both shipped, so they left this list.)

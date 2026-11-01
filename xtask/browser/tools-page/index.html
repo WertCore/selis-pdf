@@ -50,6 +50,17 @@
         post();
       }
 
+      function pageSaid() {
+        try {
+          const doc = document.getElementById("tools").contentDocument;
+          const status = doc && doc.getElementById("status");
+          const text = status ? status.textContent.trim().replace(/\s+/g, " ") : "";
+          return text === "" ? "" : " -- the page said: " + text.slice(0, 400);
+        } catch (_) {
+          return "";
+        }
+      }
+
       function waitFor(probe, timeoutMs, label) {
         return new Promise((resolve, reject) => {
           const started = performance.now();
@@ -65,7 +76,7 @@
               return;
             }
             if (performance.now() - started > timeoutMs) {
-              reject(new Error("timed out waiting for " + label));
+              reject(new Error("timed out waiting for " + label + pageSaid()));
               return;
             }
             setTimeout(tick, 40);
@@ -124,7 +135,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 28,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 29,
           15_000,
           label,
         );
@@ -634,7 +645,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-eight tool cards");
+        out.cards = await waitForCards(frame, "the twenty-nine tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -735,6 +746,33 @@
           }
           throw new Error("the report fixture has no xref keyword to damage");
         })();
+
+        // The batch queue gets two real documents of different sizes and one
+        // file the engine cannot read. The deliberate failure is the point of
+        // the leg: the survivors must each come back as their own verified
+        // download, and the skipped file must be named with its own reason.
+        // The bad file carries a real `%PDF-` header because that is the page's
+        // own rule — it refuses a non-PDF when the file is picked, so the queue
+        // can only ever be proven against a PDF that fails inside the engine.
+        const batchFiles = [
+          {
+            name: "alpha.pdf",
+            bytes: new Uint8Array(splitFixture.slice(0)),
+            type: "application/pdf",
+          },
+          {
+            name: "broken.pdf",
+            bytes: new TextEncoder().encode(
+              "%PDF-1.7\nBROKEN-DOC-MARKER this body is not a PDF\n%%EOF\n",
+            ),
+            type: "application/pdf",
+          },
+          {
+            name: "beta.pdf",
+            bytes: new Uint8Array(fixture.slice(0)),
+            type: "application/pdf",
+          },
+        ];
 
         const online = await mergeInFrame(frame, fixture, "online");
         out.fileRows = online.fileRows;
@@ -1215,6 +1253,33 @@
           network: onlineRepair.network,
         };
 
+        // Batch queue: three files in, one tool run, and the file the engine
+        // cannot read is reported as its own row instead of cancelling the other
+        // two. Each survivor is named after its own input and carries its own
+        // page count, so the leg also proves a queue does not hand back two
+        // copies of one document.
+        const onlineBatch = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online batch queue",
+          "batch",
+          { tool: "compress" },
+          ["/Type /Pages"],
+          ["BROKEN-DOC-MARKER"],
+          batchFiles,
+        );
+        out.batch = {
+          fileRows: onlineBatch.fileRows,
+          runLabel: onlineBatch.runLabel,
+          noUpload: onlineBatch.noUpload,
+          status: onlineBatch.status,
+          result: onlineBatch.result,
+          outputs: onlineBatch.outputs,
+          output: onlineBatch.output,
+          network: onlineBatch.network,
+        };
+
         // Image→PDF: two images in, two pages out. The needles are read from
         // the real Blob, so the page must have decoded both containers and
         // embedded Flate-compressed RGB image XObjects, not merely counted
@@ -1325,7 +1390,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-eight offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-nine offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1519,6 +1584,17 @@
           {},
           ["/Type /Pages"],
           ["zzzz"],
+        );
+        const offlineBatch = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline batch queue",
+          "batch",
+          { tool: "compress" },
+          ["/Type /Pages"],
+          ["BROKEN-DOC-MARKER"],
+          batchFiles,
         );
         const offlineImage = await toolInFrame(
           frame,
@@ -1871,6 +1947,16 @@
             outputs: offlineRepair.outputs,
             output: offlineRepair.output,
             network: offlineRepair.network,
+          },
+          batch: {
+            fileRows: offlineBatch.fileRows,
+            runLabel: offlineBatch.runLabel,
+            noUpload: offlineBatch.noUpload,
+            status: offlineBatch.status,
+            result: offlineBatch.result,
+            outputs: offlineBatch.outputs,
+            output: offlineBatch.output,
+            network: offlineBatch.network,
           },
         };
 

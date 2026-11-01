@@ -94,6 +94,7 @@ enum Op {
     ImageWatermark,
     Outline,
     MetadataReport,
+    Batch,
 }
 
 impl Op {
@@ -126,6 +127,7 @@ impl Op {
             25 => Some(Self::ImageWatermark),
             26 => Some(Self::Outline),
             27 => Some(Self::MetadataReport),
+            28 => Some(Self::Batch),
             _ => None,
         }
     }
@@ -161,10 +163,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
 /// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
-/// 25 outline editing, 26 metadata report.
+/// 25 outline editing, 26 metadata report, 27 batch queue.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b111_1111_1111_1111_1111_1111_1111
+    0b1111_1111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -292,11 +294,14 @@ fn run_request(request: &[u8]) -> Vec<u8> {
     let result = parse_and_run(request);
     selis_pdf_tools::clear();
     match result {
-        Ok((verification, reports, outputs)) => {
+        Ok((verification, reports, outputs, batch)) => {
             let mut message =
                 serde_json::to_value(&verification).unwrap_or(serde_json::Value::Null);
             if let Some(object) = message.as_object_mut() {
                 object.insert("outputs".to_string(), serde_json::Value::Array(reports));
+                if let Some(batch) = batch {
+                    object.insert("batch".to_string(), batch);
+                }
             }
             let message = serde_json::to_vec(&message).unwrap_or_default();
             build_response(0, &message, &outputs)
@@ -342,8 +347,16 @@ struct Produced {
     over_target: bool,
 }
 
-/// Aggregate verification, per-output JSON records, and the wire files.
-type RunOutput = (Verification, Vec<serde_json::Value>, Vec<(String, Vec<u8>)>);
+/// Aggregate verification, per-output JSON records, the wire files, and — for
+/// a run over several documents — the per-file rows that say what happened to
+/// each one. Only the batch queue fills that last field: every other operation
+/// has one input document, so its rows would repeat the single result.
+type RunOutput = (
+    Verification,
+    Vec<serde_json::Value>,
+    Vec<(String, Vec<u8>)>,
+    Option<serde_json::Value>,
+);
 
 fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
     let mut cursor = Cursor::new(request);
@@ -715,6 +728,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             }]
         }
         Op::MetadataReport => return run_metadata_report(&stem, first_input_len),
+        Op::Batch => return run_batch_op(&input_files, &options),
         Op::Zip => {
             let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
@@ -789,7 +803,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         outputs.push((zip_name, zip));
     }
 
-    Ok((verification, reports, outputs))
+    Ok((verification, reports, outputs, None))
 }
 
 /// Extract embedded files into ordinary wire outputs. One attachment yields
@@ -868,7 +882,7 @@ fn run_attachments(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
         outputs.push((name, bytes));
     }
 
-    Ok((verification, reports, outputs))
+    Ok((verification, reports, outputs, None))
 }
 
 /// Read a document's metadata and structure into a JSON report.
@@ -922,7 +936,202 @@ fn run_metadata_report(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolErr
         "bytes": json.len(),
         "verdict": verification.verdict,
     })];
-    Ok((verification, reports, vec![(name, json)]))
+    Ok((verification, reports, vec![(name, json)], None))
+}
+
+/// Run one tool across every selected document, each file on its own.
+///
+/// The queue is the only operation whose result is not a single document, so
+/// it carries a `batch` object beside the aggregate: one row per file the user
+/// picked, in the order they picked them, saying whether that file produced a
+/// result or why it did not. A failing file never cancels the others and never
+/// contributes bytes to their outputs — the engine handed each row only its own
+/// store key.
+///
+/// Every download is named from its **own** input, because a queue of twelve
+/// files whose results are all named after the first is twelve files nobody can
+/// tell apart afterwards.
+fn run_batch_op(
+    files: &[(String, Vec<u8>)],
+    options: &serde_json::Value,
+) -> Result<RunOutput, ToolError> {
+    let requested = option_str(options, "tool")
+        .ok_or_else(|| ToolError("batch needs the tool to run".to_string()))?;
+    let tool = selis_pdf_tools::BatchTool::from_name(&requested)
+        .ok_or_else(|| ToolError(format!("unknown batch tool `{requested}`")))?;
+    let jobs: Vec<selis_pdf_tools::BatchJob> = (0..files.len())
+        .map(|index| {
+            selis_pdf_tools::BatchJob::new(&format!("in/{index}"), &format!("out/{index}"))
+        })
+        .collect();
+    let outcome = selis_pdf_tools::run_batch(tool, &jobs)?;
+
+    let mut taken: Vec<String> = Vec::with_capacity(files.len());
+    let mut reports: Vec<serde_json::Value> = Vec::new();
+    let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut verifications: Vec<Verification> = Vec::new();
+    for ((input_name, _), file) in files.iter().zip(&outcome.files) {
+        let produced = match (&file.verification, &file.output) {
+            (Some(verification), Some(key)) => Some((verification, key)),
+            _ => None,
+        };
+        let Some((verification, key)) = produced else {
+            rows.push(serde_json::json!({
+                "input": input_name,
+                "name": serde_json::Value::Null,
+                "status": "failed",
+                "error": file.error,
+            }));
+            continue;
+        };
+        let base = format!("{}-{}", file_stem(input_name), tool.suffix());
+        let name = unique_name(&mut taken, &base, ".pdf");
+        let bytes = selis_pdf_tools::take_output(key)
+            .ok_or_else(|| ToolError("a verified result vanished from the session".to_string()))?;
+        let held = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        reports.push(serde_json::json!({
+            "name": name,
+            "kind": "pdf",
+            "pages": verification.pages_out,
+            "bytes": bytes.len(),
+            "verdict": verification.verdict,
+        }));
+        rows.push(serde_json::json!({
+            "input": input_name,
+            "name": name,
+            "status": "ok",
+            "pages": verification.pages_out,
+            "bytes": held,
+            "verdict": verification.verdict,
+        }));
+        outputs.push((name, bytes));
+        verifications.push(verification.clone());
+    }
+
+    if verifications.is_empty() {
+        // Nothing succeeded, so there is nothing to download and no result to
+        // dress up. The first file's own error is the most useful thing to say.
+        let reason = outcome
+            .files
+            .iter()
+            .find_map(|file| file.error.as_deref())
+            .unwrap_or("no document could be processed");
+        return Err(ToolError(format!(
+            "batch: none of the {} files could be processed — {reason}",
+            outcome.files.len()
+        )));
+    }
+
+    if outputs.len() > 1 {
+        let entries: Vec<(&str, &[u8])> = outputs
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect();
+        let zip = selis_pdf_tools::bundle_zip(&entries)?;
+        let base = format!(
+            "{}-batch",
+            file_stem(
+                &files
+                    .first()
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_default()
+            )
+        );
+        let zip_name = unique_name(&mut taken, &base, ".zip");
+        reports.push(serde_json::json!({
+            "name": zip_name,
+            "kind": "zip",
+            "pages": 0,
+            "bytes": zip.len(),
+            "verdict": "bundle",
+        }));
+        outputs.push((zip_name, zip));
+    }
+
+    let first = verifications
+        .first()
+        .ok_or_else(|| ToolError("batch produced no verification".to_string()))?;
+    let sum_in = |pick: fn(&Verification) -> Option<u64>| -> Option<u64> {
+        if verifications.iter().all(|row| pick(row).is_some()) {
+            Some(verifications.iter().fold(0u64, |total, row| {
+                total.saturating_add(pick(row).unwrap_or(0))
+            }))
+        } else {
+            None
+        }
+    };
+    let verification = Verification {
+        pages_in: sum_in(|row| row.pages_in),
+        pages_out: verifications
+            .iter()
+            .fold(0u64, |total, row| total.saturating_add(row.pages_out)),
+        annotations_in: sum_in(|row| row.annotations_in),
+        annotations_out: verifications
+            .iter()
+            .fold(0u64, |total, row| total.saturating_add(row.annotations_out)),
+        fields_in: sum_in(|row| row.fields_in),
+        fields_out: verifications
+            .iter()
+            .fold(0u64, |total, row| total.saturating_add(row.fields_out)),
+        ocgs_in: sum_in(|row| row.ocgs_in),
+        ocgs_out: verifications
+            .iter()
+            .fold(0u64, |total, row| total.saturating_add(row.ocgs_out)),
+        outline_entries_in: sum_in(|row| row.outline_entries_in),
+        outline_entries_out: verifications.iter().fold(0u64, |total, row| {
+            total.saturating_add(row.outline_entries_out)
+        }),
+        embedded_files_in: sum_in(|row| row.embedded_files_in),
+        embedded_files_out: verifications.iter().fold(0u64, |total, row| {
+            total.saturating_add(row.embedded_files_out)
+        }),
+        // The queue read every file it was given, including the ones that
+        // failed; only the documents it actually wrote count as output.
+        bytes_in: files.iter().fold(0u64, |total, (_, bytes)| {
+            total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        }),
+        bytes_out: verifications
+            .iter()
+            .fold(0u64, |total, row| total.saturating_add(row.bytes_out)),
+        verdict: if outcome.failed() == 0 {
+            "ok".to_string()
+        } else {
+            "partial".to_string()
+        },
+        // Only a promise every successful file kept is a promise the batch made.
+        checked: first
+            .checked
+            .iter()
+            .filter(|label| verifications.iter().all(|row| row.checked.contains(label)))
+            .copied()
+            .collect(),
+        repair_mode: None,
+    };
+
+    let batch = serde_json::json!({
+        "tool": outcome.tool,
+        "total": outcome.files.len(),
+        "ok": outcome.ok(),
+        "failed": outcome.failed(),
+        "files": rows,
+    });
+    Ok((verification, reports, outputs, Some(batch)))
+}
+
+/// A download name no earlier row of this run has taken.
+fn unique_name(taken: &mut Vec<String>, base: &str, extension: &str) -> String {
+    let mut candidate = format!("{base}{extension}");
+    let mut suffix = 2u32;
+    while taken
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(&candidate))
+    {
+        candidate = format!("{base}-{suffix}{extension}");
+        suffix = suffix.saturating_add(1);
+    }
+    taken.push(candidate.clone());
+    candidate
 }
 
 /// Page organization: the existing reorder operation plus duplicate and
@@ -1191,12 +1400,12 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-27: the twenty-three object-graph tools, Zip, the image
-        // watermark, outline editing, and the read-only metadata report.
-        // Op N sets bit N-1, so the mask is 27 ones.
+        // Ops 1-28: the twenty-three object-graph tools, Zip, the image
+        // watermark, outline editing, the read-only metadata report, and the
+        // batch queue. Op N sets bit N-1, so the mask is 28 ones.
         assert_eq!(
             selis_tools_capabilities(),
-            0b111_1111_1111_1111_1111_1111_1111
+            0b1111_1111_1111_1111_1111_1111_1111
         );
     }
 
@@ -1264,8 +1473,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 27 is the metadata report now, so the probe moves past it.
-        let response = run_request(&request(28, b"", &[("doc.pdf", &pdf)]));
+        // Op 28 is the batch queue now, so the probe moves past it.
+        let response = run_request(&request(29, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1298,6 +1507,116 @@ mod tests {
             .contains("xmpmeta"));
         assert_eq!(report["counts"]["annotations"], 0);
         assert_eq!(report["counts"]["embedded_files"], 0);
+    }
+
+    /// The queue is the one operation whose answer is not a single document, so
+    /// the response carries a row per file: what happened to each one, in the
+    /// order the user picked them, with the failure isolated to its own row.
+    #[test]
+    fn batch_operation_runs_one_tool_over_every_file_and_keeps_the_good_ones() {
+        let first = multipage_pdf(2);
+        let second = multipage_pdf(3);
+        let response = run_request(&request(
+            28,
+            br#"{"tool":"compress"}"#,
+            &[
+                ("alpha.pdf", &first),
+                ("beta.pdf", &second),
+                ("broken.pdf", b"this is not a PDF"),
+            ],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "batch failed: {message}");
+        assert_eq!(message["verdict"], "partial", "one file did not run");
+        assert_eq!(message["batch"]["tool"], "compress");
+        assert_eq!(message["batch"]["total"], 3);
+        assert_eq!(message["batch"]["ok"], 2);
+        assert_eq!(message["batch"]["failed"], 1);
+
+        // Each result is measured from its own document: two pages and three
+        // pages, never a merged or averaged count across the queue.
+        assert_eq!(message["outputs"][0]["name"], "alpha-compressed.pdf");
+        assert_eq!(message["outputs"][0]["pages"], 2);
+        assert_eq!(message["outputs"][1]["name"], "beta-compressed.pdf");
+        assert_eq!(message["outputs"][1]["pages"], 3);
+        assert_eq!(message["outputs"][2]["kind"], "zip");
+        assert_eq!(outputs.len(), 3, "two PDFs and the bundle");
+        assert_eq!(outputs[0].0, "alpha-compressed.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        assert_eq!(&outputs[2].1[0..2], b"PK", "the bundle is a real ZIP");
+
+        let rows = message["batch"]["files"].as_array().expect("rows");
+        assert_eq!(rows.len(), 3, "one row per picked file");
+        assert_eq!(rows[0]["status"], "ok");
+        assert_eq!(rows[0]["input"], "alpha.pdf");
+        assert_eq!(rows[1]["status"], "ok");
+        assert_eq!(rows[2]["status"], "failed");
+        assert_eq!(rows[2]["input"], "broken.pdf");
+        assert!(
+            rows[2]["name"].is_null(),
+            "a failed file has no download to name"
+        );
+        assert!(
+            rows[2]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("in/2"),
+            "the row names the file that failed: {}",
+            rows[2]["error"]
+        );
+        assert_eq!(message["pages_out"], 5, "2 + 3 pages, not 2 × 3 files");
+    }
+
+    /// Two files with the same name are two downloads, not one overwritten
+    /// result: each carries its own content.
+    #[test]
+    fn batch_downloads_are_named_after_their_own_file_and_never_share_a_name() {
+        let two = multipage_pdf(2);
+        let three = multipage_pdf(3);
+        let response = run_request(&request(
+            28,
+            br#"{"tool":"strip-metadata"}"#,
+            &[("report.pdf", &two), ("report.pdf", &three)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "batch failed: {message}");
+        assert_eq!(outputs[0].0, "report-clean.pdf");
+        assert_eq!(outputs[1].0, "report-clean-2.pdf");
+        assert_eq!(message["outputs"][0]["pages"], 2);
+        assert_eq!(message["outputs"][1]["pages"], 3);
+        assert_eq!(outputs[2].0, "report-batch.zip");
+        let names: Vec<&str> = outputs.iter().map(|(name, _)| name.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+    }
+
+    /// A queue where nothing worked is an error, not a green run with an empty
+    /// download list: the page must say what went wrong rather than show zero.
+    #[test]
+    fn a_batch_where_every_file_fails_reports_the_first_reason() {
+        let response = run_request(&request(
+            28,
+            br#"{"tool":"compress"}"#,
+            &[("a.bin", b"not a PDF"), ("b.bin", b"also not a PDF")],
+        ));
+        let text = error_text(&response);
+        assert!(text.contains("none of the 2 files"), "{text}");
+        assert!(text.contains("in/0"), "the first reason is quoted: {text}");
+    }
+
+    /// The tool is chosen, never guessed: an unknown or absent name is refused
+    /// before a single document is opened, so a stale page cannot run a
+    /// different tool over the user's files.
+    #[test]
+    fn a_batch_refuses_an_unknown_or_missing_tool_name() {
+        let pdf = multipage_pdf(1);
+        let response = run_request(&request(28, br#"{"tool":"protect"}"#, &[("doc.pdf", &pdf)]));
+        assert!(
+            error_text(&response).contains("unknown batch tool `protect`"),
+            "encryption is not a browser batch tool"
+        );
+        let response = run_request(&request(28, b"{}", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("needs the tool"));
     }
 
     #[test]

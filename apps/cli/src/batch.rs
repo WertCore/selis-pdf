@@ -3,8 +3,9 @@
 //!
 //! One bad document must never kill the batch: every file is processed
 //! independently, failures are collected, and `report.json` in the output
-//! directory records the outcome, sizes, and error message per file. v1
-//! supports `compress` and `protect`; the harness extends to the other tools.
+//! directory records the outcome, sizes, and error message per file. The queue
+//! runs `compress`, `strip-metadata`, `repair`, and `protect` — the same tools
+//! the browser queue offers, plus the crypto arm only the CLI exposes.
 
 use std::time::Instant;
 
@@ -94,6 +95,28 @@ pub(crate) struct BatchOptions {
 /// report and the batch continues (SL-1A.TOOL.11).
 pub(crate) fn batch_compress(inputs: &[String], outdir: &str) -> CliResult<()> {
     run_batch("compress", inputs, outdir, &BatchOptions::default())
+}
+
+/// Run `selis batch strip-metadata` over `inputs`, writing results into `outdir`.
+///
+/// # Errors
+///
+/// As [`batch_compress`]: an encrypted or damaged file is that file's report
+/// row, and the documents around it still get their own results.
+pub(crate) fn batch_strip_metadata(inputs: &[String], outdir: &str) -> CliResult<()> {
+    run_batch("strip-metadata", inputs, outdir, &BatchOptions::default())
+}
+
+/// Run `selis batch repair` over `inputs`, writing results into `outdir`.
+///
+/// A repair queue is where the isolation matters most: the damaged file is the
+/// one a user would otherwise lose the whole batch over.
+///
+/// # Errors
+///
+/// As [`batch_compress`].
+pub(crate) fn batch_repair(inputs: &[String], outdir: &str) -> CliResult<()> {
+    run_batch("repair", inputs, outdir, &BatchOptions::default())
 }
 
 /// Run `selis batch protect` over `inputs`, encrypting each file with the
@@ -199,6 +222,12 @@ fn run_batch(
     Ok(())
 }
 
+/// The size of a result the tool just wrote. A tool that returns its own
+/// measurement (compress) is not asked to report it twice.
+fn written_bytes(path: &str) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
 /// The resolved protect credential pair for a batch run (argument, else
 /// environment; the owner defaults to the user, mirroring the single-file
 /// tool). Never logged.
@@ -250,6 +279,10 @@ fn run_one(tool: &str, input: &str, outdir: &str, options: &BatchOptions) -> Fil
                     )
                 })
             }
+            "strip-metadata" => crate::tools::strip_metadata(&input_owned, &out_owned)
+                .map(|verification| (written_bytes(&out_owned), verification)),
+            "repair" => crate::tools::repair(&input_owned, &out_owned)
+                .map(|verification| (written_bytes(&out_owned), verification)),
             "protect" => {
                 let passwords = PasswordOptions {
                     user: options_owned.user_password.clone(),
@@ -262,10 +295,7 @@ fn run_one(tool: &str, input: &str, outdir: &str, options: &BatchOptions) -> Fil
                     options_owned.permissions.as_deref(),
                     true,
                 )
-                .map(|verification| {
-                    let out_bytes = std::fs::metadata(&out_owned).map(|m| m.len()).unwrap_or(0);
-                    (out_bytes, verification)
-                })
+                .map(|verification| (written_bytes(&out_owned), verification))
             }
             other => Err(CliError(format!("unknown batch tool `{other}`"))),
         });

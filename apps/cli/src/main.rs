@@ -664,7 +664,7 @@ enum Command {
     },
     /// Run a tool over many files with per-file isolation + a JSON report.
     Batch {
-        /// The tool to run across the set: compress|protect.
+        /// The tool to run across the set: compress|strip-metadata|repair|protect.
         tool: String,
         /// The input files.
         #[arg(required = true)]
@@ -1127,6 +1127,8 @@ fn run() {
             permissions,
         } => match tool.as_str() {
             "compress" => batch::batch_compress(&inputs, &outdir),
+            "strip-metadata" => batch::batch_strip_metadata(&inputs, &outdir),
+            "repair" => batch::batch_repair(&inputs, &outdir),
             "protect" => {
                 // `batch protect --owner-password pw` binds the flag to the
                 // batch subcommand, not the tool name; accept the flag after
@@ -1138,7 +1140,7 @@ fn run() {
                 batch::batch_protect(&inputs, &outdir, &passwords, permissions.as_deref())
             }
             other => Err(CliError(format!(
-                "unknown batch tool `{other}` (supported: compress, protect)"
+                "unknown batch tool `{other}` (supported: compress, strip-metadata, repair, protect)"
             ))),
         },
         #[cfg(debug_assertions)]

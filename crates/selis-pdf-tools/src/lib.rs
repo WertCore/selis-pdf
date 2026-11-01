@@ -29,6 +29,7 @@
 )]
 
 pub mod attachments;
+pub mod batch;
 pub mod compress;
 pub mod images;
 mod io;
@@ -47,6 +48,7 @@ mod zip;
 
 use selis_sandbox::Clock;
 
+pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
 pub use compress::{compress, compress_file, CompressionReport};
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
