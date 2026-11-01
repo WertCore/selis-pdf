@@ -26,7 +26,8 @@
       //      split-bookmark modes, duplicate a page, insert a blank page, stamp
       //      page numbers, a watermark, a header/footer and Bates numbers,
       //      compress a PDF, crop and flip pages, set page labels, resize pages,
-      //      place them N-up, extract embedded attachments, and remove metadata;
+      //      place them N-up, extract embedded attachments, report a document's
+      //      metadata as JSON, and remove metadata;
       //   2. flip the harness origin's offline switch, reload the SAME page,
       //      and repeat those runs. Every module, the CSS, and the tools WASM
       //      chunk must come back from the worker's cache; the origin answers
@@ -123,7 +124,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 27,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 28,
           15_000,
           label,
         );
@@ -633,7 +634,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-seven tool cards");
+        out.cards = await waitForCards(frame, "the twenty-eight tool cards");
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -1101,6 +1102,39 @@
           network: onlineStripMetadata.network,
         };
 
+        // Metadata report: the same fixture the strip leg removes its values
+        // from is read here and exported as JSON. The needles come from the
+        // downloaded bytes, so the leg proves the Info values reached the file
+        // rather than only the result card. The fixture names the download
+        // `notes` so the report cannot be confused with its own file name.
+        const onlineMetadataReport = await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "online metadata report",
+          "metadata_report",
+          {},
+          [
+            '"status": "ok"',
+            '"pdf_version": "1.4"',
+            '"pages": 3',
+            '"key": "Title"',
+            '"value": "Secret Title"',
+            '"present": false',
+          ],
+          ["%PDF-"],
+        );
+        out.metadataReport = {
+          fileRows: onlineMetadataReport.fileRows,
+          runLabel: onlineMetadataReport.runLabel,
+          noUpload: onlineMetadataReport.noUpload,
+          status: onlineMetadataReport.status,
+          result: onlineMetadataReport.result,
+          outputs: onlineMetadataReport.outputs,
+          output: onlineMetadataReport.output,
+          network: onlineMetadataReport.network,
+        };
+
         const onlineAttachments = await toolInFrame(
           frame,
           attachmentsFixture,
@@ -1291,7 +1325,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
 
-        const offlineCards = await waitForCards(frame, "the twenty-seven offline tool cards");
+        const offlineCards = await waitForCards(frame, "the twenty-eight offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1542,6 +1576,23 @@
           [],
           ["/Info", "Secret Title", "Secret Author", "Secret Producer"],
         );
+        const offlineMetadataReport = await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "offline metadata report",
+          "metadata_report",
+          {},
+          [
+            '"status": "ok"',
+            '"pdf_version": "1.4"',
+            '"pages": 3',
+            '"key": "Title"',
+            '"value": "Secret Title"',
+            '"present": false',
+          ],
+          ["%PDF-"],
+        );
         out.offline = {
           cards: offlineCards,
           controlled: offlineWin.navigator.serviceWorker.controller !== null,
@@ -1731,6 +1782,16 @@
             outputs: offlineStripMetadata.outputs,
             output: offlineStripMetadata.output,
             network: offlineStripMetadata.network,
+          },
+          metadataReport: {
+            fileRows: offlineMetadataReport.fileRows,
+            runLabel: offlineMetadataReport.runLabel,
+            noUpload: offlineMetadataReport.noUpload,
+            status: offlineMetadataReport.status,
+            result: offlineMetadataReport.result,
+            outputs: offlineMetadataReport.outputs,
+            output: offlineMetadataReport.output,
+            network: offlineMetadataReport.network,
           },
           imageToPdf: {
             fileRows: offlineImage.fileRows,

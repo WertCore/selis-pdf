@@ -1184,6 +1184,214 @@ fn check_strip_metadata_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The strings the metadata-report leg requires to be PRESENT in the real
+/// downloaded JSON: the status the engine chose, the version and page count it
+/// read, one `/Info` field, and the XMP packet's absence. A card that invented
+/// its rows from the file name cannot produce any of them.
+const METADATA_REPORT_NEEDLES: [&str; 6] = [
+    "\"status\": \"ok\"",
+    "\"pdf_version\": \"1.4\"",
+    "\"pages\": 3",
+    "\"key\": \"Title\"",
+    "\"value\": \"Secret Title\"",
+    "\"present\": false",
+];
+/// The strings the metadata report must NOT carry: it exports what a document
+/// says about itself, never the document.
+const METADATA_REPORT_ABSENT: [&str; 1] = ["%PDF-"];
+
+/// One metadata-report leg: one PDF in, one JSON report out, and no PDF at all.
+/// The operation is read-only, so the leg fails if the page offers a preview,
+/// if the export carries document bytes, or if the rows it shows are not the
+/// rows the downloaded file holds.
+fn check_metadata_report_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected PDF (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Read metadata" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Read metadata\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("notes-metadata.json") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"notes-metadata.json\"",
+            result.get("title")
+        ));
+    }
+    let meta = result.get("meta").and_then(Json::as_str).unwrap_or("");
+    if !meta.contains("1 file") || !meta.contains("verified locally") {
+        return Err(format!(
+            "the {label} summary did not describe one verified file (meta = {meta:?})"
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    // The report rows come from the downloaded JSON, so these are the card
+    // repeating what the file actually holds.
+    for (label_row, wanted) in [
+        ("PDF version", "1.4"),
+        ("First page", "200 \u{d7} 200 pt"),
+        ("Title", "Secret Title"),
+        ("XMP packet", "none"),
+    ] {
+        if row_value(label_row) != wanted {
+            return Err(format!(
+                "the {label} card reported {label_row:?} as {:?}, expected {wanted:?}",
+                row_value(label_row)
+            ));
+        }
+    }
+    // Read-only verification: the document is untouched, so the counts pair and
+    // the verdict say so rather than claiming a rewrite.
+    if row_value("Pages") != "3 \u{2192} 3" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"3 \u{2192} 3\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "read" {
+        return Err(format!(
+            "the {label} run reported Verification {:?}, expected the read-only verdict \"read\"",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one report",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("report") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"report\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("notes-metadata.json") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"notes-metadata.json\"",
+            output.get("name")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(0) {
+        return Err(format!(
+            "the {label} output reported pages, but a report is not a PDF"
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} output was not a Blob URL"));
+    }
+    if output.get("previewBlob").and_then(Json::as_bool).is_some() {
+        return Err(format!(
+            "the {label} output offered a PDF preview; no PDF was made"
+        ));
+    }
+    if output.get("downloadName").and_then(Json::as_str) != Some("notes-metadata.json") {
+        return Err(format!(
+            "the {label} download was named {:?}",
+            output.get("downloadName")
+        ));
+    }
+    if leg.get("output") != Some(&Json::Null) {
+        return Err(format!(
+            "the {label} leg presented a PDF to preview ({:?}); a metadata report is not a document",
+            leg.get("output")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+    if found.len() != METADATA_REPORT_NEEDLES.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            METADATA_REPORT_NEEDLES.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output is missing {:?}; the report did not carry the metadata it read",
+            METADATA_REPORT_NEEDLES[index]
+        ));
+    }
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
+    if absent.len() != METADATA_REPORT_ABSENT.len() {
+        return Err(format!(
+            "the {label} output reported {} absence checks, expected {}",
+            absent.len(),
+            METADATA_REPORT_ABSENT.len()
+        ));
+    }
+    if let Some(index) = absent
+        .iter()
+        .position(|value| value.as_bool() != Some(false))
+    {
+        return Err(format!(
+            "the {label} output contains {:?}; a metadata report must hold only metadata",
+            METADATA_REPORT_ABSENT[index]
+        ));
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
 /// The strings the image→PDF leg requires to be PRESENT in the real downloaded
 /// bytes. A page that merely counted its inputs would produce a PDF without
 /// these, so the needles prove both containers were decoded and the pixels were
@@ -2567,7 +2775,7 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///
 /// Every claim is read from the page the user gets, not from a helper:
 ///
-/// * twenty-seven cards render, and choosing Merge opens the workspace;
+/// * twenty-eight cards render, and choosing Merge opens the workspace;
 /// * two real `File` objects produce two rows and enable the button;
 /// * the run reaches `data-no-upload="verified"`, which the page only sets after
 ///   its request recorder asserts that no request carried the input bytes;
@@ -2592,6 +2800,10 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
 ///   metadata-strip leg proves `/Info` and its values are absent from the bytes;
 /// * the attachment leg downloads both embedded files with their decoded bytes
 ///   and a ZIP, without offering either file as a PDF preview;
+/// * the metadata-report leg exports one JSON file for the same fixture the
+///   strip leg rewrites, and the report's rows, its read-only `read` verdict,
+///   and its downloaded bytes agree — and no PDF is offered, because none was
+///   made;
 /// * every resource the iframe's own Resource Timing saw is same-origin, and the
 ///   `selis_pdf_wasm_tools.wasm` chunk is one of them;
 /// * the offline leg repeats the card grid, merge, every-size-bookmark splits,
@@ -2607,9 +2819,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(27) {
+    if report.get("cards").and_then(Json::as_u64) != Some(28) {
         return Err(format!(
-            "the tools grid did not render twenty-seven cards (cards = {:?})",
+            "the tools grid did not render twenty-eight cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -2903,6 +3115,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the page reported no metadata-strip leg (stripMetadata = None)".to_string()
     })?;
     check_strip_metadata_leg(strip_metadata, "online strip metadata")?;
+    let metadata_report = report.get("metadataReport").ok_or_else(|| {
+        "the page reported no metadata-report leg (metadataReport = None)".to_string()
+    })?;
+    check_metadata_report_leg(metadata_report, "online metadata report")?;
     let image_to_pdf = report
         .get("imageToPdf")
         .ok_or_else(|| "the page reported no image-to-PDF leg (imageToPdf = None)".to_string())?;
@@ -2939,9 +3155,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(27) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(28) {
         return Err(format!(
-            "the offline tools page did not render twenty-seven cards (cards = {:?})",
+            "the offline tools page did not render twenty-eight cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -3211,6 +3427,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the offline leg reported no metadata-strip result (stripMetadata = None)".to_string()
     })?;
     check_strip_metadata_leg(offline_strip_metadata, "offline strip metadata")?;
+    let offline_metadata_report = offline.get("metadataReport").ok_or_else(|| {
+        "the offline leg reported no metadata-report result (metadataReport = None)".to_string()
+    })?;
+    check_metadata_report_leg(offline_metadata_report, "offline metadata report")?;
     let offline_image_to_pdf = offline.get("imageToPdf").ok_or_else(|| {
         "the offline leg reported no image-to-PDF result (imageToPdf = None)".to_string()
     })?;
@@ -7266,6 +7486,61 @@ mod tests {
         })
     }
 
+    /// The metadata-report leg: one PDF in, one JSON report out, and no PDF
+    /// row. The card's rows repeat what the downloaded bytes carry, and the
+    /// verdict is the read-only `read`.
+    fn real_tools_metadata_report_leg() -> Json {
+        let output = json!({
+            "kind": "report",
+            "name": "notes-metadata.json",
+            "pages": 0,
+            "declaredBytes": 620,
+            "bytes": 620,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "notes-metadata.json",
+            "header": "{\n  \"",
+            "zip": false,
+            "found": [true, true, true, true, true, true],
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Read metadata",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "notes-metadata.json",
+                "meta": "1 file \u{00b7} 620 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "PDF version", "value": "1.4" },
+                    { "label": "Revisions", "value": "1" },
+                    { "label": "First page", "value": "200 \u{d7} 200 pt" },
+                    { "label": "Author", "value": "Secret Author" },
+                    { "label": "Producer", "value": "Secret Producer" },
+                    { "label": "Title", "value": "Secret Title" },
+                    { "label": "XMP packet", "value": "none" },
+                    { "label": "Pages", "value": "3 \u{2192} 3" },
+                    { "label": "Annotations", "value": "0 \u{2192} 0" },
+                    { "label": "Form fields", "value": "0 \u{2192} 0" },
+                    { "label": "Layers", "value": "0 \u{2192} 0" },
+                    { "label": "Outline entries", "value": "0 \u{2192} 0" },
+                    { "label": "Embedded files", "value": "0 \u{2192} 0" },
+                    { "label": "Size", "value": "726 B \u{2192} 726 B" },
+                    { "label": "Verification", "value": "read" },
+                ],
+            },
+            "outputs": [output],
+            "output": Json::Null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
     /// The image→PDF leg: two image files become one PDF with two pages, and the
     /// real Blob carries Flate-compressed DeviceRGB image XObjects.
     fn real_tools_image_leg() -> Json {
@@ -7443,7 +7718,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 27,
+            "cards": 28,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -7490,7 +7765,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 27,
+                "cards": 28,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -7591,6 +7866,7 @@ mod tests {
         report["detach"] = real_tools_detach_leg();
         report["repair"] = real_tools_repair_leg();
         report["stripMetadata"] = real_tools_strip_metadata_leg();
+        report["metadataReport"] = real_tools_metadata_report_leg();
         report["imageToPdf"] = real_tools_image_leg();
         report["imageWatermark"] = real_tools_image_watermark_leg();
         report["outline"] = real_tools_outline_leg();
@@ -7613,6 +7889,7 @@ mod tests {
         report["offline"]["detach"] = report["detach"].clone();
         report["offline"]["repair"] = report["repair"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
+        report["offline"]["metadataReport"] = report["metadataReport"].clone();
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
         report["offline"]["imageWatermark"] = report["imageWatermark"].clone();
         report["offline"]["outline"] = report["outline"].clone();
@@ -7825,7 +8102,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 27,
+            "cards": 28,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -7939,6 +8216,10 @@ mod tests {
             (
                 "stripMetadata",
                 "a run that never removed metadata must not pass",
+            ),
+            (
+                "metadataReport",
+                "a run that never reported metadata must not pass",
             ),
             (
                 "imageToPdf",
@@ -8311,6 +8592,54 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_metadata).is_err(),
             "an online-only metadata removal must not pass the offline gate"
+        );
+
+        let mut report_held_the_document = report.clone();
+        *report_held_the_document
+            .pointer_mut("/metadataReport/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&report_held_the_document).is_err(),
+            "a metadata report that carried document bytes must not pass"
+        );
+
+        let mut report_lost_a_field = report.clone();
+        *report_lost_a_field
+            .pointer_mut("/metadataReport/outputs/0/found/4")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&report_lost_a_field).is_err(),
+            "a metadata report that never carried the /Info value must not pass"
+        );
+
+        let mut report_offered_a_pdf = report.clone();
+        *report_offered_a_pdf
+            .pointer_mut("/metadataReport/output")
+            .unwrap() = json!({ "kind": "pdf", "name": "notes.pdf" });
+        assert!(
+            verdict_tools_page(&report_offered_a_pdf).is_err(),
+            "a read that produced no PDF must not present one to preview"
+        );
+
+        let mut report_claimed_a_rewrite = report.clone();
+        *report_claimed_a_rewrite
+            .pointer_mut("/metadataReport/runLabel")
+            .unwrap() = json!("Write metadata");
+        assert!(
+            verdict_tools_page(&report_claimed_a_rewrite).is_err(),
+            "a card that offered to write metadata must not pass a read-only leg"
+        );
+
+        let mut no_offline_report = report.clone();
+        no_offline_report
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("metadataReport");
+        assert!(
+            verdict_tools_page(&no_offline_report).is_err(),
+            "an online-only metadata report must not pass the offline gate"
         );
 
         let mut offline_no_watermark = report.clone();

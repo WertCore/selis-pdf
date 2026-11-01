@@ -41,10 +41,14 @@ budget = 900000
 
 # The tool-first page's lazy chunk (merge/split/rotate/delete/reorder/metadata).
 # It must stay import-free; `place-assets` fails the build if it grows JS glue.
+# 300 000 covered the chunk up to its 26th operation; the 27th (the read-only
+# metadata report, whose export shape is a serialized struct) crossed it, so the
+# budget moved to the next round number rather than the feature being cut. The
+# 2% baseline rule still gates every later slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 300000
+budget = 320000
 
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]

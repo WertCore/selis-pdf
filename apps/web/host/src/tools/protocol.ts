@@ -57,7 +57,8 @@ export type ToolOp =
 	| "image_to_pdf"
 	| "zip"
 	| "image_watermark"
-	| "outline";
+	| "outline"
+	| "metadata_report";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -87,6 +88,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	zip: 24,
 	image_watermark: 25,
 	outline: 26,
+	metadata_report: 27,
 };
 
 /** One input file on the wire. */
@@ -130,10 +132,14 @@ export interface ToolOutput {
 	readonly bytes: Uint8Array;
 }
 
-/** Per-file metadata emitted alongside the aggregate verification. */
+/** Per-file metadata emitted alongside the aggregate verification.
+ *
+ * `pdf` is a rewritten document, `zip` a bundle, `file` an extracted
+ * attachment, and `report` a read-only export such as the metadata JSON.
+ */
 export interface ToolOutputReport {
 	readonly name: string;
-	readonly kind: "pdf" | "zip" | "file";
+	readonly kind: "pdf" | "zip" | "file" | "report";
 	readonly pages: number;
 	readonly bytes: number;
 	readonly verdict: string;
@@ -275,11 +281,7 @@ function readBytes(cursor: Cursor): Uint8Array {
 	if (end > cursor.view.byteLength) {
 		throw new ToolProtocolError("the tool response ended inside a byte block");
 	}
-	const bytes = new Uint8Array(
-		cursor.view.buffer,
-		cursor.view.byteOffset + start,
-		length,
-	).slice();
+	const bytes = new Uint8Array(cursor.view.buffer, cursor.view.byteOffset + start, length).slice();
 	cursor.pos = end;
 	return bytes;
 }
@@ -327,7 +329,7 @@ function decodeReports(
 		if (output === undefined || typeof name !== "string" || name !== output.name) {
 			throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
 		}
-		if (kind !== "pdf" && kind !== "zip" && kind !== "file") {
+		if (kind !== "pdf" && kind !== "zip" && kind !== "file" && kind !== "report") {
 			throw new ToolProtocolError("the tool chunk returned an unknown output kind");
 		}
 		if (

@@ -1,7 +1,7 @@
 /**
  * The tool-first page (SL-4.TOOLS.02).
  *
- * Twenty-two browser-local operations, one page. The only fetch this module makes is
+ * Every browser-local operation, one page. The only fetch this module makes is
  * the same-origin lazy WASM chunk it was built to drive; every document byte is
  * read with `File.arrayBuffer()` and written back through a Blob URL. There is
  * no form action, no telemetry, and no remote endpoint to configure.
@@ -26,12 +26,13 @@ import {
 } from "./inputs.js";
 import {
 	type ToolOp,
-	ToolProtocolError,
 	type ToolOutput,
 	type ToolOutputReport,
+	ToolProtocolError,
 	type ToolRequest,
 	type ToolsWasm,
 	type Verification,
+	type VerificationRow,
 	type WireFile,
 	formatBytes,
 	loadTools,
@@ -162,6 +163,14 @@ const TOOLS: readonly ToolDef[] = [
 		title: "Organize pages",
 		blurb: "Reorder pages, duplicate pages, or insert blank pages.",
 		verb: "Organize pages",
+		multiple: false,
+	},
+	{
+		id: "metadata_report",
+		mark: "ℹ",
+		title: "Read metadata",
+		blurb: "Export the Info dictionary, XMP packet, and structure as JSON.",
+		verb: "Read metadata",
 		multiple: false,
 	},
 	{
@@ -352,6 +361,117 @@ function openBlobUrl(url: string): void {
 	document.body.append(anchor);
 	anchor.click();
 	anchor.remove();
+}
+
+/** How many `/Info` fields the card lists before pointing at the JSON file. */
+const MAX_REPORT_FIELDS = 10;
+/** How long one reported value may get before the card shortens it. */
+const MAX_REPORT_VALUE = 120;
+
+/**
+ * The metadata report the engine exports. Only what the card shows is typed;
+ * the downloaded JSON carries every field.
+ */
+interface MetadataReportJson {
+	readonly status?: string;
+	readonly pdf_version?: string;
+	readonly revisions?: number;
+	readonly page_size?: { readonly width?: number; readonly height?: number };
+	readonly info?: readonly { readonly key?: string; readonly value?: string }[];
+	readonly xmp?: {
+		readonly present?: boolean;
+		readonly decoded?: boolean;
+		readonly bytes?: number;
+		readonly truncated?: boolean;
+		readonly filter?: string;
+	};
+}
+
+/** One XMP packet, said the way it was found. */
+function xmpText(packet: NonNullable<MetadataReportJson["xmp"]>): string {
+	if (packet.present !== true) {
+		return "none";
+	}
+	const held = typeof packet.bytes === "number" ? formatBytes(packet.bytes) : "size unknown";
+	if (packet.decoded === true) {
+		return packet.truncated === true
+			? `decoded, capped in the export | ${held}`
+			: `decoded | ${held}`;
+	}
+	return `held, not decoded (${packet.filter ?? "unknown filter"}) | ${held}`;
+}
+
+/**
+ * The rows a metadata report adds to the result card. The downloadable JSON
+ * holds everything; these are the facts a reader acts on, with the packet
+ * described rather than printed and a bounded number of fields so a hostile
+ * dictionary cannot grow the page.
+ */
+function metadataRows(report: MetadataReportJson): VerificationRow[] {
+	if (report.status === "encrypted") {
+		return [
+			{
+				label: "Metadata",
+				value: "encrypted — every dictionary is still ciphertext, so nothing is shown",
+			},
+		];
+	}
+	const rows: VerificationRow[] = [];
+	if (report.pdf_version !== undefined && report.pdf_version !== "") {
+		rows.push({ label: "PDF version", value: report.pdf_version });
+	}
+	if (report.revisions !== undefined) {
+		rows.push({ label: "Revisions", value: String(report.revisions) });
+	}
+	const box = report.page_size;
+	if (box?.width !== undefined && box?.height !== undefined) {
+		rows.push({ label: "First page", value: `${box.width} × ${box.height} pt` });
+	}
+	const fields = report.info ?? [];
+	for (const field of fields.slice(0, MAX_REPORT_FIELDS)) {
+		if (field.key !== undefined && field.value !== undefined) {
+			const value = field.value;
+			rows.push({
+				label: field.key,
+				value: value.length > MAX_REPORT_VALUE ? `${value.slice(0, MAX_REPORT_VALUE)}…` : value,
+			});
+		}
+	}
+	if (fields.length > MAX_REPORT_FIELDS) {
+		rows.push({
+			label: "More fields",
+			value: `${fields.length - MAX_REPORT_FIELDS} in the JSON file`,
+		});
+	}
+	if (report.xmp !== undefined) {
+		rows.push({ label: "XMP packet", value: xmpText(report.xmp) });
+	}
+	return rows;
+}
+
+/** The report rows of one run, when the run produced a report at all. */
+function reportRows(
+	reports: readonly ToolOutputReport[],
+	outputs: readonly ToolOutput[],
+): VerificationRow[] {
+	const report = reports.find((item) => item.kind === "report");
+	if (report === undefined) {
+		return [];
+	}
+	const output = outputs.find((item) => item.name === report.name);
+	if (output === undefined) {
+		return [];
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(output.bytes));
+	} catch {
+		return [{ label: "Metadata", value: "the report could not be read" }];
+	}
+	if (typeof parsed !== "object" || parsed === null) {
+		return [{ label: "Metadata", value: "the report held no object" }];
+	}
+	return metadataRows(parsed as MetadataReportJson);
 }
 
 function init(): void {
@@ -576,8 +696,7 @@ function init(): void {
 		if (mode === "range") {
 			note.textContent = "The selected range becomes one PDF.";
 		} else if (mode === "every") {
-			note.textContent =
-				"Each group becomes its own PDF. Multiple outputs also come as one ZIP.";
+			note.textContent = "Each group becomes its own PDF. Multiple outputs also come as one ZIP.";
 		} else if (mode === "half") {
 			note.textContent = "The document splits into two PDFs at the middle page.";
 		} else if (mode === "size") {
@@ -648,12 +767,7 @@ function init(): void {
 				choice.textContent = label;
 				mode.append(choice);
 			}
-			addField(
-				"mode",
-				"Split mode",
-				mode,
-				"Choose what each downloaded file should contain.",
-			);
+			addField("mode", "Split mode", mode, "Choose what each downloaded file should contain.");
 			const from = addField(
 				"from",
 				"From page",
@@ -1215,6 +1329,13 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "metadata_report") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"Reads the /Info dictionary, the catalog's XMP packet, and the structural counts, then writes them to a JSON file. The PDF itself is not modified. An encrypted PDF reports only that it is encrypted, because its dictionaries are still ciphertext.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "strip_metadata") {
 			const note = make("p", "option-note");
 			note.textContent =
@@ -1323,12 +1444,12 @@ function init(): void {
 				: tool.accepts === "pdf-image"
 					? "Choose the PDF, then the PNG or JPEG watermark. They are read here, not sent anywhere."
 					: tool.accepts === "image"
-					? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
-					: tool.accepts === "text"
-						? "Choose a Markdown, HTML, or CSV file. It is read here, not sent anywhere."
-						: tool.multiple
-						? "Choose two or more PDFs. They are read here, not sent anywhere."
-						: "Choose a PDF. It is read here, not sent anywhere.",
+						? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
+						: tool.accepts === "text"
+							? "Choose a Markdown, HTML, or CSV file. It is read here, not sent anywhere."
+							: tool.multiple
+								? "Choose two or more PDFs. They are read here, not sent anywhere."
+								: "Choose a PDF. It is read here, not sent anywhere.",
 			"info",
 		);
 		dropzone.focus();
@@ -1520,9 +1641,7 @@ function init(): void {
 				if (toText !== "") {
 					const to = pageIndex(toText, "To page");
 					if (to < from) {
-						throw new ToolInputError(
-							"The last page must not come before the first page.",
-						);
+						throw new ToolInputError("The last page must not come before the first page.");
 					}
 					splitOptions.to = to;
 				}
@@ -1728,9 +1847,7 @@ function init(): void {
 				}
 				const parts = trimmed.split("|").map((part) => part.trim());
 				if (parts.length < 2 || parts.length > 3) {
-					throw new ToolInputError(
-						`Bookmark line ${index + 1}: use "Title | page | level".`,
-					);
+					throw new ToolInputError(`Bookmark line ${index + 1}: use "Title | page | level".`);
 				}
 				const title = parts[0] ?? "";
 				if (title === "") {
@@ -1831,6 +1948,9 @@ function init(): void {
 		if (tool.id === "strip_metadata") {
 			return { op: "strip_metadata", files: wireFiles };
 		}
+		if (tool.id === "metadata_report") {
+			return { op: "metadata_report", files: wireFiles };
+		}
 		if (tool.id !== "metadata") {
 			throw new ToolInputError("This tool is not wired into the local engine yet.");
 		}
@@ -1861,9 +1981,7 @@ function init(): void {
 		// the pair is classified by header rather than by pick order.
 		if (tool?.accepts === "pdf-image") {
 			if (files.length !== 2) {
-				throw new ToolInputError(
-					"Choose exactly one PDF and one PNG or JPEG watermark image.",
-				);
+				throw new ToolInputError("Choose exactly one PDF and one PNG or JPEG watermark image.");
 			}
 			const read = await Promise.all(
 				files.map(async (file) => ({
@@ -2012,9 +2130,7 @@ function init(): void {
 				const errLen = new DataView(memory.buffer).getUint32(errLenPtr, true);
 				let message = "The conversion failed.";
 				if (errPtr !== 0 && errLen > 0) {
-					message = new TextDecoder().decode(
-						new Uint8Array(memory.buffer, errPtr, errLen),
-					);
+					message = new TextDecoder().decode(new Uint8Array(memory.buffer, errPtr, errLen));
 					exports.selis_convert_free(errPtr, errLen);
 				}
 				exports.selis_convert_free(errLenPtr, 4);
@@ -2073,10 +2189,7 @@ function init(): void {
 
 	function showResult(result: ReturnType<typeof runTool>): void {
 		clearResult();
-		const totalBytes = result.outputs.reduce(
-			(total, output) => total + output.bytes.byteLength,
-			0,
-		);
+		const totalBytes = result.outputs.reduce((total, output) => total + output.bytes.byteLength, 0);
 		const pdfCount = result.reports.filter((report) => report.kind === "pdf").length;
 		const fileCount = result.reports.filter((report) => report.kind === "file").length;
 		const hasZip = result.reports.some((report) => report.kind === "zip");
@@ -2103,7 +2216,9 @@ function init(): void {
 						? "application/zip"
 						: report.kind === "file"
 							? "application/octet-stream"
-							: "application/pdf",
+							: report.kind === "report"
+								? "application/json"
+								: "application/pdf",
 			});
 			const url = URL.createObjectURL(blob);
 			resultUrls.push(url);
@@ -2126,6 +2241,9 @@ function init(): void {
 			if (report.kind === "file") {
 				meta.textContent = `Attachment | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
 			}
+			if (report.kind === "report") {
+				meta.textContent = `Metadata report | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
+			}
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
@@ -2140,8 +2258,7 @@ function init(): void {
 			const download = make("a", "primary-link");
 			download.href = url;
 			download.download = output.name;
-			download.textContent =
-				report.kind === "zip" ? "Download all (.zip)" : "Download";
+			download.textContent = report.kind === "zip" ? "Download all (.zip)" : "Download";
 			download.addEventListener("click", () => {
 				// The href is the Blob URL; no network request is made by a download.
 				setStatus("Saved to your download folder by the browser.", "ok");
@@ -2153,7 +2270,11 @@ function init(): void {
 		resultOutputs.replaceChildren(...outputRows);
 
 		const rows: HTMLElement[] = [];
-		for (const row of verificationRows(result.verification)) {
+		const shown = [
+			...reportRows(result.reports, result.outputs),
+			...verificationRows(result.verification),
+		];
+		for (const row of shown) {
 			const wrapper = make("div", "result-row");
 			const term = make("dt");
 			term.textContent = row.label;

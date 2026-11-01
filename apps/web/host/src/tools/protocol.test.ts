@@ -1,22 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-	decodeToolResponse,
-	encodeToolRequest,
-	formatBytes,
 	REQUEST_MAGIC,
 	RESPONSE_MAGIC,
 	ToolProtocolError,
-	verificationRows,
 	type Verification,
+	decodeToolResponse,
+	encodeToolRequest,
+	formatBytes,
+	verificationRows,
 } from "./protocol.js";
 
 function u32(value: number): number[] {
-	return [
-		value & 0xff,
-		(value >>> 8) & 0xff,
-		(value >>> 16) & 0xff,
-		(value >>> 24) & 0xff,
-	];
+	return [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
 }
 
 function text(value: string): number[] {
@@ -27,7 +22,11 @@ function block(bytes: number[]): number[] {
 	return [...u32(bytes.length), ...bytes];
 }
 
-function response(status: number, message: string, outputs: Array<{ name: string; bytes: number[] }>): Uint8Array {
+function response(
+	status: number,
+	message: string,
+	outputs: Array<{ name: string; bytes: number[] }>,
+): Uint8Array {
 	const bytes = [
 		...u32(RESPONSE_MAGIC),
 		...u32(status),
@@ -113,6 +112,11 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);
 	});
 
+	it("encodes the metadata report at 27", () => {
+		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
+		expect(readU32(encodeToolRequest({ op: "metadata_report", files }), 8)).toBe(27);
+	});
+
 	it("rejects an empty file list and malformed operations before calling the guest", () => {
 		expect(() => encodeToolRequest({ op: "merge", files: [] })).toThrow(ToolProtocolError);
 		expect(() =>
@@ -175,6 +179,38 @@ describe("decodeToolResponse", () => {
 		expect(result.reports.map((report) => report.overTarget)).toEqual([false, true, false]);
 	});
 
+	it("accepts a read-only report output as its own kind", () => {
+		const message = {
+			...verification,
+			pages_in: 3,
+			pages_out: 3,
+			bytes_in: 4096,
+			bytes_out: 4096,
+			verdict: "read",
+			outputs: [{ name: "doc-metadata.json", kind: "report", pages: 0, bytes: 2, verdict: "read" }],
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [{ name: "doc-metadata.json", bytes: [0x7b, 0x7d] }]),
+		);
+		expect(result.reports[0]?.kind).toBe("report");
+		expect(result.reports[0]?.pages).toBe(0);
+		expect(result.verification.verdict).toBe("read");
+	});
+
+	it("rejects an unknown output kind", () => {
+		const message = {
+			...verification,
+			outputs: [{ name: "doc.pdf", kind: "exe", pages: 2, bytes: 4, verdict: "ok" }],
+		};
+		expect(() =>
+			decodeToolResponse(
+				response(0, JSON.stringify(message), [
+					{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+				]),
+			),
+		).toThrow(/unknown output kind/);
+	});
+
 	it("keeps attachment files distinct from PDFs and the ZIP bundle", () => {
 		const message = {
 			...verification,
@@ -229,9 +265,7 @@ describe("decodeToolResponse", () => {
 	it("rejects output metadata that does not match the wire outputs", () => {
 		const message = {
 			...verification,
-			outputs: [
-				{ name: "other.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" },
-			],
+			outputs: [{ name: "other.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
 		};
 		expect(() =>
 			decodeToolResponse(
@@ -249,9 +283,7 @@ describe("decodeToolResponse", () => {
 	});
 
 	it("rejects a bad magic, trailing bytes, and an empty output list", () => {
-		const wrongMagic = response(0, JSON.stringify(verification), [
-			{ name: "out.pdf", bytes: [] },
-		]);
+		const wrongMagic = response(0, JSON.stringify(verification), [{ name: "out.pdf", bytes: [] }]);
 		wrongMagic[0] = 0;
 		expect(() => decodeToolResponse(wrongMagic)).toThrow(/unexpected response/);
 
@@ -284,9 +316,7 @@ describe("verificationRows", () => {
 			...verification,
 			repair_mode: "reconstructed index",
 		});
-		expect(recovered.find((row) => row.label === "Recovery")?.value).toBe(
-			"reconstructed index",
-		);
+		expect(recovered.find((row) => row.label === "Recovery")?.value).toBe("reconstructed index");
 	});
 });
 

@@ -32,7 +32,9 @@
 //! ```
 //!
 //! On success the message JSON also carries an `outputs` array with one
-//! `{name, kind, pages, bytes, verdict}` record per output. Multi-output split
+//! `{name, kind, pages, bytes, verdict}` record per output. `kind` is `pdf`
+//! for a rewritten document, `zip` for a bundle, `file` for an extracted
+//! attachment, and `report` for the metadata JSON export. Multi-output split
 //! appends a deterministic ZIP after the PDF parts; its kind is `zip` and its
 //! page count is zero.
 //!
@@ -91,6 +93,7 @@ enum Op {
     Zip,
     ImageWatermark,
     Outline,
+    MetadataReport,
 }
 
 impl Op {
@@ -122,6 +125,7 @@ impl Op {
             24 => Some(Self::Zip),
             25 => Some(Self::ImageWatermark),
             26 => Some(Self::Outline),
+            27 => Some(Self::MetadataReport),
             _ => None,
         }
     }
@@ -157,10 +161,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
 /// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
-/// 25 outline editing.
+/// 25 outline editing, 26 metadata report.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b11_1111_1111_1111_1111_1111_1111
+    0b111_1111_1111_1111_1111_1111_1111
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -710,6 +714,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::MetadataReport => return run_metadata_report(&stem, first_input_len),
         Op::Zip => {
             let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
@@ -864,6 +869,60 @@ fn run_attachments(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
     }
 
     Ok((verification, reports, outputs))
+}
+
+/// Read a document's metadata and structure into a JSON report.
+///
+/// Nothing is rewritten: the only output is the report itself, so the
+/// verification counts describe the document as it stands and the size row
+/// deliberately shows the same number twice. An encrypted document reports
+/// `encrypted` and no counts, because every dictionary it would show is still
+/// ciphertext without the file key.
+fn run_metadata_report(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
+    let report = selis_pdf_tools::metadata_report("in/0")?;
+    let json = report.to_json()?;
+    let readable = report.status == "ok";
+    let counts = report.counts;
+    let held = u64::try_from(bytes_in).unwrap_or(u64::MAX);
+    let verification = Verification {
+        pages_in: report.pages,
+        pages_out: report.pages.unwrap_or(0),
+        annotations_in: readable.then_some(counts.annotations),
+        annotations_out: counts.annotations,
+        fields_in: readable.then_some(counts.form_fields),
+        fields_out: counts.form_fields,
+        ocgs_in: readable.then_some(counts.layers),
+        ocgs_out: counts.layers,
+        outline_entries_in: readable.then_some(counts.outline_entries),
+        outline_entries_out: counts.outline_entries,
+        embedded_files_in: readable.then_some(counts.embedded_files),
+        embedded_files_out: counts.embedded_files,
+        bytes_in: held,
+        bytes_out: held,
+        verdict: if readable { "read" } else { "encrypted" }.to_string(),
+        checked: if readable {
+            vec![
+                "pages",
+                "annotations",
+                "fields",
+                "ocgs",
+                "outline_entries",
+                "embedded_files",
+            ]
+        } else {
+            vec!["metadata"]
+        },
+        repair_mode: None,
+    };
+    let name = format!("{stem}-metadata.json");
+    let reports = vec![serde_json::json!({
+        "name": name,
+        "kind": "report",
+        "pages": 0,
+        "bytes": json.len(),
+        "verdict": verification.verdict,
+    })];
+    Ok((verification, reports, vec![(name, json)]))
 }
 
 /// Page organization: the existing reorder operation plus duplicate and
@@ -1132,12 +1191,12 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-26: the twenty-three object-graph tools, Zip, the image
-        // watermark, and outline editing. Op N sets bit N-1, so the mask is
-        // 26 ones.
+        // Ops 1-27: the twenty-three object-graph tools, Zip, the image
+        // watermark, outline editing, and the read-only metadata report.
+        // Op N sets bit N-1, so the mask is 27 ones.
         assert_eq!(
             selis_tools_capabilities(),
-            0b11_1111_1111_1111_1111_1111_1111
+            0b111_1111_1111_1111_1111_1111_1111
         );
     }
 
@@ -1205,9 +1264,56 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 26 is outline editing now, so the probe moves past it.
-        let response = run_request(&request(27, b"", &[("doc.pdf", &pdf)]));
+        // Op 27 is the metadata report now, so the probe moves past it.
+        let response = run_request(&request(28, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
+    }
+
+    #[test]
+    fn metadata_report_operation_is_dispatched() {
+        let pdf = metadata_pdf();
+        let response = run_request(&request(27, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "metadata report failed: {message}");
+        assert_eq!(message["verdict"], "read");
+        assert_eq!(message["outputs"][0]["kind"], "report");
+        assert_eq!(outputs[0].0, "doc-metadata.json");
+        let report: serde_json::Value =
+            serde_json::from_slice(&outputs[0].1).expect("the report is JSON");
+        assert_eq!(report["status"], "ok");
+        assert_eq!(report["pdf_version"], "1.4");
+        assert_eq!(report["encrypted"], false);
+        assert_eq!(report["revisions"], 1);
+        assert_eq!(report["pages"], 1);
+        assert_eq!(report["page_size"]["width"], 100.0);
+        assert_eq!(report["info"][0]["key"], "Author");
+        assert_eq!(report["info"][0]["value"], "Selis");
+        assert_eq!(report["info"][1]["key"], "Title");
+        assert_eq!(report["info"][1]["value"], "A fixture");
+        assert_eq!(report["xmp"]["present"], true);
+        assert_eq!(report["xmp"]["decoded"], true);
+        assert!(report["xmp"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("xmpmeta"));
+        assert_eq!(report["counts"]["annotations"], 0);
+        assert_eq!(report["counts"]["embedded_files"], 0);
+    }
+
+    #[test]
+    fn metadata_report_leaves_the_document_bytes_alone() {
+        let pdf = metadata_pdf();
+        let response = run_request(&request(27, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "metadata report failed: {message}");
+        // The verification size row is the document, not the report: a read
+        // cannot make the input larger or smaller.
+        assert_eq!(
+            message["bytes_in"],
+            u64::try_from(pdf.len()).unwrap_or(u64::MAX)
+        );
+        assert_eq!(message["bytes_out"], message["bytes_in"]);
+        assert_eq!(&outputs[0].1[0..1], b"{", "the output is JSON, not a PDF");
     }
 
     #[test]
@@ -1700,6 +1806,46 @@ mod tests {
         .into_bytes();
         out.extend_from_slice(data);
         out.extend_from_slice(b"\nendstream\nendobj\n");
+        out
+    }
+
+    /// A one-page document carrying an `/Info` dictionary and an XMP packet:
+    /// the two places a metadata report reads its text from.
+    fn metadata_pdf() -> Vec<u8> {
+        let xmp: &[u8] = br#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""/></rdf:RDF></x:xmpmeta><?xpacket end="w"?>""#;
+        let packet = format!(
+            "5 0 obj\n<< /Subtype /XML /Length {} >>\nstream\n",
+            xmp.len()
+        );
+        let mut metadata = packet.into_bytes();
+        metadata.extend_from_slice(xmp);
+        metadata.extend_from_slice(b"\nendstream\nendobj\n");
+        let objects: Vec<Vec<u8>> = vec![
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>\nendobj\n".to_vec(),
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec(),
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj\n".to_vec(),
+            b"4 0 obj\n<< /Title (A fixture) /Author (Selis) >>\nendobj\n".to_vec(),
+            metadata,
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object);
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {size} /Root 1 0 R /Info 4 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
         out
     }
 

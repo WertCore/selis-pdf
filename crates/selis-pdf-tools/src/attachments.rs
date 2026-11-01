@@ -214,7 +214,9 @@ fn display_name(filespec: &Obj, key: &str) -> String {
     }
 }
 
-fn pdf_text(value: &Bytes) -> String {
+/// A PDF text string as words: the UTF-16 byte-order marks decode as UTF-16,
+/// anything else is read as the single-byte encoding it claims.
+pub(crate) fn pdf_text(value: &Bytes) -> String {
     let bytes = value.as_slice();
     if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
         let units: Vec<u16> = rest

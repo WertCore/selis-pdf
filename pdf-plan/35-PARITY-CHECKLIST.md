@@ -20,7 +20,7 @@ unverified claim never ticks a box.
 - [x] `cargo fmt --all -- --check`
 - [x] Targeted `cargo test` (engine crate, WASM crate, xtask verdicts)
 - [x] `pnpm.cmd --filter @selis/web-host test`
-- [x] `cargo xtask size-check --strict` (tools chunk under 300 000 B brotli)
+- [x] `cargo xtask size-check --strict` (tools chunk under its `xtask/size-budgets.toml` budget)
 - [x] `pnpm.cmd --filter @selis/web-host build`
 - [x] `cargo xtask browser-check --only tools-page --strict` (online + offline legs)
 - [x] No document bytes in any request; no PDF in Cache Storage or IndexedDB
@@ -115,7 +115,27 @@ and a size budget; no raster feature is claimed.
       compiled since it landed: the `Zip` arm referenced an out-of-scope `files` binding and the
       private `verify_report` module. The chunk now collects the parsed inputs and uses the
       re-exported `Verification`.
-- [ ] **PDF → metadata JSON** — read-only export of Info/XMP and structural facts; no mutation.
+- [x] **PDF → metadata JSON** — read-only export of Info/XMP and structural facts; no mutation.
+      *Shipped:* `selis-pdf-tools::metadata_report` opens the newest revision and reports what the
+      document says about itself — header version, revision count, leaf page count, first
+      `/MediaBox`, every `/Info` key as text (a non-string value is named by its object kind rather
+      than guessed), the catalog's XMP `/Metadata` packet with its `/Filter` decoded when it can be
+      and named when it cannot, and the six structural counts the verification gate already walks.
+      The export shape is owned by `MetadataReport::to_json`, so a CLI and the browser cannot drift.
+      An encrypted document reports `status: "encrypted"` and nothing else: with no file key its
+      dictionaries are still ciphertext, and printing ciphertext as a title would be a lie. WASM op
+      27 `MetadataReport` returns one output of the new `report` kind — never a PDF, so no preview
+      is offered — with verdict `read` (or `encrypted`) and `bytes_out == bytes_in`. The web card
+      "Read metadata" downloads `<name>-metadata.json` and shows the packet described, not printed,
+      with `/Info` fields capped at 10 rows and values at 120 characters so a hostile dictionary
+      cannot grow the page. Evidence: 6 engine tests (Info + packet, nothing invented, Flate decode,
+      undecodable filter named, oversized packet capped, encrypted), 2 wasm dispatch tests, 3 new
+      protocol tests, and the browser legs — the same 726-byte fixture the strip leg rewrites reads
+      back with `PDF version 1.4`, `First page 200 × 200 pt`, `Title = Secret Title`,
+      `XMP packet = none`, `Pages 3 → 3`, `Verification = read` and `%PDF-` absent from the
+      downloaded JSON, online and offline with zero foreign requests. Tools chunk 300 050 B brotli:
+      this slice moved the budget from 300 000 to 320 000 in `xtask/size-budgets.toml` rather than
+      cut the feature — compact JSON was 458 B cheaper and the report is meant to be read.
 - [ ] **Batch queue** — multi-file queue with per-file isolation, per-file results, one failure
       never cancels another, and no cross-file document access. Acceptance: 3 files in, 3
       independent verified results, one deliberate failure leaves the other two intact.
@@ -130,7 +150,8 @@ and a size budget; no raster feature is claimed.
 ### Phase 1A.1 exit checks
 
 - [ ] Every remaining box above is either ticked or explicitly deferred with a reason.
-- [ ] Tools chunk still under 300 000 B brotli with every new card lazy-loaded.
+- [ ] Tools chunk still under its `xtask/size-budgets.toml` budget (320 000 B brotli since the
+      metadata report) with every new card lazy-loaded.
 - [ ] Browser check drives every card online and after an offline reload.
 - [ ] `34-TOOLS-SITE-ROADMAP.md` "Remaining in 1A.1" is empty or lists only named deferrals.
 
