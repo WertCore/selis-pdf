@@ -86,6 +86,18 @@ mod tools {
         selis_pdf_tools::strip_metadata(path, output).map_err(CliError::from)
     }
 
+    /// Read a document's own metadata. The report is the output, so nothing is
+    /// rewritten and an encrypted PDF yields the encryption and nothing else.
+    pub(crate) fn metadata_report(path: &str, output: Option<&str>) -> CliResult<()> {
+        let report = selis_pdf_tools::metadata_report(path).map_err(CliError::from)?;
+        let json = report.to_json().map_err(CliError::from)?;
+        if let Some(file) = output {
+            return super::write_file(file, &json);
+        }
+        println!("{}", String::from_utf8_lossy(&json));
+        Ok(())
+    }
+
     pub(crate) fn redact(
         path: &str,
         rects: &[(f64, f64, f64, f64)],
@@ -340,6 +352,18 @@ enum Command {
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
+    },
+    /// Read a PDF's Info dictionary, XMP packet and structure as JSON.
+    ///
+    /// The document is not modified: this is the read that comes before
+    /// `strip-metadata`, and an encrypted PDF reports only that it is
+    /// encrypted, because its dictionaries are still ciphertext.
+    MetadataReport {
+        /// The input PDF.
+        path: String,
+        /// Where to write the JSON report. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Redact regions of a PDF (cover + strip text).
     Redact {
@@ -830,6 +854,9 @@ fn run() {
             output,
             json,
         } => finish(tools::strip_metadata(&path, &output), json),
+        Command::MetadataReport { path, output } => {
+            tools::metadata_report(&path, output.as_deref())
+        }
         Command::Redact {
             path,
             rects,

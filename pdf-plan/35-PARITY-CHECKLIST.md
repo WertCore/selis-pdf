@@ -125,17 +125,20 @@ and a size budget; no raster feature is claimed.
       An encrypted document reports `status: "encrypted"` and nothing else: with no file key its
       dictionaries are still ciphertext, and printing ciphertext as a title would be a lie. WASM op
       27 `MetadataReport` returns one output of the new `report` kind — never a PDF, so no preview
-      is offered — with verdict `read` (or `encrypted`) and `bytes_out == bytes_in`. The web card
-      "Read metadata" downloads `<name>-metadata.json` and shows the packet described, not printed,
-      with `/Info` fields capped at 10 rows and values at 120 characters so a hostile dictionary
-      cannot grow the page. Evidence: 6 engine tests (Info + packet, nothing invented, Flate decode,
-      undecodable filter named, oversized packet capped, encrypted), 2 wasm dispatch tests, 3 new
-      protocol tests, and the browser legs — the same 726-byte fixture the strip leg rewrites reads
-      back with `PDF version 1.4`, `First page 200 × 200 pt`, `Title = Secret Title`,
-      `XMP packet = none`, `Pages 3 → 3`, `Verification = read` and `%PDF-` absent from the
-      downloaded JSON, online and offline with zero foreign requests. Tools chunk 300 050 B brotli:
-      this slice moved the budget from 300 000 to 320 000 in `xtask/size-budgets.toml` rather than
-      cut the feature — compact JSON was 458 B cheaper and the report is meant to be read.
+      is offered — with verdict `read` (or `encrypted`) and `bytes_out == bytes_in`. The CLI twin is
+      `selis metadata-report [-o report.json]`: the same export, printed to stdout when no output is
+      named. The web card "Read metadata" downloads `<name>-metadata.json` and shows the packet
+      described, not printed, with `/Info` fields capped at 10 rows and values at 120 characters so a
+      hostile dictionary cannot grow the page. Evidence: 7 engine tests (Info + packet, nothing
+      invented, Flate decode, undecodable filter named, oversized packet capped, encrypted, a
+      negative fraction that keeps its sign outside the decimal point), 2 wasm dispatch tests, 3 new
+      protocol tests, a CLI test that the read leaves the input byte-identical, and the browser legs —
+      the same 726-byte fixture the strip leg rewrites reads back with `PDF version 1.4`,
+      `First page 200 × 200 pt`, `Title = Secret Title`, `XMP packet = none`, `Pages 3 → 3`,
+      `Verification = read` and `%PDF-` absent from the downloaded JSON, online and offline with zero
+      foreign requests. Tools chunk 300 192 B brotli, baseline refreshed: this slice moved the budget
+      from 300 000 to 320 000 in `xtask/size-budgets.toml` rather than cut the feature — compact JSON
+      was 458 B cheaper and the report is meant to be read.
 - [ ] **Batch queue** — multi-file queue with per-file isolation, per-file results, one failure
       never cancels another, and no cross-file document access. Acceptance: 3 files in, 3
       independent verified results, one deliberate failure leaves the other two intact.

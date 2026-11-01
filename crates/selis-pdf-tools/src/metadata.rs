@@ -249,18 +249,12 @@ fn real_text(scaled: i64, scale: u8) -> String {
     if digits == 0 {
         return format!("{sign}{text}");
     }
-    let width = text.len();
-    let (head, tail) = if width <= digits {
-        (
-            "0".to_string(),
-            format!("{}{text}", "0".repeat(digits - width)),
-        )
+    let padded = if text.len() <= digits {
+        format!("0{}{text}", "0".repeat(digits.saturating_sub(text.len())))
     } else {
-        (
-            text[..width - digits].to_string(),
-            text[width - digits..].to_string(),
-        )
+        text
     };
+    let (head, tail) = padded.split_at(padded.len().saturating_sub(digits));
     format!("{sign}{head}.{tail}")
 }
 

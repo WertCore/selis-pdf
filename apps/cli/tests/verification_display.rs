@@ -788,7 +788,10 @@ fn repair_command_recovers_a_damaged_index() {
         .windows(4)
         .position(|window| window == b"xref".as_slice())
         .expect("xref keyword");
-    bytes[at..at + 4].copy_from_slice(b"zzzz");
+    bytes
+        .get_mut(at..at.checked_add(4).expect("xref keyword fits"))
+        .expect("xref keyword is inside the file")
+        .copy_from_slice(b"zzzz");
     std::fs::write(&input, &bytes).expect("write input");
 
     let out = selis()
@@ -869,6 +872,97 @@ fn strip_metadata_command_removes_info_and_keeps_the_pages() {
     assert!(!text.contains("/Info"), "{text}");
     assert!(!text.contains("Removed Title"), "{text}");
     assert!(!text.contains("Removed Producer"), "{text}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `metadata-report` is the read that comes before `strip-metadata`: it
+/// exports the Info dictionary, the XMP packet and the structural counts, and
+/// because it produces a report rather than a document, the input must come
+/// back out of the run byte for byte identical.
+#[test]
+fn metadata_report_command_reads_the_document_without_touching_it() {
+    let dir = temp_dir("metadata-report");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("with-info.pdf");
+    let report = dir.join("report.json");
+
+    let budget = Budget::unlimited();
+    let mut g = guard();
+    let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+    builder.add_page(100.0, 100.0, b"");
+    builder.add_page(100.0, 100.0, b"");
+    builder.set_info(b"Title", "Read Only Title");
+    builder.set_info(b"Author", "Read Only Author");
+    std::fs::write(&input, builder.write(&budget, &mut g).expect("write input"))
+        .expect("write fixture");
+    let before = std::fs::read(&input).expect("read input");
+
+    let out = selis()
+        .args([
+            "metadata-report",
+            input.to_str().unwrap(),
+            "-o",
+            report.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run selis");
+    assert!(
+        out.status.success(),
+        "metadata-report stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = std::fs::read_to_string(&report).expect("read report");
+    let value: serde_json::Value =
+        serde_json::from_str(&text).expect("the report is one JSON object");
+    assert_eq!(jget(&value, "status"), "ok");
+    assert_eq!(jget(&value, "pages"), 2);
+    assert_eq!(jget(&value, "bytes_in"), &serde_json::json!(before.len()));
+    assert_eq!(jget(&value, "encrypted").as_bool(), Some(false));
+    assert_eq!(
+        jget(&value, "page_size")
+            .get("width")
+            .and_then(|w| w.as_f64()),
+        Some(100.0)
+    );
+    let info = value
+        .get("info")
+        .and_then(serde_json::Value::as_array)
+        .expect("info fields");
+    let title = info
+        .iter()
+        .find(|field| field.get("key").and_then(|k| k.as_str()) == Some("Title"))
+        .expect("the Title field is reported");
+    assert_eq!(
+        title.get("value").and_then(|v| v.as_str()),
+        Some("Read Only Title")
+    );
+    assert_eq!(
+        jget(&value, "xmp").get("present").and_then(|p| p.as_bool()),
+        Some(false)
+    );
+
+    let printed = selis()
+        .args(["metadata-report", input.to_str().unwrap()])
+        .output()
+        .expect("run selis");
+    assert!(
+        printed.status.success(),
+        "stdout leg stderr: {}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&printed.stdout).contains("Read Only Author"),
+        "omitting --output prints the report: {}",
+        String::from_utf8_lossy(&printed.stdout)
+    );
+
+    let after = std::fs::read(&input).expect("read input again");
+    assert_eq!(before, after, "a read must not rewrite the document");
+    assert!(
+        !text.starts_with("%PDF-"),
+        "the report is JSON, never a document: {text}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

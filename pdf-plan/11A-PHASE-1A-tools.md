@@ -399,6 +399,17 @@ operation is available identically in the CLI, the web app, and the extension.
     the catalog XMP `/Metadata` while carrying pages, annotations, forms, outlines, page labels,
     attachments, and tags; encrypted inputs are refused. Removing metadata can invalidate PDF/A
     conformance and signatures, and the UI says so.
+  - **Read half (2026-11-01):** `selis metadata-report <pdf> [-o report.json]` and the "Read
+    metadata" card (WASM op 27) export what a document says about itself — header version, revision
+    count, leaf page count, first `/MediaBox`, every `/Info` key, the catalog XMP packet with its
+    `/Filter` decoded when it can be, and the six structural counts the verification gate walks.
+    `MetadataReport::to_json` owns the export shape, so the CLI and the page cannot drift. It is the
+    read that comes before `strip-metadata`: nothing is rewritten, the output is a `report` (never a
+    PDF, so no preview is offered), verdict `read` and `bytes_out == bytes_in`. An encrypted document
+    reports `status: "encrypted"` and invents nothing, because its dictionaries are still ciphertext.
+    The browser legs read the 726-byte strip fixture back as `Title = Secret Title`,
+    `XMP packet = none`, `Verification = read` with `%PDF-` absent from the downloaded JSON, online
+    and offline with zero foreign requests.
   - **Do:** Read and edit Info dictionary and XMP, including bulk metadata stripping — which is a
     genuine privacy feature and a natural fit for this product's positioning.
 - [x] **SL-1A.TOOL.10 — Attachment extraction** · deps: `SL-1.DOC.07` · owner: AI+
