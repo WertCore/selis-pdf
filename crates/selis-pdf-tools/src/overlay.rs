@@ -1014,13 +1014,17 @@ fn image_xobject(image: &OverlayImage, num: u32) -> (Obj, Ref) {
 
 /// Composite RGBA over an opaque white background, returning packed RGB.
 fn rgba_over_white(rgba: &[u8]) -> Vec<u8> {
-    let pixels = rgba.len() / 4;
-    let mut rgb = Vec::with_capacity(pixels.saturating_mul(3));
+    let mut rgb = Vec::with_capacity(rgba.chunks_exact(4).count().saturating_mul(3));
     for chunk in rgba.chunks_exact(4) {
         let alpha = u32::from(chunk[3]);
         let inverse = 255 - alpha;
         for channel in &chunk[0..3] {
-            let value = (u32::from(*channel) * alpha + 255 * inverse + 127) / 255;
+            let value = u32::from(*channel)
+                .saturating_mul(alpha)
+                .saturating_add(255u32.saturating_mul(inverse))
+                .saturating_add(127)
+                .checked_div(255)
+                .unwrap_or(255);
             rgb.push(u8::try_from(value.min(255)).unwrap_or(255));
         }
     }
