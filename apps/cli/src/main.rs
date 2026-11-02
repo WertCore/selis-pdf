@@ -226,18 +226,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Render a page to a PPM image.
+    /// Render a page to a PPM or PNG image.
     Render {
         /// The PDF file to render.
         path: String,
         /// The page number (0-based; default 0).
         #[arg(long, default_value_t = 0)]
         page: usize,
-        /// The output PPM file.
+        /// The output image file.
         output: String,
         /// The output resolution in DPI (default 72; 72 is 1pt = 1px).
         #[arg(long, default_value_t = 72)]
         dpi: u32,
+        /// The output format: ppm (default) or png.
+        #[arg(long, default_value = "ppm")]
+        format: String,
     },
     /// Extract a page's content (text|json|md|html|image|embedded).
     Extract {
@@ -806,7 +809,8 @@ fn run() {
             page,
             output,
             dpi,
-        } => render::run(&path, page, &output, dpi),
+            format,
+        } => render::run(&path, page, &output, dpi, &format),
         Command::Extract {
             path,
             page,

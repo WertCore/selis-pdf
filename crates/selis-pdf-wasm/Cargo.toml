@@ -36,7 +36,7 @@ selis-pdf-content = { workspace = true }
 # vocabulary crosses the boundary. A strictly-downward L4 -> L2 edge, the same
 # one `selis-pdf-text` already is.
 selis-pdf-doc = { workspace = true }
-selis-pdf-engine = { workspace = true }
+selis-pdf-engine = { workspace = true, features = ["rng"] }
 selis-pdf-text = { workspace = true }
 selis-sandbox = { workspace = true }
 # SHA-256 for the CJK chunk cache-poisoning guard (SL-4.WASM.07). Already

@@ -220,7 +220,34 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
 ### Rendering and image outputs
 
 - [ ] **PDF → JPG** — render every page, quality control, ZIP for multi-page.
-- [ ] **PDF → PNG** — same, lossless.
+- [x] **PDF → PNG** — same, lossless.
+      *Shipped:* `selis-image::encode_png` writes colour type 6, filter 0, zlib through the owned
+      `selis_pdf_filter::flate_encode` — no image library in the tree. The engine renders a page to
+      straight RGBA over opaque white (`Session::render_page_rgba`, DPI-scaled, honouring `/Rotate`),
+      and the new lazy chunk `selis-pdf-wasm-raster` owns the web path: it takes the document, a
+      1-based page selection and a DPI bounded to 1–600, renders each page, encodes it, then
+      **decodes its own PNG and compares the pixels** before returning anything — a page that does
+      not round-trip is refused rather than shipped with a "verified" label on top. One page comes
+      back as a bare PNG; several come back as one store-method ZIP whose entries are `page-N.png`,
+      zero-padded to the digit width of the page count (3 pages → `page-1.png`, 12 → `page-01.png`),
+      because the page must not fire a download burst. The CLI twin is `selis render --format
+      ppm|png`, default still PPM. The web card is the 30th in `/tools.html`, fetching
+      `/wasm/selis_pdf_wasm_raster.wasm` on first use with `kind: "image"` outputs and a real
+      preview.
+      Evidence: 14 `selis-image` tests (round-trip, byte determinism, 1×1, mismatched buffer,
+      zero dimensions), 2 engine tests (opaque paper at every pixel, two renders identical),
+      7 raster-chunk tests (chunk id, PNG decodes with the centre pixel black, byte-identical
+      re-render, 1-based ordered selection, DPI bounds, multi-page ZIP, padding width), 3 CLI tests
+      (`render_png.rs`: DPI dimensions, determinism, default/unknown format), and the browser legs —
+      `report.png` 802 B whose bytes start `\x89PNG`, carry `IHDR` and `IDAT` once each, contain no
+      `/Type /Page`, measure 200×200 at 72 DPI and are offered as both a preview and a download, and
+      `report-pages.zip` with a `PK\x03\x04\x14` header, `page-1.png`/`page-2.png`/`page-3.png` each
+      present twice (local header plus central directory) and **no** preview — online and after the
+      origin is cut, with the chunk served from cache and zero foreign requests. Eight verdict
+      negatives withdraw one witness each. Raster chunk 1 088 448 B brotli of its own 1 300 000
+      budget; the tools chunk is unchanged at 304 701 B of 320 000.
+      Not claimed: JPG/WebP/TIFF (no owned JPEG encoder yet), the PDF → images ZIP parity row, and
+      the Phase 2 exit gate — render-hash determinism across the corpus and OCR still open it.
 - [ ] **PDF → WebP** — needs an owned codec under the dependency policy.
 - [ ] **PDF → TIFF** — multi-page container; define page order and DPI.
 - [ ] **PDF → images ZIP** — deterministic bundle of the above.

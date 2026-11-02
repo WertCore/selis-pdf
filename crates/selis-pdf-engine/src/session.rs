@@ -181,6 +181,22 @@ impl PublicKeyReceipt {
     }
 }
 
+/// One page rendered to straight RGBA8 pixels, top-down, on white paper.
+///
+/// `rgba` is `width * height * 4` bytes with alpha `255` on every pixel: a
+/// page is paper, not a transparent overlay, and the tool that writes it to a
+/// file never has to guess a backdrop. Produced by
+/// [`Session::render_page_rgba`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedPage {
+    /// Canvas width in pixels.
+    pub width: u32,
+    /// Canvas height in pixels.
+    pub height: u32,
+    /// Straight (non-premultiplied) RGBA samples, row-major, top-down.
+    pub rgba: Vec<u8>,
+}
+
 /// The result of one lazy-CJK render (SL-3.FONT.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CjkRenderOutcome {
@@ -1256,6 +1272,67 @@ impl Session {
         self.render_page_walk(page_num, backend, page_ctm, budget, g, stats, None, None)
     }
 
+    /// Render a page to straight RGBA8 pixels, top-down, on white paper.
+    ///
+    /// This is the whole-page path the raster tools drive: it sizes the canvas
+    /// from [`Session::page_view`] at `dpi` (honouring `/Rotate`), renders the
+    /// page and its annotation appearances, and converts the backend's
+    /// premultiplied pixmap back to straight samples over an opaque white
+    /// backdrop. The page backdrop is already filled white by the render walk
+    /// (ISO 32000-2 §11.3.1), so this conversion cannot invent colour: it only
+    /// undoes premultiplication on any pixel a transparency group left partial.
+    ///
+    /// The result is deterministic for a given document and DPI (ADR-P0012):
+    /// the same bytes in, the same pixels out.
+    ///
+    /// # Errors
+    ///
+    /// `PAGE_OUT_OF_RANGE` for an index past the document, `OBJ_UNEXPECTED` for
+    /// a non-positive/non-finite DPI or a page with no usable box, and
+    /// `BUDGET_PIXELS` when the canvas cannot be allocated.
+    pub fn render_page_rgba(
+        &self,
+        page_num: usize,
+        dpi: f64,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<RenderedPage> {
+        if !dpi.is_finite() || dpi <= 0.0 {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "session-render",
+                detail = "dpi must be positive and finite"
+            ));
+        }
+        let view = self.page_view(page_num, dpi).ok_or_else(|| {
+            err!(
+                Code::PageOutOfRange,
+                during = "session-render",
+                detail = "page index"
+            )
+        })?;
+        if view.width == 0 || view.height == 0 {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "session-render",
+                detail = "page has zero area"
+            ));
+        }
+        let mut backend = TinySkiaBackend::new(view.width, view.height).ok_or_else(|| {
+            err!(
+                Code::BudgetPixels,
+                during = "session-render",
+                detail = "canvas allocation"
+            )
+        })?;
+        self.render_page(page_num, &mut backend, view.ctm, budget, g)?;
+        Ok(RenderedPage {
+            width: view.width,
+            height: view.height,
+            rgba: straight_rgba_over_white(backend.pixmap().data()),
+        })
+    }
+
     /// Render a page with the lazy CJK fallback active (SL-3.FONT.10).
     ///
     /// Identical to [`Session::render_page`] except for `Uni…UCS2…` Type0
@@ -2149,6 +2226,39 @@ fn resolve_pattern_inner(
         y_step,
         matrix,
     })
+}
+
+/// Convert a premultiplied RGBA pixmap to straight samples over white.
+///
+/// tiny-skia stores premultiplied RGBA. Compositing a premultiplied sample
+/// `(c, a)` over opaque white is `c + (255 - a)` per channel, because white
+/// contributes `255 * (1 - a)` in premultiplied units. The render walk fills
+/// the page backdrop white first, so in practice `a == 255` and this is a
+/// straight copy; the general branch exists so a future caller that renders
+/// without a backdrop still gets paper rather than a darkened fringe.
+fn straight_rgba_over_white(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for px in data.chunks_exact(4) {
+        let &[r, g, b, sample] = px else {
+            continue;
+        };
+        let a = u32::from(sample);
+        if a == 255 {
+            out.extend_from_slice(&[r, g, b, 255]);
+        } else if a == 0 {
+            out.extend_from_slice(&[255, 255, 255, 255]);
+        } else {
+            for channel in [r, g, b] {
+                let v = u32::from(channel)
+                    .saturating_add(255u32.saturating_sub(a))
+                    .min(255);
+                // `v` is clamped to 0..=255 above, so the narrowing is exact.
+                out.push(u8::try_from(v).unwrap_or(255));
+            }
+            out.push(255);
+        }
+    }
+    out
 }
 
 /// Fill the canvas with the page's initial backdrop: opaque white.
@@ -4334,6 +4444,60 @@ mod tests {
         let idx = (50 * 100 + 50) * 4;
         assert_eq!(&data[idx..idx + 3], &[0, 0, 0]);
         assert_eq!(data[idx + 3], 255);
+    }
+
+    /// The whole-page RGBA path is opaque white paper, matches the page view,
+    /// and produces byte-identical pixels on a second render (ADR-P0012).
+    #[test]
+    fn rgba_render_is_opaque_paper_and_deterministic() {
+        let src = include_bytes!("fixtures/minimal.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
+        let view = session.page_view(0, 72.0).expect("page view");
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let first = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("render");
+        assert_eq!((first.width, first.height), (view.width, view.height));
+        assert_eq!(
+            first.rgba.len(),
+            usize::try_from(view.width)
+                .expect("width")
+                .saturating_mul(usize::try_from(view.height).expect("height"))
+                .saturating_mul(4)
+        );
+        assert!(
+            first.rgba.chunks_exact(4).all(|px| px[3] == 255),
+            "a rendered page is opaque paper"
+        );
+        let x = usize::try_from(view.width)
+            .expect("width")
+            .saturating_div(2);
+        let y = usize::try_from(view.height)
+            .expect("height")
+            .saturating_div(2);
+        let idx = y
+            .saturating_mul(usize::try_from(view.width).expect("width"))
+            .saturating_add(x)
+            .saturating_mul(4);
+        assert_eq!(&first.rgba[idx..idx + 3], &[0, 0, 0]);
+        let second = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("second render");
+        assert_eq!(first, second, "pixels must not depend on render order");
+    }
+
+    #[test]
+    fn rgba_render_rejects_a_bad_page_or_dpi() {
+        let src = include_bytes!("fixtures/minimal.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let session = Session::open(src.to_vec(), &budget, &FixedClock(0)).expect("open");
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        assert!(session.render_page_rgba(9, 72.0, &budget, &mut g).is_err());
+        assert!(session.render_page_rgba(0, 0.0, &budget, &mut g).is_err());
+        assert!(session
+            .render_page_rgba(0, f64::NAN, &budget, &mut g)
+            .is_err());
     }
 
     /// A PDF with a 2×2 DeviceGray image XObject renders it scaled to the

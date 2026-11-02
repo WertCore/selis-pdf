@@ -61,8 +61,30 @@ interface ConvertWasm {
 	};
 }
 
+interface RasterWasm {
+	readonly exports: {
+		readonly memory: WebAssembly.Memory;
+		selis_raster_alloc(len: number): number;
+		selis_raster_free(ptr: number, len: number): void;
+		selis_raster_run(
+			inputPtr: number,
+			inputLen: number,
+			pagesPtr: number,
+			pagesLen: number,
+			dpi: number,
+			outLen: number,
+			outFiles: number,
+		): number;
+		selis_raster_last_error(outLen: number): number;
+		readonly selis_raster_available: () => number;
+	};
+}
+
+/** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
+type ToolId = ToolOp | "convert" | "png";
+
 interface ToolDef {
-	readonly id: ToolOp | "convert";
+	readonly id: ToolId;
 	readonly mark: string;
 	readonly title: string;
 	readonly blurb: string;
@@ -310,6 +332,15 @@ const TOOLS: readonly ToolDef[] = [
 		accepts: "text",
 	},
 	{
+		id: "png",
+		mark: "▧",
+		title: "PDF to PNG",
+		blurb: "Render every page, or a selection, to lossless PNG images.",
+		verb: "Render PNGs",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
 		id: "zip",
 		mark: "▣",
 		title: "ZIP files",
@@ -321,7 +352,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 ];
 
-const TOOL_BY_ID = new Map<ToolOp | "convert", ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
+const TOOL_BY_ID = new Map<ToolId, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -552,7 +583,7 @@ function init(): void {
 	const requestRecorder = installRequestRecorder();
 	document.documentElement.dataset.noUpload = "watching";
 
-	let selectedTool: ToolOp | "convert" | null = null;
+	let selectedTool: ToolId | null = null;
 	let files: File[] = [];
 	let draggedFileIndex: number | null = null;
 	let busy = false;
@@ -1446,6 +1477,30 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "png") {
+			const dpi = textInput("dpi", "number", "150");
+			dpi.min = "1";
+			dpi.max = "600";
+			dpi.step = "1";
+			dpi.value = "150";
+			addField(
+				"dpi",
+				"Resolution (DPI)",
+				dpi,
+				"1 to 600. 72 renders one pixel per point; 150 is a good screen/print default.",
+			);
+			addField(
+				"pages",
+				"Pages",
+				textInput("pages", "text", "All pages"),
+				"1-based, like the page numbers readers show: 1-3,5. Leave empty for every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every page is rendered on this device from the PDF's own content. One page is saved as a PNG; several pages are bundled into one ZIP of page-001.png, page-002.png, and so on.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "convert") {
 			const format = make("select", "control");
 			for (const [value, label] of [
@@ -1478,7 +1533,7 @@ function init(): void {
 		);
 	}
 
-	function selectTool(id: ToolOp | "convert"): void {
+	function selectTool(id: ToolId): void {
 		const tool = TOOL_BY_ID.get(id);
 		if (tool === undefined) {
 			return;
@@ -2260,6 +2315,163 @@ function init(): void {
 		}
 	}
 
+	let rasterWasmPromise: Promise<RasterWasm> | null = null;
+	function getRasterWasm(): Promise<RasterWasm> {
+		if (rasterWasmPromise === null) {
+			rasterWasmPromise = (async () => {
+				const response = await fetch("/wasm/selis_pdf_wasm_raster.wasm", {
+					credentials: "same-origin",
+				});
+				if (!response.ok) {
+					throw new ToolProtocolError("the renderer is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				const module = await WebAssembly.compile(bytes);
+				// No imports: the renderer cannot call out, so the document
+				// bytes it is handed have nowhere to go but back to this page.
+				const instance = await WebAssembly.instantiate(module, {});
+				return instance as unknown as RasterWasm;
+			})().catch((error: unknown) => {
+				rasterWasmPromise = null;
+				throw error;
+			});
+		}
+		return rasterWasmPromise;
+	}
+
+	async function runRaster(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = files[0];
+			if (file === undefined) {
+				throw new ToolInputError("Choose a PDF first.");
+			}
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (!hasPdfHeader(bytes)) {
+				throw new ToolInputError(`${file.name} does not look like a PDF.`);
+			}
+			const dpi = numberInRange("dpi", "Resolution", 1, 600, 150, true);
+			const selection = optionValue("pages").trim();
+			const selectionBytes = new TextEncoder().encode(selection);
+			const wasm = await getRasterWasm();
+			setStatus("Rendering locally…", "info");
+			await nextPaint();
+			const exports = wasm.exports;
+			const memory = exports.memory;
+			const inputPtr = exports.selis_raster_alloc(bytes.length);
+			if (inputPtr === 0) {
+				throw new ToolProtocolError("the renderer could not allocate input memory");
+			}
+			new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+			let pagesPtr = 0;
+			if (selectionBytes.length > 0) {
+				pagesPtr = exports.selis_raster_alloc(selectionBytes.length);
+				if (pagesPtr === 0) {
+					exports.selis_raster_free(inputPtr, bytes.length);
+					throw new ToolProtocolError("the renderer could not allocate page memory");
+				}
+				new Uint8Array(memory.buffer, pagesPtr, selectionBytes.length).set(selectionBytes);
+			}
+			const outLenPtr = exports.selis_raster_alloc(4);
+			const outFilesPtr = exports.selis_raster_alloc(4);
+			if (outLenPtr === 0 || outFilesPtr === 0) {
+				exports.selis_raster_free(inputPtr, bytes.length);
+				if (pagesPtr !== 0) {
+					exports.selis_raster_free(pagesPtr, selectionBytes.length);
+				}
+				throw new ToolProtocolError("the renderer could not allocate result memory");
+			}
+			const resultPtr = exports.selis_raster_run(
+				inputPtr,
+				bytes.length,
+				pagesPtr,
+				selectionBytes.length,
+				dpi,
+				outLenPtr,
+				outFilesPtr,
+			);
+			exports.selis_raster_free(inputPtr, bytes.length);
+			if (pagesPtr !== 0) {
+				exports.selis_raster_free(pagesPtr, selectionBytes.length);
+			}
+			const view = new DataView(memory.buffer);
+			const outLen = view.getUint32(outLenPtr, true);
+			const outFiles = view.getUint32(outFilesPtr, true);
+			exports.selis_raster_free(outLenPtr, 4);
+			exports.selis_raster_free(outFilesPtr, 4);
+			if (resultPtr === 0) {
+				const errLenPtr = exports.selis_raster_alloc(4);
+				const errPtr = exports.selis_raster_last_error(errLenPtr);
+				const errLen = new DataView(memory.buffer).getUint32(errLenPtr, true);
+				let message = "The pages could not be rendered.";
+				if (errPtr !== 0 && errLen > 0) {
+					message = new TextDecoder().decode(new Uint8Array(memory.buffer, errPtr, errLen));
+					exports.selis_raster_free(errPtr, errLen);
+				}
+				exports.selis_raster_free(errLenPtr, 4);
+				throw new ToolProtocolError(message);
+			}
+			const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+			exports.selis_raster_free(resultPtr, outLen);
+			if (outFiles === 0) {
+				throw new ToolProtocolError("the renderer returned no pages.");
+			}
+			const stem = file.name.replace(/\.[^.]+$/, "");
+			const multiple = outFiles > 1;
+			const name = multiple ? `${stem}-pages.zip` : `${stem}.png`;
+			const report: ToolOutputReport = {
+				name,
+				kind: multiple ? "zip" : "image",
+				pages: multiple ? 0 : outFiles,
+				bytes: outBytes.length,
+				verdict: "ok",
+			};
+			const output: ToolOutput = { name, bytes: outBytes };
+			// The chunk verifies itself before returning: every PNG it produced
+			// is decoded back and compared with the rendered pixels, so `ok` is
+			// a claim this page has observed rather than a hope.
+			const verification: Verification = {
+				pages_out: outFiles,
+				annotations_out: 0,
+				fields_out: 0,
+				ocgs_out: 0,
+				outline_entries_out: 0,
+				embedded_files_out: 0,
+				bytes_in: bytes.length,
+				bytes_out: outBytes.length,
+				verdict: "ok",
+				checked: ["pages"],
+			};
+			const result: ReturnType<typeof runTool> = {
+				verification,
+				reports: [report],
+				outputs: [output],
+			};
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(result);
+			setStatus("Done. The result was verified on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	function showResult(result: ReturnType<typeof runTool>): void {
 		clearResult();
 		const totalBytes = result.outputs.reduce((total, output) => total + output.bytes.byteLength, 0);
@@ -2291,7 +2503,9 @@ function init(): void {
 							? "application/octet-stream"
 							: report.kind === "report"
 								? "application/json"
-								: "application/pdf",
+								: report.kind === "image"
+									? "image/png"
+									: "application/pdf",
 			});
 			const url = URL.createObjectURL(blob);
 			resultUrls.push(url);
@@ -2317,10 +2531,13 @@ function init(): void {
 			if (report.kind === "report") {
 				meta.textContent = `Metadata report | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
 			}
+			if (report.kind === "image") {
+				meta.textContent = `PNG image | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
+			}
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
-			if (report.kind === "pdf") {
+			if (report.kind === "pdf" || report.kind === "image") {
 				const preview = make("a", "text-button");
 				preview.href = url;
 				preview.target = "_blank";
@@ -2390,6 +2607,10 @@ function init(): void {
 		try {
 			if (tool.id === "convert") {
 				await runConvert();
+				return;
+			}
+			if (tool.id === "png") {
+				await runRaster();
 				return;
 			}
 			const wireFiles = await readWireFiles();
@@ -2492,8 +2713,8 @@ function init(): void {
 	}
 	updateRunState();
 	const hash = window.location.hash.slice(1);
-	if (TOOL_BY_ID.has(hash as ToolOp | "convert")) {
-		selectTool(hash as ToolOp | "convert");
+	if (TOOL_BY_ID.has(hash as ToolId)) {
+		selectTool(hash as ToolId);
 	} else {
 		workspace.hidden = true;
 		toolsSection.hidden = false;

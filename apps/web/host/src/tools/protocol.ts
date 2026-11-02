@@ -137,11 +137,12 @@ export interface ToolOutput {
 /** Per-file metadata emitted alongside the aggregate verification.
  *
  * `pdf` is a rewritten document, `zip` a bundle, `file` an extracted
- * attachment, and `report` a read-only export such as the metadata JSON.
+ * attachment, `report` a read-only export such as the metadata JSON, and
+ * `image` a raster page produced by the lazy raster chunk.
  */
 export interface ToolOutputReport {
 	readonly name: string;
-	readonly kind: "pdf" | "zip" | "file" | "report";
+	readonly kind: "pdf" | "zip" | "file" | "report" | "image";
 	readonly pages: number;
 	readonly bytes: number;
 	readonly verdict: string;
@@ -360,7 +361,13 @@ function decodeReports(
 		if (output === undefined || typeof name !== "string" || name !== output.name) {
 			throw new ToolProtocolError("the tool chunk returned mismatched output metadata");
 		}
-		if (kind !== "pdf" && kind !== "zip" && kind !== "file" && kind !== "report") {
+		if (
+			kind !== "pdf" &&
+			kind !== "zip" &&
+			kind !== "file" &&
+			kind !== "report" &&
+			kind !== "image"
+		) {
 			throw new ToolProtocolError("the tool chunk returned an unknown output kind");
 		}
 		if (

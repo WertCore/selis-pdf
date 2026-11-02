@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue and every-card coverage slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue, every-card coverage and PDF→PNG slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -73,6 +73,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Batch queue | — | yes | **Live** | One tool run over up to 64 files (`compress`, `strip-metadata`, `repair`; the CLI adds `protect`), each document opened, processed and closed on its own. A file the engine refuses becomes a row naming that file with its own typed message and produces no output, no verification and no file on disk — the rest of the queue still finishes. Results keep queue order, are named after the document they came from and arrive together in `<first-stem>-batch.zip`; the aggregate gate saturates and reports `ok` or `partial`, and a queue where nothing worked is an error rather than an empty success. |
 | Image to PDF | yes | yes | **Live** | PNG (colour types 0/2/3/4/6, 8-bit, non-interlaced) and baseline/progressive JPEG are decoded on the device through `selis-image`, composited over white, and embedded as a Flate-compressed `/DeviceRGB` image XObject. One image is one page. Page size is fit-to-image (image size plus margin), A4, or Letter, with the image scaled down and centred and never enlarged. The output is generated, so the gate asserts one page per input image rather than an input page count. Encrypted inputs do not apply; unknown containers fail typed `IMAGE_UNSUPPORTED`. |
 | Convert to PDF | yes | yes | **Live** | Markdown, an HTML subset, and CSV become a generated PDF through a third, lazy WASM chunk (`/wasm/selis_pdf_wasm_convert.wasm`, 62 712 B brotli, zero imports). Markdown covers ATX headings, paragraphs, bold/italic/code, fenced and indented code, bullet and ordered lists, blockquotes, rules, and links rendered as text with the URL. HTML covers headings, paragraphs, lists, `pre`, blockquote, inline emphasis, `a href`, and block containers; `<script>`/`<style>` are dropped and unknown tags unwrap to text. CSV is a plain table dump: comma-delimited with quoted fields, even column widths, header row repeated on every page. Standard-14 fonts, Letter or A4. The chunk is runtime-cached rather than precached, so the first use needs the network and later runs do not. |
+| PDF to PNG | — | yes | **Live** | One page or a 1-based selection rendered at a chosen DPI (1–600) through a fourth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_raster.wasm`, 1 088 448 B brotli). `/Rotate` is honoured and the page is composited as straight RGBA over opaque white, so the image is what a reader shows. The chunk decodes the PNG it just encoded and compares every pixel before returning it. One page downloads as a bare PNG; several come back as one deterministic store-method ZIP of `page-N.png` entries, padded to the digit width of the page count, because a page must not fire a download burst. CLI twin: `selis render --format png`. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
 | Local-only guard | — | — | **Live** | `data-no-upload="verified"` after every successful run; request recorder + CSP + import-free chunk. |
@@ -169,7 +170,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Audio → PDF | — | yes | AI/Collab | Transcription is an AI capability; the PDF output is a transcript layout. Do not ship a fake "audio to PDF". |
 | Ebook (EPUB) → PDF | — | yes | Text | EPUB layout; large scope. |
 | PDF → JPG | yes | yes | Raster | Render every page; ZIP for multi-page. |
-| PDF → PNG | — | yes | Raster | Same. |
+| PDF → PNG | — | yes | 2 | **Live.** Render at a chosen DPI (1–600), one page or a 1-based selection. A single page downloads as a bare PNG; several pages come back as one deterministic store-method ZIP of `page-N.png` entries padded to the digit width of the page count. The chunk decodes its own PNG and compares pixels before returning. Owned encoder, owned zlib, no image library. |
 | PDF → images (WebP/TIFF) | — | yes | Raster codec | Same. |
 | PDF → Word | yes | yes | Text | Top search volume and hardest fidelity problem; wait for text extraction and label honestly. |
 | PDF → PowerPoint | yes | yes | Text | Page images + text boxes; fidelity caveat. |
@@ -333,7 +334,8 @@ cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The inc
 page edits remains deferred; these page operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all 29 cards in both phases; no raster feature is claimed yet.
+size budget; the browser check drives all thirty cards in both phases. The raster claim is separate
+and starts in Phase 2 — PDF → PNG now ships there, with its own pixel verification.
 
 ### Phase 2 — raster and OCR
 
@@ -341,6 +343,23 @@ Owned render → JPG/PNG/WebP/TIFF, PDF→ZIP of images, OCR + searchable PDF, r
 flatten annotations/forms, invert, compare, fingerprinting, scan-to-PDF, lossy compression targets.
 **Exit:** render hash determinism, pixel/text verification for every output, OCR confidence and
 extraction tests, a lazy raster chunk under budget.
+
+**Shipped 2026-11-02 (PDF → PNG):** the raster path opens with its own lazy, import-free chunk
+(`selis-pdf-wasm-raster`, 1 088 448 B brotli against a 1 300 000 budget) rather than by growing the
+tools chunk. `Session::render_page_rgba` renders one page at a DPI, honouring `/Rotate`, as straight
+RGBA composited over opaque white; `selis-image::encode_png` writes it as colour type 6, filter 0,
+zlib through the owned `selis_pdf_filter::flate_encode`. The chunk then decodes the PNG it just wrote
+and compares every pixel before returning it, so "verified" means the encoder round-tripped, not that
+a function returned `Ok`. One page is a bare PNG; several are one deterministic store-method ZIP of
+`page-N.png` entries padded to the digit width of the page count — the browser is never allowed to
+fire a download burst. The 30th `/tools.html` card takes DPI and a 1-based page selection and reports
+`kind: "image"`; the CLI twin is `selis render --format ppm|png`. The browser check renders one page
+(802 B, `\x89PNG`, `IHDR` and `IDAT` present, `/Type /Page` absent, a 200×200 canvas at 72 DPI,
+previewed and downloaded from Blob URLs) and three pages (`report-pages.zip`, `PK\x03\x04\x14`, each
+entry name present twice, no preview offered) — online and after the origin is cut, with the chunk
+served from cache and zero foreign requests.
+**Still open in Phase 2:** JPG (no owned JPEG encoder), WebP/TIFF codecs, the images-ZIP parity row
+beyond PNG, and the exit gate's corpus render hashes and OCR.
 
 ### Phase 3 — text and layout
 
@@ -400,14 +419,14 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Twenty-nine live cards with 1-based page input.
+- [x] Thirty live cards with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all twenty-nine cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all thirty cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
@@ -415,8 +434,9 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
       Coverage is now measured, not assumed: the driver reports the ids it rendered and the ids it
       clicked in each phase, and the verdict refuses a run whose click lists do not cover the grid.
-      `xtask/browser/tools-page` passed in Edge with 29 cards online and 29 offline, 0 foreign
-      resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
+      `xtask/browser/tools-page` passed in Edge with 30 cards online and 30 offline, 0 foreign
+      resources, `data-no-upload="verified"` before results appeared, `%PDF-` downloads, and PNG
+      downloads whose IHDR measures the canvas the raster chunk rendered.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
       The `tools-page` browser check now runs every leg online, cuts the origin, reloads the page,

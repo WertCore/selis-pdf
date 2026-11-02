@@ -118,7 +118,9 @@ selis-raster       = { path = "crates/selis-raster", version = "0.1.0" }
 selis-font         = { path = "crates/selis-font", version = "0.1.0" }
 selis-shape        = { path = "crates/selis-shape", version = "0.1.0" }
 # L3
-selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0" }
+# `rng` (encryption) is off by default here so a render-only chunk can opt out;
+# the viewer and the CLI turn it back on explicitly.
+selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0", default-features = false }
 selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
 selis-job        = { path = "crates/selis-job", version = "0.1.0" }
 selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0" }

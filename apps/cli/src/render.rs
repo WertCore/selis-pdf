@@ -1,19 +1,36 @@
-//! The `selis render` command: render a page to a PPM image.
+//! The `selis render` command: render a page to a PPM or PNG image.
 //!
 //! This is the simplest end-to-end smoke test: open a PDF, render a page, and
-//! dump the pixels. The output is a portable pixmap (PPM/P6) — no PNG
-//! dependency needed.
+//! dump the pixels. PPM (P6) stays the default because it needs no encoder and
+//! has always been the smoke-test format; `--format png` writes the same pixels
+//! through the owned deterministic PNG encoder the raster tools use.
 
 use crate::{read_file, CliError, CliResult};
-use selis_pdf_engine::{Session, TinySkiaBackend};
+use selis_image::{encode_png, Image};
+use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
-/// Render a page to a PPM file.
+/// Render a page to an image file.
+///
+/// `format` is `ppm` (default) or `png`. `dpi == 0` means 1 px/pt (72 DPI).
 ///
 /// # Errors
 ///
-/// `IO_WRITE_FAILED` when the output file cannot be written.
-pub(crate) fn run(path: &str, page_num: usize, output: &str, dpi: u32) -> CliResult<()> {
+/// `IO_WRITE_FAILED` when the output file cannot be written, and a typed
+/// engine error when the page cannot be rendered.
+pub(crate) fn run(
+    path: &str,
+    page_num: usize,
+    output: &str,
+    dpi: u32,
+    format: &str,
+) -> CliResult<()> {
+    let format = format.to_ascii_lowercase();
+    if format != "ppm" && format != "png" {
+        return Err(CliError(format!(
+            "unknown output format {format:?}; expected ppm or png"
+        )));
+    }
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
     let clock = crate::shell_clock();
@@ -30,22 +47,26 @@ pub(crate) fn run(path: &str, page_num: usize, output: &str, dpi: u32) -> CliRes
     // the bitmap dimensions swap for 90/270 and the content rotates with the
     // page. `--dpi 0` means 1 px/pt (72 DPI).
     let dpi_f = if dpi == 0 { 72.0 } else { f64::from(dpi) };
-    let view = session
-        .page_view(page_num, dpi_f)
-        .ok_or_else(|| CliError(format!("page {page_num} has no media box")))?;
-    let (w, h) = (view.width, view.height);
-    if w == 0 || h == 0 {
-        return Err(CliError(format!("page {page_num} has zero area")));
-    }
-    let mut backend = TinySkiaBackend::new(w, h)
-        .ok_or_else(|| CliError(format!("cannot create {w}x{h} canvas")))?;
     let mut g = budget.guard_with(&clock, crate::runtime::token());
-    session
-        .render_page(page_num, &mut backend, view.ctm, &budget, &mut g)
+    let rendered = session
+        .render_page_rgba(page_num, dpi_f, &budget, &mut g)
         .map_err(|e| CliError(format!("render failed: {e}")))?;
-    let data = backend.pixmap().data();
-    write_ppm(output, data, w, h)?;
-    eprintln!("rendered page {page_num} to {output} ({w}x{h}) at {dpi} DPI");
+    let (w, h) = (rendered.width, rendered.height);
+    match format.as_str() {
+        "png" => {
+            let image = Image {
+                width: w,
+                height: h,
+                rgba: rendered.rgba,
+            };
+            let bytes = encode_png(&image, 6, &mut g)
+                .map_err(|e| CliError(format!("cannot encode PNG: {e}")))?;
+            std::fs::write(output, &bytes)
+                .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+        }
+        _ => write_ppm(output, &rendered.rgba, w, h)?,
+    }
+    eprintln!("rendered page {page_num} to {output} ({w}x{h}) at {dpi} DPI as {format}");
     Ok(())
 }
 

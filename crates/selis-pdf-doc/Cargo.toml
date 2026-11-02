@@ -10,12 +10,20 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Encryption needs a CSPRNG; parsing and layout do not. Off by default so a
+# render-only chunk never links `getrandom`'s wasm-bindgen glue; the engine's
+# own `rng` feature (default on) turns it back on for viewer/editor builds,
+# and the CLI/tools/editor crates enable `selis-pdf-cos/rng` directly.
+default = []
+rng = ["selis-pdf-cos/rng", "selis-crypto/rng"]
+
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-geom = { workspace = true }
 selis-io = { workspace = true }
-selis-pdf-cos = { workspace = true, features = ["rng"] }
+selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
-selis-crypto = { workspace = true, features = ["rng"] }
+selis-crypto = { workspace = true }

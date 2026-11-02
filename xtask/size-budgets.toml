@@ -50,6 +50,15 @@ chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
 budget = 320000
 
+# The raster page's lazy chunk (PDF → PNG). It carries the whole render walk,
+# tiny-skia and the built-in Liberation fallback faces, so it is the largest
+# lazy chunk; it must still stay import-free and off the tools page's critical
+# path. Measured at 1 142 920 B before fat LTO, hence the 1.3 MB ceiling.
+[[budget]]
+chunk = "raster"
+artifact = "selis_pdf_wasm_raster"
+budget = 1300000
+
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]
 chunk = "engine-viewer"

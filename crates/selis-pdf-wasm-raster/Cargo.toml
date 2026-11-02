@@ -1,0 +1,23 @@
+[package]
+name = "selis-pdf-wasm-raster"
+description = "Lazy WASM chunk: render PDF pages to PNG images in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The engine without `rng`: rendering never encrypts, and this chunk is
+# instantiated with an empty import object, so `getrandom` must not link.
+selis-pdf-engine = { workspace = true, default-features = false, features = ["builtin-fallback-fonts"] }
+selis-pdf-tools = { workspace = true, default-features = false }
+selis-image = { workspace = true }
+selis-sandbox = { workspace = true }

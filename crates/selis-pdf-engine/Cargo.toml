@@ -11,6 +11,19 @@ repository.workspace = true
 workspace = true
 
 [features]
+# Encryption (and therefore a CSPRNG) is the only reason this stack needs
+# `getrandom`. The browser raster chunk disables it so its module declares no
+# imports and instantiates with an empty import object; the viewer, the CLI and
+# every encryption path keep the default on.
+default = ["rng"]
+rng = [
+    "selis-crypto/rng",
+    "selis-pdf-cos/rng",
+    "selis-pdf-doc/rng",
+    "selis-pdf-edit/rng",
+    "selis-pdf-optimize/rng",
+]
+
 # Tier-2 WASM codec sandbox passthrough (SL-1.FILT.08): enables the JPXDecode
 # path in the render pipeline; a default build surfaces JPX as a typed
 # deviation instead.
@@ -29,12 +42,12 @@ builtin-fallback-fonts = ["selis-font/builtin-fallback-fonts"]
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
-selis-crypto = { workspace = true, features = ["rng"] }
+selis-crypto = { workspace = true, default-features = false }
 selis-geom = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-io = { workspace = true }
 selis-log = { workspace = true }
-selis-pdf-cos = { workspace = true, features = ["rng"] }
+selis-pdf-cos = { workspace = true, default-features = false }
 selis-pdf-doc = { workspace = true }
 selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }

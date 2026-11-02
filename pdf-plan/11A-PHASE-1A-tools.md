@@ -471,6 +471,14 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned
     raster path and a separate lazy chunk; it is Phase 2 in `34-TOOLS-SITE-ROADMAP.md`, not a
     hidden switch on the current tools chunk.
+  - **PNG (2026-11-02):** the raster path opened as promised — a fourth lazy, import-free chunk
+    (`selis-pdf-wasm-raster`, 1 088 448 B brotli of its own 1 300 000 budget) and the 30th
+    `/tools.html` card. `Session::render_page_rgba` renders straight RGBA over opaque white at a
+    chosen DPI honouring `/Rotate`; `selis-image::encode_png` writes the PNG and the chunk decodes
+    it again and compares every pixel before returning. One page is a bare PNG, several are one
+    deterministic ZIP of `page-N.png`. CLI twin `selis render --format png`. Browser legs measure
+    the real bytes online and after an offline reload. JPEG/WebP/TIFF remain Phase 2: there is no
+    owned JPEG encoder yet, so no JPG claim is made anywhere.
 
 ---
 
@@ -481,7 +489,7 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-nine live cards,
+  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards,
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not

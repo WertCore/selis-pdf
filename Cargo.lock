@@ -1953,6 +1953,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-raster"
+version = "0.1.0"
+dependencies = [
+ "selis-image",
+ "selis-pdf-engine",
+ "selis-pdf-tools",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-pdf-wasm-tools"
 version = "0.1.0"
 dependencies = [

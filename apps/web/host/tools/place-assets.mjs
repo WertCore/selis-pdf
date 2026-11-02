@@ -128,6 +128,10 @@ const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
 const CONVERT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.wasm";
+/** The raster chunk (PDF → PNG), optimised first. Import-free (checked below). */
+const RASTER_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.opt.wasm";
+/** The unoptimised raster chunk, for developers who only ran `cargo build`. */
+const RASTER_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -168,6 +172,17 @@ function findToolsEngine() {
 function findConvertEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [CONVERT_WASM_OPT, CONVERT_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first raster chunk that exists, optimised preferred over raw. */
+function findRasterEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [RASTER_WASM_OPT, RASTER_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -579,6 +594,52 @@ if (convertImports.length > 0) {
 	);
 	process.exit(1);
 }
+// The raster chunk is the fourth engine: PDF → PNG. It is lazy, so the tools
+// page never downloads it unless the user picks PDF to PNG, and it must be
+// import-free for the same reason the other two are: the module is handed the
+// user's document bytes, and an import would be a capability it never needs.
+const raster = findRasterEngine();
+if (raster === null) {
+	console.error(
+		[
+			"place-assets: no raster WASM chunk found - the PDF to PNG card cannot run without one,",
+			"so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-raster --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const rasterOut = join(publicRoot, "wasm/selis_pdf_wasm_raster.wasm");
+mkdirSync(dirname(rasterOut), { recursive: true });
+copyFileSync(raster, rasterOut);
+const rasterBytes = readFileSync(rasterOut).length;
+let rasterImports;
+try {
+	rasterImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(rasterOut)));
+} catch (error) {
+	console.error(`place-assets: the raster chunk at ${rasterOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (rasterImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the raster chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...rasterImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-raster --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -602,6 +663,10 @@ writeFileSync(
 			convert: {
 				url: "/wasm/selis_pdf_wasm_convert.wasm",
 				bytes: convertBytes,
+			},
+			raster: {
+				url: "/wasm/selis_pdf_wasm_raster.wasm",
+				bytes: rasterBytes,
 			},
 		},
 		null,

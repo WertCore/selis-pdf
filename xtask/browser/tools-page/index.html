@@ -168,7 +168,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 29,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 30,
           15_000,
           label,
         );
@@ -205,6 +205,23 @@
           bytes[1] === 0x4b &&
           bytes[2] === 0x03 &&
           bytes[3] === 0x04;
+        // A real PNG starts with the 8-byte signature; IHDR follows at byte 8,
+        // so its width/height are readable at 16 and 20 without decoding IDAT.
+        output.png =
+          bytes.length >= 24 &&
+          bytes[0] === 0x89 &&
+          bytes[1] === 0x50 &&
+          bytes[2] === 0x4e &&
+          bytes[3] === 0x47 &&
+          bytes[4] === 0x0d &&
+          bytes[5] === 0x0a &&
+          bytes[6] === 0x1a &&
+          bytes[7] === 0x0a;
+        if (output.png) {
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          output.pngWidth = view.getUint32(16);
+          output.pngHeight = view.getUint32(20);
+        }
         if (needles && needles.length > 0) {
           const text = new TextDecoder("latin1").decode(bytes);
           output.found = needles.map((needle) => text.includes(needle));
@@ -678,7 +695,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the twenty-nine tool cards");
+        out.cards = await waitForCards(frame, "the thirty tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1519,6 +1536,54 @@
           network: onlineConvert.network,
         };
 
+        // PDF to PNG runs in its own lazy chunk. The single-page leg must
+        // return a real PNG (signature checked below as `png`), and the
+        // multi-page leg must return one store-method ZIP with one `page-N.png`
+        // entry per rendered page, which is what the page promises instead of a
+        // download burst.
+        const onlinePng = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online PNG",
+          "png",
+          { dpi: "72", pages: "1" },
+          ["IHDR", "IDAT"],
+          ["/Type /Page"],
+          null,
+        );
+        out.png = {
+          fileRows: onlinePng.fileRows,
+          runLabel: onlinePng.runLabel,
+          noUpload: onlinePng.noUpload,
+          status: onlinePng.status,
+          result: onlinePng.result,
+          outputs: onlinePng.outputs,
+          output: onlinePng.output,
+          network: onlinePng.network,
+        };
+        const onlinePngZip = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online PNG bundle",
+          "png",
+          { dpi: "72", pages: "1-3" },
+          ["page-1.png", "page-2.png", "page-3.png"],
+          [],
+          null,
+        );
+        out.pngZip = {
+          fileRows: onlinePngZip.fileRows,
+          runLabel: onlinePngZip.runLabel,
+          noUpload: onlinePngZip.noUpload,
+          status: onlinePngZip.status,
+          result: onlinePngZip.result,
+          outputs: onlinePngZip.outputs,
+          output: onlinePngZip.output,
+          network: onlinePngZip.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1531,7 +1596,7 @@
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
         offlinePhase = true;
 
-        const offlineCards = await waitForCards(frame, "the twenty-nine offline tool cards");
+        const offlineCards = await waitForCards(frame, "the thirty offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -1802,6 +1867,43 @@
           ["/BaseFont /Helvetica-Bold", "Parity Report"],
           [],
           convertFiles,
+        );
+        // The raster chunk is runtime-cached on first use, like convert, so the
+        // offline leg proves the renderer still loads and renders with the
+        // origin cut. Both the single PNG and the ZIP are re-run.
+        const offlinePng = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline PNG",
+          "png",
+          { dpi: "72", pages: "1" },
+          ["IHDR", "IDAT"],
+          ["/Type /Page"],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlinePngZip = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline PNG bundle",
+          "png",
+          { dpi: "72", pages: "1-3" },
+          ["page-1.png", "page-2.png", "page-3.png"],
+          [],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
         );
         const offlineImageWatermark = await toolInFrame(
           frame,
@@ -2090,6 +2192,26 @@
             outputs: offlineConvert.outputs,
             output: offlineConvert.output,
             network: offlineConvert.network,
+          },
+          png: {
+            fileRows: offlinePng.fileRows,
+            runLabel: offlinePng.runLabel,
+            noUpload: offlinePng.noUpload,
+            status: offlinePng.status,
+            result: offlinePng.result,
+            outputs: offlinePng.outputs,
+            output: offlinePng.output,
+            network: offlinePng.network,
+          },
+          pngZip: {
+            fileRows: offlinePngZip.fileRows,
+            runLabel: offlinePngZip.runLabel,
+            noUpload: offlinePngZip.noUpload,
+            status: offlinePngZip.status,
+            result: offlinePngZip.result,
+            outputs: offlinePngZip.outputs,
+            output: offlinePngZip.output,
+            network: offlinePngZip.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

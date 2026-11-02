@@ -13,6 +13,10 @@
 //! output, grey/RGB/CMYK (the CMYK inversion zune-jpeg reports is applied).
 //! Anything else is a typed `IMAGE_UNSUPPORTED`, distinct from corruption
 //! (`IMAGE_MALFORMED` / `DCT_CORRUPT` / `FLATE_CORRUPT`).
+//!
+//! [`encode_png`] is the one writer here: it turns an RGBA8 buffer into a
+//! deterministic 8-bit PNG for the raster tools, using the same owned zlib
+//! encoder the PDF writer uses. No encoder is borrowed from a third party.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -603,6 +607,106 @@ fn to_rgba(
     Ok(rgba)
 }
 
+/// Encode an RGBA8 image as an 8-bit PNG (colour type 6, filter 0 rows).
+///
+/// The encoder writes the minimum legal stream: `IHDR`, one `IDAT` carrying a
+/// zlib-compressed concatenation of `0`-filtered rows, and `IEND`. Every chunk
+/// gets its CRC, so the output decodes through [`decode_png`] and is accepted by
+/// ordinary viewers. No ancillary chunks (timestamps, text, gamma) are written:
+/// the same pixels always produce the same bytes, which is what the raster
+/// determinism gate hashes.
+///
+/// # Budget
+///
+/// Charges the unfiltered scanline buffer against `Bytes`. That is an upper
+/// bound for the file the caller holds: deflate at the requested level adds a
+/// bounded overhead to the raw rows, and the chunk headers are constant.
+///
+/// # Malformed Input
+///
+/// `IMAGE_MALFORMED` when either dimension is zero or `rgba` is not exactly
+/// `width * height * 4` bytes.
+pub fn encode_png(image: &Image, level: u8, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
+    let width = usize::try_from(image.width).unwrap_or(usize::MAX);
+    let height = usize::try_from(image.height).unwrap_or(usize::MAX);
+    if width == 0 || height == 0 {
+        return Err(err!(
+            Code::ImageMalformed,
+            during = "png-encode",
+            detail = "zero-sized image"
+        ));
+    }
+    let stride = width.checked_mul(4).ok_or_else(|| {
+        err!(
+            Code::ImageMalformed,
+            during = "png-encode",
+            detail = "image dimensions overflow"
+        )
+    })?;
+    let expected = stride.checked_mul(height).ok_or_else(|| {
+        err!(
+            Code::ImageMalformed,
+            during = "png-encode",
+            detail = "image dimensions overflow"
+        )
+    })?;
+    if image.rgba.len() != expected {
+        return Err(err!(
+            Code::ImageMalformed,
+            during = "png-encode",
+            detail = "pixel buffer length does not match the dimensions"
+        ));
+    }
+
+    // One filter byte per row, then the row's samples. Filter 0 (None) keeps
+    // the bytes the caller handed us, so a deterministic pixmap encodes to a
+    // deterministic file with no floating-point filter heuristic in between.
+    let raw_len = height
+        .checked_mul(stride.saturating_add(1))
+        .ok_or_else(|| {
+            err!(
+                Code::ImageMalformed,
+                during = "png-encode",
+                detail = "image dimensions overflow"
+            )
+        })?;
+    g.charge(Resource::Bytes, u64::try_from(raw_len).unwrap_or(u64::MAX))?;
+    let mut raw = Vec::with_capacity(raw_len);
+    for row in image.rgba.chunks_exact(stride) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    let compressed = selis_pdf_filter::flate_encode(&raw, level);
+    drop(raw);
+
+    let mut out = Vec::with_capacity(
+        PNG_SIGNATURE
+            .len()
+            .saturating_add(compressed.len().saturating_add(64)),
+    );
+    out.extend_from_slice(&PNG_SIGNATURE);
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&image.width.to_be_bytes());
+    ihdr.extend_from_slice(&image.height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    push_chunk(&mut out, b"IHDR", &ihdr);
+    push_chunk(&mut out, b"IDAT", &compressed);
+    push_chunk(&mut out, b"IEND", &[]);
+    Ok(out)
+}
+
+/// Append a PNG chunk: length, type, body, CRC over type+body.
+fn push_chunk(out: &mut Vec<u8>, ctype: &[u8; 4], body: &[u8]) {
+    let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(ctype);
+    out.extend_from_slice(body);
+    let mut crc = Crc32::new();
+    crc.update(ctype);
+    crc.update(body);
+    out.extend_from_slice(&crc.finish().to_be_bytes());
+}
+
 /// A CRC-32 (IEEE 802.3) accumulator, table-driven.
 #[derive(Debug)]
 struct Crc32 {
@@ -747,6 +851,67 @@ mod tests {
             img.rgba,
             [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,]
         );
+    }
+
+    #[test]
+    fn encoded_png_round_trips_every_rgba_sample() {
+        let image = Image {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 128, // row 0
+                0, 0, 255, 0, 12, 34, 56, 255, // row 1
+            ],
+        };
+        let bytes = encode_png(&image, 6, &mut guard()).expect("encode");
+        let decoded = decode_png(&bytes, &mut guard()).expect("decode");
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn encoding_the_same_pixels_twice_is_byte_identical() {
+        let image = Image {
+            width: 3,
+            height: 1,
+            rgba: vec![9; 12],
+        };
+        let a = encode_png(&image, 9, &mut guard()).expect("encode a");
+        let b = encode_png(&image, 9, &mut guard()).expect("encode b");
+        assert_eq!(a, b);
+        assert_eq!(a.get(..8), Some(PNG_SIGNATURE.as_slice()));
+    }
+
+    #[test]
+    fn encodes_a_one_pixel_image() {
+        let image = Image {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 4],
+        };
+        let bytes = encode_png(&image, 6, &mut guard()).expect("encode");
+        let decoded = decode_png(&bytes, &mut guard()).expect("decode");
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.rgba, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn encode_rejects_a_buffer_that_is_not_width_times_height() {
+        let image = Image {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 15],
+        };
+        assert!(encode_png(&image, 6, &mut guard()).is_err());
+    }
+
+    #[test]
+    fn encode_rejects_a_zero_dimension() {
+        let image = Image {
+            width: 0,
+            height: 1,
+            rgba: Vec::new(),
+        };
+        assert!(encode_png(&image, 6, &mut guard()).is_err());
     }
 
     #[test]
