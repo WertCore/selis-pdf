@@ -14,9 +14,13 @@
 //! Anything else is a typed `IMAGE_UNSUPPORTED`, distinct from corruption
 //! (`IMAGE_MALFORMED` / `DCT_CORRUPT` / `FLATE_CORRUPT`).
 //!
-//! [`encode_png`] is the one writer here: it turns an RGBA8 buffer into a
-//! deterministic 8-bit PNG for the raster tools, using the same owned zlib
-//! encoder the PDF writer uses. No encoder is borrowed from a third party.
+//! [`encode_png`] and [`encode_jpeg`] are the two writers here: they turn an
+//! RGBA8 buffer into a deterministic 8-bit PNG, or a baseline JPEG flattened
+//! onto white, for the raster tools. Both code the bytes with the engine's own
+//! encoders — the zlib writer the PDF writer uses, and the owned DCT/JPEG
+//! writer — so no encoder is borrowed from a third party. Decoding stays
+//! delegated: a parser has to be lenient about what a file can get wrong, and
+//! an encoder does not.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -695,6 +699,72 @@ pub fn encode_png(image: &Image, level: u8, g: &mut BudgetGuard<'_>) -> Result<V
     Ok(out)
 }
 
+/// Composite an RGBA8 buffer onto opaque white: three bytes per pixel.
+///
+/// JPEG has no alpha channel, so this is the picture the encoder actually
+/// sees: a fully transparent sample becomes white, an opaque one is unchanged,
+/// and a rendered document is opaque wherever it has ink. It is public because
+/// the raster chunk has to verify a JPEG against the same samples — comparing
+/// the decoded file with the pre-flattening buffer would measure the encoder's
+/// alpha rule as if it were a coding error.
+///
+/// The blend is `(value * alpha + 255 * (255 - alpha) + 127) / 255`, integer
+/// arithmetic with `+127` as the rounding term, so a page renders identically
+/// on wasm32 and natively.
+///
+/// # Budget
+///
+/// Charges the RGB buffer it returns against `Bytes`.
+pub fn flatten_over_white(rgba: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
+    let mut rgb =
+        alloc::vec_with_capacity::<u8>(g, rgba.len().saturating_div(4).saturating_mul(3))?;
+    for px in rgba.chunks_exact(4) {
+        let alpha = u32::from(px.get(3).copied().unwrap_or(255));
+        for channel in px.iter().take(3) {
+            let value = u32::from(*channel);
+            let blended = value
+                .saturating_mul(alpha)
+                .saturating_add(255u32.saturating_sub(alpha).saturating_mul(255))
+                .saturating_add(127)
+                .saturating_div(255);
+            rgb.push(u8::try_from(blended).unwrap_or(255));
+        }
+    }
+    Ok(rgb)
+}
+
+/// Encode an RGBA8 image as a baseline JPEG, composited over opaque white by
+/// [`flatten_over_white`].
+///
+/// The coding itself is [`selis_pdf_filter::dct_encode`], the owned writer:
+/// baseline sequential, 8-bit, 4:4:4 with no chroma subsampling, and the
+/// ITU-T T.81 Annex K tables scaled by `quality`. Same pixels, same bytes, on
+/// wasm32 and natively, because the transform is integer.
+///
+/// # Budget
+///
+/// Charges the flattened RGB buffer against `Bytes`; the writer charges the
+/// scan it produces.
+///
+/// # Malformed Input
+///
+/// `IMAGE_MALFORMED` when either dimension is zero, `quality` is outside
+/// 1..=100, or `rgba` is not exactly `width * height * 4` bytes.
+pub fn encode_jpeg(image: &Image, quality: u8, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
+    let width = usize::try_from(image.width).unwrap_or(usize::MAX);
+    let height = usize::try_from(image.height).unwrap_or(usize::MAX);
+    let expected = width.saturating_mul(height).saturating_mul(4);
+    if width == 0 || height == 0 || image.rgba.len() != expected {
+        return Err(err!(
+            Code::ImageMalformed,
+            during = "jpeg-encode",
+            detail = "image dimensions or pixel buffer length is wrong"
+        ));
+    }
+    let rgb = flatten_over_white(&image.rgba, g)?;
+    selis_pdf_filter::dct_encode(&rgb, image.width, image.height, quality, g)
+}
+
 /// Append a PNG chunk: length, type, body, CRC over type+body.
 fn push_chunk(out: &mut Vec<u8>, ctype: &[u8; 4], body: &[u8]) {
     let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
@@ -764,6 +834,17 @@ mod tests {
 
     fn guard() -> BudgetGuard<'static> {
         Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
+    }
+
+    /// A canvas of one repeated RGBA colour, so the only deviation a decode
+    /// reports is the codec's.
+    fn solid(width: u32, height: u32, px: [u8; 4]) -> Image {
+        let count = usize::try_from(width.saturating_mul(height)).unwrap_or(0);
+        Image {
+            width,
+            height,
+            rgba: px.to_vec().repeat(count),
+        }
     }
 
     fn write_chunk(out: &mut Vec<u8>, ctype: &[u8; 4], body: &[u8]) {
@@ -912,6 +993,145 @@ mod tests {
             rgba: Vec::new(),
         };
         assert!(encode_png(&image, 6, &mut guard()).is_err());
+    }
+
+    #[test]
+    fn an_opaque_jpeg_decodes_back_within_a_few_levels_of_the_source() {
+        let image = solid(8, 8, [200, 120, 40, 255]);
+        let bytes = encode_jpeg(&image, 90, &mut guard()).expect("encode");
+        assert_eq!(bytes.get(..2), Some([0xFF, 0xD8].as_slice()), "SOI");
+        assert_eq!(
+            bytes.get(bytes.len().saturating_sub(2)..),
+            Some([0xFF, 0xD9].as_slice()),
+            "EOI"
+        );
+        let decoded = decode_jpeg(&bytes, &mut guard()).expect("decode");
+        assert_eq!((decoded.width, decoded.height), (8, 8));
+        let worst = decoded
+            .rgba
+            .chunks_exact(4)
+            .map(|px| {
+                assert_eq!(px.get(3).copied(), Some(255), "a JPEG is opaque");
+                px.iter()
+                    .zip([200u8, 120, 40, 255])
+                    .map(|(&got, want)| i64::from(got).saturating_sub(i64::from(want)).abs())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .expect("pixels");
+        assert!(
+            worst <= 6,
+            "a solid colour should survive q=90, got {worst}"
+        );
+    }
+
+    #[test]
+    fn transparency_is_flattened_onto_white_before_the_coder_sees_it() {
+        // JPEG has no alpha. A page that is transparent everywhere is a white
+        // page in the file the user downloads, and a half-transparent black ink
+        // pixel is mid-grey — the same arithmetic a browser uses to print.
+        let transparent = solid(8, 8, [10, 20, 30, 0]);
+        let bytes = encode_jpeg(&transparent, 95, &mut guard()).expect("encode");
+        let decoded = decode_jpeg(&bytes, &mut guard()).expect("decode");
+        let lightest = decoded
+            .rgba
+            .chunks_exact(4)
+            .map(|px| px.iter().take(3).copied().min().unwrap_or(0))
+            .min()
+            .expect("pixels");
+        assert!(
+            lightest >= 245,
+            "fully transparent becomes white, got {lightest}"
+        );
+
+        let half = solid(8, 8, [0, 0, 0, 128]);
+        let bytes = encode_jpeg(&half, 95, &mut guard()).expect("encode");
+        let decoded = decode_jpeg(&bytes, &mut guard()).expect("decode");
+        let grey = i64::from(decoded.rgba.first().copied().unwrap_or(0));
+        assert!(
+            (121..=133).contains(&grey),
+            "half-transparent black flattens to mid-grey, got {grey}"
+        );
+    }
+
+    #[test]
+    fn encoding_the_same_pixels_to_a_jpeg_twice_is_byte_identical() {
+        let image = Image {
+            width: 3,
+            height: 1,
+            rgba: vec![9; 12],
+        };
+        let a = encode_jpeg(&image, 70, &mut guard()).expect("encode a");
+        let b = encode_jpeg(&image, 70, &mut guard()).expect("encode b");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn flattening_onto_white_is_the_alpha_rule_the_encoder_uses() {
+        // Exact, because this is the arithmetic the JPEG leg is verified
+        // against: opaque samples pass through, transparent ones are paper, and
+        // half-transparent ink lands on the grey a printed page would show.
+        let rgba = vec![
+            10, 20, 30, 255, // unchanged
+            10, 20, 30, 0, // white
+            0, 0, 0, 128, // mid grey
+            255, 255, 255, 128, // still white
+        ];
+        let flat = flatten_over_white(&rgba, &mut guard()).expect("flatten");
+        assert_eq!(
+            flat,
+            vec![10, 20, 30, 255, 255, 255, 127, 127, 127, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn jpeg_encode_rejects_bad_input_with_a_typed_error() {
+        let mismatched = Image {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 15],
+        };
+        assert_eq!(
+            encode_jpeg(&mismatched, 50, &mut guard())
+                .err()
+                .map(|e| e.code()),
+            Some(Code::ImageMalformed)
+        );
+        let zero = Image {
+            width: 0,
+            height: 1,
+            rgba: Vec::new(),
+        };
+        assert!(encode_jpeg(&zero, 50, &mut guard()).is_err());
+        let one_pixel = Image {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        };
+        assert_eq!(
+            encode_jpeg(&one_pixel, 101, &mut guard())
+                .err()
+                .map(|e| e.code()),
+            Some(Code::ImageMalformed)
+        );
+    }
+
+    #[test]
+    fn jpeg_encode_charges_the_flattened_buffer_to_the_byte_budget() {
+        // 8x8x3 = 192 bytes of RGB plus the file: a budget that small cannot
+        // also hold the scan, and the charge has to be the budget's error, not
+        // an allocation the sandbox did not approve.
+        let budget = Budget {
+            bytes: 200,
+            ..Budget::unlimited()
+        };
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let image = solid(8, 8, [0, 0, 0, 255]);
+        assert_eq!(
+            encode_jpeg(&image, 50, &mut g).err().map(|e| e.code()),
+            Some(Code::BudgetBytes)
+        );
     }
 
     #[test]

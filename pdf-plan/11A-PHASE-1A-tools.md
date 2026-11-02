@@ -477,8 +477,19 @@ operation is available identically in the CLI, the web app, and the extension.
     chosen DPI honouring `/Rotate`; `selis-image::encode_png` writes the PNG and the chunk decodes
     it again and compares every pixel before returning. One page is a bare PNG, several are one
     deterministic ZIP of `page-N.png`. CLI twin `selis render --format png`. Browser legs measure
-    the real bytes online and after an offline reload. JPEG/WebP/TIFF remain Phase 2: there is no
-    owned JPEG encoder yet, so no JPG claim is made anywhere.
+    the real bytes online and after an offline reload. WebP/TIFF remain Phase 2: no codec is owned
+    for them yet, so no claim is made.
+  - **JPEG (2026-11-02):** the same fourth chunk, not a new one — its ABI took a `format` code and a
+    `quality`, and `selis render` took `--format jpg --quality N`. `selis-pdf-filter::dct_encode`
+    writes the stream itself (baseline sequential SOF0, 8-bit, 4:4:4, JFIF APP0, Annex K tables
+    scaled by quality, integer Q15 DCT); `selis-image::encode_jpeg` puts it in a file. Verification
+    is still decode-and-compare, with the lossy honesty spelled out: mean per-channel error against
+    the page ≤ 96, and no sampled pixel off by more than 160 from quality 75 upward — below that the
+    sample bound is dropped rather than loosened by fit, because a coarse subsample legitimately
+    moves an edge. A render beyond 16384 px on either side is refused before writing, since the
+    read-back decoder cannot open it. The 31st `/tools.html` card shares the PNG card's loader and
+    options; browser legs cover quality 90, quality 1 (which must be smaller), a three-page
+    `page-N.jpg` ZIP with no preview, and both single and bundle again offline.
 
 ---
 
@@ -489,7 +500,8 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards,
+  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards
+    (thirty-one with the PDF → JPG card on 2026-11-02),
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not

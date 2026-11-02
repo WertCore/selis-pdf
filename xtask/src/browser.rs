@@ -1581,6 +1581,54 @@ const PNG_NEEDLES: [&str; 2] = ["IHDR", "IDAT"];
 /// raster chunk pads to the digit width of the page count, so a document of
 /// three pages yields `page-1.png` … and one of twelve yields `page-01.png`.
 const PNG_ZIP_NEEDLES: [&str; 3] = ["page-1.png", "page-2.png", "page-3.png"];
+/// The strings a PDF→JPG leg requires in the downloaded bytes: the JFIF
+/// identifier the writer puts in its APP0 segment. A PDF or an empty Blob
+/// carries neither.
+const JPG_NEEDLES: [&str; 1] = ["JFIF"];
+/// The entry names a three-page JPEG bundle must contain, in order.
+const JPG_ZIP_NEEDLES: [&str; 3] = ["page-1.jpg", "page-2.jpg", "page-3.jpg"];
+
+/// What one raster leg promises, so the PNG and JPG cards are held to the same
+/// rules with their own names. `signature`, `width_key` and `height_key` are the
+/// sniff fields the harness fills in from the downloaded bytes; `baseline_key`
+/// is set only for JPEG, whose start-of-frame marker says which coding the
+/// writer actually used — SOF0 is baseline sequential, SOF2 would be a
+/// progressive frame, and the chunk promises the former.
+struct RasterSpec {
+    verb: &'static str,
+    format: &'static str,
+    extension: &'static str,
+    signature: &'static str,
+    width_key: &'static str,
+    height_key: &'static str,
+    baseline_key: Option<&'static str>,
+    needles: &'static [&'static str],
+    zip_needles: &'static [&'static str],
+}
+
+const PNG_LEG: RasterSpec = RasterSpec {
+    verb: "Render PNGs",
+    format: "PNG",
+    extension: "png",
+    signature: "png",
+    width_key: "pngWidth",
+    height_key: "pngHeight",
+    baseline_key: None,
+    needles: &PNG_NEEDLES,
+    zip_needles: &PNG_ZIP_NEEDLES,
+};
+
+const JPG_LEG: RasterSpec = RasterSpec {
+    verb: "Render JPGs",
+    format: "JPEG",
+    extension: "jpg",
+    signature: "jpeg",
+    width_key: "jpegWidth",
+    height_key: "jpegHeight",
+    baseline_key: Some("jpegBaseline"),
+    needles: &JPG_NEEDLES,
+    zip_needles: &JPG_ZIP_NEEDLES,
+};
 
 /// The request-check tail every lazy-chunk leg shares: the page must have
 /// asserted no upload and fetched nothing from another origin.
@@ -1614,23 +1662,25 @@ fn check_no_upload_network(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// One PDF→PNG leg: one page is rendered by the lazy raster chunk and the real
-/// Blob is a PNG whose IHDR carries the rendered canvas size.
+/// One single-page raster leg: the lazy raster chunk renders the page and the
+/// real Blob is the image the card promises, with the sniff reporting the
+/// format's own signature and canvas size.
 ///
 /// This is the only browser proof that the raster chunk is served, links with
-/// no imports, and is wired to the card. The single-page leg also proves the
-/// page offers a PNG preview rather than only a download.
-fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
+/// no imports, and is wired to the card. The leg also proves the page offers an
+/// image preview rather than only a download.
+fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
             "the {label} leg did not show one selected file (fileRows = {:?})",
             leg.get("fileRows")
         ));
     }
-    if string_field(leg, "runLabel")? != "Render PNGs" {
+    if string_field(leg, "runLabel")? != spec.verb {
         return Err(format!(
-            "the {label} button was labelled {:?}, expected \"Render PNGs\"",
-            leg.get("runLabel")
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            spec.verb
         ));
     }
     check_no_upload_network(leg, label)?;
@@ -1639,9 +1689,10 @@ fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("result")
         .and_then(Json::as_object)
         .ok_or_else(|| format!("the {label} leg reported no result object"))?;
-    if result.get("title").and_then(Json::as_str) != Some("report.png") {
+    let wanted = format!("report.{}", spec.extension);
+    if result.get("title").and_then(Json::as_str) != Some(wanted.as_str()) {
         return Err(format!(
-            "the {label} result was named {:?}, expected \"report.png\"",
+            "the {label} result was named {:?}, expected {wanted:?}",
             result.get("title")
         ));
     }
@@ -1675,8 +1726,9 @@ fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
         .ok_or_else(|| format!("the {label} run reported no output list"))?;
     if outputs.len() != 1 {
         return Err(format!(
-            "the {label} run produced {} outputs, expected one PNG",
-            outputs.len()
+            "the {label} run produced {} outputs, expected one {}",
+            outputs.len(),
+            spec.format
         ));
     }
     let output = outputs
@@ -1688,11 +1740,11 @@ fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
             output.get("kind")
         ));
     }
-    if output.get("name").and_then(Json::as_str) != Some("report.png")
-        || output.get("downloadName").and_then(Json::as_str) != Some("report.png")
+    if output.get("name").and_then(Json::as_str) != Some(wanted.as_str())
+        || output.get("downloadName").and_then(Json::as_str) != Some(wanted.as_str())
     {
         return Err(format!(
-            "the {label} output/download was named {:?}/{:?}, expected \"report.png\"",
+            "the {label} output/download was named {:?}/{:?}, expected {wanted:?}",
             output.get("name"),
             output.get("downloadName")
         ));
@@ -1710,25 +1762,43 @@ fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
             "the {label} output did not use Blob URLs for preview and download"
         ));
     }
-    if output.get("png").and_then(Json::as_bool) != Some(true) {
+    if output.get(spec.signature).and_then(Json::as_bool) != Some(true) {
         return Err(format!(
-            "the {label} output did not begin with the PNG signature"
+            "the {label} output did not read back as a complete {}",
+            spec.format
         ));
     }
-    let width = output.get("pngWidth").and_then(Json::as_u64).unwrap_or(0);
-    let height = output.get("pngHeight").and_then(Json::as_u64).unwrap_or(0);
+    if spec
+        .baseline_key
+        .is_some_and(|key| output.get(key).and_then(Json::as_bool) != Some(true))
+    {
+        return Err(format!(
+            "the {label} {} is not the baseline sequential frame the chunk writes",
+            spec.format
+        ));
+    }
+    let width = output
+        .get(spec.width_key)
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    let height = output
+        .get(spec.height_key)
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
     if width == 0 || height == 0 {
         return Err(format!(
-            "the {label} PNG reported a zero canvas ({width}x{height})"
+            "the {label} {} reported a zero canvas ({width}x{height})",
+            spec.format
         ));
     }
     let found = output
         .get("found")
         .and_then(Json::as_array)
         .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
-    if found.len() != PNG_NEEDLES.len() || found.iter().any(|item| item.as_bool() != Some(true)) {
+    if found.len() != spec.needles.len() || found.iter().any(|item| item.as_bool() != Some(true)) {
         return Err(format!(
-            "the {label} output is missing a PNG chunk type ({found:?})"
+            "the {label} output is missing bytes the {} writer always writes ({found:?})",
+            spec.format
         ));
     }
     let absent = output
@@ -1737,27 +1807,29 @@ fn check_png_leg(leg: &Json, label: &str) -> Result<(), String> {
         .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
     if absent.iter().any(|item| item.as_bool() == Some(true)) {
         return Err(format!(
-            "the {label} PNG still carries PDF page syntax; the bytes were not rendered"
+            "the {label} {} still carries PDF page syntax; the bytes were not rendered",
+            spec.format
         ));
     }
     Ok(())
 }
 
-/// One multi-page PDF→PNG leg: several pages come back as a single store-method
-/// ZIP named `page-001.png` … so the browser never has to allow a burst of
-/// downloads. The Pages row is the rendered count, and the entry names prove
-/// the archive holds one image per page rather than one blob.
-fn check_png_zip_leg(leg: &Json, label: &str) -> Result<(), String> {
+/// One multi-page raster leg: several pages come back as a single store-method
+/// ZIP of `page-N.png` / `page-N.jpg` entries, so the browser never has to
+/// allow a burst of downloads. The Pages row is the rendered count, and the
+/// entry names prove the archive holds one image per page rather than one blob.
+fn check_raster_zip_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
             "the {label} leg did not show one selected file (fileRows = {:?})",
             leg.get("fileRows")
         ));
     }
-    if string_field(leg, "runLabel")? != "Render PNGs" {
+    if string_field(leg, "runLabel")? != spec.verb {
         return Err(format!(
-            "the {label} button was labelled {:?}, expected \"Render PNGs\"",
-            leg.get("runLabel")
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            spec.verb
         ));
     }
     check_no_upload_network(leg, label)?;
@@ -1838,17 +1910,50 @@ fn check_png_zip_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("found")
         .and_then(Json::as_array)
         .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
-    if found.len() != PNG_ZIP_NEEDLES.len() {
+    if found.len() != spec.zip_needles.len() {
         return Err(format!(
             "the {label} output reported {} content checks, expected {}",
             found.len(),
-            PNG_ZIP_NEEDLES.len()
+            spec.zip_needles.len()
         ));
     }
     if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
         return Err(format!(
             "the {label} bundle is missing {:?}; not every page was rendered",
-            PNG_ZIP_NEEDLES[index]
+            spec.zip_needles
+                .get(index)
+                .copied()
+                .unwrap_or("an unnamed entry")
+        ));
+    }
+    Ok(())
+}
+
+/// The downloaded byte count of a leg's first output.
+fn leg_output_bytes(leg: &Json, label: &str) -> Result<u64, String> {
+    leg.get("outputs")
+        .and_then(Json::as_array)
+        .and_then(|outputs| outputs.first())
+        .and_then(|output| output.get("bytes"))
+        .and_then(Json::as_u64)
+        .ok_or_else(|| format!("the {label} leg reported no downloaded byte count"))
+}
+
+/// One leg's file must come back smaller than another's. This is the witness
+/// that a knob the page exposes changes the bytes the browser hands over rather
+/// than only the encoder's internals.
+fn check_smaller_than(
+    small: &Json,
+    large: &Json,
+    small_label: &str,
+    large_label: &str,
+) -> Result<(), String> {
+    let small_bytes = leg_output_bytes(small, small_label)?;
+    let large_bytes = leg_output_bytes(large, large_label)?;
+    if small_bytes >= large_bytes {
+        return Err(format!(
+            "{small_label} downloaded {small_bytes} bytes against {large_label}'s {large_bytes}; \
+             the quality knob changed nothing"
         ));
     }
     Ok(())
@@ -3278,7 +3383,7 @@ fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 30] = [
+const TOOLS_PAGE_CARDS: [&str; 31] = [
     "attach",
     "attachments",
     "batch",
@@ -3292,6 +3397,7 @@ const TOOLS_PAGE_CARDS: [&str; 30] = [
     "header_footer",
     "image_to_pdf",
     "image_watermark",
+    "jpg",
     "merge",
     "metadata",
     "metadata_report",
@@ -3620,9 +3726,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(30) {
+    if report.get("cards").and_then(Json::as_u64) != Some(31) {
         return Err(format!(
-            "the tools grid did not render thirty cards (cards = {:?})",
+            "the tools grid did not render thirty-one cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -3996,11 +4102,27 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     let png = report
         .get("png")
         .ok_or_else(|| "the page reported no PDF-to-PNG leg (png = None)".to_string())?;
-    check_png_leg(png, "online PNG")?;
+    check_raster_leg(png, "online PNG", &PNG_LEG)?;
     let png_zip = report.get("pngZip").ok_or_else(|| {
         "the page reported no multi-page PNG bundle leg (pngZip = None)".to_string()
     })?;
-    check_png_zip_leg(png_zip, "online PNG bundle")?;
+    check_raster_zip_leg(png_zip, "online PNG bundle", &PNG_LEG)?;
+    let jpg = report
+        .get("jpg")
+        .ok_or_else(|| "the page reported no PDF-to-JPG leg (jpg = None)".to_string())?;
+    check_raster_leg(jpg, "online JPG", &JPG_LEG)?;
+    let jpg_zip = report.get("jpgZip").ok_or_else(|| {
+        "the page reported no multi-page JPG bundle leg (jpgZip = None)".to_string()
+    })?;
+    check_raster_zip_leg(jpg_zip, "online JPG bundle", &JPG_LEG)?;
+    // The quality knob has to move the bytes the browser actually downloads,
+    // not only the encoder's internals: the same page at quality 1 must come
+    // back smaller than the same page at quality 90.
+    let jpg_coarse = report.get("jpgCoarse").ok_or_else(|| {
+        "the page reported no coarse-quality JPG leg (jpgCoarse = None)".to_string()
+    })?;
+    check_raster_leg(jpg_coarse, "online JPG at quality 1", &JPG_LEG)?;
+    check_smaller_than(jpg_coarse, jpg, "online JPG at quality 1", "online JPG")?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -4021,9 +4143,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(30) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(31) {
         return Err(format!(
-            "the offline tools page did not render thirty cards (cards = {:?})",
+            "the offline tools page did not render thirty-one cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -4372,11 +4494,19 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     let offline_png = offline
         .get("png")
         .ok_or_else(|| "the offline leg reported no PDF-to-PNG result".to_string())?;
-    check_png_leg(offline_png, "offline PNG")?;
+    check_raster_leg(offline_png, "offline PNG", &PNG_LEG)?;
     let offline_png_zip = offline
         .get("pngZip")
         .ok_or_else(|| "the offline leg reported no multi-page PNG bundle result".to_string())?;
-    check_png_zip_leg(offline_png_zip, "offline PNG bundle")?;
+    check_raster_zip_leg(offline_png_zip, "offline PNG bundle", &PNG_LEG)?;
+    let offline_jpg = offline
+        .get("jpg")
+        .ok_or_else(|| "the offline leg reported no PDF-to-JPG result".to_string())?;
+    check_raster_leg(offline_jpg, "offline JPG", &JPG_LEG)?;
+    let offline_jpg_zip = offline
+        .get("jpgZip")
+        .ok_or_else(|| "the offline leg reported no multi-page JPG bundle result".to_string())?;
+    check_raster_zip_leg(offline_jpg_zip, "offline JPG bundle", &JPG_LEG)?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -5678,10 +5808,10 @@ the browser's print pipeline decides the paper, the margins and the resolution"
             .ok_or_else(|| format!("the health panel has no {id} row"))
     };
     let severity = |id: &str| -> Result<&str, String> {
-        Ok(row(id)?
+        row(id)?
             .get("severity")
             .and_then(Json::as_str)
-            .ok_or_else(|| format!("health row {id} carries no severity"))?)
+            .ok_or_else(|| format!("health row {id} carries no severity"))
     };
 
     // The signature row is the one the Do: leans on hardest. A signed document
@@ -5921,7 +6051,7 @@ severity has to track whether anything is readable",
 ///    has not answered yet, and claiming otherwise is a cancellation the shell
 ///    invented.
 /// 4. **The engine's answer is what ends it.** The job settles `cancelled` and
-///    - the claim that matters most - NO failure panel appeared. The reader
+///    (the claim that matters most) NO failure panel appeared. The reader
 ///    pressed the button; telling them their document has a problem it does not
 ///    have is the dead end SL-4.UI.12 exists to remove.
 fn assert_print_cancellation(report: &Json) -> Result<(), String> {
@@ -7462,13 +7592,13 @@ fn handle_connection(
     match std::fs::read(&path) {
         Ok(bytes) => {
             let kind = content_type(&path);
-            return respond_closing(stream, "200 OK", kind, &bytes);
+            respond_closing(stream, "200 OK", kind, &bytes)
         }
         Err(_) => {
             // A 404 is a response, not an error: the favicon is a 404 on
             // every run. Its disposition is the same as every other
             // response, so nothing lands behind a dying socket.
-            return respond_closing(stream, "404 Not Found", "text/plain", b"not found");
+            respond_closing(stream, "404 Not Found", "text/plain", b"not found")
         }
     }
 }
@@ -8416,6 +8546,124 @@ mod tests {
         })
     }
 
+    /// One PDF → JPG leg: the same lazy chunk renders the page and the real Blob
+    /// is a complete baseline JPEG — SOI, a readable frame, EOI — offered as a
+    /// preview as well as a download, with no PDF page syntax left inside it.
+    fn real_tools_jpg_leg() -> Json {
+        let output = json!({
+            "kind": "image",
+            "name": "report.jpg",
+            "pages": 1,
+            "declaredBytes": 1200,
+            "bytes": 1200,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "report.jpg",
+            "header": "\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{0}",
+            "zip": false,
+            "png": false,
+            "jpeg": true,
+            "jpegWidth": 200,
+            "jpegHeight": 200,
+            "jpegBaseline": true,
+            "overTarget": false,
+            "foundCounts": [1],
+            "found": [true],
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Render JPGs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report.jpg",
+                "meta": "1 file \u{00b7} 1.2 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1" },
+                    { "label": "Size", "value": "979 B \u{2192} 1.2 KiB" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_raster.wasm"],
+            },
+        })
+    }
+
+    /// The same page at quality 1: a smaller file, which is the only proof in the
+    /// browser that the quality field reaches the encoder.
+    fn real_tools_jpg_coarse_leg() -> Json {
+        let mut leg = real_tools_jpg_leg();
+        let object = leg["output"].as_object_mut().expect("jpg output object");
+        object.insert("bytes".to_string(), json!(480));
+        object.insert("declaredBytes".to_string(), json!(480));
+        let outputs = leg["outputs"].as_array_mut().expect("jpg outputs");
+        if let Some(first) = outputs.first_mut() {
+            if let Some(map) = first.as_object_mut() {
+                map.insert("bytes".to_string(), json!(480));
+                map.insert("declaredBytes".to_string(), json!(480));
+            }
+        }
+        let result = leg["result"].as_object_mut().expect("jpg result");
+        result.insert(
+            "meta".to_string(),
+            json!("1 file \u{00b7} 480 B \u{00b7} verified locally"),
+        );
+        leg
+    }
+
+    /// Three pages of JPEG rendered on one card come back as one store-method ZIP
+    /// whose entries are named `page-N.jpg`.
+    fn real_tools_jpg_zip_leg() -> Json {
+        let output = json!({
+            "kind": "zip",
+            "name": "report-pages.zip",
+            "pages": 0,
+            "declaredBytes": 3600,
+            "bytes": 3600,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "report-pages.zip",
+            "header": "PK\u{3}\u{4}\u{14}",
+            "zip": true,
+            "png": false,
+            "jpeg": false,
+            "overTarget": false,
+            "foundCounts": [2, 2, 2],
+            "found": [true, true, true],
+            "absentFound": [],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Render JPGs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report-pages.zip",
+                "meta": "1 file \u{00b7} 3.5 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3" },
+                    { "label": "Size", "value": "979 B \u{2192} 3.5 KiB" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_raster.wasm"],
+            },
+        })
+    }
+
     /// A leg that ends with one rewritten PDF. `counts` is what the page found in
     /// the downloaded bytes, in the order the leg asked for them.
     fn real_tools_single_leg(
@@ -8921,7 +9169,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 30,
+            "cards": 31,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -8968,7 +9216,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 30,
+                "cards": 31,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -9096,6 +9344,9 @@ mod tests {
         report["zip"] = real_tools_zip_leg();
         report["png"] = real_tools_png_leg();
         report["pngZip"] = real_tools_png_zip_leg();
+        report["jpg"] = real_tools_jpg_leg();
+        report["jpgCoarse"] = real_tools_jpg_coarse_leg();
+        report["jpgZip"] = real_tools_jpg_zip_leg();
         report["cardIds"] = json!(TOOLS_PAGE_CARDS);
         report["clicked"] = json!({
             "online": TOOLS_PAGE_CARDS,
@@ -9130,6 +9381,8 @@ mod tests {
         report["offline"]["zip"] = report["zip"].clone();
         report["offline"]["png"] = report["png"].clone();
         report["offline"]["pngZip"] = report["pngZip"].clone();
+        report["offline"]["jpg"] = report["jpg"].clone();
+        report["offline"]["jpgZip"] = report["jpgZip"].clone();
         report["offline"]["batch"] = report["batch"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["metadataReport"] = report["metadataReport"].clone();
@@ -9345,7 +9598,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 30,
+            "cards": 31,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -10152,6 +10405,73 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_png_bundle).is_err(),
             "an online-only PNG bundle must not pass the offline gate"
+        );
+
+        let mut jpg_truncated = report.clone();
+        *jpg_truncated.pointer_mut("/jpg/outputs/0/jpeg").unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&jpg_truncated).is_err(),
+            "a JPEG leg whose bytes do not read back as a complete JPEG must not pass"
+        );
+
+        let mut jpg_progressive = report.clone();
+        *jpg_progressive
+            .pointer_mut("/jpg/outputs/0/jpegBaseline")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&jpg_progressive).is_err(),
+            "a progressive frame is not the baseline sequential JPEG the chunk writes"
+        );
+
+        let mut jpg_blank_canvas = report.clone();
+        *jpg_blank_canvas
+            .pointer_mut("/jpg/outputs/0/jpegWidth")
+            .unwrap() = json!(0);
+        assert!(
+            verdict_tools_page(&jpg_blank_canvas).is_err(),
+            "a JPEG reporting a zero canvas must not pass"
+        );
+
+        let mut jpg_bundle_lost_a_page = report.clone();
+        *jpg_bundle_lost_a_page
+            .pointer_mut("/jpgZip/outputs/0/found/2")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&jpg_bundle_lost_a_page).is_err(),
+            "a JPEG bundle holding two of three rendered pages must not pass"
+        );
+
+        let mut jpg_quality_changed_nothing = report.clone();
+        *jpg_quality_changed_nothing
+            .pointer_mut("/jpgCoarse/outputs/0/bytes")
+            .unwrap() = json!(1200);
+        assert!(
+            verdict_tools_page(&jpg_quality_changed_nothing).is_err(),
+            "a quality knob that produced the same bytes as the default must not pass"
+        );
+
+        let mut no_offline_jpg = report.clone();
+        no_offline_jpg
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("jpg");
+        assert!(
+            verdict_tools_page(&no_offline_jpg).is_err(),
+            "an online-only JPG must not pass the offline gate"
+        );
+
+        let mut no_offline_jpg_bundle = report.clone();
+        no_offline_jpg_bundle
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("jpgZip");
+        assert!(
+            verdict_tools_page(&no_offline_jpg_bundle).is_err(),
+            "an online-only JPG bundle must not pass the offline gate"
         );
     }
 

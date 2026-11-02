@@ -219,7 +219,51 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
 
 ### Rendering and image outputs
 
-- [ ] **PDF → JPG** — render every page, quality control, ZIP for multi-page.
+- [x] **PDF → JPG** — render every page, quality control, ZIP for multi-page.
+      *Shipped:* the JPEG lives in the same lazy, import-free `selis-pdf-wasm-raster` chunk as PNG —
+      its ABI took a `format` code and a `quality` argument rather than the tree growing a fifth
+      chunk. The coder is owned from the transform up: `selis_pdf_filter::dct_encode` writes a
+      baseline sequential SOF0, 8-bit, 4:4:4, with a JFIF APP0, Annex K quantisation tables scaled by
+      the requested quality and an integer Q15 DCT, and `selis_image::encode_jpeg` frames it. The page
+      is the same render the PNG card uses (`Session::render_page_rgba`, `/Rotate` honoured, straight
+      RGBA over opaque white), so the two cards differ only in what happens after the pixels exist.
+      Quality is 1–100 (default 90, both knobs rejected outside the range) and DPI stays 1–600.
+      Verification is still "decode what you wrote and compare it to the page", with the lossy part
+      stated as bounds instead of equality: the chunk re-opens its own JPEG and refuses a file that
+      does not measure the page, then refuses unless the mean per-channel error is ≤ 96 and, from
+      quality 75 upward, no sampled pixel is off by more than 160. Below quality 75 the local bound is
+      dropped rather than curve-fitted — a coarse subsample legitimately moves an edge — while the
+      mean bound, the size check and the dimension check keep holding. A page rendering wider or
+      taller than 16384 px is refused before any file is written, because that is the limit of the
+      decoder doing the read-back: a JPEG this device cannot re-open is not a verified output, and the
+      card says so in its own note. One page downloads as a bare `.jpg`; several come back as one
+      deterministic store-method ZIP of `page-N.jpg` entries padded to the digit width of the page
+      count, never previewed. The CLI twin is `selis render --format jpg --quality N` (`jpeg` accepted
+      as an alias, PPM still the default, an unknown format naming the three that exist). The web card
+      is the 31st in `/tools.html` and reports `kind: "image"`.
+      Evidence: 61 `selis-pdf-filter` and 20 `selis-image` tests (the coder's own round-trips and
+      guards, JPEG framing determinism), 25 raster-chunk tests — the JPEG round-trip, byte-identical
+      re-render, `page-N.jpg` naming, PNG ignoring the quality knob, an honest page and a megapixel
+      text page clearing the bounds, refusal of a file of the wrong size, of a file that is not the
+      page, of a few badly wrong pixels, of a damaged scan, ringing *not* being refused at the
+      coarsest quality, and the oversized page refused before any file is written — 6 CLI tests in
+      `render_jpg.rs` (canvas at 72 and 144 DPI, worst-pixel bound, quality moving the byte count on
+      a text page, determinism, the `jpeg` alias, refused quality values, the refusal naming the
+      formats) with `render_png.rs`'s 3 still green, and 178 `xtask` tests including the real Edge
+      run. The browser legs read the downloaded bytes: `report.jpg` must re-parse as a complete JPEG —
+      SOI, `JFIF` APP0, a **baseline** SOF0 measuring 200×200 for the fixture page at 72 DPI, EOI in
+      the last two bytes — carry no `/Type /Page`, be previewed and downloaded from Blob URLs, with
+      Pages `1` and Verification `ok`; `jpgCoarse` at quality 1 must come back smaller than the
+      quality-90 leg; `report-pages.zip` must start `PK\x03\x04\x14`, hold `page-1.jpg`, `page-2.jpg`
+      and `page-3.jpg`, report Pages `3` and offer **no** preview — online, and again after the origin
+      is cut with the chunk served from cache and zero foreign requests. Seven verdict negatives
+      withdraw one witness each: a truncated JPEG, a progressive frame, a zero canvas, a bundle with
+      two of three pages, a quality knob that produced identical bytes, and the two offline legs.
+      Raster chunk 1 093 374 B brotli of its own 1 300 000 budget — 4 926 B (+0.45%) over the
+      PNG-only baseline, recorded as a deliberate baseline edit rather than drift; the tools chunk is
+      not touched by this slice (304 640 B brotli measured against its 320 000 budget).
+      Not claimed: WebP/TIFF (no owned codec), the images-ZIP parity row across every image format,
+      and the Phase 2 exit gate — corpus render-hash determinism and OCR still open it.
 - [x] **PDF → PNG** — same, lossless.
       *Shipped:* `selis-image::encode_png` writes colour type 6, filter 0, zlib through the owned
       `selis_pdf_filter::flate_encode` — no image library in the tree. The engine renders a page to
@@ -246,8 +290,9 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       origin is cut, with the chunk served from cache and zero foreign requests. Eight verdict
       negatives withdraw one witness each. Raster chunk 1 088 448 B brotli of its own 1 300 000
       budget; the tools chunk is unchanged at 304 701 B of 320 000.
-      Not claimed: JPG/WebP/TIFF (no owned JPEG encoder yet), the PDF → images ZIP parity row, and
-      the Phase 2 exit gate — render-hash determinism across the corpus and OCR still open it.
+      Not claimed at the time: JPG (since shipped — see the row above), WebP/TIFF, the PDF → images
+      ZIP parity row, and the Phase 2 exit gate — render-hash determinism across the corpus and OCR
+      still open it.
 - [ ] **PDF → WebP** — needs an owned codec under the dependency policy.
 - [ ] **PDF → TIFF** — multi-page container; define page order and DPI.
 - [ ] **PDF → images ZIP** — deterministic bundle of the above.
@@ -366,6 +411,8 @@ document bytes stay local.
 ## Next slices, in order
 
 1. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
-2. Phase 2 raster chunk, starting with PDF → PNG/JPG.
+2. Phase 2 raster, what is left of it: WebP/TIFF codecs, images-ZIP beyond PNG/JPG, and the exit
+   gate's corpus render hashes + OCR.
 
-(Metadata → JSON export and the batch queue have both shipped, so they left this list.)
+(Metadata → JSON export, the batch queue and the raster chunk's PNG + JPG have all shipped, so they
+left this list.)

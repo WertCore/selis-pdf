@@ -72,6 +72,8 @@ interface RasterWasm {
 			pagesPtr: number,
 			pagesLen: number,
 			dpi: number,
+			format: number,
+			quality: number,
 			outLen: number,
 			outFiles: number,
 		): number;
@@ -81,7 +83,7 @@ interface RasterWasm {
 }
 
 /** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId = ToolOp | "convert" | "png";
+type ToolId = ToolOp | "convert" | "png" | "jpg";
 
 interface ToolDef {
 	readonly id: ToolId;
@@ -337,6 +339,15 @@ const TOOLS: readonly ToolDef[] = [
 		title: "PDF to PNG",
 		blurb: "Render every page, or a selection, to lossless PNG images.",
 		verb: "Render PNGs",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "jpg",
+		mark: "▨",
+		title: "PDF to JPG",
+		blurb: "Render every page, or a selection, to compact JPEG images.",
+		verb: "Render JPGs",
 		multiple: false,
 		accepts: "pdf",
 	},
@@ -1497,7 +1508,42 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Every page is rendered on this device from the PDF's own content. One page is saved as a PNG; several pages are bundled into one ZIP of page-001.png, page-002.png, and so on.";
+				"Every page is rendered on this device from the PDF's own content. One page is saved as a PNG; several pages are bundled into one ZIP of page-1.png, page-2.png entries, padded to the width of the page count.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "jpg") {
+			const dpi = textInput("dpi", "number", "150");
+			dpi.min = "1";
+			dpi.max = "600";
+			dpi.step = "1";
+			dpi.value = "150";
+			addField(
+				"dpi",
+				"Resolution (DPI)",
+				dpi,
+				"1 to 600. 72 renders one pixel per point; 150 is a good screen/print default.",
+			);
+			const quality = textInput("quality", "number", "90");
+			quality.min = "1";
+			quality.max = "100";
+			quality.step = "1";
+			quality.value = "90";
+			addField(
+				"quality",
+				"Quality",
+				quality,
+				"1 to 100. 90 is the balanced default; lower makes a smaller file with more visible softening.",
+			);
+			addField(
+				"pages",
+				"Pages",
+				textInput("pages", "text", "All pages"),
+				"1-based, like the page numbers readers show: 1-3,5. Leave empty for every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every page is rendered on this device from the PDF's own content. Each JPEG is decoded back and compared with the page before it is offered, so a file that does not match comes back as a failure instead of a download. One page is saved as a JPG; several pages are bundled into one ZIP of page-1.jpg, page-2.jpg entries, padded to the width of the page count. A render wider or taller than 16384 px cannot be read back on this device, so lower the DPI for that page or use PDF to PNG.";
 			options.append(note);
 			return;
 		}
@@ -2339,7 +2385,7 @@ function init(): void {
 		return rasterWasmPromise;
 	}
 
-	async function runRaster(): Promise<void> {
+	async function runRaster(toolId: ToolId): Promise<void> {
 		setBusy(true);
 		clearResult();
 		setStatus("Reading your PDF on this device…", "info");
@@ -2353,6 +2399,9 @@ function init(): void {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			const dpi = numberInRange("dpi", "Resolution", 1, 600, 150, true);
+			const format = toolId === "jpg" ? 1 : 0;
+			const extension = toolId === "jpg" ? "jpg" : "png";
+			const quality = numberInRange("quality", "Quality", 1, 100, 90, true);
 			const selection = optionValue("pages").trim();
 			const selectionBytes = new TextEncoder().encode(selection);
 			const wasm = await getRasterWasm();
@@ -2389,6 +2438,8 @@ function init(): void {
 				pagesPtr,
 				selectionBytes.length,
 				dpi,
+				format,
+				quality,
 				outLenPtr,
 				outFilesPtr,
 			);
@@ -2420,7 +2471,7 @@ function init(): void {
 			}
 			const stem = file.name.replace(/\.[^.]+$/, "");
 			const multiple = outFiles > 1;
-			const name = multiple ? `${stem}-pages.zip` : `${stem}.png`;
+			const name = multiple ? `${stem}-pages.zip` : `${stem}.${extension}`;
 			const report: ToolOutputReport = {
 				name,
 				kind: multiple ? "zip" : "image",
@@ -2429,8 +2480,9 @@ function init(): void {
 				verdict: "ok",
 			};
 			const output: ToolOutput = { name, bytes: outBytes };
-			// The chunk verifies itself before returning: every PNG it produced
-			// is decoded back and compared with the rendered pixels, so `ok` is
+			// The chunk verifies itself before returning: a PNG is decoded back and
+			// matched pixel for pixel, a JPEG is decoded back and compared with the
+			// page inside the bounds its coder can honestly meet. Either way `ok` is
 			// a claim this page has observed rather than a hope.
 			const verification: Verification = {
 				pages_out: outFiles,
@@ -2609,8 +2661,8 @@ function init(): void {
 				await runConvert();
 				return;
 			}
-			if (tool.id === "png") {
-				await runRaster();
+			if (tool.id === "png" || tool.id === "jpg") {
+				await runRaster(tool.id);
 				return;
 			}
 			const wireFiles = await readWireFiles();

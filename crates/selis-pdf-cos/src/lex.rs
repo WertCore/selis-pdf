@@ -159,14 +159,10 @@ fn hex_val(b: u8) -> Option<u8> {
 /// `selis inspect` treats one: the question is what was *tolerated*.
 pub fn object_deviations(src: &[u8], g: &mut BudgetGuard<'_>) -> Vec<Deviation> {
     let mut lex = Lexer::new(src);
-    loop {
-        // A lexer error ends the pass. `inspect` does the same, and for the same
-        // reason: a document that was tolerated up to here still has real
-        // deviations worth naming.
-        let token = match lex.next_token(g) {
-            Ok(Some(t)) => t,
-            Ok(None) | Err(_) => break,
-        };
+    // A lexer error ends the pass. `inspect` does the same, and for the same
+    // reason: a document that was tolerated up to here still has real
+    // deviations worth naming.
+    while let Ok(Some(token)) = lex.next_token(g) {
         if token == Token::Stream && !lex.skip_stream_body(g).unwrap_or(false) {
             // No `endstream`: the body ran to end of input, so there is nothing
             // left to lex.

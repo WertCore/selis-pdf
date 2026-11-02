@@ -238,9 +238,12 @@ enum Command {
         /// The output resolution in DPI (default 72; 72 is 1pt = 1px).
         #[arg(long, default_value_t = 72)]
         dpi: u32,
-        /// The output format: ppm (default) or png.
+        /// The output format: ppm (default), png or jpg.
         #[arg(long, default_value = "ppm")]
         format: String,
+        /// The JPEG quality, 1-100 (default 90; other formats ignore it).
+        #[arg(long, default_value_t = 90)]
+        quality: u32,
     },
     /// Extract a page's content (text|json|md|html|image|embedded).
     Extract {
@@ -810,7 +813,8 @@ fn run() {
             output,
             dpi,
             format,
-        } => render::run(&path, page, &output, dpi, &format),
+            quality,
+        } => render::run(&path, page, &output, dpi, &format, quality),
         Command::Extract {
             path,
             page,

@@ -1,18 +1,22 @@
-//! The `selis render` command: render a page to a PPM or PNG image.
+//! The `selis render` command: render a page to a PPM, PNG or JPEG image.
 //!
 //! This is the simplest end-to-end smoke test: open a PDF, render a page, and
 //! dump the pixels. PPM (P6) stays the default because it needs no encoder and
 //! has always been the smoke-test format; `--format png` writes the same pixels
-//! through the owned deterministic PNG encoder the raster tools use.
+//! through the owned deterministic PNG encoder the raster tools use, and
+//! `--format jpg` writes them through the owned baseline JPEG encoder with
+//! `--quality` as the user's knob (1..=100, default 90).
 
 use crate::{read_file, CliError, CliResult};
-use selis_image::{encode_png, Image};
+use selis_image::{encode_jpeg, encode_png, Image};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
 /// Render a page to an image file.
 ///
-/// `format` is `ppm` (default) or `png`. `dpi == 0` means 1 px/pt (72 DPI).
+/// `format` is `ppm` (default), `png` or `jpg` (`jpeg` accepted as an alias).
+/// `dpi == 0` means 1 px/pt (72 DPI). `quality` is the JPEG knob and is ignored
+/// by the other formats.
 ///
 /// # Errors
 ///
@@ -24,12 +28,23 @@ pub(crate) fn run(
     output: &str,
     dpi: u32,
     format: &str,
+    quality: u32,
 ) -> CliResult<()> {
-    let format = format.to_ascii_lowercase();
-    if format != "ppm" && format != "png" {
-        return Err(CliError(format!(
-            "unknown output format {format:?}; expected ppm or png"
-        )));
+    let name = format.to_ascii_lowercase();
+    let format = match name.as_str() {
+        "ppm" => "ppm",
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        other => {
+            return Err(CliError(format!(
+                "unknown output format {other:?}; expected ppm, png or jpg"
+            )))
+        }
+    };
+    if format == "jpg" && (quality == 0 || quality > 100) {
+        return Err(CliError(
+            "JPEG quality must be between 1 and 100".to_string(),
+        ));
     }
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
@@ -52,7 +67,7 @@ pub(crate) fn run(
         .render_page_rgba(page_num, dpi_f, &budget, &mut g)
         .map_err(|e| CliError(format!("render failed: {e}")))?;
     let (w, h) = (rendered.width, rendered.height);
-    match format.as_str() {
+    match format {
         "png" => {
             let image = Image {
                 width: w,
@@ -61,6 +76,18 @@ pub(crate) fn run(
             };
             let bytes = encode_png(&image, 6, &mut g)
                 .map_err(|e| CliError(format!("cannot encode PNG: {e}")))?;
+            std::fs::write(output, &bytes)
+                .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+        }
+        "jpg" => {
+            let image = Image {
+                width: w,
+                height: h,
+                rgba: rendered.rgba,
+            };
+            let level = u8::try_from(quality).unwrap_or(100);
+            let bytes = encode_jpeg(&image, level, &mut g)
+                .map_err(|e| CliError(format!("cannot encode JPEG: {e}")))?;
             std::fs::write(output, &bytes)
                 .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
         }

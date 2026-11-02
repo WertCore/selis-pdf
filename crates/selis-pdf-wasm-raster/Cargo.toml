@@ -1,6 +1,6 @@
 [package]
 name = "selis-pdf-wasm-raster"
-description = "Lazy WASM chunk: render PDF pages to PNG images in the browser."
+description = "Lazy WASM chunk: render PDF pages to PNG or JPEG images in the browser."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

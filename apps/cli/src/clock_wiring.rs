@@ -66,6 +66,7 @@ fn the_render_command_runs_on_the_real_clock() {
         &out.display().to_string(),
         72,
         "ppm",
+        90,
     )
     .expect("render on the real clock");
     let ppm = std::fs::metadata(&out).expect("PPM written");
