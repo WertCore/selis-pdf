@@ -456,6 +456,16 @@ operation is available identically in the CLI, the web app, and the extension.
     over `alpha.pdf / broken.pdf / beta.pdf` whose middle failure leaves both survivors on disk with
     their own page counts, and the browser legs — `compress · 2 of 3 files · 1 not processed` with
     3-page and 1-page downloads and the ZIP holding both, online and after an offline reload.
+    **Every card driven (2026-11-02):** the browser check's last gap was coverage — four cards
+    (rotate, delete pages, edit metadata, ZIP) rendered but were never opened, so a regression in
+    any of them would have passed. The driver now reports the ids the grid rendered and the ids it
+    clicked, separately for the online pass and the pass after the origin is cut, and
+    `check_card_coverage` refuses unless both cover all 29. The four new legs measure the
+    downloaded Blob: `/Rotate 90` three times with Pages `3 → 3`; `/Type /Pages` and `/Count 2`
+    present with `/Count 3` gone and Pages `3 → 2`; the rewritten title and author present with
+    `Secret Title` gone; and `one.zip` as kind `zip` with a `PK\x03\x04\x14` header, no preview
+    offered, and marker counts `[1, 2, 2]` over two picked files. Eight negatives withdraw one
+    witness each, including two that shrink the click lists and one that shrinks the grid.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
   - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned
@@ -471,7 +481,7 @@ operation is available identically in the CLI, the web app, and the extension.
     audience searching "merge pdf" expects. Multi-file drag-drop, reorder by dragging, run, download.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
-  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-three live cards,
+  - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: twenty-nine live cards,
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not

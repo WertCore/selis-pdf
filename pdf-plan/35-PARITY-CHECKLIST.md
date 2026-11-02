@@ -179,11 +179,36 @@ and a size budget; no raster feature is claimed.
 
 ### Phase 1A.1 exit checks
 
-- [ ] Every remaining box above is either ticked or explicitly deferred with a reason.
-- [ ] Tools chunk still under its `xtask/size-budgets.toml` budget (320 000 B brotli since the
+- [x] Every remaining box above is either ticked or explicitly deferred with a reason.
+      The four unticked rows are the crypto-enabled security tools — unlock, protect, clear
+      permissions, permissions/encrypt — each marked *Human review required*, plus the Phase 2
+      raster rows, which sit behind their own exit gate. Nothing else from the parity list is
+      outstanding in 1A.1.
+- [x] Tools chunk still under its `xtask/size-budgets.toml` budget (320 000 B brotli since the
       metadata report) with every new card lazy-loaded.
-- [ ] Browser check drives every card online and after an offline reload.
-- [ ] `34-TOOLS-SITE-ROADMAP.md` "Remaining in 1A.1" is empty or lists only named deferrals.
+      `cargo xtask size-check --strict` measures `selis_pdf_wasm_tools` at 304 703 B brotli
+      (997 252 B raw, baseline unchanged) — 15 297 B of headroom. The four legs added in this exit
+      pass are driver-side only, so the chunk did not move.
+- [x] Browser check drives every card online and after an offline reload.
+      The gate is not "the page renders a card": an unclicked card can break without the check
+      noticing. The driver now names every id in the grid (`cardIds`) and records the ids it
+      actually opened in each phase (`clicked.online`, `clicked.offline`), and
+      `xtask/src/browser.rs::check_card_coverage` refuses unless both click lists cover the grid
+      and the grid equals `TOOLS_PAGE_CARDS`. The four cards that had no leg — rotate, delete
+      pages, edit metadata, ZIP — now have one, each read from the downloaded Blob: `report-rotated.pdf`
+      with `/Rotate 90` three times and Pages `3 → 3`; `report-trimmed.pdf` with `/Type /Pages`
+      and `/Count 2` present, `/Count 3` gone, Pages `3 → 2`; `metadata-metadata.pdf` with
+      `Browser Rewritten Title` and `Browser Author` present and `Secret Title` gone; `one.zip`
+      as kind `zip` with a `PK\x03\x04\x14` header, no preview offered, and counts `[1, 2, 2]`
+      over two picked files. The live run measures `cardIds 29`, `online 29`, `offline 29` with
+      zero foreign requests in both phases, inside the committed 30 000 ms per-check budget.
+      Eight negatives withdraw one witness each: a rotate that turned one page, a delete that
+      kept the page, a metadata save that still carries the old title, an archive offered as a
+      PDF preview, an online-only ZIP, an online pass that never opened rotate, an offline pass
+      that clicked three cards, and a grid that rendered fewer cards than the check covers.
+- [x] `34-TOOLS-SITE-ROADMAP.md` "Remaining in 1A.1" is empty or lists only named deferrals.
+      It now lists the crypto-enabled security tools and the deferred incremental writer, both by
+      name; the batch queue and the four remaining tool cards are recorded as Live.
 
 ---
 

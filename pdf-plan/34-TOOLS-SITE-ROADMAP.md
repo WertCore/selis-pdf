@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling and batch-queue slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue and every-card coverage slices, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -132,7 +132,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Flatten annotations | — | yes | Raster | Requires appearance-stream rendering; never claim flatten without a render check. |
 | Flatten forms | — | yes | Raster/Forms | Same; form appearance generation is its own correctness surface. |
 | Invert colors | — | yes | Raster | Content-stream transform or render-to-image; prefer the latter only with an owned raster path. |
-| PDF → ZIP | — | yes | 1A.1 | Live for split outputs and extracted attachments; the ZIP writer is a small owned container, not a PDF library. A general file-picker ZIP is next. |
+| PDF → ZIP | — | yes | 1A.1 | Live as its own card (`zip`): the engine bundles every file the card is given, in the order picked, under the user-visible names. The browser still refuses a file without a `%PDF-` header when it is picked, so a web ZIP bundles PDFs; the CLI and engine take any bytes. The ZIP writer is a small owned container, not a PDF library. |
 
 ### 3.2 Compression, repair, and privacy
 
@@ -180,7 +180,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | PDF → PDF/A | yes | — | Spec | ISO 19005; Phase 9 after spec procurement. |
 | PDF → audio | — | yes | AI/Collab | Local TTS model; explicit model download; never a cloud default. |
 | PDF → metadata | — | yes | 1A.0 | Live as metadata editor; add a read-only JSON export. |
-| PDF → ZIP | — | yes | 1A.1 | Live for extracted attachments and split outputs; a general file-picker ZIP is next. |
+| PDF → ZIP | — | yes | 1A.1 | Live as the `zip` card, over the files the card is picked; the browser still refuses a non-PDF at pick time. |
 
 ### 3.4 Security, signatures, and forms
 
@@ -314,14 +314,26 @@ bytes contain both documents once each and neither the failed file's marker — 
 offline reload. The page refuses a non-PDF when files are picked, so the queue's deliberate failure
 is a PDF the engine cannot read, not a text file.
 
+Coverage, not rendering, is what makes the card grid a gate. The driver reports the ids it rendered
+(`cardIds`) and the ids it actually opened in each phase (`clicked.online`, `clicked.offline`);
+`check_card_coverage` refuses unless the grid equals `TOOLS_PAGE_CARDS` and both click lists cover
+it, because a card nobody clicks can break without the check noticing. The four cards that leg
+covered were rotate, delete pages, edit metadata and ZIP, each measured on the downloaded Blob
+rather than on what the engine claimed: `/Rotate 90` three times proves every page turned, `/Count 2`
+with `/Count 3` gone proves the page tree was rebuilt rather than a page hidden, the new title
+present with `Secret Title` absent proves a metadata set rather than an append, and an archive with
+a `PK\x03\x04\x14` header, no preview offered and counts `[1, 2, 2]` over two picked files proves the
+ZIP card bundled both documents and never handed an archive to the PDF viewer. The live run measures
+29 ids, 29 opened online and 29 opened offline, with zero foreign requests in both phases.
+
 **Remaining in 1A.1:** the crypto-enabled security tools (unlock, protect, clear permissions),
 which are human-owned and stay off the browser until that review lands. Image watermark,
-CSV/Markdown/HTML→PDF, image→PDF, the metadata JSON export and the batch queue have all shipped.
-The incremental writer for page edits remains deferred; these page operations use the verified
-full-rewrite path.
+CSV/Markdown/HTML→PDF, image→PDF, the metadata JSON export, the batch queue and the last four
+cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The incremental writer for
+page edits remains deferred; these page operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; no raster feature is claimed yet.
+size budget; the browser check drives all 29 cards in both phases; no raster feature is claimed yet.
 
 ### Phase 2 — raster and OCR
 
@@ -388,20 +400,22 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Twenty-two live operations with 1-based page input.
+- [x] Twenty-nine live cards with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all twenty-two cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all twenty-nine cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
       from the Blob, proves an embedded file's name tree and name are present after attach, proves
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
-      `xtask/browser/tools-page` passed in Edge with 25 cards online and offline, 0 foreign
+      Coverage is now measured, not assumed: the driver reports the ids it rendered and the ids it
+      clicked in each phase, and the verdict refuses a run whose click lists do not cover the grid.
+      `xtask/browser/tools-page` passed in Edge with 29 cards online and 29 offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, and `%PDF-` downloads.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.

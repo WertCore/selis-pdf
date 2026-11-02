@@ -47,6 +47,9 @@
 
       function fail(error) {
         out.fatal = String((error && error.stack) || error);
+        // How far the driver got is the useful half of a failure: which cards it
+        // had already opened when it stopped.
+        out.clicked = clickRecord();
         post();
       }
 
@@ -131,6 +134,36 @@
           foreign: resources.filter((name) => new URL(name).origin !== origin),
           paths: resources.map((name) => new URL(name).pathname).sort(),
         };
+      }
+
+      // Which cards this run actually opened, per phase. The gate is not "the
+      // page renders a card" — a card nobody clicks can break without the check
+      // noticing — so every click is recorded and the verdict compares the two
+      // sets against the ids the grid rendered.
+      const clickedOnline = new Set();
+      const clickedOffline = new Set();
+      let offlinePhase = false;
+
+      function markClick(card) {
+        const id = card.getAttribute("data-tool");
+        if (id) {
+          if (offlinePhase) {
+            clickedOffline.add(id);
+          } else {
+            clickedOnline.add(id);
+          }
+        }
+        card.click();
+      }
+
+      function cardIds(frame) {
+        return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
+          .map((card) => card.getAttribute("data-tool") || "")
+          .sort();
+      }
+
+      function clickRecord() {
+        return { online: [...clickedOnline].sort(), offline: [...clickedOffline].sort() };
       }
 
       async function waitForCards(frame, label) {
@@ -287,7 +320,7 @@
         const doc = frameDocument(frame);
         const merge = doc.querySelector('[data-tool="merge"]');
         if (!merge) throw new Error("the page offered no Merge card");
-        merge.click();
+        markClick(merge);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -335,7 +368,7 @@
         }
         const mix = doc.querySelector('[data-tool="mix"]');
         if (!mix) throw new Error("the page offered no Mix pages card");
-        mix.click();
+        markClick(mix);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -383,7 +416,7 @@
         }
         const split = doc.querySelector('[data-tool="split"]');
         if (!split) throw new Error("the page offered no Split card");
-        split.click();
+        markClick(split);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -445,7 +478,7 @@
         }
         const organize = doc.querySelector('[data-tool="reorder"]');
         if (!organize) throw new Error("the page offered no Organize pages card");
-        organize.click();
+        markClick(organize);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -513,7 +546,7 @@
         }
         const card = doc.querySelector('[data-tool="' + toolId + '"]');
         if (!card) throw new Error("the page offered no " + toolId + " card");
-        card.click();
+        markClick(card);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -583,7 +616,7 @@
         }
         const card = doc.querySelector('[data-tool="attach"]');
         if (!card) throw new Error("the page offered no attach card");
-        card.click();
+        markClick(card);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -646,6 +679,7 @@
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
         out.cards = await waitForCards(frame, "the twenty-nine tool cards");
+        out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
         // The page registers the worker itself. Wait for that registration to
@@ -1253,6 +1287,112 @@
           network: onlineRepair.network,
         };
 
+        // The four cards that had no leg of their own. Each is a real run whose
+        // bytes are read back from the Blob, so the leg proves the operation and
+        // not merely that a button enabled.
+        const onlineRotate = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online rotate",
+          "rotate",
+          { angle: "90", pages: "" },
+          ["/Rotate 90"],
+          [],
+        );
+        out.rotate = {
+          fileRows: onlineRotate.fileRows,
+          runLabel: onlineRotate.runLabel,
+          noUpload: onlineRotate.noUpload,
+          status: onlineRotate.status,
+          result: onlineRotate.result,
+          outputs: onlineRotate.outputs,
+          output: onlineRotate.output,
+          network: onlineRotate.network,
+        };
+
+        const onlineDelete = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online delete pages",
+          "delete",
+          { pages: "2" },
+          ["/Type /Pages", "/Count 2"],
+          ["/Count 3"],
+        );
+        out.delete = {
+          fileRows: onlineDelete.fileRows,
+          runLabel: onlineDelete.runLabel,
+          noUpload: onlineDelete.noUpload,
+          status: onlineDelete.status,
+          result: onlineDelete.result,
+          outputs: onlineDelete.outputs,
+          output: onlineDelete.output,
+          network: onlineDelete.network,
+        };
+
+        // The metadata fixture already says "Secret Title"; the new title must
+        // be in the downloaded bytes and the old one must be gone, or the card
+        // is appending rather than setting.
+        const onlineMetadata = await toolInFrame(
+          frame,
+          metadataFixture,
+          "metadata.pdf",
+          "online edit metadata",
+          "metadata",
+          { title: "Browser Rewritten Title", author: "Browser Author" },
+          ["Browser Rewritten Title", "Browser Author"],
+          ["Secret Title"],
+        );
+        out.metadata = {
+          fileRows: onlineMetadata.fileRows,
+          runLabel: onlineMetadata.runLabel,
+          noUpload: onlineMetadata.noUpload,
+          status: onlineMetadata.status,
+          result: onlineMetadata.result,
+          outputs: onlineMetadata.outputs,
+          output: onlineMetadata.output,
+          network: onlineMetadata.network,
+        };
+
+        // The ZIP card bundles any files the user selected, so it gets a
+        // one-page and a three-page document: the bundle must hold both, and the
+        // page must not offer a PDF preview for an archive.
+        const zipFiles = [
+          {
+            name: "one.pdf",
+            bytes: new Uint8Array(fixture.slice(0)),
+            type: "application/pdf",
+          },
+          {
+            name: "report.pdf",
+            bytes: new Uint8Array(splitFixture.slice(0)),
+            type: "application/pdf",
+          },
+        ];
+        const onlineZip = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online zip",
+          "zip",
+          {},
+          ["/Type /Pages", "one.pdf", "report.pdf"],
+          [],
+          zipFiles,
+        );
+        out.zip = {
+          fileRows: onlineZip.fileRows,
+          runLabel: onlineZip.runLabel,
+          noUpload: onlineZip.noUpload,
+          status: onlineZip.status,
+          result: onlineZip.result,
+          outputs: onlineZip.outputs,
+          output: onlineZip.output,
+          network: onlineZip.network,
+        };
+
         // Batch queue: three files in, one tool run, and the file the engine
         // cannot read is reported as its own row instead of cancelling the other
         // two. Each survivor is named after its own input and carries its own
@@ -1389,6 +1529,7 @@
         await secondLoad;
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
+        offlinePhase = true;
 
         const offlineCards = await waitForCards(frame, "the twenty-nine offline tool cards");
         await waitFor(
@@ -1584,6 +1725,47 @@
           {},
           ["/Type /Pages"],
           ["zzzz"],
+        );
+        const offlineRotate = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline rotate",
+          "rotate",
+          { angle: "90", pages: "" },
+          ["/Rotate 90"],
+          [],
+        );
+        const offlineDelete = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline delete pages",
+          "delete",
+          { pages: "2" },
+          ["/Type /Pages", "/Count 2"],
+          ["/Count 3"],
+        );
+        const offlineMetadata = await toolInFrame(
+          frame,
+          metadataFixture,
+          "metadata.pdf",
+          "offline edit metadata",
+          "metadata",
+          { title: "Browser Rewritten Title", author: "Browser Author" },
+          ["Browser Rewritten Title", "Browser Author"],
+          ["Secret Title"],
+        );
+        const offlineZip = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline zip",
+          "zip",
+          {},
+          ["/Type /Pages", "one.pdf", "report.pdf"],
+          [],
+          zipFiles,
         );
         const offlineBatch = await toolInFrame(
           frame,
@@ -1948,6 +2130,46 @@
             output: offlineRepair.output,
             network: offlineRepair.network,
           },
+          rotate: {
+            fileRows: offlineRotate.fileRows,
+            runLabel: offlineRotate.runLabel,
+            noUpload: offlineRotate.noUpload,
+            status: offlineRotate.status,
+            result: offlineRotate.result,
+            outputs: offlineRotate.outputs,
+            output: offlineRotate.output,
+            network: offlineRotate.network,
+          },
+          delete: {
+            fileRows: offlineDelete.fileRows,
+            runLabel: offlineDelete.runLabel,
+            noUpload: offlineDelete.noUpload,
+            status: offlineDelete.status,
+            result: offlineDelete.result,
+            outputs: offlineDelete.outputs,
+            output: offlineDelete.output,
+            network: offlineDelete.network,
+          },
+          metadata: {
+            fileRows: offlineMetadata.fileRows,
+            runLabel: offlineMetadata.runLabel,
+            noUpload: offlineMetadata.noUpload,
+            status: offlineMetadata.status,
+            result: offlineMetadata.result,
+            outputs: offlineMetadata.outputs,
+            output: offlineMetadata.output,
+            network: offlineMetadata.network,
+          },
+          zip: {
+            fileRows: offlineZip.fileRows,
+            runLabel: offlineZip.runLabel,
+            noUpload: offlineZip.noUpload,
+            status: offlineZip.status,
+            result: offlineZip.result,
+            outputs: offlineZip.outputs,
+            output: offlineZip.output,
+            network: offlineZip.network,
+          },
           batch: {
             fileRows: offlineBatch.fileRows,
             runLabel: offlineBatch.runLabel,
@@ -1960,6 +2182,7 @@
           },
         };
 
+        out.clicked = clickRecord();
         clearTimeout(watchdog);
         post();
       })().catch((error) => {

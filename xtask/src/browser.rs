@@ -2767,6 +2767,323 @@ fn check_repair_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One leg of the report, or the sentence that says it never ran: a card the
+/// driver did not open has to fail here rather than be silently absent.
+fn leg_of<'a>(report: &'a Json, key: &str) -> Result<&'a Json, String> {
+    report
+        .get(key)
+        .ok_or_else(|| format!("the page reported no {key} leg ({key} = None)"))
+}
+
+/// The same, for the half of the run that happens after the origin is cut.
+fn offline_leg_of<'a>(report: &'a Json, key: &str) -> Result<&'a Json, String> {
+    leg_of(report, "offline")?
+        .get(key)
+        .ok_or_else(|| format!("the offline leg reported no {key} result ({key} = None)"))
+}
+
+/// One card, one run, one downloaded file. The rotate, delete, edit-metadata
+/// and ZIP legs all end this way and differ only in the name of the result, the
+/// page count the gate must assert, and which markers the bytes must carry.
+///
+/// The marker counts are read from the downloaded Blob, not from what the
+/// engine claimed: `/Rotate 90` three times is what proves the rotate card
+/// turned every page rather than the first one it found, and `/Count 2` with
+/// `/Count 3` gone is what proves the delete card rebuilt the page tree instead
+/// of only hiding a page.
+struct SingleLeg<'a> {
+    label: &'a str,
+    run_label: &'a str,
+    output_name: &'a str,
+    file_rows: u64,
+    zip: bool,
+    pages: u64,
+    pages_row: Option<&'a str>,
+    found_counts: &'a [u64],
+}
+
+fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
+    let label = want.label;
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(want.file_rows) {
+        return Err(format!(
+            "the {label} leg did not show {} selected files (fileRows = {:?})",
+            want.file_rows,
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != want.run_label {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            want.run_label
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("verified") {
+        return Err(format!(
+            "the {label} status did not say the result was verified (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(want.output_name) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {:?}",
+            result.get("title"),
+            want.output_name
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} card reported Verification {:?}, expected \"ok\"",
+            row_value("Verification")
+        ));
+    }
+    if let Some(expected) = want.pages_row {
+        if row_value("Pages") != expected {
+            return Err(format!(
+                "the {label} card reported Pages {:?}, expected {expected:?}",
+                row_value("Pages")
+            ));
+        }
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one file",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    let expected_kind = if want.zip { "zip" } else { "pdf" };
+    if output.get("kind").and_then(Json::as_str) != Some(expected_kind) {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected {expected_kind:?}",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some(want.output_name)
+        || output.get("downloadName").and_then(Json::as_str) != Some(want.output_name)
+    {
+        return Err(format!(
+            "the {label} output was named {:?} / downloaded as {:?}, expected {:?}",
+            output.get("name"),
+            output.get("downloadName"),
+            want.output_name
+        ));
+    }
+    if output.get("zip").and_then(Json::as_bool) != Some(want.zip) {
+        return Err(format!(
+            "the {label} output claimed zip = {:?}, expected {:?}",
+            output.get("zip"),
+            want.zip
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(want.pages) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected {}",
+            output.get("pages"),
+            want.pages
+        ));
+    }
+    let expected_header = if want.zip {
+        "PK\u{3}\u{4}\u{14}"
+    } else {
+        "%PDF-"
+    };
+    if output.get("header").and_then(Json::as_str) != Some(expected_header) {
+        return Err(format!(
+            "the {label} output began with {:?}, expected {expected_header:?}",
+            output.get("header")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} output was not offered as a Blob URL"));
+    }
+    // An archive is not a document: the page must download it and never open it
+    // in the PDF viewer.
+    let preview = output
+        .get("previewBlob")
+        .ok_or_else(|| format!("the {label} output said nothing about a preview"))?;
+    if want.zip {
+        if *preview != Json::Null {
+            return Err(format!(
+                "the {label} output offered an archive as a PDF preview (preview = {preview:?})"
+            ));
+        }
+    } else if preview.as_bool() != Some(true) {
+        return Err(format!(
+            "the {label} output did not offer its PDF as a Blob URL preview (preview = {preview:?})"
+        ));
+    }
+    let declared = output.get("declaredBytes").and_then(Json::as_u64);
+    if declared.is_none() || declared != output.get("bytes").and_then(Json::as_u64) {
+        return Err(format!(
+            "the {label} download was {:?} bytes while the row declared {declared:?}",
+            output.get("bytes")
+        ));
+    }
+    let found = output
+        .get("foundCounts")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output reported no marker counts"))?;
+    let counts: Vec<u64> = found.iter().filter_map(Json::as_u64).collect();
+    if counts != want.found_counts {
+        return Err(format!(
+            "the {label} bytes carried the markers {counts:?}, expected {:?}",
+            want.found_counts
+        ));
+    }
+    if output
+        .get("found")
+        .and_then(Json::as_array)
+        .is_none_or(|items| items.iter().any(|item| item.as_bool() != Some(true)))
+    {
+        return Err(format!(
+            "the {label} output did not carry every marker the leg asked for"
+        ));
+    }
+    if let Some(absent) = output.get("absentFound").and_then(Json::as_array) {
+        if absent.iter().any(|item| item.as_bool() != Some(false)) {
+            return Err(format!(
+                "the {label} output still carries a marker it was meant to leave behind (absentFound = {absent:?})"
+            ));
+        }
+    }
+
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} run reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} run fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// Every card `/tools.html` renders, sorted — the list the browser check holds
+/// itself to. A new card has to be added here and given a leg, not merely
+/// rendered.
+const TOOLS_PAGE_CARDS: [&str; 29] = [
+    "attach",
+    "attachments",
+    "batch",
+    "bates",
+    "compress",
+    "convert",
+    "crop",
+    "delete",
+    "detach",
+    "flip",
+    "header_footer",
+    "image_to_pdf",
+    "image_watermark",
+    "merge",
+    "metadata",
+    "metadata_report",
+    "mix",
+    "nup",
+    "outline",
+    "page_labels",
+    "page_numbers",
+    "reorder",
+    "repair",
+    "resize",
+    "rotate",
+    "split",
+    "strip_metadata",
+    "watermark",
+    "zip",
+];
+
+/// The gate the roadmap words as "the browser check drives every card online and
+/// after an offline reload". A card that renders and is never opened is an
+/// untested card, so the driver names every id in the grid and records the ids
+/// it clicked in each phase; both lists must equal the grid exactly.
+fn check_card_coverage(report: &Json) -> Result<(), String> {
+    let names = |array: &[Json]| -> Vec<String> {
+        array
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    let grid = names(
+        report
+            .get("cardIds")
+            .and_then(Json::as_array)
+            .ok_or_else(|| "the page reported no card-id list (cardIds = None)".to_string())?,
+    );
+    let expected: Vec<String> = TOOLS_PAGE_CARDS
+        .iter()
+        .map(|card| (*card).to_string())
+        .collect();
+    if grid != expected {
+        return Err(format!(
+            "the tools grid held a different set of cards than the check covers: got {grid:?}, expected {expected:?}"
+        ));
+    }
+    let clicked = report
+        .get("clicked")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the driver reported no card-click record (clicked = None)".to_string())?;
+    for phase in ["online", "offline"] {
+        let driven = names(
+            clicked
+                .get(phase)
+                .and_then(Json::as_array)
+                .ok_or_else(|| format!("the driver reported no {phase} click list"))?,
+        );
+        let missing: Vec<&str> = grid
+            .iter()
+            .filter(|card| !driven.iter().any(|driven| driven == *card))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "the {phase} run never opened {} of {} cards: {:?}",
+                missing.len(),
+                grid.len(),
+                missing
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The batch queue's promise, measured on the page: three picked files, two
 /// verified downloads named after their own documents, one row saying which
 /// file was skipped and why, and a ZIP holding both results.
@@ -3027,6 +3344,7 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             report.get("cards")
         ));
     }
+    check_card_coverage(report)?;
     if report.get("fileRows").and_then(Json::as_u64) != Some(2) {
         return Err(format!(
             "the page did not show two selected PDFs (fileRows = {:?})",
@@ -3313,6 +3631,58 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("repair")
         .ok_or_else(|| "the page reported no repair leg (repair = None)".to_string())?;
     check_repair_leg(repair, "online repair")?;
+    check_single_output_leg(
+        leg_of(report, "rotate")?,
+        &SingleLeg {
+            label: "online rotate",
+            run_label: "Rotate PDF",
+            output_name: "report-rotated.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 3,
+            pages_row: Some("3 \u{2192} 3"),
+            found_counts: &[3],
+        },
+    )?;
+    check_single_output_leg(
+        leg_of(report, "delete")?,
+        &SingleLeg {
+            label: "online delete pages",
+            run_label: "Delete pages",
+            output_name: "report-trimmed.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 2,
+            pages_row: Some("3 \u{2192} 2"),
+            found_counts: &[1, 1],
+        },
+    )?;
+    check_single_output_leg(
+        leg_of(report, "metadata")?,
+        &SingleLeg {
+            label: "online edit metadata",
+            run_label: "Save metadata",
+            output_name: "metadata-metadata.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 3,
+            pages_row: Some("3 \u{2192} 3"),
+            found_counts: &[1, 1],
+        },
+    )?;
+    check_single_output_leg(
+        leg_of(report, "zip")?,
+        &SingleLeg {
+            label: "online zip",
+            run_label: "Create ZIP",
+            output_name: "one.zip",
+            file_rows: 2,
+            zip: true,
+            pages: 0,
+            pages_row: None,
+            found_counts: &[1, 2, 2],
+        },
+    )?;
     let batch = report
         .get("batch")
         .ok_or_else(|| "the page reported no batch-queue leg (batch = None)".to_string())?;
@@ -3629,6 +3999,58 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("repair")
         .ok_or_else(|| "the offline leg reported no repair result".to_string())?;
     check_repair_leg(offline_repair, "offline repair")?;
+    check_single_output_leg(
+        offline_leg_of(report, "rotate")?,
+        &SingleLeg {
+            label: "offline rotate",
+            run_label: "Rotate PDF",
+            output_name: "report-rotated.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 3,
+            pages_row: Some("3 \u{2192} 3"),
+            found_counts: &[3],
+        },
+    )?;
+    check_single_output_leg(
+        offline_leg_of(report, "delete")?,
+        &SingleLeg {
+            label: "offline delete pages",
+            run_label: "Delete pages",
+            output_name: "report-trimmed.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 2,
+            pages_row: Some("3 \u{2192} 2"),
+            found_counts: &[1, 1],
+        },
+    )?;
+    check_single_output_leg(
+        offline_leg_of(report, "metadata")?,
+        &SingleLeg {
+            label: "offline edit metadata",
+            run_label: "Save metadata",
+            output_name: "metadata-metadata.pdf",
+            file_rows: 1,
+            zip: false,
+            pages: 3,
+            pages_row: Some("3 \u{2192} 3"),
+            found_counts: &[1, 1],
+        },
+    )?;
+    check_single_output_leg(
+        offline_leg_of(report, "zip")?,
+        &SingleLeg {
+            label: "offline zip",
+            run_label: "Create ZIP",
+            output_name: "one.zip",
+            file_rows: 2,
+            zip: true,
+            pages: 0,
+            pages_row: None,
+            found_counts: &[1, 2, 2],
+        },
+    )?;
     let offline_batch = offline.get("batch").ok_or_else(|| {
         "the offline leg reported no batch-queue result (offline.batch = None)".to_string()
     })?;
@@ -7603,9 +8025,103 @@ mod tests {
         })
     }
 
-    /// The batch queue leg: two documents of different sizes and one file that
-    /// is not a PDF. Each survivor is its own download, the skipped file is a
-    /// row with a reason, and the bundle holds both documents.
+    /// A leg that ends with one rewritten PDF. `counts` is what the page found in
+    /// the downloaded bytes, in the order the leg asked for them.
+    fn real_tools_single_leg(
+        run_label: &str,
+        output_name: &str,
+        file_rows: u64,
+        pages: u64,
+        pages_row: &str,
+        counts: &[u64],
+    ) -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": output_name,
+            "pages": pages,
+            "declaredBytes": 1039,
+            "bytes": 1039,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": output_name,
+            "header": "%PDF-",
+            "zip": false,
+            "overTarget": false,
+            "foundCounts": counts,
+            "found": counts.iter().map(|_| true).collect::<Vec<bool>>(),
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": file_rows,
+            "runLabel": run_label,
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": output_name,
+                "meta": "1 file \u{00b7} 1.0 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": pages_row },
+                    { "label": "Size", "value": "979 B \u{2192} 1.0 KiB" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
+    /// The ZIP card's leg: two files picked, one archive back, and no preview —
+    /// an archive is not a document the browser should open in its viewer.
+    fn real_tools_zip_leg() -> Json {
+        let output = json!({
+            "kind": "zip",
+            "name": "one.zip",
+            "pages": 0,
+            "declaredBytes": 1610,
+            "bytes": 1610,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "one.zip",
+            "header": "PK\u{3}\u{4}\u{14}",
+            "zip": true,
+            "overTarget": false,
+            "foundCounts": [1, 2, 2],
+            "found": [true, true, true],
+            "absentFound": [],
+        });
+        json!({
+            "fileRows": 2,
+            "runLabel": "Create ZIP",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "one.zip",
+                "meta": "1 file \u{00b7} 1.6 KiB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Size", "value": "0 B \u{2192} 1.6 KiB" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_tools.wasm"],
+            },
+        })
+    }
+
+    /// The batch queue leg: two documents of different sizes and one PDF whose
+    /// index the engine cannot read. Each survivor is its own download, the
+    /// skipped file is a row with a reason, and the bundle holds both documents.
     fn real_tools_batch_leg() -> Json {
         let first = json!({
             "kind": "pdf",
@@ -8162,6 +8678,36 @@ mod tests {
         report["detach"] = real_tools_detach_leg();
         report["repair"] = real_tools_repair_leg();
         report["batch"] = real_tools_batch_leg();
+        report["rotate"] = real_tools_single_leg(
+            "Rotate PDF",
+            "report-rotated.pdf",
+            1,
+            3,
+            "3 \u{2192} 3",
+            &[3],
+        );
+        report["delete"] = real_tools_single_leg(
+            "Delete pages",
+            "report-trimmed.pdf",
+            1,
+            2,
+            "3 \u{2192} 2",
+            &[1, 1],
+        );
+        report["metadata"] = real_tools_single_leg(
+            "Save metadata",
+            "metadata-metadata.pdf",
+            1,
+            3,
+            "3 \u{2192} 3",
+            &[1, 1],
+        );
+        report["zip"] = real_tools_zip_leg();
+        report["cardIds"] = json!(TOOLS_PAGE_CARDS);
+        report["clicked"] = json!({
+            "online": TOOLS_PAGE_CARDS,
+            "offline": TOOLS_PAGE_CARDS,
+        });
         report["stripMetadata"] = real_tools_strip_metadata_leg();
         report["metadataReport"] = real_tools_metadata_report_leg();
         report["imageToPdf"] = real_tools_image_leg();
@@ -8185,6 +8731,10 @@ mod tests {
         report["offline"]["attach"] = report["attach"].clone();
         report["offline"]["detach"] = report["detach"].clone();
         report["offline"]["repair"] = report["repair"].clone();
+        report["offline"]["rotate"] = report["rotate"].clone();
+        report["offline"]["delete"] = report["delete"].clone();
+        report["offline"]["metadata"] = report["metadata"].clone();
+        report["offline"]["zip"] = report["zip"].clone();
         report["offline"]["batch"] = report["batch"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["metadataReport"] = report["metadataReport"].clone();
@@ -9056,6 +9606,79 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_tiled).is_err(),
             "an online-only tiled watermark must not pass the offline gate"
+        );
+
+        let mut rotated_one_page = report.clone();
+        *rotated_one_page
+            .pointer_mut("/rotate/outputs/0/foundCounts/0")
+            .unwrap() = json!(1);
+        assert!(
+            verdict_tools_page(&rotated_one_page).is_err(),
+            "a rotate that turned only the page it found first must not pass"
+        );
+
+        let mut delete_kept_the_page = report.clone();
+        *delete_kept_the_page
+            .pointer_mut("/delete/result/rows/0/value")
+            .unwrap() = json!("3 \u{2192} 3");
+        assert!(
+            verdict_tools_page(&delete_kept_the_page).is_err(),
+            "a delete that left the page in the tree must not pass"
+        );
+
+        let mut metadata_left_the_old_title = report.clone();
+        *metadata_left_the_old_title
+            .pointer_mut("/metadata/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&metadata_left_the_old_title).is_err(),
+            "a metadata save that still carries the title it replaced must not pass"
+        );
+
+        let mut archive_previewed = report.clone();
+        *archive_previewed
+            .pointer_mut("/zip/outputs/0/previewBlob")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&archive_previewed).is_err(),
+            "an archive handed to the PDF viewer as a preview must not pass"
+        );
+
+        let mut no_offline_zip = report.clone();
+        no_offline_zip
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("zip");
+        assert!(
+            verdict_tools_page(&no_offline_zip).is_err(),
+            "an online-only ZIP must not pass the offline gate"
+        );
+
+        let mut never_opened_rotate = report.clone();
+        *never_opened_rotate.pointer_mut("/clicked/online").unwrap() =
+            json!(["metadata", "batch", "zip"]);
+        assert!(
+            verdict_tools_page(&never_opened_rotate).is_err(),
+            "a run that left cards unclicked must not pass, even with every other leg green"
+        );
+
+        let mut offline_never_opened_zip = report.clone();
+        *offline_never_opened_zip
+            .pointer_mut("/clicked/offline")
+            .unwrap() = json!(["rotate", "delete", "metadata"]);
+        assert!(
+            verdict_tools_page(&offline_never_opened_zip).is_err(),
+            "an offline pass that clicked three cards must not cover the grid"
+        );
+
+        let mut grid_lost_a_card = report.clone();
+        *grid_lost_a_card.pointer_mut("/cardIds").unwrap() =
+            json!(["merge", "mix", "split", "zip"]);
+        assert!(
+            verdict_tools_page(&grid_lost_a_card).is_err(),
+            "a grid that rendered fewer cards than the check covers must not pass"
         );
     }
 
