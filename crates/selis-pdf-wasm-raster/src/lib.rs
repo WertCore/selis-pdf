@@ -1,4 +1,4 @@
-//! Raster lazy chunk: PDF pages → PNG, JPEG or TIFF files, on the device.
+//! Raster lazy chunk: PDF pages → PNG, JPEG, TIFF or WebP files, on the device.
 //!
 //! Separate `cdylib` from the viewer and the tools chunk. The tools page never
 //! downloads this module until the user asks for images; it is fetched then and
@@ -10,15 +10,17 @@
 //!
 //! The render itself is the engine's own whole-page path
 //! ([`Session::render_page_rgba`]), and the encoders are the engine's own
-//! writers: `selis-image`'s deterministic PNG, the owned baseline JPEG, and the
-//! owned multi-page TIFF. One page becomes one file; several pages become one
-//! deterministic ZIP so a browser does not have to allow a burst of downloads.
-//! A TIFF is the exception: its pages live inside one container already, so
-//! every selected page lands in the single `.tif` the chunk returns.
+//! writers: `selis-image`'s deterministic PNG, the owned baseline JPEG, the
+//! owned multi-page TIFF and the owned lossless WebP. One page becomes one
+//! file; several pages become one deterministic ZIP so a browser does not have
+//! to allow a burst of downloads. A TIFF is the exception: its pages live
+//! inside one container already, so every selected page lands in the single
+//! `.tif` the chunk returns.
 //!
-//! All three are read back before the chunk returns. A PNG must reproduce the
+//! All four are read back before the chunk returns. A PNG must reproduce the
 //! rendered pixels exactly; a TIFF must do the same, page by page, and is
-//! lossless too, so it gets the same demand. A JPEG is lossy, so it must decode
+//! lossless too, so it gets the same demand — as does the WebP, which keeps the
+//! page's alpha the PNG keeps. A JPEG is lossy, so it must decode
 //! under the engine's own JPEG reader, match the page's size, and stay inside
 //! error bounds measured against the harshest content the coder can honestly be
 //! given. A page too large for the format's own description is refused rather
@@ -31,8 +33,8 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::sync::Mutex;
 
 use selis_image::{
-    encode_jpeg, encode_png, encode_tiff, flatten_over_white, tiff_page_infos, tiff_strip, Image,
-    TiffStrip,
+    encode_jpeg, encode_png, encode_tiff, encode_webp, flatten_over_white, tiff_page_infos,
+    tiff_strip, Image, TiffStrip,
 };
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
@@ -64,6 +66,16 @@ const TIFF_LEVEL: u8 = 6;
 /// page and names the knob that fixes it, exactly as the JPEG leg does at its
 /// own reader's limit.
 const MAX_TIFF_EDGE: u32 = 65535;
+
+/// The largest edge a VP8L stream can describe.
+///
+/// A lossless WebP names its width and height with two 14-bit fields holding
+/// `size - 1`, so 16,384 px is the biggest page the container can name — a
+/// quarter of what a baseline TIFF can claim, and the same edge the owned reader
+/// stops at. Past it the writer would have to lie about the dimensions, so the
+/// chunk refuses the page and names the knob that fixes it, as the TIFF and JPEG
+/// legs do at their own limits.
+const MAX_WEBP_EDGE: u32 = 16_384;
 
 /// The largest mean channel error a verified JPEG may carry, in 8-bit levels.
 ///
@@ -239,15 +251,16 @@ pub extern "C" fn selis_raster_available() -> u32 {
     1
 }
 
-/// Render the selected pages to PNG, JPEG or TIFF.
+/// Render the selected pages to PNG, JPEG, TIFF or WebP.
 ///
 /// `pages_ptr`/`pages_len` is a UTF-8 selection in the same 1-based syntax the
 /// page's other tools use (`""` = every page, `"1-3,5"` = those four).
-/// `format` selects the writer — `0` is PNG, `1` is JPEG, `2` is TIFF — and
-/// `quality` is the JPEG knob (1..=100); PNG ignores it and keeps its own fixed
-/// compression level, and TIFF has no quality to be given: it is lossless.
-/// PNG and JPEG return one file per page, bundled into a deterministic ZIP when
-/// the selection has more than one page. TIFF always returns one file, because
+/// `format` selects the writer — `0` is PNG, `1` is JPEG, `2` is TIFF, `3` is
+/// WebP — and `quality` is the JPEG knob (1..=100). PNG ignores it and keeps its
+/// own fixed compression level; TIFF and WebP are lossless, so they have no
+/// quality to be given. PNG, JPEG and WebP return one file per page, bundled
+/// into a deterministic ZIP when the selection has more than one page. TIFF
+/// always returns one file, because
 /// its pages are inside the container already — `out_files` still carries the
 /// page count, so the page can say how many pages that document holds. Free the
 /// result with [`selis_raster_free`].
@@ -332,6 +345,8 @@ enum Format {
     Jpg,
     /// Lossless multi-page TIFF, verified sample for sample, page by page.
     Tiff,
+    /// Lossless WebP, verified sample for sample, alpha and all.
+    WebP,
 }
 
 impl Format {
@@ -343,6 +358,7 @@ impl Format {
             0 => Ok(Self::Png),
             1 => Ok(Self::Jpg),
             2 => Ok(Self::Tiff),
+            3 => Ok(Self::WebP),
             other => Err(format!("unknown image format code {other}")),
         }
     }
@@ -353,6 +369,7 @@ impl Format {
             Self::Png => "png",
             Self::Jpg => "jpg",
             Self::Tiff => "tif",
+            Self::WebP => "webp",
         }
     }
 }
@@ -378,10 +395,11 @@ fn run_impl(
     if format == Format::Tiff {
         return run_tiff(&session, &budget, &clock, &pages, dpi);
     }
-    // PNG has no quality knob; the level it compresses at is this module's own
-    // choice. JPEG's is the user's, and 1..=100 is what the writer accepts.
+    // PNG and WebP have no quality knob; the level PNG compresses at is this
+    // module's own choice and WebP's coder has none to be given. JPEG's is the
+    // user's, and 1..=100 is what the writer accepts.
     let level = match format {
-        Format::Png => 0,
+        Format::Png | Format::WebP => 0,
         Format::Jpg => {
             if quality == 0 || quality > 100 {
                 return Err("JPEG quality must be between 1 and 100".to_string());
@@ -419,6 +437,14 @@ fn run_impl(
                 })?;
                 verify_jpg(&image, &jpg, level, &mut g, page)?;
                 jpg
+            }
+            Format::WebP => {
+                check_webp_is_writable(&image, dpi, page)?;
+                let webp = encode_webp(&image, &mut g).map_err(|e| {
+                    format!("page {} could not be encoded: {e}", page.saturating_add(1))
+                })?;
+                verify_webp(&image, &webp, &mut g, page)?;
+                webp
             }
             // `run_tiff` owns this format, and took the selection before this
             // loop ran: a TIFF is one container for every page at once, so
@@ -581,6 +607,50 @@ fn verify_png(
     {
         return Err(format!(
             "page {label} failed pixel verification: the PNG does not round-trip"
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a page a VP8L stream cannot describe, before spending time on it.
+///
+/// The pixels themselves are not the problem — the coder would happily take a
+/// wider frame — but the container names each edge with 14 bits holding
+/// `size - 1`, so a page past [`MAX_WEBP_EDGE`] would be written with dimensions
+/// that are not its own. The chunk says so instead, and points at the DPI, as
+/// the TIFF leg does at its `SHORT`-tag limit.
+fn check_webp_is_writable(image: &Image, dpi: u32, page: usize) -> Result<(), String> {
+    if image.width <= MAX_WEBP_EDGE && image.height <= MAX_WEBP_EDGE {
+        return Ok(());
+    }
+    let label = page.saturating_add(1);
+    Err(format!(
+        "page {label} at {dpi} DPI is {}x{} px, and a lossless WebP can only describe a page up \
+         to {MAX_WEBP_EDGE} px on an edge; lower the DPI, or use PDF to PNG for one file per page",
+        image.width, image.height
+    ))
+}
+
+/// Read a WebP back and demand the pixels it was made from.
+///
+/// VP8L is lossless, so this is the PNG's standard, not the JPEG's — and it
+/// covers the alpha channel too, which a WebP carries the way a PNG does and a
+/// TIFF profile here does not. A file that comes back with different samples is
+/// a bug in the writer, and the user must not receive it under a "verified"
+/// label.
+fn verify_webp(
+    image: &Image,
+    bytes: &[u8],
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+    page: usize,
+) -> Result<(), String> {
+    let label = page.saturating_add(1);
+    let decoded = selis_image::decode_webp(bytes, g)
+        .map_err(|e| format!("page {label} output could not be read back: {e}"))?;
+    if decoded.width != image.width || decoded.height != image.height || decoded.rgba != image.rgba
+    {
+        return Err(format!(
+            "page {label} failed pixel verification: the WebP does not round-trip"
         ));
     }
     Ok(())
@@ -945,11 +1015,13 @@ mod tests {
         assert_eq!(Format::from_code(0).unwrap(), Format::Png);
         assert_eq!(Format::from_code(1).unwrap(), Format::Jpg);
         assert_eq!(Format::from_code(2).unwrap(), Format::Tiff);
-        let err = Format::from_code(3).expect_err("unknown code");
-        assert!(err.contains("unknown image format code 3"), "{err}");
+        assert_eq!(Format::from_code(3).unwrap(), Format::WebP);
+        let err = Format::from_code(4).expect_err("unknown code");
+        assert!(err.contains("unknown image format code 4"), "{err}");
         assert_eq!(Format::Png.extension(), "png");
         assert_eq!(Format::Jpg.extension(), "jpg");
         assert_eq!(Format::Tiff.extension(), "tif");
+        assert_eq!(Format::WebP.extension(), "webp");
     }
 
     #[test]
@@ -1372,5 +1444,145 @@ mod tests {
         let bytes = encode_png(&other, PNG_LEVEL, &mut guard()).expect("encode");
         let err = verify_png(&page, &bytes, &mut guard(), 0).expect_err("must refuse");
         assert!(err.contains("the PNG does not round-trip"), "{err}");
+    }
+
+    #[test]
+    fn one_page_is_a_webp_that_reads_back_its_own_pixels() {
+        let (bytes, files) = run_impl(MINIMAL, "", 72, Format::WebP, 0).expect("render");
+        assert_eq!(files, 1);
+        assert_eq!(bytes.get(..4), Some(b"RIFF".as_slice()));
+        assert_eq!(bytes.get(8..12), Some(b"WEBP".as_slice()));
+        assert_eq!(bytes.get(12..16), Some(b"VP8L".as_slice()));
+        let image = selis_image::decode_webp(&bytes, &mut guard()).expect("decode");
+        assert_eq!((image.width, image.height), (100, 100));
+        assert!(image
+            .rgba
+            .chunks_exact(4)
+            .all(|px| matches!(px, &[_, _, _, 255])));
+        let centre = (50 * 100 + 50) * 4;
+        assert_eq!(
+            image.rgba.get(centre..centre + 3).expect("centre pixel"),
+            &[0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn webp_pages_are_named_by_the_format() {
+        let (bytes, files) = run_impl(NAV, "", 36, Format::WebP, 0).expect("render");
+        assert_eq!(files, 2);
+        assert_eq!(bytes.get(..2), Some(b"PK".as_slice()));
+        assert!(bytes
+            .windows(11)
+            .any(|window| window == b"page-1.webp".as_slice()));
+        assert!(bytes
+            .windows(11)
+            .any(|window| window == b"page-2.webp".as_slice()));
+        assert!(
+            !bytes
+                .windows(10)
+                .any(|window| window == b"page-1.png".as_slice()),
+            "a WebP run must not carry PNG entries"
+        );
+    }
+
+    #[test]
+    fn rendering_the_same_page_to_webp_twice_is_byte_identical() {
+        let (a, _) = run_impl(MINIMAL, "1", 96, Format::WebP, 0).expect("first");
+        let (b, _) = run_impl(MINIMAL, " 1 ", 96, Format::WebP, 0).expect("second");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn webp_ignores_the_quality_knob() {
+        // A lossless file cannot have a quality, so the knob must not reach it:
+        // the same page at any quality is the same bytes, and no quality is an
+        // error the way it is for JPEG.
+        let (plain, _) = run_impl(MINIMAL, "1", 96, Format::WebP, 0).expect("zero");
+        let (asked, _) = run_impl(MINIMAL, "1", 96, Format::WebP, 999).expect("huge");
+        assert_eq!(plain, asked);
+        assert!(run_impl(MINIMAL, "", 0, Format::WebP, 0).is_err());
+    }
+
+    #[test]
+    fn a_document_page_is_smaller_as_a_webp_than_as_a_png() {
+        // The reason the format is on the page at all: a real page, verified
+        // lossless both ways, must come back out of the WebP coder no bigger than
+        // the PNG the tool already offers. If this flips, the encoder lost a
+        // trick — it is not the assertion that needs widening.
+        let fixtures = [
+            ("minimal", MINIMAL),
+            ("text", TEXT),
+            ("nav", NAV),
+            ("form", FORM),
+        ];
+        for (name, input) in fixtures {
+            let (png, _) = run_impl(input, "", 72, Format::Png, 0).expect("png");
+            let (webp, _) = run_impl(input, "", 72, Format::WebP, 0).expect("webp");
+            assert!(
+                webp.len() <= png.len(),
+                "{name}: a WebP of the page is {} bytes against the PNG's {}",
+                webp.len(),
+                png.len()
+            );
+        }
+    }
+
+    #[test]
+    fn check_webp_is_writable_holds_at_the_container_s_limit() {
+        let at_the_limit = solid(MAX_WEBP_EDGE, 8, [0, 0, 0, 255]);
+        assert!(check_webp_is_writable(&at_the_limit, 300, 0).is_ok());
+        let too_tall = solid(8, MAX_WEBP_EDGE.saturating_add(1), [0, 0, 0, 255]);
+        assert!(check_webp_is_writable(&too_tall, 300, 0).is_err());
+    }
+
+    #[test]
+    fn a_page_too_large_for_vp8l_is_refused_before_the_file_is_written() {
+        // 20,000 pt at 72 DPI is 20,000 px across — past the 14-bit field a VP8L
+        // stream names an edge with. The chunk says so by number rather than
+        // writing a file whose own header describes a different page, and the
+        // formats with room to spare still take it.
+        let wide = wide_page_pdf(20_000.0, 40.0);
+        let err = run_impl(&wide, "", 72, Format::WebP, 0).expect_err("oversized WebP");
+        assert!(err.contains("20000x40"), "{err}");
+        assert!(err.contains("lossless WebP can only describe"), "{err}");
+        assert!(err.contains("PDF to PNG"), "{err}");
+        let (bytes, files) = run_impl(&wide, "", 72, Format::Png, 0).expect("png still works");
+        assert_eq!(files, 1);
+        assert_eq!(
+            bytes.get(..8),
+            Some([0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A].as_slice())
+        );
+    }
+
+    #[test]
+    fn verify_webp_refuses_a_file_that_is_not_the_page() {
+        let page = solid(8, 8, [10, 20, 30, 255]);
+        let other = solid(8, 8, [200, 128, 64, 255]);
+        let bytes = encode_webp(&other, &mut guard()).expect("encode");
+        let err = verify_webp(&page, &bytes, &mut guard(), 0).expect_err("must refuse");
+        assert!(err.contains("the WebP does not round-trip"), "{err}");
+    }
+
+    #[test]
+    fn verify_webp_refuses_a_damaged_bitstream() {
+        // The witness that the read-back is not decoration: bytes inside the
+        // entropy-coded body of an honest page-sized file. Either the coder's own
+        // reader refuses, or the samples that come back are not the page's.
+        let (image, mut g) = page_image(TEXT, 0, 72);
+        let honest = encode_webp(&image, &mut g).expect("encode");
+        let body = honest.len().saturating_sub(16);
+        for fraction in [4usize, 8, 16, 64] {
+            let offset = 16usize.saturating_add(body.saturating_div(fraction));
+            let mut damaged = honest.clone();
+            if let Some(byte) = damaged.get_mut(offset) {
+                *byte ^= 0x55;
+            }
+            let outcome = verify_webp(&image, &damaged, &mut g, 0);
+            assert!(
+                outcome.is_err(),
+                "damage at byte {offset} of the WebP passed verification"
+            );
+        }
+        verify_webp(&image, &honest, &mut g, 0).expect("the honest file passes");
     }
 }

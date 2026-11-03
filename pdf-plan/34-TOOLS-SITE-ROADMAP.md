@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue, every-card coverage, the PDF→PNG / JPG / TIFF raster slices and the positioned PDF→HTML export, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue, every-card coverage, the PDF→PNG / JPG / TIFF / WebP raster slices and the positioned PDF→HTML export, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -77,6 +77,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | PDF to JPG | yes | yes | **Live** | The same lazy, import-free raster chunk and the same ABI as PDF to PNG, with a format code and a quality (1–100, default 90) beside the DPI (1–600) and the 1-based page selection. The page is rendered to RGBA and encoded by the owned baseline coder (`selis-pdf-filter::dct_encode`: SOF0 sequential, 8-bit, 4:4:4, JFIF APP0, Annex K tables scaled by quality, integer Q15 DCT) — no image library in the tree. The chunk decodes its own JPEG and compares it with the page before returning: mean per-channel error ≤ 96, and from quality 75 upward no sampled pixel may differ by more than 160. One page downloads as a bare JPG, several as one deterministic store-method ZIP of `page-N.jpg`; a render wider or taller than 16384 px is refused before a file exists, because it could not be read back. CLI twin: `selis render --format jpg --quality N`. |
 | PDF to TIFF | — | yes | **Live** | The same lazy, import-free raster chunk again, with a format code for TIFF. `selis-image::tiff` writes baseline TIFF 6.0 and reads exactly what it wrote — little-endian mark and 42, one Deflate-compressed strip per page, `PhotometricInterpretation` 2, three 8-bit samples, `PlanarConfiguration` 1, the chosen DPI as `XResolution`/`YResolution` with `ResolutionUnit` 2, and `PageNumber` carrying the 1-based selection order — with no image library in the tree. Verification is the PNG standard, not a lossy bound: the chunk re-opens its own file, walks the IFD chain, inflates every strip and compares it with the render sample for sample. A page rasterising past 65535 px on an edge is refused before a byte is written, because those dimensions are `SHORT` tags. One `.tif` whatever the page count — a container is never bundled — and **no** preview link, because Chromium does not display TIFF inline. No quality knob: a TIFF here is lossless. CLI twin: `selis render --format tif` (`tiff` accepted as an alias). |
 | PDF to HTML | — | yes | **Live** (positioned) | One self-contained HTML document for the whole 1-based selection, through a fifth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_html.wasm`, 228 325 B brotli, zero imports). Every selected page is a `<section class="page">` sized by the page's own `PageView` at 72 DPI — one CSS pixel per PDF unit, `/Rotate` folded into the transform, the same canvas the PNG card paints — and every *recovered* span is an absolutely positioned `<p>` with its measured box as `data-box`. A page that drew text and recovered none carries the low-confidence marker, as the text, JSON and Markdown exports do; a zero-area page is refused before a byte is written. `selis-pdf-text::html` owns the emitter, a strict reader that whitelists its tags and attributes (so `@import` and `url()` cannot pass, and the `<style>` block is compared line for line against a constant), and a verifier that re-reads the bytes against the model span for span — and the chunk ships only after it passes. Download only, **no** preview: a `blob:` document runs in this page's own origin. No colour, no font faces, no reflow, no images, no separator characters between word spans. CLI twin: `selis extract --format html`. |
+| PDF to WebP | — | yes | **Live** | The same lazy, import-free raster chunk a fourth time, with format code `3`. `selis-image::webp` writes VP8L lossless WebP and reads exactly what it wrote — a `RIFF`/`WEBP` container around one `VP8L` chunk, the page's RGBA as ARGB pixels, a prefix code per channel (green's alphabet carries the 24 LZ77 length codes), backward references through the 40 distance prefix codes, subtract-green plus a per-block predictor transform — with no image library and no libwebp in the tree. Verification is the PNG standard, not a lossy bound, and it keeps the alpha plane: the chunk decodes its own WebP and compares every sample, so a lossless file either reproduces the page or is refused. A page rasterising past 16384 px on an edge is refused before a byte is written, because both dimensions are 14-bit minus-one fields. One page downloads as a bare `.webp`, several as one deterministic store-method ZIP of `page-N.webp`; there is no quality knob, and it **does** preview — Chromium displays WebP inline, and the browser check grades the samples with Chromium's own decoder against the PNG of the same render. CLI twin: `selis render --format webp`. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
 | Local-only guard | — | — | **Live** | `data-no-upload="verified"` after every successful run; request recorder + CSP + import-free chunk. |
@@ -159,8 +160,8 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 |---|---|---|---|---|
 | JPG → PDF | yes | yes | 1A.1 | `selis-image` decodes JPEG; writer already embeds. Browser must accept image files, not only PDF. |
 | PNG → PDF | yes | yes | 1A.1 | Same. |
-| WebP → PDF | — | yes | Raster codec | Needs a new owned codec dependency under the dependency policy. |
-| HEIC → PDF | — | yes | Raster codec | Same; licence and platform review required. |
+| WebP → PDF | — | yes | Raster codec | Codec is no longer the blocker in principle — `selis-image::webp` decodes VP8L — but only the profile this device writes. It refuses a color cache, meta prefix codes, color and color-indexing transforms and close-range distance codes by name, all of which libwebp emits, so an inbound card first has to widen the reader to a stranger's files and prove every decoded page lands in the produced PDF. Not shipped. |
+| HEIC → PDF | — | yes | Raster codec | Needs an owned HEIF/HEVC decoder that does not exist in the tree, plus licence and platform review; the WebP coder above is not reusable here — HEIC is a lossy DCT container, not VP8L. |
 | TIFF (multi-page) → PDF | — | yes | Raster codec | Codec no longer the blocker: `selis-image::tiff` decodes the baseline profile this device writes, and page order and DPI come off the IFD chain. Not shipped — a card would have to prove every decoded page lands in the produced PDF, and that verification does not exist yet. |
 | SVG → PDF | — | yes | Text/Vector | SVG subset renderer; do not claim full SVG. |
 | Word → PDF | yes | yes | Text/Office | OOXML layout is a separate product-sized problem; Phase 5 at the earliest. |
@@ -175,7 +176,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | PDF → JPG | yes | yes | 2 | **Live.** See §2: same raster chunk as PNG, quality 1–100, owned baseline sequential encoder with read-back comparison, `page-N.jpg` ZIP for multi-page. |
 | PDF → PNG | — | yes | 2 | **Live.** Render at a chosen DPI (1–600), one page or a 1-based selection. A single page downloads as a bare PNG; several pages come back as one deterministic store-method ZIP of `page-N.png` entries padded to the digit width of the page count. The chunk decodes its own PNG and compares pixels before returning. Owned encoder, owned zlib, no image library. |
 | PDF → TIFF | — | yes | 2 | **Live.** See §Phase 2: one lossless multi-page container, owned writer and reader, sample-for-sample read-back, `PageNumber` carries the 1-based selection, no quality knob, no preview (Chromium will not display it). |
-| PDF → WebP | — | yes | Raster codec | Still needs an owned VP8/VP8L coder; a third-party codec is a supply-chain decision, not a `Cargo.toml` edit. |
+| PDF → WebP | — | yes | 2 | **Live.** One lossless file per page through the VP8L coder this tree owns — per-channel prefix codes, LZ77 over the 40 distance codes, subtract-green and a per-block predictor transform, no libwebp. The chunk decodes its own WebP and compares every sample *including alpha*; a page past 16384 px on an edge is refused before a byte exists (both dimensions are 14-bit minus-one fields); no quality knob; several pages bundle as `page-N.webp` in the same deterministic ZIP as PNG and JPG; it previews, because Chromium displays WebP — and the check makes Chromium's decoder grade the samples against the PNG leg of the same render. CLI twin `selis render --format webp`. See §Phase 2. |
 | PDF → Word | yes | yes | Text | Top search volume and hardest fidelity problem; wait for text extraction and label honestly. |
 | PDF → PowerPoint | yes | yes | Text | Page images + text boxes; fidelity caveat. |
 | PDF → Excel | yes | yes | Text | Table reconstruction; confidence display. |
@@ -338,10 +339,10 @@ cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The inc
 page edits remains deferred; these page operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all thirty-three cards in both phases. The raster claim is
+size budget; the browser check drives all thirty-four cards in both phases. The raster claim is
 separate
-and starts in Phase 2 — PDF → PNG, PDF → JPG and PDF → TIFF now ship there, each with its own
-read-back verification.
+and starts in Phase 2 — PDF → PNG, PDF → JPG, PDF → TIFF and PDF → WebP now ship there, each with
+its own read-back verification.
 
 ### Phase 2 — raster and OCR
 
@@ -418,6 +419,56 @@ writer, the reader and their refusals), 35 raster-chunk tests (10 TIFF), 5 `rend
 (1 093 374 B before the TIFF coder) against the same 1 300 000 budget: +4 257 B, +0.39%, accepted by
 the 2% rule as a deliberate baseline edit. `TIFF → PDF` is now codec-unblocked — the reader above
 decodes what this device writes — and is still not shipped, so no card claims it.
+
+**Shipped 2026-11-04 (PDF → WebP):** the fourth format is the one whose bitstream had no owner. PNG
+borrowed the engine's Deflate writer and TIFF wraps it, but VP8L is its own entropy code, its own
+transforms and its own container, so `selis-image::webp` carries the whole of it and, following the
+TIFF doctrine, writes and reads it in the same module: `encode_webp` → `decode_webp` → sample-for-sample
+comparison, with no third-party codec and no libwebp anywhere in the tree — which is what the old
+"needs an owned coder" line was really blocking. The writer packs the rendered RGBA as the ARGB pixels
+the format names, gives each channel its own prefix code (green's alphabet carries the 24 LZ77 length
+codes on top of 256 literals; red, blue and alpha are plain 256-symbol), emits backward references
+through the 40 distance prefix codes with a bounded hash chain, decorrelates a document's achromatic ink
+with subtract-green and lays a predictor transform whose mode is chosen per block. A skewed histogram
+that would push a code past the 15 bits VP8L allows gets a floor under its counts, a one-symbol code
+spends no bits, an odd payload gets the pad byte the chunk size does not count and the enclosing RIFF
+size does, and the same pixels always produce the same file. The reader is deliberately narrow and says
+so by name: a color cache, a meta prefix code, a color transform, a color-indexing transform, one of the
+120 close-range distance codes or a chunk that is not `VP8L` is `IMAGE_UNSUPPORTED` — each is a
+construct this crate does not write and therefore has no test for — while a broken container, an
+incomplete tree, a reference reaching past the frame or a stream that stops early is `IMAGE_MALFORMED`.
+Verification is the PNG's standard, not the JPEG's measured bounds, and it keeps alpha: VP8L has an
+alpha plane, so this is the lossless output that ships what the renderer produced instead of compositing
+it over white the way the TIFF profile must. The card refuses a page rasterising past 16384 px on an
+edge before a byte is written — both dimensions are 14-bit minus-one fields, so a truncated one would
+make the header lie about its own page — and the refusal names the canvas, the limit and PDF to PNG as
+the per-page way out. There is no quality knob, and a test asserts a nonsense quality value does not move
+the bytes. The 34th `/tools.html` card rides the *same* raster chunk as the other three (format code
+`3`; no fifth chunk, no raised ceiling) and returns one file per page, so several pages come back as one
+deterministic store-method ZIP of `page-N.webp`; unlike the TIFF card, it previews, because Chromium
+displays WebP. The CLI twin is `selis render --format webp`, and the unknown-format refusal now names the
+five formats that exist rather than listing WebP as one that does not.
+The browser check carries the slice's strongest witness. `vp8lFrame` walks the downloaded bytes as RIFF:
+the `RIFF`/`WEBP` fourccs, a declared length that agrees with the file it was handed, a `VP8L` chunk
+opened by its 0x2F signature, then the LSB-first 14-bit minus-one width and height, the alpha bit and
+the three reserved version bits read from bit 168 — so the canvas is named by the container, not by the
+writer's own say-so, and version 0 is what makes "lossless" a read fact. Then `chromiumPixels` paints
+each displayable file through `createImageBitmap` and an `OffscreenCanvas` and digests the samples with
+FNV-1a, and the verdict requires the PNG and the WebP of one render to be **the same picture** — 200×200,
+160 000 samples, digest 3 627 224 773, in the online pass and again after the origin is cut. Neither
+decoder is ours, so that is the one raster proof that cannot run in the writer's favour. On the same
+fixture page the WebP measured 152 B against the PNG's 802 B, and the three-page bundle 790 B against
+2 712 B — the "smaller lossless file" sentence is a checked property, tested in the chunk (a document page
+comes back no larger as a WebP than as a PNG) and in the CLI, not marketing copy. Evidence: 61
+`selis-image` tests (26 this module), 44 raster-chunk tests (9 WebP), 4 `render_webp` CLI tests with
+`render_tiff`'s 5, `render_jpg`'s 6 and `render_png`'s 3 still green, 248 host tests, and 178 `xtask`
+tests including the real Edge run; six verdict negatives withdraw one witness each — a stream that is not
+VP8L, a zero canvas, a WebP Chromium paints differently from the PNG, a bundle missing one of three
+pages, and the two offline legs. The chunk is 1 115 272 B brotli (1 097 631 B before the WebP coder)
+against the same 1 300 000 budget: +17 641 B, +1.6%, inside the 2% rule and recorded as a deliberate
+baseline edit. `WebP → PDF` stays roadmap: this reader decodes what this device writes and refuses by
+name everything libwebp also emits, so an inbound card needs the reader widened to a stranger's files
+first, and no copy claims it.
 
 ### Phase 3 — text and layout
 
@@ -536,14 +587,14 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Thirty-three live cards with 1-based page input.
+- [x] Thirty-four live cards with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all thirty-three cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all thirty-four cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
@@ -551,12 +602,13 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
       Coverage is now measured, not assumed: the driver reports the ids it rendered and the ids it
       clicked in each phase, and the verdict refuses a run whose click lists do not cover the grid.
-      `xtask/browser/tools-page` passed in Edge with 32 cards online and 32 offline, 0 foreign
+      `xtask/browser/tools-page` passed in Edge with 34 cards online and 34 offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, `%PDF-` downloads, PNG
       downloads whose IHDR measures the canvas the raster chunk rendered, JPG downloads whose
-      SOF0 measures that same canvas and stay baseline sequential, and TIFF downloads whose IFD
+      SOF0 measures that same canvas and stay baseline sequential, TIFF downloads whose IFD
       chain — re-walked independently in the harness — measures that canvas, carries the RGB and
-      Deflate profile, and stays one file at three pages.
+      Deflate profile, and stays one file at three pages, and WebP downloads whose `VP8L` header
+      names that canvas and whose samples Chromium paints identically to the PNG of the same render.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
       The `tools-page` browser check now runs every leg online, cuts the origin, reloads the page,

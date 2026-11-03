@@ -381,10 +381,17 @@ operation is available identically in the CLI, the web app, and the extension.
     margin options. Pure generation — no renderer needed. High-volume, low-difficulty.
   - **Note:** Shipped as `selis img2pdf a.png b.jpg -o out.pdf` for JPEG + PNG (`selis-image`
     decode → `embed_image_rgba` via the WRITE.01 writer), with `--page-size fit|letter|a4` and
-    `--margin`. WebP/HEIC need new codec dependencies — held under the "no new dependency
-    without proposal" rule (00-INDEX §agent template); file them with a licence justification to
-    complete the format list. TIFF is no longer on that list: `selis-image::tiff` has owned the
-    baseline multi-page reader and writer since the PDF → TIFF slice (34-TOOLS-SITE-ROADMAP §Phase
+    `--margin`. HEIC needs a codec dependency that does not exist in the tree — held under the "no new
+    dependency without proposal" rule (00-INDEX §agent template); file it with a licence justification
+    to complete the format list. WebP is off that list, and not yet on the shipped one:
+    `selis-image::webp` has owned the VP8L coder in both directions since the PDF → WebP slice
+    (34-TOOLS-SITE-ROADMAP §Phase 2), but that reader refuses by name everything libwebp *also* emits —
+    a color cache, meta prefix codes, a color transform, a color-indexing transform, the 120
+    close-range distance codes — so decoding a stranger's WebP is first a reader-widening job measured
+    against real corpus files, then the same verification job as TIFF: decode, embed, prove the pixels
+    survived the produced PDF. Neither is shipped and no card claims it. TIFF is no longer on that
+    list: `selis-image::tiff` has owned the baseline multi-page reader and writer since the PDF → TIFF
+    slice (34-TOOLS-SITE-ROADMAP §Phase
     2), so `TIFF → PDF` is a verification job — decode each IFD, embed each page, prove the pixels
     survived the produced PDF — rather than a codec job. It is not shipped and no card claims it.
   - **Browser parity (2026-10-31):** the same engine path is now card 23 on `/tools.html`. The
@@ -471,7 +478,9 @@ operation is available identically in the CLI, the web app, and the extension.
     witness each, including two that shrink the click lists and one that shrinks the grid.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
   - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output — and does,
-    alongside TIFF: `selis render --format ppm|png|jpg|tif` and three `/tools.html` cards.
+    alongside TIFF and lossless WebP: `selis render --format ppm|png|jpg|tif|webp` and four
+    `/tools.html` cards, three of which bundle several pages as `page-N.<ext>` in one deterministic
+    ZIP while TIFF returns one container.
   - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned
     raster path and a separate lazy chunk; it is Phase 2 in `34-TOOLS-SITE-ROADMAP.md`, not a
     hidden switch on the current tools chunk.
@@ -482,7 +491,9 @@ operation is available identically in the CLI, the web app, and the extension.
     it again and compares every pixel before returning. One page is a bare PNG, several are one
     deterministic ZIP of `page-N.png`. CLI twin `selis render --format png`. Browser legs measure
     the real bytes online and after an offline reload. WebP/TIFF were still unowned at that date,
-    so no claim was made; TIFF shipped the next day (see below) and WebP still has no owned coder.
+    so no claim was made; TIFF shipped the next day (see below) and WebP followed on 2026-11-04,
+    as the fourth format of the same chunk (`selis-image::webp`, VP8L written and read
+    back in one module — no third-party codec, which is what that row's blocker had been).
   - **JPEG (2026-11-02):** the same fourth chunk, not a new one — its ABI took a `format` code and a
     `quality`, and `selis render` took `--format jpg --quality N`. `selis-pdf-filter::dct_encode`
     writes the stream itself (baseline sequential SOF0, 8-bit, 4:4:4, JFIF APP0, Annex K tables
@@ -543,7 +554,8 @@ operation is available identically in the CLI, the web app, and the extension.
     small interface and building it now is the right call regardless.
   - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards
     (thirty-one with the PDF → JPG card on 2026-11-02, thirty-two with PDF → TIFF on 2026-11-03,
-    thirty-three with the positioned PDF → HTML export the same day),
+    thirty-three with the positioned PDF → HTML export the same day, and thirty-four with
+    PDF → WebP on 2026-11-04),
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not

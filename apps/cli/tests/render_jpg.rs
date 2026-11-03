@@ -172,9 +172,9 @@ fn quality_outside_the_writers_range_is_refused() {
 #[test]
 fn an_unknown_format_names_the_ones_that_exist() {
     let pdf = write_fixture("unknown.pdf", MINIMAL);
-    let out = temp_path("unknown.webp");
-    let (code, err) = render(&pdf, &out, 72, "webp", None);
+    let out = temp_path("unknown.bmp");
+    let (code, err) = render(&pdf, &out, 72, "bmp", None);
     assert_ne!(code, 0);
     assert!(err.contains("unknown output format"), "{err}");
-    assert!(err.contains("ppm, png, jpg or tif"), "{err}");
+    assert!(err.contains("ppm, png, jpg, tif or webp"), "{err}");
 }

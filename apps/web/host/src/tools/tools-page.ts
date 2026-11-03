@@ -103,7 +103,10 @@ interface HtmlWasm {
 }
 
 /** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff" | "html";
+type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff" | "webp" | "html";
+
+/** The cards that hand their pages to the lazy raster chunk. */
+type RasterToolId = "png" | "jpg" | "tiff" | "webp";
 
 interface ToolDef {
 	readonly id: ToolId;
@@ -381,6 +384,15 @@ const TOOLS: readonly ToolDef[] = [
 		accepts: "pdf",
 	},
 	{
+		id: "webp",
+		mark: "▥",
+		title: "PDF to WebP",
+		blurb: "Render every page, or a selection, to lossless WebP images.",
+		verb: "Render WebPs",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
 		id: "html",
 		mark: "◩",
 		title: "PDF to HTML",
@@ -424,7 +436,20 @@ const RASTERS: ReadonlyMap<string, RasterInfo> = new Map([
 	["png", { mime: "image/png", label: "PNG image", preview: true }],
 	["jpg", { mime: "image/jpeg", label: "JPEG image", preview: true }],
 	["tif", { mime: "image/tiff", label: "TIFF image", preview: false }],
+	["webp", { mime: "image/webp", label: "WebP image", preview: true }],
 ]);
+
+/**
+ * What each raster card asks the chunk for: the ABI's format number and the
+ * suffix its files get. The chunk numbers its writers 0..3 and the page must
+ * agree with it, so the table is the one place the two are tied together.
+ */
+const RASTER_FORMATS: Record<RasterToolId, { code: number; extension: string }> = {
+	png: { code: 0, extension: "png" },
+	jpg: { code: 1, extension: "jpg" },
+	tiff: { code: 2, extension: "tif" },
+	webp: { code: 3, extension: "webp" },
+};
 
 const UNNAMED_RASTER: RasterInfo = {
 	mime: "application/octet-stream",
@@ -1641,6 +1666,30 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "webp") {
+			const dpi = textInput("dpi", "number", "150");
+			dpi.min = "1";
+			dpi.max = "600";
+			dpi.step = "1";
+			dpi.value = "150";
+			addField(
+				"dpi",
+				"Resolution (DPI)",
+				dpi,
+				"1 to 600. 72 renders one pixel per point; 150 is a good screen/print default.",
+			);
+			addField(
+				"pages",
+				"Pages",
+				textInput("pages", "text", "All pages"),
+				"1-based, like the page numbers readers show: 1-3,5. Leave empty for every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every page is rendered on this device from the PDF's own content. Each WebP is decoded back and compared with the page sample for sample, alpha included, before it is offered, so a file that does not match comes back as a failure instead of a download. There is no quality knob: the coder here is VP8L, which is lossless. One page is saved as a WebP; several pages are bundled into one ZIP of page-1.webp, page-2.webp entries, padded to the width of the page count. A render wider or taller than 16384 px is past what a VP8L stream can name, so lower the DPI for that page or use PDF to PNG.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "html") {
 			addField(
 				"pages",
@@ -2492,7 +2541,7 @@ function init(): void {
 		return rasterWasmPromise;
 	}
 
-	async function runRaster(toolId: ToolId): Promise<void> {
+	async function runRaster(toolId: RasterToolId): Promise<void> {
 		setBusy(true);
 		clearResult();
 		setStatus("Reading your PDF on this device…", "info");
@@ -2506,8 +2555,8 @@ function init(): void {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			const dpi = numberInRange("dpi", "Resolution", 1, 600, 150, true);
-			const format = toolId === "jpg" ? 1 : toolId === "tiff" ? 2 : 0;
-			const extension = toolId === "jpg" ? "jpg" : toolId === "tiff" ? "tif" : "png";
+			const format = RASTER_FORMATS[toolId].code;
+			const extension = RASTER_FORMATS[toolId].extension;
 			// A TIFF is a container: several pages live in one file, so unlike the
 			// per-page formats its page count never turns the result into a ZIP.
 			const container = toolId === "tiff";
@@ -2961,7 +3010,12 @@ function init(): void {
 				await runConvert();
 				return;
 			}
-			if (tool.id === "png" || tool.id === "jpg" || tool.id === "tiff") {
+			if (
+				tool.id === "png" ||
+				tool.id === "jpg" ||
+				tool.id === "tiff" ||
+				tool.id === "webp"
+			) {
 				await runRaster(tool.id);
 				return;
 			}

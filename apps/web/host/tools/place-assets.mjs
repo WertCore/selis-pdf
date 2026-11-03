@@ -128,7 +128,7 @@ const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
 const CONVERT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.wasm";
-/** The raster chunk (PDF → PNG, JPG or TIFF), optimised first. Import-free (checked below). */
+/** The raster chunk (PDF → PNG, JPG, TIFF or WebP), optimised first. Import-free (checked below). */
 const RASTER_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.opt.wasm";
 /** The unoptimised raster chunk, for developers who only ran `cargo build`. */
 const RASTER_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.wasm";
@@ -609,15 +609,16 @@ if (convertImports.length > 0) {
 	);
 	process.exit(1);
 }
-// The raster chunk is the fourth engine: PDF → PNG. It is lazy, so the tools
-// page never downloads it unless the user picks PDF to PNG, and it must be
-// import-free for the same reason the other two are: the module is handed the
-// user's document bytes, and an import would be a capability it never needs.
+// The raster chunk is the fourth engine: PDF → PNG, JPG, TIFF or WebP. It is
+// lazy, so the tools page never downloads it unless the user picks one of those
+// cards, and it must be import-free for the same reason the other two are: the
+// module is handed the user's document bytes, and an import would be a
+// capability it never needs.
 const raster = findRasterEngine();
 if (raster === null) {
 	console.error(
 		[
-			"place-assets: no raster WASM chunk found - the PDF to PNG, JPG and TIFF cards cannot run without one,",
+			"place-assets: no raster WASM chunk found - the PDF to PNG, JPG, TIFF and WebP cards cannot run without one,",
 			"so this is a build failure rather than a skip. Build it first:",
 			"",
 			"  cargo build -p selis-pdf-wasm-raster --target wasm32-unknown-unknown --release",

@@ -1587,20 +1587,31 @@ const PNG_ZIP_NEEDLES: [&str; 3] = ["page-1.png", "page-2.png", "page-3.png"];
 const JPG_NEEDLES: [&str; 1] = ["JFIF"];
 /// The entry names a three-page JPEG bundle must contain, in order.
 const JPG_ZIP_NEEDLES: [&str; 3] = ["page-1.jpg", "page-2.jpg", "page-3.jpg"];
+/// The strings a PDF→WebP leg requires in the downloaded bytes: the fourcc of
+/// the lossless chunk this writer emits. A PDF, a ZIP or a lossy `VP8 ` file
+/// carries neither.
+const WEBP_NEEDLES: [&str; 1] = ["VP8L"];
+/// The entry names a three-page WebP bundle must contain, in order.
+const WEBP_ZIP_NEEDLES: [&str; 3] = ["page-1.webp", "page-2.webp", "page-3.webp"];
 
-/// What one raster leg promises, so the PNG, JPG and TIFF cards are held to the
-/// same rules with their own names. `signature`, `width_key` and `height_key`
-/// are the sniff fields the harness fills in from the downloaded bytes;
-/// `baseline_key` is set only for JPEG, whose start-of-frame marker says which
-/// coding the writer actually used — SOF0 is baseline sequential, SOF2 would be
-/// a progressive frame, and the chunk promises the former. `profile_key` is the
-/// TIFF's equivalent claim: the walk of its IFD chain reports whether every page
-/// is the RGB Deflate strip this writer makes. `pages` is how many the downloaded
+/// What one raster leg promises, so the PNG, JPG, TIFF and WebP cards are held
+/// to the same rules with their own names. `signature`, `width_key` and
+/// `height_key` are the sniff fields the harness fills in from the downloaded
+/// bytes; `baseline_key` is set only for JPEG, whose start-of-frame marker says
+/// which coding the writer actually used — SOF0 is baseline sequential, SOF2
+/// would be a progressive frame, and the chunk promises the former.
+/// `profile_key` is the format's equivalent claim: the TIFF's walk of its IFD
+/// chain reports whether every page is the RGB Deflate strip this writer makes,
+/// and the WebP's read of its VP8L chunk header reports whether the stream is
+/// the lossless coding rather than a lossy frame renamed. `profile_claim` names
+/// that profile in the failure message, because "the profile" means something
+/// different to each of them.
+/// `pages` is how many the downloaded
 /// file is expected to hold, and `count_key` names the sniff field that says so —
 /// only a container reports a count, because the per-page formats put their extra
 /// pages in a ZIP whose entry names are already the needles. `preview` records
-/// what the card may promise: Chromium displays PNG and JPEG inline and does not
-/// display TIFF, so the TIFF leg fails if a preview link appears.
+/// what the card may promise: Chromium displays PNG, JPEG and WebP inline and
+/// does not display TIFF, so the TIFF leg fails if a preview link appears.
 struct RasterSpec {
     verb: &'static str,
     format: &'static str,
@@ -1610,6 +1621,7 @@ struct RasterSpec {
     height_key: &'static str,
     baseline_key: Option<&'static str>,
     profile_key: Option<&'static str>,
+    profile_claim: &'static str,
     pages: u32,
     count_key: Option<&'static str>,
     preview: bool,
@@ -1626,6 +1638,7 @@ const PNG_LEG: RasterSpec = RasterSpec {
     height_key: "pngHeight",
     baseline_key: None,
     profile_key: None,
+    profile_claim: "",
     pages: 1,
     count_key: None,
     preview: true,
@@ -1642,6 +1655,7 @@ const JPG_LEG: RasterSpec = RasterSpec {
     height_key: "jpegHeight",
     baseline_key: Some("jpegBaseline"),
     profile_key: None,
+    profile_claim: "",
     pages: 1,
     count_key: None,
     preview: true,
@@ -1661,6 +1675,7 @@ const TIFF_LEG: RasterSpec = RasterSpec {
     height_key: "tiffHeight",
     baseline_key: None,
     profile_key: Some("tiffProfile"),
+    profile_claim: "RGB Deflate strip",
     pages: 1,
     count_key: Some("tiffPages"),
     preview: false,
@@ -1673,6 +1688,27 @@ const TIFF_LEG: RasterSpec = RasterSpec {
 const TIFF_THREE_LEG: RasterSpec = RasterSpec {
     pages: 3,
     ..TIFF_LEG
+};
+
+/// One page as a lossless WebP. The sniff reads the VP8L chunk header — the
+/// 0x2F signature, the two 14-bit dimensions and the reserved version bits —
+/// so `webpLossless` is the format's own claim that the bytes are this writer's
+/// coding. The card previews: unlike a TIFF, a WebP is something Chromium draws.
+const WEBP_LEG: RasterSpec = RasterSpec {
+    verb: "Render WebPs",
+    format: "WebP",
+    extension: "webp",
+    signature: "webp",
+    width_key: "webpWidth",
+    height_key: "webpHeight",
+    baseline_key: None,
+    profile_key: Some("webpLossless"),
+    profile_claim: "VP8L lossless",
+    pages: 1,
+    count_key: None,
+    preview: true,
+    needles: &WEBP_NEEDLES,
+    zip_needles: &WEBP_ZIP_NEEDLES,
 };
 
 /// The request-check tail every lazy-chunk leg shares: the page must have
@@ -1839,8 +1875,8 @@ fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), St
         .is_some_and(|key| output.get(key).and_then(Json::as_bool) != Some(true))
     {
         return Err(format!(
-            "the {label} {} is not the RGB Deflate strip profile the chunk writes",
-            spec.format
+            "the {label} {} is not the {} profile the chunk writes",
+            spec.format, spec.profile_claim
         ));
     }
     if let Some(key) = spec.count_key {
@@ -2006,6 +2042,55 @@ fn check_raster_zip_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<()
                 .get(index)
                 .copied()
                 .unwrap_or("an unnamed entry")
+        ));
+    }
+    Ok(())
+}
+
+/// What the browser's own decoder made of a leg's file: the canvas it painted
+/// and a digest of the samples it put on it. The harness carries one output
+/// object per raster leg inside its `outputs` list, so that is where the paint
+/// is read from. `None` when the leg carried no Chromium decoding at all — a
+/// TIFF or an archive, which the browser does not draw, or a file Chromium could
+/// not open.
+fn chromium_painting(leg: &Json) -> Option<(u64, u64, u64)> {
+    let output = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .and_then(|list| list.first())
+        .or_else(|| leg.get("output"))
+        .and_then(Json::as_object)?;
+    let chromium = output.get("chromium").and_then(Json::as_object)?;
+    let width = chromium.get("width").and_then(Json::as_u64)?;
+    let height = chromium.get("height").and_then(Json::as_u64)?;
+    let digest = chromium.get("digest").and_then(Json::as_u64)?;
+    Some((width, height, digest))
+}
+
+/// The one raster proof that does not run in the writer's favour: two lossless
+/// files of the same render — here a PNG and a WebP of the same page at the same
+/// DPI — painted by Chromium's own decoders have to come out the same picture.
+/// Neither decoder is ours, so a WebP whose samples drift from the page shows up
+/// here as two digests that disagree, not as a reader agreeing with its own
+/// writer.
+fn check_lossless_pair_agrees(
+    first: &Json,
+    second: &Json,
+    first_format: &str,
+    second_format: &str,
+    label: &str,
+) -> Result<(), String> {
+    let first_painting = chromium_painting(first).ok_or_else(|| {
+        format!("the {label} {first_format} leg never reported what Chromium made of its file")
+    })?;
+    let second_painting = chromium_painting(second).ok_or_else(|| {
+        format!("the {label} {second_format} leg never reported what Chromium made of its file")
+    })?;
+    if first_painting != second_painting {
+        return Err(format!(
+            "the {label} {second_format} is not the picture the {first_format} of the same render \
+             is: Chromium painted the {first_format} {first_painting:?} and the {second_format} \
+             {second_painting:?}"
         ));
     }
     Ok(())
@@ -3763,7 +3848,7 @@ fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 33] = [
+const TOOLS_PAGE_CARDS: [&str; 34] = [
     "attach",
     "attachments",
     "batch",
@@ -3796,6 +3881,7 @@ const TOOLS_PAGE_CARDS: [&str; 33] = [
     "strip_metadata",
     "tiff",
     "watermark",
+    "webp",
     "zip",
 ];
 
@@ -4108,9 +4194,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(33) {
+    if report.get("cards").and_then(Json::as_u64) != Some(34) {
         return Err(format!(
-            "the tools grid did not render thirty-three cards (cards = {:?})",
+            "the tools grid did not render thirty-four cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -4515,6 +4601,19 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("tiffThree")
         .ok_or_else(|| "the page reported no three-page TIFF leg (tiffThree = None)".to_string())?;
     check_raster_leg(tiff_three, "online TIFF of three pages", &TIFF_THREE_LEG)?;
+    let webp = report
+        .get("webp")
+        .ok_or_else(|| "the page reported no PDF-to-WebP leg (webp = None)".to_string())?;
+    check_raster_leg(webp, "online WebP", &WEBP_LEG)?;
+    let webp_zip = report.get("webpZip").ok_or_else(|| {
+        "the page reported no multi-page WebP bundle leg (webpZip = None)".to_string()
+    })?;
+    check_raster_zip_leg(webp_zip, "online WebP bundle", &WEBP_LEG)?;
+    // Two lossless files of one render, and the browser — not the engine — is
+    // the judge: the WebP of this page must paint exactly what the PNG of it
+    // paints. This is the leg that would catch a coder that is self-consistent
+    // and wrong.
+    check_lossless_pair_agrees(png, webp, "PNG", "WebP", "online")?;
     // PDF to HTML runs in its own lazy chunk and its own shape: the whole
     // selection is one document, so the leg is read back by the browser's HTML
     // parser rather than a format sniff the writer could agree with itself.
@@ -4546,9 +4645,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(33) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(34) {
         return Err(format!(
-            "the offline tools page did not render thirty-three cards (cards = {:?})",
+            "the offline tools page did not render thirty-four cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -4922,6 +5021,16 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline TIFF of three pages",
         &TIFF_THREE_LEG,
     )?;
+    let offline_webp = offline
+        .get("webp")
+        .ok_or_else(|| "the offline leg reported no PDF-to-WebP result".to_string())?;
+    check_raster_leg(offline_webp, "offline WebP", &WEBP_LEG)?;
+    let offline_webp_zip = offline.get("webpZip").ok_or_else(|| {
+        "the offline leg reported no multi-page WebP bundle result (offline.webpZip = None)"
+            .to_string()
+    })?;
+    check_raster_zip_leg(offline_webp_zip, "offline WebP bundle", &WEBP_LEG)?;
+    check_lossless_pair_agrees(offline_png, offline_webp, "PNG", "WebP", "offline")?;
     let offline_html = offline.get("html").ok_or_else(|| {
         "the offline leg reported no PDF-to-HTML result (offline.html = None)".to_string()
     })?;
@@ -8894,6 +9003,8 @@ mod tests {
             "png": true,
             "pngWidth": 200,
             "pngHeight": 200,
+            "webp": false,
+            "chromium": { "width": 200, "height": 200, "digest": 3_627_224_773_u64, "samples": 160_000 },
             "overTarget": false,
             "foundCounts": [1, 1],
             "found": [true, true],
@@ -8986,6 +9097,7 @@ mod tests {
             "zip": false,
             "png": false,
             "jpeg": true,
+            "webp": false,
             "jpegWidth": 200,
             "jpegHeight": 200,
             "jpegBaseline": true,
@@ -9107,11 +9219,13 @@ mod tests {
             "zip": false,
             "png": false,
             "jpeg": false,
+            "webp": false,
             "tiff": true,
             "tiffPages": pages,
             "tiffWidth": 200,
             "tiffHeight": 200,
             "tiffProfile": true,
+            "chromium": Json::Null,
             "overTarget": false,
             "absentFound": [false],
         });
@@ -9126,6 +9240,112 @@ mod tests {
                 "rows": [
                     { "label": "Pages", "value": pages.to_string() },
                     { "label": "Size", "value": format!("979 B \u{2192} {bytes} B") },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_raster.wasm"],
+            },
+        })
+    }
+
+    /// One PDF → WebP leg: the same lazy chunk renders the page and the real
+    /// Blob is a RIFF container whose one chunk is `VP8L`, so the sniff reports
+    /// the lossless coding, the canvas the engine asked for and the alpha plane
+    /// the PNG keeps. The card previews — Chromium draws a WebP, unlike a TIFF —
+    /// and the picture it paints is the one the PNG leg of the same render
+    /// produces: two decoders that are not ours agreeing is the only raster proof
+    /// that does not run in the writer's favour.
+    fn real_tools_webp_leg() -> Json {
+        let output = json!({
+            "kind": "image",
+            "name": "report.webp",
+            "pages": 1,
+            "declaredBytes": 152,
+            "bytes": 152,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "report.webp",
+            "header": "RIFF\u{fffd}",
+            "zip": false,
+            "png": false,
+            "jpeg": false,
+            "tiff": false,
+            "webp": true,
+            "webpWidth": 200,
+            "webpHeight": 200,
+            "webpAlpha": false,
+            "webpLossless": true,
+            "chromium": { "width": 200, "height": 200, "digest": 3_627_224_773_u64, "samples": 160_000 },
+            "overTarget": false,
+            "foundCounts": [1],
+            "found": [true],
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Render WebPs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report.webp",
+                "meta": "1 file \u{00b7} 152 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1" },
+                    { "label": "Size", "value": "979 B \u{2192} 152 B" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_raster.wasm"],
+            },
+        })
+    }
+
+    /// The WebP bundle: three pages, one `page-N.webp` entry each, in one
+    /// store-method ZIP — the same shape the PNG bundle owes the user, because
+    /// WebP is a per-page format and has no multi-page container here.
+    fn real_tools_webp_zip_leg() -> Json {
+        let output = json!({
+            "kind": "zip",
+            "name": "report-pages.zip",
+            "pages": 0,
+            "declaredBytes": 790,
+            "bytes": 790,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "report-pages.zip",
+            "header": "PK\u{3}\u{4}\u{14}",
+            "zip": true,
+            "png": false,
+            "webp": false,
+            "chromium": Json::Null,
+            "overTarget": false,
+            "foundCounts": [2, 2, 2],
+            "found": [true, true, true],
+            "absentFound": [],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Render WebPs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report-pages.zip",
+                "meta": "1 file \u{00b7} 790 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "3" },
+                    { "label": "Size", "value": "979 B \u{2192} 790 B" },
                     { "label": "Verification", "value": "ok" },
                 ],
             },
@@ -9725,7 +9945,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 33,
+            "cards": 34,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -9772,7 +9992,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 33,
+                "cards": 34,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -9905,6 +10125,8 @@ mod tests {
         report["jpgZip"] = real_tools_jpg_zip_leg();
         report["tiff"] = real_tools_tiff_leg(1);
         report["tiffThree"] = real_tools_tiff_leg(3);
+        report["webp"] = real_tools_webp_leg();
+        report["webpZip"] = real_tools_webp_zip_leg();
         report["html"] = real_tools_html_leg(true);
         report["htmlOne"] = real_tools_html_leg(false);
         report["cardIds"] = json!(TOOLS_PAGE_CARDS.as_slice());
@@ -9945,6 +10167,8 @@ mod tests {
         report["offline"]["jpgZip"] = report["jpgZip"].clone();
         report["offline"]["tiff"] = report["tiff"].clone();
         report["offline"]["tiffThree"] = report["tiffThree"].clone();
+        report["offline"]["webp"] = report["webp"].clone();
+        report["offline"]["webpZip"] = report["webpZip"].clone();
         report["offline"]["html"] = report["html"].clone();
         report["offline"]["htmlOne"] = report["htmlOne"].clone();
         report["offline"]["batch"] = report["batch"].clone();
@@ -10162,7 +10386,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 33,
+            "cards": 34,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -11036,6 +11260,66 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_jpg_bundle).is_err(),
             "an online-only JPG bundle must not pass the offline gate"
+        );
+
+        let mut webp_not_lossless = report.clone();
+        *webp_not_lossless
+            .pointer_mut("/webp/outputs/0/webpLossless")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&webp_not_lossless).is_err(),
+            "a WebP whose chunk is not the VP8L lossless stream this writer makes must not pass"
+        );
+
+        let mut webp_blank_canvas = report.clone();
+        *webp_blank_canvas
+            .pointer_mut("/webp/outputs/0/webpHeight")
+            .unwrap() = json!(0);
+        assert!(
+            verdict_tools_page(&webp_blank_canvas).is_err(),
+            "a WebP reporting a zero canvas must not pass"
+        );
+
+        let mut webp_painted_elsewhere = report.clone();
+        *webp_painted_elsewhere
+            .pointer_mut("/webp/outputs/0/chromium/digest")
+            .unwrap() = json!(1_u64);
+        assert!(
+            verdict_tools_page(&webp_painted_elsewhere).is_err(),
+            "a WebP that Chromium paints differently from the PNG of the same render must not pass"
+        );
+
+        let mut webp_bundle_lost_a_page = report.clone();
+        *webp_bundle_lost_a_page
+            .pointer_mut("/webpZip/outputs/0/found/1")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&webp_bundle_lost_a_page).is_err(),
+            "a WebP bundle holding two of three rendered pages must not pass"
+        );
+
+        let mut no_offline_webp = report.clone();
+        no_offline_webp
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("webp");
+        assert!(
+            verdict_tools_page(&no_offline_webp).is_err(),
+            "an online-only WebP must not pass the offline gate"
+        );
+
+        let mut no_offline_webp_bundle = report.clone();
+        no_offline_webp_bundle
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("webpZip");
+        assert!(
+            verdict_tools_page(&no_offline_webp_bundle).is_err(),
+            "an online-only WebP bundle must not pass the offline gate"
         );
     }
 

@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 33;
+      const CARD_COUNT = 34;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -331,6 +331,114 @@
       }
 
       /**
+       * The frame of a lossless WebP, or null when the bytes are not one.
+       *
+       * A WebP is a RIFF container whose first chunk names the coding, and
+       * `VP8L` is the lossless one this writer makes. The chunk opens with a 0x2F
+       * signature byte and then a bit stream read least-significant-bit first:
+       * 14 bits of width-1, 14 of height-1, one alpha bit and three reserved
+       * bits that a version-0 stream must leave zero. That names the canvas
+       * without decoding a pixel, which is what makes this the proof that a real
+       * frame arrived rather than a renamed, truncated or lossy one. The RIFF
+       * length has to agree with the file the harness was handed, so a Blob that
+       * stopped short reports null instead of a smaller picture.
+       */
+      function vp8lFrame(bytes) {
+        if (bytes.length < 22) {
+          return null;
+        }
+        const fourcc = (at) =>
+          String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+        if (fourcc(0) !== "RIFF" || fourcc(8) !== "WEBP") {
+          return null;
+        }
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (view.getUint32(4, true) + 8 !== bytes.length) {
+          return null;
+        }
+        if (fourcc(12) !== "VP8L" || bytes[20] !== 0x2f) {
+          return null;
+        }
+        const chunk = view.getUint32(16, true);
+        if (chunk + 20 > bytes.length) {
+          return null;
+        }
+        // The bit stream starts at bit 168: one byte of signature past the
+        // twelve header bytes and the four-byte chunk length.
+        let bit = 168;
+        const readBits = (count) => {
+          let value = 0;
+          for (let index = 0; index < count; index += 1) {
+            const at = (bit + index) >> 3;
+            if (at >= bytes.length) {
+              return null;
+            }
+            if (((bit + index) & 7) === 0 && at + 1 > chunk + 20) {
+              return null;
+            }
+            const shift = (bit + index) & 7;
+            if ((bytes[at] & (1 << shift)) !== 0) {
+              value += 1 << index;
+            }
+          }
+          bit += count;
+          return value;
+        };
+        const width = readBits(14);
+        const height = readBits(14);
+        const alpha = readBits(1);
+        const version = readBits(3);
+        if (width === null || height === null || alpha === null || version === null) {
+          return null;
+        }
+        return {
+          width: width + 1,
+          height: height + 1,
+          alpha: alpha === 1,
+          lossless: version === 0,
+        };
+      }
+
+      /**
+       * The bytes painted by the browser's own image decoder, digested.
+       *
+       * Chromium is a second, unrelated implementation of every format it can
+       * display, and the only one that says what the user who opens this file
+       * will actually see. The leg records the size it decoded and an FNV-1a
+       * digest of the samples, so two lossless files of one render can be
+       * compared by the verdict rather than by the engine that wrote them. Null
+       * when the browser refuses the bytes outright, which the verdict reads as
+       * a failure of the file, not of the harness.
+       */
+      async function chromiumPixels(bytes) {
+        let bitmap = null;
+        try {
+          bitmap = await createImageBitmap(new Blob([bytes]));
+          const width = bitmap.width;
+          const height = bitmap.height;
+          const canvas = new OffscreenCanvas(width, height);
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          if (context === null) {
+            return null;
+          }
+          context.drawImage(bitmap, 0, 0);
+          const samples = context.getImageData(0, 0, width, height).data;
+          let hash = 0x811c9dc5;
+          for (let index = 0; index < samples.length; index += 1) {
+            hash ^= samples[index];
+            hash = Math.imul(hash, 0x01000193) >>> 0;
+          }
+          return { width, height, digest: hash >>> 0, samples: samples.length };
+        } catch {
+          return null;
+        } finally {
+          if (bitmap !== null) {
+            bitmap.close();
+          }
+        }
+      }
+
+      /**
        * The positioned HTML document the card handed over, walked independently
        * of the engine that wrote it.
        *
@@ -480,6 +588,22 @@
           output.tiffHeight = tiff.height;
           output.tiffProfile = tiff.profile;
         }
+        // A WebP is read from its VP8L chunk header, so `webp` true means the
+        // RIFF container, the chunk name, the signature byte and the two 14-bit
+        // dimensions all agree with the bytes that were downloaded.
+        const webp = vp8lFrame(bytes);
+        output.webp = webp !== null;
+        if (webp !== null) {
+          output.webpWidth = webp.width;
+          output.webpHeight = webp.height;
+          output.webpAlpha = webp.alpha;
+          output.webpLossless = webp.lossless;
+        }
+        // The browser's own decoder is asked only about the formats it claims to
+        // display. A TIFF is not one of them, so its leg reports the sniff and
+        // nothing more — which is also what the card's missing preview says.
+        const displayable = output.png || output.jpeg || output.webp;
+        output.chromium = displayable ? await chromiumPixels(bytes) : null;
         // An HTML document is walked by the browser's own parser, which is a
         // second implementation of the format and the only one that says what
         // the user who opens this file will see. `html` true means the bytes
@@ -1984,6 +2108,56 @@
           network: onlineTiffThree.network,
         };
 
+        // PDF to WebP shares the raster chunk and the per-page shape of PNG and
+        // JPEG: one file per page, bundled when the selection runs past one. The
+        // single-page leg is also the cross-check the engine cannot make about
+        // itself — the same page rendered at the same DPI goes out as a PNG and
+        // as a WebP, both lossless, and Chromium's own decoder paints both. Two
+        // digests of one render is the browser's verdict on our bitstream, not
+        // our reader's verdict on our writer.
+        const onlineWebp = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online WebP",
+          "webp",
+          { dpi: "72", pages: "1" },
+          ["VP8L"],
+          ["/Type /Page"],
+          null,
+        );
+        out.webp = {
+          fileRows: onlineWebp.fileRows,
+          runLabel: onlineWebp.runLabel,
+          noUpload: onlineWebp.noUpload,
+          status: onlineWebp.status,
+          result: onlineWebp.result,
+          outputs: onlineWebp.outputs,
+          output: onlineWebp.output,
+          network: onlineWebp.network,
+        };
+        const onlineWebpZip = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online WebP bundle",
+          "webp",
+          { dpi: "72", pages: "1-3" },
+          ["page-1.webp", "page-2.webp", "page-3.webp"],
+          [],
+          null,
+        );
+        out.webpZip = {
+          fileRows: onlineWebpZip.fileRows,
+          runLabel: onlineWebpZip.runLabel,
+          noUpload: onlineWebpZip.noUpload,
+          status: onlineWebpZip.status,
+          result: onlineWebpZip.result,
+          outputs: onlineWebpZip.outputs,
+          output: onlineWebpZip.output,
+          network: onlineWebpZip.network,
+        };
+
         // PDF to HTML runs in its own lazy chunk and has its own shape: the
         // whole selection is ONE document whose pages are `<section>`s, so a
         // two-page run is one download rather than a bundle. The all-pages leg
@@ -2431,6 +2605,40 @@
             },
           ],
         );
+        const offlineWebp = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline WebP",
+          "webp",
+          { dpi: "72", pages: "1" },
+          ["VP8L"],
+          ["/Type /Page"],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineWebpZip = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline WebP bundle",
+          "webp",
+          { dpi: "72", pages: "1-3" },
+          ["page-1.webp", "page-2.webp", "page-3.webp"],
+          [],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
         const offlineHtml = await toolInFrame(
           frame,
           null,
@@ -2812,6 +3020,26 @@
             outputs: offlineTiffThree.outputs,
             output: offlineTiffThree.output,
             network: offlineTiffThree.network,
+          },
+          webp: {
+            fileRows: offlineWebp.fileRows,
+            runLabel: offlineWebp.runLabel,
+            noUpload: offlineWebp.noUpload,
+            status: offlineWebp.status,
+            result: offlineWebp.result,
+            outputs: offlineWebp.outputs,
+            output: offlineWebp.output,
+            network: offlineWebp.network,
+          },
+          webpZip: {
+            fileRows: offlineWebpZip.fileRows,
+            runLabel: offlineWebpZip.runLabel,
+            noUpload: offlineWebpZip.noUpload,
+            status: offlineWebpZip.status,
+            result: offlineWebpZip.result,
+            outputs: offlineWebpZip.outputs,
+            output: offlineWebpZip.output,
+            network: offlineWebpZip.network,
           },
           html: {
             fileRows: offlineHtml.fileRows,

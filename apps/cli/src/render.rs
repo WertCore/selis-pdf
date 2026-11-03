@@ -1,25 +1,27 @@
-//! The `selis render` command: render a page to a PPM, PNG, JPEG or TIFF image.
+//! The `selis render` command: render a page to a PPM, PNG, JPEG, TIFF or WebP
+//! image.
 //!
 //! This is the simplest end-to-end smoke test: open a PDF, render a page, and
 //! dump the pixels. PPM (P6) stays the default because it needs no encoder and
 //! has always been the smoke-test format; `--format png` writes the same pixels
 //! through the owned deterministic PNG encoder the raster tools use, `--format
 //! jpg` writes them through the owned baseline JPEG encoder with `--quality` as
-//! the user's knob (1..=100, default 90), and `--format tif` writes them through
-//! the owned baseline TIFF writer.
+//! the user's knob (1..=100, default 90), `--format tif` writes them through
+//! the owned baseline TIFF writer, and `--format webp` writes them through the
+//! owned VP8L lossless WebP coder.
 //!
 //! The CLI renders one page, so its TIFF is a one-page document. That is the
 //! same container the raster chunk assembles from a whole selection — which is
 //! why the web tool hands over one `.tif` for many pages instead of a ZIP.
 
 use crate::{read_file, CliError, CliResult};
-use selis_image::{encode_jpeg, encode_png, encode_tiff_one, Image};
+use selis_image::{encode_jpeg, encode_png, encode_tiff_one, encode_webp, Image};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, Surface};
 
 /// Render a page to an image file.
 ///
-/// `format` is `ppm` (default), `png`, `jpg` or `tif` (`jpeg` and `tiff`
+/// `format` is `ppm` (default), `png`, `jpg`, `tif` or `webp` (`jpeg` and `tiff`
 /// accepted as aliases). `dpi == 0` means 1 px/pt (72 DPI). `quality` is the
 /// JPEG knob and is ignored by the other formats, which have none to give.
 ///
@@ -41,9 +43,10 @@ pub(crate) fn run(
         "png" => "png",
         "jpg" | "jpeg" => "jpg",
         "tif" | "tiff" => "tif",
+        "webp" => "webp",
         other => {
             return Err(CliError(format!(
-                "unknown output format {other:?}; expected ppm, png, jpg or tif"
+                "unknown output format {other:?}; expected ppm, png, jpg, tif or webp"
             )))
         }
     };
@@ -108,6 +111,19 @@ pub(crate) fn run(
             let dpi_tag = if dpi == 0 { 72 } else { dpi };
             let bytes = encode_tiff_one(&image, 6, dpi_tag, &mut g)
                 .map_err(|e| CliError(format!("cannot encode TIFF: {e}")))?;
+            std::fs::write(output, &bytes)
+                .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+        }
+        "webp" => {
+            let image = Image {
+                width: w,
+                height: h,
+                rgba: rendered.rgba,
+            };
+            // Lossless and with an alpha plane of its own, so the pixels go in as
+            // the renderer produced them — no flattening, no quality to pass.
+            let bytes = encode_webp(&image, &mut g)
+                .map_err(|e| CliError(format!("cannot encode WebP: {e}")))?;
             std::fs::write(output, &bytes)
                 .map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
         }

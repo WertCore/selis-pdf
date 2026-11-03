@@ -202,8 +202,8 @@ and a size budget; no raster feature is claimed.
       as kind `zip` with a `PK\x03\x04\x14` header, no preview offered, and counts `[1, 2, 2]`
       over two picked files. The live run measures `cardIds 29`, `online 29`, `offline 29` with
       zero foreign requests in both phases, inside the committed 30 000 ms per-check budget. (That
-      was the grid at this pass; the raster cards have since grown it to 32, and the same coverage
-      rule refuses any run whose click lists do not cover the whole grid.)
+      was the grid at this pass; the raster and HTML cards have since grown it to 34, and the same
+      coverage rule refuses any run whose click lists do not cover the whole grid.)
       Eight negatives withdraw one witness each: a rotate that turned one page, a delete that
       kept the page, a metadata save that still carries the old title, an archive offered as a
       PDF preview, an online-only ZIP, an online pass that never opened rotate, an offline pass
@@ -264,9 +264,9 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       Raster chunk 1 093 374 B brotli of its own 1 300 000 budget — 4 926 B (+0.45%) over the
       PNG-only baseline, recorded as a deliberate baseline edit rather than drift; the tools chunk is
       not touched by this slice (304 640 B brotli measured against its 320 000 budget).
-      Not claimed: WebP (no owned VP8/VP8L coder), TIFF (since shipped — see the **PDF → TIFF** row),
-      the images-ZIP parity row across every image format, and the Phase 2 exit gate — corpus
-      render-hash determinism and OCR still open it.
+      Not claimed: WebP (since shipped — see the **PDF → WebP** row), TIFF (since shipped — see the
+      **PDF → TIFF** row), and the images-ZIP parity row across every image format (since ticked — see
+      below); the Phase 2 exit gate — corpus render-hash determinism and OCR — still open it.
 - [x] **PDF → PNG** — same, lossless.
       *Shipped:* `selis-image::encode_png` writes colour type 6, filter 0, zlib through the owned
       `selis_pdf_filter::flate_encode` — no image library in the tree. The engine renders a page to
@@ -293,11 +293,79 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       origin is cut, with the chunk served from cache and zero foreign requests. Eight verdict
       negatives withdraw one witness each. Raster chunk 1 088 448 B brotli of its own 1 300 000
       budget; the tools chunk is unchanged at 304 701 B of 320 000.
-      Not claimed at the time: JPG (since shipped — see the row above), WebP and TIFF (TIFF since
-      shipped — see the **PDF → TIFF** row), the PDF → images ZIP parity row, and the Phase 2 exit
-      gate — render-hash determinism across the corpus and OCR still open it.
-- [ ] **PDF → WebP** — needs an owned VP8/VP8L coder. A third-party codec is a supply-chain decision
-      that belongs to the human-owned `cargo vet` gate, not a `Cargo.toml` edit.
+      Not claimed at the time: JPG (since shipped — see the row above), WebP (since shipped — see the
+      **PDF → WebP** row) and TIFF (since shipped — see the **PDF → TIFF** row), the PDF → images ZIP
+      parity row (since ticked — see below), and the Phase 2 exit gate — render-hash determinism across
+      the corpus and OCR still open it.
+- [x] **PDF → WebP** — one file per page, lossless, through a VP8L coder the tree owns.
+      *Shipped:* `selis-image::webp` writes `RIFF`/`VP8L` and reads it back — no image library and no
+      libwebp in the tree. This row used to read "needs an owned VP8/VP8L coder", and that was the
+      honest blocker rather than a task: a third-party codec is a supply-chain decision that belongs to
+      the human-owned `cargo vet` gate, not a `Cargo.toml` edit. `encode_webp` packs the page's RGBA as
+      the ARGB pixels VP8L names, gives each channel its own `PrefixCode` (the green alphabet carries
+      the 24 LZ77 length codes on top of 256 literals; red, blue and alpha are plain 256-symbol),
+      codes backward references through the 40 distance prefix codes, decorrelates a document's
+      achromatic ink with subtract-green and lays a predictor transform whose mode is chosen per block.
+      A skewed histogram that would push a code past the 15 bits the format allows gets a floor under
+      its counts, a one-symbol code spends no bits, an odd payload gets the pad byte the chunk size does
+      not count and the enclosing RIFF size does, and the same pixels always produce the same file.
+      `decode_webp` reproduces those samples exactly and names what it will not read — a color cache, a
+      meta prefix code, a color transform, a color-indexing transform, one of the 120 close-range
+      distance codes, or a chunk that is not `VP8L`, is `IMAGE_UNSUPPORTED`; a broken container, an
+      incomplete tree, a reference reaching past the frame or a stream that stops early is
+      `IMAGE_MALFORMED`.
+      Verification is the PNG's standard, not the JPEG's bounds: the chunk decodes its own WebP and
+      compares every sample, alpha included — VP8L carries an alpha plane, so this is the lossless
+      output that keeps what the renderer produced instead of compositing it over white like the TIFF
+      profile must. A page rasterising past 16384 px on an edge is refused before a byte is written,
+      because both dimensions are 14-bit minus-one fields and a truncated one would let the header lie
+      about its own page; the refusal names the canvas, the limit and PDF to PNG as the per-page way
+      out. DPI stays 1–600, there is no quality knob, and a nonsense quality value changes nothing byte
+      for byte. One page downloads as a bare `.webp`; several come back in the same deterministic
+      store-method ZIP the other per-page formats use, as `page-N.webp` padded to the digit width of the
+      page count, never previewed. The CLI twin is `selis render --format webp`, and the refusal for an
+      unknown format now names the five that exist (ppm, png, jpg, tif, webp). The web card is the 34th
+      in `/tools.html`: it reports `kind: "image"` and previews, because unlike a TIFF a WebP is
+      something Chromium draws.
+      Evidence: 61 `selis-image` tests, 26 of them this module (the container being a RIFF wrapping one
+      `VP8L` chunk, a document page round-tripping and not being a size liability, a flat page costing
+      its headers and little else, a varying page and a page of noise round-tripping channel for channel,
+      alpha surviving and saying so in the header, greyscale using the green subtraction, subtract-green
+      and add-green being inverses, every prediction mode defined and bounded, LZ77 prefix coding
+      covering its whole range, a long run copying itself in blocks of 4096, an overlapping reference
+      rebuilding the pixels it repeats, a long zero run shrinking to the two repeat codes, the
+      two-symbol and one-symbol code forms, a deep tree getting its floor, determinism, a budget too
+      small for the working set refusing the page, zero-sized and oversized images refused, and every
+      construct the writer does not produce refused by name); 44 raster-chunk tests, 9 of them WebP (the
+      page reading back its own pixels with the centre pixel black, `page-N.webp` naming, byte-identical
+      re-render, quality ignored, a document page coming back *smaller* than the same page as a PNG, the
+      16384 limit holding on either side of it, a 20000×40 page refused before any file exists, and
+      `verify_webp` refusing a file that is not the page and a damaged bitstream); 4 CLI tests in
+      `render_webp.rs` (canvas at the requested DPI, a text page coming back exactly as the PNG leg sees
+      it *and* smaller, determinism, quality not moving a lossless file) with `render_tiff.rs`'s 5,
+      `render_jpg.rs`'s 6 and `render_png.rs`'s 3 still green — and `render_jpg.rs`'s unknown-format
+      witness now asserting the message names WebP instead of refusing it — and 178 `xtask` tests
+      including the real Edge run. The browser legs read the downloaded bytes: `report.webp` must walk
+      as RIFF with a `WEBP` form type, a declared RIFF length that agrees with the file the harness was
+      handed, a `VP8L` chunk whose 0x2F signature opens it and whose two 14-bit minus-one fields name
+      200×200 at 72 DPI with version bits 0; `found` the `VP8L` fourcc once, carry no `/Type /Page`, be
+      previewed and downloaded from Blob URLs with Pages `1` and Verification `ok`; `report-pages.zip`
+      must hold `page-1.webp`, `page-2.webp` and `page-3.webp` and offer **no** preview — online, and
+      again after the origin is cut with the chunk served from cache and zero foreign requests. Then the
+      one raster proof that is not the writer grading itself: the harness paints each displayable file
+      through `createImageBitmap` and an `OffscreenCanvas` and digests the samples with FNV-1a, and the
+      PNG and the WebP of the same render must come out the **same picture** — 3 627 224 773 over
+      160 000 samples on a 200×200 canvas, in both passes. Measured on that fixture page: `report.webp`
+      152 B against `report.png` 802 B, and the three-page bundle 790 B against 2 712 B. Six verdict
+      negatives withdraw one witness each: a stream that is not VP8L, a zero canvas, a WebP Chromium
+      paints differently from the PNG, a bundle with two of three pages, and the two offline legs.
+      Raster chunk 1 115 272 B brotli of its own 1 300 000 budget — 17 641 B (+1.6%) over the TIFF
+      baseline, recorded as a deliberate baseline edit rather than drift; the coder needed no fifth
+      chunk and no raised ceiling. The tools chunk is untouched by this slice (304 734 B brotli against
+      its 320 000 budget).
+      Not claimed: WebP → PDF (the reader refuses every construct libwebp writes, so a stranger's WebP
+      is not an input this tool accepts — the inbound card stays roadmap), HEIC, and the Phase 2 exit
+      gate — corpus render-hash determinism and OCR still open it.
 - [x] **PDF → TIFF** — one multi-page container; the page order is the 1-based selection, the DPI is the tag.
       *Shipped:* `selis-image::tiff` writes the container and reads it back — no image library in the
       tree. `tiff_strip` deflates one rendered page through the owned
@@ -346,15 +414,22 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       the origin is cut, the chunk served from cache with zero foreign requests. Raster chunk
       1 097 631 B brotli of its 1 300 000 budget — 4 257 B (+0.39%) over the JPEG baseline, recorded as
       a deliberate baseline edit rather than drift; the tools chunk is not touched by this slice.
-      Not claimed: WebP (no owned VP8/VP8L coder, and adding one is a supply-chain decision), TIFF →
-      PDF (the reader now exists in the tree; the card does not), and the Phase 2 exit gate — corpus
+      Not claimed: WebP (since shipped — see the **PDF → WebP** row; the coder arrived after this row
+      was written, which is why the TIFF card went out with the container's own limits already named),
+      TIFF → PDF (the reader exists in the tree; the card does not), and the Phase 2 exit gate — corpus
       render-hash determinism and OCR still open it.
-- [ ] **PDF → images ZIP** — deterministic bundle of the above.
-      Shipped for the formats that produce one file per page: `selis-pdf-tools::bundle_zip` writes the
-      store-method archive deterministically and both raster cards hand several pages to it as
-      `page-N.png` / `page-N.jpg` padded to the digit width of the page count, browser-verified on the
-      entry names. Not ticked because "the above" still lists WebP, and TIFF deliberately is not in it —
-      a TIFF is already a container, so its card returns one `.tif` and no ZIP.
+- [x] **PDF → images ZIP** — deterministic bundle of the above.
+      *Shipped:* `selis-pdf-tools::bundle_zip` writes the store-method archive deterministically, and
+      the three cards that produce one file per page hand several pages to it as `page-N.png` /
+      `page-N.jpg` / `page-N.webp`, zero-padded to the digit width of the page count, each entry name
+      browser-verified twice over (local header plus central directory) with **no** preview offered for
+      the archive — online and offline. The bundle exists because the page must not fire a download
+      burst, not because the formats need one. TIFF deliberately stays out of it: it is already a
+      container, so its card returns one `.tif` whose IFD chain counts the selection.
+      Evidence: the entry names are asserted per format by the `pngZip` / `jpgZip` / `webpZip` legs of
+      the committed tools-page check, and seven verdict negatives show those witnesses are load-bearing:
+      a bundle holding two of three rendered pages for each of the three formats, a PNG archive handed to
+      the viewer as a preview, and an online-only bundle for each format.
 - [ ] **Lossy compression with a target** — quality/size search, measured result shown,
       never labelled lossless.
 - [ ] **Invert colours** — render-based; verify pixel inversion on a known fixture.
@@ -531,8 +606,10 @@ document bytes stay local.
 ## Next slices, in order
 
 1. Crypto-enabled security chunk (unlock, protect, clear permissions) — human review.
-2. Phase 2 raster, what is left of it: the WebP codec, an images-ZIP row that covers every format
-   worth bundling, and the exit gate's corpus render hashes + OCR.
+2. Phase 2 raster: the exit gate's corpus render hashes + OCR, and the render-based rows still unticked
+   in that block (target-size compression, invert colours, flatten annotations and forms, compare two
+   PDFs). The WebP codec and the images-ZIP row have since shipped.
 
-(Metadata → JSON export, the batch queue and the raster chunk's PNG, JPG and TIFF have all shipped,
-so they left this list. TIFF left it as a container: one `.tif`, never a bundle.)
+(Metadata → JSON export, the batch queue and the raster chunk's PNG, JPG, TIFF and WebP — with the
+bundle the per-page formats share — have all shipped, so they left this list. TIFF left it as a
+container: one `.tif`, never a bundle.)
