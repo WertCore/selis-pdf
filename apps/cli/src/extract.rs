@@ -4,6 +4,11 @@
 //! positioned glyphs into lines, and emits them as plain text, JSON,
 //! Markdown, or HTML.  With `--format=image`, writes each image XObject
 //! used on the page to a PPM file and prints a JSON manifest.
+//!
+//! HTML is the one format that is not a per-page printout: the whole page
+//! range becomes a single document whose `<section>`s are the pages, laid out
+//! on each page's own canvas, and it is read back and compared against the
+//! extraction before it is written.
 
 use crate::render::write_ppm;
 use crate::{read_file, CliError, CliResult};
@@ -11,6 +16,11 @@ use selis_pdf_content::display_list::Op;
 use selis_pdf_engine::Session;
 use selis_pdf_text::TextLine;
 use selis_sandbox::{Budget, Surface};
+
+/// The DPI the HTML document is laid out at: 72 is one CSS pixel per PDF unit,
+/// the same canvas `selis render --format png --dpi 72` paints, so the text
+/// lands where the rendered page puts the ink.
+const HTML_DPI: f64 = 72.0;
 
 /// Extract a page's text or images.
 ///
@@ -44,6 +54,16 @@ pub(crate) fn run(
         )));
     }
     let mut g = budget.guard_with(&clock, crate::runtime::token());
+    if format == "html" {
+        // The name the user typed is the only title worth putting in the
+        // document: a browser tab that says "export" tells them nothing about
+        // which PDF they exported.
+        let title = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("PDF");
+        return extract_html(&session, &budget, &mut g, page, last, output, title);
+    }
     let mut first_output = true;
     for p in page..=last {
         let dl = session
@@ -63,27 +83,11 @@ pub(crate) fn run(
             page_lines(&session, p, &budget, &dl, mcid_order.as_deref(), &mut g)?;
         let page_out = match format {
             "json" => {
-                let run_texts: Vec<Vec<String>> = lines
-                    .iter()
-                    .map(|line| {
-                        line.words
-                            .iter()
-                            .flat_map(|w| w.runs.iter())
-                            .map(|run| {
-                                run.glyphs
-                                    .iter()
-                                    .filter_map(|g| char::from_u32(u32::from(g.code)))
-                                    .collect()
-                            })
-                            .collect()
-                    })
-                    .collect();
-                let mut s = selis_pdf_text::structured(&lines, &line_texts, &run_texts);
+                let mut s = selis_pdf_text::structured(&lines, &line_texts, &run_texts(&lines));
                 s.low_confidence = low_confidence;
                 selis_pdf_text::to_json(&s)
             }
             "md" => selis_pdf_text::to_markdown(&lines, &line_texts, low_confidence),
-            "html" => selis_pdf_text::to_html(&lines, &line_texts, low_confidence),
             _ => selis_pdf_text::to_text(&lines, &line_texts, low_confidence),
         };
         if !first_output && page != last {
@@ -93,6 +97,102 @@ pub(crate) fn run(
         first_output = false;
     }
     Ok(())
+}
+
+/// Write the page range as ONE positioned HTML document.
+///
+/// One `<section>` per page at that page's own canvas size, one `<p>` per span
+/// at its projected position, and the SL-3.TEXT.10 marker where a page drew text
+/// the extractor could not recover. The document is then re-read with
+/// `selis-pdf-text`'s own strict reader and compared against the model it was
+/// built from, so what reaches the user's terminal or `--output` file is a
+/// document known to carry its own pages. A run that cannot verify is an error
+/// with a non-zero exit, never a file.
+///
+/// # Errors
+///
+/// A page that cannot be read, ordered or measured, and a document that fails
+/// its own read-back.
+fn extract_html(
+    session: &Session,
+    budget: &Budget,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+    page: usize,
+    last: usize,
+    output: Option<&str>,
+    title: &str,
+) -> CliResult<()> {
+    let mcid_order = session.mcid_order(budget, g).ok().filter(|v| !v.is_empty());
+    let mut laid: Vec<(u32, selis_pdf_engine::PageView, selis_pdf_text::Structured)> = Vec::new();
+    for p in page..=last {
+        let number = u32::try_from(p.saturating_add(1)).unwrap_or(u32::MAX);
+        let dl = session
+            .page_text_display_list(p, budget, g)
+            .map_err(|e| CliError(format!("cannot interpret page {number}: {e}")))?;
+        let (lines, line_texts, low_confidence) =
+            page_lines(session, p, budget, &dl, mcid_order.as_deref(), g)?;
+        let mut model = selis_pdf_text::structured(&lines, &line_texts, &run_texts(&lines));
+        model.low_confidence = low_confidence;
+        let view = session
+            .page_view(p, HTML_DPI)
+            .ok_or_else(|| CliError(format!("page {number} has no box to lay text out on")))?;
+        if view.width == 0 || view.height == 0 {
+            return Err(CliError(format!(
+                "page {number} has no area to place text on: its box is {}x{} px at 72 DPI",
+                view.width, view.height
+            )));
+        }
+        laid.push((number, view, model));
+    }
+    let pages: Vec<selis_pdf_text::HtmlPage<'_>> = laid
+        .iter()
+        .map(|(number, view, model)| selis_pdf_text::HtmlPage {
+            number: *number,
+            width_px: view.width,
+            height_px: view.height,
+            ctm: view.ctm,
+            content: model,
+        })
+        .collect();
+    let document = selis_pdf_text::to_positioned_html(&pages, title)
+        .map_err(|e| CliError(format!("cannot write HTML: {e}")))?;
+    selis_pdf_text::verify_positioned_html(&pages, title, &document).map_err(|e| {
+        CliError(format!(
+            "HTML output is not the pages it was built from: {e}"
+        ))
+    })?;
+    match output {
+        Some(path) => {
+            std::fs::write(path, &document)
+                .map_err(|e| CliError(format!("cannot write {path}: {e}")))?;
+            eprintln!("wrote {} page(s) to {path}", pages.len());
+        }
+        None => print!("{document}"),
+    }
+    Ok(())
+}
+
+/// The per-run texts of assembled lines: one string per run, in the order the
+/// runs appear across a line's words. Both output shapes that keep span
+/// structure — JSON and the positioned HTML document — need them, because
+/// [`selis_pdf_text::structured`] falls back to repeating the whole line's text
+/// when a caller does not supply them.
+fn run_texts(lines: &[TextLine]) -> Vec<Vec<String>> {
+    lines
+        .iter()
+        .map(|line| {
+            line.words
+                .iter()
+                .flat_map(|w| w.runs.iter())
+                .map(|run| {
+                    run.glyphs
+                        .iter()
+                        .filter_map(|g| char::from_u32(u32::from(g.code)))
+                        .collect::<String>()
+                })
+                .collect::<Vec<String>>()
+        })
+        .collect()
 }
 
 /// The assembled text lines and their recovered Unicode texts for a display

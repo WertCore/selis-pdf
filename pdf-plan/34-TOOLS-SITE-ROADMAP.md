@@ -36,7 +36,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 
 ---
 
-## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue, every-card coverage and PDF→PNG slices, `/tools.html`)
+## 2. What is live now (Phase 1A.0 + the Phase 1A.1 split, organize, overlay, compression, attachment, mix, crop, flip, page-label, metadata-strip, metadata-report, resize, N-up, attach, detach, repair, bookmark, outline, image-to-PDF, Markdown/HTML/CSV conversion, ZIP bundling, batch-queue, every-card coverage, the PDF→PNG / JPG / TIFF raster slices and the positioned PDF→HTML export, `/tools.html`)
 
 | Feature | iLovePDF | ihatepdf.cv | Status | Notes |
 |---|---|---|---|---|
@@ -75,6 +75,8 @@ raster path and is therefore not a Phase 1A/2 shortcut.
 | Convert to PDF | yes | yes | **Live** | Markdown, an HTML subset, and CSV become a generated PDF through a third, lazy WASM chunk (`/wasm/selis_pdf_wasm_convert.wasm`, 62 712 B brotli, zero imports). Markdown covers ATX headings, paragraphs, bold/italic/code, fenced and indented code, bullet and ordered lists, blockquotes, rules, and links rendered as text with the URL. HTML covers headings, paragraphs, lists, `pre`, blockquote, inline emphasis, `a href`, and block containers; `<script>`/`<style>` are dropped and unknown tags unwrap to text. CSV is a plain table dump: comma-delimited with quoted fields, even column widths, header row repeated on every page. Standard-14 fonts, Letter or A4. The chunk is runtime-cached rather than precached, so the first use needs the network and later runs do not. |
 | PDF to PNG | — | yes | **Live** | One page or a 1-based selection rendered at a chosen DPI (1–600) through a fourth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_raster.wasm`, 1 088 448 B brotli). `/Rotate` is honoured and the page is composited as straight RGBA over opaque white, so the image is what a reader shows. The chunk decodes the PNG it just encoded and compares every pixel before returning it. One page downloads as a bare PNG; several come back as one deterministic store-method ZIP of `page-N.png` entries, padded to the digit width of the page count, because a page must not fire a download burst. CLI twin: `selis render --format png`. |
 | PDF to JPG | yes | yes | **Live** | The same lazy, import-free raster chunk and the same ABI as PDF to PNG, with a format code and a quality (1–100, default 90) beside the DPI (1–600) and the 1-based page selection. The page is rendered to RGBA and encoded by the owned baseline coder (`selis-pdf-filter::dct_encode`: SOF0 sequential, 8-bit, 4:4:4, JFIF APP0, Annex K tables scaled by quality, integer Q15 DCT) — no image library in the tree. The chunk decodes its own JPEG and compares it with the page before returning: mean per-channel error ≤ 96, and from quality 75 upward no sampled pixel may differ by more than 160. One page downloads as a bare JPG, several as one deterministic store-method ZIP of `page-N.jpg`; a render wider or taller than 16384 px is refused before a file exists, because it could not be read back. CLI twin: `selis render --format jpg --quality N`. |
+| PDF to TIFF | — | yes | **Live** | The same lazy, import-free raster chunk again, with a format code for TIFF. `selis-image::tiff` writes baseline TIFF 6.0 and reads exactly what it wrote — little-endian mark and 42, one Deflate-compressed strip per page, `PhotometricInterpretation` 2, three 8-bit samples, `PlanarConfiguration` 1, the chosen DPI as `XResolution`/`YResolution` with `ResolutionUnit` 2, and `PageNumber` carrying the 1-based selection order — with no image library in the tree. Verification is the PNG standard, not a lossy bound: the chunk re-opens its own file, walks the IFD chain, inflates every strip and compares it with the render sample for sample. A page rasterising past 65535 px on an edge is refused before a byte is written, because those dimensions are `SHORT` tags. One `.tif` whatever the page count — a container is never bundled — and **no** preview link, because Chromium does not display TIFF inline. No quality knob: a TIFF here is lossless. CLI twin: `selis render --format tif` (`tiff` accepted as an alias). |
+| PDF to HTML | — | yes | **Live** (positioned) | One self-contained HTML document for the whole 1-based selection, through a fifth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_html.wasm`, 228 325 B brotli, zero imports). Every selected page is a `<section class="page">` sized by the page's own `PageView` at 72 DPI — one CSS pixel per PDF unit, `/Rotate` folded into the transform, the same canvas the PNG card paints — and every *recovered* span is an absolutely positioned `<p>` with its measured box as `data-box`. A page that drew text and recovered none carries the low-confidence marker, as the text, JSON and Markdown exports do; a zero-area page is refused before a byte is written. `selis-pdf-text::html` owns the emitter, a strict reader that whitelists its tags and attributes (so `@import` and `url()` cannot pass, and the `<style>` block is compared line for line against a constant), and a verifier that re-reads the bytes against the model span for span — and the chunk ships only after it passes. Download only, **no** preview: a `blob:` document runs in this page's own origin. No colour, no font faces, no reflow, no images, no separator characters between word spans. CLI twin: `selis extract --format html`. |
 | Browser-native preview | — | — | **Live** | PDF outputs open as Blob URLs in the browser's viewer. Attachment outputs download as files and are never offered as a PDF preview. |
 | Verification display | — | — | **Live** | Pages, annotations, fields, layers, outlines, embedded files, size, verdict. |
 | Local-only guard | — | — | **Live** | `data-no-upload="verified"` after every successful run; request recorder + CSP + import-free chunk. |
@@ -178,7 +180,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | PDF → PowerPoint | yes | yes | Text | Page images + text boxes; fidelity caveat. |
 | PDF → Excel | yes | yes | Text | Table reconstruction; confidence display. |
 | PDF → text | — | yes | Text | Extraction quality report and page separators. |
-| PDF → HTML | — | yes | Text | Positioned spans first; reflow later. |
+| PDF → HTML | — | yes | Text | **Live** for the positioned profile: one document, one `<section>` per page on the page's own canvas, one `<p>` per recovered span at its projected box, written by an emitter that owns its strict reader and verifier. Reflow, colour, faces and images stay unclaimed. |
 | PDF → EPUB | — | yes | Text | Reflow from extracted structure. |
 | PDF → PDF/A | yes | — | Spec | ISO 19005; Phase 9 after spec procurement. |
 | PDF → audio | — | yes | AI/Collab | Local TTS model; explicit model download; never a cloud default. |
@@ -336,7 +338,8 @@ cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The inc
 page edits remains deferred; these page operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all thirty-two cards in both phases. The raster claim is separate
+size budget; the browser check drives all thirty-three cards in both phases. The raster claim is
+separate
 and starts in Phase 2 — PDF → PNG, PDF → JPG and PDF → TIFF now ship there, each with its own
 read-back verification.
 
@@ -422,6 +425,65 @@ PDF→text/HTML/EPUB, Word/Excel/PowerPoint reconstruction, accessibility extrac
 table extraction, HTML/CSS/Markdown/LaTeX layout refinements.
 **Exit:** text extraction ladder and honest confidence; no layout claim above measured fidelity.
 
+**Shipped 2026-11-03 (PDF → HTML, the positioned half):** the output is a page, not a paragraph
+dump. What `selis extract --format html` used to write — one `<p data-bbox>` per line, no canvas,
+and a page range exported as several `<html>` roots concatenated into one file — is text wearing
+HTML clothes, so it was replaced rather than extended. `selis-pdf-text::html` now owns three
+functions with the `selis-image::tiff` doctrine behind them: `to_positioned_html` writes,
+`read_positioned_html` parses only the profile the emitter writes, and `verify_positioned_html`
+re-reads the bytes against the model they came from, span for span, inside the same module — the
+writer owns the claim because it owns the reader. One document per selection: one
+`<section class="page" data-page data-width data-height>` per page, sized by the caller's own
+`Session::page_view` at 72 DPI (one CSS pixel per PDF unit, `/Rotate` folded into the transform —
+the same box the PDF-to-PNG card paints, which is what makes "a span lands where the ink goes" a
+checkable statement rather than a hope), and one absolutely positioned `<p class="s">` per
+*recovered* span with the measured box carried as `data-box`. Only recovered text is positioned, so
+the accuracy ceiling is the extraction measurement in `21-TESTING-AND-ORACLES.md`, and a page that
+drew text and recovered none gets `LOW_CONFIDENCE_MARKER` exactly as the text, JSON and Markdown
+formats do. The reader is not an HTML parser: tags and attributes are whitelisted and anything else
+is refused with the line and the reason, and the `<style>` block is compared line for line against
+a module constant — which is how "no external reference can reach whoever opens this file" stops
+being a hope and becomes a checked property, since `@import` and `url()` have nowhere else in the
+document to live. Refusals are named before a byte is written: a zero-area page has no canvas to
+place text on, and a title containing markup cannot open a tag. Coordinates that a document-derived
+matrix projects out of range saturate at `MAX_COORDINATE_PX`, as `selis_geom::Fixed` saturates, so
+the words survive and only an already-off-page position degrades — the raster path clips that same
+span away. Control characters inside a span become U+FFFD, the mapping a byte decoder uses for an
+invalid byte, and verification compares the sanitised form.
+
+The fifth lazy chunk is `crates/selis-pdf-wasm-html`: a separate `cdylib` from the viewer, the
+tools chunk, the convert chunk and the raster chunk, speaking a pointer ABI
+(`selis_html_run(bytes, pages, title, out_len, out_pages)`) and declaring **no imports**, so the
+page instantiates it with an empty import object. The tools page never downloads it until the user
+asks for HTML; `/wasm/` is already a runtime path prefix in the service-worker policy, so the
+chunk is runtime-cached like the convert chunk rather than precached. Page selection is the 1-based
+`1-3,5` grammar the raster cards use with `""` meaning every page, a page named twice is written
+once, an out-of-range page is refused before the document is read, two runs on one input are
+byte-identical, and the document is verified before it is handed over — a failure is reported as a
+failure, never shipped under a verified label. Measured 742 184 B raw → 228 325 B brotli against
+its own 300 000 budget, with the other nine artifacts unmoved.
+
+The 33rd `/tools.html` card (the one between Render TIFF and Create ZIP) exports
+`<stem>.html` with `kind: "html"` and offers a download with **no** preview link: a `blob:`
+document opens in this page's own origin, so previewing the result of a local-only operation would
+run untrusted markup inside the app. The check asserts that absence. The CLI twin is
+`selis extract --format html [--pages 1-3,5] [--output file.html]`, titled from the file stem and
+verified before the output file is created; the per-page text/markdown/JSON exports are pinned by a
+test that byte-compares them against their own output before the change. The browser legs do not
+trust the writer: the four of them (`html`, `htmlOne`, and both again after the origin is cut)
+re-walk the downloaded bytes with the browser's own HTML parser — `main > section.page`, each
+section's `data-page`/`data-width`/`data-height` agreed with its own inline `style`, every span's
+box inside its canvas, no low-confidence marker without a reason — while the doctype, `<html>`,
+`</html>` and `<main>` counts are taken from the raw bytes, because DOMParser *repairs* a
+concatenated document and the repaired tree would hide exactly the shape this slice replaced.
+Evidence: 15 `html.rs` tests inside `selis-pdf-text`'s 77, 14 chunk tests, 6 `extract_html.rs` CLI
+tests, 178 `xtask` tests including the real Edge run, and the host suite green with the new chunk
+named and its imports asserted empty. Not claimed: reflow (spans sit in extraction order inside
+their page), colour (the model carries no resolved fill), font faces (one CSS fallback family,
+which is why the measured box is emitted beside the position), separators between word spans (the
+gap is geometry, as in the JSON format), images, annotations or forms in the output — and the
+reflow row stays unticked.
+
 ### Phase 4 — forms, signatures, security UI
 
 Fill forms, sign, certificates, permissions, encryption UI, handwriting/thumbmark.
@@ -474,14 +536,14 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Thirty-two live cards with 1-based page input.
+- [x] Thirty-three live cards with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all thirty-two cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all thirty-three cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent

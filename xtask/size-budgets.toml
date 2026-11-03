@@ -50,16 +50,27 @@ chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
 budget = 320000
 
-# The raster page's lazy chunk (PDF → PNG and PDF → JPG). It carries the whole
-# render walk, tiny-skia, the built-in Liberation fallback faces and the owned
-# baseline JPEG coder with its read-back verification, so it is the largest lazy
-# chunk; it must still stay import-free and off the tools page's critical path.
-# Measured at 1 093 374 B brotli with both formats (1 088 448 B before the JPEG
-# arrived), hence the 1.3 MB ceiling.
+# The raster page's lazy chunk (PDF → PNG, JPG and TIFF). It carries the whole
+# render walk, tiny-skia, the built-in Liberation fallback faces, the owned
+# baseline JPEG coder and the owned multi-page TIFF with their read-back
+# verification, so it is the largest lazy chunk; it must still stay import-free
+# and off the tools page's critical path.
+# Measured at 1 097 631 B brotli with all three formats (1 093 374 B with both
+# raster formats, 1 088 448 B before the JPEG arrived), hence the 1.3 MB ceiling.
 [[budget]]
 chunk = "raster"
 artifact = "selis_pdf_wasm_raster"
 budget = 1300000
+
+# The HTML page's lazy chunk (PDF → HTML). It is the engine's extraction pipeline
+# — display list, Unicode recovery, line assembly, reading order — plus the
+# positioned emitter and its strict reader. No rasteriser, no built-in face and no
+# entropy source: text extraction reads the document's own fonts, which is why this
+# is a quarter of the raster chunk. Measured at 228 325 B brotli, hence 300 000.
+[[budget]]
+chunk = "html"
+artifact = "selis_pdf_wasm_html"
+budget = 300000
 
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]

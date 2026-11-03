@@ -385,7 +385,68 @@ Exit gate: a text-extraction ladder with honest confidence; no layout claim abov
 fidelity.
 
 - [ ] **PDF → text** — extraction quality report and page separators.
-- [ ] **PDF → HTML** — positioned spans first, reflow later.
+- [x] **PDF → HTML** — positioned spans first, reflow later.
+      *Shipped (the positioned half):* `selis-pdf-text::html` writes, reads and verifies one
+      profile — `to_positioned_html`, `read_positioned_html`, `verify_positioned_html`. The
+      shape it replaced (one `<p data-bbox>` per line, no canvas, a page range concatenated
+      into several `<html>` roots in one file) is text wearing HTML clothes; this writes what
+      the raster cards paint: one `<section class="page">` per selected page, sized by the
+      caller's own `Session::page_view` at 72 DPI — one CSS pixel per PDF unit, `/Rotate`
+      folded into the transform, so a span lands where the PDF-to-PNG card puts the ink — and
+      one absolutely positioned `<p>` per *recovered* span, with the measured box emitted as
+      `data-box` beside the `left`/`top`/`font-size` derived from it. A page that drew text
+      and recovered none carries `LOW_CONFIDENCE_MARKER` exactly as the text, JSON and Markdown
+      formats do; a zero-area page is refused before a byte is written; runaway matrices
+      saturate at `MAX_COORDINATE_PX` and keep the word; a control character inside a span
+      becomes U+FFFD, because a line-oriented profile has no newline to put it in.
+      The reader is deliberately not an HTML parser: it accepts the emitter's tag and
+      attribute whitelist and refuses anything else with the line and the reason, and the
+      `<style>` block is compared line for line against a constant, so `@import` and `url()`
+      cannot appear in a document that passes — "nothing external can reach whoever opens
+      this file" is a checked property, not a hope. `verify_positioned_html` re-reads the
+      bytes against the model they came from, span for span.
+      The fifth lazy chunk is `crates/selis-pdf-wasm-html`: pointer ABI
+      (`selis_html_run(bytes, pages, title, out_len, out_pages)`), **no declared imports**, so
+      the page instantiates it with an empty import object — the mechanical form of "this
+      module cannot call out". Page selection is the 1-based `1-3,5` grammar the other cards
+      use, `""` meaning every page; a page named twice is written once; two runs on one input
+      are byte-identical; the document is verified before it is handed over, and a failure is
+      reported as a failure instead of a download. Measured raw 742 184 B → 228 325 B brotli
+      against its own 300 000 budget, with the other nine artifacts unmoved.
+      The CLI twin is `selis extract --format html`: one document for the whole selection, to
+      stdout or `--output`, titled from the file stem, verified before the file is created.
+      The web card is the 33rd in `/tools.html` (the card between Render TIFF and Create ZIP): it reports
+      `kind: "html"` and offers a download with **no** preview, because a `blob:` document opens
+      in this page's own origin — the check asserts that absence.
+      Evidence: 15 `html.rs` tests inside `selis-pdf-text`'s 77 (one root per selection, a span
+      where the PNG card paints it, rotation through the raster transform, DPI scaling both
+      axes, escaping and U+FFFD, the marker once per page, a zero-area refusal, saturating
+      coordinates that keep the text, a plain paragraph dump refused as not-this-profile, an
+      injected element refused, a mutated box/text/page failing verification, numbers only in
+      the emitter's own spelling, an empty selection as a valid empty document, a title that
+      cannot open a tag, escapes as the only entities the reader knows); 14 chunk tests (the
+      chunk's words surviving a real page, sections numbered as the user selected them, a
+      text-less page as a section with no spans and no marker, byte determinism, the canvas
+      being the page's own box with every span inside it, title markup/truncation/control
+      characters, selection parsing, an out-of-range page refused before the document is read,
+      a zero-area page refused, a non-PDF refused, the ABI moving bytes through guest slots);
+      6 `extract_html.rs` CLI tests (a range is one document of sections on their own canvases
+      with every box inside its page, a selected page numbered as itself, `--output` holding
+      exactly what stdout showed, a zero-area page refusing to write any file, the marker
+      riding its own page, and the per-page text/md/json formats byte-unchanged) plus the
+      reworded `extract_fidelity` html assertions; 178 `xtask` tests including the real Edge
+      run, whose four HTML legs (all pages and page 1, before and after the origin is cut) do
+      not trust the writer: the downloaded bytes are re-walked by the browser's own HTML parser
+      — `main > section.page`, each section's `data-page`/`data-width`/`data-height` agreed
+      with its own `style`, every span's box inside its canvas, no span outside — while the
+      doctype/root/`<main>` counts are taken from the raw bytes, because DOMParser *repairs* a
+      concatenated document and the repaired tree would hide exactly the old broken shape.
+      Not claimed: reflow (this is a layout copy, spans sit in extraction order inside the
+      page), colour (the model carries no resolved fill), font faces (one CSS fallback family),
+      a separator between word spans (the gap is geometry, as in the JSON format), images or
+      annotations in the output. The reflow line below stays open.
+- [ ] **PDF → HTML reflow** — reading-order article output, tables and links; no layout claim
+      above measured fidelity.
 - [ ] **PDF → EPUB** — reflow from extracted structure.
 - [ ] **Split by text** — boundary rule shown before committing.
 - [ ] **Table extraction** — confidence display.

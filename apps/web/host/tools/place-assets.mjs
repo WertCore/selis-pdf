@@ -128,10 +128,14 @@ const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
 const CONVERT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.wasm";
-/** The raster chunk (PDF → PNG), optimised first. Import-free (checked below). */
+/** The raster chunk (PDF → PNG, JPG or TIFF), optimised first. Import-free (checked below). */
 const RASTER_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.opt.wasm";
 /** The unoptimised raster chunk, for developers who only ran `cargo build`. */
 const RASTER_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.wasm";
+/** The HTML chunk (PDF → HTML), optimised first. Import-free (checked below). */
+const HTML_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_html.opt.wasm";
+/** The unoptimised HTML chunk, for developers who only ran `cargo build`. */
+const HTML_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_html.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -183,6 +187,17 @@ function findConvertEngine() {
 function findRasterEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [RASTER_WASM_OPT, RASTER_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first HTML chunk that exists, optimised preferred over raw. */
+function findHtmlEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [HTML_WASM_OPT, HTML_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -602,7 +617,7 @@ const raster = findRasterEngine();
 if (raster === null) {
 	console.error(
 		[
-			"place-assets: no raster WASM chunk found - the PDF to PNG card cannot run without one,",
+			"place-assets: no raster WASM chunk found - the PDF to PNG, JPG and TIFF cards cannot run without one,",
 			"so this is a build failure rather than a skip. Build it first:",
 			"",
 			"  cargo build -p selis-pdf-wasm-raster --target wasm32-unknown-unknown --release",
@@ -640,6 +655,54 @@ if (rasterImports.length > 0) {
 	process.exit(1);
 }
 
+// The HTML chunk is the fifth engine: PDF → HTML. Like the raster chunk it is
+// lazy, so the tools page downloads it only when the user picks PDF to HTML, and
+// it must be import-free for the same reason the others are: the module is
+// handed the user's document bytes, and an import would be a capability it never
+// needs. Extraction reads the document's own fonts, so this chunk carries no
+// faces and no entropy source at all.
+const html = findHtmlEngine();
+if (html === null) {
+	console.error(
+		[
+			"place-assets: no HTML WASM chunk found - the PDF to HTML card cannot run without one,",
+			"so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-html --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const htmlOut = join(publicRoot, "wasm/selis_pdf_wasm_html.wasm");
+mkdirSync(dirname(htmlOut), { recursive: true });
+copyFileSync(html, htmlOut);
+const htmlBytes = readFileSync(htmlOut).length;
+let htmlImports;
+try {
+	htmlImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(htmlOut)));
+} catch (error) {
+	console.error(`place-assets: the HTML chunk at ${htmlOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (htmlImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the HTML chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...htmlImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-html --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -668,6 +731,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_raster.wasm",
 				bytes: rasterBytes,
 			},
+			html: {
+				url: "/wasm/selis_pdf_wasm_html.wasm",
+				bytes: htmlBytes,
+			},
 		},
 		null,
 		2,
@@ -679,5 +746,6 @@ console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
 		`tools chunk (${toolsBytes} B, 0 imports) and the convert chunk (${convertBytes} B, 0 imports) ` +
+		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );

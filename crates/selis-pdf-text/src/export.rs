@@ -1,8 +1,12 @@
 //! Structured extraction output (SL-3.TEXT.07).
 //!
 //! Emits the assembled, ordered lines as plain text, a structured JSON
-//! document (blocks/lines/spans with style and bbox), Markdown, or HTML. The
+//! document (blocks/lines/spans with style and bbox), or Markdown. The
 //! foundation for the convert product and for AI/RAG integration.
+//!
+//! HTML is the exception and lives in [`crate::html`]: an HTML answer is a page,
+//! so it needs a canvas, a position per span, and a reader to verify the file it
+//! wrote — none of which belongs in this module's line-oriented formatters.
 //!
 //! The JSON schema is versioned as `selis-extract/1`.
 
@@ -13,9 +17,9 @@ use crate::assembly::{TextLine, TextRun, TextWord};
 /// What a consumer must see when a page's display list **drew text** yet the
 /// extractor recovered no characters (SL-3.TEXT.10): a visible low-confidence
 /// marker, never a silent empty string that masquerades as a blank page. Every
-/// format carries it as one more line of the extraction, so the marker reaches
-/// `text`, Markdown and HTML through the line model, and JSON through both the
-/// line and [`Structured::low_confidence`].
+/// format carries it — `text` and Markdown as one more line of the extraction,
+/// JSON through [`Structured::low_confidence`], and the positioned HTML document
+/// as its own paragraph — so the verdict never disappears into silence.
 pub const LOW_CONFIDENCE_MARKER: &str = "[low-confidence: text drawn, nothing recovered]";
 
 /// A style span within a line.
@@ -210,34 +214,6 @@ pub fn to_markdown(lines: &[TextLine], line_texts: &[String], low_confidence: bo
     out
 }
 
-/// HTML: each line is a `<p>` with the bbox as a data attribute.
-#[must_use]
-pub fn to_html(lines: &[TextLine], line_texts: &[String], low_confidence: bool) -> String {
-    let mut out = String::from("<html><body>\n");
-    let n = lines.len().min(line_texts.len());
-    for i in 0..n {
-        let raw = line_texts.get(i).cloned().unwrap_or_default();
-        let text = html_escape(&raw);
-        let bbox = lines
-            .get(i)
-            .map(|l| {
-                format!(
-                    "{:.2},{:.2},{:.2},{:.2}",
-                    l.bbox.x0, l.bbox.y0, l.bbox.x1, l.bbox.y1
-                )
-            })
-            .unwrap_or_default();
-        out.push_str(&format!("  <p data-bbox=\"{bbox}\">{text}</p>\n"));
-    }
-    if low_confidence {
-        out.push_str("  <p class=\"low-confidence\">");
-        out.push_str(&html_escape(LOW_CONFIDENCE_MARKER));
-        out.push_str("</p>\n");
-    }
-    out.push_str("</body></html>\n");
-    out
-}
-
 fn bbox_json(r: Rect) -> String {
     format!("[{:.2}, {:.2}, {:.2}, {:.2}]", r.x0, r.y0, r.x1, r.y1)
 }
@@ -262,13 +238,6 @@ fn json_escape(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// Escape for an HTML text node.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -332,14 +301,11 @@ mod tests {
     }
 
     #[test]
-    fn markdown_and_html_emit_lines() {
+    fn markdown_emits_paragraphs() {
         let lines = vec![line_at(vec![glyph(65, "F1", 12.0)])];
         let texts = vec!["Hello & bye".to_string()];
         let md = to_markdown(&lines, &texts, false);
         assert!(md.contains("Hello & bye"));
-        let html = to_html(&lines, &texts, false);
-        assert!(html.contains("<p"));
-        assert!(html.contains("Hello &amp; bye"));
     }
 
     #[test]
@@ -350,9 +316,12 @@ mod tests {
 
     /// SL-3.TEXT.08 DoD: every format must emit decoded Unicode (UTF-8) for
     /// e-acute (U+00E9), the ring/degree sign (U+00B0), and CJK (U+65E5)
-    /// pushed through text/json/md/html — never the PDF-string octal digits.
+    /// pushed through text/json/md — never the PDF-string octal digits. The
+    /// fourth format, the positioned HTML document, takes the same model and is
+    /// covered in [`crate::html`]'s own tests and end-to-end by the CLI's
+    /// `extract_fidelity` suite.
     #[test]
-    fn all_formats_emit_unicode_not_octal_escapes() {
+    fn line_formats_emit_unicode_not_octal_escapes() {
         // Codes are already the recovered scalars (TEXT.02 ran their ToUnicode /
         // encoding chain); the formatter must render them as UTF-8, not "é".
         let lines = vec![line_at(vec![glyph(0xE9, "F1", 12.0)])];
@@ -376,11 +345,6 @@ mod tests {
 
         let md = to_markdown(&lines, &texts, false);
         assert!(md.contains("\u{E9}\u{B0}\u{65E5}"));
-
-        let html = to_html(&lines, &texts, false);
-        // HTML must not escape the non-ASCII bytes into entities; the raw
-        // characters pass through (only markup chars are escaped).
-        assert!(html.contains("\u{E9}\u{B0}\u{65E5}"));
     }
 
     /// A non-ASCII character survives JSON escaping intact.
@@ -412,19 +376,17 @@ mod tests {
         );
     }
 
-    /// SL-3.TEXT.10: text/markdown/html all carry the marker when the flag is
+    /// SL-3.TEXT.10: text and markdown both carry the marker when the flag is
     /// set (and never when it is not) — an empty page is not a low-confidence
-    /// page, and a low-confidence page is never silently empty.
+    /// page, and a low-confidence page is never silently empty. The positioned
+    /// HTML document carries it as its own paragraph, asserted in `html.rs`.
     #[test]
-    fn low_confidence_marker_in_all_line_formats() {
+    fn low_confidence_marker_in_line_formats() {
         let lines: Vec<TextLine> = Vec::new();
         let texts: Vec<String> = Vec::new();
         assert_eq!(to_text(&lines, &texts, false), "");
         assert_eq!(to_text(&lines, &texts, true), LOW_CONFIDENCE_MARKER);
         assert!(to_markdown(&lines, &texts, true).contains(LOW_CONFIDENCE_MARKER));
-        let html = to_html(&lines, &texts, true);
-        assert!(html.contains(LOW_CONFIDENCE_MARKER));
-        assert!(!to_html(&lines, &texts, false).contains(LOW_CONFIDENCE_MARKER));
         // With real content the marker rides alongside, not instead of it.
         let with_text = vec![line_at(vec![glyph(65, "F1", 12.0)])];
         let text = to_text(&with_text, &["A".to_string()], true);

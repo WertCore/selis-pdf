@@ -1934,6 +1934,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-html"
+version = "0.1.0"
+dependencies = [
+ "selis-geom",
+ "selis-pdf-engine",
+ "selis-pdf-text",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-pdf-wasm-jpx"
 version = "0.1.0"
 dependencies = [

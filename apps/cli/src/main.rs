@@ -258,7 +258,7 @@ enum Command {
         /// The output format: text|json|md|html|image|embedded.
         #[arg(long, default_value = "text")]
         format: String,
-        /// The output directory (for format=embedded, writes the files).
+        /// The output file (format=html) or directory (format=embedded).
         #[arg(long)]
         output: Option<String>,
     },

@@ -156,6 +156,12 @@
         card.click();
       }
 
+      // The card count the grid must reach before anything is run. `TOOLS_PAGE_CARDS`
+      // in xtask/src/browser.rs holds the same list, and the verdict compares the
+      // ids, so a page that renders a different number fails here with a message
+      // that names the count it was waiting for.
+      const CARD_COUNT = 33;
+
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
           .map((card) => card.getAttribute("data-tool") || "")
@@ -168,7 +174,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 32,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === CARD_COUNT,
           15_000,
           label,
         );
@@ -324,6 +330,88 @@
         };
       }
 
+      /**
+       * The positioned HTML document the card handed over, walked independently
+       * of the engine that wrote it.
+       *
+       * The bytes go through the browser's own HTML parser — a second, unrelated
+       * implementation of the format, and the only reading of it that says what
+       * a user who opens this file will actually see. Each `<section>` gives up
+       * the page number and canvas the writer claims, each positioned paragraph
+       * gives up its text and its four box edges, and a document that dropped a
+       * word or pushed it off the page shows up here instead of in the writer's
+       * own tests.
+       *
+       * The byte-level structure is counted in the raw text rather than the
+       * parsed tree, because a parser repairs what it is given: three
+       * concatenated `<html>` roots would still parse, which is exactly the file
+       * the previous shape used to produce. Null when these are not HTML bytes.
+       */
+      function htmlDocument(bytes) {
+        const head = new TextDecoder("latin1").decode(bytes.subarray(0, 24)).trimStart();
+        if (!/^<!doctype html>/i.test(head)) {
+          return null;
+        }
+        const text = new TextDecoder("latin1").decode(bytes);
+        const count = (needle) => text.split(needle).length - 1;
+        const utf8 = new TextDecoder().decode(bytes);
+        const parsed = new DOMParser().parseFromString(utf8, "text/html");
+        const sections = parsed.querySelectorAll("main > section.page");
+        const pages = [];
+        for (const section of sections) {
+          const width = Number(section.getAttribute("data-width") || "NaN");
+          const height = Number(section.getAttribute("data-height") || "NaN");
+          const style = section.getAttribute("style") || "";
+          const spans = [];
+          let outside = 0;
+          for (const paragraph of section.querySelectorAll("p.s")) {
+            const edges = (paragraph.getAttribute("data-box") || "").split(",");
+            if (edges.length !== 4) {
+              return null;
+            }
+            const box = edges.map(Number);
+            if (box.some((edge) => !Number.isFinite(edge))) {
+              return null;
+            }
+            const paragraphStyle = paragraph.getAttribute("style") || "";
+            const size = Number((paragraphStyle.match(/font-size:([0-9.]+)px/) || [])[1]);
+            if (!Number.isFinite(size) || size <= 0) {
+              return null;
+            }
+            if (
+              box[0] < 0 ||
+              box[1] < 0 ||
+              box[2] > width ||
+              box[3] > height ||
+              box[2] < box[0] ||
+              box[3] < box[1]
+            ) {
+              outside += 1;
+            }
+            spans.push({ text: paragraph.textContent, box, size });
+          }
+          pages.push({
+            number: Number(section.getAttribute("data-page") || "NaN"),
+            width,
+            height,
+            styleMatches:
+              style.includes("width:" + width + "px") && style.includes("height:" + height + "px"),
+            spans: spans.length,
+            words: spans.map((span) => span.text).join(" ").slice(0, 400),
+            outside,
+            marker: section.querySelectorAll("p.low-confidence").length,
+          });
+        }
+        return {
+          roots: count("<html"),
+          closers: count("</html>"),
+          doctypes: count("<!doctype html>"),
+          mains: count("<main>"),
+          title: (parsed.querySelector("title") || {}).textContent || "",
+          pages,
+        };
+      }
+
       async function readOutput(win, row, label, needles, absent) {
         const download = row.querySelector("a.primary-link");
         if (!download) throw new Error("a result row had no download link (" + label + ")");
@@ -391,6 +479,29 @@
           output.tiffWidth = tiff.width;
           output.tiffHeight = tiff.height;
           output.tiffProfile = tiff.profile;
+        }
+        // An HTML document is walked by the browser's own parser, which is a
+        // second implementation of the format and the only one that says what
+        // the user who opens this file will see. `html` true means the bytes
+        // open with a doctype and every page in them parsed with a readable box.
+        const html = htmlDocument(bytes);
+        output.html = html !== null;
+        if (html !== null) {
+          output.htmlRoots = html.roots;
+          output.htmlClosers = html.closers;
+          output.htmlDoctypes = html.doctypes;
+          output.htmlMains = html.mains;
+          output.htmlTitle = html.title;
+          output.htmlPages = html.pages.map((page) => ({
+            number: page.number,
+            width: page.width,
+            height: page.height,
+            style: page.styleMatches,
+            spans: page.spans,
+            outside: page.outside,
+            marker: page.marker,
+            words: page.words,
+          }));
         }
         if (needles && needles.length > 0) {
           const text = new TextDecoder("latin1").decode(bytes);
@@ -865,7 +976,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the thirty-two tool cards");
+        out.cards = await waitForCards(frame, "the thirty-three tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1873,6 +1984,61 @@
           network: onlineTiffThree.network,
         };
 
+        // PDF to HTML runs in its own lazy chunk and has its own shape: the
+        // whole selection is ONE document whose pages are `<section>`s, so a
+        // two-page run is one download rather than a bundle. The all-pages leg
+        // is the one that can fail honestly: page 1 of this fixture carries a
+        // word and page 2 carries none, so the document has to show both — the
+        // span where there is one and a clean empty section where there is not.
+        // The bytes are re-walked by the browser's own HTML parser, which is a
+        // second implementation of the format and the only reading that says
+        // what a user who opens the file will see.
+        const onlineHtml = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online HTML",
+          "html",
+          {},
+          ["<!doctype html>", "Selis", 'data-page="2"'],
+          ["<script"],
+          null,
+        );
+        out.html = {
+          fileRows: onlineHtml.fileRows,
+          runLabel: onlineHtml.runLabel,
+          noUpload: onlineHtml.noUpload,
+          status: onlineHtml.status,
+          result: onlineHtml.result,
+          outputs: onlineHtml.outputs,
+          output: onlineHtml.output,
+          network: onlineHtml.network,
+        };
+        // A selection names pages; the section carries the page's own number.
+        // One page is still one document, and its word still lands where the
+        // page puts it.
+        const onlineHtmlOne = await toolInFrame(
+          frame,
+          outlinedFixture,
+          "outlined.pdf",
+          "online HTML of page 1",
+          "html",
+          { pages: "1" },
+          ["Selis"],
+          ["<script"],
+          null,
+        );
+        out.htmlOne = {
+          fileRows: onlineHtmlOne.fileRows,
+          runLabel: onlineHtmlOne.runLabel,
+          noUpload: onlineHtmlOne.noUpload,
+          status: onlineHtmlOne.status,
+          result: onlineHtmlOne.result,
+          outputs: onlineHtmlOne.outputs,
+          output: onlineHtmlOne.output,
+          network: onlineHtmlOne.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1885,7 +2051,7 @@
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
         offlinePhase = true;
 
-        const offlineCards = await waitForCards(frame, "the thirty-two offline tool cards");
+        const offlineCards = await waitForCards(frame, "the thirty-three offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -2265,6 +2431,40 @@
             },
           ],
         );
+        const offlineHtml = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline HTML",
+          "html",
+          {},
+          ["<!doctype html>", "Selis", 'data-page="2"'],
+          ["<script"],
+          [
+            {
+              name: "outlined.pdf",
+              bytes: new Uint8Array(outlinedFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineHtmlOne = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline HTML of page 1",
+          "html",
+          { pages: "1" },
+          ["Selis"],
+          ["<script"],
+          [
+            {
+              name: "outlined.pdf",
+              bytes: new Uint8Array(outlinedFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
         const offlineImageWatermark = await toolInFrame(
           frame,
           null,
@@ -2612,6 +2812,26 @@
             outputs: offlineTiffThree.outputs,
             output: offlineTiffThree.output,
             network: offlineTiffThree.network,
+          },
+          html: {
+            fileRows: offlineHtml.fileRows,
+            runLabel: offlineHtml.runLabel,
+            noUpload: offlineHtml.noUpload,
+            status: offlineHtml.status,
+            result: offlineHtml.result,
+            outputs: offlineHtml.outputs,
+            output: offlineHtml.output,
+            network: offlineHtml.network,
+          },
+          htmlOne: {
+            fileRows: offlineHtmlOne.fileRows,
+            runLabel: offlineHtmlOne.runLabel,
+            noUpload: offlineHtmlOne.noUpload,
+            status: offlineHtmlOne.status,
+            result: offlineHtmlOne.result,
+            outputs: offlineHtmlOne.outputs,
+            output: offlineHtmlOne.output,
+            network: offlineHtmlOne.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

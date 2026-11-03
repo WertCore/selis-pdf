@@ -141,9 +141,16 @@ fn text08_unicode_survives_all_four_formats() {
 
     let (code, html, _) = extract(&path, "html", Some(0));
     assert_eq!(code, 0);
+    // One span per word, each carrying its own decoded text — the space
+    // between "café" and "30°" is a gap on the canvas, not a character in
+    // either paragraph. Non-ASCII passes through unescaped.
     assert!(
-        html.contains("café 30°") && html.contains("二次元"),
-        "HTML must pass non-ASCII through unescaped: {html}"
+        html.contains(">café</p>") && html.contains(">30°</p>") && html.contains(">二次元</p>"),
+        "HTML must pass non-ASCII through unescaped, one word per span: {html}"
+    );
+    assert!(
+        !html.contains("&#") && !html.contains("\\260"),
+        "no entity or octal escape in HTML: {html}"
     );
 }
 
@@ -218,7 +225,12 @@ fn text10_marker_instead_of_silence_and_font_survives_bt() {
 
     let (code, html, _) = extract(&path, "html", Some(0));
     assert_eq!(code, 0);
-    assert!(html.contains("low-confidence"), "HTML marker: {html}");
+    // The marker text, not the class name — every positioned document carries
+    // the `p.low-confidence` rule in its stylesheet whether or not a page needs it.
+    assert!(
+        html.contains(selis_pdf_text::LOW_CONFIDENCE_MARKER),
+        "HTML marker: {html}"
+    );
 
     // The recovered page after the §9.4.1 BT-persistence fix: TCPDF split
     // blocks are readable and carry no marker.

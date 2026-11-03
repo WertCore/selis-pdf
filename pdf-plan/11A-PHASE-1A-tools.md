@@ -507,6 +507,30 @@ operation is available identically in the CLI, the web app, and the extension.
     container is never bundled) and offers **no** preview, because Chromium will not display TIFF
     inline — the check asserts the absence rather than allowing the omission. CLI twin
     `selis render --format tif`, `tiff` accepted as an alias.
+- [x] **SL-1A.TOOL.13 — PDF → positioned HTML** · deps: `SL-1A.TOOL.12`, text extraction · owner: AI
+  - **Do:** One self-contained HTML document for a page selection, with every recovered span placed
+    where the page puts it, and a read-back verification standard — never a paragraph dump.
+  - **Shipped (2026-11-03):** `selis-pdf-text::html` writes, reads and verifies the profile in one
+    module (`to_positioned_html` / `read_positioned_html` / `verify_positioned_html`), the same
+    ownership rule `selis-image::tiff` follows. One `<section class="page">` per selected page on
+    the page's own 72-DPI `PageView` canvas — one CSS pixel per PDF unit, `/Rotate` folded into the
+    transform, so a span lands where the PNG card paints the ink — and one positioned `<p>` per
+    recovered span with its measured box as `data-box`. The reader is a whitelist, not an HTML
+    parser, and compares the `<style>` block line for line against a constant, so `@import` and
+    `url()` cannot appear in a document that passes it. A page that drew text and recovered none
+    carries the low-confidence marker; a zero-area page is refused before a byte exists.
+  - **Surface:** the fifth lazy chunk, `crates/selis-pdf-wasm-html` (pointer ABI, **0 imports**,
+    228 325 B brotli of a 300 000 budget), the 33rd `/tools.html` card with `kind: "html"`, and
+    `selis extract --format html [--pages] [--output]`. Download only, **no** preview: a `blob:`
+    document runs in this page's own origin.
+  - **Evidence:** 15 `html.rs` tests, 14 chunk tests, 6 `extract_html.rs` CLI tests plus the
+    reworded `extract_fidelity` html assertions and a test that the per-page text/markdown/JSON
+    exports are byte-unchanged; `xtask`'s 178 tests include four real-Edge HTML legs that re-walk
+    the downloaded bytes with the browser's own parser and count the doctype/root/`<main>` markers
+    from the raw bytes — DOMParser repairs a concatenated document, which is precisely the shape
+    this replaced.
+  - **Not claimed:** reflow, colour, font faces, separators between word spans, images,
+    annotations, forms. `PDF → HTML` reflow stays an open row in `35-PARITY-CHECKLIST.md`.
 
 ---
 
@@ -518,7 +542,8 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
   - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards
-    (thirty-one with the PDF → JPG card on 2026-11-02, thirty-two with PDF → TIFF on 2026-11-03),
+    (thirty-one with the PDF → JPG card on 2026-11-02, thirty-two with PDF → TIFF on 2026-11-03,
+    thirty-three with the positioned PDF → HTML export the same day),
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not

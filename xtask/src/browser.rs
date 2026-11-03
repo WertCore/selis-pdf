@@ -2011,6 +2011,304 @@ fn check_raster_zip_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<()
     Ok(())
 }
 
+/// One page of the positioned HTML document the card owes the user: its number
+/// as the selection named it, the canvas it is drawn on, and how many
+/// positioned spans the browser's parser found inside it.
+struct HtmlSection {
+    number: u64,
+    width: u64,
+    height: u64,
+    spans: u64,
+}
+
+/// The HTML card's promise, in the shape the browser check can verify: a whole
+/// selection is ONE document, each page is a section on its own canvas, and each
+/// recovered word is a positioned span inside it.
+struct HtmlSpec {
+    verb: &'static str,
+    /// The picked file's stem, which the page turns into both the download name
+    /// and the document's `<title>`.
+    stem: &'static str,
+    /// The Pages row the result card must show, as the page writes it.
+    pages_row: &'static str,
+    sections: &'static [HtmlSection],
+    needles: &'static [&'static str],
+    /// Byte runs the document must not contain. A positioned text layer has no
+    /// business holding an executable script.
+    absent: &'static [&'static str],
+}
+
+/// Every page of the two-page fixture: page 1 carries one word, page 2 carries
+/// none. Both must appear — a document that dropped the empty page would be
+/// reporting a selection the user did not make.
+const HTML_LEG: HtmlSpec = HtmlSpec {
+    verb: "Export HTML",
+    stem: "outlined",
+    pages_row: "2",
+    sections: &[
+        HtmlSection {
+            number: 1,
+            width: 612,
+            height: 792,
+            spans: 1,
+        },
+        HtmlSection {
+            number: 2,
+            width: 612,
+            height: 792,
+            spans: 0,
+        },
+    ],
+    needles: &["<!doctype html>", "Selis", "data-page=\"2\""],
+    absent: &["<script"],
+};
+
+/// One page selected: still one document, and the section still says which page
+/// it came from.
+const HTML_ONE_LEG: HtmlSpec = HtmlSpec {
+    pages_row: "1",
+    sections: &[HtmlSection {
+        number: 1,
+        width: 612,
+        height: 792,
+        spans: 1,
+    }],
+    needles: &["Selis"],
+    ..HTML_LEG
+};
+
+/// One HTML leg. The bytes the browser downloaded are re-walked by the browser's
+/// own HTML parser — a second implementation of the format, and the only reading
+/// that says what a user who opens the file will see — so this is the proof that
+/// the document the chunk verified is the document the user receives.
+fn check_html_leg(leg: &Json, label: &str, spec: &HtmlSpec) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != spec.verb {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            spec.verb
+        ));
+    }
+    check_no_upload_network(leg, label)?;
+
+    let wanted = format!("{}.html", spec.stem);
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(wanted.as_str()) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {wanted:?}",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != spec.pages_row {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected {:?}",
+            row_value("Pages"),
+            spec.pages_row
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs; a selection is one HTML document",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("html") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"html\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some(wanted.as_str())
+        || output.get("downloadName").and_then(Json::as_str) != Some(wanted.as_str())
+    {
+        return Err(format!(
+            "the {label} output/download was named {:?}/{:?}, expected {wanted:?}",
+            output.get("name"),
+            output.get("downloadName")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(spec.sections.len() as u64) {
+        return Err(format!(
+            "the {label} document claimed {:?} pages, expected {}",
+            output.get("pages"),
+            spec.sections.len()
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} output did not use a Blob URL for download"
+        ));
+    }
+    // A blob: document runs in this page's own origin, so the card must offer
+    // the download and nothing else.
+    if output.get("previewBlob").map(Json::is_null) != Some(true) {
+        return Err(format!(
+            "the {label} offered an HTML document as a same-origin preview (preview = {:?})",
+            output.get("previewBlob")
+        ));
+    }
+    if output.get("html").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} download did not open as an HTML document"
+        ));
+    }
+    // One root, whatever the selection. Concatenating a document per page — the
+    // shape this card replaced — would still parse, so the counts are taken from
+    // the bytes rather than the repaired tree.
+    for key in ["htmlDoctypes", "htmlRoots", "htmlClosers", "htmlMains"] {
+        let counted = output.get(key).and_then(Json::as_u64).unwrap_or(0);
+        if counted != 1 {
+            return Err(format!(
+                "the {label} document holds {counted} {key} markers, expected exactly one"
+            ));
+        }
+    }
+    if output.get("htmlTitle").and_then(Json::as_str) != Some(spec.stem) {
+        return Err(format!(
+            "the {label} document is titled {:?}, expected {:?}",
+            output.get("htmlTitle"),
+            spec.stem
+        ));
+    }
+
+    let pages = output
+        .get("htmlPages")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} document carried no pages for the harness to walk"))?;
+    if pages.len() != spec.sections.len() {
+        return Err(format!(
+            "the {label} document holds {} section(s), expected {}",
+            pages.len(),
+            spec.sections.len()
+        ));
+    }
+    for (index, expected) in spec.sections.iter().enumerate() {
+        let Some(page) = pages.get(index).and_then(Json::as_object) else {
+            return Err(format!(
+                "the {label} document has no section at position {index}"
+            ));
+        };
+        let number = page.get("number").and_then(Json::as_u64).unwrap_or(0);
+        if number != expected.number {
+            return Err(format!(
+                "the {label} document's section {index} is numbered {number}, expected {}",
+                expected.number
+            ));
+        }
+        let width = page.get("width").and_then(Json::as_u64).unwrap_or(0);
+        let height = page.get("height").and_then(Json::as_u64).unwrap_or(0);
+        if (width, height) != (expected.width, expected.height) {
+            return Err(format!(
+                "the {label} document's page {number} is a {width}x{height} canvas, expected {}x{}",
+                expected.width, expected.height
+            ));
+        }
+        if page.get("style").and_then(Json::as_bool) != Some(true) {
+            return Err(format!(
+                "the {label} document's page {number} declares a canvas its own style disagrees with"
+            ));
+        }
+        let spans = page.get("spans").and_then(Json::as_u64).unwrap_or(0);
+        if spans != expected.spans {
+            return Err(format!(
+                "the {label} document's page {number} holds {spans} positioned span(s), expected {}",
+                expected.spans
+            ));
+        }
+        // A span outside its section is text the user cannot see: the box was
+        // projected onto a canvas the page does not have.
+        let outside = page.get("outside").and_then(Json::as_u64).unwrap_or(0);
+        if outside != 0 {
+            return Err(format!(
+                "the {label} document puts {outside} span(s) outside the canvas of page {number}"
+            ));
+        }
+        // Nothing in these fixtures drew text the extractor could not recover,
+        // so a marker here would be a false alarm on a page that reads.
+        if page.get("marker").and_then(Json::as_u64).unwrap_or(0) != 0 {
+            return Err(format!(
+                "the {label} document flags page {number} as low-confidence without reason"
+            ));
+        }
+    }
+
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+    if found.len() != spec.needles.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            spec.needles.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} document is missing {:?}; the extraction did not reach the file",
+            spec.needles
+                .get(index)
+                .copied()
+                .unwrap_or("an unnamed marker")
+        ));
+    }
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its absence checks"))?;
+    if absent.len() != spec.absent.len() {
+        return Err(format!(
+            "the {label} output reported {} absence checks, expected {}",
+            absent.len(),
+            spec.absent.len()
+        ));
+    }
+    if let Some(index) = absent.iter().position(|item| item.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} document carries {:?}, which this card never writes",
+            spec.absent
+                .get(index)
+                .copied()
+                .unwrap_or("an unnamed marker")
+        ));
+    }
+    Ok(())
+}
+
 /// The downloaded byte count of a leg's first output.
 fn leg_output_bytes(leg: &Json, label: &str) -> Result<u64, String> {
     leg.get("outputs")
@@ -3465,7 +3763,7 @@ fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 32] = [
+const TOOLS_PAGE_CARDS: [&str; 33] = [
     "attach",
     "attachments",
     "batch",
@@ -3477,6 +3775,7 @@ const TOOLS_PAGE_CARDS: [&str; 32] = [
     "detach",
     "flip",
     "header_footer",
+    "html",
     "image_to_pdf",
     "image_watermark",
     "jpg",
@@ -3809,9 +4108,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(32) {
+    if report.get("cards").and_then(Json::as_u64) != Some(33) {
         return Err(format!(
-            "the tools grid did not render thirty-two cards (cards = {:?})",
+            "the tools grid did not render thirty-three cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -4216,6 +4515,17 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("tiffThree")
         .ok_or_else(|| "the page reported no three-page TIFF leg (tiffThree = None)".to_string())?;
     check_raster_leg(tiff_three, "online TIFF of three pages", &TIFF_THREE_LEG)?;
+    // PDF to HTML runs in its own lazy chunk and its own shape: the whole
+    // selection is one document, so the leg is read back by the browser's HTML
+    // parser rather than a format sniff the writer could agree with itself.
+    let html = report
+        .get("html")
+        .ok_or_else(|| "the page reported no PDF-to-HTML leg (html = None)".to_string())?;
+    check_html_leg(html, "online HTML", &HTML_LEG)?;
+    let html_one = report
+        .get("htmlOne")
+        .ok_or_else(|| "the page reported no single-page HTML leg (htmlOne = None)".to_string())?;
+    check_html_leg(html_one, "online HTML of page 1", &HTML_ONE_LEG)?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -4236,9 +4546,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(32) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(33) {
         return Err(format!(
-            "the offline tools page did not render thirty-two cards (cards = {:?})",
+            "the offline tools page did not render thirty-three cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -4612,6 +4922,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline TIFF of three pages",
         &TIFF_THREE_LEG,
     )?;
+    let offline_html = offline.get("html").ok_or_else(|| {
+        "the offline leg reported no PDF-to-HTML result (offline.html = None)".to_string()
+    })?;
+    check_html_leg(offline_html, "offline HTML", &HTML_LEG)?;
+    let offline_html_one = offline.get("htmlOne").ok_or_else(|| {
+        "the offline leg reported no single-page HTML result (offline.htmlOne = None)".to_string()
+    })?;
+    check_html_leg(offline_html_one, "offline HTML of page 1", &HTML_ONE_LEG)?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -8822,6 +9140,86 @@ mod tests {
         })
     }
 
+    /// A PDF-to-HTML leg, as the harness reports it: one document for the whole
+    /// selection, and its own walk of the downloaded bytes. `all` is the
+    /// every-pages leg — two sections, one carrying the fixture's only word and
+    /// one honestly empty — while the other is the single-page selection.
+    fn real_tools_html_leg(all: bool) -> Json {
+        let section = |number: u64, spans: u64, words: &str| {
+            json!({
+                "number": number,
+                "width": 612,
+                "height": 792,
+                "style": true,
+                "spans": spans,
+                "outside": 0,
+                "marker": 0,
+                "words": words,
+            })
+        };
+        let pages = if all {
+            vec![section(1, 1, "Selis"), section(2, 0, "")]
+        } else {
+            vec![section(1, 1, "Selis")]
+        };
+        let pages_row = pages.len().to_string();
+        let found: Vec<bool> = if all {
+            vec![true, true, true]
+        } else {
+            vec![true]
+        };
+        let bytes = if all { 1_318 } else { 1_102 };
+        let output = json!({
+            "kind": "html",
+            "name": "outlined.html",
+            "pages": pages.len(),
+            "declaredBytes": bytes,
+            "bytes": bytes,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "outlined.html",
+            "header": "<!doc",
+            "zip": false,
+            "png": false,
+            "jpeg": false,
+            "tiff": false,
+            "html": true,
+            "htmlRoots": 1,
+            "htmlClosers": 1,
+            "htmlDoctypes": 1,
+            "htmlMains": 1,
+            "htmlTitle": "outlined",
+            "htmlPages": pages,
+            "overTarget": false,
+            "found": found,
+            "foundCounts": if all { vec![1u64, 2, 1] } else { vec![1u64] },
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Export HTML",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "outlined.html",
+                "meta": format!("1 file \u{00b7} {bytes} B \u{00b7} verified locally"),
+                "rows": [
+                    { "label": "Pages", "value": pages_row },
+                    { "label": "Size", "value": format!("4\u{2009}034 B \u{2192} {bytes} B") },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_html.wasm"],
+            },
+        })
+    }
+
     /// A leg that ends with one rewritten PDF. `counts` is what the page found in
     /// the downloaded bytes, in the order the leg asked for them.
     fn real_tools_single_leg(
@@ -9327,7 +9725,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 32,
+            "cards": 33,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -9374,7 +9772,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 32,
+                "cards": 33,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -9507,10 +9905,12 @@ mod tests {
         report["jpgZip"] = real_tools_jpg_zip_leg();
         report["tiff"] = real_tools_tiff_leg(1);
         report["tiffThree"] = real_tools_tiff_leg(3);
-        report["cardIds"] = json!(TOOLS_PAGE_CARDS);
+        report["html"] = real_tools_html_leg(true);
+        report["htmlOne"] = real_tools_html_leg(false);
+        report["cardIds"] = json!(TOOLS_PAGE_CARDS.as_slice());
         report["clicked"] = json!({
-            "online": TOOLS_PAGE_CARDS,
-            "offline": TOOLS_PAGE_CARDS,
+            "online": TOOLS_PAGE_CARDS.as_slice(),
+            "offline": TOOLS_PAGE_CARDS.as_slice(),
         });
         report["stripMetadata"] = real_tools_strip_metadata_leg();
         report["metadataReport"] = real_tools_metadata_report_leg();
@@ -9545,6 +9945,8 @@ mod tests {
         report["offline"]["jpgZip"] = report["jpgZip"].clone();
         report["offline"]["tiff"] = report["tiff"].clone();
         report["offline"]["tiffThree"] = report["tiffThree"].clone();
+        report["offline"]["html"] = report["html"].clone();
+        report["offline"]["htmlOne"] = report["htmlOne"].clone();
         report["offline"]["batch"] = report["batch"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["metadataReport"] = report["metadataReport"].clone();
@@ -9760,7 +10162,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 32,
+            "cards": 33,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",

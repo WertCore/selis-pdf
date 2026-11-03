@@ -1,0 +1,26 @@
+[package]
+name = "selis-pdf-wasm-html"
+description = "Lazy WASM chunk: write selected PDF pages as one positioned HTML document in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The engine without `rng` and without `builtin-fallback-fonts`. Extraction reads
+# the document's own fonts (its `/ToUnicode` maps, its encodings, its glyph names)
+# and never asks for a face of our own, so the twelve built-in Liberation families
+# would be dead weight in this module — and `getrandom` must not link, because the
+# page instantiates the chunk with an empty import object.
+selis-pdf-engine = { workspace = true, default-features = false }
+selis-pdf-text = { workspace = true }
+selis-geom = { workspace = true }
+selis-sandbox = { workspace = true }

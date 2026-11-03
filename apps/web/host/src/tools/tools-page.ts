@@ -82,8 +82,28 @@ interface RasterWasm {
 	};
 }
 
+interface HtmlWasm {
+	readonly exports: {
+		readonly memory: WebAssembly.Memory;
+		selis_html_alloc(len: number): number;
+		selis_html_free(ptr: number, len: number): void;
+		selis_html_run(
+			inputPtr: number,
+			inputLen: number,
+			pagesPtr: number,
+			pagesLen: number,
+			titlePtr: number,
+			titleLen: number,
+			outLen: number,
+			outPages: number,
+		): number;
+		selis_html_last_error(outLen: number): number;
+		readonly selis_html_available: () => number;
+	};
+}
+
 /** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff";
+type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff" | "html";
 
 interface ToolDef {
 	readonly id: ToolId;
@@ -357,6 +377,15 @@ const TOOLS: readonly ToolDef[] = [
 		title: "PDF to TIFF",
 		blurb: "Render every page, or a selection, into one lossless multi-page TIFF.",
 		verb: "Render TIFF",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "html",
+		mark: "◩",
+		title: "PDF to HTML",
+		blurb: "Write every page, or a selection, as one positioned HTML document.",
+		verb: "Export HTML",
 		multiple: false,
 		accepts: "pdf",
 	},
@@ -1612,6 +1641,19 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "html") {
+			addField(
+				"pages",
+				"Pages",
+				textInput("pages", "text", "All pages"),
+				"1-based, like the page numbers readers show: 1-3,5. Leave empty for every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every selected page becomes one <section> of a single HTML file, sized by that page's own box at 72 dpi — the same canvas PDF to PNG paints at 72 — and each word the engine recovers is placed where the page puts it. The file is read back and compared with the extraction before it is offered, so a document that does not carry its own pages comes back as a failure instead of a download. This is a positioned text layer, not a picture of the page: no colour, no images, no font faces and no spaces between words, so it reads as prose only once you style it. A page that drew text the engine could not recover says so in the file rather than going blank.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "convert") {
 			const format = make("select", "control");
 			for (const [value, label] of [
@@ -2593,6 +2635,190 @@ function init(): void {
 		}
 	}
 
+	let htmlWasmPromise: Promise<HtmlWasm> | null = null;
+	function getHtmlWasm(): Promise<HtmlWasm> {
+		if (htmlWasmPromise === null) {
+			htmlWasmPromise = (async () => {
+				const response = await fetch("/wasm/selis_pdf_wasm_html.wasm", {
+					credentials: "same-origin",
+				});
+				if (!response.ok) {
+					throw new ToolProtocolError("the HTML writer is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				const module = await WebAssembly.compile(bytes);
+				// No imports: the writer cannot call out, so the document bytes it
+				// is handed have nowhere to go but back to this page.
+				const instance = await WebAssembly.instantiate(module, {});
+				return instance as unknown as HtmlWasm;
+			})().catch((error: unknown) => {
+				htmlWasmPromise = null;
+				throw error;
+			});
+		}
+		return htmlWasmPromise;
+	}
+
+	/**
+	 * One `.html` file for the whole selection, whatever its length: the pages are
+	 * `<section>`s inside a single document, not one file per page. So there is no
+	 * ZIP branch here — a three-page selection is one download.
+	 */
+	async function runHtml(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = files[0];
+			if (file === undefined) {
+				throw new ToolInputError("Choose a PDF first.");
+			}
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (!hasPdfHeader(bytes)) {
+				throw new ToolInputError(`${file.name} does not look like a PDF.`);
+			}
+			const encoder = new TextEncoder();
+			const selection = optionValue("pages").trim();
+			const selectionBytes = encoder.encode(selection);
+			// The name the user picked is the only title worth putting in the
+			// document: a tab that says "export" tells them nothing about which
+			// PDF they exported.
+			const titleBytes = encoder.encode(file.name.replace(/\.[^.]+$/, ""));
+			const wasm = await getHtmlWasm();
+			setStatus("Writing the HTML document locally…", "info");
+			await nextPaint();
+			const exports = wasm.exports;
+			const memory = exports.memory;
+			const inputPtr = exports.selis_html_alloc(bytes.length);
+			if (inputPtr === 0) {
+				throw new ToolProtocolError("the HTML writer could not allocate input memory");
+			}
+			new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+			let pagesPtr = 0;
+			if (selectionBytes.length > 0) {
+				pagesPtr = exports.selis_html_alloc(selectionBytes.length);
+				if (pagesPtr === 0) {
+					exports.selis_html_free(inputPtr, bytes.length);
+					throw new ToolProtocolError("the HTML writer could not allocate page memory");
+				}
+				new Uint8Array(memory.buffer, pagesPtr, selectionBytes.length).set(selectionBytes);
+			}
+			let titlePtr = 0;
+			if (titleBytes.length > 0) {
+				titlePtr = exports.selis_html_alloc(titleBytes.length);
+				if (titlePtr === 0) {
+					exports.selis_html_free(inputPtr, bytes.length);
+					if (pagesPtr !== 0) {
+						exports.selis_html_free(pagesPtr, selectionBytes.length);
+					}
+					throw new ToolProtocolError("the HTML writer could not allocate title memory");
+				}
+				new Uint8Array(memory.buffer, titlePtr, titleBytes.length).set(titleBytes);
+			}
+			const outLenPtr = exports.selis_html_alloc(4);
+			const outPagesPtr = exports.selis_html_alloc(4);
+			if (outLenPtr === 0 || outPagesPtr === 0) {
+				exports.selis_html_free(inputPtr, bytes.length);
+				if (pagesPtr !== 0) {
+					exports.selis_html_free(pagesPtr, selectionBytes.length);
+				}
+				if (titlePtr !== 0) {
+					exports.selis_html_free(titlePtr, titleBytes.length);
+				}
+				throw new ToolProtocolError("the HTML writer could not allocate result memory");
+			}
+			const resultPtr = exports.selis_html_run(
+				inputPtr,
+				bytes.length,
+				pagesPtr,
+				selectionBytes.length,
+				titlePtr,
+				titleBytes.length,
+				outLenPtr,
+				outPagesPtr,
+			);
+			exports.selis_html_free(inputPtr, bytes.length);
+			if (pagesPtr !== 0) {
+				exports.selis_html_free(pagesPtr, selectionBytes.length);
+			}
+			if (titlePtr !== 0) {
+				exports.selis_html_free(titlePtr, titleBytes.length);
+			}
+			const view = new DataView(memory.buffer);
+			const outLen = view.getUint32(outLenPtr, true);
+			const outPages = view.getUint32(outPagesPtr, true);
+			exports.selis_html_free(outLenPtr, 4);
+			exports.selis_html_free(outPagesPtr, 4);
+			if (resultPtr === 0) {
+				const errLenPtr = exports.selis_html_alloc(4);
+				const errPtr = exports.selis_html_last_error(errLenPtr);
+				const errLen = new DataView(memory.buffer).getUint32(errLenPtr, true);
+				let message = "The pages could not be written as HTML.";
+				if (errPtr !== 0 && errLen > 0) {
+					message = new TextDecoder().decode(new Uint8Array(memory.buffer, errPtr, errLen));
+					exports.selis_html_free(errPtr, errLen);
+				}
+				exports.selis_html_free(errLenPtr, 4);
+				throw new ToolProtocolError(message);
+			}
+			const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+			exports.selis_html_free(resultPtr, outLen);
+			if (outPages === 0) {
+				throw new ToolProtocolError("the HTML writer returned a document with no pages.");
+			}
+			const name = `${file.name.replace(/\.[^.]+$/, "")}.html`;
+			const report: ToolOutputReport = {
+				name,
+				kind: "html",
+				pages: outPages,
+				bytes: outBytes.length,
+				verdict: "ok",
+			};
+			const output: ToolOutput = { name, bytes: outBytes };
+			// The chunk hands back a document it has already re-read with its own
+			// strict HTML reader and compared, span for span, against the extraction
+			// it came from — so `ok` is a claim about bytes this device produced,
+			// not about a writer that hoped.
+			const verification: Verification = {
+				pages_out: outPages,
+				annotations_out: 0,
+				fields_out: 0,
+				ocgs_out: 0,
+				outline_entries_out: 0,
+				embedded_files_out: 0,
+				bytes_in: bytes.length,
+				bytes_out: outBytes.length,
+				verdict: "ok",
+				checked: ["pages"],
+			};
+			const result: ReturnType<typeof runTool> = {
+				verification,
+				reports: [report],
+				outputs: [output],
+			};
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(result);
+			setStatus("Done. The result was verified on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	function showResult(result: ReturnType<typeof runTool>): void {
 		clearResult();
 		const totalBytes = result.outputs.reduce((total, output) => total + output.bytes.byteLength, 0);
@@ -2627,7 +2853,9 @@ function init(): void {
 								? "application/json"
 								: report.kind === "image"
 									? raster.mime
-									: "application/pdf",
+									: report.kind === "html"
+										? "text/html"
+										: "application/pdf",
 			});
 			const url = URL.createObjectURL(blob);
 			resultUrls.push(url);
@@ -2659,6 +2887,8 @@ function init(): void {
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
+			// An HTML result is deliberately not previewed: a blob: document opens
+			// in this page's own origin, so the only honest action is a download.
 			if (report.kind === "pdf" || (report.kind === "image" && raster.preview)) {
 				const preview = make("a", "text-button");
 				preview.href = url;
@@ -2733,6 +2963,10 @@ function init(): void {
 			}
 			if (tool.id === "png" || tool.id === "jpg" || tool.id === "tiff") {
 				await runRaster(tool.id);
+				return;
+			}
+			if (tool.id === "html") {
+				await runHtml();
 				return;
 			}
 			const wireFiles = await readWireFiles();

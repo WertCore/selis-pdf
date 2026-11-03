@@ -9,6 +9,7 @@
 
 pub mod assembly;
 pub mod export;
+pub mod html;
 pub mod order;
 pub mod search;
 pub mod selection;
@@ -19,8 +20,12 @@ pub use assembly::{
     TextLine, TextRun, TextWord,
 };
 pub use export::{
-    structured, to_html, to_json, to_markdown, to_text, to_text_from_line_texts, Line, Span,
-    Structured, LOW_CONFIDENCE_MARKER,
+    structured, to_json, to_markdown, to_text, to_text_from_line_texts, Line, Span, Structured,
+    LOW_CONFIDENCE_MARKER,
+};
+pub use html::{
+    read_positioned_html, to_positioned_html, verify_positioned_html, HtmlPage, ReadDocument,
+    ReadPage, ReadSpan, MAX_COORDINATE_PX, MAX_POSITION_ERROR_PX,
 };
 pub use order::{order_lines, LineWithMcid, OrderResult, ReadingOrder};
 pub use search::{search, search_lines, SearchMatch};
