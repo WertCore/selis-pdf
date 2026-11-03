@@ -21,12 +21,25 @@
 //! writer — so no encoder is borrowed from a third party. Decoding stays
 //! delegated: a parser has to be lenient about what a file can get wrong, and
 //! an encoder does not.
+//!
+//! [`tiff`] is the exception on both counts. A TIFF is a container whose pages
+//! live in one file, so the raster tools needed a reader for it too, and the
+//! reader is this crate's own — there is nothing delegated to fall back on.
+//! Because it returns several pages, [`decode`] still sniffs only PNG and
+//! JPEG; a caller that knows it holds a TIFF calls [`decode_tiff`].
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
 
 use selis_error::{err, Code, Result};
 use selis_sandbox::{alloc, BudgetGuard, Resource};
+
+mod tiff;
+
+pub use tiff::{
+    decode_tiff, encode_tiff, encode_tiff_one, tiff_page_infos, tiff_strip, tiff_strip_rgb,
+    TiffPageInfo, TiffStrip,
+};
 
 /// The PNG file signature (ISO/IEC 15948 §5.2).
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];

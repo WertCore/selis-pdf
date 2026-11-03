@@ -48,6 +48,7 @@ assets/payload/fallback/*.ttf.br
 
 # Local agent scratch (build logs, probes, patches). Never committed.
 .kilo/
+.perch/
 
 # The web app's generated deployment root (SL-4.WEB.02). The COMMITTED parts of
 # `apps/web/host/public/` are the hand-written shell — index.html, _headers,

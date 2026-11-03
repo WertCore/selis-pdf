@@ -159,7 +159,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | PNG → PDF | yes | yes | 1A.1 | Same. |
 | WebP → PDF | — | yes | Raster codec | Needs a new owned codec dependency under the dependency policy. |
 | HEIC → PDF | — | yes | Raster codec | Same; licence and platform review required. |
-| TIFF (multi-page) → PDF | — | yes | Raster codec | Same; define page order and DPI. |
+| TIFF (multi-page) → PDF | — | yes | Raster codec | Codec no longer the blocker: `selis-image::tiff` decodes the baseline profile this device writes, and page order and DPI come off the IFD chain. Not shipped — a card would have to prove every decoded page lands in the produced PDF, and that verification does not exist yet. |
 | SVG → PDF | — | yes | Text/Vector | SVG subset renderer; do not claim full SVG. |
 | Word → PDF | yes | yes | Text/Office | OOXML layout is a separate product-sized problem; Phase 5 at the earliest. |
 | PowerPoint → PDF | yes | yes | Text/Office | Same. |
@@ -172,7 +172,8 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Ebook (EPUB) → PDF | — | yes | Text | EPUB layout; large scope. |
 | PDF → JPG | yes | yes | 2 | **Live.** See §2: same raster chunk as PNG, quality 1–100, owned baseline sequential encoder with read-back comparison, `page-N.jpg` ZIP for multi-page. |
 | PDF → PNG | — | yes | 2 | **Live.** Render at a chosen DPI (1–600), one page or a 1-based selection. A single page downloads as a bare PNG; several pages come back as one deterministic store-method ZIP of `page-N.png` entries padded to the digit width of the page count. The chunk decodes its own PNG and compares pixels before returning. Owned encoder, owned zlib, no image library. |
-| PDF → images (WebP/TIFF) | — | yes | Raster codec | Same. |
+| PDF → TIFF | — | yes | 2 | **Live.** See §Phase 2: one lossless multi-page container, owned writer and reader, sample-for-sample read-back, `PageNumber` carries the 1-based selection, no quality knob, no preview (Chromium will not display it). |
+| PDF → WebP | — | yes | Raster codec | Still needs an owned VP8/VP8L coder; a third-party codec is a supply-chain decision, not a `Cargo.toml` edit. |
 | PDF → Word | yes | yes | Text | Top search volume and hardest fidelity problem; wait for text extraction and label honestly. |
 | PDF → PowerPoint | yes | yes | Text | Page images + text boxes; fidelity caveat. |
 | PDF → Excel | yes | yes | Text | Table reconstruction; confidence display. |
@@ -335,9 +336,9 @@ cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The inc
 page edits remains deferred; these page operations use the verified full-rewrite path.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all thirty-one cards in both phases. The raster claim is separate
-and starts in Phase 2 — PDF → PNG and PDF → JPG now ship there, each with its own read-back
-verification.
+size budget; the browser check drives all thirty-two cards in both phases. The raster claim is separate
+and starts in Phase 2 — PDF → PNG, PDF → JPG and PDF → TIFF now ship there, each with its own
+read-back verification.
 
 ### Phase 2 — raster and OCR
 
@@ -360,7 +361,7 @@ fire a download burst. The 30th `/tools.html` card takes DPI and a 1-based page 
 previewed and downloaded from Blob URLs) and three pages (`report-pages.zip`, `PK\x03\x04\x14`, each
 entry name present twice, no preview offered) — online and after the origin is cut, with the chunk
 served from cache and zero foreign requests.
-**Still open in Phase 2:** WebP/TIFF codecs, the images-ZIP parity row beyond PNG and JPG, and the
+**Still open in Phase 2:** the WebP codec, the images-ZIP parity row beyond PNG and JPG, and the
 exit gate's corpus render hashes and OCR.
 
 **Shipped 2026-11-02 (PDF → JPG):** the same raster chunk, not a fifth one — `selis-pdf-wasm-raster`
@@ -385,6 +386,35 @@ withdraw one witness each: a truncated JPEG, a progressive frame, a zero canvas,
 of three pages, a quality knob that produced identical bytes, and the two offline legs. The chunk is
 1 093 374 B brotli (1 088 448 B before the JPEG coder arrived) against its 1 300 000 budget; the 2%
 regression rule accepted the increase as a deliberate baseline edit, not a drift.
+
+**Shipped 2026-11-03 (PDF → TIFF):** the third format is the first *container*, which is why it took a
+codec that is written and read in the same module. `selis-image::tiff` emits the baseline TIFF 6.0
+profile it can also parse — little-endian mark and magic 42, one IFD per page (186 bytes: count, 15
+entries, `NextIFD`), `Compression` 8 with the same owned `flate_encode` the PDF writer and PNG use,
+`PhotometricInterpretation` 2, `PlanarConfiguration` 1, three 8-bit samples, `ResolutionUnit` 2 with
+the chosen DPI as a RATIONAL, one strip per page whose `RowsPerStrip` is the full height, and
+`PageNumber` carrying the 1-based selection order. `tiff_page_infos` walks that chain without touching
+pixels and `tiff_strip_rgb` inflates one page, so verification is the PNG standard rather than a lossy
+bound: the chunk re-opens the file it wrote, walks the chain, inflates every strip and refuses unless
+it matches the rendered page sample for sample. The reader refuses outside the profile by name — a
+planar configuration of 2, a `BitsPerSample` that is not three 8-bit samples, a `Compression` we do not
+write and a multi-strip page are `IMAGE_UNSUPPORTED`; a broken chain, a truncated file or a strip that
+will not inflate to its declared size is `IMAGE_MALFORMED` — and the writer refuses a page wider or
+taller than 65535 px before any bytes exist, because a `SHORT` dimension that overflows is a number a
+reader would believe. There is no quality knob: a TIFF here is lossless, and a test asserts the knob
+does not move the bytes. The 32nd `/tools.html` card returns one `.tif` whatever the page count — a
+container is never bundled, so `pages` is the page count rather than zero — and offers no preview,
+because Chromium does not display TIFF inline; the check asserts that absence instead of permitting the
+omission. The CLI twin is `selis render --format tif` (`tiff` accepted as an alias). The browser legs
+read the downloaded bytes with an independent JS re-implementation of the IFD walk: the mark, version
+42 and a strictly forward chain, each page measuring 200×200 at 72 DPI for the fixture, each carrying
+the RGB/Deflate/one-strip profile — one page as `report.tif`, three pages as one `report.tif` with
+three IFDs, online and after the origin is cut. Evidence: 35 `selis-image` tests (15 of them the
+writer, the reader and their refusals), 35 raster-chunk tests (10 TIFF), 5 `render_tiff` CLI tests,
+178 `xtask` tests including the real Edge run and 248 host tests. The chunk is 1 097 631 B brotli
+(1 093 374 B before the TIFF coder) against the same 1 300 000 budget: +4 257 B, +0.39%, accepted by
+the 2% rule as a deliberate baseline edit. `TIFF → PDF` is now codec-unblocked — the reader above
+decodes what this device writes — and is still not shipped, so no card claims it.
 
 ### Phase 3 — text and layout
 
@@ -444,14 +474,14 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 ## 6. Launch checklist (tools surface)
 
 - [x] `/tools.html` exists, links the external `tools.css` and compiled `tools-page.js`.
-- [x] Thirty-one live cards with 1-based page input.
+- [x] Thirty-two live cards with 1-based page input.
 - [x] Verification rows and download.
 - [x] Browser-native preview for PDF inputs and outputs; non-PDF attachments download without a preview.
 - [x] Lazy tools chunk copied by `place-assets`; build fails when missing.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all thirty-one cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all thirty-two cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
@@ -459,10 +489,12 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
       they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
       Coverage is now measured, not assumed: the driver reports the ids it rendered and the ids it
       clicked in each phase, and the verdict refuses a run whose click lists do not cover the grid.
-      `xtask/browser/tools-page` passed in Edge with 31 cards online and 31 offline, 0 foreign
+      `xtask/browser/tools-page` passed in Edge with 32 cards online and 32 offline, 0 foreign
       resources, `data-no-upload="verified"` before results appeared, `%PDF-` downloads, PNG
-      downloads whose IHDR measures the canvas the raster chunk rendered, and JPG downloads whose
-      SOF0 measures that same canvas and stay baseline sequential.
+      downloads whose IHDR measures the canvas the raster chunk rendered, JPG downloads whose
+      SOF0 measures that same canvas and stay baseline sequential, and TIFF downloads whose IFD
+      chain — re-walked independently in the harness — measures that canvas, carries the RGB and
+      Deflate profile, and stays one file at three pages.
 - [x] Tools page precache/offline promotion. `/tools.html`, `tools.css`, the tools module graph,
       the registrar, and `selis_pdf_wasm_tools.wasm` are in the install set; `CACHE_VERSION` is 2.
       The `tools-page` browser check now runs every leg online, cuts the origin, reloads the page,

@@ -1588,12 +1588,19 @@ const JPG_NEEDLES: [&str; 1] = ["JFIF"];
 /// The entry names a three-page JPEG bundle must contain, in order.
 const JPG_ZIP_NEEDLES: [&str; 3] = ["page-1.jpg", "page-2.jpg", "page-3.jpg"];
 
-/// What one raster leg promises, so the PNG and JPG cards are held to the same
-/// rules with their own names. `signature`, `width_key` and `height_key` are the
-/// sniff fields the harness fills in from the downloaded bytes; `baseline_key`
-/// is set only for JPEG, whose start-of-frame marker says which coding the
-/// writer actually used — SOF0 is baseline sequential, SOF2 would be a
-/// progressive frame, and the chunk promises the former.
+/// What one raster leg promises, so the PNG, JPG and TIFF cards are held to the
+/// same rules with their own names. `signature`, `width_key` and `height_key`
+/// are the sniff fields the harness fills in from the downloaded bytes;
+/// `baseline_key` is set only for JPEG, whose start-of-frame marker says which
+/// coding the writer actually used — SOF0 is baseline sequential, SOF2 would be
+/// a progressive frame, and the chunk promises the former. `profile_key` is the
+/// TIFF's equivalent claim: the walk of its IFD chain reports whether every page
+/// is the RGB Deflate strip this writer makes. `pages` is how many the downloaded
+/// file is expected to hold, and `count_key` names the sniff field that says so —
+/// only a container reports a count, because the per-page formats put their extra
+/// pages in a ZIP whose entry names are already the needles. `preview` records
+/// what the card may promise: Chromium displays PNG and JPEG inline and does not
+/// display TIFF, so the TIFF leg fails if a preview link appears.
 struct RasterSpec {
     verb: &'static str,
     format: &'static str,
@@ -1602,6 +1609,10 @@ struct RasterSpec {
     width_key: &'static str,
     height_key: &'static str,
     baseline_key: Option<&'static str>,
+    profile_key: Option<&'static str>,
+    pages: u32,
+    count_key: Option<&'static str>,
+    preview: bool,
     needles: &'static [&'static str],
     zip_needles: &'static [&'static str],
 }
@@ -1614,6 +1625,10 @@ const PNG_LEG: RasterSpec = RasterSpec {
     width_key: "pngWidth",
     height_key: "pngHeight",
     baseline_key: None,
+    profile_key: None,
+    pages: 1,
+    count_key: None,
+    preview: true,
     needles: &PNG_NEEDLES,
     zip_needles: &PNG_ZIP_NEEDLES,
 };
@@ -1626,8 +1641,38 @@ const JPG_LEG: RasterSpec = RasterSpec {
     width_key: "jpegWidth",
     height_key: "jpegHeight",
     baseline_key: Some("jpegBaseline"),
+    profile_key: None,
+    pages: 1,
+    count_key: None,
+    preview: true,
     needles: &JPG_NEEDLES,
     zip_needles: &JPG_ZIP_NEEDLES,
+};
+
+/// One page inside one TIFF. The needles are empty because a TIFF carries no
+/// text marker to search for — `IHDR`, `IDAT` and `JFIF` are format signatures
+/// the container does not have — so the leg's proof is the IFD walk instead.
+const TIFF_LEG: RasterSpec = RasterSpec {
+    verb: "Render TIFF",
+    format: "TIFF",
+    extension: "tif",
+    signature: "tiff",
+    width_key: "tiffWidth",
+    height_key: "tiffHeight",
+    baseline_key: None,
+    profile_key: Some("tiffProfile"),
+    pages: 1,
+    count_key: Some("tiffPages"),
+    preview: false,
+    needles: &[],
+    zip_needles: &[],
+};
+
+/// Three pages of the same document in the same container. This is the leg the
+/// ZIP-bundle legs stand in for on the per-page formats.
+const TIFF_THREE_LEG: RasterSpec = RasterSpec {
+    pages: 3,
+    ..TIFF_LEG
 };
 
 /// The request-check tail every lazy-chunk leg shares: the page must have
@@ -1667,8 +1712,9 @@ fn check_no_upload_network(leg: &Json, label: &str) -> Result<(), String> {
 /// format's own signature and canvas size.
 ///
 /// This is the only browser proof that the raster chunk is served, links with
-/// no imports, and is wired to the card. The leg also proves the page offers an
-/// image preview rather than only a download.
+/// no imports, and is wired to the card. The leg also proves the page hands the
+/// file over the way `preview` says it should: a preview link for a format the
+/// browser displays, none for one it does not.
 fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
@@ -1707,9 +1753,10 @@ fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), St
             .and_then(Json::as_str)
             .unwrap_or("")
     };
-    if row_value("Pages") != "1" {
+    let pages_wanted = spec.pages.to_string();
+    if row_value("Pages") != pages_wanted {
         return Err(format!(
-            "the {label} run reported Pages {:?}, expected \"1\"",
+            "the {label} run reported Pages {:?}, expected {pages_wanted:?}",
             row_value("Pages")
         ));
     }
@@ -1749,18 +1796,28 @@ fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), St
             output.get("downloadName")
         ));
     }
-    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+    if output.get("pages").and_then(Json::as_u64) != Some(u64::from(spec.pages)) {
         return Err(format!(
-            "the {label} output reported {:?} pages, expected 1",
-            output.get("pages")
+            "the {label} output reported {:?} pages, expected {}",
+            output.get("pages"),
+            spec.pages
         ));
     }
-    if output.get("blob").and_then(Json::as_bool) != Some(true)
-        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
-    {
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
         return Err(format!(
-            "the {label} output did not use Blob URLs for preview and download"
+            "the {label} output was not handed over as a Blob URL"
         ));
+    }
+    let previewed = output.get("previewBlob").and_then(Json::as_bool) == Some(true);
+    if previewed != spec.preview {
+        return Err(if spec.preview {
+            format!("the {label} output offered no preview link")
+        } else {
+            format!(
+                "the {label} output offered a preview link, and a {} is not displayed inline",
+                spec.format
+            )
+        });
     }
     if output.get(spec.signature).and_then(Json::as_bool) != Some(true) {
         return Err(format!(
@@ -1777,6 +1834,24 @@ fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), St
             spec.format
         ));
     }
+    if spec
+        .profile_key
+        .is_some_and(|key| output.get(key).and_then(Json::as_bool) != Some(true))
+    {
+        return Err(format!(
+            "the {label} {} is not the RGB Deflate strip profile the chunk writes",
+            spec.format
+        ));
+    }
+    if let Some(key) = spec.count_key {
+        let counted = output.get(key).and_then(Json::as_u64).unwrap_or(0);
+        if counted != u64::from(spec.pages) {
+            return Err(format!(
+                "the {label} {} holds {counted} page(s) by its own IFD chain, expected {}",
+                spec.format, spec.pages
+            ));
+        }
+    }
     let width = output
         .get(spec.width_key)
         .and_then(Json::as_u64)
@@ -1791,15 +1866,22 @@ fn check_raster_leg(leg: &Json, label: &str, spec: &RasterSpec) -> Result<(), St
             spec.format
         ));
     }
-    let found = output
-        .get("found")
-        .and_then(Json::as_array)
-        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
-    if found.len() != spec.needles.len() || found.iter().any(|item| item.as_bool() != Some(true)) {
-        return Err(format!(
-            "the {label} output is missing bytes the {} writer always writes ({found:?})",
-            spec.format
-        ));
+    // A format with no text marker in its bytes (a TIFF has no chunk names like
+    // IHDR or a JFIF tag) declares no needles, and the harness records no
+    // content list for it; its proof is the structure walk above.
+    if !spec.needles.is_empty() {
+        let found = output
+            .get("found")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+        if found.len() != spec.needles.len()
+            || found.iter().any(|item| item.as_bool() != Some(true))
+        {
+            return Err(format!(
+                "the {label} output is missing bytes the {} writer always writes ({found:?})",
+                spec.format
+            ));
+        }
     }
     let absent = output
         .get("absentFound")
@@ -3383,7 +3465,7 @@ fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 31] = [
+const TOOLS_PAGE_CARDS: [&str; 32] = [
     "attach",
     "attachments",
     "batch",
@@ -3413,6 +3495,7 @@ const TOOLS_PAGE_CARDS: [&str; 31] = [
     "rotate",
     "split",
     "strip_metadata",
+    "tiff",
     "watermark",
     "zip",
 ];
@@ -3726,9 +3809,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(31) {
+    if report.get("cards").and_then(Json::as_u64) != Some(32) {
         return Err(format!(
-            "the tools grid did not render thirty-one cards (cards = {:?})",
+            "the tools grid did not render thirty-two cards (cards = {:?})",
             report.get("cards")
         ));
     }
@@ -4123,6 +4206,16 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     })?;
     check_raster_leg(jpg_coarse, "online JPG at quality 1", &JPG_LEG)?;
     check_smaller_than(jpg_coarse, jpg, "online JPG at quality 1", "online JPG")?;
+    let tiff = report
+        .get("tiff")
+        .ok_or_else(|| "the page reported no PDF-to-TIFF leg (tiff = None)".to_string())?;
+    check_raster_leg(tiff, "online TIFF", &TIFF_LEG)?;
+    // The container is the card: three pages selected must be three pages
+    // inside the one file the browser downloads, not three files in a ZIP.
+    let tiff_three = report
+        .get("tiffThree")
+        .ok_or_else(|| "the page reported no three-page TIFF leg (tiffThree = None)".to_string())?;
+    check_raster_leg(tiff_three, "online TIFF of three pages", &TIFF_THREE_LEG)?;
 
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
@@ -4143,9 +4236,9 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(31) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(32) {
         return Err(format!(
-            "the offline tools page did not render thirty-one cards (cards = {:?})",
+            "the offline tools page did not render thirty-two cards (cards = {:?})",
             offline.get("cards")
         ));
     }
@@ -4507,6 +4600,18 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("jpgZip")
         .ok_or_else(|| "the offline leg reported no multi-page JPG bundle result".to_string())?;
     check_raster_zip_leg(offline_jpg_zip, "offline JPG bundle", &JPG_LEG)?;
+    let offline_tiff = offline
+        .get("tiff")
+        .ok_or_else(|| "the offline leg reported no PDF-to-TIFF result".to_string())?;
+    check_raster_leg(offline_tiff, "offline TIFF", &TIFF_LEG)?;
+    let offline_tiff_three = offline
+        .get("tiffThree")
+        .ok_or_else(|| "the offline leg reported no three-page TIFF result".to_string())?;
+    check_raster_leg(
+        offline_tiff_three,
+        "offline TIFF of three pages",
+        &TIFF_THREE_LEG,
+    )?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -8664,6 +8769,59 @@ mod tests {
         })
     }
 
+    /// One PDF → TIFF leg: the same lazy chunk renders `pages` pages into ONE
+    /// container, so the downloaded Blob is a `II`-ordered TIFF whose IFD walk
+    /// counts exactly those pages and reports the RGB Deflate profile the writer
+    /// promises. There is no preview link: Chromium does not display TIFF, and a
+    /// card that promised one would be promising something the browser refuses.
+    fn real_tools_tiff_leg(pages: u64) -> Json {
+        let bytes = if pages == 1 { 3_216 } else { 9_648 };
+        let output = json!({
+            "kind": "image",
+            "name": "report.tif",
+            "pages": pages,
+            "declaredBytes": bytes,
+            "bytes": bytes,
+            "blob": true,
+            "previewBlob": Json::Null,
+            "downloadName": "report.tif",
+            "header": "II*\u{0}\u{8}",
+            "zip": false,
+            "png": false,
+            "jpeg": false,
+            "tiff": true,
+            "tiffPages": pages,
+            "tiffWidth": 200,
+            "tiffHeight": 200,
+            "tiffProfile": true,
+            "overTarget": false,
+            "absentFound": [false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Render TIFF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "report.tif",
+                "meta": format!("1 file \u{00b7} {bytes} B \u{00b7} verified locally"),
+                "rows": [
+                    { "label": "Pages", "value": pages.to_string() },
+                    { "label": "Size", "value": format!("979 B \u{2192} {bytes} B") },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_raster.wasm"],
+            },
+        })
+    }
+
     /// A leg that ends with one rewritten PDF. `counts` is what the page found in
     /// the downloaded bytes, in the order the leg asked for them.
     fn real_tools_single_leg(
@@ -9169,7 +9327,7 @@ mod tests {
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 31,
+            "cards": 32,
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -9216,7 +9374,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 31,
+                "cards": 32,
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -9347,6 +9505,8 @@ mod tests {
         report["jpg"] = real_tools_jpg_leg();
         report["jpgCoarse"] = real_tools_jpg_coarse_leg();
         report["jpgZip"] = real_tools_jpg_zip_leg();
+        report["tiff"] = real_tools_tiff_leg(1);
+        report["tiffThree"] = real_tools_tiff_leg(3);
         report["cardIds"] = json!(TOOLS_PAGE_CARDS);
         report["clicked"] = json!({
             "online": TOOLS_PAGE_CARDS,
@@ -9383,6 +9543,8 @@ mod tests {
         report["offline"]["pngZip"] = report["pngZip"].clone();
         report["offline"]["jpg"] = report["jpg"].clone();
         report["offline"]["jpgZip"] = report["jpgZip"].clone();
+        report["offline"]["tiff"] = report["tiff"].clone();
+        report["offline"]["tiffThree"] = report["tiffThree"].clone();
         report["offline"]["batch"] = report["batch"].clone();
         report["offline"]["stripMetadata"] = report["stripMetadata"].clone();
         report["offline"]["metadataReport"] = report["metadataReport"].clone();
@@ -9598,7 +9760,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 31,
+            "cards": 32,
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",

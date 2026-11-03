@@ -83,7 +83,7 @@ interface RasterWasm {
 }
 
 /** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId = ToolOp | "convert" | "png" | "jpg";
+type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff";
 
 interface ToolDef {
 	readonly id: ToolId;
@@ -352,6 +352,15 @@ const TOOLS: readonly ToolDef[] = [
 		accepts: "pdf",
 	},
 	{
+		id: "tiff",
+		mark: "▤",
+		title: "PDF to TIFF",
+		blurb: "Render every page, or a selection, into one lossless multi-page TIFF.",
+		verb: "Render TIFF",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
 		id: "zip",
 		mark: "▣",
 		title: "ZIP files",
@@ -367,6 +376,38 @@ const TOOL_BY_ID = new Map<ToolId, ToolDef>(TOOLS.map((tool) => [tool.id, tool])
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+
+/** How the page hands one raster format to the browser. */
+interface RasterInfo {
+	readonly mime: string;
+	readonly label: string;
+	readonly preview: boolean;
+}
+
+/**
+ * A raster output's own suffix decides its MIME, the word its row uses and
+ * whether a preview is offered at all: Chromium does not display TIFF, so a
+ * `.tif` says download and nothing more. A suffix this page never writes gets
+ * an opaque type and no preview rather than a claim about a format it cannot
+ * name.
+ */
+const RASTERS: ReadonlyMap<string, RasterInfo> = new Map([
+	["png", { mime: "image/png", label: "PNG image", preview: true }],
+	["jpg", { mime: "image/jpeg", label: "JPEG image", preview: true }],
+	["tif", { mime: "image/tiff", label: "TIFF image", preview: false }],
+]);
+
+const UNNAMED_RASTER: RasterInfo = {
+	mime: "application/octet-stream",
+	label: "image",
+	preview: false,
+};
+
+function rasterInfo(name: string): RasterInfo {
+	const dot = name.lastIndexOf(".");
+	const suffix = dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+	return RASTERS.get(suffix) ?? UNNAMED_RASTER;
+}
 
 type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type StatusKind = "info" | "error" | "ok";
@@ -1547,6 +1588,30 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "tiff") {
+			const dpi = textInput("dpi", "number", "150");
+			dpi.min = "1";
+			dpi.max = "600";
+			dpi.step = "1";
+			dpi.value = "150";
+			addField(
+				"dpi",
+				"Resolution (DPI)",
+				dpi,
+				"1 to 600. 72 renders one pixel per point; 150 is a good screen/print default.",
+			);
+			addField(
+				"pages",
+				"Pages",
+				textInput("pages", "text", "All pages"),
+				"1-based, like the page numbers readers show: 1-3,5. Leave empty for every page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every page is rendered on this device from the PDF's own content. The selected pages go into one multi-page TIFF rather than a file per page, and each page is read back out of the assembled file and matched sample for sample before it is offered, so a file that does not agree with the pages comes back as a failure instead of a download. There is no quality knob: a TIFF here is lossless. Browsers do not display TIFF inline, so the result offers a download rather than a preview.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "convert") {
 			const format = make("select", "control");
 			for (const [value, label] of [
@@ -2399,8 +2464,11 @@ function init(): void {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			const dpi = numberInRange("dpi", "Resolution", 1, 600, 150, true);
-			const format = toolId === "jpg" ? 1 : 0;
-			const extension = toolId === "jpg" ? "jpg" : "png";
+			const format = toolId === "jpg" ? 1 : toolId === "tiff" ? 2 : 0;
+			const extension = toolId === "jpg" ? "jpg" : toolId === "tiff" ? "tif" : "png";
+			// A TIFF is a container: several pages live in one file, so unlike the
+			// per-page formats its page count never turns the result into a ZIP.
+			const container = toolId === "tiff";
 			const quality = numberInRange("quality", "Quality", 1, 100, 90, true);
 			const selection = optionValue("pages").trim();
 			const selectionBytes = new TextEncoder().encode(selection);
@@ -2470,18 +2538,19 @@ function init(): void {
 				throw new ToolProtocolError("the renderer returned no pages.");
 			}
 			const stem = file.name.replace(/\.[^.]+$/, "");
-			const multiple = outFiles > 1;
-			const name = multiple ? `${stem}-pages.zip` : `${stem}.${extension}`;
+			const bundle = outFiles > 1 && !container;
+			const name = bundle ? `${stem}-pages.zip` : `${stem}.${extension}`;
 			const report: ToolOutputReport = {
 				name,
-				kind: multiple ? "zip" : "image",
-				pages: multiple ? 0 : outFiles,
+				kind: bundle ? "zip" : "image",
+				pages: bundle ? 0 : outFiles,
 				bytes: outBytes.length,
 				verdict: "ok",
 			};
 			const output: ToolOutput = { name, bytes: outBytes };
 			// The chunk verifies itself before returning: a PNG is decoded back and
-			// matched pixel for pixel, a JPEG is decoded back and compared with the
+			// matched pixel for pixel, a TIFF's page chain is walked and every page's
+			// samples compared, a JPEG is decoded back and compared with the
 			// page inside the bounds its coder can honestly meet. Either way `ok` is
 			// a claim this page has observed rather than a hope.
 			const verification: Verification = {
@@ -2547,6 +2616,7 @@ function init(): void {
 			}
 			const copy = new Uint8Array(output.bytes.byteLength);
 			copy.set(output.bytes);
+			const raster = rasterInfo(output.name);
 			const blob = new Blob([copy.buffer], {
 				type:
 					report.kind === "zip"
@@ -2556,7 +2626,7 @@ function init(): void {
 							: report.kind === "report"
 								? "application/json"
 								: report.kind === "image"
-									? "image/png"
+									? raster.mime
 									: "application/pdf",
 			});
 			const url = URL.createObjectURL(blob);
@@ -2584,12 +2654,12 @@ function init(): void {
 				meta.textContent = `Metadata report | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
 			}
 			if (report.kind === "image") {
-				meta.textContent = `PNG image | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
+				meta.textContent = `${raster.label} | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
 			}
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
-			if (report.kind === "pdf" || report.kind === "image") {
+			if (report.kind === "pdf" || (report.kind === "image" && raster.preview)) {
 				const preview = make("a", "text-button");
 				preview.href = url;
 				preview.target = "_blank";
@@ -2661,7 +2731,7 @@ function init(): void {
 				await runConvert();
 				return;
 			}
-			if (tool.id === "png" || tool.id === "jpg") {
+			if (tool.id === "png" || tool.id === "jpg" || tool.id === "tiff") {
 				await runRaster(tool.id);
 				return;
 			}

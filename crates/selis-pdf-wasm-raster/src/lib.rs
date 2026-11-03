@@ -1,4 +1,4 @@
-//! Raster lazy chunk: PDF pages → PNG or JPEG files, on the device.
+//! Raster lazy chunk: PDF pages → PNG, JPEG or TIFF files, on the device.
 //!
 //! Separate `cdylib` from the viewer and the tools chunk. The tools page never
 //! downloads this module until the user asks for images; it is fetched then and
@@ -10,24 +10,30 @@
 //!
 //! The render itself is the engine's own whole-page path
 //! ([`Session::render_page_rgba`]), and the encoders are the engine's own
-//! writers: `selis-image`'s deterministic PNG and the owned baseline JPEG.
-//! One page becomes one file; several pages are returned as one deterministic
-//! ZIP so a browser does not have to allow a burst of downloads.
+//! writers: `selis-image`'s deterministic PNG, the owned baseline JPEG, and the
+//! owned multi-page TIFF. One page becomes one file; several pages become one
+//! deterministic ZIP so a browser does not have to allow a burst of downloads.
+//! A TIFF is the exception: its pages live inside one container already, so
+//! every selected page lands in the single `.tif` the chunk returns.
 //!
-//! Both formats are read back before the chunk returns. A PNG must reproduce
-//! the rendered pixels exactly; a JPEG is lossy, so it must decode under the
-//! engine's own JPEG reader, match the page's size, and stay inside error bounds
-//! measured against the harshest content the coder can honestly be given. A page
-//! too large for that reader to reopen is refused rather than shipped unchecked.
-//! A file that fails is reported as a failure instead of being handed over with
-//! a "verified" label.
+//! All three are read back before the chunk returns. A PNG must reproduce the
+//! rendered pixels exactly; a TIFF must do the same, page by page, and is
+//! lossless too, so it gets the same demand. A JPEG is lossy, so it must decode
+//! under the engine's own JPEG reader, match the page's size, and stay inside
+//! error bounds measured against the harshest content the coder can honestly be
+//! given. A page too large for the format's own description is refused rather
+//! than shipped. A file that fails is reported as a failure instead of being
+//! handed over with a "verified" label.
 
 #![allow(unsafe_code)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::sync::Mutex;
 
-use selis_image::{encode_jpeg, encode_png, Image};
+use selis_image::{
+    encode_jpeg, encode_png, encode_tiff, flatten_over_white, tiff_page_infos, tiff_strip, Image,
+    TiffStrip,
+};
 use selis_pdf_engine::Session;
 use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
 
@@ -40,6 +46,24 @@ pub const CHUNK_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// image compresses well without the level-9 time cost showing up as a stalled
 /// tab. The output is deterministic at any fixed level.
 const PNG_LEVEL: u8 = 6;
+
+/// The Deflate level a TIFF strip is compressed at.
+///
+/// Six again, for the same reason as [`PNG_LEVEL`]: the page's own samples are
+/// what matters, the level only decides how hard the compressor works on the
+/// way to the same bytes. It is not a user knob — `quality` does not touch it,
+/// because a lossless file that changes with a quality number is a contradiction.
+const TIFF_LEVEL: u8 = 6;
+
+/// The largest edge a baseline TIFF can describe.
+///
+/// `ImageWidth` and `ImageLength` are `SHORT` tags in a baseline file, so 65535
+/// px is the biggest page the container can name — 11 inches at 600 DPI, but a
+/// wide banner at a high DPI reaches it. Beyond that the writer would have to
+/// claim a dimension the reader would not believe, so the chunk refuses the
+/// page and names the knob that fixes it, exactly as the JPEG leg does at its
+/// own reader's limit.
+const MAX_TIFF_EDGE: u32 = 65535;
 
 /// The largest mean channel error a verified JPEG may carry, in 8-bit levels.
 ///
@@ -215,16 +239,18 @@ pub extern "C" fn selis_raster_available() -> u32 {
     1
 }
 
-/// Render the selected pages to PNG or JPEG.
+/// Render the selected pages to PNG, JPEG or TIFF.
 ///
 /// `pages_ptr`/`pages_len` is a UTF-8 selection in the same 1-based syntax the
 /// page's other tools use (`""` = every page, `"1-3,5"` = those four).
-/// `format` selects the writer — `0` is PNG, `1` is JPEG — and `quality` is
-/// the JPEG knob (1..=100); the PNG leg ignores it and keeps its own fixed
-/// compression level. The return value is one image when the selection has one
-/// page, otherwise a deterministic ZIP of `page-NNN.png` or `page-NNN.jpg`
-/// entries. `out_files` receives the count and `out_len` the byte length; free
-/// the result with [`selis_raster_free`].
+/// `format` selects the writer — `0` is PNG, `1` is JPEG, `2` is TIFF — and
+/// `quality` is the JPEG knob (1..=100); PNG ignores it and keeps its own fixed
+/// compression level, and TIFF has no quality to be given: it is lossless.
+/// PNG and JPEG return one file per page, bundled into a deterministic ZIP when
+/// the selection has more than one page. TIFF always returns one file, because
+/// its pages are inside the container already — `out_files` still carries the
+/// page count, so the page can say how many pages that document holds. Free the
+/// result with [`selis_raster_free`].
 ///
 /// On failure the return value is null and [`selis_raster_last_error`] carries
 /// the reason.
@@ -304,6 +330,8 @@ enum Format {
     Png,
     /// Lossy baseline JPEG, verified inside a measured bound.
     Jpg,
+    /// Lossless multi-page TIFF, verified sample for sample, page by page.
+    Tiff,
 }
 
 impl Format {
@@ -314,6 +342,7 @@ impl Format {
         match code {
             0 => Ok(Self::Png),
             1 => Ok(Self::Jpg),
+            2 => Ok(Self::Tiff),
             other => Err(format!("unknown image format code {other}")),
         }
     }
@@ -323,6 +352,7 @@ impl Format {
         match self {
             Self::Png => "png",
             Self::Jpg => "jpg",
+            Self::Tiff => "tif",
         }
     }
 }
@@ -338,6 +368,16 @@ fn run_impl(
     if dpi == 0 || dpi > 600 {
         return Err("DPI must be between 1 and 600".to_string());
     }
+    let budget = Budget::profile(Surface::Batch);
+    let clock = FixedClock(0);
+    let session = Session::open(input.to_vec(), &budget, &clock)
+        .map_err(|e| format!("cannot open PDF: {e}"))?;
+    let pages = parse_pages(selection, session.len())?;
+    // A TIFF is already a container, so its leg assembles one file from every
+    // selected page instead of one file per page.
+    if format == Format::Tiff {
+        return run_tiff(&session, &budget, &clock, &pages, dpi);
+    }
     // PNG has no quality knob; the level it compresses at is this module's own
     // choice. JPEG's is the user's, and 1..=100 is what the writer accepts.
     let level = match format {
@@ -348,12 +388,9 @@ fn run_impl(
             }
             u8::try_from(quality).unwrap_or(100)
         }
+        // Handled above by `run_tiff`, which brings its own level.
+        Format::Tiff => TIFF_LEVEL,
     };
-    let budget = Budget::profile(Surface::Batch);
-    let clock = FixedClock(0);
-    let session = Session::open(input.to_vec(), &budget, &clock)
-        .map_err(|e| format!("cannot open PDF: {e}"))?;
-    let pages = parse_pages(selection, session.len())?;
     let total = u32::try_from(session.len()).unwrap_or(u32::MAX);
     let width = decimal_width(total);
     let mut rendered: Vec<(String, Vec<u8>)> = Vec::with_capacity(pages.len());
@@ -383,6 +420,12 @@ fn run_impl(
                 verify_jpg(&image, &jpg, level, &mut g, page)?;
                 jpg
             }
+            // `run_tiff` owns this format, and took the selection before this
+            // loop ran: a TIFF is one container for every page at once, so
+            // there is no per-page file to make here.
+            Format::Tiff => {
+                return Err("a TIFF is built from every selected page at once".to_string());
+            }
         };
         rendered.push((
             format!(
@@ -408,6 +451,116 @@ fn run_impl(
     let zip =
         selis_pdf_tools::bundle_zip(&entries).map_err(|e| format!("cannot bundle images: {e}"))?;
     Ok((zip, files))
+}
+
+/// Render every selected page into one multi-page TIFF and read it back.
+///
+/// Strips, not rasters, are what this holds between the two passes: a page is
+/// rendered, deflated and dropped, so a fifty-page document costs fifty
+/// compressed strips rather than fifty live canvases. The assembly is one
+/// `encode_tiff` call, and the verification re-renders page by page against
+/// `tiff_page_infos` and `tiff_strip_rgb` — never decoding every page at once.
+fn run_tiff(
+    session: &Session,
+    budget: &Budget,
+    clock: &FixedClock,
+    pages: &[usize],
+    dpi: u32,
+) -> Result<(Vec<u8>, u32), String> {
+    if pages.is_empty() {
+        return Err("no pages selected".to_string());
+    }
+    let mut strips: Vec<TiffStrip> = Vec::new();
+    for &page in pages {
+        let mut g = budget.guard_with(clock, CancelToken::new());
+        let pixels = session
+            .render_page_rgba(page, f64::from(dpi), budget, &mut g)
+            .map_err(|e| format!("page {} could not be rendered: {e}", page.saturating_add(1)))?;
+        let image = Image {
+            width: pixels.width,
+            height: pixels.height,
+            rgba: pixels.rgba,
+        };
+        check_tiff_is_writable(&image, dpi, page)?;
+        let strip = tiff_strip(&image, TIFF_LEVEL, &mut g)
+            .map_err(|e| format!("page {} could not be encoded: {e}", page.saturating_add(1)))?;
+        strips.push(strip);
+    }
+    let mut g = budget.guard_with(clock, CancelToken::new());
+    let file = encode_tiff(&strips, dpi, &mut g)
+        .map_err(|e| format!("the TIFF could not be built: {e}"))?;
+    drop(g);
+    verify_tiff(session, budget, clock, pages, dpi, &file)?;
+    let files = u32::try_from(pages.len()).map_err(|_| "too many pages".to_string())?;
+    Ok((file, files))
+}
+
+/// Refuse a page a baseline TIFF cannot describe, before spending time on it.
+///
+/// The container could hold the pixels — 24-bit samples have no per-edge limit
+/// — but a baseline file names them with `SHORT` tags, and a writer that truncates
+/// a dimension is handing the user a document whose own description is a lie.
+fn check_tiff_is_writable(image: &Image, dpi: u32, page: usize) -> Result<(), String> {
+    if image.width <= MAX_TIFF_EDGE && image.height <= MAX_TIFF_EDGE {
+        return Ok(());
+    }
+    let label = page.saturating_add(1);
+    Err(format!(
+        "page {label} at {dpi} DPI is {}x{} px, and a baseline TIFF can only describe a page up \
+         to {MAX_TIFF_EDGE} px on an edge; lower the DPI, or use PDF to PNG for one file per page",
+        image.width, image.height
+    ))
+}
+
+/// Read the assembled TIFF back and demand the pages it was built from.
+///
+/// Lossless, so this is the PNG's standard rather than the JPEG's: every sample
+/// the encoder was handed — [`flatten_over_white`] of the render, because a TIFF
+/// in this profile has no alpha — has to come back out unchanged. The page count
+/// is checked first, because a chain that dropped a page would otherwise show up
+/// as a mismatch on whichever page happened to be last.
+fn verify_tiff(
+    session: &Session,
+    budget: &Budget,
+    clock: &FixedClock,
+    pages: &[usize],
+    dpi: u32,
+    file: &[u8],
+) -> Result<(), String> {
+    let mut walk = budget.guard_with(clock, CancelToken::new());
+    let infos =
+        tiff_page_infos(file, &mut walk).map_err(|e| format!("the TIFF could not be read: {e}"))?;
+    drop(walk);
+    if infos.len() != pages.len() {
+        return Err(format!(
+            "the TIFF holds {} pages, but {} were rendered",
+            infos.len(),
+            pages.len()
+        ));
+    }
+    for (info, &page) in infos.iter().zip(pages) {
+        let label = page.saturating_add(1);
+        let mut g = budget.guard_with(clock, CancelToken::new());
+        let pixels = session
+            .render_page_rgba(page, f64::from(dpi), budget, &mut g)
+            .map_err(|e| format!("page {label} could not be re-rendered to verify: {e}"))?;
+        if info.width != pixels.width || info.height != pixels.height {
+            return Err(format!(
+                "page {label} failed TIFF verification: the file says {}x{}, the page is {}x{}",
+                info.width, info.height, pixels.width, pixels.height
+            ));
+        }
+        let want = flatten_over_white(&pixels.rgba, &mut g)
+            .map_err(|e| format!("page {label} could not be prepared for verification: {e}"))?;
+        let got = selis_image::tiff_strip_rgb(file, info, &mut g)
+            .map_err(|e| format!("page {label} could not be read back: {e}"))?;
+        if got != want {
+            return Err(format!(
+                "page {label} failed TIFF verification: the file does not hold the page's samples"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Read a PNG back and demand the pixels it was made from.
@@ -791,10 +944,160 @@ mod tests {
     fn format_codes_are_the_abi_numbers() {
         assert_eq!(Format::from_code(0).unwrap(), Format::Png);
         assert_eq!(Format::from_code(1).unwrap(), Format::Jpg);
-        let err = Format::from_code(2).expect_err("unknown code");
-        assert!(err.contains("unknown image format code 2"), "{err}");
+        assert_eq!(Format::from_code(2).unwrap(), Format::Tiff);
+        let err = Format::from_code(3).expect_err("unknown code");
+        assert!(err.contains("unknown image format code 3"), "{err}");
         assert_eq!(Format::Png.extension(), "png");
         assert_eq!(Format::Jpg.extension(), "jpg");
+        assert_eq!(Format::Tiff.extension(), "tif");
+    }
+
+    #[test]
+    fn one_page_is_a_tiff_that_reads_back_its_own_pixels() {
+        let (bytes, files) = run_impl(MINIMAL, "", 72, Format::Tiff, 0).expect("render");
+        assert_eq!(files, 1);
+        assert_eq!(bytes.get(..4), Some(b"II\x2a\x00".as_slice()));
+        let pages = selis_image::decode_tiff(&bytes, &mut guard()).expect("decode");
+        assert_eq!(pages.len(), 1);
+        assert_eq!((pages[0].width, pages[0].height), (100, 100));
+        assert!(pages[0]
+            .rgba
+            .chunks_exact(4)
+            .all(|px| matches!(px, &[_, _, _, 255])));
+        // The same canvas the PNG leg reports, sample for sample: TIFF is
+        // lossless here, so there is no bound to allow for.
+        let png = run_impl(MINIMAL, "", 72, Format::Png, 0).expect("png").0;
+        let from_png = selis_image::decode_png(&png, &mut guard()).expect("decode png");
+        assert_eq!(from_png.rgba, pages[0].rgba);
+    }
+
+    #[test]
+    fn several_pages_become_one_tiff_and_not_a_zip() {
+        let (bytes, files) = run_impl(NAV, "", 36, Format::Tiff, 0).expect("render");
+        assert_eq!(files, 2, "the page count is still reported");
+        assert_eq!(bytes.get(..2), Some(b"II".as_slice()));
+        assert_ne!(
+            bytes.get(..2),
+            Some(b"PK".as_slice()),
+            "a container needs no ZIP"
+        );
+        let infos = tiff_page_infos(&bytes, &mut guard()).expect("walk");
+        assert_eq!(infos.len(), 2);
+        for (index, info) in infos.iter().enumerate() {
+            let (page, _) = page_image(NAV, index, 36);
+            assert_eq!((info.width, info.height), (page.width, page.height));
+            let samples = selis_image::tiff_strip_rgb(&bytes, info, &mut guard()).expect("strip");
+            let want = selis_image::flatten_over_white(&page.rgba, &mut guard()).expect("flatten");
+            assert_eq!(
+                samples,
+                want,
+                "page {} must survive the container",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_page_is_written_once_in_the_tiff_too() {
+        let (bytes, files) = run_impl(MINIMAL, "1,1", 36, Format::Tiff, 0).expect("render");
+        assert_eq!(files, 1);
+        assert_eq!(
+            tiff_page_infos(&bytes, &mut guard()).expect("walk").len(),
+            1
+        );
+        let err = run_impl(MINIMAL, "2", 36, Format::Tiff, 0).expect_err("out of range");
+        assert!(err.contains("outside this document"), "{err}");
+    }
+
+    #[test]
+    fn tiff_ignores_the_quality_knob_and_is_deterministic() {
+        // A lossless file cannot have a quality, so the knob must not reach it:
+        // a nonsense value changes nothing and is not an error.
+        let (default, _) = run_impl(MINIMAL, "1", 96, Format::Tiff, 0).expect("zero");
+        let (asked, _) = run_impl(MINIMAL, " 1 ", 96, Format::Tiff, 999).expect("huge");
+        assert_eq!(default, asked, "the same page, twice, byte for byte");
+    }
+
+    #[test]
+    fn tiff_dpi_is_bounded_like_the_others() {
+        let low = run_impl(MINIMAL, "", 0, Format::Tiff, 0).expect_err("dpi 0");
+        assert!(low.contains("DPI must be between 1 and 600"), "{low}");
+        let high = run_impl(MINIMAL, "", 1000, Format::Tiff, 0).expect_err("dpi 1000");
+        assert!(high.contains("DPI must be between 1 and 600"), "{high}");
+    }
+
+    #[test]
+    fn check_tiff_is_writable_holds_at_the_container_s_limit() {
+        let at_limit = solid(MAX_TIFF_EDGE, 1, [0, 0, 0, 255]);
+        assert!(check_tiff_is_writable(&at_limit, 72, 0).is_ok());
+        let too_wide = solid(MAX_TIFF_EDGE.saturating_add(1), 1, [0, 0, 0, 255]);
+        let err = check_tiff_is_writable(&too_wide, 72, 0).expect_err("oversized width");
+        assert!(err.contains("baseline TIFF"), "{err}");
+        assert!(err.contains("PDF to PNG"), "{err}");
+        let too_tall = solid(1, MAX_TIFF_EDGE.saturating_add(1), [0, 0, 0, 255]);
+        assert!(check_tiff_is_writable(&too_tall, 300, 0).is_err());
+    }
+
+    #[test]
+    fn a_page_too_large_for_a_baseline_tiff_is_refused_before_the_file_is_written() {
+        // 8000 pt at 600 DPI is 66,667 px across — past what a SHORT tag can
+        // name. The run must say so rather than write a file that describes its
+        // own page wrongly.
+        let wide = wide_page_pdf(8_000.0, 2.0);
+        let err = run_impl(&wide, "", 600, Format::Tiff, 0).expect_err("oversized TIFF");
+        assert!(err.contains("66667x17"), "{err}");
+        assert!(err.contains("baseline TIFF"), "{err}");
+        assert!(err.contains("PDF to PNG"), "{err}");
+    }
+
+    #[test]
+    fn verify_tiff_refuses_a_file_that_is_not_the_selection() {
+        let budget = Budget::profile(Surface::Batch);
+        let clock = FixedClock(0);
+        let session = Session::open(NAV.to_vec(), &budget, &clock).expect("open");
+        // One page's file, offered as the answer to a two-page selection.
+        let (one, _) = run_impl(NAV, "1", 36, Format::Tiff, 0).expect("render");
+        let err =
+            verify_tiff(&session, &budget, &clock, &[0, 1], 36, &one).expect_err("short chain");
+        assert!(err.contains("holds 1 pages"), "{err}");
+        assert!(err.contains("2 were rendered"), "{err}");
+    }
+
+    #[test]
+    fn verify_tiff_refuses_a_file_of_the_wrong_size() {
+        let budget = Budget::profile(Surface::Batch);
+        let clock = FixedClock(0);
+        let session = Session::open(MINIMAL.to_vec(), &budget, &clock).expect("open");
+        // The same page, but rasterised at half the DPI it is checked against:
+        // the dimensions disagree before any sample does.
+        let (small, _) = run_impl(MINIMAL, "", 36, Format::Tiff, 0).expect("render");
+        let err = verify_tiff(&session, &budget, &clock, &[0], 72, &small).expect_err("wrong size");
+        assert!(err.contains("the file says"), "{err}");
+    }
+
+    #[test]
+    fn verify_tiff_refuses_a_damaged_strip() {
+        // The witness that the read-back is not decoration: bytes inside the
+        // Deflate stream of an honest file. The inflated length cannot come out
+        // right, and the page is refused rather than labelled verified.
+        let budget = Budget::profile(Surface::Batch);
+        let clock = FixedClock(0);
+        let session = Session::open(TEXT.to_vec(), &budget, &clock).expect("open");
+        let (good, files) = run_impl(TEXT, "", 72, Format::Tiff, 0).expect("render");
+        assert_eq!(files, 1);
+        let mut damaged = good.clone();
+        let at = damaged.len().saturating_sub(40);
+        for byte in damaged.iter_mut().skip(at) {
+            *byte = byte.wrapping_add(0x5A);
+        }
+        let err = verify_tiff(&session, &budget, &clock, &[0], 72, &damaged)
+            .expect_err("a damaged strip must not pass");
+        assert!(
+            err.contains("could not be read back") || err.contains("does not hold"),
+            "{err}"
+        );
+        verify_tiff(&session, &budget, &clock, &[0], 72, &good)
+            .expect("the honest file still passes");
     }
 
     #[test]

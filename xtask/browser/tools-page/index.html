@@ -168,7 +168,7 @@
 
       async function waitForCards(frame, label) {
         await waitFor(
-          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 31,
+          () => frameDocument(frame).querySelectorAll("#tool-grid .tool-card").length === 32,
           15_000,
           label,
         );
@@ -222,6 +222,106 @@
           pos += 2 + size;
         }
         return null;
+      }
+
+      /**
+       * The page chain of a TIFF, or null when the bytes are not one.
+       *
+       * A TIFF opens with `II` or `MM`, the version 42 in the writer's own byte
+       * order, and the offset of the first IFD. Each IFD is an entry count, that
+       * many 12-byte tags, and the offset of the next one, so the chain is
+       * walkable without decoding a pixel — which is what makes this the proof
+       * that a multi-page container arrived rather than a truncated single page.
+       * The chain must move forward and stay inside the file, so a loop or an
+       * offset past the end reports null instead of hanging the harness.
+       *
+       * Every page is measured against the profile the raster chunk writes: RGB
+       * photometric, three contiguous samples, one Deflate strip whose
+       * RowsPerStrip is the whole page. Sample depth lives behind an offset this
+       * walk does not follow; the engine's reader refuses a file that is not
+       * 8-bit, and the leg below proves the two claims independently.
+       */
+      function tiffChain(bytes) {
+        if (bytes.length < 8) {
+          return null;
+        }
+        const le = bytes[0] === 0x49 && bytes[1] === 0x49;
+        if (!le && !(bytes[0] === 0x4d && bytes[1] === 0x4d)) {
+          return null;
+        }
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const u16 = (at) => (at + 2 > bytes.length ? null : view.getUint16(at, le));
+        const u32 = (at) => (at + 4 > bytes.length ? null : view.getUint32(at, le));
+        if (u16(2) !== 42) {
+          return null;
+        }
+        const pages = [];
+        let previous = 0;
+        let ifd = u32(4);
+        while (ifd !== null && ifd !== 0) {
+          if (ifd <= previous || ifd + 2 > bytes.length || pages.length === 64) {
+            return null;
+          }
+          const count = u16(ifd);
+          const entries = ifd + 2 + count * 12;
+          if (count === null || count === 0 || entries + 4 > bytes.length) {
+            return null;
+          }
+          const page = {
+            width: 0,
+            height: 0,
+            compression: 0,
+            photometric: 0,
+            samples: 0,
+            rows: 0,
+            planar: 0,
+            strips: 0,
+            byteCounts: 0,
+          };
+          for (let i = 0; i < count; i += 1) {
+            const at = ifd + 2 + i * 12;
+            const tag = u16(at);
+            const field = u16(at + 2);
+            const values = u32(at + 4);
+            const inline = field === 4 ? u32(at + 8) : u16(at + 8);
+            if (tag === null || values === null || inline === null) {
+              return null;
+            }
+            if (tag === 256) page.width = inline;
+            else if (tag === 257) page.height = inline;
+            else if (tag === 259) page.compression = inline;
+            else if (tag === 262) page.photometric = inline;
+            else if (tag === 273) page.strips = values;
+            else if (tag === 277) page.samples = inline;
+            else if (tag === 278) page.rows = inline;
+            else if (tag === 279) page.byteCounts = values;
+            else if (tag === 284) page.planar = inline;
+          }
+          pages.push(page);
+          previous = ifd;
+          ifd = u32(entries);
+        }
+        if (pages.length === 0) {
+          return null;
+        }
+        const profile = pages.every(
+          (page) =>
+            page.width > 0 &&
+            page.height > 0 &&
+            page.compression === 8 &&
+            page.photometric === 2 &&
+            page.samples === 3 &&
+            page.planar === 1 &&
+            page.strips === 1 &&
+            page.byteCounts === 1 &&
+            page.rows === page.height,
+        );
+        return {
+          count: pages.length,
+          width: pages[0].width,
+          height: pages[0].height,
+          profile,
+        };
       }
 
       async function readOutput(win, row, label, needles, absent) {
@@ -280,6 +380,17 @@
           output.jpegWidth = jpeg.width;
           output.jpegHeight = jpeg.height;
           output.jpegBaseline = jpeg.baseline;
+        }
+        // A TIFF is read by walking its IFD chain, so `tiff` true means a header
+        // the harness parsed, a chain that terminated, and one page per link.
+        // The count is the container's own claim about how many pages it holds.
+        const tiff = tiffChain(bytes);
+        output.tiff = tiff !== null;
+        if (tiff !== null) {
+          output.tiffPages = tiff.count;
+          output.tiffWidth = tiff.width;
+          output.tiffHeight = tiff.height;
+          output.tiffProfile = tiff.profile;
         }
         if (needles && needles.length > 0) {
           const text = new TextDecoder("latin1").decode(bytes);
@@ -754,7 +865,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the thirty-one tool cards");
+        out.cards = await waitForCards(frame, "the thirty-two tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1712,6 +1823,56 @@
           network: onlineJpgZip.network,
         };
 
+        // PDF to TIFF shares the raster chunk but not its shape: the selected
+        // pages go into ONE container rather than a file per page. The
+        // single-page leg proves the header, the profile and the canvas; the
+        // three-page leg proves the chain really carries three pages inside one
+        // download — the card's whole promise. There is no quality knob, and a
+        // TIFF is not displayed inline by Chromium, so the leg also proves the
+        // page offered a download and no preview it could not honour.
+        const onlineTiff = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online TIFF",
+          "tiff",
+          { dpi: "72", pages: "1" },
+          [],
+          ["/Type /Page"],
+          null,
+        );
+        out.tiff = {
+          fileRows: onlineTiff.fileRows,
+          runLabel: onlineTiff.runLabel,
+          noUpload: onlineTiff.noUpload,
+          status: onlineTiff.status,
+          result: onlineTiff.result,
+          outputs: onlineTiff.outputs,
+          output: onlineTiff.output,
+          network: onlineTiff.network,
+        };
+        const onlineTiffThree = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online TIFF of three pages",
+          "tiff",
+          { dpi: "72", pages: "1-3" },
+          [],
+          ["/Type /Page"],
+          null,
+        );
+        out.tiffThree = {
+          fileRows: onlineTiffThree.fileRows,
+          runLabel: onlineTiffThree.runLabel,
+          noUpload: onlineTiffThree.noUpload,
+          status: onlineTiffThree.status,
+          result: onlineTiffThree.result,
+          outputs: onlineTiffThree.outputs,
+          output: onlineTiffThree.output,
+          network: onlineTiffThree.network,
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -1724,7 +1885,7 @@
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
         offlinePhase = true;
 
-        const offlineCards = await waitForCards(frame, "the thirty-one offline tool cards");
+        const offlineCards = await waitForCards(frame, "the thirty-two offline tool cards");
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
@@ -2070,6 +2231,40 @@
             },
           ],
         );
+        const offlineTiff = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline TIFF",
+          "tiff",
+          { dpi: "72", pages: "1" },
+          [],
+          ["/Type /Page"],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineTiffThree = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline TIFF of three pages",
+          "tiff",
+          { dpi: "72", pages: "1-3" },
+          [],
+          ["/Type /Page"],
+          [
+            {
+              name: "report.pdf",
+              bytes: new Uint8Array(splitFixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
         const offlineImageWatermark = await toolInFrame(
           frame,
           null,
@@ -2397,6 +2592,26 @@
             outputs: offlineJpgZip.outputs,
             output: offlineJpgZip.output,
             network: offlineJpgZip.network,
+          },
+          tiff: {
+            fileRows: offlineTiff.fileRows,
+            runLabel: offlineTiff.runLabel,
+            noUpload: offlineTiff.noUpload,
+            status: offlineTiff.status,
+            result: offlineTiff.result,
+            outputs: offlineTiff.outputs,
+            output: offlineTiff.output,
+            network: offlineTiff.network,
+          },
+          tiffThree: {
+            fileRows: offlineTiffThree.fileRows,
+            runLabel: offlineTiffThree.runLabel,
+            noUpload: offlineTiffThree.noUpload,
+            status: offlineTiffThree.status,
+            result: offlineTiffThree.result,
+            outputs: offlineTiffThree.outputs,
+            output: offlineTiffThree.output,
+            network: offlineTiffThree.network,
           },
           attachments: {
             fileRows: offlineAttachments.fileRows,

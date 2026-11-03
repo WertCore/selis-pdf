@@ -238,10 +238,10 @@ enum Command {
         /// The output resolution in DPI (default 72; 72 is 1pt = 1px).
         #[arg(long, default_value_t = 72)]
         dpi: u32,
-        /// The output format: ppm (default), png or jpg.
+        /// The output format: ppm (default), png, jpg or tif.
         #[arg(long, default_value = "ppm")]
         format: String,
-        /// The JPEG quality, 1-100 (default 90; other formats ignore it).
+        /// The JPEG quality, 1-100 (default 90; png and tif ignore it).
         #[arg(long, default_value_t = 90)]
         quality: u32,
     },

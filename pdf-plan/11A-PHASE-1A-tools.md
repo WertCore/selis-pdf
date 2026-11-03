@@ -381,9 +381,12 @@ operation is available identically in the CLI, the web app, and the extension.
     margin options. Pure generation — no renderer needed. High-volume, low-difficulty.
   - **Note:** Shipped as `selis img2pdf a.png b.jpg -o out.pdf` for JPEG + PNG (`selis-image`
     decode → `embed_image_rgba` via the WRITE.01 writer), with `--page-size fit|letter|a4` and
-    `--margin`. WebP/HEIC/TIFF need new codec dependencies — held under the "no new dependency
+    `--margin`. WebP/HEIC need new codec dependencies — held under the "no new dependency
     without proposal" rule (00-INDEX §agent template); file them with a licence justification to
-    complete the format list.
+    complete the format list. TIFF is no longer on that list: `selis-image::tiff` has owned the
+    baseline multi-page reader and writer since the PDF → TIFF slice (34-TOOLS-SITE-ROADMAP §Phase
+    2), so `TIFF → PDF` is a verification job — decode each IFD, embed each page, prove the pixels
+    survived the produced PDF — rather than a codec job. It is not shipped and no card claims it.
   - **Browser parity (2026-10-31):** the same engine path is now card 23 on `/tools.html`. The
     CLI's `img2pdf` was refactored into a thin shim over `selis_pdf_tools::image_to_pdf`, so CLI and
     browser run one implementation; `embed_image_rgba_flate` composites alpha over white and
@@ -467,7 +470,8 @@ operation is available identically in the CLI, the web app, and the extension.
     offered, and marker counts `[1, 2, 2]` over two picked files. Eight negatives withdraw one
     witness each, including two that shrink the click lists and one that shrinks the grid.
 - [x] **SL-1A.TOOL.12 — PDF → images** · deps: Phase 2 · owner: AI
-  - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output.
+  - **Note:** Shipped at G1.5 as `selis convert` (PPM). Ships at G2 with PNG/JPEG output — and does,
+    alongside TIFF: `selis render --format ppm|png|jpg|tif` and three `/tools.html` cards.
   - **Browser status (2026-10-27):** not in the six-tool slice. PDF→JPG/PNG requires the owned
     raster path and a separate lazy chunk; it is Phase 2 in `34-TOOLS-SITE-ROADMAP.md`, not a
     hidden switch on the current tools chunk.
@@ -477,8 +481,8 @@ operation is available identically in the CLI, the web app, and the extension.
     chosen DPI honouring `/Rotate`; `selis-image::encode_png` writes the PNG and the chunk decodes
     it again and compares every pixel before returning. One page is a bare PNG, several are one
     deterministic ZIP of `page-N.png`. CLI twin `selis render --format png`. Browser legs measure
-    the real bytes online and after an offline reload. WebP/TIFF remain Phase 2: no codec is owned
-    for them yet, so no claim is made.
+    the real bytes online and after an offline reload. WebP/TIFF were still unowned at that date,
+    so no claim was made; TIFF shipped the next day (see below) and WebP still has no owned coder.
   - **JPEG (2026-11-02):** the same fourth chunk, not a new one — its ABI took a `format` code and a
     `quality`, and `selis render` took `--format jpg --quality N`. `selis-pdf-filter::dct_encode`
     writes the stream itself (baseline sequential SOF0, 8-bit, 4:4:4, JFIF APP0, Annex K tables
@@ -490,6 +494,19 @@ operation is available identically in the CLI, the web app, and the extension.
     read-back decoder cannot open it. The 31st `/tools.html` card shares the PNG card's loader and
     options; browser legs cover quality 90, quality 1 (which must be smaller), a three-page
     `page-N.jpg` ZIP with no preview, and both single and bundle again offline.
+  - **TIFF (2026-11-03):** the same fourth chunk again, and the first *container* output.
+    `selis-image::tiff` writes baseline TIFF 6.0 and reads exactly what it wrote: little-endian mark
+    and magic 42, one IFD per page (15 entries, 186 bytes of structure), `Compression` 8 through the
+    owned `flate_encode` or 1 uncompressed, `PhotometricInterpretation` 2, `PlanarConfiguration` 1,
+    three 8-bit samples, one strip whose `RowsPerStrip` is the page height, `ResolutionUnit` inches
+    carrying the DPI, and `PageNumber` holding the 1-based selection order. Verification is the PNG's
+    standard, not the JPEG's bounds — the chunk walks its own chain and re-inflates every strip to
+    compare it sample for sample with the render — and a page past 65535 px on an edge is refused
+    before writing, because those dimensions are `SHORT` tags a reader would believe. There is no
+    quality knob and a test says so. The 32nd card returns one `.tif` whatever the page count (a
+    container is never bundled) and offers **no** preview, because Chromium will not display TIFF
+    inline — the check asserts the absence rather than allowing the omission. CLI twin
+    `selis render --format tif`, `tiff` accepted as an alias.
 
 ---
 
@@ -501,7 +518,7 @@ operation is available identically in the CLI, the web app, and the extension.
   - **Note:** This means `SL-4.UI.01` (`PlatformAdapter`) is pulled forward from Phase 4. It is a
     small interface and building it now is the right call regardless.
   - **Status (2026-10-30, partial):** `/tools.html` is the tool-first surface: thirty live cards
-    (thirty-one with the PDF → JPG card on 2026-11-02),
+    (thirty-one with the PDF → JPG card on 2026-11-02, thirty-two with PDF → TIFF on 2026-11-03),
     multi-file drag-drop, an ordered merge list, run, browser-native preview, and download.
     Reordering ships with ↑/↓ buttons; drag-to-reorder is a UI enhancement, not a correctness gap.
     The full iLovePDF/ihatepdf.cv matrix is `34-TOOLS-SITE-ROADMAP.md`; the long tail is staged, not
