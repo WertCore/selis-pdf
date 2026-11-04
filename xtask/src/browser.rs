@@ -11456,7 +11456,7 @@ mod tests {
         assert!(verdict_service_worker(&real_service_worker_report()).is_ok());
         assert!(verdict_async_wasm(&real_async_wasm_report()).is_ok());
         assert!(verdict_extension(&real_extension_report()).is_ok());
-        verdict_tools_page(&real_tools_page_report()).unwrap();
+        assert!(verdict_tools_page(&real_tools_page_report()).is_ok());
     }
 
     /// The tools verdict's witnesses, withdrawn one at a time. A merge that
