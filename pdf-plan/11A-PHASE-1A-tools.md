@@ -266,6 +266,21 @@ operation is available identically in the CLI, the web app, and the extension.
     (`handler_rev=-1`); three qpdf-written R6 files unlock the same way; a wrong password returns a
     typed `WRONG_PASSWORD` and writes nothing; and every unlocked output renders pixel-identical to
     the plain fixture (page-1 digest `3363023653717085315`).
+  - **Post-sign-off fix (2026-11-04):** a user's real revision-3 (RC4-128) identity PDF was refused.
+    Two defects, both fixed here with regression tests and both invisible to the earlier
+    self-consistent, empty-password tests:
+    - `selis_crypto::pad_password` appended padding from `PAD[len]` instead of `PAD[0]`
+      (Algorithm 2 step (a)), so any R2–R4 document with a non-empty password derived a key no
+      other reader computes. R5/R6 never use the padding, which is why only legacy files broke.
+      Pinned by a qpdf-12.4.2 revision-3 vector (`rev3_qpdf_vector_authenticates_with_a_password`).
+    - `parse_standard_encrypt` defaulted `/StmF` and `/StrF` to `/Identity` when absent. Those
+      entries only exist from `/V 4`; for `/V 1–3` every stream and string uses the standard
+      handler. The default made the rewrite drop `/Encrypt` while copying ciphertext, so the output
+      opened with garbage content. Pinned by
+      `revision_3_defaults_to_the_standard_handler_not_identity`.
+    After the fix the same file unlocks, qpdf `--check` reports "No syntax or stream encoding
+    errors found", and pinned PDFium renders the original (`handler_rev=3`, with the password) and
+    the output (`handler_rev=-1`) to the identical digest `17035566201910249761`.
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
     document. Works for whichever password the user has — user or owner.

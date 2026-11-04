@@ -55,14 +55,21 @@ const PAD: [u8; 32] = [
     0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
 ];
 
-/// Pad a password (truncated to 32 bytes) with the standard padding.
+/// Pad a password (truncated to 32 bytes) with the standard padding string.
+///
+/// ISO 32000-2 §7.6.3.3 Algorithm 2 step (a) appends padding from the
+/// **beginning** of the string, so an n-byte password is followed by
+/// `PAD[0..32-n]`. Indexing the padding by the output position instead — as
+/// this did until a real-world revision-3 file with a non-empty password
+/// failed to open — derives a key no other reader computes. An empty password
+/// (n = 0) is unaffected, which is what let the mistake survive.
 #[must_use]
 pub fn pad_password(password: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     let n = password.len().min(32);
     out[..n].copy_from_slice(&password[..n]);
-    for (i, b) in out.iter_mut().enumerate().skip(n) {
-        *b = PAD[i];
+    for (slot, pad) in out.iter_mut().skip(n).zip(PAD.iter()) {
+        *slot = *pad;
     }
     out
 }
@@ -1014,11 +1021,13 @@ mod tests {
     }
 
     #[test]
-    fn padding_extends_with_the_standard_bytes() {
+    fn padding_is_appended_from_the_start_of_the_string() {
         let padded = pad_password(b"secret");
         assert_eq!(&padded[..6], b"secret");
-        assert_eq!(padded[6], PAD[6]);
-        assert_eq!(padded[31], PAD[31]);
+        // Algorithm 2 (a) appends the padding *from its beginning*, so the
+        // first pad byte after the password is PAD[0] — not PAD[len].
+        assert_eq!(&padded[6..], &PAD[..26]);
+        assert_eq!(pad_password(b""), PAD);
     }
 
     #[test]
@@ -1044,6 +1053,78 @@ mod tests {
         let u = compute_u(&key, 4, &id0);
         let auth = authenticate_user(&o, &u, p, &id0, 4, 128, true, true, &[], &[], b"");
         assert!(auth.is_some(), "self-consistent /U must authenticate");
+    }
+
+    /// An **external** revision-3 vector: qpdf 12.4.2 wrote this `/Encrypt`
+    /// (`qpdf --ip-all-weak-crypto --encrypt selis-regression selis-owner 128`,
+    /// i.e. RC4-128, `/V 2 /R 3`) on 2026-11-04 over a one-page fixture. The
+    /// password is non-empty on purpose: the self-consistent test above uses
+    /// the empty one, and a padding-offset bug is invisible when n = 0 — which
+    /// is exactly how a real revision-3 file with a password failed to open.
+    #[test]
+    fn rev3_qpdf_vector_authenticates_with_a_password() {
+        let o: [u8; 32] = [
+            0xA3, 0xE2, 0xA7, 0x18, 0x2C, 0x33, 0x1B, 0xCD, 0x25, 0xDA, 0x75, 0xC6, 0xF7, 0x3D,
+            0xE2, 0x9F, 0x2C, 0xAA, 0x33, 0x67, 0x3F, 0x12, 0xEC, 0x7E, 0x20, 0x7A, 0x64, 0x4D,
+            0x38, 0x96, 0xC4, 0xEE,
+        ];
+        let u: [u8; 32] = [
+            0x62, 0xC2, 0x1C, 0x4E, 0xE5, 0x14, 0x06, 0x92, 0xCF, 0xD7, 0x04, 0xF9, 0x18, 0x27,
+            0x5B, 0xD2, 0x00, 0x21, 0x44, 0x69, 0x90, 0xB9, 0xE4, 0x11, 0x40, 0x71, 0xA4, 0xD9,
+            0x10, 0x49, 0x84, 0xC1,
+        ];
+        let id0: [u8; 16] = [
+            0x55, 0x51, 0x0D, 0x48, 0x56, 0xF7, 0xAC, 0x45, 0xC3, 0x49, 0x88, 0xEA, 0x90, 0x8E,
+            0x8F, 0xEA,
+        ];
+        let p: u32 = 0xFFFF_FFFC;
+
+        let key = encryption_key(b"selis-regression", &o, p, &id0, 3, 128, true);
+        assert_eq!(key.len(), 16);
+        let computed = compute_u(&key, 3, &id0);
+        assert_eq!(
+            &computed[..16],
+            &u[..16],
+            "the derived key must reproduce qpdf's /U for a non-empty password"
+        );
+        assert!(
+            authenticate_user(
+                &o,
+                &u,
+                p,
+                &id0,
+                3,
+                128,
+                false,
+                true,
+                &[],
+                &[],
+                b"selis-regression"
+            )
+            .is_some(),
+            "the user password must authenticate"
+        );
+        assert!(
+            authenticate_user(
+                &o,
+                &u,
+                p,
+                &id0,
+                3,
+                128,
+                false,
+                true,
+                &[],
+                &[],
+                b"selis-owner"
+            )
+            .is_some(),
+            "the owner password must authenticate through /O"
+        );
+        assert!(
+            authenticate_user(&o, &u, p, &id0, 3, 128, false, true, &[], &[], b"wrong").is_none(),
+            "a password that is neither must be refused"
+        );
     }
 
     #[test]

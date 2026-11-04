@@ -187,6 +187,19 @@ and a size budget; no raster feature is claimed.
       (`/Encrypt`, `/Filter /Standard`, `/AESV3` absent) while `/Type /Pages` and `/Count 3`
       remain, and the refusal sentence names the document the reader picked up, not the chunk's
       internal session key.
+      **Post-sign-off fix (2026-11-04):** a user's real revision-3 (RC4-128) identity PDF would not
+      open — `wrong password` with the password that opens it everywhere else. Two defects were
+      behind it, both found by that file and both now fixed with regression tests. `pad_password`
+      appended the padding starting at `PAD[len]` instead of `PAD[0]`, so every R2–R4 document with
+      a **non-empty** password derived a key no other reader computes (an empty password and R5/R6
+      never reach that code, which is how the tests missed it). And `/StmF`/`/StrF` were defaulted
+      to `/Identity` for `/V 2`, where they do not exist at all: the rewrite dropped `/Encrypt` while
+      leaving every stream and string encrypted. After the fix the file unlocks and pinned PDFium
+      renders the original (`handler_rev=3`, opened with the password) and the unlocked output
+      (`handler_rev=-1`, asked for none) to the identical digest `17035566201910249761`; qpdf
+      `--check` reports no stream errors on the output. The earlier tests were self-consistent and
+      used an empty password; the new ones pin an external qpdf R3 vector and the revision-based
+      filter default.
 - [x] **Protect with password** — AESV3/R6, separate user/owner passwords, permission copy
       reviewed; keys stay on device. **Signed off (HUMAN review 2026-11-04, approved).**
       *Shipped* on the same chunk: AES-256 revision 6 only, separate open and owner passwords (the

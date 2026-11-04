@@ -415,13 +415,22 @@ fn parse_standard_encrypt(
         Some(Obj::Bool(b)) => *b,
         _ => true,
     };
+    // `/StmF` and `/StrF` exist only from `/V 4` on. Before that every stream
+    // and string uses the standard RC4 handler, and a real `/V 2 /R 3` file has
+    // no such entries at all — defaulting them to `/Identity` (Table 20's
+    // default, which speaks to `/V 4+`) leaves the ciphertext in place, so a
+    // rewrite that drops `/Encrypt` produces a document whose pages, strings
+    // and Flate streams are still encrypted. A missing entry therefore means
+    // "the standard handler" for revisions 2–3 and `/Identity` only for later
+    // versions.
+    let default_filter = if v <= 3 { "StdCF" } else { "Identity" };
     let stmf = match get(b"StmF") {
         Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
-        _ => "Identity".to_string(),
+        _ => default_filter.to_string(),
     };
     let strf = match get(b"StrF") {
         Some(Obj::Name(n)) => String::from_utf8_lossy(n.as_slice()).to_string(),
-        _ => "Identity".to_string(),
+        _ => default_filter.to_string(),
     };
     // AES is used when the handler revision requires it (`/V` 4 or 5 are
     // AES-128/AES-256 by definition, ISO 32000-1 §7.6.3.2), or when the
@@ -887,6 +896,67 @@ mod tests {
             _ => None,
         };
         bytes.unwrap_or_else(|| panic!("no /Encrypt entry named {name}"))
+    }
+
+    /// `/StmF` and `/StrF` only exist from `/V 4` on, so a revision-3 handler
+    /// that omits them encrypts everything with the standard handler. Reading
+    /// their absence as Table 20's `/Identity` default (which speaks to
+    /// `/V 4+`) leaves the ciphertext in place: a real UIDAI revision-3 file
+    /// unlocked to a document whose Flate streams were still encrypted and
+    /// whose page content was noise.
+    #[test]
+    fn revision_3_defaults_to_the_standard_handler_not_identity() {
+        let pairs = [
+            (selis_bytes::Bytes::copy_from_slice(b"V"), Obj::Int(2)),
+            (selis_bytes::Bytes::copy_from_slice(b"R"), Obj::Int(3)),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"Length"),
+                Obj::Int(128),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"O"),
+                Obj::String(selis_bytes::Bytes::from(vec![0u8; 32])),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"U"),
+                Obj::String(selis_bytes::Bytes::from(vec![0u8; 32])),
+            ),
+            (selis_bytes::Bytes::copy_from_slice(b"P"), Obj::Int(-4)),
+        ];
+        let info = parse_standard_encrypt(&pairs, Vec::new())
+            .unwrap()
+            .expect("a standard /Encrypt dictionary");
+        assert!(
+            info.stream_encrypted() && info.string_encrypted(),
+            "revision 3 without /StmF or /StrF encrypts streams and strings"
+        );
+        assert!(!info.aes, "revision 3 is RC4, never AES");
+
+        // From /V 4 on, an absent /StmF really does mean Identity (Table 20).
+        let modern = [
+            (selis_bytes::Bytes::copy_from_slice(b"V"), Obj::Int(5)),
+            (selis_bytes::Bytes::copy_from_slice(b"R"), Obj::Int(6)),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"Length"),
+                Obj::Int(256),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"O"),
+                Obj::String(selis_bytes::Bytes::from(vec![0u8; 48])),
+            ),
+            (
+                selis_bytes::Bytes::copy_from_slice(b"U"),
+                Obj::String(selis_bytes::Bytes::from(vec![0u8; 48])),
+            ),
+            (selis_bytes::Bytes::copy_from_slice(b"P"), Obj::Int(-4)),
+        ];
+        let info = parse_standard_encrypt(&modern, Vec::new())
+            .unwrap()
+            .expect("a standard /Encrypt dictionary");
+        assert!(
+            !info.stream_encrypted() && !info.string_encrypted(),
+            "/V 5 keeps Table 20's /Identity default when the entries are absent"
+        );
     }
 
     /// A document encrypted by the browser path is reproducible: same
