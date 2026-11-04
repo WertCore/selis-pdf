@@ -12,9 +12,12 @@ workspace = true
 
 [features]
 default = ["rng"]
-# Native and viewer builds use the OS/browser CSPRNG. The browser tools chunk
-# disables this feature because its six operations never encrypt; that keeps
-# `getrandom`'s wasm-bindgen JS glue out of the lazy tools artifact.
+# Native and viewer builds use the OS CSPRNG. The browser chunks disable this
+# feature: wasm32 has no OS entropy source, and the lazy chunks are built with a
+# closed set of JS imports so a link-time surprise cannot ship as a runtime
+# crash. Instead the page injects the 64 bytes of key material
+# (`R6Material::from_bytes`) and every other random-looking field is derived from
+# the file key, which keeps `getrandom`'s wasm-bindgen glue out of the artifacts.
 rng = ["dep:getrandom"]
 
 [dependencies]

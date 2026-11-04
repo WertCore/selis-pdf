@@ -502,16 +502,14 @@ fn aes128_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// AES-256-CBC encrypt with a random IV and PKCS7 padding.
+/// AES-256-CBC encrypt with an explicit IV and PKCS7 padding.
 /// Returns the IV prepended to the ciphertext.
-#[must_use]
-pub fn aes256_cbc_encrypt(key: &[u8], data: &[u8]) -> Vec<u8> {
+fn aes256_cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
     let Ok(cipher) = Aes256::new_from_slice(&key[..key.len().min(32)]) else {
         return Vec::new();
     };
-    let iv = random16();
     let padded = pkcs7_pad(data);
-    let ct = aes256_cbc_encrypt_raw(&cipher, &iv, &padded);
+    let ct = aes256_cbc_encrypt_raw(&cipher, iv, &padded);
     let mut out = iv.to_vec();
     out.extend_from_slice(&ct);
     out
@@ -563,28 +561,85 @@ fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 16 random bytes for an IV (CSPRNG via `getrandom`; deterministic fallback
-/// only on platforms without an OS entropy source).
-fn random16() -> [u8; 16] {
-    let mut out = [0u8; 16];
-    fill_random(&mut out);
-    out
+/// Fill `out` from the OS CSPRNG, reporting whether entropy was obtained.
+///
+/// There is deliberately no fallback. This function used to fall through to a
+/// fixed-seed generator, which on any platform without entropy returned the
+/// *same* byte stream every time — for a writer that means every document it
+/// ever protected shared one predictable file key. A caller that gets `false`
+/// must refuse, or take the bytes from its host the way the browser guest
+/// does.
+fn fill_random(out: &mut [u8]) -> bool {
+    #[cfg(feature = "rng")]
+    return getrandom::getrandom(out).is_ok();
+    #[cfg(not(feature = "rng"))]
+    {
+        let _ = out;
+        false
+    }
 }
 
-/// Fill a buffer with random bytes from the OS CSPRNG when the `rng` feature
-/// is enabled. The browser tools chunk disables it because its six operations
-/// never encrypt; on a platform without entropy the fallback keeps this
-/// function infallible, exactly as it was before the feature split.
-fn fill_random(out: &mut [u8]) {
-    #[cfg(feature = "rng")]
-    if getrandom::getrandom(out).is_ok() {
-        return;
-    }
-    let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
-    for b in out.iter_mut() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        *b = (state >> 32) as u8;
-    }
+/// A per-object AES IV: a hash of the key that object is encrypted under and
+/// its own `/Obj`+`/Gen` coordinates.
+///
+/// What the spec needs from the IV is that no two objects share one and that
+/// nobody without the key can guess it. Both hold here — the input is the
+/// per-object key, itself derived from a 256-bit CSPRNG file key — so every
+/// object gets a distinct unpredictable IV. This is also the only construction
+/// that lets the browser encrypt at all: its guest links no CSPRNG (the
+/// `rng` feature is off, and `getrandom`'s glue is a `wasm-bindgen` import the
+/// loader's four-shim allowlist rejects). The trade-off is stated rather than
+/// hidden: encrypting the *same* object twice under the *same* key yields the
+/// *same* ciphertext. Every save draws a fresh file key, so no shipped path
+/// does that.
+#[must_use]
+pub fn derive_iv(key: &[u8], objnum: u32, gen: u16) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"selis-iv");
+    hasher.update(key);
+    hasher.update(objnum.to_le_bytes());
+    hasher.update(gen.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut iv = [0u8; 16];
+    iv.copy_from_slice(&digest[..16]);
+    iv
+}
+
+/// The four `/Perms` fill bytes (revision 6, Algorithm 10 step h).
+///
+/// The spec calls these arbitrary; readers may define them and verify only
+/// checks the first twelve bytes of the block, so they are derived from the
+/// file key and `/P` instead of drawn from an entropy source. Same reasoning
+/// as [`derive_iv`]: nothing downstream can distinguish a random fill from
+/// this one, and the browser has no entropy source to draw from.
+#[must_use]
+pub fn perms_fill(p: u32, file_key: &[u8]) -> [u8; 4] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"selis-perms-fill");
+    hasher.update(p.to_le_bytes());
+    hasher.update(file_key);
+    let digest = hasher.finalize();
+    let mut fill = [0u8; 4];
+    fill.copy_from_slice(&digest[..4]);
+    fill
+}
+
+/// The trailer `/ID` for a freshly encrypted document, from its file key.
+///
+/// `/ID` is a document identifier, not a secret: it has to be unique and
+/// unguessable, and a writer may pick either. Deriving it from the 256-bit
+/// file key gives both — a fresh save draws a fresh key, so a fresh ID — and
+/// keeps the browser's entropy needs at one 64-byte credential blob for a
+/// document of any size.
+#[must_use]
+pub fn document_id_from_key(file_key: &[u8]) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"selis-id");
+    hasher.update(file_key);
+    let digest = hasher.finalize();
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id
 }
 
 /// AES-256-CBC decrypt with an explicit IV and PKCS7 unpadding. Reserved for
@@ -739,16 +794,19 @@ pub fn decrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
 /// `r` is the security-handler revision. Revisions 2–3 use salted RC4;
 /// revision 4 uses an MD5-salted key with AES-128-CBC whose IV prefixes the
 /// ciphertext; revisions 5–6 use the file key directly with AES-256-CBC
-/// (no per-object salting — ISO 32000-2 §7.6.4.3). A random IV is generated
-/// per call and prepended, so the same plaintext encrypts differently each
-/// time — which is required for stream-level indistinguishability.
+/// (no per-object salting — ISO 32000-2 §7.6.4.3). The IV that prefixes the
+/// ciphertext comes from [`derive_iv`]: distinct per object and unguessable
+/// without the key, which is what the mode needs. Re-encrypting one object
+/// under one key is reproducible by design — that is what lets a guest with
+/// no CSPRNG (the browser) write this format at all.
 #[must_use]
 pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: bool) -> Vec<u8> {
     if key.is_empty() {
         return Vec::new();
     }
     if r >= 5 {
-        return aes256_cbc_encrypt(&key[..key.len().min(32)], data);
+        let iv = derive_iv(&key[..key.len().min(32)], objnum, gen);
+        return aes256_cbc_encrypt(&key[..key.len().min(32)], &iv, data);
     }
     // Algorithm 1: salt the file key with the object and generation numbers.
     let mut hasher = Md5::new();
@@ -768,7 +826,7 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
         // Pad to exactly 16 bytes for AES-128 (ISO 32000-1 §7.6.3.3
         // Algorithm 1, step (d) note for /V 4).
         obj_key.resize(16, 0);
-        let iv = random16();
+        let iv = derive_iv(&obj_key, objnum, gen);
         let padded = pkcs7_pad(data);
         let ct = aes128_cbc_encrypt(&obj_key, &iv, &padded);
         let mut out = iv.to_vec();
@@ -779,15 +837,24 @@ pub fn encrypt_data(key: &[u8], objnum: u32, gen: u16, data: &[u8], r: u8, aes: 
     }
 }
 
-/// Random bytes of length `n` (CSPRNG via `getrandom`; deterministic fallback
-/// only on platforms without an OS entropy source).
-#[must_use]
-pub fn random_bytes(n: usize) -> Vec<u8> {
-    // Key-sized only (16/32 in every caller): `vec![0; n]` allocates exactly
-    // `n`, and every byte is overwritten by `fill_random` below.
+/// `n` random bytes from the OS CSPRNG, or `None` when no entropy source is
+/// reachable.
+///
+/// The browser security chunk builds this crate with `rng` off, so there it is
+/// always `None` and the caller takes the key material from the page instead
+/// (see [`crate::perms_fill`] for why the IVs need none of it). `None` is a
+/// refusal, never a stand-in: a fabricated "random" key is the one outcome
+/// this function must not be able to produce.
+pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
+    // Key-sized only (16/32/64 in every caller): `vec![0; n]` allocates
+    // exactly `n`, and every byte is overwritten only when `fill_random`
+    // reports success.
     let mut out = vec![0; n];
-    fill_random(&mut out);
-    out
+    if fill_random(&mut out) {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// The R5/R6 key-hash of `password || salt || udata` (SHA-256 for revision 5,
@@ -853,7 +920,7 @@ pub fn compute_oe_r6(
 /// zero IV of the 16-byte block
 /// `P(4 LE) || 0xFF 0xFF 0xFF 0xFF || 'T'|"adb" || 4 arbitrary bytes`.
 /// Byte 8 is `'F'` when `/EncryptMetadata` is false; the final four bytes are
-/// fill bytes readers are free to define (here: from the CSPRNG).
+/// fill bytes readers are free to define (here: [`perms_fill`]).
 #[must_use]
 pub fn compute_perms_r6(p: u32, file_key: &[u8], encrypt_metadata: bool) -> Vec<u8> {
     let mut plain = [0u8; 16];
@@ -863,7 +930,7 @@ pub fn compute_perms_r6(p: u32, file_key: &[u8], encrypt_metadata: bool) -> Vec<
     }
     plain[8] = if encrypt_metadata { b'T' } else { b'F' };
     plain[9..12].copy_from_slice(b"adb");
-    let fill = random_bytes(4);
+    let fill = perms_fill(p, file_key);
     plain[12..16].copy_from_slice(&fill);
     let fk = &file_key[..file_key.len().min(32)];
     let Ok(cipher) = Aes256::new_from_slice(fk) else {
@@ -909,6 +976,7 @@ pub fn verify_perms_r6(p: u32, file_key: &[u8], perms: &[u8], encrypt_metadata: 
 mod tests {
     #![allow(
         clippy::unwrap_used,
+        clippy::expect_used,
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects
     )]
@@ -1135,8 +1203,81 @@ mod tests {
 
     #[test]
     fn random_bytes_fill_and_are_not_all_zero() {
-        let a = random_bytes(32);
+        let a = random_bytes(32).expect("the test host has an OS CSPRNG");
         assert_eq!(a.len(), 32);
         assert!(a.iter().any(|&x| x != 0), "not all zeros");
+        // Two draws differ: the function is a generator, not a stand-in for
+        // one. The old fixed-seed fallback passed the length and non-zero
+        // checks above while handing every caller the same 32 bytes.
+        let b = random_bytes(32).expect("the test host has an OS CSPRNG");
+        assert_ne!(a, b, "successive CSPRNG draws must differ");
+    }
+
+    /// The derived IV is per object and per key: no two objects in one
+    /// document share it, and a different file key moves it completely.
+    #[test]
+    fn derived_iv_is_unique_per_object_and_stable() {
+        let key = [0x11u8; 32];
+        let a = derive_iv(&key, 7, 0);
+        let b = derive_iv(&key, 8, 0);
+        let same = derive_iv(&key, 7, 0);
+        assert_eq!(a, same, "one object always gets one IV");
+        assert_ne!(a, b, "different objects must not share an IV");
+        assert_ne!(a, derive_iv(&[0x12u8; 32], 7, 0), "the key moves it");
+        assert_ne!(derive_iv(&key, 7, 0), derive_iv(&key, 7, 1));
+    }
+
+    /// The property the CSPRNG IV used to give and this one keeps: identical
+    /// plaintext in two objects is not two identical ciphertexts.
+    #[test]
+    fn identical_plaintext_in_two_objects_does_not_repeat() {
+        let key = [0x2Au8; 32];
+        let text = b"the same page content, twice";
+        let first = encrypt_data(&key, 11, 0, text, 6, true);
+        let second = encrypt_data(&key, 12, 0, text, 6, true);
+        assert_ne!(first, second, "the IV must break the repetition");
+        assert_eq!(decrypt_data(&key, 11, 0, &first, 6, true), text);
+        assert_eq!(decrypt_data(&key, 12, 0, &second, 6, true), text);
+    }
+
+    /// AES-128 (revision 4) takes the salted per-object key, not the file key,
+    /// so its IVs come out under the same rule and its round trip holds.
+    #[test]
+    fn derived_iv_round_trips_through_aes128_and_rc4() {
+        let key = b"abcde";
+        let text = b"a stream body that must survive the rewrite";
+        for (r, aes) in [(4u8, true), (3, false), (2, false)] {
+            let ct = encrypt_data(key, 21, 0, text, r, aes);
+            assert_eq!(
+                decrypt_data(key, 21, 0, &ct, r, aes),
+                text,
+                "R{r} aes={aes} must round-trip with the derived IV"
+            );
+            if aes {
+                assert_ne!(
+                    ct,
+                    encrypt_data(key, 22, 0, text, r, true),
+                    "R4 AES objects must not share a ciphertext"
+                );
+            }
+        }
+    }
+
+    /// The `/Perms` fill bytes are defined by the writer and ignored by
+    /// readers; deriving them keeps Algorithm 10's twelve checked bytes and
+    /// the verification both ways intact.
+    #[test]
+    fn perms_fill_is_derived_and_leaves_the_checked_bytes_alone() {
+        let file_key = [0x44u8; 32];
+        let p: u32 = 0xFFFF_FFC4;
+        let perms = compute_perms_r6(p, &file_key, true);
+        assert!(verify_perms_r6(p, &file_key, &perms, true));
+        let fill = perms_fill(p, &file_key);
+        assert_ne!(fill, [0; 4], "a derived fill is still a real byte string");
+        assert_ne!(perms_fill(p + 1, &file_key), fill);
+        assert_ne!(perms_fill(p, &[0x45u8; 32]), fill);
+        // Re-running the whole computation reproduces the block exactly, which
+        // is what lets a guest without a CSPRNG write a document twice.
+        assert_eq!(compute_perms_r6(p, &file_key, true), perms);
     }
 }

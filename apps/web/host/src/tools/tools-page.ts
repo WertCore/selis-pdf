@@ -40,6 +40,16 @@ import {
 	runTool,
 	verificationRows,
 } from "./protocol.js";
+import {
+	SECURITY_WASM_URL,
+	type SecurityRequest,
+	type SecurityResult,
+	type SecurityWasm,
+	instantiateSecurity,
+	randomKeyMaterial,
+	runSecurity,
+	securityRows,
+} from "./security-protocol.js";
 
 interface ConvertWasm {
 	readonly exports: {
@@ -103,7 +113,52 @@ interface HtmlWasm {
 }
 
 /** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId = ToolOp | "convert" | "png" | "jpg" | "tiff" | "webp" | "html";
+type ToolId =
+	| ToolOp
+	| "convert"
+	| "png"
+	| "jpg"
+	| "tiff"
+	| "webp"
+	| "html"
+	| "unlock"
+	| "protect"
+	| "clear_permissions"
+	| "permissions";
+
+/** One AcroForm field as the read op reports it. */
+interface FormFieldJson {
+	readonly name: string;
+	readonly kind:
+		| "text"
+		| "checkbox"
+		| "radio"
+		| "choice"
+		| "signature"
+		| "push_button"
+		| "unknown";
+	readonly value?: string;
+	readonly options?: readonly string[];
+	readonly labels?: readonly string[];
+	readonly editable?: boolean;
+	readonly multi_select?: boolean;
+	readonly max_len?: number;
+	readonly states?: readonly string[];
+	readonly read_only?: boolean;
+	readonly required?: boolean;
+	readonly page?: number;
+}
+
+/** The read op's report: what the page needs to render the form. */
+interface FormFieldsJson {
+	readonly status: string;
+	readonly pages?: number;
+	readonly has_signature: boolean;
+	readonly fields: readonly FormFieldJson[];
+}
+
+/** The cards that hand their document to the lazy security chunk. */
+type SecurityToolId = "unlock" | "protect" | "clear_permissions" | "permissions";
 
 /** The cards that hand their pages to the lazy raster chunk. */
 type RasterToolId = "png" | "jpg" | "tiff" | "webp";
@@ -411,6 +466,51 @@ const TOOLS: readonly ToolDef[] = [
 		minimum: 2,
 		accepts: "pdf",
 	},
+	{
+		id: "fill_forms",
+		mark: "☑",
+		title: "Fill forms",
+		blurb: "Read an AcroForm, fill its fields, and save the filled PDF.",
+		verb: "Fill form",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "unlock",
+		mark: "◇",
+		title: "Remove password",
+		blurb: "Open a protected PDF with its password and save it without one.",
+		verb: "Remove password",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "protect",
+		mark: "◆",
+		title: "Protect with password",
+		blurb: "Encrypt a PDF with AES-256 and choose what a reader may do with it.",
+		verb: "Protect PDF",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "clear_permissions",
+		mark: "◈",
+		title: "Clear permissions",
+		blurb: "Lift the print, copy, modify and annotate restrictions, with the owner password.",
+		verb: "Clear permissions",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "permissions",
+		mark: "◉",
+		title: "Set permissions",
+		blurb: "Write the permission bits a document should carry, guarded by an owner password.",
+		verb: "Set permissions",
+		multiple: false,
+		accepts: "pdf",
+	},
 ];
 
 const TOOL_BY_ID = new Map<ToolId, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
@@ -697,6 +797,12 @@ function init(): void {
 	let resultUrls: string[] = [];
 	const optionControls = new Map<string, Control>();
 	const optionFields = new Map<string, HTMLElement>();
+	/**
+	 * The field whose value travels in the request, with the getter for the
+	 * control the user edits. Rebuilt every time the fields list is read;
+	 * empty until a form PDF has been read.
+	 */
+	let formFieldControls: Array<{ readonly name: string; readonly value: () => string }> = [];
 
 	function currentTool(): ToolDef | null {
 		return selectedTool === null ? null : (TOOL_BY_ID.get(selectedTool) ?? null);
@@ -799,12 +905,20 @@ function init(): void {
 		return control;
 	}
 
-	function textInput(key: string, type: "text" | "number", placeholder: string): HTMLInputElement {
+	function textInput(
+		key: string,
+		type: "text" | "number" | "password",
+		placeholder: string,
+	): HTMLInputElement {
 		const input = make("input", "control");
 		input.type = type;
 		input.name = key;
 		input.placeholder = placeholder;
-		input.autocomplete = "off";
+		// "off" everywhere, and "new-password" for a password: this page has no
+		// account and no server, so a browser that offered to remember, autofill,
+		// or generate a value here would be proposing to keep a document's key
+		// somewhere the user never chose to keep it.
+		input.autocomplete = type === "password" ? "new-password" : "off";
 		input.spellcheck = false;
 		if (type === "number") {
 			input.min = "1";
@@ -927,10 +1041,289 @@ function init(): void {
 		}
 	}
 
+	/** Build the per-field rows for the fields list, one call per field. */
+	type FormFieldRow = { readonly name: string; readonly value: () => string };
+
+	/** The label for a choice option: the parallel `/Opt` label when the file carries one, the export value otherwise. */
+	function choiceLabel(labels: readonly string[] | undefined, value: string, index: number): string {
+		const label = labels?.[index];
+		return label === undefined || label === "" ? value : label;
+	}
+
+	function buildFormFieldRow(
+		rows: FormFieldRow[],
+		field: FormFieldJson,
+	): HTMLElement {
+		const row = make("div", "form-field");
+		row.dataset.field = field.name;
+		const id = `field-${rows.length}`;
+		const label = make("label", "field-label");
+		label.htmlFor = id;
+		label.textContent = field.name;
+		if (field.required === true) {
+			const badge = make("span", "field-badge");
+			badge.textContent = "required";
+			label.append(badge);
+		}
+		if (field.read_only === true) {
+			const badge = make("span", "field-badge");
+			badge.textContent = "read-only";
+			label.append(badge);
+		}
+		const control = buildFormFieldControl(rows, field, id);
+		row.append(label, control);
+		return row;
+	}
+
+	function disabledFormControl(id: string, text: string): HTMLElement {
+		const input = make("input", "control");
+		input.id = id;
+		input.type = "text";
+		input.disabled = true;
+		input.value = text;
+		return input;
+	}
+
+	function buildFormFieldControl(
+		rows: FormFieldRow[],
+		field: FormFieldJson,
+		id: string,
+	): HTMLElement {
+		if (field.read_only === true) {
+			// A read-only field is shown for completeness and never submitted; the
+			// engine refuses it too, and hiding it would make a signed or
+			// locked form look filled.
+			return disabledFormControl(
+				id,
+				field.value ?? "read-only",
+			);
+		}
+		switch (field.kind) {
+			case "text": {
+				const input = make("input", "control");
+				input.id = id;
+				input.type = "text";
+				input.value = field.value ?? "";
+				input.spellcheck = false;
+				input.autocomplete = "off";
+				if (typeof field.max_len === "number" && field.max_len > 0) {
+					input.maxLength = field.max_len;
+				}
+				rows.push({ name: field.name, value: () => input.value });
+				return input;
+			}
+			case "checkbox":
+			case "radio": {
+				const states = field.states ?? [];
+				if (states.length === 0) {
+					return disabledFormControl(
+						id,
+						"No appearance states — not fillable",
+					);
+				}
+				const select = make("select", "control");
+				select.id = id;
+				for (const state of ["Off", ...states]) {
+					const option = document.createElement("option");
+					option.value = state;
+					option.textContent = state;
+					if (state === (field.value ?? "Off")) {
+						option.selected = true;
+					}
+					select.append(option);
+				}
+				rows.push({ name: field.name, value: () => select.value });
+				return select;
+			}
+			case "choice": {
+				if (field.multi_select === true) {
+					return disabledFormControl(
+						id,
+						"Multiple values — not supported by this tool",
+					);
+				}
+				const options = field.options ?? [];
+				if (options.length > 0 && field.editable !== true) {
+					const select = make("select", "control");
+					select.id = id;
+					const labels = field.labels;
+					for (const [index, value] of options.entries()) {
+						const option = document.createElement("option");
+						option.value = value;
+						option.textContent = choiceLabel(labels, value, index);
+						if (value === field.value) {
+							option.selected = true;
+						}
+						select.append(option);
+					}
+					// A stored value that is no longer an option stays selectable
+					// — clearing it would silently erase something this tool
+					// cannot bring back.
+					if (
+						field.value !== undefined &&
+						!options.includes(field.value)
+					) {
+						const option = document.createElement("option");
+						option.value = field.value;
+						option.textContent = `${field.value} (current)`;
+						option.selected = true;
+						select.append(option);
+					}
+					rows.push({ name: field.name, value: () => select.value });
+					return select;
+				}
+				const input = make("input", "control");
+				input.id = id;
+				input.type = "text";
+				input.value = field.value ?? "";
+				input.spellcheck = false;
+				input.autocomplete = "off";
+				rows.push({ name: field.name, value: () => input.value });
+				return input;
+			}
+			case "signature":
+				return disabledFormControl(
+					id,
+					"Signature — filling is a signing operation",
+				);
+			case "push_button":
+				return disabledFormControl(id, "Button — no value to fill");
+			default:
+				return disabledFormControl(id, "Field type not supported");
+		}
+	}
+
+	/** Render the fields list: one labelled control per field. */
+	function renderFormFields(list: HTMLElement, report: FormFieldsJson): void {
+		const rows: FormFieldRow[] = [];
+		const signature = byId<HTMLElement>("form-fields-signature");
+		if (signature !== null) {
+			signature.hidden = report.has_signature !== true;
+		}
+		if (report.fields.length === 0) {
+			const empty = make("p", "field-hint");
+			empty.textContent =
+				"This PDF carries no fillable AcroForm fields.";
+			formFieldControls = [];
+			list.replaceChildren(empty);
+			return;
+		}
+		const elements = report.fields.map((field) =>
+			buildFormFieldRow(rows, field),
+		);
+		formFieldControls = rows;
+		list.replaceChildren(...elements);
+	}
+
+	/** Parse the fields JSON the tools chunk returns. */
+	function parseFieldsJson(bytes: Uint8Array): FormFieldsJson | null {
+		try {
+			const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+			if (typeof parsed !== "object" || parsed === null) {
+				return null;
+			}
+			const report = parsed as { fields?: unknown };
+			if (!Array.isArray(report.fields)) {
+				return null;
+			}
+			return parsed as FormFieldsJson;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Read the fields of the currently picked PDF and render their inputs. */
+	async function loadFormFields(): Promise<void> {
+		const file = files[0];
+		const list = byId<HTMLElement>("form-fields");
+		if (file === undefined || list === null) {
+			return;
+		}
+		const bytes = new Uint8Array(await file.arrayBuffer());
+		const wasm = await getWasm().catch(() => null);
+		if (wasm === null) {
+			const note = make("p", "field-hint");
+			note.textContent = "The local engine could not load. Reload the page and try again.";
+			list.replaceChildren(note);
+			return;
+		}
+		setBusy(true);
+		setStatus("Reading the form fields on this device…", "info");
+		try {
+			const request: ToolRequest = {
+				op: "form_fields",
+				files: [{ name: file.name, bytes }],
+			};
+			const result = runTool(wasm, request);
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the field list was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			const output = result.outputs[0];
+			const report = output === undefined ? null : parseFieldsJson(output.bytes);
+			if (report === null || report.status !== "ok") {
+				throw new ToolProtocolError(
+					"the fields report could not be read.",
+				);
+			}
+			renderFormFields(list, report);
+			const count = report.fields.length;
+			setStatus(
+				`${count} field${count === 1 ? "" : "s"} found.`,
+				"ok",
+			);
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError
+					? error.message
+					: "The fields could not be read. Your file was not uploaded.";
+			const note = make("p", "field-hint");
+			note.textContent = message;
+			list.replaceChildren(note);
+			setStatus(message, "error");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	/** The edit payload every visible field contributes to, in field order. */
+	function fillFormsPayload(): Array<{ name: string; value: string }> {
+		return formFieldControls.map((row) => ({
+			name: row.name,
+			value: row.value(),
+		}));
+	}
+
+	function renderFillFormsOptions(options: HTMLElement): void {
+		const note = make("p", "option-note");
+		note.textContent =
+			"Nothing leaves this device: the fields are read and the filled file is written on this machine. Values are stored in the document as written, and viewers rebuild the appearances on open; flattening is a separate step.";
+		const list = make("div", "form-fields");
+		list.id = "form-fields";
+		const empty = make("p", "field-hint");
+		empty.textContent = "Choose a form PDF to see its fields.";
+		list.append(empty);
+		const warning = make("p", "field-hint field-warning");
+		warning.id = "form-fields-signature";
+		warning.hidden = true;
+		warning.textContent =
+			"This document is signed. Filling it here invalidates the signature — re-sign the filled file if it must stay valid.";
+		options.append(note, list, warning);
+	}
+
 	function renderOptions(tool: ToolDef): void {
 		options.replaceChildren();
 		optionControls.clear();
 		optionFields.clear();
+		if (tool.id === "fill_forms") {
+			renderFillFormsOptions(options);
+			return;
+		}
 		if (tool.id === "merge" || tool.id === "mix") {
 			const note = make("p", "option-note");
 			note.textContent =
@@ -1703,6 +2096,68 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "unlock") {
+			addField(
+				"password",
+				"Password",
+				textInput("password", "password", "The password the document opens with"),
+				"Leave it empty for a PDF that opens without a password but still restricts editing.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"The document is decrypted and rewritten on this device, then re-opened and checked page for page before it is offered as a download. A wrong password is refused and nothing is produced — you never get an unencrypted-looking file that is actually still locked. A PDF that was never protected has no password to remove, so its own bytes are copied through and the result says so.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "protect" || tool.id === "permissions") {
+			if (tool.id === "protect") {
+				addField(
+					"userPassword",
+					"Open password",
+					textInput("userPassword", "password", "What a reader must type to see the pages"),
+					"The document cannot be opened without this.",
+				);
+			}
+			addField(
+				"ownerPassword",
+				"Owner password",
+				textInput(
+					"ownerPassword",
+					"password",
+					tool.id === "protect" ? "Optional — defaults to the open password" : "Required",
+				),
+				"Changes or removes the permissions below. Without it they are fixed as written.",
+			);
+			addPermissionFields();
+			const metadata = checkInput("encryptMetadata");
+			metadata.checked = true;
+			addField(
+				"encryptMetadata",
+				"Encrypt document metadata too",
+				metadata,
+				"Leaving this unticked keeps the document's title, author and XMP packet readable to a search tool, while the pages stay encrypted.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				tool.id === "protect"
+					? "Written with AES-256 (revision 6), the newest handler the PDF specification defines, using a 256-bit key this page generates from your browser's own random source and never sends anywhere. The passwords are used to write the file and then thrown away; only the derived keys go into it. Permission flags are a convention rather than a lock: a reader that respects them will not print, copy, modify or annotate against your wishes, and a reader that ignores them can still do those things — the page cannot force a program it has never met to behave. A PDF that already carries a password is refused: removing one is the Remove password tool."
+					: "This card writes the permission flags onto a document that still opens without a password, which is what the flags are for. The owner password is required because changing permissions is the owner's decision, and it is what lets you change them again later. The flags are a convention, not enforcement: a reader that respects them will not print, copy, modify or annotate against your wishes, and a reader that ignores them can. To lift restrictions instead, use Clear permissions with the owner password; a document that already carries a password is refused here, so remove it first.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "clear_permissions") {
+			addField(
+				"password",
+				"Owner password",
+				textInput("password", "password", "The owner password of the document"),
+				"The user password is not enough: changing permissions is the owner's decision.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Only the flags change. The page content is left exactly as it is — on a modern encrypted file the document is appended to rather than rewritten, so the bytes underneath are untouched — and the result is re-read and checked before it is offered. What this lifts is reported afterwards by name, read back out of the flag the tool actually wrote. A wrong owner password is refused with nothing produced, and a document that needs a password just to open keeps needing it: that is the Remove password tool.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "convert") {
 			const format = make("select", "control");
 			for (const [value, label] of [
@@ -1911,6 +2366,16 @@ function init(): void {
 		clearResult();
 		renderFiles();
 		updateRunState();
+		// A removed PDF means the rendered fields are no longer its fields.
+		if (currentTool()?.id === "fill_forms" && files.length === 0) {
+			const list = byId<HTMLElement>("form-fields");
+			if (list !== null) {
+				const hint = make("p", "field-hint");
+				hint.textContent = "Choose a form PDF to see its fields.";
+				list.replaceChildren(hint);
+			}
+			formFieldControls = [];
+		}
 	}
 
 	async function addFiles(incoming: readonly File[]): Promise<void> {
@@ -1944,15 +2409,53 @@ function init(): void {
 		renderFiles();
 		updateRunState();
 		setStatus("Ready. Files stay on this device.", "info");
+		if (tool.id === "fill_forms") {
+			// The fields list drives the inputs, so read it as soon as a PDF
+			// lands; the run button stays disabled until it succeeds.
+			void loadFormFields();
+		}
 	}
 
 	function optionValue(key: string): string {
 		return optionControls.get(key)?.value ?? "";
 	}
 
+	/** The state of a checkbox field, or false when the card never showed one. */
+	function optionChecked(key: string): boolean {
+		const control = optionControls.get(key);
+		return control instanceof HTMLInputElement && control.checked;
+	}
+
+	/** The four boxes every permission-writing card offers, all granted by default. */
+	function addPermissionFields(): void {
+		for (const [key, label] of [
+			["print", "Allow printing"],
+			["modify", "Allow modifying"],
+			["copy", "Allow copying text and images"],
+			["annotate", "Allow adding comments and form fills"],
+		] as const) {
+			const box = checkInput(key);
+			box.checked = true;
+			addField(key, label, box);
+		}
+	}
+
+	/** The permission spec the boxes add up to: what is ticked is what is granted. */
+	function permissionSpec(): string {
+		const granted = ["print", "modify", "copy", "annotate"].filter(optionChecked);
+		return granted.length === 0 ? "none" : granted.join(",");
+	}
+
 	function buildRequest(tool: ToolDef, wireFiles: readonly WireFile[]): ToolRequest {
 		if (tool.id === "merge") {
 			return { op: "merge", files: wireFiles };
+		}
+		if (tool.id === "fill_forms") {
+			return {
+				op: "fill_forms",
+				options: { fields: fillFormsPayload() },
+				files: wireFiles,
+			};
 		}
 		if (tool.id === "mix") {
 			return { op: "mix", files: wireFiles };
@@ -2868,7 +3371,138 @@ function init(): void {
 		}
 	}
 
-	function showResult(result: ReturnType<typeof runTool>): void {
+	let securityWasmPromise: Promise<SecurityWasm> | null = null;
+	function getSecurityWasm(): Promise<SecurityWasm> {
+		if (securityWasmPromise === null) {
+			securityWasmPromise = (async () => {
+				const response = await fetch(SECURITY_WASM_URL, { credentials: "same-origin" });
+				if (!response.ok) {
+					throw new ToolProtocolError("the security chunk is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				// `instantiateSecurity` refuses a module that declares any import, so
+				// the guest the passwords and document bytes reach has nowhere to
+				// send them.
+				return await instantiateSecurity(bytes);
+			})().catch((error: unknown) => {
+				securityWasmPromise = null;
+				throw error;
+			});
+		}
+		return securityWasmPromise;
+	}
+
+	/**
+	 * The options for one security card. A protect run with no owner password
+	 * simply omits the field — the chunk then writes the open password as the
+	 * owner password, the way Acrobat does — and the 64 bytes of key material are
+	 * drawn here, because the guest has no entropy of its own and must not
+	 * invent a document key.
+	 */
+	function buildSecurityRequest(toolId: SecurityToolId, file: WireFile): SecurityRequest {
+		if (toolId === "unlock" || toolId === "clear_permissions") {
+			return {
+				op: toolId,
+				options: { password: optionValue("password") },
+				file,
+			};
+		}
+		const userPassword = toolId === "protect" ? optionValue("userPassword") : "";
+		const ownerPassword = optionValue("ownerPassword");
+		if (userPassword === "" && ownerPassword === "") {
+			throw new ToolInputError(
+				toolId === "protect"
+					? "Enter an open password, an owner password, or both."
+					: "Setting permissions needs an owner password.",
+			);
+		}
+		const options: Record<string, unknown> = {
+			userPassword,
+			permissions: permissionSpec(),
+			encryptMetadata: optionChecked("encryptMetadata"),
+			keyMaterial: randomKeyMaterial(),
+		};
+		if (ownerPassword !== "") {
+			options.ownerPassword = ownerPassword;
+		}
+		return { op: "protect", options, file };
+	}
+
+	/** One plain sentence about what the protection now is. */
+	function securitySummary(result: SecurityResult): string {
+		const { outcome } = result;
+		if (outcome.encrypted === false) {
+			return "Done. This PDF had no password, so its own bytes were copied.";
+		}
+		if (outcome.encrypted === true) {
+			return "Done. The password is removed and the open document was verified on this device.";
+		}
+		if (outcome.granted !== undefined) {
+			const list = outcome.granted.length === 0 ? "none" : outcome.granted.join(", ");
+			return `Done. Protected with AES-256 and verified on this device. Granted: ${list}.`;
+		}
+		if (outcome.previouslyDenied !== undefined) {
+			return outcome.previouslyDenied.length === 0
+				? "Done. Nothing was restricted before, so the flags already granted everything."
+				: `Done. Permissions cleared and verified on this device. Now granted: ${outcome.previouslyDenied.join(", ")}.`;
+		}
+		return "Done. The result was verified on this device.";
+	}
+
+	/**
+	 * One password or permission operation over the lazy security chunk. Always
+	 * one document in, one document out.
+	 */
+	async function runSecurityCard(toolId: SecurityToolId): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = files[0];
+			if (file === undefined) {
+				throw new ToolInputError("Choose a PDF first.");
+			}
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (!hasPdfHeader(bytes)) {
+				throw new ToolInputError(`${file.name} does not look like a PDF.`);
+			}
+			const request = buildSecurityRequest(toolId, { name: file.name, bytes });
+			const wasm = await getSecurityWasm();
+			setStatus("Working on the document locally…", "info");
+			await nextPaint();
+			const result = runSecurity(wasm, request);
+			const shown: ReturnType<typeof runTool> = {
+				verification: result.verification,
+				reports: [result.report],
+				outputs: [result.output],
+			};
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(shown, securityRows(result));
+			setStatus(securitySummary(result), "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	function showResult(
+		result: ReturnType<typeof runTool>,
+		extraRows: readonly VerificationRow[] = [],
+	): void {
 		clearResult();
 		const totalBytes = result.outputs.reduce((total, output) => total + output.bytes.byteLength, 0);
 		const pdfCount = result.reports.filter((report) => report.kind === "pdf").length;
@@ -2964,6 +3598,7 @@ function init(): void {
 		const shown = [
 			...batchRows(result.batch),
 			...reportRows(result.reports, result.outputs),
+			...extraRows,
 			...verificationRows(result.verification),
 		];
 		for (const row of shown) {
@@ -3021,6 +3656,15 @@ function init(): void {
 			}
 			if (tool.id === "html") {
 				await runHtml();
+				return;
+			}
+			if (
+				tool.id === "unlock" ||
+				tool.id === "protect" ||
+				tool.id === "clear_permissions" ||
+				tool.id === "permissions"
+			) {
+				await runSecurityCard(tool.id);
 				return;
 			}
 			const wireFiles = await readWireFiles();

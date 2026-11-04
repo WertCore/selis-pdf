@@ -1,23 +1,16 @@
-//! The `selis unlock` tool (SL-1A.TOOL.04): remove password protection.
+//! The `selis unlock` command (SL-1A.TOOL.04): remove password protection.
 //!
-//! Opens an encrypted document, decrypts every stream and string via the
-//! engine's decryption pipeline, and writes an unencrypted clean copy. This is
-//! a full rewrite (WRITE.01), not an incremental append — the encrypted bytes
-//! must not survive in the output. Aspose.PDF, Adobe Acrobat, and Foxit all
-//! follow the same pattern: authenticate the password, derive the file key,
-//! decrypt every stream/string with that key, drop `/Encrypt` from the trailer,
-//! and emit a fresh single-revision document.
+//! The operation itself lives in `selis_pdf_tools::security`, shared byte-for-
+//! byte with the browser security chunk: authenticate the password, derive the
+//! file key, decrypt every stream and string through the engine's resolver,
+//! drop `/Encrypt` from the trailer, and emit a fresh single-revision document.
+//! This file is the command boundary — the audit line, the verification
+//! display, and nothing else.
 
-use std::collections::BTreeSet;
-
-use selis_pdf_cos::doc_writer::write_objects_as_document_with_trailer;
-use selis_pdf_cos::encrypt::{self, DecryptPolicy};
-use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
-use selis_pdf_doc::Resolver;
-use selis_sandbox::{Budget, Surface};
+use selis_pdf_tools::security;
 
 use crate::verify_report::Verification;
-use crate::{read_file, CliError, CliResult};
+use crate::{CliError, CliResult};
 
 /// Run the unlock tool: decrypt `path` and write the result to `output`.
 ///
@@ -27,247 +20,18 @@ use crate::{read_file, CliError, CliResult};
 ///
 /// # Errors
 ///
-/// `IO_READ_FAILED` when the input cannot be read, a typed parse error when
-/// the document is damaged, and `WRONG_PASSWORD` when the password does not
-/// match the document's user or owner password.
+/// A typed parse error when the document is damaged, and `WRONG_PASSWORD` when
+/// the password does not match the document's user or owner password. An
+/// unencrypted input is copied verbatim and the display says so.
 pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<Verification> {
-    let (report, verification) = unlock_file(path, output, password)?;
-    if report.encrypted {
+    let outcome = security::unlock(path, output, password).map_err(CliError::from)?;
+    if outcome.encrypted {
         eprintln!("unlocked {path} -> {output}");
     } else {
         eprintln!("{path}: not encrypted; copied as-is to {output}");
     }
-    verification.emit_line();
-    Ok(verification)
-}
-
-/// The outcome of unlocking a file.
-struct UnlockReport {
-    /// Whether the original file was encrypted.
-    encrypted: bool,
-}
-
-/// Core unlock logic: read, decrypt, write, verify. Returns the outcome plus
-/// the operation's verification display (SL-1A.UI.02).
-fn unlock_file(
-    path: &str,
-    output: &str,
-    password: Option<&str>,
-) -> CliResult<(UnlockReport, Verification)> {
-    let src = read_file(path)?;
-    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
-    let budget = Budget::unlimited();
-    let clock = crate::shell_clock();
-    let mut g = crate::runtime::cli_guard(&budget, &clock);
-
-    let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
-    let doc = parse_revisions(&src, startxref, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    let rev = doc
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: no revisions")))?;
-
-    let policy = match rev.encrypt {
-        None => {
-            // Not encrypted: copy as-is (verbatim, atomic — the bytes are the
-            // user's original file, not writer output to verify). The
-            // display says so honestly instead of inventing a verdict.
-            crate::write_gate::atomic_write(&src, output, &crate::runtime::token())?;
-            return Ok((
-                UnlockReport { encrypted: false },
-                Verification::copied(in_bytes),
-            ));
-        }
-        Some(r) => {
-            let info = encrypt::parse_encrypt(&src, Some(r), &budget, &mut g)
-                .map_err(|e| CliError(format!("{path}: {e}")))?
-                .ok_or_else(|| {
-                    CliError(format!(
-                        "{path}: unsupported or unreadable /Encrypt dictionary"
-                    ))
-                })?;
-            let id = encrypt::document_id(&rev.trailer);
-            let key = encrypt::authenticate(&info, &id, password.unwrap_or("").as_bytes())
-                .ok_or_else(|| CliError(format!("{path}: wrong password (WRONG_PASSWORD)")))?;
-            DecryptPolicy::from_encrypt(&info, key)
-        }
-    };
-
-    let root = rev
-        .root
-        .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
-
-    // TOOL.04 engineering note: a full rewrite invalidates digital
-    // signatures — detect before running and tell the user.
-    crate::tools::warn_if_digital_signature(&src, &doc, &budget, &mut g, path);
-
-    // Walk the object graph from /Root (and /Info, so metadata survives),
-    // resolving with automatic decryption.
-    let mut resolver = Resolver::new(&doc, &src, &budget);
-    resolver.set_key(policy);
-
-    let mut objects: Vec<(u32, Obj)> = Vec::new();
-    let mut visited = BTreeSet::new();
-    walk(&mut resolver, root, &mut visited, &mut objects, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-
-    // /Info is not reachable from /Root (it is a trailer entry), so walk it
-    // separately and add an /Info trailer entry.
-    let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some((_, Obj::Ref(info))) = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
-        if !visited.contains(&info.num) {
-            walk(&mut resolver, *info, &mut visited, &mut objects, &mut g)
-                .map_err(|e| CliError(format!("{path}: {e}")))?;
-        }
-        extra_trailer.push((b"Info".to_vec(), Obj::Ref(*info)));
-    }
-    // /ID: the first element is the permanent identifier (carried over); the
-    // second must change when a file is modified (ISO 32000-1 §14.4), so a
-    // fresh deterministic value is derived from the source contents — the
-    // same FNV-2x64 pattern the merge tool uses (WRITE.04).
-    let old_id: Option<Vec<u8>> = rev
-        .trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"ID")
-        .and_then(|(_, v)| match v {
-            Obj::Array(items) => items.first().and_then(|x| match x {
-                Obj::String(s) => Some(s.as_slice().to_vec()),
-                _ => None,
-            }),
-            _ => None,
-        });
-    let fresh = fresh_file_id(&src);
-    match old_id {
-        Some(id0) => extra_trailer.push((
-            b"ID".to_vec(),
-            Obj::Array(vec![
-                Obj::String(selis_bytes::Bytes::copy_from_slice(&id0)),
-                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
-            ]),
-        )),
-        None => extra_trailer.push((
-            b"ID".to_vec(),
-            Obj::Array(vec![
-                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
-                Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
-            ]),
-        )),
-    }
-
-    // The /Encrypt entry is omitted from the new trailer because
-    // write_objects_as_document_with_trailer only emits /Size, /Root, + extra.
-    let bytes =
-        write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
-            .map_err(|e| CliError(format!("{path}: write: {e}")))?;
-
-    // Structural verification (WRITE.05, via the shared gate): the output
-    // must reparse, every reference must resolve, and the input's surveyed
-    // counts must hold — decryption rewrites no structure, so everything is
-    // asserted (pages, annotations, fields, OCGs, outlines, embedded files).
-    // Commit is atomic (temp + fsync + rename).
-    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
-    let expected =
-        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
-    let verdict = crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
-    // The decrypted output must carry no /Encrypt and must build a usable
-    // document model (WRITE.07).
-    let sx = xref::find_startxref(&bytes, 4096).unwrap_or(0);
-    let parsed = parse_revisions(&bytes, sx, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
-    let out_rev = parsed
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: output has no revisions")))?;
-    if out_rev.encrypt.is_some() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Encrypt still present)"
-        )));
-    }
-    // The output must also build a usable document model (WRITE.07). The
-    // typed error is propagated, not swallowed (SL-1A.UI.06).
-    let doc_budget = Budget::profile(Surface::Viewer);
-    let clock = crate::shell_clock();
-    // The typed error is propagated, not swallowed (SL-1A.UI.06).
-    selis_pdf_engine::Session::open(bytes.clone(), &doc_budget, &clock)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-
-    let verification = crate::verify_report::Verification::from_gate(
-        Some(&observed),
-        &verdict,
-        &expected,
-        in_bytes,
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-    );
-    Ok((UnlockReport { encrypted: true }, verification))
-}
-
-/// Walk the object graph from `root`, resolving with decryption, collecting
-/// (num, Obj) pairs with original object numbers preserved.
-fn walk(
-    resolver: &mut Resolver<'_>,
-    root: Ref,
-    visited: &mut BTreeSet<u32>,
-    objects: &mut Vec<(u32, Obj)>,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(), selis_error::Error> {
-    if !visited.insert(root.num) {
-        return Ok(());
-    }
-    let obj = resolver.resolve(root, g)?;
-    let mut pending = Vec::new();
-    collect_refs(&obj, &mut pending);
-    objects.push((root.num, obj));
-    for next in pending {
-        walk(resolver, next, visited, objects, g)?;
-    }
-    Ok(())
-}
-
-/// Collect all `Ref` values from an object (used to walk the object graph).
-fn collect_refs(obj: &Obj, out: &mut Vec<Ref>) {
-    match obj {
-        Obj::Ref(r) => out.push(*r),
-        Obj::Array(items) => {
-            for item in items {
-                collect_refs(item, out);
-            }
-        }
-        Obj::Dict(pairs) => {
-            for (_, v) in pairs {
-                collect_refs(v, out);
-            }
-        }
-        Obj::Stream { dict, data: _ } => {
-            for (_, v) in dict {
-                collect_refs(v, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// A deterministic 16-byte file identifier from the source contents (the
-/// same FNV-2x64 construction the merge tool uses for a fresh `/ID`).
-fn fresh_file_id(src: &[u8]) -> Vec<u8> {
-    fn fnv(data: &[u8], seed: u64) -> u64 {
-        let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
-        for &b in data {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
-    }
-    let blob = src.get(..src.len().min(1 << 20)).unwrap_or(src);
-    let mut id = vec![0u8; 16];
-    if let Some(slot) = id.get_mut(..8) {
-        slot.copy_from_slice(&fnv(blob, 1).to_le_bytes());
-    }
-    if let Some(slot) = id.get_mut(8..) {
-        slot.copy_from_slice(&fnv(blob, 2).to_le_bytes());
-    }
-    id
+    outcome.verification.emit_line();
+    Ok(outcome.verification)
 }
 
 #[cfg(test)]

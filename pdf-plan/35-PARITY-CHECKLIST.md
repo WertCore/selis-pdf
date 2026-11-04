@@ -543,7 +543,37 @@ fidelity.
 Exit gate: keys never leave the device; signature invalidation is disclosed before writing;
 form values survive a round trip. Human-owned correctness.
 
-- [ ] **Fill forms** — AcroForm field editing; flatten is a separate raster/forms task.
+- [x] **Fill forms** — AcroForm field editing; flatten is a separate raster/forms task.
+      *Shipped:* a new core crate, `selis-pdf-form`, owns the form model: it walks the catalog
+      `/AcroForm /Fields`, resolves inherited `/FT`/`/Ff`/`/DA`, associates each field with its own
+      widget or its kids' widgets, and reports the page each one paints on. Values decode from
+      ASCII literal strings and UTF-16BE with a BOM, and encode back the same way, so a name typed
+      with an accent survives the round trip. `fill_form` writes `/V` for text and buttons, `/V` plus
+      `/I` for a choice, and sets `/NeedAppearances true` so a viewer rebuilds the appearances, then
+      re-reads every written value from the bytes it produced and refuses with `ReadBack` if one did
+      not stick. It refuses by type rather than degrading: encrypted documents, XFA, a document that
+      is already signed, read-only fields, push buttons, multi-select choices, unknown `/FT` values and
+      duplicate qualified names. The crate is bytes-in/bytes-out with a caller-supplied `Budget` and
+      `#![forbid(unsafe_code)]` — no filesystem, no network — so the desktop app reuses it unchanged.
+      `selis-pdf-tools::fill_forms` is a thin wrapper that adds file I/O, the signature warning and the
+      WRITE.05 gate. WASM ops 29 `form_fields` (a read-only JSON report, kind `form`) and 30
+      `fill_forms`, with the capability mask now 30 ones. CLI twins: `selis form-fields` prints the
+      report and `selis fill-forms --set NAME=VALUE` writes the filled file; the WRITE.07 conformance
+      leg fills the fixture's first fillable field on every release build. The web card reads the
+      fields as soon as a PDF lands and renders one control per field — text input (honouring
+      `/MaxLen`), a button-state select built from the widget's own appearance states, a choice select
+      that shows parallel `/Opt` labels but submits export values and keeps a stored value that is no
+      longer an option — with signature and read-only rows rendered but disabled, and the signature
+      invalidation warning shown before the run button enables. Evidence: 8 core tests (field kinds and
+      values, UTF-16 round trip, unchecking writes `/Off`, a second fill replaces the first, every
+      refusal named), 103 `selis-pdf-tools` tests, 37 tools-chunk tests (dispatch pair plus a refusal
+      for an unknown field), 4 CLI end-to-end tests, 23 protocol tests, and the browser legs — online
+      and offline the fixture renders 7 rows, the signature warning is visible, the signature and
+      read-only controls are disabled, and the downloaded Blob carries `(Browser Ada Lovelace)` and
+      `/NeedAppearances true` with zero foreign requests. 39 cards. Tools chunk 321 569 B brotli of
+      340 000 (the budget moved one round step with a note in `xtask/size-budgets.toml`).
+      Still open: appearance-stream synthesis, so this relies on `/NeedAppearances` and a viewer that
+      honours it; flattening remains its own task.
 - [ ] **Sign PDF** — certificate/signature UI, local keys, invalidation warnings.
 - [ ] **Certificate validation** — trust store and revocation policy; no validity claim
       without a chain.

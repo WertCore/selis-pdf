@@ -17,6 +17,14 @@ default = ["native-fs"]
 # The browser tools chunk disables default features and uses the in-memory
 # store instead; nothing on that path names a filesystem.
 native-fs = ["selis-sandbox/instant-clock", "selis-pdf-cos/rng"]
+# The password and permission operations (unlock, protect, clear-permissions).
+# Off by default: decrypting on the way out runs through the engine's resolver —
+# the same path the viewer uses and the one the qpdf/PDFium/poppler evidence was
+# measured against — and the WRITE.07 gate opens the output as a document
+# model. Those two links are the whole weight of the security chunk, so the
+# plain tools chunk must not carry them. Note it does NOT turn `rng` on: the
+# caller injects the key material, so the guest still links no entropy source.
+security = ["dep:selis-crypto", "dep:selis-pdf-doc", "dep:selis-pdf-engine"]
 
 [dependencies]
 selis-error = { workspace = true }
@@ -25,10 +33,14 @@ selis-io = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
+selis-pdf-form = { workspace = true }
 selis-image = { workspace = true }
 selis-font = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+selis-crypto = { workspace = true, optional = true }
+selis-pdf-doc = { workspace = true, optional = true }
+selis-pdf-engine = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

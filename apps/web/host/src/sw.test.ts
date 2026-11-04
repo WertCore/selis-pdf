@@ -148,6 +148,7 @@ function createOrigin(): Origin {
 		"/assets/host/tools/inputs.js",
 		"/assets/host/tools/protocol.js",
 		"/assets/host/tools/tools-page.js",
+		"/assets/host/tools/security-protocol.js",
 	]) {
 		origin.serve(
 			module,

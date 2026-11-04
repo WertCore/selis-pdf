@@ -88,7 +88,9 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 	it("precaches the tools page, its complete module graph, and its own chunk", () => {
 		// The tools chunk is 137 KB brotli, not 3 MB. Precaching it makes the
 		// tool-first page work in airplane mode on the first visit; leaving a
-		// module out here is caught by the offline browser leg.
+		// module out here is caught by the offline browser leg. The security
+		// module is a *static* import of the page (the security chunks are the
+		// lazy ones), so it belongs here beside `protocol.js`.
 		expect(TOOLS_PRECACHE_PATHS).toEqual([
 			"/tools.html",
 			"/assets/tools.css",
@@ -98,6 +100,7 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/host/tools/inputs.js",
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/tools-page.js",
+			"/assets/host/tools/security-protocol.js",
 			"/wasm/selis_pdf_wasm_tools.wasm",
 		]);
 		expect(TOOLS_PRECACHE_PATHS.filter((path) => path.endsWith(".wasm"))).toEqual([
@@ -120,6 +123,7 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/host/tools/inputs.js",
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/tools-page.js",
+			"/assets/host/tools/security-protocol.js",
 			"/wasm/selis_pdf_wasm_tools.wasm",
 		]);
 	});

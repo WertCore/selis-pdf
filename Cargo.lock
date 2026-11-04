@@ -1836,6 +1836,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-form"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-pdf-cos",
+ "selis-sandbox",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-optimize"
 version = "0.1.0"
 dependencies = [
@@ -1869,12 +1880,16 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "selis-bytes",
+ "selis-crypto",
  "selis-error",
  "selis-font",
  "selis-image",
  "selis-io",
  "selis-pdf-cos",
+ "selis-pdf-doc",
+ "selis-pdf-engine",
  "selis-pdf-filter",
+ "selis-pdf-form",
  "selis-sandbox",
  "serde",
  "serde_json",
@@ -1970,6 +1985,14 @@ dependencies = [
  "selis-pdf-engine",
  "selis-pdf-tools",
  "selis-sandbox",
+]
+
+[[package]]
+name = "selis-pdf-wasm-security"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-tools",
+ "serde_json",
 ]
 
 [[package]]

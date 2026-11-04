@@ -138,6 +138,7 @@ export const TOOLS_PRECACHE_PATHS: readonly string[] = [
 	"/assets/host/tools/inputs.js",
 	"/assets/host/tools/protocol.js",
 	"/assets/host/tools/tools-page.js",
+	"/assets/host/tools/security-protocol.js",
 	"/wasm/selis_pdf_wasm_tools.wasm",
 ];
 

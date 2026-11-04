@@ -59,7 +59,9 @@ export type ToolOp =
 	| "image_watermark"
 	| "outline"
 	| "metadata_report"
-	| "batch";
+	| "batch"
+	| "form_fields"
+	| "fill_forms";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -91,6 +93,8 @@ const OP_CODE: Record<ToolOp, number> = {
 	outline: 26,
 	metadata_report: 27,
 	batch: 28,
+	form_fields: 29,
+	fill_forms: 30,
 };
 
 /** One input file on the wire. */

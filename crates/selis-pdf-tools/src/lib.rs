@@ -31,6 +31,7 @@
 pub mod attachments;
 pub mod batch;
 pub mod compress;
+pub mod forms;
 pub mod images;
 mod io;
 mod memory;
@@ -41,6 +42,8 @@ pub mod overlay;
 mod progress;
 pub mod repair;
 pub mod runtime;
+#[cfg(feature = "security")]
+pub mod security;
 mod tools;
 mod verify_report;
 pub mod write_gate;
@@ -50,6 +53,9 @@ use selis_sandbox::Clock;
 
 pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
 pub use compress::{compress, compress_file, CompressionReport};
+pub use forms::{
+    fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
+};
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};

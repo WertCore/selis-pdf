@@ -24,8 +24,10 @@ fn encrypted_document_roundtrip_through_session() {
         .end_text();
     b.add_page(100.0, 100.0, c.to_bytes().as_slice());
 
+    let material =
+        selis_pdf_cos::encrypt::R6Material::from_bytes(&[0x5Au8; 64]).expect("credential blob");
     let (info, file_key) =
-        selis_pdf_cos::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &[0u8; 16]);
+        selis_pdf_cos::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &material);
     b.set_encrypt(info, file_key);
     let mut g = guard();
     let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);

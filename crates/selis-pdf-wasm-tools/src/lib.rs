@@ -95,6 +95,8 @@ enum Op {
     Outline,
     MetadataReport,
     Batch,
+    FormFields,
+    FillForms,
 }
 
 impl Op {
@@ -128,6 +130,8 @@ impl Op {
             26 => Some(Self::Outline),
             27 => Some(Self::MetadataReport),
             28 => Some(Self::Batch),
+            29 => Some(Self::FormFields),
+            30 => Some(Self::FillForms),
             _ => None,
         }
     }
@@ -163,10 +167,11 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 11 extract attachments, 12 mix pages, 13 crop, 14 flip, 15 page labels,
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
 /// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
-/// 25 outline editing, 26 metadata report, 27 batch queue.
+/// 25 outline editing, 26 metadata report, 27 batch queue, 28 form fields,
+/// 29 fill forms.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    0b1111_1111_1111_1111_1111_1111_1111
+    (1u32 << 30) - 1
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -729,6 +734,16 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         }
         Op::MetadataReport => return run_metadata_report(&stem, first_input_len),
         Op::Batch => return run_batch_op(&input_files, &options),
+        Op::FormFields => return run_form_fields(&stem, first_input_len),
+        Op::FillForms => {
+            let options: selis_pdf_tools::FillFormsOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-filled.pdf"),
+                verification: selis_pdf_tools::fill_forms("in/0", &options, "out.pdf")?,
+                over_target: false,
+            }]
+        }
         Op::Zip => {
             let entries: Vec<(&str, &[u8])> = input_files
                 .iter()
@@ -929,6 +944,49 @@ fn run_metadata_report(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolErr
         repair_mode: None,
     };
     let name = format!("{stem}-metadata.json");
+    let reports = vec![serde_json::json!({
+        "name": name,
+        "kind": "report",
+        "pages": 0,
+        "bytes": json.len(),
+        "verdict": verification.verdict,
+    })];
+    Ok((verification, reports, vec![(name, json)], None))
+}
+
+/// Read the document's AcroForm fields into a JSON report.
+///
+/// Nothing is rewritten: the output is the report itself, so the counts
+/// describe the form as it stands. The browser card uses this to render one
+/// control per field before the user confirms a fill; a document without a
+/// form produces an empty list rather than an error, because "this PDF has no
+/// fillable fields" is a fact the page can show.
+fn run_form_fields(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
+    let report = selis_pdf_tools::form_fields("in/0")?;
+    let json = report.to_json()?;
+    let count = u64::try_from(report.fields.len()).unwrap_or(u64::MAX);
+    let pages = report.pages;
+    let held = u64::try_from(bytes_in).unwrap_or(u64::MAX);
+    let verification = Verification {
+        pages_in: pages,
+        pages_out: pages.unwrap_or(0),
+        annotations_in: None,
+        annotations_out: 0,
+        fields_in: Some(count),
+        fields_out: count,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: None,
+        embedded_files_out: 0,
+        bytes_in: held,
+        bytes_out: held,
+        verdict: "read".to_string(),
+        checked: Vec::new(),
+        repair_mode: None,
+    };
+    let name = format!("{stem}-fields.json");
     let reports = vec![serde_json::json!({
         "name": name,
         "kind": "report",
@@ -1398,14 +1456,141 @@ mod tests {
         out
     }
 
+    /// One upright page with a text field, a checkbox and a two-widget radio
+    /// group — the smallest document the form ops can edit.
+    fn form_pdf() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [6 0 R 7 0 R 10 0 R 11 0 R] >>",
+            ),
+            (
+                5,
+                b"<< /Fields [6 0 R 7 0 R 9 0 R] /DA (/Helv 0 Tf 0 g) >>",
+            ),
+            (
+                6,
+                b"<< /FT /Tx /T (Name) /V (Old) /Subtype /Widget /Rect [10 10 90 30] /P 3 0 R >>",
+            ),
+            (
+                7,
+                b"<< /FT /Btn /T (Agree) /V /Off /Subtype /Widget /Rect [10 40 30 60] /P 3 0 R /AP << /N << /Off 8 0 R /Yes 8 0 R >> >> >>",
+            ),
+            (
+                8,
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Length 0 >>\nstream\n\nendstream",
+            ),
+            (9, b"<< /FT /Btn /Ff 32768 /T (Size) /V /Small /Kids [10 0 R 11 0 R] >>"),
+            (
+                10,
+                b"<< /Subtype /Widget /Parent 9 0 R /Rect [10 70 25 85] /P 3 0 R /AP << /N << /Off 8 0 R /Small 8 0 R >> >> >>",
+            ),
+            (
+                11,
+                b"<< /Subtype /Widget /Parent 9 0 R /Rect [40 70 55 85] /P 3 0 R /AP << /N << /Off 8 0 R /Large 8 0 R >> >> >>",
+            ),
+        ];
+        let max = objects.iter().map(|(num, _)| *num).max().unwrap_or(0);
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = vec![0usize; max as usize + 1];
+        for (num, body) in objects {
+            offsets[*num as usize] = out.len();
+            out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        let size = max as usize + 1;
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets[1..] {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-28: the twenty-three object-graph tools, Zip, the image
-        // watermark, outline editing, the read-only metadata report, and the
-        // batch queue. Op N sets bit N-1, so the mask is 28 ones.
-        assert_eq!(
-            selis_tools_capabilities(),
-            0b1111_1111_1111_1111_1111_1111_1111
+        // Ops 1-30: the twenty-three object-graph tools, Zip, the image
+        // watermark, outline editing, the read-only metadata report, the
+        // batch queue, and the AcroForm read/fill pair. Op N sets bit N-1,
+        // so the mask is 30 ones.
+        assert_eq!(selis_tools_capabilities(), (1u32 << 30) - 1);
+    }
+
+    #[test]
+    fn form_fields_and_fill_forms_are_dispatched() {
+        let pdf = form_pdf();
+        // The read op: one JSON report, no document written.
+        let response = run_request(&request(29, br#"{}"#, &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "form-fields failed: {message}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "doc-fields.json");
+        let json: serde_json::Value = serde_json::from_slice(&outputs[0].1).expect("fields json");
+        let names: Vec<&str> = json["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(names, ["Name", "Agree", "Size"]);
+        assert_eq!(message["fields_out"], 3);
+        let reports = message["outputs"].as_array().expect("reports");
+        assert_eq!(reports[0]["kind"], "report");
+        assert_eq!(reports[0]["verdict"], "read");
+
+        // The write op: the filled document carries the values, and the
+        // report says a PDF came out.
+        let response = run_request(&request(
+            30,
+            br#"{"fields":[{"name":"Name","value":"Ada"},{"name":"Agree","value":"Yes"},{"name":"Size","value":"Large"}]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "fill-forms failed: {message}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "doc-filled.pdf");
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(text.contains("(Ada)"), "filled value written");
+        assert!(text.contains("/V /Large"), "filled radio state written");
+        assert!(text.contains("/NeedAppearances true"), "appearances asked");
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(message["fields_out"], 5);
+        let reports = message["outputs"].as_array().expect("reports");
+        assert_eq!(reports[0]["kind"], "pdf");
+    }
+
+    #[test]
+    fn fill_forms_refuses_an_unknown_field() {
+        let pdf = form_pdf();
+        let response = run_request(&request(
+            30,
+            br#"{"fields":[{"name":"Nope","value":"x"}]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        // A refusal goes down the plain-text error path, not the JSON one, so
+        // walk the response by hand to its output count.
+        let status = u32::from_le_bytes(response[4..8].try_into().expect("status"));
+        assert_eq!(status, 1, "a refused fill signals an error status");
+        let message_len =
+            u32::from_le_bytes(response[8..12].try_into().expect("message len")) as usize;
+        let outputs_offset = 12usize.saturating_add(message_len);
+        let outputs = u32::from_le_bytes(
+            response[outputs_offset..outputs_offset + 4]
+                .try_into()
+                .expect("output count"),
+        );
+        assert_eq!(outputs, 0, "a refused fill produces no downloadable file");
+        assert!(
+            response.windows(4).any(|window| window == b"Nope"),
+            "the refusal names the field"
         );
     }
 
@@ -1473,8 +1658,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 28 is the batch queue now, so the probe moves past it.
-        let response = run_request(&request(29, b"", &[("doc.pdf", &pdf)]));
+        // Op 30 is the fill-forms op now, so the probe moves past it.
+        let response = run_request(&request(31, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 

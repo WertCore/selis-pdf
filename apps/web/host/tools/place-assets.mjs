@@ -136,6 +136,10 @@ const RASTER_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_raster.wa
 const HTML_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_html.opt.wasm";
 /** The unoptimised HTML chunk, for developers who only ran `cargo build`. */
 const HTML_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_html.wasm";
+/** The security chunk (unlock, protect, clear permissions), optimised first. Import-free (checked below). */
+const SECURITY_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_security.opt.wasm";
+/** The unoptimised security chunk, for developers who only ran `cargo build`. */
+const SECURITY_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_security.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -198,6 +202,17 @@ function findRasterEngine() {
 function findHtmlEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [HTML_WASM_OPT, HTML_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first security chunk that exists, optimised preferred over raw. */
+function findSecurityEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [SECURITY_WASM_OPT, SECURITY_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -704,6 +719,57 @@ if (htmlImports.length > 0) {
 	process.exit(1);
 }
 
+// The security chunk is the sixth engine: unlock, protect and clear permissions.
+// Like the others it is lazy — the tools page downloads it only when someone opens
+// a password card — and import-free for the same reason: the module is handed the
+// user's document bytes, and an import would be a capability it never needs. The
+// key material it writes is injected by the page from `crypto.getRandomValues`, so
+// the guest needs no entropy import of its own, and a protect request that arrives
+// without that material is refused inside the guest rather than given a stand-in key.
+const security = findSecurityEngine();
+if (security === null) {
+	console.error(
+		[
+			"place-assets: no security WASM chunk found - the password cards cannot run without one,",
+			"so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-security --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const securityOut = join(publicRoot, "wasm/selis_pdf_wasm_security.wasm");
+mkdirSync(dirname(securityOut), { recursive: true });
+copyFileSync(security, securityOut);
+const securityBytes = readFileSync(securityOut).length;
+let securityImports;
+try {
+	securityImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(securityOut)));
+} catch (error) {
+	console.error(
+		`place-assets: the security chunk at ${securityOut} is not valid WebAssembly: ${error}`,
+	);
+	process.exit(1);
+}
+if (securityImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the security chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...securityImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-security --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -736,6 +802,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_html.wasm",
 				bytes: htmlBytes,
 			},
+			security: {
+				url: "/wasm/selis_pdf_wasm_security.wasm",
+				bytes: securityBytes,
+			},
 		},
 		null,
 		2,
@@ -748,5 +818,6 @@ console.log(
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
 		`tools chunk (${toolsBytes} B, 0 imports) and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
+		`and the security chunk (${securityBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );

@@ -15,8 +15,10 @@ workspace = true
 
 [features]
 default = ["rng"]
-# Encryption support needs a CSPRNG. Parsing, verification, and the six
-# browser-safe tools do not, so the tools chunk compiles this crate without it.
+# Drawing entropy needs a CSPRNG. Parsing, verification, the browser tools and
+# the browser security chunk all run without it: the security chunk takes its
+# key material from the page (`R6Material::from_bytes`) rather than asking the
+# guest to invent it.
 rng = ["selis-crypto/rng"]
 
 [dependencies]

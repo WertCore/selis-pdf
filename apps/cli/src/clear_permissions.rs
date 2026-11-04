@@ -1,32 +1,21 @@
-//! The `selis clear-permissions` tool (SL-1A.TOOL.05): remove permission
+//! The `selis clear-permissions` command (SL-1A.TOOL.05): remove permission
 //! restrictions from an encrypted document.
 //!
-//! Interprets the owner password as the explicit override SL-1.ENC.04
-//! requires: the tool only proceeds when the password authenticates as the
-//! document owner. For R5/6 (AES-256) the file key is independent of `/P`,
-//! so the content stays encrypted at rest — only `/P` and `/Perms` are
-//! updated via an incremental append (WRITE.02). For R2–4 (RC4/AES-128) the
-//! `/P` value feeds the key derivation, so a new key is derived from the
-//! cleared `/P` and every stream/string is re-encrypted.
-
-use std::collections::BTreeSet;
+//! The operation lives in `selis_pdf_tools::security`, shared with the browser
+//! security chunk. It interprets the owner password as the explicit override
+//! SL-1.ENC.04 requires and proceeds only when that password authenticates as
+//! the document owner. For R5/6 the file key is independent of `/P`, so the
+//! content stays encrypted at rest and only `/P` and `/Perms` change, appended
+//! as a new revision (WRITE.02); for R2–4 `/P` feeds the key derivation, so a
+//! new key is derived from the cleared `/P` and every stream and string is
+//! re-encrypted. This file is the command boundary — the oplog override record
+//! and the verification display.
 
 use selis_log::oplog::{ActorId, OpLog, OpRecord, Outcome};
-use selis_pdf_cos::doc_writer::{write_incremental_update, write_objects_as_document_with_trailer};
-use selis_pdf_cos::encrypt::{self, DecryptPolicy};
-use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
-use selis_pdf_doc::Resolver;
-use selis_sandbox::{Budget, Surface};
+use selis_pdf_tools::security;
 
 use crate::verify_report::Verification;
-use crate::{read_file, CliError, CliResult};
-
-/// All permissions granted (R2–4): bits 0–1 cleared, all permission and
-/// reserved bits set.
-const ALL_PERMS_R2_4: u32 = 0xFFFF_FFFC;
-
-/// All permissions granted (R5/6): every bit set.
-const ALL_PERMS_R5_6: u32 = 0xFFFF_FFFF;
+use crate::{CliError, CliResult};
 
 /// The oplog vocabulary for the SL-1.ENC.04 override (closed, greppable).
 const OP_CLEAR_PERMISSIONS: &str = "clear-permissions";
@@ -34,276 +23,30 @@ const OVERRIDE_OWNER_PASSWORD: &str = "owner-password-permission-bits";
 
 /// Run the clear-permissions tool. Returns the operation's verification
 /// display (SL-1A.UI.02).
+///
+/// # Errors
+///
+/// `WRONG_OWNER_PASSWORD` when the password does not authenticate as the owner,
+/// and an error naming the file when the input is not encrypted or carries an
+/// unreadable `/Encrypt`. Nothing is written on a refusal.
 pub(crate) fn run(path: &str, output: &str, password: Option<&str>) -> CliResult<Verification> {
-    let pw = password.unwrap_or("");
-    let src = read_file(path)?;
-    let budget = Budget::unlimited();
-    let clock = crate::shell_clock();
-    let mut g = crate::runtime::cli_guard(&budget, &clock);
-
-    let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
-    let doc = parse_revisions(&src, startxref, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    let rev = doc
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: no revisions")))?;
-
-    let enc_ref = rev
-        .encrypt
-        .ok_or_else(|| CliError(format!("{path}: not encrypted; nothing to clear")))?;
-
-    let info = encrypt::parse_encrypt(&src, Some(enc_ref), &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?
-        .ok_or_else(|| CliError(format!("{path}: unsupported /Encrypt dictionary")))?;
-    let id0 = encrypt::document_id(&rev.trailer);
-
-    // Require owner access (SL-1.ENC.04): clearing permissions is an explicit
-    // override that only the owner password legitimises.
-    if !selis_crypto::is_owner_password(
-        &info.o,
-        &info.u,
-        info.p,
-        &id0,
-        info.r,
-        info.length,
-        info.encrypt_metadata,
-        &info.ue,
-        &info.oe,
-        pw.as_bytes(),
-    ) {
-        return Err(CliError(format!(
-            "{path}: owner password required (WRONG_OWNER_PASSWORD)"
-        )));
-    }
-
-    let key = encrypt::authenticate(&info, &id0, pw.as_bytes())
-        .ok_or_else(|| CliError(format!("{path}: wrong password (WRONG_PASSWORD)")))?;
-
-    let root = rev
-        .root
-        .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
-
-    let verification = if info.r >= 5 {
-        clear_permissions_r56(
-            &src,
-            &info,
-            &key,
-            root,
-            path,
-            output,
-            &rev.trailer,
-            &budget,
-            &mut g,
-        )
+    let outcome = security::clear_permissions(path, output, password).map_err(CliError::from)?;
+    record_override(&outcome.summary);
+    if outcome.previously_denied.is_empty() {
+        eprintln!("cleared permissions on {path} -> {output} (nothing was restricted)");
     } else {
-        clear_permissions_r24(
-            &src,
-            &doc,
-            &info,
-            &key,
-            pw.as_bytes(),
-            &id0,
-            root,
-            path,
-            output,
-            &rev.trailer,
-            &budget,
-            &mut g,
-        )
-    }?;
-    verification.emit_line();
-    Ok(verification)
-}
-/// R5/6: `/P` does not feed the key derivation, so the content stays
-/// encrypted at rest under the same file key.  Only `/P` and `/Perms` change,
-/// and the new `/Encrypt` object is appended as a new revision (WRITE.02).
-// A permission rewrite needs the whole encryption record end to end: the
-// source bytes, the parsed document, the `/Encrypt` dictionary, the file key,
-// the recovered passwords, the root and first-page ids, the two paths, the
-// trailer pairs, and the budget handles. Splitting the R2–4 and R5/6 halves
-// across a context struct would not make either one narrower to read, so the
-// arity stays and the allow is scoped to this function (SL-0.WS.11).
-#[allow(clippy::too_many_arguments)]
-fn clear_permissions_r56(
-    src: &[u8],
-    info: &encrypt::EncryptInfo,
-    key: &[u8],
-    root: Ref,
-    path: &str,
-    output: &str,
-    trailer: &[(selis_bytes::Bytes, Obj)],
-    budget: &Budget,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<Verification> {
-    let new_p = ALL_PERMS_R5_6;
-    let perms = selis_crypto::compute_perms_r6(new_p, key, info.encrypt_metadata);
-
-    // The /Encrypt object number from the trailer.
-    let enc_num = trailer
-        .iter()
-        .find(|(k, _)| k.as_slice() == b"Encrypt")
-        .and_then(|(_, v)| match v {
-            Obj::Ref(r) => Some(r.num),
-            _ => None,
-        })
-        .ok_or_else(|| CliError(format!("{path}: /Encrypt trailer entry not a ref")))?;
-
-    let mut new_info = info.clone();
-    new_info.p = new_p;
-    new_info.perms = perms;
-    let new_encrypt = encrypt::encrypt_dict(&new_info);
-
-    // New revision trailer: /Root, /ID, /Encrypt.
-    let new_trailer = build_new_trailer(trailer, enc_num, src);
-
-    let updated = write_incremental_update(src, &[(enc_num, new_encrypt)], &new_trailer, budget, g)
-        .map_err(|e| CliError(format!("{path}: write: {e}")))?;
-
-    verify_output(&updated, root, path)?;
-
-    // WRITE.05 (via the shared gate): the appended revision changes only the
-    // /Encrypt dictionary, so every surveyed count must hold on the updated
-    // bytes. Commit is atomic.
-    let verification = crate::write_gate::verify_all_preserved(
-        &updated,
-        output,
-        src,
-        u64::try_from(src.len()).unwrap_or(u64::MAX),
-        budget,
-        g,
-    )?;
-    record_override(
-        "R5/6 incremental: /P and /Perms updated, content re-encrypted under the unchanged file key",
-    );
-    eprintln!("cleared permissions on {path} -> {output}");
-    Ok(verification)
+        eprintln!(
+            "cleared permissions on {path} -> {output} (now granted: {})",
+            outcome.previously_denied.join(", ")
+        );
+    }
+    outcome.verification.emit_line();
+    Ok(outcome.verification)
 }
 
-/// R2–4: `/P` feeds the key derivation.  Decrypt all content with the old
-/// key, derive a new key from the cleared `/P`, recompute `/U`, and
-/// re-encrypt every stream/string.
-// See `clear_permissions_r56`: the R2-4 half needs the same record plus the
-// user password it recovers and the old file key it decrypts with, which is
-// why it is the wider of the two (SL-0.WS.11).
-#[allow(clippy::too_many_arguments)]
-fn clear_permissions_r24(
-    src: &[u8],
-    doc: &selis_pdf_cos::Doc,
-    info: &encrypt::EncryptInfo,
-    old_key: &[u8],
-    owner_password: &[u8],
-    id0: &[u8],
-    root: Ref,
-    path: &str,
-    output: &str,
-    trailer: &[(selis_bytes::Bytes, Obj)],
-    budget: &Budget,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<Verification> {
-    // Recover the padded user password from /O (Algorithm 3), so the new key
-    // can be derived from the same user password with the cleared /P.
-    let user_pw = selis_crypto::recover_user_password(&info.o, info.r, info.length, owner_password)
-        .ok_or_else(|| CliError(format!("{path}: cannot recover user password from /O")))?;
-
-    let new_p = ALL_PERMS_R2_4;
-    let new_key = selis_crypto::encryption_key(
-        &user_pw,
-        &info.o,
-        new_p,
-        id0,
-        info.r,
-        info.length,
-        info.encrypt_metadata,
-    );
-    let new_u = selis_crypto::compute_u(&new_key, info.r, id0);
-
-    // Walk the object graph with the OLD key (auto-decrypt via Resolver).
-    let old_policy = DecryptPolicy::from_encrypt(info, old_key.to_vec());
-    let new_policy = DecryptPolicy::from_encrypt(info, new_key.clone());
-
-    let mut resolver = Resolver::new(doc, src, budget);
-    resolver.set_key(old_policy);
-
-    let mut objects: Vec<(u32, Obj)> = Vec::new();
-    let mut visited = BTreeSet::new();
-    walk(&mut resolver, root, &mut visited, &mut objects, g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-
-    // /Info as a separate root.
-    if let Some((_, Obj::Ref(info_r))) = trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
-        if !visited.contains(&info_r.num) {
-            walk(&mut resolver, *info_r, &mut visited, &mut objects, g)
-                .map_err(|e| CliError(format!("{path}: {e}")))?;
-        }
-    }
-
-    // Re-encrypt each object with the new key.
-    for (num, obj) in &mut objects {
-        let r = Ref::new(*num, 0);
-        let taken = std::mem::replace(obj, Obj::Int(0));
-        *obj = selis_pdf_doc::encrypt_obj(taken, r, &new_policy);
-    }
-
-    // Build the new /Encrypt dict via the canonical builder: mutate the
-    // parsed info with the cleared /P and the recomputed /U, then serialize.
-    // Per ISO 32000-1 Table 15 the trailer's /Encrypt is an indirect
-    // reference, so the dict becomes a fresh object after the walked content.
-    let mut new_info = info.clone();
-    new_info.p = new_p;
-    new_info.u = new_u.clone();
-    let new_encrypt = encrypt::encrypt_dict(&new_info);
-
-    // Trailer: /Root, /Info, /ID, /Encrypt (indirect).
-    let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some((_, Obj::Ref(info_r))) = trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
-        extra_trailer.push((b"Info".to_vec(), Obj::Ref(*info_r)));
-    }
-    let fresh = fresh_file_id(src);
-    extra_trailer.push((
-        b"ID".to_vec(),
-        Obj::Array(vec![
-            Obj::String(selis_bytes::Bytes::copy_from_slice(id0)),
-            Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
-        ]),
-    ));
-
-    // The /Encrypt object gets the first free object number above the walk.
-    let enc_num = objects
-        .iter()
-        .map(|(num, _)| *num)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    objects.push((enc_num, new_encrypt));
-    extra_trailer.push((b"Encrypt".to_vec(), Obj::Ref(Ref::new(enc_num, 0))));
-
-    let bytes = write_objects_as_document_with_trailer(&objects, root, &extra_trailer, budget, g)
-        .map_err(|e| CliError(format!("{path}: write: {e}")))?;
-
-    verify_output(&bytes, root, path)?;
-
-    // WRITE.05 (via the shared gate): the re-encryption changes no structure,
-    // so every surveyed count must hold. Commit is atomic.
-    let verification = crate::write_gate::verify_all_preserved(
-        &bytes,
-        output,
-        src,
-        u64::try_from(src.len()).unwrap_or(u64::MAX),
-        budget,
-        g,
-    )?;
-    record_override(&format!(
-        "R{} full rewrite: content re-encrypted under the /P-cleared key",
-        info.r
-    ));
-    eprintln!("cleared permissions on {path} -> {output}");
-    Ok(verification)
-}
-
-/// Record the SL-1.ENC.04 override in the oplog vocabulary and echo the
-/// audit record (the CLI's one-shot oplog surface until the edit model
-/// (SL-5) carries per-document logs).
+/// Record the SL-1.ENC.04 override in the oplog vocabulary and echo the audit
+/// record (the CLI's one-shot oplog surface until the edit model (SL-5) carries
+/// per-document logs).
 fn record_override(summary: &str) {
     let mut log = OpLog::new();
     let seq = log.record_override(
@@ -327,120 +70,6 @@ fn record_override(summary: &str) {
             override_used.unwrap_or("")
         );
     }
-}
-
-/// Build the new revision's trailer entries for the R5/6 incremental update.
-fn build_new_trailer(
-    trailer: &[(selis_bytes::Bytes, Obj)],
-    enc_num: u32,
-    src: &[u8],
-) -> Vec<(Vec<u8>, Obj)> {
-    let mut t = Vec::new();
-    if let Some((_, Obj::Ref(r))) = trailer.iter().find(|(k, _)| k.as_slice() == b"Root") {
-        t.push((b"Root".to_vec(), Obj::Ref(*r)));
-    }
-    let id0 = encrypt::document_id(trailer);
-    let fresh = fresh_file_id(src);
-    t.push((
-        b"ID".to_vec(),
-        Obj::Array(vec![
-            Obj::String(selis_bytes::Bytes::copy_from_slice(&id0)),
-            Obj::String(selis_bytes::Bytes::copy_from_slice(&fresh)),
-        ]),
-    ));
-    t.push((b"Encrypt".to_vec(), Obj::Ref(Ref::new(enc_num, 0))));
-    t
-}
-
-/// WRITE.05: verify the output reparses with the same /Root and builds a
-/// usable document model.
-fn verify_output(bytes: &[u8], expected_root: Ref, path: &str) -> CliResult<()> {
-    let verify_budget = Budget::unlimited();
-    let mut vg = verify_budget.guard();
-    let sx = xref::find_startxref(bytes, 4096).unwrap_or(0);
-    let parsed = parse_revisions(bytes, sx, &verify_budget, &mut vg)
-        .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
-    let out_rev = parsed
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: output has no revisions")))?;
-    if out_rev.root != Some(expected_root) {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Root mismatch)"
-        )));
-    }
-    let doc_budget = Budget::profile(Surface::Viewer);
-    let clock = crate::shell_clock();
-    // The typed error is propagated, not swallowed (SL-1A.UI.06).
-    selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    Ok(())
-}
-
-/// Walk the object graph from `root`, resolving with decryption.
-fn walk(
-    resolver: &mut Resolver<'_>,
-    root: Ref,
-    visited: &mut BTreeSet<u32>,
-    objects: &mut Vec<(u32, Obj)>,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(), selis_error::Error> {
-    if !visited.insert(root.num) {
-        return Ok(());
-    }
-    let obj = resolver.resolve(root, g)?;
-    let mut pending = Vec::new();
-    collect_refs(&obj, &mut pending);
-    objects.push((root.num, obj));
-    for next in pending {
-        walk(resolver, next, visited, objects, g)?;
-    }
-    Ok(())
-}
-
-/// Collect all `Ref` values from an object (used to walk the graph).
-fn collect_refs(obj: &Obj, out: &mut Vec<Ref>) {
-    match obj {
-        Obj::Ref(r) => out.push(*r),
-        Obj::Array(items) => {
-            for item in items {
-                collect_refs(item, out);
-            }
-        }
-        Obj::Dict(pairs) => {
-            for (_, v) in pairs {
-                collect_refs(v, out);
-            }
-        }
-        Obj::Stream { dict, data: _ } => {
-            for (_, v) in dict {
-                collect_refs(v, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// A deterministic 16-byte file identifier (same construction as the unlock
-/// tool's `fresh_file_id`).
-fn fresh_file_id(src: &[u8]) -> Vec<u8> {
-    fn fnv(data: &[u8], seed: u64) -> u64 {
-        let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
-        for &b in data {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
-    }
-    let blob = src.get(..src.len().min(1 << 20)).unwrap_or(src);
-    let mut id = vec![0u8; 16];
-    if let Some(slot) = id.get_mut(..8) {
-        slot.copy_from_slice(&fnv(blob, 1).to_le_bytes());
-    }
-    if let Some(slot) = id.get_mut(8..) {
-        slot.copy_from_slice(&fnv(blob, 2).to_le_bytes());
-    }
-    id
 }
 
 #[cfg(test)]
@@ -659,12 +288,18 @@ mod tests {
         let src = build_r6_encrypted_pdf();
         std::fs::write(&in_path, &src).unwrap();
 
-        super::run(
+        let outcome = selis_pdf_tools::security::clear_permissions(
             in_path.to_str().unwrap(),
             out_path.to_str().unwrap(),
             Some("owner"),
         )
         .expect("clear permissions on R6");
+        // /P 0xFFFF_FBE4 denies modify and copy; the report names exactly those.
+        assert_eq!(
+            outcome.previously_denied,
+            vec!["modify", "copy"],
+            "the report names what changed"
+        );
 
         let out = std::fs::read(&out_path).unwrap();
         // Original bytes are a prefix (incremental append, WRITE.02).
@@ -694,12 +329,18 @@ mod tests {
         let out_path = dir.join("r2_cleared.pdf");
         std::fs::write(&in_path, build_r2_encrypted_pdf()).unwrap();
 
-        super::run(
+        let outcome = selis_pdf_tools::security::clear_permissions(
             in_path.to_str().unwrap(),
             out_path.to_str().unwrap(),
             Some("owner"),
         )
         .expect("clear permissions on R2");
+        // /P 0xFFFF_FFC4 grants print only.
+        assert_eq!(
+            outcome.previously_denied,
+            vec!["modify", "copy", "annotate"],
+            "the report names what changed"
+        );
 
         let out = std::fs::read(&out_path).unwrap();
         let s = String::from_utf8_lossy(&out);

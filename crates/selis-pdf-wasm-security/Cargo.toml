@@ -1,0 +1,23 @@
+[package]
+name = "selis-pdf-wasm-security"
+description = "Lazy WASM chunk: password and permission operations on a PDF, run in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: every path is a key in the in-memory tool session. No `rng`,
+# directly or through `selis-pdf-cos`: the page injects the 64 bytes of key
+# material for the one operation that needs them, so this module links no
+# entropy source and the page can instantiate it with an empty import object.
+selis-pdf-tools = { workspace = true, features = ["security"] }
+serde_json = { workspace = true }

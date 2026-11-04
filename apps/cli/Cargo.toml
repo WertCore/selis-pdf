@@ -27,7 +27,7 @@ selis-log = { workspace = true }
 selis-crypto = { workspace = true, features = ["rng"] }
 selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
-selis-pdf-tools = { workspace = true, features = ["native-fs"] }
+selis-pdf-tools = { workspace = true, features = ["native-fs", "security"] }
 selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-content = { workspace = true }

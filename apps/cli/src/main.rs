@@ -31,6 +31,7 @@ mod convert;
 mod crash_save;
 mod extract;
 mod failure;
+mod forms;
 mod img2pdf;
 mod inspect;
 mod protect;
@@ -54,8 +55,6 @@ mod write_gate {
 mod tools {
     use crate::verify_report::Verification;
     use crate::{CliError, CliResult};
-
-    pub(crate) use selis_pdf_tools::warn_if_digital_signature;
 
     pub(crate) fn merge(inputs: &[String], output: &str) -> CliResult<Verification> {
         selis_pdf_tools::merge(inputs, output).map_err(CliError::from)
@@ -355,6 +354,32 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the AcroForm fields in a PDF (name, type, current value).
+    FormFields {
+        /// The input PDF.
+        path: String,
+        /// Where to write the JSON report. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Fill AcroForm fields. Every filled value is re-read from the
+    /// produced document before the file is committed; filling a signed or
+    /// read-only field is refused rather than silently invalidated.
+    FillForms {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Set a field: `--set "Name=Value"` (repeatable). For a checkbox or
+        /// radio group the value is a state name, or `true`/`false` for a
+        /// single-state checkbox.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
@@ -862,6 +887,13 @@ fn run() {
             output,
             json,
         } => finish(tools::strip_metadata(&path, &output), json),
+        Command::FormFields { path, output } => forms::list(&path, output.as_deref()),
+        Command::FillForms {
+            path,
+            output,
+            set,
+            json,
+        } => finish(forms::fill(&path, &set, &output), json),
         Command::MetadataReport { path, output } => {
             tools::metadata_report(&path, output.as_deref())
         }

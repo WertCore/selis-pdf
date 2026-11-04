@@ -7292,7 +7292,11 @@ mod tests {
         assert!(super::split_half(single.to_str().unwrap(), "").is_err());
     }
 
-    fn custom_box_source(pages: &[([f64; 4], Option<[f64; 4]>, i64)]) -> Vec<u8> {
+    /// One page's `/MediaBox`, optional `/CropBox` and `/Rotate`, as the
+    /// custom-box test source takes them.
+    type BoxedPage = ([f64; 4], Option<[f64; 4]>, i64);
+
+    fn custom_box_source(pages: &[BoxedPage]) -> Vec<u8> {
         let budget = Budget::unlimited();
         let mut g = budget.guard();
         let mut builder = selis_pdf_cos::doc_writer::DocumentBuilder::new();

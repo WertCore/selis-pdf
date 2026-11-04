@@ -45,10 +45,16 @@ budget = 900000
 # metadata report, whose export shape is a serialized struct) crossed it, so the
 # budget moved to the next round number rather than the feature being cut. The
 # 2% baseline rule still gates every later slice.
+# 320 000 then covered it through the 28th operation. The 29th and 30th (the
+# AcroForm field report and the fill writer) add a whole field walk, a value
+# codec and its read-back check — a measured 16.9 KB - so the budget moved one
+# more round step to 340 000 rather than shipping a form tool that only reads
+# half a form. The growth is in the two operations themselves, not in a
+# dependency, and the 2% rule still gates every later slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 320000
+budget = 340000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
@@ -73,6 +79,17 @@ budget = 1300000
 chunk = "html"
 artifact = "selis_pdf_wasm_html"
 budget = 300000
+
+# The security page's lazy chunk (unlock, protect, clear permissions). It is the
+# only chunk that links the crypto handler and the engine's decryption resolver,
+# and it is deliberately not part of the tools chunk: the plain tools chunk sits
+# 15 KB under its own ceiling, and a password card is opened far less often than
+# a merge. The 64 bytes of key material are injected by the page, so no entropy
+# import reaches the guest and the chunk stays import-free.
+[[budget]]
+chunk = "security"
+artifact = "selis_pdf_wasm_security"
+budget = 200000
 
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]

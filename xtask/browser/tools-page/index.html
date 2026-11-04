@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 34;
+      const CARD_COUNT = 39;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -539,6 +539,10 @@
         };
         if (!output.blob) throw new Error("the download was not a Blob URL (" + label + ")");
         const bytes = new Uint8Array(await fetch(href).then((r) => r.arrayBuffer()));
+        // A chained leg needs the document itself, not a description of it: the
+        // protect leg hands its output to the unlock leg. The property is hidden
+        // so it stays in the driver's closure and never reaches the JSON report.
+        Object.defineProperty(output, "raw", { value: bytes, enumerable: false });
         output.bytes = bytes.length;
         output.header = new TextDecoder().decode(bytes.subarray(0, 5));
         if (output.kind === "file") {
@@ -667,6 +671,23 @@
           result,
           outputs,
           output: outputs.find((output) => output.kind === "pdf") || null,
+        };
+      }
+
+      /**
+       * What one leg contributes to the report. The raw bytes are left out: the
+       * report is JSON, and a chained leg reads them from this closure instead.
+       */
+      function legRecord(leg) {
+        return {
+          fileRows: leg.fileRows,
+          runLabel: leg.runLabel,
+          noUpload: leg.noUpload,
+          status: leg.status,
+          result: leg.result,
+          outputs: leg.outputs,
+          output: leg.output,
+          network: leg.network,
         };
       }
 
@@ -1025,6 +1046,74 @@
         };
       }
 
+      /**
+       * One card that must refuse. The password cards' central promise is that a
+       * wrong password produces nothing, so this leg asserts the absence rather
+       * than a download: no result panel, no output row, and the refusal worded
+       * by the engine. `data-no-upload` is deliberately not read here — the page
+       * sets it only for a result it actually produced, and a refusal has none.
+       */
+      async function refuseInFrame(frame, fixture, fixtureName, label, toolId, inputs, needle) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const card = doc.querySelector('[data-tool="' + toolId + '"]');
+        if (!card) throw new Error("the page offered no " + toolId + " card");
+        markClick(card);
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the " + toolId + " workspace (" + label + ")",
+        );
+        for (const [key, value] of Object.entries(inputs || {})) {
+          const field = doc.getElementById("option-" + key);
+          if (!field) throw new Error("the " + toolId + " page offered no " + key + " field");
+          field.value = String(value);
+          field.dispatchEvent(new win.Event("input", { bubbles: true }));
+          field.dispatchEvent(new win.Event("change", { bubbles: true }));
+        }
+        await attachList(
+          frame,
+          [{ name: fixtureName, bytes: new Uint8Array(fixture), type: "application/pdf" }],
+          label,
+        );
+        const run = doc.getElementById("run-tool");
+        await waitFor(() => !run.disabled, 5_000, "the " + toolId + " button to enable");
+        const runLabel = run.textContent.trim();
+        // A sentinel the page has to overwrite: without it, a status left behind
+        // by the previous leg would satisfy the wait before this one ran.
+        const status = doc.getElementById("status");
+        status.dataset.kind = "waiting";
+        status.textContent = "";
+        run.click();
+        await waitFor(
+          () => status.dataset.kind === "error",
+          30_000,
+          "the " + toolId + " refusal (" + label + ")",
+        );
+        const said = status.textContent.trim();
+        if (!said.includes(needle)) {
+          throw new Error(
+            "the " + label + " refusal said " + JSON.stringify(said) + ", expected " + needle,
+          );
+        }
+        return {
+          runLabel,
+          status: said,
+          refused: true,
+          resultHidden: doc.getElementById("result").hidden,
+          outputRows: doc.querySelectorAll("#result-outputs .output-row").length,
+          network: readNetwork(win),
+        };
+      }
+
       async function attachInFrame(frame, fixture, fixtureName, payload, payloadName, label) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -1100,7 +1189,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the thirty-three tool cards");
+        out.cards = await waitForCards(frame, "the thirty-nine tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1142,12 +1231,25 @@
           if (!r.ok) throw new Error("outlined.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        const formFixture = await fetch("form.pdf").then((r) => {
+          if (!r.ok) throw new Error("form.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
         const attachmentsFixture = await fetch("attachments.pdf").then((r) => {
           if (!r.ok) throw new Error("attachments.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
         const metadataFixture = await fetch("metadata.pdf").then((r) => {
           if (!r.ok) throw new Error("metadata.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        // The password fixture is NOT one Selis wrote: `qpdf --encrypt` produced
+        // it (AES-256, revision 6, user `selis-open`, owner `selis-owner`, with
+        // modify, copy and annotate denied). Unlocking and clearing permissions on
+        // it is the interop direction — a foreign writer's envelope, our engine's
+        // answer — which is why no Selis output stands in for it here.
+        const lockedFixture = await fetch("locked.pdf").then((r) => {
+          if (!r.ok) throw new Error("locked.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
         // Image→PDF inputs: a PNG and a JPEG, so the leg covers both decoders
@@ -1202,6 +1304,115 @@
           }
           throw new Error("the report fixture has no xref keyword to damage");
         })();
+
+      // The fill-forms leg drives the one card that renders its own field
+      // list from the picked document, so the driver reads the DOM instead
+      // of option ids: it waits for the seven fixture fields, asserts the
+      // signature warning is visible and the signature and read-only rows
+      // are disabled, then types into the visible controls and reads the
+      // Blob — the page can only pass by filling the form.
+      async function fillFormInFrame(frame, fixture, fixtureName, label, edits) {
+        const win = frame.contentWindow;
+        const doc = frameDocument(frame);
+        if (doc.getElementById("tools").hidden) {
+          doc.getElementById("back-to-tools").click();
+          await waitFor(
+            () => !doc.getElementById("tools").hidden,
+            5_000,
+            "the tools grid (" + label + ")",
+          );
+        }
+        const card = doc.querySelector('[data-tool="fill_forms"]');
+        if (!card) throw new Error("the page offered no fill_forms card");
+        markClick(card);
+        await waitFor(
+          () => !doc.getElementById("workspace").hidden,
+          5_000,
+          "the fill_forms workspace (" + label + ")",
+        );
+        const transfer = new win.DataTransfer();
+        transfer.items.add(
+          new win.File([fixture.slice(0)], fixtureName, { type: "application/pdf" }),
+        );
+        const input = doc.getElementById("file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll("#file-list .file-row").length === 1,
+          5_000,
+          "the form PDF to list (" + label + ")",
+        );
+        // The page reads the fields itself once the file lands.
+        await waitFor(
+          () => doc.querySelectorAll("#form-fields .form-field").length === 7,
+          30_000,
+          "the seven form fields to render (" + label + ")",
+        );
+        const warning = doc.getElementById("form-fields-signature");
+        const signatureWarn = warning ? !warning.hidden : false;
+        if (!signatureWarn) {
+          throw new Error("the signature warning was not shown (" + label + ")");
+        }
+        const signRow = doc.querySelector('.form-field[data-field="Sign"]');
+        const signControl = signRow ? signRow.querySelector("input,select") : null;
+        const signatureFieldDisabled = Boolean(signControl && signControl.disabled);
+        if (!signatureFieldDisabled) {
+          throw new Error("the signature field was not disabled (" + label + ")");
+        }
+        const freezeRow = doc.querySelector('.form-field[data-field="Frozen"]');
+        const freezeControl = freezeRow ? freezeRow.querySelector("input,select") : null;
+        const readOnlyDisabled = Boolean(freezeControl && freezeControl.disabled);
+        if (!readOnlyDisabled) {
+          throw new Error("the read-only field was not disabled (" + label + ")");
+        }
+        const setField = (name, value) => {
+          const row = doc.querySelector('.form-field[data-field="' + name + '"]');
+          if (!row) throw new Error("the form had no field " + name);
+          const control = row.querySelector("input,select");
+          control.value = String(value);
+          control.dispatchEvent(new win.Event("input", { bubbles: true }));
+          control.dispatchEvent(new win.Event("change", { bubbles: true }));
+        };
+        for (const [name, value] of Object.entries(edits || {})) {
+          setField(name, value);
+        }
+        const run = doc.getElementById("run-tool");
+        await waitFor(
+          () => !run.disabled,
+          5_000,
+          "the fill button to enable (" + label + ")",
+        );
+        const runLabel = run.textContent.trim();
+        run.click();
+        await waitFor(
+          () =>
+            doc.documentElement.dataset.noUpload === "verified" &&
+            !doc.getElementById("result").hidden,
+          30_000,
+          "the fill result and the no-upload assertion (" + label + ")",
+        );
+        const read = await readResult(
+          frame,
+          label,
+          ["(Browser Ada Lovelace)", "/NeedAppearances true"],
+          [],
+        );
+        return {
+          win,
+          fileRows: 1,
+          runLabel,
+          noUpload: doc.documentElement.dataset.noUpload,
+          status: doc.getElementById("status").textContent.trim(),
+          result: read.result,
+          outputs: read.outputs,
+          output: read.output,
+          network: readNetwork(win),
+          signatureWarn,
+          signatureFieldDisabled,
+          readOnlyDisabled,
+          fieldRows: doc.querySelectorAll("#form-fields .form-field").length,
+        };
+      }
 
         // The batch queue gets two real documents of different sizes and one
         // file the engine cannot read. The deliberate failure is the point of
@@ -1941,6 +2152,32 @@
           network: onlineConvert.network,
         };
 
+        // The form-fill leg is the only card whose own DOM carries the proof:
+        // seven fixture fields render, the signature row is disabled with the
+        // page's own invalidation warning beside it, and the Blob that comes
+        // out carries the fills.
+        const onlineFormFill = await fillFormInFrame(
+          frame,
+          formFixture,
+          "form.pdf",
+          "online form fill",
+          { Name: "Browser Ada Lovelace", Agree: "Yes", Color: "Green", Size: "Large" },
+        );
+        out.formFill = {
+          fileRows: onlineFormFill.fileRows,
+          runLabel: onlineFormFill.runLabel,
+          noUpload: onlineFormFill.noUpload,
+          status: onlineFormFill.status,
+          result: onlineFormFill.result,
+          outputs: onlineFormFill.outputs,
+          output: onlineFormFill.output,
+          network: onlineFormFill.network,
+          signatureWarn: onlineFormFill.signatureWarn,
+          signatureFieldDisabled: onlineFormFill.signatureFieldDisabled,
+          readOnlyDisabled: onlineFormFill.readOnlyDisabled,
+          fieldRows: onlineFormFill.fieldRows,
+        };
+
         // PDF to PNG runs in its own lazy chunk. The single-page leg must
         // return a real PNG (signature checked below as `png`), and the
         // multi-page leg must return one store-method ZIP with one `page-N.png`
@@ -2213,6 +2450,117 @@
           network: onlineHtmlOne.network,
         };
 
+        // ── The four password cards ───────────────────────────────────────────
+        // They share one lazy chunk of their own, so the first leg below is the
+        // moment the browser asks for the security module. Protect and set
+        // permissions write; the unlock legs then read what this page wrote AND
+        // what qpdf wrote, because `locked.pdf` is a foreign envelope; the clear
+        // legs show that the user password is not the owner password and name
+        // what the owner password lifted.
+        const onlineProtect = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online protect",
+          "protect",
+          {
+            userPassword: "selis-open",
+            ownerPassword: "selis-owner",
+            modify: false,
+            annotate: false,
+          },
+          ["/Encrypt", "/Filter /Standard", "/CFM /AESV3", "/V 5", "/R 6", "/P -44"],
+          ["q 1 0 0 rg"],
+          null,
+        );
+        const onlinePermissions = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online set permissions",
+          "permissions",
+          {
+            ownerPassword: "selis-owner",
+            modify: false,
+            copy: false,
+            annotate: false,
+          },
+          // Only print granted: /P = baseline with the modify (8), copy (16)
+          // and annotate (32) bits cleared, so -4 - 8 - 16 - 32 = -60.
+          ["/Encrypt", "/CFM /AESV3", "/P -60"],
+          ["q 1 0 0 rg"],
+          null,
+        );
+        const onlineUnlockRefusal = await refuseInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "online unlock with a wrong password",
+          "unlock",
+          { password: "not-the-password" },
+          "WRONG_PASSWORD",
+        );
+        const onlineUnlock = await toolInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "online unlock",
+          "unlock",
+          { password: "selis-open" },
+          ["/Type /Pages", "/Count 3"],
+          ["/Encrypt", "/Filter /Standard", "/AESV3"],
+          null,
+        );
+        // The page's own protected output, unlocked on the same device: the loop
+        // closes, because the bytes the protect card wrote now open with the
+        // password the user typed and carry no encryption at all.
+        const onlineUnlockOwn = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online unlock of the file this page just wrote",
+          "unlock",
+          { password: "selis-open" },
+          ["/Type /Pages", "/Count 3"],
+          ["/Encrypt", "/Filter /Standard", "/AESV3"],
+          [
+            {
+              name: "report-protected.pdf",
+              bytes: onlineProtect.output.raw,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const onlineClearRefusal = await refuseInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "online clear permissions with the user password",
+          "clear_permissions",
+          { password: "selis-open" },
+          "WRONG_OWNER_PASSWORD",
+        );
+        const onlineClear = await toolInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "online clear permissions",
+          "clear_permissions",
+          { password: "selis-owner" },
+          ["/Encrypt", "/P -1", "/Prev"],
+          [],
+          null,
+        );
+        out.security = {
+          unlockRefusal: onlineUnlockRefusal,
+          unlock: legRecord(onlineUnlock),
+          unlockOwn: legRecord(onlineUnlockOwn),
+          clearRefusal: onlineClearRefusal,
+          clear: legRecord(onlineClear),
+          protect: legRecord(onlineProtect),
+          permissions: legRecord(onlinePermissions),
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -2225,8 +2573,13 @@
         if (!offlineWin) throw new Error("the offline tools iframe had no window");
         offlinePhase = true;
 
-        const offlineCards = await waitForCards(frame, "the thirty-three offline tool cards");
-        await waitFor(
+        out.offlineHtmlPreview = offlineWin
+          ? offlineWin.document.documentElement.outerHTML.slice(0, 400)
+          : null;
+        out.offlineSwController = offlineWin
+          ? offlineWin.navigator?.serviceWorker?.controller?.scriptURL ?? null
+          : null;
+        const offlineCards = await waitForCards(frame, "the thirty-nine offline tool cards");        await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
           "the worker to claim the offline tools page",
@@ -2497,6 +2850,17 @@
           [],
           convertFiles,
         );
+        // The form-fill leg is the one card whose inputs are rendered, not
+        // declared: its 7 fields re-read from the picked PDF, the signature
+        // row stays disabled, and the page's invalidation warning is shown
+        // — all with the origin cut, after the offline reload.
+        const offlineFormFill = await fillFormInFrame(
+          frame,
+          formFixture,
+          "form.pdf",
+          "offline form fill",
+          { Name: "Browser Ada Lovelace", Agree: "Yes", Color: "Green", Size: "Large" },
+        );
         // The raster chunk is runtime-cached on first use, like convert, so the
         // offline leg proves the renderer still loads and renders with the
         // origin cut. Both the single PNG and the ZIP are re-run.
@@ -2721,6 +3085,100 @@
           ],
           ["%PDF-"],
         );
+
+        // The same seven password legs after the origin is cut. The security chunk
+        // is not in the precache list — it is cached the first time a card runs —
+        // so these legs are the proof that a device which once used a password
+        // card can remove a password offline, with no server to ask.
+        const offlineProtect = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline protect",
+          "protect",
+          {
+            userPassword: "selis-open",
+            ownerPassword: "selis-owner",
+            modify: false,
+            annotate: false,
+          },
+          ["/Encrypt", "/Filter /Standard", "/CFM /AESV3", "/V 5", "/R 6", "/P -44"],
+          ["q 1 0 0 rg"],
+          [
+            { name: "report.pdf", bytes: new Uint8Array(splitFixture.slice(0)), type: "application/pdf" },
+          ],
+        );
+        const offlinePermissions = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline set permissions",
+          "permissions",
+          { ownerPassword: "selis-owner", modify: false, copy: false, annotate: false },
+          ["/Encrypt", "/CFM /AESV3", "/P -60"],
+          ["q 1 0 0 rg"],
+          [
+            { name: "report.pdf", bytes: new Uint8Array(splitFixture.slice(0)), type: "application/pdf" },
+          ],
+        );
+        const offlineUnlockRefusal = await refuseInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "offline unlock with a wrong password",
+          "unlock",
+          { password: "not-the-password" },
+          "WRONG_PASSWORD",
+        );
+        const offlineUnlock = await toolInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "offline unlock",
+          "unlock",
+          { password: "selis-open" },
+          ["/Type /Pages", "/Count 3"],
+          ["/Encrypt", "/Filter /Standard", "/AESV3"],
+          null,
+        );
+        const offlineUnlockOwn = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline unlock of the file this page just wrote",
+          "unlock",
+          { password: "selis-open" },
+          ["/Type /Pages", "/Count 3"],
+          ["/Encrypt", "/Filter /Standard", "/AESV3"],
+          [
+            {
+              name: "report-protected.pdf",
+              bytes: offlineProtect.output.raw,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineClearRefusal = await refuseInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "offline clear permissions with the user password",
+          "clear_permissions",
+          { password: "selis-open" },
+          "WRONG_OWNER_PASSWORD",
+        );
+        const offlineClear = await toolInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "offline clear permissions",
+          "clear_permissions",
+          { password: "selis-owner" },
+          ["/Encrypt", "/P -1", "/Prev"],
+          [],
+          null,
+        );
+
         out.offline = {
           cards: offlineCards,
           controlled: offlineWin.navigator.serviceWorker.controller !== null,
@@ -2961,6 +3419,20 @@
             output: offlineConvert.output,
             network: offlineConvert.network,
           },
+          formFill: {
+            fileRows: offlineFormFill.fileRows,
+            runLabel: offlineFormFill.runLabel,
+            noUpload: offlineFormFill.noUpload,
+            status: offlineFormFill.status,
+            result: offlineFormFill.result,
+            outputs: offlineFormFill.outputs,
+            output: offlineFormFill.output,
+            network: offlineFormFill.network,
+            signatureWarn: offlineFormFill.signatureWarn,
+            signatureFieldDisabled: offlineFormFill.signatureFieldDisabled,
+            readOnlyDisabled: offlineFormFill.readOnlyDisabled,
+            fieldRows: offlineFormFill.fieldRows,
+          },
           png: {
             fileRows: offlinePng.fileRows,
             runLabel: offlinePng.runLabel,
@@ -3149,6 +3621,15 @@
             outputs: offlineBatch.outputs,
             output: offlineBatch.output,
             network: offlineBatch.network,
+          },
+          security: {
+            unlockRefusal: offlineUnlockRefusal,
+            unlock: legRecord(offlineUnlock),
+            unlockOwn: legRecord(offlineUnlockOwn),
+            clearRefusal: offlineClearRefusal,
+            clear: legRecord(offlineClear),
+            protect: legRecord(offlineProtect),
+            permissions: legRecord(offlinePermissions),
           },
         };
 

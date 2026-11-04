@@ -192,12 +192,12 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 
 | Feature | iLovePDF | ihp | Phase | Status / constraint |
 |---|---|---|---|---|
-| Unlock / remove password | yes | yes | Forms/Security | CLI exists. Browser needs a crypto-enabled chunk; the current tools chunk deliberately has no RNG imports. |
-| Protect with password | yes | yes | Forms/Security | AESV3/R6 only; separate user/owner passwords; permission copy reviewed. |
-| Clear permissions | — | yes | Forms/Security | CLI exists; owner-password override only. |
-| Permissions / encrypt | — | yes | Forms/Security | Same surface as protect. |
-| Sign PDF | yes | yes | Forms/Security | Certificate/signature UI; keys never leave device; signature invalidation warnings. |
-| Fill forms | — | yes | Forms/Security | AcroForm field editing; flatten is a separate raster/forms task. |
+| Unlock / remove password | yes | yes | Forms/Security | Shipped in CLI and browser through a sixth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_security.wasm`). AESV3/R6, R2-4 legacy envelopes and qpdf files open with the user password; a wrong password is refused and nothing is written. Human review pending, so the checklist row stays unticked. |
+| Protect with password | yes | yes | Forms/Security | AESV3/R6 only; separate user/owner passwords; permission bits written and read back from `/P`. Key material is injected by the page, so no RNG import reaches the guest. Human review pending. |
+| Clear permissions | — | yes | Forms/Security | Owner-password override only; the output is an incremental revision whose `/P` and `/Perms` change while the content stays encrypted under the unchanged file key, and the page names what was lifted. Human review pending. |
+| Permissions / encrypt | — | yes | Forms/Security | Same surface as protect, with the permission boxes as the only difference; `/P` is verified by re-opening the output. Human review pending. |
+| Sign PDF | yes | yes | Forms/Security | Certificate/signature UI; keys never leave device; signature invalidation warnings. Not shipped: creating a signature needs PKCS#7 signing, which the tree does not have. |
+| Fill forms | — | yes | Forms/Security | Live in CLI and browser. A new core crate, `selis-pdf-form`, reads the AcroForm (text, checkbox, radio, choice, signature, push button, read-only), writes text/choice/button values as `/V` (plus `/I` for choices) and sets `/NeedAppearances`, then re-reads every value from the bytes it wrote. Encrypted, XFA, signed, read-only, multi-select and duplicate-name inputs are refused by type. The page renders one control per field, disables signature and read-only rows, and discloses signature invalidation before the run button enables. No appearance-stream synthesis yet, so a viewer rebuilds appearances on open; flatten stays a separate task. |
 | Certificate validation | — | yes | Forms/Security | Trust store and revocation policy; do not claim validity without a chain. |
 | Handwriting / thumbmark | — | yes | Raster | Ink capture → vector or image overlay; preview and flatten option. |
 | Remove password from scans | — | yes | Forms/Security | Same as unlock. |

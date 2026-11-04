@@ -1601,8 +1601,10 @@ mod tests {
             .end_text();
         let original = c.to_bytes();
         b.add_page(100.0, 100.0, original.as_slice());
-        let id0 = b"0123456789abcdef";
-        let (info, file_key) = crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, id0);
+        let material = crate::encrypt::R6Material::from_bytes(&[0x5Au8; 64])
+            .expect("a 64-byte credential blob");
+        let (info, file_key) =
+            crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &material);
         assert_eq!(info.r, 6);
         assert_eq!(info.v, 5);
         assert_eq!(file_key.len(), 32);
@@ -1696,8 +1698,10 @@ mod tests {
         }
 
         // Encrypt with empty user password.
+        let material = crate::encrypt::R6Material::from_bytes(&[0x77u8; 64])
+            .expect("a 64-byte credential blob");
         let (info, file_key) =
-            crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &[0u8; 16]);
+            crate::encrypt::EncryptInfo::new_r6(b"", b"owner", 0xFFFFF0C0, &material);
         let encrypted = crate::doc_writer::write_objects_as_document_encrypted(
             &objects, root, &info, &file_key, &budget, &mut g,
         )

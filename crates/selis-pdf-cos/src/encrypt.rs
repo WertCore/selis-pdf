@@ -66,6 +66,76 @@ pub struct EncryptInfo {
     pub recipients: Vec<Vec<u8>>,
 }
 
+/// The 64 bytes a revision-6 writer must not guess: the 256-bit file key and
+/// the four 8-byte salts that `/U`, `/O`, `/UE` and `/OE` are built around.
+///
+/// Two ways to fill it, and only two:
+///
+/// * [`R6Material::generate`] draws from the OS CSPRNG and returns `None`
+///   where there is no OS entropy source. A native caller that gets `None`
+///   refuses to encrypt — there is no substitute for a key, and this module's
+///   history includes a fixed-seed stand-in that would have quietly given every
+///   protected document the same one.
+/// * [`R6Material::from_bytes`] takes bytes a host with entropy produced for
+///   it. The web page supplies them from `crypto.getRandomValues`, uses them
+///   for one operation, and stores nothing: they are the only secret the page
+///   hands the guest that the guest cannot recompute.
+///
+/// Stream and string IVs are not here — `selis_crypto::derive_iv` makes them
+/// from the file key and each object's number — which is why one 64-byte blob
+/// covers a document of any size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct R6Material {
+    /// The file encryption key every stream and string is encrypted under.
+    pub file_key: [u8; 32],
+    /// The user-password validation salt.
+    pub u_v_salt: [u8; 8],
+    /// The user-password key salt.
+    pub u_k_salt: [u8; 8],
+    /// The owner-password validation salt.
+    pub o_v_salt: [u8; 8],
+    /// The owner-password key salt.
+    pub o_k_salt: [u8; 8],
+}
+
+impl R6Material {
+    /// The exact byte length [`R6Material::from_bytes`] takes.
+    pub const LEN: usize = 64;
+
+    /// Draw the whole blob from the OS CSPRNG.
+    pub fn generate() -> Option<Self> {
+        let bytes = selis_crypto::random_bytes(Self::LEN)?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Read a host-supplied blob. `None` unless it is exactly [`Self::LEN`]
+    /// bytes — a short or over-long injection is a caller bug, and guessing
+    /// which half to drop would be a weaker key without saying so.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::LEN {
+            return None;
+        }
+        let file_key: [u8; 32] = bytes.get(..32)?.try_into().ok()?;
+        let u_v_salt: [u8; 8] = bytes.get(32..40)?.try_into().ok()?;
+        let u_k_salt: [u8; 8] = bytes.get(40..48)?.try_into().ok()?;
+        let o_v_salt: [u8; 8] = bytes.get(48..56)?.try_into().ok()?;
+        let o_k_salt: [u8; 8] = bytes.get(56..)?.try_into().ok()?;
+        Some(Self {
+            file_key,
+            u_v_salt,
+            u_k_salt,
+            o_v_salt,
+            o_k_salt,
+        })
+    }
+
+    /// The document's `/ID`, derived from the file key.
+    #[must_use]
+    pub fn document_id(&self) -> [u8; 16] {
+        selis_crypto::document_id_from_key(&self.file_key)
+    }
+}
+
 impl EncryptInfo {
     /// Whether the stream crypt filter is a real handler filter (streams are
     /// encrypted). `/Identity` streams are not. Beyond the standard
@@ -121,27 +191,33 @@ impl EncryptInfo {
         self.v <= 5 && self.r >= 2 && self.r <= 6
     }
 
-    /// Build a revision-6 `/Encrypt` dictionary and the file encryption key.
+    /// Build a revision-6 `/Encrypt` dictionary from caller-supplied
+    /// credential material.
     ///
     /// Returns the [`EncryptInfo`] (with `/O`, `/U`, `/UE`, `/OE`, `/Perms` all
-    /// computed) and the 32-byte file key. The document ID `id0` (from
-    /// [`document_id`]) is used for key derivation.
+    /// computed) and the 32-byte file key. Revision 6 does not hash the
+    /// document ID into the key (ISO 32000-2 §7.6.4.3.4), so `id0` is not an
+    /// input here — the caller derives it from the material and writes it into
+    /// the trailer.
     #[must_use]
     pub fn new_r6(
         user_password: &[u8],
         owner_password: &[u8],
         p: u32,
-        _id0: &[u8],
+        material: &R6Material,
     ) -> (Self, Vec<u8>) {
-        let file_key = selis_crypto::random_bytes(32);
-        let u_v_salt = selis_crypto::random_bytes(8);
-        let u_k_salt = selis_crypto::random_bytes(8);
-        let o_v_salt = selis_crypto::random_bytes(8);
-        let o_k_salt = selis_crypto::random_bytes(8);
-        let u = selis_crypto::compute_u_r6(user_password, &u_v_salt, &u_k_salt, 6);
-        let o = selis_crypto::compute_o_r6(owner_password, &o_v_salt, &o_k_salt, &u, 6);
-        let ue = selis_crypto::compute_ue_r6(user_password, &u_k_salt, &file_key, 6);
-        let oe = selis_crypto::compute_oe_r6(owner_password, &o_k_salt, &u, &file_key, 6);
+        let file_key = material.file_key.to_vec();
+        let u =
+            selis_crypto::compute_u_r6(user_password, &material.u_v_salt, &material.u_k_salt, 6);
+        let o = selis_crypto::compute_o_r6(
+            owner_password,
+            &material.o_v_salt,
+            &material.o_k_salt,
+            &u,
+            6,
+        );
+        let ue = selis_crypto::compute_ue_r6(user_password, &material.u_k_salt, &file_key, 6);
+        let oe = selis_crypto::compute_oe_r6(owner_password, &material.o_k_salt, &u, &file_key, 6);
         let perms = selis_crypto::compute_perms_r6(p, &file_key, true);
         let cf_std_cf = Obj::Dict(vec![
             (bytes(b"CFM"), Obj::Name(bytes(b"AESV3"))),
@@ -793,6 +869,144 @@ mod tests {
 
     use super::*;
 
+    /// A fixed 64-byte credential blob for the tests below. A test that
+    /// asserts what `/U`, `/UE` and `/Perms` contain has to pin the key and
+    /// salts, which is exactly what the host-injected path lets it do.
+    fn fixed_material() -> R6Material {
+        R6Material::from_bytes(&[0x5Au8; R6Material::LEN]).expect("a 64-byte credential blob")
+    }
+
+    /// One `/Encrypt` byte string by the name a reviewer would ask for it.
+    fn entry_of<'a>(info: &'a EncryptInfo, name: &str) -> &'a [u8] {
+        let bytes = match name {
+            "/U" => Some(info.u.as_slice()),
+            "/O" => Some(info.o.as_slice()),
+            "/UE" => Some(info.ue.as_slice()),
+            "/OE" => Some(info.oe.as_slice()),
+            "/Perms" => Some(info.perms.as_slice()),
+            _ => None,
+        };
+        bytes.unwrap_or_else(|| panic!("no /Encrypt entry named {name}"))
+    }
+
+    /// A document encrypted by the browser path is reproducible: same
+    /// credentials, same passwords, same `/P` — the same bytes out. Nothing in
+    /// the write path reaches for an entropy source any more, which is what
+    /// makes a guest with no CSPRNG able to write this format at all.
+    #[test]
+    fn injected_credentials_reproduce_the_dictionary() {
+        let first = EncryptInfo::new_r6(b"user", b"owner", 0xFFFF_FFC4, &fixed_material()).0;
+        let second = EncryptInfo::new_r6(b"user", b"owner", 0xFFFF_FFC4, &fixed_material()).0;
+        assert_eq!(first, second, "one credential blob gives one dictionary");
+        assert_eq!(first.r, 6);
+        assert_eq!(first.v, 5);
+        assert_eq!(first.u.len(), 48);
+        assert_eq!(first.o.len(), 48);
+        assert_eq!(first.ue.len(), 32);
+        assert_eq!(first.oe.len(), 32);
+        assert_eq!(first.perms.len(), 16);
+    }
+
+    /// Which credential byte reaches which `/Encrypt` entry.
+    ///
+    /// This is the map Algorithms 2.A/2.B/10 imply, written down as an
+    /// executable claim: the file key only appears where the key is wrapped or
+    /// the permissions are sealed; the user salts sit inside `/U` (and so
+    /// change `/O` and `/OE`, which hash `/U`); the owner salts only reach the
+    /// owner's own entries. A test that asserted "every byte moves `/U`" would
+    /// have been wrong, and it was — until it said so.
+    #[test]
+    fn each_credential_byte_reaches_exactly_the_entries_it_should() {
+        let base = EncryptInfo::new_r6(b"user", b"owner", 0xFFFF_FFC4, &fixed_material()).0;
+        // (offset, what it is, the entries that must move, the ones that must not)
+        let table: [(usize, &str, &[&str], &[&str]); 5] = [
+            (0, "file key", &["/UE", "/OE", "/Perms"], &["/U", "/O"]),
+            (
+                32,
+                "user validation salt",
+                &["/U", "/O", "/OE"],
+                &["/UE", "/Perms"],
+            ),
+            (
+                40,
+                "user key salt",
+                &["/U", "/UE", "/O", "/OE"],
+                &["/Perms"],
+            ),
+            (
+                48,
+                "owner validation salt",
+                &["/O"],
+                &["/U", "/UE", "/OE", "/Perms"],
+            ),
+            (
+                56,
+                "owner key salt",
+                &["/O", "/OE"],
+                &["/U", "/UE", "/Perms"],
+            ),
+        ];
+        for (offset, what, moves, holds) in table {
+            let mut blob = [0x5Au8; R6Material::LEN];
+            blob[offset] ^= 0x01;
+            let changed = EncryptInfo::new_r6(
+                b"user",
+                b"owner",
+                0xFFFF_FFC4,
+                &R6Material::from_bytes(&blob).expect("a 64-byte credential blob"),
+            )
+            .0;
+            for entry in moves {
+                assert_ne!(
+                    entry_of(&base, entry),
+                    entry_of(&changed, entry),
+                    "the {what} must move {entry}"
+                );
+            }
+            for entry in holds {
+                assert_eq!(
+                    entry_of(&base, entry),
+                    entry_of(&changed, entry),
+                    "the {what} must not move {entry}"
+                );
+            }
+        }
+    }
+
+    /// A wrong length is a refusal, not a truncation: silently dropping the
+    /// tail would shrink the salt the owner password is keyed by.
+    #[test]
+    fn a_credential_blob_is_all_sixty_four_bytes_or_nothing() {
+        assert!(R6Material::from_bytes(&[0u8; 63]).is_none());
+        assert!(R6Material::from_bytes(&[0u8; 65]).is_none());
+        assert!(R6Material::from_bytes(&[]).is_none());
+        assert!(R6Material::from_bytes(&[0u8; 64]).is_some());
+    }
+
+    /// `/ID` comes from the file key, so a fresh save (fresh key) is a fresh
+    /// identifier, and the same save reproduces the same one.
+    #[test]
+    fn document_id_follows_the_file_key() {
+        let one = fixed_material();
+        let mut other_bytes = [0x5Au8; R6Material::LEN];
+        other_bytes[0] ^= 0x80;
+        let other = R6Material::from_bytes(&other_bytes).expect("a 64-byte credential blob");
+        assert_eq!(one.document_id().len(), 16);
+        assert_eq!(one.document_id(), fixed_material().document_id());
+        assert_ne!(one.document_id(), other.document_id());
+    }
+
+    /// The native writer refuses rather than invents: `generate` is the only
+    /// path that can produce a key without a host supplying one, and on this
+    /// host it succeeds.
+    #[test]
+    fn the_native_draw_is_random_or_absent() {
+        let a = R6Material::generate().expect("this host has an OS CSPRNG");
+        let b = R6Material::generate().expect("this host has an OS CSPRNG");
+        assert_ne!(a.file_key, b.file_key, "two saves must not share a key");
+        assert_ne!(a.u_v_salt, b.u_v_salt);
+    }
+
     /// Build the dict pairs `parse_pubkey_encrypt` expects (the same shape
     /// the resolver hands `parse_encrypt`).
     macro_rules! dict_pairs {
@@ -886,7 +1100,7 @@ mod tests {
     /// `authenticate_public_key` refuses standard-handler infos.
     #[test]
     fn pubkey_authentication_refuses_standard_infos() {
-        let (info, _) = EncryptInfo::new_r6(b"", b"", 0xFFFF_F0C0, &[0u8; 16]);
+        let (info, _) = EncryptInfo::new_r6(b"", b"", 0xFFFF_F0C0, &fixed_material());
         let credential = selis_crypto::pkcs7::PubKeyCredential::rsa([0u8; 8].to_vec());
         let budget = Budget::unlimited();
         let mut g = budget.guard();

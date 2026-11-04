@@ -5,7 +5,8 @@
 //! The DoD for every 1A.TOOL operation: a corpus entry exercising it, the
 //! output verified structurally, and an oracle interop check where the local
 //! tooling allows. The protected output is deliberately non-deterministic
-//! (CSPRNG file key, salts, IVs, /ID), so the corpus carries the unencrypted
+//! (CSPRNG file key and salts; `/ID` and the per-object IVs follow from that
+//! key), so the corpus carries the unencrypted
 //! source fixture and this test exercises the operation end-to-end:
 //!
 //! 1. `selis protect` with separate user/owner passwords and a restricted

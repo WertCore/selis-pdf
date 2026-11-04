@@ -77,6 +77,40 @@ fn run_tools(
     run("set-metadata", &|out| {
         crate::tools::set_metadata(&input, &[("Title", "conformance hook")], out).map(|_| ())
     });
+    run("fill-forms", &|out| {
+        // Set the first fillable field to its own current value (or a short
+        // marker when the field is empty). A document with no fillable field
+        // — including every non-form document — refuses, and the gate counts
+        // that as a clean refusal rather than a run.
+        let report = selis_pdf_tools::form_fields(&input).map_err(|e| crate::CliError(e.0))?;
+        let edits: Vec<selis_pdf_tools::FieldEdit> = report
+            .fields
+            .into_iter()
+            .filter(|field| {
+                !field.read_only
+                    && !matches!(
+                        field.kind,
+                        selis_pdf_tools::FieldKind::Signature
+                            | selis_pdf_tools::FieldKind::PushButton
+                    )
+            })
+            .take(1)
+            .map(|field| selis_pdf_tools::FieldEdit {
+                name: field.name,
+                value: field.value.unwrap_or_else(|| "conformance".to_string()),
+            })
+            .collect();
+        if edits.is_empty() {
+            return Err(crate::CliError("no fillable field".to_string()));
+        }
+        selis_pdf_tools::fill_forms(
+            &input,
+            &selis_pdf_tools::FillFormsOptions { fields: edits },
+            out,
+        )
+        .map(|_| ())
+        .map_err(|e| crate::CliError(e.0))
+    });
     run("compress", &|out| {
         crate::compress::optimise_file(&input, out).map(|_r| ())
     });

@@ -2424,6 +2424,152 @@ fn check_smaller_than(
     Ok(())
 }
 
+/// One form-fill leg: the fixture's seven fields render, the signature and
+/// read-only rows are disabled, the signature warning is shown, and the
+/// downloaded Blob carries the fills and asks the viewer to rebuild
+/// appearances.
+///
+/// This is the only browser proof that the form-fill card works through the
+/// real page: the fields list comes from the tools chunk, the fill is
+/// committed through the same engine whose CLI writes the bytes, and the
+/// disclosure of signature invalidation is visible before the user touches
+/// the run button.
+fn check_fill_forms_leg(leg: &Json, label: &str) -> Result<(), String> {
+    const NEEDLES: [&str; 2] = ["(Browser Ada Lovelace)", "/NeedAppearances true"];
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Fill form" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Fill form\"",
+            leg.get("runLabel")
+        ));
+    }
+    check_no_upload_network(leg, label)?;
+
+    if leg.get("fieldRows").and_then(Json::as_u64) != Some(7) {
+        return Err(format!(
+            "the {label} leg rendered {} form rows, expected 7",
+            leg.get("fieldRows").and_then(Json::as_u64).unwrap_or(0)
+        ));
+    }
+    if leg.get("signatureWarn").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} leg never showed the signature warning; an invalidated signature must be disclosed"
+        ));
+    }
+    if leg.get("signatureFieldDisabled").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} leg left the signature field fillable"));
+    }
+    if leg.get("readOnlyDisabled").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} leg left the read-only field fillable"));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("form-filled.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"form-filled.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "1 \u{2192} 1" {
+        return Err(format!(
+            "the {label} run reported Pages {:?}, expected \"1 → 1\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} run did not report a passing verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("form-filled.pdf")
+        || output.get("downloadName").and_then(Json::as_str) != Some("form-filled.pdf")
+    {
+        return Err(format!(
+            "the {label} output/download was named {:?}/{:?}, expected \"form-filled.pdf\"",
+            output.get("name"),
+            output.get("downloadName")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} output reported {:?} pages, expected 1",
+            output.get("pages")
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("previewBlob").and_then(Json::as_bool) != Some(true)
+    {
+        return Err(format!(
+            "the {label} output did not use Blob URLs for preview and download"
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+    if found.len() != NEEDLES.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            NEEDLES.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output is missing {:?}; the filled document does not carry the fills",
+            NEEDLES[index]
+        ));
+    }
+    Ok(())
+}
+
 /// One image→PDF leg: two image files (PNG + JPEG) become one PDF with one
 /// page per image, and the real Blob carries Flate-compressed DeviceRGB image
 /// XObjects. The page count row has no input count, because the output is
@@ -3633,6 +3779,21 @@ fn offline_leg_of<'a>(report: &'a Json, key: &str) -> Result<&'a Json, String> {
         .ok_or_else(|| format!("the offline leg reported no {key} result ({key} = None)"))
 }
 
+/// The password cards report as one block, because their legs chain: the unlock
+/// of the page's own file reads what the protect leg above it wrote.
+fn security_legs<'a>(parent: &'a Json, phase: &str) -> Result<&'a Json, String> {
+    parent
+        .get("security")
+        .ok_or_else(|| format!("the {phase} run reported no password legs (security = None)"))
+}
+
+/// One named leg inside the security block.
+fn security_leg<'a>(block: &'a Json, phase: &str, name: &str) -> Result<&'a Json, String> {
+    block
+        .get(name)
+        .ok_or_else(|| format!("the {phase} password run reported no {name} leg"))
+}
+
 /// One card, one run, one downloaded file. The rotate, delete, edit-metadata
 /// and ZIP legs all end this way and differ only in the name of the result, the
 /// page count the gate must assert, and which markers the bytes must carry.
@@ -3845,19 +4006,409 @@ fn check_single_output_leg(leg: &Json, want: &SingleLeg) -> Result<(), String> {
     Ok(())
 }
 
+/// One password card's promise, in the shape the browser check can verify.
+///
+/// `check_single_output_leg` pins how many times each marker appears, which is
+/// right for a stamp or a rotation — the count IS the claim. Here the claim is
+/// about protection: an envelope of a given revision, a flag with a given value,
+/// and `/Encrypt` gone from an unlocked file. How many objects a crypt filter
+/// happens to name is the writer's business, so this asserts presence, not
+/// multiplicity, and spends its strictness on the result card's sentences
+/// instead.
+struct SecuritySpec<'a> {
+    run_label: &'a str,
+    /// The finished sentence, in full. A card that changed its claim about what
+    /// it did is exactly what this gate is for.
+    status: &'a str,
+    output_name: &'a str,
+    pages: u64,
+    /// Rows the result card must show, as the page writes them. The values come
+    /// out of the flag the writer wrote, so a grant that was not applied cannot
+    /// be claimed here.
+    rows: &'a [(&'a str, &'a str)],
+    /// Byte runs the downloaded document must carry.
+    needles: &'a [&'a str],
+    /// Byte runs the downloaded document must not carry.
+    absent: &'a [&'a str],
+}
+
+fn check_security_leg(leg: &Json, label: &str, spec: &SecuritySpec) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show exactly one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != spec.run_label {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            spec.run_label
+        ));
+    }
+    if string_field(leg, "status")? != spec.status {
+        return Err(format!(
+            "the {label} card said {:?}, expected {:?}",
+            leg.get("status"),
+            spec.status
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(spec.output_name) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {:?}",
+            result.get("title"),
+            spec.output_name
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} card reported Verification {:?}, expected \"ok\"",
+            row_value("Verification")
+        ));
+    }
+    for &(wanted, expected) in spec.rows {
+        let value = row_value(wanted);
+        if value != expected {
+            return Err(format!(
+                "the {label} card reported {wanted:?} {value:?}, expected {expected:?}"
+            ));
+        }
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs; a password operation is one document in and \
+             one out",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    for key in ["name", "downloadName"] {
+        if output.get(key).and_then(Json::as_str) != Some(spec.output_name) {
+            return Err(format!(
+                "the {label} output {key} was {:?}, expected {:?}",
+                output.get(key),
+                spec.output_name
+            ));
+        }
+    }
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output began with {:?}, expected \"%PDF-\"",
+            output.get("header")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(spec.pages) {
+        return Err(format!(
+            "the {label} output claimed {:?} pages, expected {}",
+            output.get("pages"),
+            spec.pages
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} output was not offered as a Blob URL"));
+    }
+    // A password operation returns a real document, so the native viewer keeps
+    // its preview — and the reader can open it without leaving the page.
+    if output.get("previewBlob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} output offered no PDF preview (preview = {:?})",
+            output.get("previewBlob")
+        ));
+    }
+    let declared = output.get("declaredBytes").and_then(Json::as_u64);
+    if declared.is_none() || declared != output.get("bytes").and_then(Json::as_u64) {
+        return Err(format!(
+            "the {label} download was {:?} bytes while the row declared {declared:?}",
+            output.get("bytes")
+        ));
+    }
+
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output reported no marker presence"))?;
+    if found.len() != spec.needles.len() {
+        return Err(format!(
+            "the {label} output answered for {} markers, expected {}",
+            found.len(),
+            spec.needles.len()
+        ));
+    }
+    let counts = output
+        .get("foundCounts")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output reported no marker counts"))?;
+    // The downloaded Blob is what is judged, object by object: a marker the leg
+    // asked for that never appears means the card said it wrote an envelope it
+    // did not write.
+    for (index, seen) in found.iter().enumerate() {
+        let count = counts.get(index).and_then(Json::as_u64).unwrap_or(0);
+        if seen.as_bool() != Some(true) || count == 0 {
+            return Err(format!(
+                "the {label} download did not carry {:?} (present = {seen:?}, count = {count})",
+                spec.needles.get(index).copied().unwrap_or("")
+            ));
+        }
+    }
+    let none: Vec<Json> = Vec::new();
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .unwrap_or(&none);
+    if absent.len() != spec.absent.len() {
+        return Err(format!(
+            "the {label} output answered for {} removed markers, expected {}",
+            absent.len(),
+            spec.absent.len()
+        ));
+    }
+    for (index, still_there) in absent.iter().enumerate() {
+        if still_there.as_bool() != Some(false) {
+            return Err(format!(
+                "the {label} download still carries {:?}, which this operation was meant to leave \
+                 behind",
+                spec.absent.get(index).copied().unwrap_or("")
+            ));
+        }
+    }
+    check_no_upload_network(leg, label)
+}
+
+/// One refusal: the card was asked to do something it must not do, and the
+/// answer is a sentence and nothing else. The absence is the whole point — a
+/// wrong password that produced a file would be the most damaging bug this set
+/// of cards could ship with.
+struct SecurityRefusal<'a> {
+    run_label: &'a str,
+    /// The code the engine names, so a generic failure cannot pass as a refusal.
+    code: &'a str,
+    /// The document the reader picked up, which the sentence must name.
+    document: &'a str,
+    /// What the leg typed. A refusal that repeats it puts the password on the
+    /// page's status line — and a screenshot of a status line is a shared thing.
+    secret: &'a str,
+}
+
+fn check_security_refusal(leg: &Json, label: &str, want: &SecurityRefusal) -> Result<(), String> {
+    if leg.get("refused").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} leg reported no refusal"));
+    }
+    if string_field(leg, "runLabel")? != want.run_label {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            want.run_label
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains(want.code) {
+        return Err(format!(
+            "the {label} refusal said {status:?}, which does not name {}",
+            want.code
+        ));
+    }
+    if !status.contains(want.document) {
+        return Err(format!(
+            "the {label} refusal said {status:?}, which does not name the document {:?}",
+            want.document
+        ));
+    }
+    if status.contains(want.secret) {
+        return Err(format!(
+            "the {label} refusal repeated the password it was given"
+        ));
+    }
+    if leg.get("resultHidden").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} refusal left a result panel open (resultHidden = {:?})",
+            leg.get("resultHidden")
+        ));
+    }
+    if leg.get("outputRows").and_then(Json::as_u64) != Some(0) {
+        return Err(format!(
+            "the {label} refusal offered {} output row(s) to download",
+            leg.get("outputRows").and_then(Json::as_u64).unwrap_or(0)
+        ));
+    }
+    // The shared witness check asks for `data-no-upload=verified`, which the page
+    // sets only over a result it produced. A refusal has no result, so the honest
+    // claim here is the narrower one: nothing left this origin.
+    let network = leg
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} refusal reported no network object"))?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} refusal reported no foreign-resource list"))?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the {label} refusal fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// Protect: an envelope the reader can check, with the flags the page asked for
+/// and the plain text of the page gone.
+const PROTECT_LEG: SecuritySpec = SecuritySpec {
+    run_label: "Protect PDF",
+    status: "Done. Protected with AES-256 and verified on this device. Granted: print, copy.",
+    output_name: "report-protected.pdf",
+    pages: 3,
+    rows: &[
+        ("Encryption", "AES-256 (revision 6)"),
+        ("Granted", "print, copy"),
+        ("Restricted", "modify, annotate"),
+        ("Document metadata", "encrypted"),
+    ],
+    needles: &[
+        "/Encrypt",
+        "/Filter /Standard",
+        "/CFM /AESV3",
+        "/V 5",
+        "/R 6",
+        "/P -44",
+    ],
+    absent: &["q 1 0 0 rg"],
+};
+
+/// Set permissions: the same writer, an owner password only, and a document that
+/// still opens without one.
+const PERMISSIONS_LEG: SecuritySpec = SecuritySpec {
+    run_label: "Set permissions",
+    status: "Done. Protected with AES-256 and verified on this device. Granted: print.",
+    output_name: "report-protected.pdf",
+    pages: 3,
+    rows: &[
+        ("Encryption", "AES-256 (revision 6)"),
+        ("Granted", "print"),
+        ("Restricted", "modify, copy, annotate"),
+        ("Document metadata", "encrypted"),
+    ],
+    needles: &["/Encrypt", "/CFM /AESV3", "/P -60"],
+    absent: &["q 1 0 0 rg"],
+};
+
+/// Unlock of a document qpdf wrote: a foreign envelope, opened on this device,
+/// with every trace of the crypt filter gone.
+const UNLOCK_LEG: SecuritySpec = SecuritySpec {
+    run_label: "Remove password",
+    status: "Done. The password is removed and the open document was verified on this device.",
+    output_name: "locked-unlocked.pdf",
+    pages: 3,
+    rows: &[(
+        "Password",
+        "Removed — the output opens without one and carries no /Encrypt",
+    )],
+    needles: &["/Type /Pages", "/Count 3"],
+    absent: &["/Encrypt", "/Filter /Standard", "/AESV3"],
+};
+
+/// Unlock of the file the protect card on this same page just wrote. The loop
+/// closes here: the bytes this page encrypted open again with the password the
+/// user typed.
+const UNLOCK_OWN_LEG: SecuritySpec = SecuritySpec {
+    run_label: "Remove password",
+    status: "Done. The password is removed and the open document was verified on this device.",
+    output_name: "report-protected-unlocked.pdf",
+    pages: 3,
+    rows: &[(
+        "Password",
+        "Removed — the output opens without one and carries no /Encrypt",
+    )],
+    needles: &["/Type /Pages", "/Count 3"],
+    absent: &["/Encrypt", "/Filter /Standard", "/AESV3"],
+};
+
+/// Clear permissions: the owner password lifts the flags, the content stays
+/// encrypted under the unchanged file key, and the old revision is still
+/// reachable in the appended one.
+const CLEAR_LEG: SecuritySpec = SecuritySpec {
+    run_label: "Clear permissions",
+    status: "Done. Permissions cleared and verified on this device. Now granted: modify, copy, \
+             annotate.",
+    output_name: "locked-permissions-cleared.pdf",
+    pages: 3,
+    rows: &[
+        ("Now granted", "modify, copy, annotate"),
+        (
+            "How",
+            "R5/6 incremental: /P and /Perms updated; the content stays encrypted under the \
+             unchanged file key",
+        ),
+    ],
+    needles: &["/Encrypt", "/P -1", "/Prev"],
+    absent: &[],
+};
+
+/// A wrong open password is refused, and the page shows the engine's sentence.
+const UNLOCK_REFUSAL: SecurityRefusal = SecurityRefusal {
+    run_label: "Remove password",
+    code: "WRONG_PASSWORD",
+    document: "locked.pdf",
+    secret: "not-the-password",
+};
+
+/// The user password opens a document; it does not change its permissions.
+const CLEAR_REFUSAL: SecurityRefusal = SecurityRefusal {
+    run_label: "Clear permissions",
+    code: "WRONG_OWNER_PASSWORD",
+    document: "locked.pdf",
+    secret: "selis-open",
+};
+
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 34] = [
+const TOOLS_PAGE_CARDS: [&str; 39] = [
     "attach",
     "attachments",
     "batch",
     "bates",
+    "clear_permissions",
     "compress",
     "convert",
     "crop",
     "delete",
     "detach",
+    "fill_forms",
     "flip",
     "header_footer",
     "html",
@@ -3872,7 +4423,9 @@ const TOOLS_PAGE_CARDS: [&str; 34] = [
     "outline",
     "page_labels",
     "page_numbers",
+    "permissions",
     "png",
+    "protect",
     "reorder",
     "repair",
     "resize",
@@ -3880,6 +4433,7 @@ const TOOLS_PAGE_CARDS: [&str; 34] = [
     "split",
     "strip_metadata",
     "tiff",
+    "unlock",
     "watermark",
     "webp",
     "zip",
@@ -4194,9 +4748,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     if string_field(report, "check")? != "tools-page" {
         return Err("the page did not identify itself as the tools check".into());
     }
-    if report.get("cards").and_then(Json::as_u64) != Some(34) {
+    if report.get("cards").and_then(Json::as_u64) != Some(TOOLS_PAGE_CARDS.len() as u64) {
         return Err(format!(
-            "the tools grid did not render thirty-four cards (cards = {:?})",
+            "the tools grid did not render all {} cards (cards = {:?})",
+            TOOLS_PAGE_CARDS.len(),
             report.get("cards")
         ));
     }
@@ -4567,6 +5122,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("convert")
         .ok_or_else(|| "the page reported no convert leg (convert = None)".to_string())?;
     check_convert_leg(convert, "online convert")?;
+    let form_fill = report
+        .get("formFill")
+        .ok_or_else(|| "the page reported no form-fill leg (formFill = None)".to_string())?;
+    check_fill_forms_leg(form_fill, "online form fill")?;
     let png = report
         .get("png")
         .ok_or_else(|| "the page reported no PDF-to-PNG leg (png = None)".to_string())?;
@@ -4626,6 +5185,48 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .ok_or_else(|| "the page reported no single-page HTML leg (htmlOne = None)".to_string())?;
     check_html_leg(html_one, "online HTML of page 1", &HTML_ONE_LEG)?;
 
+    // The four password cards share one lazy chunk of their own, so the first leg
+    // below is also the moment the page asks for that module. Each success is
+    // judged on the bytes the browser downloaded — the envelope it carries and
+    // the sentence the card said over it — and the two refusals are judged on what
+    // the page did NOT produce, which is the promise these cards make.
+    let security = security_legs(report, "online")?;
+    check_security_leg(
+        security_leg(security, "online", "protect")?,
+        "online protect",
+        &PROTECT_LEG,
+    )?;
+    check_security_leg(
+        security_leg(security, "online", "permissions")?,
+        "online set permissions",
+        &PERMISSIONS_LEG,
+    )?;
+    check_security_refusal(
+        security_leg(security, "online", "unlockRefusal")?,
+        "online unlock with a wrong password",
+        &UNLOCK_REFUSAL,
+    )?;
+    check_security_leg(
+        security_leg(security, "online", "unlock")?,
+        "online unlock",
+        &UNLOCK_LEG,
+    )?;
+    check_security_leg(
+        security_leg(security, "online", "unlockOwn")?,
+        "online unlock of the file this page wrote",
+        &UNLOCK_OWN_LEG,
+    )?;
+    check_security_refusal(
+        security_leg(security, "online", "clearRefusal")?,
+        "online clear permissions with the user password",
+        &CLEAR_REFUSAL,
+    )?;
+    check_security_leg(
+        security_leg(security, "online", "clear")?,
+        "online clear permissions",
+        &CLEAR_LEG,
+    )?;
+
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
     // module, never reaches the card grid: the harness gets the worker's 503.
@@ -4645,9 +5246,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
             "the offline tools page was controlled by {script:?}, not the app's /sw.js"
         ));
     }
-    if offline.get("cards").and_then(Json::as_u64) != Some(34) {
+    if offline.get("cards").and_then(Json::as_u64) != Some(TOOLS_PAGE_CARDS.len() as u64) {
         return Err(format!(
-            "the offline tools page did not render thirty-four cards (cards = {:?})",
+            "the offline tools page did not render all {} cards (cards = {:?})",
+            TOOLS_PAGE_CARDS.len(),
             offline.get("cards")
         ));
     }
@@ -4993,6 +5595,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("convert")
         .ok_or_else(|| "the offline leg reported no convert result".to_string())?;
     check_convert_leg(offline_convert, "offline convert")?;
+    let offline_form_fill = offline
+        .get("formFill")
+        .ok_or_else(|| "the offline leg reported no form-fill result".to_string())?;
+    check_fill_forms_leg(offline_form_fill, "offline form fill")?;
     let offline_png = offline
         .get("png")
         .ok_or_else(|| "the offline leg reported no PDF-to-PNG result".to_string())?;
@@ -5039,6 +5645,47 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "the offline leg reported no single-page HTML result (offline.htmlOne = None)".to_string()
     })?;
     check_html_leg(offline_html_one, "offline HTML of page 1", &HTML_ONE_LEG)?;
+
+    // The same seven password legs with the origin cut — including the chained
+    // one, which reads bytes this page wrote moments ago rather than a fixture.
+    let offline_security = offline.get("security").ok_or_else(|| {
+        "the offline run reported no password legs (offline.security = None)".to_string()
+    })?;
+    check_security_leg(
+        security_leg(offline_security, "offline", "protect")?,
+        "offline protect",
+        &PROTECT_LEG,
+    )?;
+    check_security_leg(
+        security_leg(offline_security, "offline", "permissions")?,
+        "offline set permissions",
+        &PERMISSIONS_LEG,
+    )?;
+    check_security_refusal(
+        security_leg(offline_security, "offline", "unlockRefusal")?,
+        "offline unlock with a wrong password",
+        &UNLOCK_REFUSAL,
+    )?;
+    check_security_leg(
+        security_leg(offline_security, "offline", "unlock")?,
+        "offline unlock",
+        &UNLOCK_LEG,
+    )?;
+    check_security_leg(
+        security_leg(offline_security, "offline", "unlockOwn")?,
+        "offline unlock of the file this page wrote",
+        &UNLOCK_OWN_LEG,
+    )?;
+    check_security_refusal(
+        security_leg(offline_security, "offline", "clearRefusal")?,
+        "offline clear permissions with the user password",
+        &CLEAR_REFUSAL,
+    )?;
+    check_security_leg(
+        security_leg(offline_security, "offline", "clear")?,
+        "offline clear permissions",
+        &CLEAR_LEG,
+    )?;
 
     let status = string_field(report, "status")?;
     if !status.contains("verified") {
@@ -9662,6 +10309,49 @@ mod tests {
             },
         })
     }
+    fn real_tools_form_fill_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "form-filled.pdf",
+            "pages": 1,
+            "declaredBytes": 2100,
+            "bytes": 2100,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "form-filled.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true, true],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Fill form",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "form-filled.pdf",
+                "meta": "1 file · 2.1 kB · verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1 \u{2192} 1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 2,
+                "foreign": [],
+                "paths": [
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+            "signatureWarn": true,
+            "signatureFieldDisabled": true,
+            "readOnlyDisabled": true,
+            "fieldRows": 7,
+        })
+    }
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
     /// negative witness the verdict requires (`absentFound` all false).
     fn real_tools_strip_metadata_leg() -> Json {
@@ -9940,12 +10630,84 @@ mod tests {
     /// a real merge and a split-every run. The numbers are representative; the
     /// assertions are about the shape and the claims, not about a particular
     /// compression ratio.
+    /// A password leg built from the same spec the gate holds the page to, so
+    /// the fixture cannot drift into describing a card the check would accept for
+    /// the wrong reason.
+    fn real_tools_security_leg(spec: &SecuritySpec) -> Json {
+        let bytes = 5_118;
+        let mut rows: Vec<Json> = spec
+            .rows
+            .iter()
+            .map(|(label, value)| json!({ "label": label, "value": value }))
+            .collect();
+        rows.push(
+            json!({ "label": "Size", "value": format!("4\u{2009}812 B \u{2192} {bytes} B") }),
+        );
+        rows.push(json!({ "label": "Verification", "value": "ok" }));
+        let output = json!({
+            "kind": "pdf",
+            "name": spec.output_name,
+            "downloadName": spec.output_name,
+            "pages": spec.pages,
+            "declaredBytes": bytes,
+            "bytes": bytes,
+            "blob": true,
+            "previewBlob": true,
+            "header": "%PDF-",
+            "zip": false,
+            "png": false,
+            "jpeg": false,
+            "tiff": false,
+            "html": false,
+            "overTarget": false,
+            "found": vec![true; spec.needles.len()],
+            "foundCounts": vec![1u64; spec.needles.len()],
+            "absentFound": vec![false; spec.absent.len()],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": spec.run_label,
+            "noUpload": "verified",
+            "status": spec.status,
+            "result": {
+                "title": spec.output_name,
+                "meta": format!("1 file \u{00b7} {bytes} B \u{00b7} verified locally"),
+                "rows": rows,
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_security.wasm"],
+            },
+        })
+    }
+
+    /// A refusal: the card said the engine's sentence and produced nothing.
+    fn real_tools_security_refusal(run_label: &str, status: &str) -> Json {
+        json!({
+            "runLabel": run_label,
+            "status": status,
+            "refused": true,
+            "resultHidden": true,
+            "outputRows": 0,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_security.wasm"],
+            },
+        })
+    }
+
     fn real_tools_page_report() -> Json {
         let mut report = json!({
             "schema": SCHEMA,
             "check": "tools-page",
             "fatal": Json::Null,
-            "cards": 34,
+            "cards": TOOLS_PAGE_CARDS.len(),
             "fileRows": 2,
             "noUpload": "verified",
             "status": "Done. The result was verified on this device.",
@@ -9992,7 +10754,7 @@ mod tests {
                 "controlled": true,
             },
             "offline": {
-                "cards": 34,
+                "cards": TOOLS_PAGE_CARDS.len(),
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
                 "pageTitle": "Selis Tools — PDFs, handled here",
@@ -10140,6 +10902,22 @@ mod tests {
         report["imageWatermark"] = real_tools_image_watermark_leg();
         report["outline"] = real_tools_outline_leg();
         report["convert"] = real_tools_convert_leg();
+        report["formFill"] = real_tools_form_fill_leg();
+        report["security"] = json!({
+            "protect": real_tools_security_leg(&PROTECT_LEG),
+            "permissions": real_tools_security_leg(&PERMISSIONS_LEG),
+            "unlockRefusal": real_tools_security_refusal(
+                "Remove password",
+                "locked.pdf: wrong password (WRONG_PASSWORD)",
+            ),
+            "unlock": real_tools_security_leg(&UNLOCK_LEG),
+            "unlockOwn": real_tools_security_leg(&UNLOCK_OWN_LEG),
+            "clearRefusal": real_tools_security_refusal(
+                "Clear permissions",
+                "locked.pdf: owner password required (WRONG_OWNER_PASSWORD)",
+            ),
+            "clear": real_tools_security_leg(&CLEAR_LEG),
+        });
 
         report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
@@ -10177,7 +10955,9 @@ mod tests {
         report["offline"]["imageToPdf"] = report["imageToPdf"].clone();
         report["offline"]["imageWatermark"] = report["imageWatermark"].clone();
         report["offline"]["outline"] = report["outline"].clone();
+        report["offline"]["formFill"] = report["formFill"].clone();
         report["offline"]["convert"] = report["convert"].clone();
+        report["offline"]["security"] = report["security"].clone();
         report
     }
 
@@ -10186,7 +10966,7 @@ mod tests {
         assert!(verdict_service_worker(&real_service_worker_report()).is_ok());
         assert!(verdict_async_wasm(&real_async_wasm_report()).is_ok());
         assert!(verdict_extension(&real_extension_report()).is_ok());
-        assert!(verdict_tools_page(&real_tools_page_report()).is_ok());
+        verdict_tools_page(&real_tools_page_report()).unwrap();
     }
 
     /// The tools verdict's witnesses, withdrawn one at a time. A merge that
@@ -10386,7 +11166,7 @@ mod tests {
 
         let mut offline_no_split = report.clone();
         *offline_no_split.pointer_mut("/offline").unwrap() = json!({
-            "cards": 34,
+            "cards": TOOLS_PAGE_CARDS.len(),
             "controlled": true,
             "script": "http://127.0.0.1:1234/sw.js",
             "pageTitle": "Selis Tools",
@@ -10705,6 +11485,66 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_convert).is_err(),
             "an online-only convert must not pass the offline gate"
+        );
+
+        // Form fill: a Blob without the filled text, a hidden signature
+        // warning, an enabled signature or read-only field, the wrong field
+        // count, or no offline pass must each refuse the run.
+        let mut form_fill_missing_value = report.clone();
+        *form_fill_missing_value
+            .pointer_mut("/formFill/outputs/0/found/0")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&form_fill_missing_value).is_err(),
+            "a form fill without the filled text must not pass"
+        );
+
+        let mut form_fill_no_warning = report.clone();
+        *form_fill_no_warning
+            .pointer_mut("/formFill/signatureWarn")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&form_fill_no_warning).is_err(),
+            "an undisclosed signature invalidation must not pass"
+        );
+
+        let mut form_fill_sign_enabled = report.clone();
+        *form_fill_sign_enabled
+            .pointer_mut("/formFill/signatureFieldDisabled")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&form_fill_sign_enabled).is_err(),
+            "a signature field left fillable must not pass"
+        );
+
+        let mut form_fill_readonly_enabled = report.clone();
+        *form_fill_readonly_enabled
+            .pointer_mut("/formFill/readOnlyDisabled")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&form_fill_readonly_enabled).is_err(),
+            "a read-only field left fillable must not pass"
+        );
+
+        let mut form_fill_wrong_rows = report.clone();
+        *form_fill_wrong_rows
+            .pointer_mut("/formFill/fieldRows")
+            .unwrap() = json!(6);
+        assert!(
+            verdict_tools_page(&form_fill_wrong_rows).is_err(),
+            "a fill leg that rendered the wrong field count must not pass"
+        );
+
+        let mut no_offline_form = report.clone();
+        no_offline_form
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("formFill");
+        assert!(
+            verdict_tools_page(&no_offline_form).is_err(),
+            "an online-only form fill must not pass the offline gate"
         );
 
         let mut no_offline_attachments = report.clone();
@@ -11320,6 +12160,116 @@ mod tests {
         assert!(
             verdict_tools_page(&no_offline_webp_bundle).is_err(),
             "an online-only WebP bundle must not pass the offline gate"
+        );
+
+        // ── The four password cards ───────────────────────────────────────────
+        // A card that claims an envelope it did not write.
+        let mut unprotected = report.clone();
+        *unprotected
+            .pointer_mut("/security/protect/outputs/0/found/0")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&unprotected).is_err(),
+            "a protect run whose download carries no /Encrypt must not pass"
+        );
+
+        // A grant the writer did not apply, dressed up as one the reader has.
+        let mut overclaimed_grant = report.clone();
+        *overclaimed_grant
+            .pointer_mut("/security/protect/result/rows/1/value")
+            .unwrap() = json!("print, copy, modify");
+        assert!(
+            verdict_tools_page(&overclaimed_grant).is_err(),
+            "a protect card may not claim a permission the flag does not grant"
+        );
+
+        // The card's own sentence about what it did, contradicted.
+        let mut unprotected_status = report.clone();
+        *unprotected_status
+            .pointer_mut("/security/permissions/status")
+            .unwrap() = json!(
+            "Done. Protected with AES-256 and verified on this device. \
+                              Granted: print, copy."
+        );
+        assert!(
+            verdict_tools_page(&unprotected_status).is_err(),
+            "the set-permissions card must not speak with the protect card's sentence"
+        );
+
+        let mut verification_failed = report.clone();
+        *verification_failed
+            .pointer_mut("/security/clear/result/rows/3/value")
+            .unwrap() = json!("mismatch");
+        assert!(
+            verdict_tools_page(&verification_failed).is_err(),
+            "a clear-permissions run that did not verify must not pass"
+        );
+
+        // The unlock that leaves the envelope behind is the failure this card is
+        // judged on: the reader would still be asked for a password.
+        let mut still_encrypted = report.clone();
+        *still_encrypted
+            .pointer_mut("/security/unlock/outputs/0/absentFound/0")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&still_encrypted).is_err(),
+            "an unlocked output that still carries /Encrypt must not pass"
+        );
+
+        // A refusal that produced a file anyway — the worst thing a password
+        // card can do is hand back a document it could not legitimately open.
+        let mut refusal_produced_a_file = report.clone();
+        *refusal_produced_a_file
+            .pointer_mut("/security/unlockRefusal/outputRows")
+            .unwrap() = json!(1);
+        assert!(
+            verdict_tools_page(&refusal_produced_a_file).is_err(),
+            "a wrong password must produce no download"
+        );
+
+        // The refusal has to be the engine's, not a generic failure that happens
+        // to mention a password.
+        let mut vague_refusal = report.clone();
+        *vague_refusal
+            .pointer_mut("/security/unlockRefusal/status")
+            .unwrap() = json!("The tool could not finish.");
+        assert!(
+            verdict_tools_page(&vague_refusal).is_err(),
+            "an unlock failure that does not name WRONG_PASSWORD must not pass"
+        );
+
+        let mut leaked_refusal = report.clone();
+        *leaked_refusal
+            .pointer_mut("/security/clearRefusal/status")
+            .unwrap() =
+            json!("locked.pdf: owner password required (WRONG_OWNER_PASSWORD); given: selis-open");
+        assert!(
+            verdict_tools_page(&leaked_refusal).is_err(),
+            "a refusal must not repeat the password it was handed"
+        );
+
+        let mut no_offline_security = report.clone();
+        no_offline_security
+            .pointer_mut("/offline")
+            .unwrap()
+            .as_object_mut()
+            .expect("offline object")
+            .remove("security");
+        assert!(
+            verdict_tools_page(&no_offline_security).is_err(),
+            "an online-only password run must not pass the offline gate"
+        );
+
+        let mut no_offline_clear = report.clone();
+        no_offline_clear
+            .pointer_mut("/offline/security")
+            .unwrap()
+            .as_object_mut()
+            .expect("security object")
+            .remove("clear");
+        assert!(
+            verdict_tools_page(&no_offline_clear).is_err(),
+            "an online-only clear-permissions must not pass the offline gate"
         );
     }
 

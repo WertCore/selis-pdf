@@ -1,19 +1,12 @@
-//! The `selis protect` tool (SL-1A.TOOL.06): add password protection and
+//! The `selis protect` command (SL-1A.TOOL.06): add password protection and
 //! permission bits.
 //!
-//! Encrypts with AESV3 / revision 6 only (ADR-P0019 — the only handler Selis
-//! writes), via the SL-1.ENC.02 write path: `EncryptInfo::new_r6` derives the
-//! credentials from separate user and owner passwords with CSPRNG salts and a
-//! CSPRNG file key, and every stream/string is encrypted with the file key
-//! (`encrypt::encrypt_object`, the mirror of the resolver's decrypt).
-//!
-//! This is a full rewrite (WRITE.01), not an incremental append: encrypting
-//! changes every stream and string body, so the output cannot share bytes
-//! with the source. The source bytes stay immutable (they are read once into
-//! memory); the rewritten output is verified structurally (WRITE.05) before
-//! any file is replaced (ADR-P0007). Encrypting an already-encrypted file is
-//! refused with the typed `ALREADY_ENCRYPTED` error — removing a password is
-//! the separate `selis unlock` tool.
+//! The operation lives in `selis_pdf_tools::security`, shared byte-for-byte
+//! with the browser security chunk: AESV3 / revision 6 only (ADR-P0019 — the
+//! only handler Selis writes), a full rewrite rather than an incremental append
+//! because encrypting changes every stream and string body, and the typed
+//! `ALREADY_ENCRYPTED` refusal on a file that already carries a password —
+//! removing one is the separate `selis unlock` command.
 //!
 //! Permission bits (`/P`) are a *convention, not enforcement* (SL-1.ENC.04):
 //! the tool writes the owner's intent honestly and the long-help says so in
@@ -24,96 +17,21 @@
 //!
 //! Passwords arrive via arguments or environment variables only. They are
 //! never logged and never written anywhere except the `/Encrypt` dictionary.
-
-use std::collections::BTreeSet;
+//! The 64 bytes of key material the write needs are drawn here, from the
+//! operating system: a command that cannot get them refuses, because a
+//! stand-in would give every protected document the same predictable key.
 
 use selis_log::oplog::{ActorId, OpLog, Outcome};
-use selis_pdf_cos::doc_writer::write_objects_as_document_with_trailer;
-use selis_pdf_cos::encrypt::{self, EncryptInfo};
-use selis_pdf_cos::{parse_revisions, xref, Obj, Ref};
-use selis_pdf_doc::Resolver;
-use selis_sandbox::{Budget, Surface};
+use selis_pdf_cos::encrypt::R6Material;
+use selis_pdf_tools::security::{self, ProtectOptions};
 
 use crate::verify_report::Verification;
-use crate::{read_file, CliError, CliResult};
+use crate::{CliError, CliResult};
 
-/// All permission bits granted, restricted only by the spec's reserved-bit
-/// rules: bits 1–2 shall be 0, bits 7–8 and 13–32 shall be 1 (ISO 32000-1
-/// Table 22). Denying a permission clears its bit from this baseline.
-const P_BASELINE: u32 = 0xFFFF_FFFC;
-
-/// Bit 3 — print (ISO 32000-1 Table 22).
-const BIT_PRINT: u32 = 0x0000_0004;
-/// Bit 4 — modify the document contents.
-const BIT_MODIFY: u32 = 0x0000_0008;
-/// Bit 5 — copy / extract text and graphics.
-const BIT_COPY: u32 = 0x0000_0010;
-/// Bit 6 — add or modify annotations and form fields.
-const BIT_ANNOTATE: u32 = 0x0000_0020;
-
-/// The bits the v1 surface exposes, with their CLI names. Everything else in
-/// the baseline stays granted — including accessibility extraction (bit 10),
-/// which is deliberately not restrictable — and `/P` bits not exposed here
-/// are documented as such rather than hidden behind extra flags.
-const EXPOSED: &[(&str, u32)] = &[
-    ("print", BIT_PRINT),
-    ("modify", BIT_MODIFY),
-    ("copy", BIT_COPY),
-    ("annotate", BIT_ANNOTATE),
-];
+pub(crate) use selis_pdf_tools::security::parse_permissions;
 
 /// The oplog vocabulary (`&'static str` keeps the set closed and greppable).
 const OP_PROTECT: &str = "protect";
-
-/// Resolve a permission spec into the exposed-bit grant mask.
-///
-/// The spec is a comma-separated list of permissions to **grant** — `print`,
-/// `modify`, `copy`, `annotate` — or the token `none`. Anything not listed is
-/// denied; the default (no `--permissions`) grants all four. Bits the surface
-/// does not expose (fill-forms, accessibility, assemble, high-res print) are
-/// always granted and are not reachable from this mask.
-///
-/// # Errors
-///
-/// A plain message naming the valid vocabulary on an unknown token — this is
-/// a caller mistake, not document damage.
-pub(crate) fn parse_permissions(spec: &str) -> Result<u32, String> {
-    let spec = spec.trim();
-    if spec.is_empty() {
-        return Err("empty --permissions spec (expected e.g. `print,copy` or `none`)".to_string());
-    }
-    if spec.eq_ignore_ascii_case("none") {
-        return Ok(0);
-    }
-    let mut granted = 0u32;
-    for token in spec.split(',') {
-        let token = token.trim();
-        let (_, bit) = EXPOSED
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(token))
-            .ok_or_else(|| {
-                format!(
-                    "unknown permission `{token}` (valid: {})",
-                    EXPOSED
-                        .iter()
-                        .map(|(n, _)| *n)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?;
-        granted |= bit;
-    }
-    Ok(granted)
-}
-
-/// Map a grant mask onto the conformant `/P` value: start from the
-/// all-granted baseline and clear the exposed bits that were denied.
-/// Bits 1–2 stay 0 and bits 7–8 / 13–32 stay 1 in every outcome.
-#[must_use]
-pub(crate) fn compute_p(granted: u32) -> u32 {
-    let exposed_bits: u32 = EXPOSED.iter().map(|(_, bit)| bit).fold(0, |a, b| a | b);
-    P_BASELINE & !(exposed_bits & !granted)
-}
 
 /// Run the protect tool.
 ///
@@ -127,10 +45,10 @@ pub(crate) fn compute_p(granted: u32) -> u32 {
 ///
 /// # Errors
 ///
-/// `IO_READ_FAILED` when the input cannot be read, a typed parse error when
-/// the document is damaged, the typed `ALREADY_ENCRYPTED` error when the
-/// input already carries an `/Encrypt` dictionary, and a plain usage error
-/// for empty credentials or an unknown permission name.
+/// A typed parse error when the document is damaged, the typed
+/// `ALREADY_ENCRYPTED` error when the input already carries an `/Encrypt`
+/// dictionary, and a plain usage error for empty credentials or an unknown
+/// permission name.
 ///
 /// # Budget
 ///
@@ -206,21 +124,14 @@ impl PasswordOptions {
     }
 }
 
-/// Core protect logic on one file: read, encrypt, verify, commit. This is
-/// the batch harness's per-file entry point as well as `run`'s body — a
-/// per-file typed failure is a batch report entry, never a batch abort.
+/// Core protect logic on one file: draw the key material, hand the whole
+/// request to the shared operation, and record what it wrote. This is the
+/// batch harness's per-file entry point as well as [`run`]'s body — a per-file
+/// typed failure is a batch report entry, never a batch abort.
 ///
 /// # Errors
 ///
-/// As [`run`].
-///
-/// # Budget
-///
-/// As [`run`].
-///
-/// # Malformed Input
-///
-/// As [`run`].
+/// As [`run`], plus a refusal when the operating system offers no entropy.
 pub(crate) fn protect_file(
     path: &str,
     output: &str,
@@ -228,8 +139,8 @@ pub(crate) fn protect_file(
     permissions: Option<&str>,
     encrypt_metadata: bool,
 ) -> CliResult<Verification> {
-    let (user_pw, owner_pw) = passwords.resolve();
-    if user_pw.is_empty() && owner_pw.is_empty() {
+    let (user_password, owner_password) = passwords.resolve();
+    if user_password.is_empty() && owner_password.is_empty() {
         return Err(CliError(
             "no passwords given: --user-password / --owner-password or \
              SELIS_USER_PASSWORD / SELIS_OWNER_PASSWORD"
@@ -238,174 +149,34 @@ pub(crate) fn protect_file(
     }
     let granted = match permissions {
         Some(spec) => parse_permissions(spec).map_err(CliError)?,
-        None => parse_permissions("print,modify,copy,annotate").map_err(CliError)?,
+        None => security::ALL_GRANTED,
     };
-    let p = compute_p(granted);
 
-    let src = read_file(path)?;
-    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
-    let budget = Budget::unlimited();
-    let clock = crate::shell_clock();
-    let mut g = crate::runtime::cli_guard(&budget, &clock);
-
-    let startxref = xref::find_startxref(&src, 4096).unwrap_or(0);
-    let doc = parse_revisions(&src, startxref, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    let rev = doc
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: no revisions")))?;
-
-    if rev.encrypt.is_some() {
-        let mut ctx = selis_error::Ctx::new();
-        ctx.detail = Some(format!(
-            "{path}: remove the existing password with `selis unlock` first"
-        ));
-        return Err(CliError::from(selis_error::Error::with(
-            selis_error::Code::AlreadyEncrypted,
-            ctx,
+    // The R6 credentials: a 256-bit file key and four 8-byte salts, drawn from
+    // the operating system. The document /ID then follows from the file key
+    // (revision 6 never hashes /ID into the key, so a fresh key per save means
+    // a fresh ID per save).
+    let Some(material) = R6Material::generate() else {
+        return Err(CliError(format!(
+            "{path}: no operating-system entropy source is available; refusing to protect a \
+             document with a key that is not random"
         )));
-    }
-    let root = rev
-        .root
-        .ok_or_else(|| CliError(format!("{path}: no /Root in trailer")))?;
+    };
 
-    // TOOL.04 engineering note: a full rewrite invalidates digital
-    // signatures — detect before running and tell the user.
-    crate::tools::warn_if_digital_signature(&src, &doc, &budget, &mut g, path);
-
-    // Walk the object graph from /Root (and /Info, so metadata survives),
-    // keeping the original object numbers. The input is unencrypted, so the
-    // resolver needs no key.
-    let mut resolver = Resolver::new(&doc, &src, &budget);
-    let mut objects: Vec<(u32, Obj)> = Vec::new();
-    let mut visited = BTreeSet::new();
-    walk(&mut resolver, root, &mut visited, &mut objects, &mut g)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    if let Some((_, Obj::Ref(info_ref))) = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info")
-    {
-        walk(&mut resolver, *info_ref, &mut visited, &mut objects, &mut g)
-            .map_err(|e| CliError(format!("{path}: {e}")))?;
-    }
-
-    // The document-level XMP stream is exempt from encryption when
-    // /EncryptMetadata is false. Only an indirect /Metadata can be exempted;
-    // a stream stored directly inside the catalog would have to be rewritten
-    // into its own object, so the tool refuses rather than mis-handle it.
-    let mut metadata_exempt: Option<u32> = None;
-    if !encrypt_metadata {
-        let metadata_obj = objects
-            .iter()
-            .find(|(num, _)| *num == root.num)
-            .and_then(|(_, obj)| match obj {
-                Obj::Dict(pairs) => pairs.iter().find(|(k, _)| k.as_slice() == b"Metadata"),
-                _ => None,
-            })
-            .map(|(_, v)| v);
-        match metadata_obj {
-            Some(Obj::Ref(r)) => metadata_exempt = Some(r.num),
-            Some(_) => {
-                return Err(CliError(format!(
-                    "{path}: /Metadata is a direct stream; --encrypt-metadata false \
-                     needs an indirect /Metadata reference"
-                )));
-            }
-            None => {}
-        }
-    }
-
-    // The R6 credentials: CSPRNG salts + file key inside `new_r6`; the
-    // document /ID is generated from the CSPRNG as well (ISO 32000-1 §14.4).
-    // Revision 6 does not feed /ID into key derivation, so a fresh random ID
-    // is safe and unguessable.
-    let id = selis_crypto::random_bytes(16);
-    let (mut info, file_key) =
-        EncryptInfo::new_r6(clamp_password(&user_pw), clamp_password(&owner_pw), p, &id);
-    info.encrypt_metadata = encrypt_metadata;
-    // new_r6 bakes the /EncryptMetadata marker into /Perms; recompute the
-    // blob so the marker matches the caller's flag.
-    info.perms = selis_crypto::compute_perms_r6(p, &file_key, encrypt_metadata);
-
-    // Encrypt every object except the /Encrypt dictionary itself (written
-    // separately below) and the exempted metadata stream.
-    for (num, obj) in objects.iter_mut() {
-        if Some(*num) == metadata_exempt {
-            continue;
-        }
-        let taken = std::mem::replace(obj, Obj::Null);
-        *obj = encrypt::encrypt_object(&taken, &file_key, *num, 0, info.r, info.aes);
-    }
-
-    // The /Encrypt dictionary as its own (plaintext) object after the walked
-    // content, referenced from the trailer (ISO 32000-1 Table 15).
-    let enc_num = objects
-        .iter()
-        .map(|(num, _)| *num)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    objects.push((enc_num, encrypt::encrypt_dict(&info)));
-
-    // Trailer: /Root, /Info, /ID, /Encrypt (the writer emits /Size + /Root).
-    let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some((_, Obj::Ref(info_ref))) = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info")
-    {
-        extra_trailer.push((b"Info".to_vec(), Obj::Ref(*info_ref)));
-    }
-    extra_trailer.push((
-        b"ID".to_vec(),
-        Obj::Array(vec![
-            Obj::HexString(selis_bytes::Bytes::copy_from_slice(&id)),
-            Obj::HexString(selis_bytes::Bytes::copy_from_slice(&id)),
-        ]),
-    ));
-    extra_trailer.push((b"Encrypt".to_vec(), Obj::Ref(Ref::new(enc_num, 0))));
-
-    let bytes =
-        write_objects_as_document_with_trailer(&objects, root, &extra_trailer, &budget, &mut g)
-            .map_err(|e| CliError(format!("{path}: write: {e}")))?;
-
-    // WRITE.05 (via the shared gate): the output is surveyed against the
-    // input's counts (protect rewrites nothing structurally — pages,
-    // annotations, fields, and OCGs must match) and verified before the
-    // atomic commit.
-    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
-    let expected =
-        crate::write_gate::expectations_from(&observed, &crate::write_gate::PRESERVE_ALL);
-
-    // WRITE.05 (protect-specific): the re-parsed output must carry a
-    // revision-6 /Encrypt whose /P and /EncryptMetadata match the request,
-    // both passwords must authenticate, /Perms must verify against the file
-    // key, the exempted metadata (if any) must still be plaintext, and the
-    // document model must open.
-    verify_output(
-        &bytes,
-        VerifyExpectations {
-            root,
-            p,
-            encrypt_metadata,
-            user_pw: user_pw.clone(),
-            owner_pw,
-            metadata_exempt,
-        },
+    let outcome = security::protect(
         path,
+        output,
+        &ProtectOptions {
+            user_password,
+            owner_password,
+            granted,
+            encrypt_metadata,
+            material,
+        },
     )?;
-
-    // Commit through the shared gate: structural verification + atomic
-    // write (temp + fsync + rename). A failing verification leaves the
-    // destination untouched.
-    let verdict = crate::write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
-
     record_operation(&granted);
     eprintln!("protected {path} -> {output} (AES-256, revision 6)");
-    Ok(crate::verify_report::Verification::from_gate(
-        Some(&observed),
-        &verdict,
-        &expected,
-        in_bytes,
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-    ))
+    Ok(outcome.verification)
 }
 
 /// Resolve a password: the argument wins; otherwise the named environment
@@ -424,23 +195,11 @@ fn resolve_password(arg: Option<&str>, env_var: &str) -> Option<String> {
     std::env::var(env_var).ok().filter(|pw| !pw.is_empty())
 }
 
-/// Algorithm 2.A step (a): a UTF-8 password is truncated to 127 bytes before
-/// hashing. Truncation happens here so the written credentials and any later
-/// authentication agree byte-for-byte.
-fn clamp_password(pw: &str) -> &[u8] {
-    let end = pw.len().min(127);
-    pw.as_bytes().get(..end).unwrap_or(pw.as_bytes())
-}
-
 /// Record the operation in the oplog vocabulary and echo the audit line (the
 /// CLI's one-shot oplog surface until SL-5 carries per-document logs). The
 /// record names the granted permission set — never the passwords.
 fn record_operation(granted: &u32) {
-    let granted_names: Vec<&str> = EXPOSED
-        .iter()
-        .filter(|(_, bit)| (granted & bit) != 0)
-        .map(|(name, _)| *name)
-        .collect();
+    let granted_names = security::granted_names(*granted);
     let mut log = OpLog::new();
     let seq = log.record(
         OP_PROTECT,
@@ -463,217 +222,33 @@ fn record_operation(granted: &u32) {
         );
     }
 }
-
-/// WRITE.05 structural verification of the encrypted output.
-///
-/// # Budget
-///
-/// Runs under its own unlimited budget (the CLI's standing choice): a full
-/// re-parse, two authentications (hardened-hash runs), and a document-model
-/// open over the output bytes. Nothing is charged against the caller.
-///
-/// # Malformed Input
-///
-/// `bytes` is engine-written, not document-derived, so every failure here is
-/// a writer bug, not a document problem: each check fails the tool with an
-/// `output failed verification` error and no file is written.
-/// The expectations the WRITE.05 verification checks the output against.
-struct VerifyExpectations {
-    /// The catalog reference from the input.
-    root: Ref,
-    /// The requested `/P` value.
-    p: u32,
-    /// The requested `/EncryptMetadata` flag.
-    encrypt_metadata: bool,
-    /// The user password that must authenticate.
-    user_pw: String,
-    /// The owner password that must authenticate.
-    owner_pw: String,
-    /// The object number of the plaintext-exempt `/Metadata` stream, if any.
-    metadata_exempt: Option<u32>,
-}
-
-/// WRITE.05 structural verification of the encrypted output.
-///
-/// # Budget
-///
-/// Runs under its own unlimited budget (the CLI's standing choice): a full
-/// re-parse, two authentications (hardened-hash runs), and a document-model
-/// open over the output bytes. Nothing is charged against the caller.
-///
-/// # Malformed Input
-///
-/// `bytes` is engine-written, not document-derived, so every failure here is
-/// a writer bug, not a document problem: each check fails the tool with an
-/// `output failed verification` error and no file is written.
-fn verify_output(bytes: &[u8], expect: VerifyExpectations, path: &str) -> CliResult<()> {
-    let budget = Budget::unlimited();
-    let clock = crate::shell_clock();
-    let mut g = crate::runtime::cli_guard(&budget, &clock);
-    let sx = xref::find_startxref(bytes, 4096).unwrap_or(0);
-    let parsed = parse_revisions(bytes, sx, &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?;
-    let rev = parsed
-        .revisions()
-        .last()
-        .ok_or_else(|| CliError(format!("{path}: output failed verification (no revisions)")))?;
-    if rev.root != Some(expect.root) {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Root not preserved)"
-        )));
-    }
-    let enc_ref = rev.encrypt.ok_or_else(|| {
-        CliError(format!(
-            "{path}: output failed verification (/Encrypt missing)"
-        ))
-    })?;
-    let info = encrypt::parse_encrypt(bytes, Some(enc_ref), &budget, &mut g)
-        .map_err(|e| CliError(format!("{path}: output failed verification: {e}")))?
-        .ok_or_else(|| {
-            CliError(format!(
-                "{path}: output failed verification (/Encrypt unreadable)"
-            ))
-        })?;
-    if info.r != 6 || info.v != 5 {
-        return Err(CliError(format!(
-            "{path}: output failed verification (expected revision 6 / AES-256, got R{} V{})",
-            info.r, info.v
-        )));
-    }
-    if info.p != expect.p {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/P mismatch)"
-        )));
-    }
-    if info.encrypt_metadata != expect.encrypt_metadata {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/EncryptMetadata mismatch)"
-        )));
-    }
-    let id0 = encrypt::document_id(&rev.trailer);
-    if id0.is_empty() {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/ID missing)"
-        )));
-    }
-    let key = encrypt::authenticate(&info, &id0, expect.user_pw.as_bytes()).ok_or_else(|| {
-        CliError(format!(
-            "{path}: output failed verification (user password does not authenticate)"
-        ))
-    })?;
-    if !selis_crypto::verify_perms_r6(info.p, &key, &info.perms, info.encrypt_metadata) {
-        return Err(CliError(format!(
-            "{path}: output failed verification (/Perms does not verify)"
-        )));
-    }
-    encrypt::authenticate(&info, &id0, expect.owner_pw.as_bytes()).ok_or_else(|| {
-        CliError(format!(
-            "{path}: output failed verification (owner password does not authenticate)"
-        ))
-    })?;
-    if let Some(num) = expect.metadata_exempt {
-        let ok = matches!(
-            resolve_number(bytes, num, &budget, &mut g),
-            Ok(Obj::Stream { .. })
-        );
-        if !ok {
-            return Err(CliError(format!(
-                "{path}: output failed verification (exempted /Metadata stream unreadable)"
-            )));
-        }
-    }
-    // The output must also build a usable document model (WRITE.07). With a
-    // non-empty user password the session opens tolerantly without the key —
-    // this check is structural reachability, not decryption (the decrypt path
-    // is proven by the authenticate + /Perms checks above and the round-trip
-    // tests).
-    let doc_budget = Budget::profile(Surface::Viewer);
-    let clock = crate::shell_clock();
-    // The typed error is propagated, not swallowed (SL-1A.UI.06).
-    selis_pdf_engine::Session::open(bytes.to_vec(), &doc_budget, &clock)
-        .map_err(|e| CliError(format!("{path}: {e}")))?;
-    Ok(())
-}
-
-/// Resolve one object by number across revisions (used for the metadata
-/// exemption check on the re-parsed output).
-///
-/// # Budget
-///
-/// Charged to the caller's guard like every parse: object bytes and one
-/// object unit per resolution.
-///
-/// # Malformed Input
-///
-/// A number absent from every revision's xref, or an unparseable body,
-/// returns the typed parse error instead of a partial object.
-fn resolve_number(
-    src: &[u8],
-    num: u32,
-    budget: &Budget,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<Obj, selis_error::Error> {
-    let startxref = xref::find_startxref(src, 4096).unwrap_or(0);
-    let doc = parse_revisions(src, startxref, budget, g)?;
-    for view in doc.revisions().iter().rev() {
-        if let Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) = view.entries.get(&num) {
-            return selis_pdf_cos::resolve_object(src, *offset, budget, g);
-        }
-    }
-    Err(selis_error::Error::new(selis_error::Code::ObjUnexpected))
-}
-
-/// Walk the object graph from `root`, collecting (num, Obj) pairs with the
-/// original object numbers preserved. The visited set makes cyclic graphs
-/// terminate; depth and object counts are charged to the budget guard.
-fn walk(
-    resolver: &mut Resolver<'_>,
-    root: Ref,
-    visited: &mut BTreeSet<u32>,
-    objects: &mut Vec<(u32, Obj)>,
-    g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> Result<(), selis_error::Error> {
-    if !visited.insert(root.num) {
-        return Ok(());
-    }
-    let obj = resolver.resolve(root, g)?;
-    let mut pending = Vec::new();
-    collect_refs(&obj, &mut pending);
-    objects.push((root.num, obj));
-    for next in pending {
-        walk(resolver, next, visited, objects, g)?;
-    }
-    Ok(())
-}
-
-/// Collect all `Ref` values from an object (used to walk the object graph).
-fn collect_refs(obj: &Obj, out: &mut Vec<Ref>) {
-    match obj {
-        Obj::Ref(r) => out.push(*r),
-        Obj::Array(items) => {
-            for item in items {
-                collect_refs(item, out);
-            }
-        }
-        Obj::Dict(pairs) => {
-            for (_, v) in pairs {
-                collect_refs(v, out);
-            }
-        }
-        Obj::Stream { dict, data: _ } => {
-            for (_, v) in dict {
-                collect_refs(v, out);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
+    use selis_pdf_cos::encrypt;
+    use selis_pdf_cos::{parse_revisions, xref, Obj};
+    use selis_pdf_tools::security::{compute_p, BIT_ANNOTATE, BIT_COPY, BIT_MODIFY, BIT_PRINT};
+    use selis_sandbox::{Budget, Surface};
+
+    /// Resolve one object by number across revisions, so a test can read a
+    /// stream body straight out of the written file.
+    fn resolve_number(
+        src: &[u8],
+        num: u32,
+        budget: &Budget,
+        g: &mut selis_sandbox::BudgetGuard<'_>,
+    ) -> Result<Obj, selis_error::Error> {
+        let startxref = xref::find_startxref(src, 4096).unwrap_or(0);
+        let doc = parse_revisions(src, startxref, budget, g)?;
+        for view in doc.revisions().iter().rev() {
+            if let Some(selis_pdf_cos::XrefEntry::InUse { offset, .. }) = view.entries.get(&num) {
+                return selis_pdf_cos::resolve_object(src, *offset, budget, g);
+            }
+        }
+        Err(selis_error::Error::new(selis_error::Code::ObjUnexpected))
+    }
 
     /// Build a minimal single-page PDF with a content stream, an indirect
     /// catalog /Metadata stream (XMP), and an /Info dictionary — every string
@@ -827,7 +402,7 @@ mod tests {
     fn stream_data(bytes: &[u8], num: u32) -> Option<Vec<u8>> {
         let budget = Budget::unlimited();
         let mut g = budget.guard();
-        match super::resolve_number(bytes, num, &budget, &mut g) {
+        match resolve_number(bytes, num, &budget, &mut g) {
             Ok(Obj::Stream { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
@@ -836,35 +411,35 @@ mod tests {
     #[test]
     fn parse_permissions_grants_named_bits() {
         assert_eq!(
-            super::parse_permissions("print,copy").unwrap(),
+            parse_permissions("print,copy").unwrap(),
             BIT_PRINT | BIT_COPY
         );
         assert_eq!(
-            super::parse_permissions("all-of-nothing").unwrap_err(),
+            parse_permissions("all-of-nothing").unwrap_err(),
             "unknown permission `all-of-nothing` (valid: print, modify, copy, annotate)"
         );
-        assert_eq!(super::parse_permissions("none").unwrap(), 0);
+        assert_eq!(parse_permissions("none").unwrap(), 0);
         assert_eq!(
-            super::parse_permissions("print,modify,copy,annotate").unwrap(),
+            parse_permissions("print,modify,copy,annotate").unwrap(),
             BIT_PRINT | BIT_MODIFY | BIT_COPY | BIT_ANNOTATE
         );
-        assert!(super::parse_permissions("").is_err());
+        assert!(parse_permissions("").is_err());
     }
 
     #[test]
     fn compute_p_keeps_reserved_bits_conformant() {
         // All granted: bits 1-2 zero, everything else set (Table 22 baseline).
         assert_eq!(
-            super::compute_p(BIT_PRINT | BIT_MODIFY | BIT_COPY | BIT_ANNOTATE),
+            compute_p(BIT_PRINT | BIT_MODIFY | BIT_COPY | BIT_ANNOTATE),
             0xFFFF_FFFC
         );
         // Deny copy + annotate: their bits clear, reserved bits untouched.
         assert_eq!(
-            super::compute_p(BIT_PRINT | BIT_MODIFY),
+            compute_p(BIT_PRINT | BIT_MODIFY),
             0xFFFF_FFFC & !(BIT_COPY | BIT_ANNOTATE)
         );
         // None granted: only the four exposed bits clear.
-        assert_eq!(super::compute_p(0), 0xFFFF_FFC0);
+        assert_eq!(compute_p(0), 0xFFFF_FFC0);
     }
 
     #[test]
@@ -1087,7 +662,7 @@ mod tests {
         .expect("protect");
         let out = std::fs::read(&paths.output).unwrap();
         let (info, key) = parse_output(&out);
-        let expected = super::compute_p(BIT_PRINT | BIT_ANNOTATE);
+        let expected = compute_p(BIT_PRINT | BIT_ANNOTATE);
         assert_eq!(info.p, expected, "/P matches the requested bits");
         assert!(
             selis_crypto::verify_perms_r6(info.p, &key, &info.perms, info.encrypt_metadata),
@@ -1293,7 +868,7 @@ mod tests {
         let id_a = document_id_of(&std::fs::read(&paths_a.output).unwrap());
         let id_b = document_id_of(&std::fs::read(&paths_b.output).unwrap());
         assert_eq!(id_a.len(), 16, "/ID is 16 bytes");
-        assert_ne!(id_a, id_b, "CSPRNG /ID differs per document");
+        assert_ne!(id_a, id_b, "a fresh file key per protect means a fresh /ID");
     }
 
     // ── Property test (DoD template) ─────────────────────────────────────
@@ -1356,7 +931,7 @@ mod tests {
             let mut granted = BIT_MODIFY | BIT_ANNOTATE;
             if grant_print { granted |= BIT_PRINT; }
             if grant_copy { granted |= BIT_COPY; }
-            assert_eq!(info.p, super::compute_p(granted), "/P matches the spec");
+            assert_eq!(info.p, compute_p(granted), "/P matches the spec");
 
             // The user password authenticates; a definitely-wrong one does not.
             let key = encrypt::authenticate(&info, &id0, user_pw.as_bytes())
@@ -1370,7 +945,7 @@ mod tests {
             assert!(selis_crypto::verify_perms_r6(info.p, &key, &info.perms, true));
 
             // The content stream decrypts byte-exactly under the file key.
-            let ct = match super::resolve_number(&out, 5, &budget, &mut g).unwrap() {
+            let ct = match resolve_number(&out, 5, &budget, &mut g).unwrap() {
                 Obj::Stream { data, .. } => data.to_vec(),
                 other => panic!("object 5 not a stream: {other:?}"),
             };
