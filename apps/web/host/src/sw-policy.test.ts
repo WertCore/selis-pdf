@@ -101,6 +101,7 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/tools-page.js",
 			"/assets/host/tools/security-protocol.js",
+			"/assets/host/tools/sign-protocol.js",
 			"/wasm/selis_pdf_wasm_tools.wasm",
 		]);
 		expect(TOOLS_PRECACHE_PATHS.filter((path) => path.endsWith(".wasm"))).toEqual([
@@ -124,6 +125,7 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/tools-page.js",
 			"/assets/host/tools/security-protocol.js",
+			"/assets/host/tools/sign-protocol.js",
 			"/wasm/selis_pdf_wasm_tools.wasm",
 		]);
 	});

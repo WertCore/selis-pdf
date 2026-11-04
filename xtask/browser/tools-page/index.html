@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 39;
+      const CARD_COUNT = 42;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -976,6 +976,7 @@
         needles,
         absent,
         files,
+        optionFiles,
       ) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
@@ -1005,6 +1006,24 @@
             field.value = String(value);
           }
           field.dispatchEvent(new win.Event("input", { bubbles: true }));
+          field.dispatchEvent(new win.Event("change", { bubbles: true }));
+        }
+
+        // A signing card reads a key, a chain and its anchors through file
+        // inputs of its own. They are filled the same way the page's own
+        // chooser fills `#file-input`: a DataTransfer, so the page sees real
+        // File objects and never a path. `readOptionText` reads the bytes in
+        // the tab when the button is pressed.
+        for (const [key, entries] of Object.entries(optionFiles || {})) {
+          const field = doc.getElementById("option-" + key);
+          if (!field) throw new Error("the " + toolId + " page offered no " + key + " input");
+          const transfer = new win.DataTransfer();
+          for (const entry of entries) {
+            transfer.items.add(
+              new win.File([entry.bytes.slice(0)], entry.name, { type: entry.type }),
+            );
+          }
+          field.files = transfer.files;
           field.dispatchEvent(new win.Event("change", { bubbles: true }));
         }
 
@@ -1189,7 +1208,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the thirty-nine tool cards");
+        out.cards = await waitForCards(frame, "the forty-two tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1252,6 +1271,80 @@
           if (!r.ok) throw new Error("locked.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        // Signing fixtures: the committed test key the core signing crate uses,
+        // its leaf certificate and the root it chains to. The key is not a
+        // secret and signs nothing but this harness's own document. The leaf is
+        // valid from 2026-11-04 for ten years, so the report's clock check has a
+        // real window rather than a frozen fixture date.
+        const signKeyPem = `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDB5yeiljEa92td
+rAQo/t1C+IIIdVV4MZXQPEQldCE1xQXBBCZNDZyHKsAuli1AqLy8etUPN1mEPf2L
+2M6cBLynYWebaUBh+ZId6DZcuYjT5yCB6amy8yhKt5LAPMLlvrT0sJhiAXP2+Km7
+QXG+u2Fg2sPcf+L53lW/W2Bpv7OsUQ7MISzJqRk5uAOYzeEnWTEYWbjkehy80oT9
+4BmbGhA1Zo4EwPX9BtbrkY5Hsh0FQLLQYlJC0K3LXfI6NTQWKNjIWxbkHXYDm1el
+XqFJ/fXLpb3mqcMeHaRJKW5ASENOQ9/TyXc8PVshbY5GVhqHIIy0rdaPM4t8l6xd
+gTx5JkJPAgMBAAECggEAA+Yn3rXsxzE0zag7rdlbeKZySETtEuLTCOIVWrgdl4Je
+jcA4HEeK9Lra13T59E66+4KazdixP56sKQeTNqxFC4vtX0DRZHGgywzUKa7Uvgdr
+7hYql+hveyUlhHZpqDYFVyrv6CnwUNs0394+hnUnzaCd3KK5B949Kiu7t2n9Qm3r
+y2qZZ9oGToYrrsHbqMeeLQ/o/1nhSCsViyMxRf9IP3reTDvigri4oF37CcVh7EQ/
+4vWxaed9VtYQAZ+O/ThoVvzL0UhbQvI/wMH3GOIsi5j97CeN7i2YP2b4Qyqb/6BM
+VI95ShGlIJC/TVeOzfjUlqNVpWKogN2GpL7j4f99hQKBgQD/diMGlR1YsypF+0n+
+5HYV4QmWZvn38k4RuDtI0ZRZSN2527nI5SSoQNPytxxM/reesicrftqX9LfWXU/h
+OMlRQHR8XwoVUweo2z26JPREgEwMpVj6fv1enc8sgXv/qXfYk5qs5DKURNbK/Lfp
+X4qr4E7ZvYAkjLuY4PATvgyKwwKBgQDCT8wQrzvItRU6YB8lDzFmpoJWwnxtTgYb
+4KX/mVXhH8vLPKUgFvbeMctJ9bZH4uNQbU+jTGoCm74x8Jmz+NkwKttoKMTr0SU9
+mbdBLi4Y8W8W2ywuj981xex4C+DrsjU6RV5hZ15uf3+0R6uRPe5qd7mNykrQzZmK
+e1SGjAR5hQKBgFD3/LoFYTvP7cIol5d2igb9QLCvCuOPpTbwkbnO05pJAh36irQm
+DKxXf9YaO5ob0c824DtlBZvMMMh84uibuxNJvqH87ZE8s9zNQI9TTyi3EWOgtMcQ
+oPXwRs3wbIDoEdhPUGMkIPPlrb7AwvnxEl7Pxa415fuvr3YRNYbMYeVJAoGBAKcj
+ZHBlipMVz/CqhZ+m9eNKDor6N3T9zBtmnOLCzjAa3X0v6Qk1N5vgUPCJPgWPj9+6
+Zuob7IPZ2zuxrUQ1JPxdoORzTQ9akyHtesfCJTynT9rlI5fZgTIL0V9hOFMEsuww
+hwJZm8yINxynGViRYOaLnTvtaXU5pHyNoSMqhR7RAoGAb08HxL5ZCbP6mKZqMt+Y
+7Vl4kzvd16vT1szezoZtDWvcHLUFSh/3+SbHQ+0OkjbbyV+hx2OqsknrT4V0cCGk
+hAU6qW4zDVwZGUWYBTqOIdZTtuFbnf5hxcNUS+yVJ/87gnjFEJpXoRLqr/ka26Ct
+FiWbpAZQ/S4t59J7kQ6rCAQ=
+-----END PRIVATE KEY-----
+`;
+        const signLeafPem = `-----BEGIN CERTIFICATE-----
+MIIDJzCCAg+gAwIBAgIUSqFen1CoN4+8ew4Eif1TZxGvvcUwDQYJKoZIhvcNAQEL
+BQAwHTEbMBkGA1UEAwwSU2VsaXMgVGVzdCBSb290IENBMB4XDTI2MTEwNDA4MTQx
+OVoXDTM2MTEwMTA4MTQxOVowHDEaMBgGA1UEAwwRU2VsaXMgVGVzdCBTaWduZXIw
+ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDB5yeiljEa92tdrAQo/t1C
++IIIdVV4MZXQPEQldCE1xQXBBCZNDZyHKsAuli1AqLy8etUPN1mEPf2L2M6cBLyn
+YWebaUBh+ZId6DZcuYjT5yCB6amy8yhKt5LAPMLlvrT0sJhiAXP2+Km7QXG+u2Fg
+2sPcf+L53lW/W2Bpv7OsUQ7MISzJqRk5uAOYzeEnWTEYWbjkehy80oT94BmbGhA1
+Zo4EwPX9BtbrkY5Hsh0FQLLQYlJC0K3LXfI6NTQWKNjIWxbkHXYDm1elXqFJ/fXL
+pb3mqcMeHaRJKW5ASENOQ9/TyXc8PVshbY5GVhqHIIy0rdaPM4t8l6xdgTx5JkJP
+AgMBAAGjYDBeMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMB0GA1UdDgQW
+BBSEpl5GhljB3Y9tv/NLl5q+GZsTpTAfBgNVHSMEGDAWgBTv4YbHBlWCerMvX6/G
+dEvKqrZgDTANBgkqhkiG9w0BAQsFAAOCAQEAh79Y+yt/8DdcMSQzKOKg/mhQ+hOc
+8uGgmuNUiMYgvM8cu04idf0eGpbbrZcrYBcAE+CX2YjatWAwKTYlgVKMKaFLOFpr
+npykcQOgPv0pqsACFCS6WJqvxPRi8OdvBYsoygURLHgLE+zFUTbCCM4T64pB1CuG
+Vw8CAQ0B2TnzLSJaDO+HMpO9k6hNGvhNgGR5Rb93JTKEhMhdEGe+f+vfCQk0wcPR
+2wryeioaRzh9prP0aCvxDqGH1rG1GRzKLAbrF9lqS5UDBHdkA8Mt9FiRAs4jR0n+
+Np7Fxtqzc9xekIZgC3wMkiYN1lpcVvG6HDVT9mbuohn8adyBcW2Ax5wRGg==
+-----END CERTIFICATE-----
+`;
+        const signRootPem = `-----BEGIN CERTIFICATE-----
+MIIDCjCCAfKgAwIBAgIUeNA9xP4fi0Tevjl2XJnJMfgnKDUwDQYJKoZIhvcNAQEL
+BQAwHTEbMBkGA1UEAwwSU2VsaXMgVGVzdCBSb290IENBMB4XDTI2MTEwNDA4MTQx
+OFoXDTM2MTEwMTA4MTQxOFowHTEbMBkGA1UEAwwSU2VsaXMgVGVzdCBSb290IENB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2GbhZpMCwTOi+RTjZTid
+GafqXnT+kvD0MoTk5/JJMG6SvPTQIwVBjNUN/yEZDBcW7Sa7c7pdxRa0ovkMhaEx
+ya7NyaUd7CI3M3VPKziCTjfTXrVsw7mWQ9G4QemtCMFHR4qm25j+6NafaGbumWK7
+eZHpjkjIPjeaMXJS906YbCcXwKx5nwFr5Fgn6s9iJIEEwIUNyipQcKEvrYyFut3x
+UQbluMSXdh0WOB5XrSofQnCXj7pxLZvYuDpHH7uQ7XmONevJLy0bHCPsF9Uz7wp2
+OEyl4ZAMNrxr4GV9FVhPPRdCIAumScEjB5J3l127vNkAFIYMjx0EmIAZKJfbXQCO
+EwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNV
+HQ4EFgQU7+GGxwZVgnqzL1+vxnRLyqq2YA0wDQYJKoZIhvcNAQELBQADggEBAMt3
+URlh4NWf7UZYYEeatb3OG71GJDlMao3dDvHjwR/mjTAwbdSYwHbKOVnsFz2Cm1B+
+xLgvkTtMiWXGbc5nag3gOtMSj8PfB9KW0v1xJwluXKFrTe6LZfM229XYaBzunzYz
+pRDlzsvFQ5XQE8DfQw8WEQCw/UQfWqA1CgWv3uVA3bQqlXd/VFoKuDj/fqpE+pnr
+nXEM10cXgQX6Zxfyt8+jhTxtYWUFe+j5Ct87u+eJ2yxfgfbdFdP4jcW+Zo5ilXDo
+kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
+913NqJy8Ikmb6bY5SeU=
+-----END CERTIFICATE-----
+`;
         // Image→PDF inputs: a PNG and a JPEG, so the leg covers both decoders
         // `selis-image` owns and proves the page accepts images rather than PDFs.
         const pngFixture = await fetch("one.png").then((r) => {
@@ -2561,6 +2654,128 @@
           permissions: legRecord(onlinePermissions),
         };
 
+        // ── Signing: a typed stamp, a certificate signature, its report ───────
+        // These four legs share the signing chunk, which is why the stamp leg
+        // is also the moment the browser asks for it. The stamp proves the
+        // visual path; the certificate leg signs the bytes with the committed
+        // test key and proves the detached CMS shape; the report then checks
+        // THAT output against the root the chain ends at, so the legs are one
+        // chain. The workflow card reuses the stamp op with a decision block.
+        const onlineStamp = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online stamp",
+          "sign",
+          {
+            signMode: "stamp",
+            stampText: "Browser Approved",
+            page: "2",
+            signerName: "Ada Lovelace",
+          },
+          ["/SelisSigF", "(Browser Approved) Tj", "(Ada Lovelace"],
+          ["/ByteRange"],
+          null,
+        );
+        const onlineSign = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online certificate signature",
+          "sign",
+          {
+            signMode: "certificate",
+            page: "1",
+            signerName: "Ada Lovelace",
+            reason: "Browser harness approval",
+            location: "Local device",
+            field: "Signature1",
+          },
+          [
+            "/Type /Sig",
+            "/Filter /Adobe.PPKLite",
+            "/SubFilter /adbe.pkcs7.detached",
+            "/ByteRange [",
+            "/Name (Ada Lovelace)",
+            "/Reason (Browser harness approval)",
+            "/Location (Local device)",
+          ],
+          [],
+          null,
+          {
+            certKey: [
+              {
+                name: "leaf.key",
+                bytes: new TextEncoder().encode(signKeyPem),
+                type: "application/x-pem-file",
+              },
+            ],
+            certChain: [
+              {
+                name: "leaf.crt",
+                bytes: new TextEncoder().encode(signLeafPem),
+                type: "application/x-pem-file",
+              },
+              {
+                name: "root.crt",
+                bytes: new TextEncoder().encode(signRootPem),
+                type: "application/x-pem-file",
+              },
+            ],
+          },
+        );
+        const onlineWorkflow = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online approval workflow",
+          "workflow",
+          {
+            decision: "approved",
+            approver: "Grace Hopper",
+            note: "Looks good",
+            page: "3",
+          },
+          ["/SelisSigF", "(APPROVED) Tj", "(Grace Hopper"],
+          [],
+          null,
+        );
+        // The reported bytes are the ones the certificate leg just wrote, so a
+        // report row saying "verified" and "trusted" cannot come from some
+        // fixture that was never signed here.
+        const onlineReport = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online signature report",
+          "certificate",
+          {},
+          [],
+          [],
+          [
+            {
+              name: "report-signed.pdf",
+              bytes: onlineSign.output.raw,
+              type: "application/pdf",
+            },
+          ],
+          {
+            anchors: [
+              {
+                name: "root.crt",
+                bytes: new TextEncoder().encode(signRootPem),
+                type: "application/x-pem-file",
+              },
+            ],
+          },
+        );
+        out.sign = {
+          stamp: legRecord(onlineStamp),
+          certificate: legRecord(onlineSign),
+          workflow: legRecord(onlineWorkflow),
+          report: legRecord(onlineReport),
+        };
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -2579,7 +2794,11 @@
         out.offlineSwController = offlineWin
           ? offlineWin.navigator?.serviceWorker?.controller?.scriptURL ?? null
           : null;
-        const offlineCards = await waitForCards(frame, "the thirty-nine offline tool cards");        await waitFor(
+        const offlineCards = await waitForCards(
+          frame,
+          "the forty-two offline tool cards",
+        );
+        await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
           10_000,
           "the worker to claim the offline tools page",
@@ -3179,6 +3398,122 @@
           null,
         );
 
+        // The same four signing legs after the origin is cut. The signing chunk
+        // is runtime-cached on first use rather than precached, so these legs
+        // prove a device that once signed can sign and validate again with no
+        // server to ask.
+        const offlineStamp = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline stamp",
+          "sign",
+          {
+            signMode: "stamp",
+            stampText: "Browser Approved",
+            page: "2",
+            signerName: "Ada Lovelace",
+          },
+          ["/SelisSigF", "(Browser Approved) Tj", "(Ada Lovelace"],
+          ["/ByteRange"],
+          [
+            { name: "report.pdf", bytes: new Uint8Array(splitFixture.slice(0)), type: "application/pdf" },
+          ],
+        );
+        const offlineSign = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline certificate signature",
+          "sign",
+          {
+            signMode: "certificate",
+            page: "1",
+            signerName: "Ada Lovelace",
+            reason: "Browser harness approval",
+            location: "Local device",
+            field: "Signature1",
+          },
+          [
+            "/Type /Sig",
+            "/Filter /Adobe.PPKLite",
+            "/SubFilter /adbe.pkcs7.detached",
+            "/ByteRange [",
+            "/Name (Ada Lovelace)",
+            "/Reason (Browser harness approval)",
+            "/Location (Local device)",
+          ],
+          [],
+          [
+            { name: "report.pdf", bytes: new Uint8Array(splitFixture.slice(0)), type: "application/pdf" },
+          ],
+          {
+            certKey: [
+              {
+                name: "leaf.key",
+                bytes: new TextEncoder().encode(signKeyPem),
+                type: "application/x-pem-file",
+              },
+            ],
+            certChain: [
+              {
+                name: "leaf.crt",
+                bytes: new TextEncoder().encode(signLeafPem),
+                type: "application/x-pem-file",
+              },
+              {
+                name: "root.crt",
+                bytes: new TextEncoder().encode(signRootPem),
+                type: "application/x-pem-file",
+              },
+            ],
+          },
+        );
+        const offlineWorkflow = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline approval workflow",
+          "workflow",
+          {
+            decision: "approved",
+            approver: "Grace Hopper",
+            note: "Looks good",
+            page: "3",
+          },
+          ["/SelisSigF", "(APPROVED) Tj", "(Grace Hopper"],
+          [],
+          [
+            { name: "report.pdf", bytes: new Uint8Array(splitFixture.slice(0)), type: "application/pdf" },
+          ],
+        );
+        const offlineReport = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline signature report",
+          "certificate",
+          {},
+          [],
+          [],
+          [
+            {
+              name: "report-signed.pdf",
+              bytes: offlineSign.output.raw,
+              type: "application/pdf",
+            },
+          ],
+          {
+            anchors: [
+              {
+                name: "root.crt",
+                bytes: new TextEncoder().encode(signRootPem),
+                type: "application/x-pem-file",
+              },
+            ],
+          },
+        );
+
         out.offline = {
           cards: offlineCards,
           controlled: offlineWin.navigator.serviceWorker.controller !== null,
@@ -3630,6 +3965,12 @@
             clear: legRecord(offlineClear),
             protect: legRecord(offlineProtect),
             permissions: legRecord(offlinePermissions),
+          },
+          sign: {
+            stamp: legRecord(offlineStamp),
+            certificate: legRecord(offlineSign),
+            workflow: legRecord(offlineWorkflow),
+            report: legRecord(offlineReport),
           },
         };
 

@@ -62,8 +62,8 @@ aes         = "0.8"
 cbc         = { version = "0.1", features = ["alloc"] }
 getrandom   = "0.2"
 md-5        = "0.10"
-sha1        = "0.10"
-sha2        = "0.10"
+sha1        = { version = "0.10", features = ["oid"] }
+sha2        = { version = "0.10", features = ["oid"] }
 
 # Public-key security handler (SL-1.ENC.03, ADR-P0021): both crates are
 # RustCrypto (MIT OR Apache-2.0), pure Rust (wasm32-safe, ADR-P0011), no_std
@@ -75,7 +75,7 @@ sha2        = "0.10"
 # accepted, documented risk for local decryption of the user's own document —
 # see pdf-plan/31-ENC03-DESIGN-NOTE.md §6 (human sign-off item).
 rsa  = { version = "0.9", default-features = false, features = ["pem", "u64_digit"] }
-p256 = { version = "0.13", default-features = false, features = ["ecdh", "pkcs8", "pem"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "pkcs8", "pem"] }
 
 # CLI
 clap        = { version = "4", features = ["derive"] }
@@ -126,6 +126,7 @@ selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
 selis-job        = { path = "crates/selis-job", version = "0.1.0" }
 selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0" }
 selis-pdf-tools   = { path = "crates/selis-pdf-tools", version = "0.1.0", default-features = false }
+selis-pdf-sign    = { path = "crates/selis-pdf-sign", version = "0.1.0" }
 selis-pdf-wasm-tools = { path = "crates/selis-pdf-wasm-tools", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------

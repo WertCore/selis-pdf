@@ -35,7 +35,7 @@ selis-pdf-text     = 2
 selis-pdf-annot    = 2 # planned — Phase 5
 selis-pdf-form     = 2 # planned — Phase 5
 selis-pdf-redact   = 2 # planned — Phase 5
-selis-pdf-sign     = 2 # planned — Phase 5
+selis-pdf-sign     = 2 # Phase 4 - visual stamps and detached CMS signatures
 
 # L3 — Orchestration
 selis-pdf-engine = 3
@@ -153,6 +153,25 @@ is a leaf L2 with no reverse dependency."""
 from = "selis-pdf-form"
 to = "selis-pdf-annot"
 why = "01-ARCHITECTURE.md §3 — declared exception. Widget annotations are field appearances."
+
+[[edge]]
+from = "selis-pdf-form"
+to = "selis-pdf-cos"
+why = """
+Filling a form appends a revision to the catalog and the AcroForm: the field
+dictionaries and their /V values are COS objects, and the write is only accepted
+after the values are re-read from the bytes it wrote. COS is a leaf with no
+reverse dependency on the form model."""
+
+[[edge]]
+from = "selis-pdf-sign"
+to = "selis-pdf-cos"
+why = """
+A signature is an incremental COS revision: /ByteRange must name exact byte
+offsets in the document it signs, so the crate reads the catalog, appends the
+signature field and patches the range in place. COS is a leaf with no reverse
+dependency on the signing model. Same declared sideways edge as the form model,
+which writes its own field dictionaries."""
 
 [[edge]]
 from = "selis-pdf-engine"

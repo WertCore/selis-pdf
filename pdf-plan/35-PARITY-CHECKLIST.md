@@ -574,11 +574,36 @@ form values survive a round trip. Human-owned correctness.
       340 000 (the budget moved one round step with a note in `xtask/size-budgets.toml`).
       Still open: appearance-stream synthesis, so this relies on `/NeedAppearances` and a viewer that
       honours it; flattening remains its own task.
-- [ ] **Sign PDF** — certificate/signature UI, local keys, invalidation warnings.
-- [ ] **Certificate validation** — trust store and revocation policy; no validity claim
-      without a chain.
+- [x] **Sign PDF** — certificate/signature UI, local keys, invalidation warnings. Shipped as the core
+      crate `selis-pdf-sign` (27 tests: visual-stamp geometry and WinAnsi refusal, incremental digital
+      signature, `/ByteRange` patching, CMS verification and re-read of the field) plus `selis-crypto`
+      DER/CMS/X.509 additions (70 unit + 8 integration tests), a seventh lazy import-free WASM chunk
+      (`selis-pdf-wasm-sign`, 6 tests, capability mask `0b111`, protocol ops 1 stamp / 2 sign / 3
+      report, `SLSG`/`SLRG`), `selis-pdf-tools::sign` wrappers behind a `sign` feature with
+      `PRESERVE_ON_APPEND`, `selis stamp | sign | signatures`, and 21 `sign-protocol` vitest cases.
+      RSA PKCS#1 v1.5 with SHA-256 only, 2048-bit minimum, EC keys refused by name; timestamp, CAdES,
+      PAdES and LTV are not claimed. Browser legs online and offline stamp page 2, sign `report.pdf`
+      with the committed test key and check the downloaded bytes for `/SubFilter
+      /adbe.pkcs7.detached`, `/ByteRange` and the typed `/Name`. Sign chunk 220 308 B brotli of the
+      400 000 B budget (725 507 B raw with custom sections stripped, measured by `size-check`); the
+      grid now renders 42 cards, up from 39.
+- [x] **Certificate validation** — trust store and revocation policy; no validity claim
+      without a chain. Shipped as a report-only card over the signing chunk. Anchors are PEM files
+      the reader selects (no built-in root store); the chain walk checks names, signatures, validity
+      windows, CA and path-length constraints at the report's `now`, and lists every link. Revocation
+      is always "not checked - this build has no network", never a guessed status, and an unverified
+      signature is listed with its reason instead of hidden. The online browser leg validates the
+      file the signing leg had just written against the test root and asserts `Signature 1:
+      verified`, `Trust 1: trusted`, `Coverage 1: the whole document`; the offline leg repeats it with
+      the origin cut. No download is offered, because the report is the result.
 - [ ] **Permissions / encryption UI** — completes the 1A.1 crypto tools with a reviewed flow.
-- [ ] **Workflow (approve / route)** — local workflow state first; sharing is P2P later.
+- [x] **Workflow (approve / route)** — local workflow state first; sharing is P2P later. Shipped as a
+      local-only approval card: decision, approver, date and optional note are appended as a visible
+      block through the stamp operation, and the result says no queue, account or server holds a
+      copy. A later decision adds a block and leaves the earlier one readable. No routing,
+      notification or P2P sharing ships yet, and none is claimed. Online and offline browser legs
+      assert `(APPROVED) Tj` in the downloaded bytes and the result row "recorded in the appended
+      block; no server holds a copy".
 
 ---
 

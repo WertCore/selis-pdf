@@ -1,0 +1,25 @@
+[package]
+name = "selis-pdf-wasm-sign"
+description = "Lazy WASM chunk: visual stamps, certificate signatures and signature reports, run in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs` and no `rng`: every path is a key in the in-memory tool
+# session, and the private key arrives in the options JSON from the page. The
+# signing crate links RSA, which is why this is a chunk of its own rather than
+# part of the plain tools chunk.
+selis-pdf-tools = { workspace = true, features = ["sign"] }
+selis-crypto = { workspace = true }
+selis-sandbox = { workspace = true }
+serde_json = { workspace = true }

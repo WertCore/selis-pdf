@@ -91,6 +91,18 @@ chunk = "security"
 artifact = "selis_pdf_wasm_security"
 budget = 200000
 
+# The signing page's lazy chunk (stamp, certificate signature, signature report).
+# This is the only chunk that links an RSA implementation, the DER/CMS encoder and
+# the X.509 chain walker, which is why it is separate from both the tools chunk and
+# the security chunk. The private key is read by the page and sent as PEM in the
+# options JSON, so no entropy import reaches the guest and the chunk stays
+# import-free. Measured at 220 308 B brotli with all three operations, hence the
+# 400 000 ceiling.
+[[budget]]
+chunk = "sign"
+artifact = "selis_pdf_wasm_sign"
+budget = 400000
+
 # Automation binary (native, also built for wasm32 as the size canary).
 [[budget]]
 chunk = "engine-viewer"

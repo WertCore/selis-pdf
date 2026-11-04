@@ -25,6 +25,11 @@ native-fs = ["selis-sandbox/instant-clock", "selis-pdf-cos/rng"]
 # plain tools chunk must not carry them. Note it does NOT turn `rng` on: the
 # caller injects the key material, so the guest still links no entropy source.
 security = ["dep:selis-crypto", "dep:selis-pdf-doc", "dep:selis-pdf-engine"]
+# Visual stamps, certificate signatures and signature reports (Phase 4 — sign
+# PDF). Off by default: the signing crate links RSA and the CMS encoder, which
+# is most of the weight of the sign chunk, so the plain tools chunk must not
+# carry them.
+sign = ["dep:selis-pdf-sign"]
 
 [dependencies]
 selis-error = { workspace = true }
@@ -41,6 +46,7 @@ serde_json = { workspace = true }
 selis-crypto = { workspace = true, optional = true }
 selis-pdf-doc = { workspace = true, optional = true }
 selis-pdf-engine = { workspace = true, optional = true }
+selis-pdf-sign = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

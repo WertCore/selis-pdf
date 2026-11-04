@@ -44,6 +44,8 @@ pub mod repair;
 pub mod runtime;
 #[cfg(feature = "security")]
 pub mod security;
+#[cfg(feature = "sign")]
+pub mod sign;
 mod tools;
 mod verify_report;
 pub mod write_gate;
@@ -61,6 +63,12 @@ pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
+#[cfg(feature = "sign")]
+pub use sign::{
+    sign_pdf, signature_report, signature_report_bytes, stamp_pdf, DigitalOptions, DigitalReport,
+    SignatureReport, SignaturesReport, TrustReport, VisualLine, VisualOptions, VisualReport,
+    VisualStroke,
+};
 pub use verify_report::Verification;
 
 /// The most PDF parts one split request may produce.

@@ -66,6 +66,12 @@ pub(crate) struct Tlv<'a> {
     pub tag: Tag,
     /// The bytes between the length octets and the next TLV.
     pub content: &'a [u8],
+    /// The whole TLV, identifier and length octets included.
+    ///
+    /// Signature verification covers structures as they were encoded (a
+    /// `TBSCertificate`, a `SubjectPublicKeyInfo`), not just their content, so
+    /// the reader hands back the exact slice it consumed.
+    pub full: &'a [u8],
 }
 
 /// An iterative DER reader over the remaining bytes.
@@ -179,6 +185,10 @@ impl<'a> Der<'a> {
             .remaining
             .get(body_start..total)
             .ok_or_else(|| malformed(at, "truncated content"))?;
+        let full = self
+            .remaining
+            .get(..total)
+            .ok_or_else(|| malformed(at, "truncated content"))?;
         self.remaining = self
             .remaining
             .get(total..)
@@ -189,6 +199,7 @@ impl<'a> Der<'a> {
         Ok(Tlv {
             tag: Tag(ident),
             content,
+            full,
         })
     }
 

@@ -3794,6 +3794,21 @@ fn security_leg<'a>(block: &'a Json, phase: &str, name: &str) -> Result<&'a Json
         .ok_or_else(|| format!("the {phase} password run reported no {name} leg"))
 }
 
+/// The signing cards report as one block, because their legs chain: the report
+/// reads what the certificate leg above it wrote.
+fn signing_legs<'a>(parent: &'a Json, phase: &str) -> Result<&'a Json, String> {
+    parent
+        .get("sign")
+        .ok_or_else(|| format!("the {phase} run reported no signing legs (sign = None)"))
+}
+
+/// One named leg inside the signing block.
+fn signing_leg<'a>(block: &'a Json, phase: &str, name: &str) -> Result<&'a Json, String> {
+    block
+        .get(name)
+        .ok_or_else(|| format!("the {phase} signing run reported no {name} leg"))
+}
+
 /// One card, one run, one downloaded file. The rotate, delete, edit-metadata
 /// and ZIP legs all end this way and differ only in the name of the result, the
 /// page count the gate must assert, and which markers the bytes must carry.
@@ -4394,14 +4409,352 @@ const CLEAR_REFUSAL: SecurityRefusal = SecurityRefusal {
     secret: "selis-open",
 };
 
+/// One signing leg that writes a document: a typed stamp, a certificate
+/// signature, or an approval block. The rows are the card's own account of what
+/// it appended, and the needles are checked against the bytes the browser
+/// actually downloaded, so a card that claimed a signature it did not write
+/// fails here.
+struct SignDocumentSpec<'a> {
+    run_label: &'a str,
+    status: &'a str,
+    output_name: &'a str,
+    pages: u64,
+    rows: &'a [(&'a str, &'a str)],
+    needles: &'a [&'a str],
+    absent: &'a [&'a str],
+}
+
+fn check_sign_document(leg: &Json, label: &str, spec: &SignDocumentSpec) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show exactly one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != spec.run_label {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected {:?}",
+            leg.get("runLabel"),
+            spec.run_label
+        ));
+    }
+    if string_field(leg, "status")? != spec.status {
+        return Err(format!(
+            "the {label} card said {:?}, expected {:?}",
+            leg.get("status"),
+            spec.status
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some(spec.output_name) {
+        return Err(format!(
+            "the {label} result was named {:?}, expected {:?}",
+            result.get("title"),
+            spec.output_name
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} card reported Verification {:?}, expected \"ok\"",
+            row_value("Verification")
+        ));
+    }
+    for &(wanted, expected) in spec.rows {
+        let value = row_value(wanted);
+        if value != expected {
+            return Err(format!(
+                "the {label} card reported {wanted:?} {value:?}, expected {expected:?}"
+            ));
+        }
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs; signing is one document in and one out",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    for key in ["name", "downloadName"] {
+        if output.get(key).and_then(Json::as_str) != Some(spec.output_name) {
+            return Err(format!(
+                "the {label} output {key} was {:?}, expected {:?}",
+                output.get(key),
+                spec.output_name
+            ));
+        }
+    }
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output began with {:?}, expected \"%PDF-\"",
+            output.get("header")
+        ));
+    }
+    if output.get("pages").and_then(Json::as_u64) != Some(spec.pages) {
+        return Err(format!(
+            "the {label} output claimed {:?} pages, expected {}",
+            output.get("pages"),
+            spec.pages
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} output was not offered as a Blob URL"));
+    }
+    if output.get("previewBlob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} output offered no PDF preview (preview = {:?})",
+            output.get("previewBlob")
+        ));
+    }
+    let declared = output.get("declaredBytes").and_then(Json::as_u64);
+    if declared.is_none() || declared != output.get("bytes").and_then(Json::as_u64) {
+        return Err(format!(
+            "the {label} download was {:?} bytes while the row declared {declared:?}",
+            output.get("bytes")
+        ));
+    }
+
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output reported no marker presence"))?;
+    if found.len() != spec.needles.len() {
+        return Err(format!(
+            "the {label} output answered for {} markers, expected {}",
+            found.len(),
+            spec.needles.len()
+        ));
+    }
+    for (index, seen) in found.iter().enumerate() {
+        if seen.as_bool() != Some(true) {
+            return Err(format!(
+                "the {label} download did not carry {:?}",
+                spec.needles.get(index).copied().unwrap_or("")
+            ));
+        }
+    }
+    let none: Vec<Json> = Vec::new();
+    let absent = output
+        .get("absentFound")
+        .and_then(Json::as_array)
+        .unwrap_or(&none);
+    if absent.len() != spec.absent.len() {
+        return Err(format!(
+            "the {label} output answered for {} removed markers, expected {}",
+            absent.len(),
+            spec.absent.len()
+        ));
+    }
+    for (index, still_there) in absent.iter().enumerate() {
+        if still_there.as_bool() != Some(false) {
+            return Err(format!(
+                "the {label} download still carries {:?}, which this operation was meant to leave \
+                 behind",
+                spec.absent.get(index).copied().unwrap_or("")
+            ));
+        }
+    }
+    check_no_upload_network(leg, label)
+}
+
+/// One signature report. It downloads nothing: the rows ARE the result, and the
+/// claim is that the bytes this page wrote a moment ago verify and that their
+/// chain ends at the root the reader supplied.
+struct SignatureReportSpec<'a> {
+    status: &'a str,
+    meta: &'a str,
+    rows: &'a [(&'a str, &'a str)],
+}
+
+fn check_signature_report(
+    leg: &Json,
+    label: &str,
+    spec: &SignatureReportSpec,
+) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show exactly one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Validate signatures" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Validate signatures\"",
+            leg.get("runLabel")
+        ));
+    }
+    if string_field(leg, "status")? != spec.status {
+        return Err(format!(
+            "the {label} card said {:?}, expected {:?}",
+            leg.get("status"),
+            spec.status
+        ));
+    }
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no report card"))?;
+    if result.get("title").and_then(Json::as_str) != Some("Signature report") {
+        return Err(format!(
+            "the {label} report was titled {:?}, expected \"Signature report\"",
+            result.get("title")
+        ));
+    }
+    if result.get("meta").and_then(Json::as_str) != Some(spec.meta) {
+        return Err(format!(
+            "the {label} report meta was {:?}, expected {:?}",
+            result.get("meta"),
+            spec.meta
+        ));
+    }
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if !outputs.is_empty() {
+        return Err(format!(
+            "the {label} report offered {} download(s); a report is not a document",
+            outputs.len()
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} report had no rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    for &(wanted, expected) in spec.rows {
+        let value = row_value(wanted);
+        if value != expected {
+            return Err(format!(
+                "the {label} report reported {wanted:?} {value:?}, expected {expected:?}"
+            ));
+        }
+    }
+    check_no_upload_network(leg, label)
+}
+
+/// A typed stamp: the page's own text is drawn inside the signature rectangle
+/// and no signature dictionary is written at all.
+const STAMP_LEG: SignDocumentSpec = SignDocumentSpec {
+    run_label: "Sign PDF",
+    status: "Done. The stamp was appended and verified on this device.",
+    output_name: "report-stamped.pdf",
+    pages: 3,
+    rows: &[("Page", "2"), ("Stamp", "2 line(s), 0 stroke(s)")],
+    needles: &["/SelisSigF", "(Browser Approved) Tj", "(Ada Lovelace"],
+    absent: &["/ByteRange"],
+};
+
+/// A certificate signature: a real `/Sig` dictionary around a detached CMS blob
+/// and the chain the reader selected. The `/M`, `/Name` and `/Reason` values are
+/// the ones the harness typed, so an option that was dropped fails here.
+const CERTIFICATE_LEG: SignDocumentSpec = SignDocumentSpec {
+    run_label: "Sign PDF",
+    status: "Done. The signature was written and verified on this device.",
+    output_name: "report-signed.pdf",
+    pages: 3,
+    rows: &[
+        ("Page", "1"),
+        ("Signature field", "Signature1"),
+        ("Sub-filter", "adbe.pkcs7.detached"),
+    ],
+    needles: &[
+        "/Type /Sig",
+        "/Filter /Adobe.PPKLite",
+        "/SubFilter /adbe.pkcs7.detached",
+        "/ByteRange [",
+        "/Name (Ada Lovelace)",
+        "/Reason (Browser harness approval)",
+        "/Location (Local device)",
+    ],
+    absent: &[],
+};
+
+/// The approval card: a decision block appended as a visible stamp, with the
+/// sentence the page writes about where the decision is kept.
+const WORKFLOW_LEG: SignDocumentSpec = SignDocumentSpec {
+    run_label: "Record approval",
+    status: "Done. The decision was appended and verified on this device.",
+    output_name: "report-stamped.pdf",
+    pages: 3,
+    rows: &[
+        ("Decision", "APPROVED"),
+        ("Approver", "Grace Hopper"),
+        ("Note", "Looks good"),
+        (
+            "Workflow state",
+            "recorded in the appended block; no server holds a copy",
+        ),
+        ("Page", "3"),
+        ("Stamp", "3 line(s), 0 stroke(s)"),
+    ],
+    needles: &["/SelisSigF", "(APPROVED) Tj", "(Grace Hopper"],
+    absent: &[],
+};
+
+/// The report over the file the certificate leg just wrote, checked against the
+/// root the chain ends at. Every row is a fact the report had to establish by
+/// verifying the bytes, not a label the page could print on its own.
+const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
+    status: "Done. 1 of 1 signature verified on this device.",
+    meta: "1 signature \u{b7} 1 anchor \u{b7} checked locally",
+    rows: &[
+        ("Signature 1", "Signature1: verified"),
+        ("Signer 1", "Ada Lovelace"),
+        ("Coverage 1", "the whole document"),
+        (
+            "Trust 1",
+            "trusted \u{2014} the chain ends at a supplied anchor (Selis Test Signer)",
+        ),
+        (
+            "Revocation",
+            "not checked \u{2014} this build has no network, so no CRL or OCSP response was fetched",
+        ),
+    ],
+};
+
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 39] = [
+const TOOLS_PAGE_CARDS: [&str; 42] = [
     "attach",
     "attachments",
     "batch",
     "bates",
+    "certificate",
     "clear_permissions",
     "compress",
     "convert",
@@ -4430,12 +4783,14 @@ const TOOLS_PAGE_CARDS: [&str; 39] = [
     "repair",
     "resize",
     "rotate",
+    "sign",
     "split",
     "strip_metadata",
     "tiff",
     "unlock",
     "watermark",
     "webp",
+    "workflow",
     "zip",
 ];
 
@@ -5227,6 +5582,32 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         &CLEAR_LEG,
     )?;
 
+    // The signing cards share one lazy chunk, and their legs chain: the
+    // certificate leg signs the fixture, then the report leg validates the
+    // bytes it just wrote against the root the chain ends at. A report row that
+    // says "verified" cannot come from a fixture this page did not sign.
+    let signing = signing_legs(report, "online")?;
+    check_sign_document(
+        signing_leg(signing, "online", "stamp")?,
+        "online stamp",
+        &STAMP_LEG,
+    )?;
+    check_sign_document(
+        signing_leg(signing, "online", "certificate")?,
+        "online certificate signature",
+        &CERTIFICATE_LEG,
+    )?;
+    check_sign_document(
+        signing_leg(signing, "online", "workflow")?,
+        "online approval workflow",
+        &WORKFLOW_LEG,
+    )?;
+    check_signature_report(
+        signing_leg(signing, "online", "report")?,
+        "online signature report",
+        &SIGNATURE_REPORT_LEG,
+    )?;
+
     // SL-4.TOOLS.05. The second leg is the same page with the origin cut. A
     // page that forgot to register the worker, or a precache list missing one
     // module, never reaches the card grid: the harness gets the worker's 503.
@@ -5685,6 +6066,33 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         security_leg(offline_security, "offline", "clear")?,
         "offline clear permissions",
         &CLEAR_LEG,
+    )?;
+
+    // The same four signing legs with the origin cut. The signing chunk is
+    // runtime-cached on first use rather than precached, so these legs prove a
+    // device that once signed can sign and validate again with no server.
+    let offline_signing = offline.get("sign").ok_or_else(|| {
+        "the offline run reported no signing legs (offline.sign = None)".to_string()
+    })?;
+    check_sign_document(
+        signing_leg(offline_signing, "offline", "stamp")?,
+        "offline stamp",
+        &STAMP_LEG,
+    )?;
+    check_sign_document(
+        signing_leg(offline_signing, "offline", "certificate")?,
+        "offline certificate signature",
+        &CERTIFICATE_LEG,
+    )?;
+    check_sign_document(
+        signing_leg(offline_signing, "offline", "workflow")?,
+        "offline approval workflow",
+        &WORKFLOW_LEG,
+    )?;
+    check_signature_report(
+        signing_leg(offline_signing, "offline", "report")?,
+        "offline signature report",
+        &SIGNATURE_REPORT_LEG,
     )?;
 
     let status = string_field(report, "status")?;
@@ -10702,6 +11110,81 @@ mod tests {
         })
     }
 
+    /// A signing leg built from the same spec the gate holds the page to.
+    fn real_tools_sign_leg(spec: &SignDocumentSpec) -> Json {
+        let bytes = 5_300;
+        let mut rows: Vec<Json> = spec
+            .rows
+            .iter()
+            .map(|(label, value)| json!({ "label": label, "value": value }))
+            .collect();
+        rows.push(
+            json!({ "label": "Size", "value": format!("4\u{2009}812 B \u{2192} {bytes} B") }),
+        );
+        rows.push(json!({ "label": "Verification", "value": "ok" }));
+        let output = json!({
+            "kind": "pdf",
+            "name": spec.output_name,
+            "downloadName": spec.output_name,
+            "pages": spec.pages,
+            "declaredBytes": bytes,
+            "bytes": bytes,
+            "blob": true,
+            "previewBlob": true,
+            "header": "%PDF-",
+            "found": vec![true; spec.needles.len()],
+            "foundCounts": vec![1u64; spec.needles.len()],
+            "absentFound": vec![false; spec.absent.len()],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": spec.run_label,
+            "noUpload": "verified",
+            "status": spec.status,
+            "result": {
+                "title": spec.output_name,
+                "meta": format!("1 file \u{00b7} {bytes} B \u{00b7} verified locally"),
+                "rows": rows,
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_sign.wasm"],
+            },
+        })
+    }
+
+    /// A signature report: rows, no download, one anchor.
+    fn real_tools_signature_report_leg(spec: &SignatureReportSpec) -> Json {
+        let rows: Vec<Json> = spec
+            .rows
+            .iter()
+            .map(|(label, value)| json!({ "label": label, "value": value }))
+            .collect();
+        json!({
+            "fileRows": 1,
+            "runLabel": "Validate signatures",
+            "noUpload": "verified",
+            "status": spec.status,
+            "result": {
+                "title": "Signature report",
+                "meta": spec.meta,
+                "rows": rows,
+            },
+            "outputs": [],
+            "output": Json::Null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 1,
+                "foreign": [],
+                "paths": ["/wasm/selis_pdf_wasm_sign.wasm"],
+            },
+        })
+    }
+
     fn real_tools_page_report() -> Json {
         let mut report = json!({
             "schema": SCHEMA,
@@ -10918,6 +11401,12 @@ mod tests {
             ),
             "clear": real_tools_security_leg(&CLEAR_LEG),
         });
+        report["sign"] = json!({
+            "stamp": real_tools_sign_leg(&STAMP_LEG),
+            "certificate": real_tools_sign_leg(&CERTIFICATE_LEG),
+            "workflow": real_tools_sign_leg(&WORKFLOW_LEG),
+            "report": real_tools_signature_report_leg(&SIGNATURE_REPORT_LEG),
+        });
 
         report["offline"]["mix"] = report["mix"].clone();
         report["offline"]["pageNumbers"] = report["pageNumbers"].clone();
@@ -10958,6 +11447,7 @@ mod tests {
         report["offline"]["formFill"] = report["formFill"].clone();
         report["offline"]["convert"] = report["convert"].clone();
         report["offline"]["security"] = report["security"].clone();
+        report["offline"]["sign"] = report["sign"].clone();
         report
     }
 

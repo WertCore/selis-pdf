@@ -631,6 +631,7 @@ dependencies = [
  "der",
  "digest",
  "elliptic-curve",
+ "rfc6979",
  "signature",
 ]
 
@@ -1180,6 +1181,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "primeorder",
+ "sha2",
 ]
 
 [[package]]
@@ -1519,6 +1521,16 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rfc6979"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dd2a808d456c4a54e300a23e9f5a67e122c3024119acbfd73e3bf664491cb2"
+dependencies = [
+ "hmac",
+ "subtle",
+]
 
 [[package]]
 name = "rsa"
@@ -1861,6 +1873,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-sign"
+version = "0.1.0"
+dependencies = [
+ "rsa",
+ "selis-bytes",
+ "selis-crypto",
+ "selis-error",
+ "selis-pdf-cos",
+ "selis-sandbox",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-text"
 version = "0.1.0"
 dependencies = [
@@ -1890,6 +1916,7 @@ dependencies = [
  "selis-pdf-engine",
  "selis-pdf-filter",
  "selis-pdf-form",
+ "selis-pdf-sign",
  "selis-sandbox",
  "serde",
  "serde_json",
@@ -1992,6 +2019,16 @@ name = "selis-pdf-wasm-security"
 version = "0.1.0"
 dependencies = [
  "selis-pdf-tools",
+ "serde_json",
+]
+
+[[package]]
+name = "selis-pdf-wasm-sign"
+version = "0.1.0"
+dependencies = [
+ "selis-crypto",
+ "selis-pdf-tools",
+ "selis-sandbox",
  "serde_json",
 ]
 

@@ -32,7 +32,10 @@
 // design note §9 R20).
 #![deny(deprecated)]
 
+pub mod cert;
+pub mod cms;
 pub mod der;
+pub mod der_write;
 pub mod legacy;
 pub mod pkcs7;
 pub mod x509;

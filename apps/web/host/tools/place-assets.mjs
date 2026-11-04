@@ -140,6 +140,10 @@ const HTML_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_html.wasm";
 const SECURITY_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_security.opt.wasm";
 /** The unoptimised security chunk, for developers who only ran `cargo build`. */
 const SECURITY_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_security.wasm";
+/** The signing chunk (stamp, certificate signature, signature report), optimised first. Import-free (checked below). */
+const SIGN_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign.opt.wasm";
+/** The unoptimised signing chunk, for developers who only ran `cargo build`. */
+const SIGN_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -213,6 +217,17 @@ function findHtmlEngine() {
 function findSecurityEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [SECURITY_WASM_OPT, SECURITY_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first signing chunk that exists, optimised preferred over raw. */
+function findSignEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [SIGN_WASM_OPT, SIGN_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -770,6 +785,53 @@ if (securityImports.length > 0) {
 	process.exit(1);
 }
 
+// The signing chunk is the seventh engine: a typed stamp, a certificate
+// signature with a key the user picked, and the signature report. Like the
+// others it is lazy and import-free. The key arrives in the options JSON from
+// the page, so the guest needs no entropy import, and the module has no clock:
+// the page supplies the signing time and the report's `now`.
+const sign = findSignEngine();
+if (sign === null) {
+	console.error(
+		[
+			"place-assets: no signing WASM chunk found - the sign and certificate cards cannot",
+			"run without one, so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-sign --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const signOut = join(publicRoot, "wasm/selis_pdf_wasm_sign.wasm");
+mkdirSync(dirname(signOut), { recursive: true });
+copyFileSync(sign, signOut);
+const signBytes = readFileSync(signOut).length;
+let signImports;
+try {
+	signImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(signOut)));
+} catch (error) {
+	console.error(`place-assets: the signing chunk at ${signOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (signImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the signing chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...signImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-sign --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -806,6 +868,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_security.wasm",
 				bytes: securityBytes,
 			},
+			sign: {
+				url: "/wasm/selis_pdf_wasm_sign.wasm",
+				bytes: signBytes,
+			},
 		},
 		null,
 		2,
@@ -819,5 +885,6 @@ console.log(
 		`tools chunk (${toolsBytes} B, 0 imports) and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`and the security chunk (${securityBytes} B, 0 imports) ` +
+		`and the signing chunk (${signBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );

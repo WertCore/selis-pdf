@@ -520,6 +520,33 @@ user_msg = "This change would invalidate an existing digital signature."
 retryable = false
 doc_state = "Unchanged"
 
+[[code]]
+id = 2808
+name = "SIGNATURE_INVALID"
+kind = "Malformed"
+meaning = "A signature dictionary's /ByteRange or /Contents, or the CMS SignedData it carries, was malformed or did not verify against the bytes it names."
+user_msg = "This document's signature does not verify."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 2809
+name = "SIGNATURE_UNSUPPORTED"
+kind = "Unsupported"
+meaning = "A signature, key or certificate used an algorithm (key type, digest or signature scheme) this build cannot create or verify."
+user_msg = "Selis cannot check that signature's algorithm."
+retryable = false
+doc_state = "Loaded"
+
+[[code]]
+id = 2810
+name = "CERTIFICATE_UNTRUSTED"
+kind = "Policy"
+meaning = "No certificate in the supplied chain is a byte-identical trust anchor, and no anchor issued a link in it."
+user_msg = "This certificate does not chain to a trust anchor you supplied."
+retryable = false
+doc_state = "Loaded"
+
 # ---------------------------------------------------------------------------
 # 3600–3799 — Accessibility and conformance
 # ---------------------------------------------------------------------------

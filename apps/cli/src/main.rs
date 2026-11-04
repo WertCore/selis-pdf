@@ -37,6 +37,7 @@ mod inspect;
 mod protect;
 mod render;
 mod search;
+mod sign;
 mod topdf;
 mod unlock;
 
@@ -395,6 +396,80 @@ enum Command {
         /// Where to write the JSON report. Prints it on stdout when omitted.
         #[arg(short, long)]
         output: Option<String>,
+    },
+    /// Draw typed lines on one page as an appended content stream.
+    Stamp {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The 1-based page to stamp.
+        #[arg(long, default_value_t = 1)]
+        page: usize,
+        /// The stamp rectangle as `x,y,w,h` in display points
+        /// (default `36,36,220,70`).
+        #[arg(long)]
+        rect: Option<String>,
+        /// A text line (repeatable).
+        #[arg(long = "text", required = true, value_name = "LINE")]
+        text: Vec<String>,
+        /// Font size in points.
+        #[arg(long = "font-size", default_value_t = 11.0)]
+        font_size: f64,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sign a PDF with a local RSA key, as an incremental revision.
+    Sign {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The 1-based page that carries the signature block.
+        #[arg(long, default_value_t = 1)]
+        page: usize,
+        /// The signature rectangle as `x,y,w,h` in display points.
+        #[arg(long)]
+        rect: Option<String>,
+        /// The RSA private key, as PEM (`PKCS#8` or `PKCS#1`). Never written.
+        #[arg(long)]
+        key: String,
+        /// A certificate, leaf first (repeatable). Never written.
+        #[arg(long = "cert", required = true, value_name = "PEM")]
+        cert: Vec<String>,
+        /// The signature field's name.
+        #[arg(long, default_value = "Signature")]
+        field: String,
+        /// The signer name in the visible block (default: the leaf's subject CN).
+        #[arg(long)]
+        name: Option<String>,
+        /// Why the document was signed.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where it was signed.
+        #[arg(long)]
+        location: Option<String>,
+        /// The signing time as `YYYYMMDDHHMMSSZ` (default: now, UTC).
+        #[arg(long)]
+        time: Option<String>,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report every signature and check it against the bytes it covers.
+    Signatures {
+        /// The input PDF.
+        path: String,
+        /// Where to write the JSON report. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+        /// A trusted certificate (PEM), repeatable. With none, nothing is
+        /// trusted and the report says so.
+        #[arg(long = "anchor", value_name = "PEM")]
+        anchor: Vec<String>,
     },
     /// Redact regions of a PDF (cover + strip text).
     Redact {
@@ -894,6 +969,52 @@ fn run() {
             set,
             json,
         } => finish(forms::fill(&path, &set, &output), json),
+        Command::Stamp {
+            path,
+            output,
+            page,
+            rect,
+            text,
+            font_size,
+            json,
+        } => finish(
+            sign::stamp(&path, &output, page, rect.as_deref(), &text, font_size),
+            json,
+        ),
+        Command::Sign {
+            path,
+            output,
+            page,
+            rect,
+            key,
+            cert,
+            field,
+            name,
+            reason,
+            location,
+            time,
+            json,
+        } => finish(
+            sign::sign(
+                &path,
+                &output,
+                page,
+                rect.as_deref(),
+                &key,
+                &cert,
+                &field,
+                name.as_deref(),
+                reason.as_deref(),
+                location.as_deref(),
+                time.as_deref(),
+            ),
+            json,
+        ),
+        Command::Signatures {
+            path,
+            output,
+            anchor,
+        } => sign::signatures(&path, output.as_deref(), &anchor),
         Command::MetadataReport { path, output } => {
             tools::metadata_report(&path, output.as_deref())
         }

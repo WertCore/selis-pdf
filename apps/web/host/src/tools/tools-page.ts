@@ -50,6 +50,16 @@ import {
 	runSecurity,
 	securityRows,
 } from "./security-protocol.js";
+import {
+	SIGN_WASM_URL,
+	type SignRequest,
+	type SignWasm,
+	instantiateSign,
+	runSign,
+	signRows,
+	signatureRows,
+	signingStamp,
+} from "./sign-protocol.js";
 
 interface ConvertWasm {
 	readonly exports: {
@@ -124,7 +134,10 @@ type ToolId =
 	| "unlock"
 	| "protect"
 	| "clear_permissions"
-	| "permissions";
+	| "permissions"
+	| "sign"
+	| "certificate"
+	| "workflow";
 
 /** One AcroForm field as the read op reports it. */
 interface FormFieldJson {
@@ -511,12 +524,47 @@ const TOOLS: readonly ToolDef[] = [
 		multiple: false,
 		accepts: "pdf",
 	},
+	{
+		id: "sign",
+		mark: "✍",
+		title: "Sign PDF",
+		blurb: "Draw a typed or freehand stamp, or sign with a key that never leaves this device.",
+		verb: "Sign PDF",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "certificate",
+		mark: "◊",
+		title: "Certificate validation",
+		blurb: "Read every signature and say whether its chain ends at a certificate you trust.",
+		verb: "Validate signatures",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "workflow",
+		mark: "⤳",
+		title: "Approval workflow",
+		blurb: "Record an approval decision on the document itself, with no server in the loop.",
+		verb: "Record approval",
+		multiple: false,
+		accepts: "pdf",
+	},
 ];
 
 const TOOL_BY_ID = new Map<ToolId, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Where a signature block lands, in display points from the bottom-left. The
+ * default sits at the bottom-left of the first page, the position the CLI's
+ * `--rect` default uses, so the two surfaces put the same mark in the same
+ * place.
+ */
+const SIGNATURE_RECT: readonly [number, number, number, number] = [36, 36, 256, 106];
 
 /** How the page hands one raster format to the browser. */
 interface RasterInfo {
@@ -931,6 +979,20 @@ function init(): void {
 		const input = make("input", "control");
 		input.type = "checkbox";
 		input.name = key;
+		return input;
+	}
+
+	/**
+	 * A local file the card reads in the tab (a key, a certificate, or the
+	 * anchors a report trusts). The bytes are read with `File.text()` and travel
+	 * only into the signing chunk's own memory.
+	 */
+	function fileChooser(key: string, accept: string, multiple: boolean): HTMLInputElement {
+		const input = make("input", "control");
+		input.type = "file";
+		input.name = key;
+		input.accept = accept;
+		input.multiple = multiple;
 		return input;
 	}
 
@@ -2155,6 +2217,156 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent =
 				"Only the flags change. The page content is left exactly as it is — on a modern encrypted file the document is appended to rather than rewritten, so the bytes underneath are untouched — and the result is re-read and checked before it is offered. What this lifts is reported afterwards by name, read back out of the flag the tool actually wrote. A wrong owner password is refused with nothing produced, and a document that needs a password just to open keeps needing it: that is the Remove password tool.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "sign") {
+			const mode = make("select", "control");
+			for (const [value, label] of [
+				["stamp", "Typed stamp (no key)"],
+				["certificate", "Certificate signature (local key)"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				mode.append(choice);
+			}
+			addField(
+				"signMode",
+				"Signature mode",
+				mode,
+				"A stamp marks the page but proves nothing about who wrote it. A certificate signature covers the document's own bytes with a key you hold.",
+			);
+			addField(
+				"stampText",
+				"Stamp text",
+				textInput("stampText", "text", "Approved"),
+				"Everything is drawn inside the signature rectangle on the page you choose.",
+			);
+			addField(
+				"page",
+				"Page",
+				textInput("page", "number", "1"),
+				"1-based, like the page numbers readers show.",
+			);
+			addField(
+				"signerName",
+				"Signer name",
+				textInput("signerName", "text", "Your name"),
+				"Printed under the stamp, and written as the signature's name when a key is used.",
+			);
+			addField(
+				"certKey",
+				"Private key (PEM)",
+				fileChooser(
+					"certKey",
+					".pem,.key,application/x-pem-file,application/octet-stream",
+					false,
+				),
+				"A PKCS#8 or PKCS#1 RSA key of at least 2048 bits. It is read in this tab, used once, and never written anywhere — not into the PDF, not into a download, not into a request.",
+			);
+			addField(
+				"certChain",
+				"Certificate chain (PEM)",
+				fileChooser(
+					"certChain",
+					".pem,.crt,.cer,application/x-pem-file,application/octet-stream",
+					true,
+				),
+				"Leaf first, then any intermediates. Select one file per certificate.",
+			);
+			addField(
+				"reason",
+				"Reason",
+				textInput("reason", "text", "Why this document was signed"),
+				"Optional. Recorded in the signature dictionary.",
+			);
+			addField(
+				"location",
+				"Location",
+				textInput("location", "text", "Where it was signed"),
+				"Optional. Recorded in the signature dictionary.",
+			);
+			const field = addField(
+				"field",
+				"Field name",
+				textInput("field", "text", "Signature"),
+				"The AcroForm field the signature lives in.",
+			);
+			(field as HTMLInputElement).value = "Signature";
+			const note = make("p", "option-note");
+			note.textContent =
+				"Signing is an incremental revision: the bytes already in the document are kept, so an earlier signature stays verifiable. A certificate signature proves the file has not changed since it was signed; it does not by itself prove the signer is trusted — use Certificate validation with the certificates you trust for that. Signing a document that already carries a signature appends a revision, and the report shows which bytes each signature covers rather than hiding the difference.";
+			options.append(note);
+			const syncMode = (): void => {
+				const certificate = mode.value === "certificate";
+				for (const key of ["certKey", "certChain", "reason", "location", "field"]) {
+					const element = optionFields.get(key);
+					if (element !== undefined) {
+						element.hidden = !certificate;
+					}
+				}
+				const stamp = optionFields.get("stampText");
+				if (stamp !== undefined) {
+					stamp.hidden = certificate;
+				}
+			};
+			mode.addEventListener("change", syncMode);
+			syncMode();
+			return;
+		}
+		if (tool.id === "certificate") {
+			addField(
+				"anchors",
+				"Trusted certificates (PEM)",
+				fileChooser(
+					"anchors",
+					".pem,.crt,.cer,application/x-pem-file,application/octet-stream",
+					true,
+				),
+				"The certificates you already trust, one per file. A chain is trusted only when it ends at one of these; with none selected, every signature is reported untrusted rather than assumed good.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every signature is checked against the exact bytes it names, on this device, and the report says what was checked and what was not. Revocation is never claimed: this build has no network, so no CRL or OCSP response is fetched and the report says \"not checked\" instead of implying a status it did not look up. A signature that does not verify is still listed, with its reason, because hiding it would be worse than reporting it.";
+			options.append(note);
+			return;
+		}
+		if (tool.id === "workflow") {
+			const decision = make("select", "control");
+			for (const [value, label] of [
+				["approved", "Approved"],
+				["changes", "Changes requested"],
+				["rejected", "Rejected"],
+				["reviewed", "Reviewed"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				decision.append(choice);
+			}
+			addField("decision", "Decision", decision, "Recorded in the document itself.");
+			addField(
+				"approver",
+				"Approver",
+				textInput("approver", "text", "Your name"),
+				"Printed on the approval block.",
+			);
+			addField(
+				"note",
+				"Note",
+				textInput("note", "text", "Optional comment"),
+				"Optional. Kept short so it fits the block.",
+			);
+			addField(
+				"page",
+				"Page",
+				textInput("page", "number", "1"),
+				"1-based. The decision block is appended to this page.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Routing stays on this device: the decision is appended to the document as a visible approval block, and no queue, account or server holds a copy. Send the resulting PDF on by whatever means you already use. A later decision appends another block and leaves the earlier one readable, so the route history travels with the file.";
 			options.append(note);
 			return;
 		}
@@ -3392,6 +3604,330 @@ function init(): void {
 		return securityWasmPromise;
 	}
 
+	let signWasmPromise: Promise<SignWasm> | null = null;
+	function getSignWasm(): Promise<SignWasm> {
+		if (signWasmPromise === null) {
+			signWasmPromise = (async () => {
+				const response = await fetch(SIGN_WASM_URL, { credentials: "same-origin" });
+				if (!response.ok) {
+					throw new ToolProtocolError("the signing chunk is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				// `instantiateSign` refuses a module that declares any import, so the
+				// guest that sees the key and the document has nowhere to send them.
+				return await instantiateSign(bytes);
+			})().catch((error: unknown) => {
+				signWasmPromise = null;
+				throw error;
+			});
+		}
+		return signWasmPromise;
+	}
+
+	/** The text of the one file a card's file input holds. */
+	async function readOptionText(key: string): Promise<string> {
+		const control = optionControls.get(key);
+		if (!(control instanceof HTMLInputElement) || control.type !== "file") {
+			return "";
+		}
+		const file = control.files?.[0];
+		return file === undefined ? "" : await file.text();
+	}
+
+	/** The text of every file a card's file input holds, in selection order. */
+	async function readOptionTexts(key: string): Promise<string[]> {
+		const control = optionControls.get(key);
+		if (!(control instanceof HTMLInputElement) || control.type !== "file") {
+			return [];
+		}
+		const out: string[] = [];
+		for (const file of control.files ?? []) {
+			out.push(await file.text());
+		}
+		return out;
+	}
+
+	/** A date the approval block prints: `YYYY-MM-DD`, from the page's clock. */
+	function today(): string {
+		return new Date().toISOString().slice(0, 10);
+	}
+
+	/** The document bytes the grid already holds, refused before they reach a guest. */
+	async function readSinglePdf(): Promise<WireFile> {
+		const file = files[0];
+		if (file === undefined) {
+			throw new ToolInputError("Choose a PDF first.");
+		}
+		const bytes = new Uint8Array(await file.arrayBuffer());
+		if (!hasPdfHeader(bytes)) {
+			throw new ToolInputError(`${file.name} does not look like a PDF.`);
+		}
+		return { name: file.name, bytes };
+	}
+
+	/**
+	 * The request a stamp or signature run makes. A stamp is nothing but typed
+	 * lines; a certificate signature carries the key and chain the user picked,
+	 * and the page supplies the signing time because the chunk has no clock.
+	 */
+	async function buildSignRequest(file: WireFile): Promise<SignRequest> {
+		const page = numberInRange("page", "Page", 1, 100_000, 1, true);
+		const signerName = optionValue("signerName").trim();
+		if (optionValue("signMode") === "certificate") {
+			const keyPem = await readOptionText("certKey");
+			if (keyPem.trim() === "") {
+				throw new ToolInputError("Choose the private key file first.");
+			}
+			const certificatesPem = await readOptionTexts("certChain");
+			if (certificatesPem.length === 0) {
+				throw new ToolInputError("Choose at least the leaf certificate (then any intermediates).");
+			}
+			const options: Record<string, unknown> = {
+				page,
+				rect: [...SIGNATURE_RECT],
+				fieldName: optionValue("field").trim() === "" ? "Signature" : optionValue("field").trim(),
+				signerName: signerName === "" ? "Selis signer" : signerName,
+				signingTime: signingStamp(Math.floor(Date.now() / 1000)),
+				keyPem,
+				certificatesPem,
+			};
+			const reason = optionValue("reason").trim();
+			if (reason !== "") {
+				options.reason = reason;
+			}
+			const location = optionValue("location").trim();
+			if (location !== "") {
+				options.location = location;
+			}
+			return { op: "sign", options, file };
+		}
+		const text = optionValue("stampText").trim();
+		if (text === "") {
+			throw new ToolInputError("Enter the stamp text.");
+		}
+		const second = signerName === "" ? today() : `${signerName} · ${today()}`;
+		return {
+			op: "stamp",
+			options: {
+				page,
+				rect: [...SIGNATURE_RECT],
+				lines: [
+					{ text, size: 12 },
+					{ text: second, size: 9 },
+				],
+				strokes: [],
+				color: [0, 0, 0],
+				strokeWidth: 1,
+				fontSize: 11,
+				border: true,
+			},
+			file,
+		};
+	}
+
+	/** The bytes a no-upload check must not find in a request: the document and any key. */
+	async function signSecrets(file: WireFile): Promise<Uint8Array[]> {
+		const secrets: Uint8Array[] = [file.bytes];
+		if (optionValue("signMode") === "certificate") {
+			const encoder = new TextEncoder();
+			const key = await readOptionText("certKey");
+			if (key !== "") {
+				secrets.push(encoder.encode(key));
+			}
+		}
+		return secrets;
+	}
+
+	async function runSignCard(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = await readSinglePdf();
+			const request = await buildSignRequest(file);
+			const secrets = await signSecrets(file);
+			const wasm = await getSignWasm();
+			setStatus("Signing on this device…", "info");
+			await nextPaint();
+			const result = runSign(wasm, request);
+			if (result.kind !== "document") {
+				throw new ToolProtocolError("a signing run produced no document");
+			}
+			try {
+				await requestRecorder.assertNoUpload(secrets);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(
+				{
+					verification: result.verification,
+					reports: [result.report],
+					outputs: [result.output],
+				},
+				signRows(result),
+			);
+			setStatus(
+				result.outcome.operation === "stamp"
+					? "Done. The stamp was appended and verified on this device."
+					: "Done. The signature was written and verified on this device.",
+				"ok",
+			);
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function runCertificateCard(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = await readSinglePdf();
+			const anchors = await readOptionTexts("anchors");
+			const options: Record<string, unknown> = {
+				now: Math.floor(Date.now() / 1000),
+			};
+			if (anchors.length > 0) {
+				options.anchors = anchors;
+			}
+			const wasm = await getSignWasm();
+			setStatus("Checking every signature locally…", "info");
+			await nextPaint();
+			const result = runSign(wasm, { op: "report", options, file });
+			if (result.kind !== "report") {
+				throw new ToolProtocolError("a signature report produced a document");
+			}
+			try {
+				await requestRecorder.assertNoUpload([file.bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			const report = result.report;
+			const verified = report.signatures.filter((signature) => signature.verified).length;
+			showReportCard(
+				"Signature report",
+				`${report.signatures.length} signature${report.signatures.length === 1 ? "" : "s"} · ${report.anchorCount} anchor${report.anchorCount === 1 ? "" : "s"} · checked locally`,
+				signatureRows(report),
+			);
+			setStatus(
+				report.signatures.length === 0
+					? "Done. This document carries no signature."
+					: `Done. ${verified} of ${report.signatures.length} signature${report.signatures.length === 1 ? "" : "s"} verified on this device.`,
+				"ok",
+			);
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	const DECISION_LABELS: Readonly<Record<string, string>> = {
+		approved: "APPROVED",
+		changes: "CHANGES REQUESTED",
+		rejected: "REJECTED",
+		reviewed: "REVIEWED",
+	};
+
+	async function runWorkflowCard(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = await readSinglePdf();
+			const approver = optionValue("approver").trim();
+			if (approver === "") {
+				throw new ToolInputError("Enter the approver's name.");
+			}
+			const decision = DECISION_LABELS[optionValue("decision")] ?? "REVIEWED";
+			const note = optionValue("note").trim();
+			const lines = [
+				{ text: decision, size: 12 },
+				{ text: `${approver} · ${today()}`, size: 9 },
+			];
+			if (note !== "") {
+				lines.push({ text: note.slice(0, 96), size: 8 });
+			}
+			const request: SignRequest = {
+				op: "stamp",
+				options: {
+					page: numberInRange("page", "Page", 1, 100_000, 1, true),
+					rect: [...SIGNATURE_RECT],
+					lines,
+					strokes: [],
+					color: [0, 0, 0],
+					strokeWidth: 1,
+					fontSize: 11,
+					border: true,
+				},
+				file,
+			};
+			const wasm = await getSignWasm();
+			setStatus("Recording the decision locally…", "info");
+			await nextPaint();
+			const result = runSign(wasm, request);
+			if (result.kind !== "document") {
+				throw new ToolProtocolError("the approval run produced no document");
+			}
+			try {
+				await requestRecorder.assertNoUpload([file.bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(
+				{
+					verification: result.verification,
+					reports: [result.report],
+					outputs: [result.output],
+				},
+				[
+					{ label: "Decision", value: decision },
+					{ label: "Approver", value: approver },
+					...(note === "" ? [] : [{ label: "Note", value: note }]),
+					{
+						label: "Workflow state",
+						value: "recorded in the appended block; no server holds a copy",
+					},
+					...signRows(result),
+				],
+			);
+			setStatus("Done. The decision was appended and verified on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	/**
 	 * The options for one security card. A protect run with no owner password
 	 * simply omits the field — the chunk then writes the open password as the
@@ -3497,6 +4033,35 @@ function init(): void {
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	/**
+	 * The result card for a read-only report: rows, no output file. The report
+	 * card is the one result that cannot be downloaded by accident, because a
+	 * signature report is a statement about the document, not a document.
+	 */
+	function showReportCard(
+		title: string,
+		meta: string,
+		rows: readonly VerificationRow[],
+	): void {
+		clearResult();
+		resultTitle.textContent = title;
+		resultMeta.textContent = meta;
+		resultOutputs.replaceChildren();
+		const nodes: HTMLElement[] = [];
+		for (const row of rows) {
+			const wrapper = make("div", "result-row");
+			const term = make("dt");
+			term.textContent = row.label;
+			const detail = make("dd");
+			detail.textContent = row.value;
+			wrapper.append(term, detail);
+			nodes.push(wrapper);
+		}
+		resultRows.replaceChildren(...nodes);
+		resultCard.hidden = false;
+		resultCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
 	}
 
 	function showResult(
@@ -3665,6 +4230,18 @@ function init(): void {
 				tool.id === "permissions"
 			) {
 				await runSecurityCard(tool.id);
+				return;
+			}
+			if (tool.id === "sign") {
+				await runSignCard();
+				return;
+			}
+			if (tool.id === "certificate") {
+				await runCertificateCard();
+				return;
+			}
+			if (tool.id === "workflow") {
+				await runWorkflowCard();
 				return;
 			}
 			const wireFiles = await readWireFiles();

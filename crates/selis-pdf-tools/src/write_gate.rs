@@ -73,6 +73,19 @@ pub const PRESERVE_EXCEPT_PAGES: Preserved = Preserved {
     embedded_files: true,
 };
 
+/// Counts preserved by an incremental append (a stamp or a signature): the
+/// revision before the edit is kept verbatim, so pages, optional content,
+/// outlined and embedded files survive, while annotations (the signature
+/// widget) and form fields (the signature field) are *expected* to grow.
+pub const PRESERVE_ON_APPEND: Preserved = Preserved {
+    pages: true,
+    annotations: false,
+    fields: false,
+    ocgs: true,
+    outlines: true,
+    embedded_files: true,
+};
+
 /// Build the output expectations from the input's observed counts.
 pub fn expectations_from(input: &Observed, preserved: &Preserved) -> Expectations {
     Expectations {
