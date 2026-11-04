@@ -260,6 +260,12 @@ operation is available identically in the CLI, the web app, and the extension.
     form (/Perms dictionary with /Signatures) *before* the rewrite and warn
     on stderr that the signature will be invalidated, instead of quietly
     handing back a dead-signature document (advisory, not a refusal).
+  - **Sign-off (HUMAN review 2026-11-04: approved):** the manual open ran against the locally pinned
+    PDFium and qpdf 12.4.2. A file this device wrote unlocks to a document the engine re-opens
+    (3 pages, `/Encrypt` gone) and that PDFium opens reporting "File is not encrypted"
+    (`handler_rev=-1`); three qpdf-written R6 files unlock the same way; a wrong password returns a
+    typed `WRONG_PASSWORD` and writes nothing; and every unlocked output renders pixel-identical to
+    the plain fixture (page-1 digest `3363023653717085315`).
   - **Do:** User supplies the password, we hand back a decrypted copy. Decrypt every stream and
     string with the document's handler, drop `/Encrypt` from the trailer, and write out a clean
     document. Works for whichever password the user has — user or owner.
@@ -323,10 +329,17 @@ operation is available identically in the CLI, the web app, and the extension.
   - **DoD:** A corpus of permission-restricted documents round-trips with the bits cleared.
   - **Note:** Distinct from TOOL.04 and lower priority — ship TOOL.04 first, it is the one users
     ask for by name.
+  - **Sign-off (HUMAN review 2026-11-04: approved):** on the qpdf-written R6 fixture the user
+    password is refused — `locked.pdf: owner password required (WRONG_OWNER_PASSWORD)`, no file
+    produced — and the owner password clears the flags in an appended revision that keeps the old
+    `/P -3388` beside the new `/P -1` and the `/Prev` link, reports the lifted names
+    (`modify, copy, annotate`) read back from the written flag, and renders pixel-identical to the
+    original. The browser card drives both the refusal and the clear, online and offline.
 - [x] **SL-1A.TOOL.06 — Add password / set permissions** · deps: `SL-1.ENC.02` · owner: HUMAN
-  - **Status: DRAFT — awaiting HUMAN sign-off** (per the task's owner gate; the AI draft is
-    complete and green but not final until a human approves it — including the ENC.04 UI copy
-    and the Acrobat/PDFium manual open step).
+  - **Status: SIGNED OFF (HUMAN review 2026-11-04, approved).** The ENC.04 long-help copy was
+    reviewed, and the manual open step was performed against a locally pinned PDFium (Acrobat was
+    not available on this host; PDFium together with qpdf 12.4.2 stands in, both pinned under
+    `E:/softwares/oracles`). Evidence recorded in the note below and in the checklist row.
   - **Note:** Shipped as
     `selis protect in.pdf -o out.pdf --user-password <p> --owner-password <p> [--permissions <spec>] [--no-encrypt-metadata]`.
     AESV3/R6 only (ADR-P0019) via the ENC.02 write path; separate user/owner passwords (owner
@@ -353,11 +366,13 @@ operation is available identically in the CLI, the web app, and the extension.
     we encrypt pass qpdf --show-encryption/--check clean, and a qpdf --encrypt R6 AESV3 file
     (generated at test time when qpdf exists; no committed fixture, the output embeds a CSPRNG
     file key so a snapshot would be stale by construction) authenticates, verifies /Perms under
-    our Algorithm 10, and unlocks to a document the engine opens. pdfium check added behind
-    local-first discovery: pdfium_driver AND Docker are unavailable on this host, so the check
-    skips loudly — the Acrobat/PDFium manual open is still outstanding for the sign-off.
-    Remaining for the human sign-off: open a protected output in Acrobat and PDFium; review the
-    ENC.04 long-help copy.
+    our Algorithm 10, and unlocks to a document the engine opens. The pdfium check runs behind
+    local-first discovery against the pinned oracle installed on this host, and the manual open was
+    performed with it: a print+copy output opens with its user password at `handler_rev=6` and
+    PDFium derives exactly `perm_print=1 perm_modify=0 perm_copy=1 perm_annotate=0`, while a wrong or
+    empty password fails (`pdfium_err=4`); qpdf 12.4.2 prints `R = 6`, `P = -44`, AESv3 for stream,
+    string and file, passes `--check` and `--decrypt`s the file. The ENC.04 copy was reviewed and the
+    same plain-language statement ships in the browser card.
   - **Do:** Encrypt with AESV3/R6 only (ADR-P0019). Separate user and owner passwords, permission
     bit selection, and a plain-language explanation in the UI that permission bits are a
     convention, not enforcement.

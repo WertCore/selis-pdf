@@ -169,26 +169,73 @@ and a size budget; no raster feature is claimed.
       header because that is the page's own rule: a non-PDF is refused when it is picked, so the
       browser can only prove isolation against a PDF that fails inside the engine. Tools chunk
       304 703 B brotli of 320 000, baseline refreshed from 300 192 (+4 511 B for the queue).
-- [ ] **Unlock / remove password** — crypto-enabled lazy chunk; AESV3/R6; never silently claim
-      an unencrypted output when the password was wrong. Human review required.
-- [ ] **Protect with password** — AESV3/R6, separate user/owner passwords, permission copy
-      reviewed; keys stay on device. Human review required.
-- [ ] **Clear permissions** — owner-password override only; report what changed. Human review.
-- [ ] **Permissions / encrypt** — same surface as protect; no "remove all restrictions" claim
-      without the owner password. Human review required.
+- [x] **Unlock / remove password** — crypto-enabled lazy chunk; AESV3/R6; never silently claim
+      an unencrypted output when the password was wrong. **Signed off (HUMAN review 2026-11-04,
+      approved).** *Shipped* in `selis-pdf-wasm-security`, a sixth lazy chunk with **0 imports**:
+      "keys stay on device" is structural, because the guest has nowhere to send a document. The
+      page injects the 64 bytes of key material (`crypto.getRandomValues`) and zeroes the request
+      buffer once the call returns, since a guest with no entropy import must not be allowed to
+      invent a file key. Interop, both directions: a Selis-encrypted file opened in pinned PDFium
+      demands the password (a wrong or empty one fails with `pdfium_err=4`) and reports
+      `handler_rev=6`; qpdf prints `R = 6`, `P = -44` with AESv3 for stream, string and file and
+      `--decrypt`s it. Conversely three qpdf-written R6 files unlock on this device to a document
+      the engine re-opens (3 pages), while a wrong password returns
+      `locked.pdf: wrong password (WRONG_PASSWORD)` and writes nothing. Decryption is pixel-exact:
+      the page-1 render digest `3363023653717085315` is identical for the plain fixture, the
+      Selis-encrypted file opened with its password, and the qpdf-encrypted file after Selis
+      unlock. Browser legs, online and offline, assert the envelope is gone from the download
+      (`/Encrypt`, `/Filter /Standard`, `/AESV3` absent) while `/Type /Pages` and `/Count 3`
+      remain, and the refusal sentence names the document the reader picked up, not the chunk's
+      internal session key.
+- [x] **Protect with password** — AESV3/R6, separate user/owner passwords, permission copy
+      reviewed; keys stay on device. **Signed off (HUMAN review 2026-11-04, approved).**
+      *Shipped* on the same chunk: AES-256 revision 6 only, separate open and owner passwords (the
+      owner defaults to the open password, Acrobat-style), and permission bits written and then read
+      back out of `/P`. Selis → PDFium: a print+copy file opens with its open password at
+      `handler_rev=6` and PDFium derives `perm_print=1 perm_modify=0 perm_copy=1 perm_annotate=0`;
+      qpdf reports `P = -44`, AESv3 for the content and the file key, and `--check`/`--decrypt`
+      clean. The page's own loop closes in a browser leg: the file the protect card writes is handed
+      straight to the unlock card and opens with the password the user typed. The card says in
+      words that permission bits are a convention rather than enforcement, and never implies a
+      reader that ignores them can be stopped. Key material is drawn in the page, so the guest links
+      no RNG. Browser needles on the download: `/Encrypt`, `/Filter /Standard`, `/CFM /AESV3`,
+      `/V 5`, `/R 6`, `/P -44`, with the plaintext content marker absent, online and offline.
+- [x] **Clear permissions** — owner-password override only; report what changed. **Signed off
+      (HUMAN review 2026-11-04, approved).** *Shipped*: the output is an incremental revision whose
+      `/P` and `/Perms` change while the content stays encrypted under the unchanged file key, so
+      the bytes underneath are not rewritten. The user password is refused here by name — clearing
+      is the owner's decision — with `locked.pdf: owner password required (WRONG_OWNER_PASSWORD)`
+      and no output; a successful run names what it actually lifted, read back from the flag it
+      wrote (`modify, copy, annotate` for the qpdf fixture), and leaves the old `/P -3388` beside
+      the new `/P -1` and the `/Prev` link. The cleared output renders pixel-identical to the
+      original (digest `3363023653717085315`). Browser legs check `/Encrypt`, `/P -1` and `/Prev`
+      present, the refusal producing no download row, online and offline.
+- [x] **Permissions / encrypt** — same surface as protect; no "remove all restrictions" claim
+      without the owner password. **Signed off (HUMAN review 2026-11-04, approved).** *Shipped* as
+      the "Set permissions" card, which is the protect writer with an owner password and no open
+      password: the document still opens without one and carries the flags (`/P -28` for
+      print-annotate, `/P -4` for all four). It cannot lift a restriction — that is Clear
+      permissions, and the card says so and points there — and it refuses a document that already
+      carries a password rather than editing under one. Verified by the card re-opening its own
+      output and by qpdf/PDFium reading `/P` back, online and offline.
 
 ### Phase 1A.1 exit checks
 
 - [x] Every remaining box above is either ticked or explicitly deferred with a reason.
-      The four unticked rows are the crypto-enabled security tools — unlock, protect, clear
-      permissions, permissions/encrypt — each marked *Human review required*, plus the Phase 2
-      raster rows, which sit behind their own exit gate. Nothing else from the parity list is
-      outstanding in 1A.1.
-- [x] Tools chunk still under its `xtask/size-budgets.toml` budget (320 000 B brotli since the
-      metadata report) with every new card lazy-loaded.
-      `cargo xtask size-check --strict` measures `selis_pdf_wasm_tools` at 304 703 B brotli
-      (997 252 B raw, baseline unchanged) — 15 297 B of headroom. The four legs added in this exit
-      pass are driver-side only, so the chunk did not move.
+      Nothing from the parity list is outstanding in 1A.1. The four crypto-enabled security rows —
+      unlock, protect, clear permissions, permissions/encrypt — carried *Human review required* and
+      are now ticked: the review was signed off 2026-11-04 against independent readers (pinned
+      PDFium and qpdf 12.4.2), in both directions, on the CLI and in the real browser. The Phase 2
+      raster rows sit behind their own exit gate.
+- [x] Tools chunk still under its `xtask/size-budgets.toml` budget with every new card lazy-loaded.
+      `cargo xtask size-check --strict` now measures `selis_pdf_wasm_tools` at 321 372 B brotli
+      against a 340 000 B budget — 18 628 B of headroom. The rise from 304 703 B is the AcroForm
+      engine landing in `selis-pdf-tools` (the tools chunk carries it) and the crypto API the write
+      path already linked; the budget moved to the next round number in the same pass rather than a
+      feature being cut, and the 2% baseline rule still gates every later slice. The password
+      operations do **not** weigh on this chunk: `pub mod security` is feature-gated, so the crypto
+      code rides only the dedicated `selis_pdf_wasm_security` chunk (144 270 B brotli of 200 000),
+      which the page loads lazily on the first password card.
 - [x] Browser check drives every card online and after an offline reload.
       The gate is not "the page renders a card": an unclicked card can break without the check
       noticing. The driver now names every id in the grid (`cardIds`) and records the ids it
@@ -202,15 +249,24 @@ and a size budget; no raster feature is claimed.
       as kind `zip` with a `PK\x03\x04\x14` header, no preview offered, and counts `[1, 2, 2]`
       over two picked files. The live run measures `cardIds 29`, `online 29`, `offline 29` with
       zero foreign requests in both phases, inside the committed 30 000 ms per-check budget. (That
-      was the grid at this pass; the raster and HTML cards have since grown it to 34, and the same
-      coverage rule refuses any run whose click lists do not cover the whole grid.)
+      was the grid at this pass; the raster, HTML, AcroForm, sign/validate/approve and four password
+      cards have since grown it to 42, and the same coverage rule refuses any run whose click lists
+      do not cover the whole grid.)
       Eight negatives withdraw one witness each: a rotate that turned one page, a delete that
       kept the page, a metadata save that still carries the old title, an archive offered as a
       PDF preview, an online-only ZIP, an online pass that never opened rotate, an offline pass
       that clicked three cards, and a grid that rendered fewer cards than the check covers.
+      The password cards add ten more, each withdrawing a claim: a protect download that carries no
+      `/Encrypt`, a grant the flag does not hold, a card that speaks with another card's sentence, a
+      clear run whose verification is not `ok`, an unlocked output that still carries `/Encrypt`, a
+      refusal that produced a download, a refusal that does not name `WRONG_PASSWORD`, a refusal
+      that repeats the password it was handed, an online-only security block, and an offline pass
+      whose clear leg never ran.
 - [x] `34-TOOLS-SITE-ROADMAP.md` "Remaining in 1A.1" is empty or lists only named deferrals.
-      It now lists the crypto-enabled security tools and the deferred incremental writer, both by
-      name; the batch queue and the four remaining tool cards are recorded as Live.
+      It now names one deferral only — the incremental writer for page edits (which the verified
+      full-rewrite path covers today). The crypto-enabled security tools, the batch queue, the
+      AcroForm, sign, validate and approve cards, and the four remaining tool cards are all recorded
+      as Live.
 
 ---
 

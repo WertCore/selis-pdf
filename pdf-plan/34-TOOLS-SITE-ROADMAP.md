@@ -192,10 +192,10 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 
 | Feature | iLovePDF | ihp | Phase | Status / constraint |
 |---|---|---|---|---|
-| Unlock / remove password | yes | yes | Forms/Security | Shipped in CLI and browser through a sixth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_security.wasm`). AESV3/R6, R2-4 legacy envelopes and qpdf files open with the user password; a wrong password is refused and nothing is written. Human review pending, so the checklist row stays unticked. |
-| Protect with password | yes | yes | Forms/Security | AESV3/R6 only; separate user/owner passwords; permission bits written and read back from `/P`. Key material is injected by the page, so no RNG import reaches the guest. Human review pending. |
-| Clear permissions | — | yes | Forms/Security | Owner-password override only; the output is an incremental revision whose `/P` and `/Perms` change while the content stays encrypted under the unchanged file key, and the page names what was lifted. Human review pending. |
-| Permissions / encrypt | — | yes | Forms/Security | Same surface as protect, with the permission boxes as the only difference; `/P` is verified by re-opening the output. Human review pending. |
+| Unlock / remove password | yes | yes | Forms/Security | Shipped in CLI and browser through a sixth, lazy, import-free chunk (`/wasm/selis_pdf_wasm_security.wasm`). AESV3/R6, R2-4 legacy envelopes and qpdf files open with the user password; a wrong password is refused and nothing is written. **Reviewed 2026-11-04 and approved** against pinned PDFium and qpdf 12.4.2 in both directions — a wrong or empty password fails PDFium (`pdfium_err=4`) while the right one reports `handler_rev=6`, and qpdf reads `R = 6`, `P = -44`, AESv3 and can `--decrypt` — and decryption is pixel-exact against the plain fixture. |
+| Protect with password | yes | yes | Forms/Security | AESV3/R6 only; separate user/owner passwords; permission bits written and read back from `/P`. Key material is injected by the page, so no RNG import reaches the guest. **Reviewed 2026-11-04:** PDFium opens a print+copy output with its password and derives the same rights (`perm_print=1 perm_modify=0 perm_copy=1 perm_annotate=0`), qpdf reports `P = -44`, and the browser loop hands the protect output straight to the unlock card. |
+| Clear permissions | — | yes | Forms/Security | Owner-password override only; the output is an incremental revision whose `/P` and `/Perms` change while the content stays encrypted under the unchanged file key, and the page names what was lifted. **Reviewed 2026-11-04:** the cleared output is pixel-identical to the original, the user password is refused with `WRONG_OWNER_PASSWORD` and no file, and the old `/P -3388` survives beside the new `/P -1` and `/Prev`. |
+| Permissions / encrypt | — | yes | Forms/Security | Same surface as protect, with the permission boxes as the only difference; `/P` is verified by re-opening the output. **Reviewed 2026-11-04:** the output opens with no password and carries the flags (`/P -28`, `/P -4`), qpdf and PDFium read `/P` back, and the card refuses a document that already carries a password. |
 | Sign PDF | yes | yes | Forms/Security | Live in CLI and browser through a seventh, lazy, import-free chunk (`/wasm/selis_pdf_wasm_sign.wasm`). The new core crate `selis-pdf-sign` appends an incremental revision: a typed or freehand visual stamp, or a real AcroForm signature field whose dictionary carries a detached CMS (`adbe.pkcs7.detached`) over the document's `/ByteRange`. Only RSA keys of at least 2048 bits are accepted and only RSA PKCS#1 v1.5 with SHA-256 is written; an EC private key is refused by name. The key is read in the page and passed as PEM in the options JSON, so the chunk declares no imports (no clock, no entropy, no network) and the key is never written into the PDF or a request. Earlier signatures stay verifiable because nothing is rewritten. No timestamp, CAdES/PAdES or LTV: the result says what it is. |
 | Fill forms | — | yes | Forms/Security | Live in CLI and browser. A new core crate, `selis-pdf-form`, reads the AcroForm (text, checkbox, radio, choice, signature, push button, read-only), writes text/choice/button values as `/V` (plus `/I` for choices) and sets `/NeedAppearances`, then re-reads every value from the bytes it wrote. Encrypted, XFA, signed, read-only, multi-select and duplicate-name inputs are refused by type. The page renders one control per field, disables signature and read-only rows, and discloses signature invalidation before the run button enables. No appearance-stream synthesis yet, so a viewer rebuilds appearances on open; flatten stays a separate task. |
 | Certificate validation | — | yes | Forms/Security | Live as a report-only card over the signing chunk. Every signature is verified against the exact bytes its `/ByteRange` names, and the X.509 chain is walked to the PEM anchors the reader selects — there is no built-in root store. Name matching, certificate signatures, validity windows, CA and path-length constraints are all checked at the report's `now`, and every link is listed. Revocation is always reported "not checked" because the build has no network, and a signature that does not verify is listed with its reason rather than hidden. The card offers no download: the report is the result. |
@@ -332,17 +332,17 @@ a `PK\x03\x04\x14` header, no preview offered and counts `[1, 2, 2]` over two pi
 ZIP card bundled both documents and never handed an archive to the PDF viewer. The live run measures
 29 ids, 29 opened online and 29 opened offline, with zero foreign requests in both phases.
 
-**Remaining in 1A.1:** the crypto-enabled security tools (unlock, protect, clear permissions),
-which are human-owned and stay off the browser until that review lands. Image watermark,
-CSV/Markdown/HTML→PDF, image→PDF, the metadata JSON export, the batch queue and the last four
-cards — rotate, delete pages, edit metadata, ZIP — have all shipped. The incremental writer for
-page edits remains deferred; these page operations use the verified full-rewrite path.
+**Remaining in 1A.1:** one named deferral — the incremental writer for page edits, which the
+verified full-rewrite path covers today. The crypto-enabled security tools (unlock, protect, clear
+permissions, permissions/encrypt) shipped in CLI and browser and their human review was signed off
+2026-11-04 against pinned PDFium and qpdf 12.4.2. Image watermark, CSV/Markdown/HTML→PDF,
+image→PDF, the metadata JSON export, the AcroForm, sign, validate and approve cards, and the batch
+queue have all shipped too.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all thirty-four cards in both phases. The raster claim is
-separate
-and starts in Phase 2 — PDF → PNG, PDF → JPG, PDF → TIFF and PDF → WebP now ship there, each with
-its own read-back verification.
+size budget; the browser check drives all forty-two cards in both phases. The raster claim is
+separate and starts in Phase 2 — PDF → PNG, PDF → JPG, PDF → TIFF and PDF → WebP now ship there,
+each with its own read-back verification.
 
 ### Phase 2 — raster and OCR
 
@@ -594,12 +594,14 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all thirty-four cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all forty-two cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent
       from the Blob, proves an embedded file's name tree and name are present after attach, proves
-      they are absent after detach, and checks extracted attachment bytes plus the ZIP header.
+      they are absent after detach, and checks extracted attachment bytes plus the ZIP header. The
+      four password cards are driven the same way in both phases, including the two refusals that
+      must produce nothing.
       Coverage is now measured, not assumed: the driver reports the ids it rendered and the ids it
       clicked in each phase, and the verdict refuses a run whose click lists do not cover the grid.
       `xtask/browser/tools-page` passed in Edge with 34 cards online and 34 offline, 0 foreign
