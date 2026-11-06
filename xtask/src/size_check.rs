@@ -282,6 +282,7 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         "selis-pdf-wasm-tools",
         "selis-pdf-wasm-security",
         "selis-pdf-wasm-sign",
+        "selis-pdf-wasm-text",
         "xtask",
     ];
     for pkg in WASM_PACKAGES {
@@ -304,13 +305,29 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         }
     }
 
-    // Optimise with wasm-opt. On Windows the npm-installed binary is a `.cmd`
-    // wrapper, not an `.exe`, so resolve it explicitly.
-    let wasm_opt = if std::env::consts::OS == "windows" {
-        "wasm-opt.cmd".to_string()
+    // Optimise with wasm-opt. Prefer the plain binary; the npm-installed
+    // Windows shim is a `.cmd` wrapper some environments cannot exec, so it
+    // is tried last rather than assumed.
+    let candidates: &[&str] = if std::env::consts::OS == "windows" {
+        &["wasm-opt.exe", "wasm-opt", "wasm-opt.cmd"]
     } else {
-        "wasm-opt".to_string()
+        &["wasm-opt"]
     };
+    let wasm_opt = candidates
+        .iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .map(|candidate| (*candidate).to_string())
+        .ok_or_else(|| {
+            "wasm-opt not found. Install with `cargo install wasm-opt` or `npm i -g wasm-opt`."
+                .to_string()
+        })?;
 
     let wasm_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(|d| Path::new(&d).join("wasm32-unknown-unknown/release"))

@@ -81,6 +81,15 @@ pub(crate) enum Block {
     Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
+    /// A table: the header row (empty when the source had none) and the body
+    /// rows. Every row has the same number of cells; the parsers pad short
+    /// rows with empty cells rather than fail.
+    Table {
+        /// The header row's cells (may be empty).
+        head: Vec<Vec<Span>>,
+        /// The body rows; each cell is a span list.
+        rows: Vec<Vec<Vec<Span>>>,
+    },
 }
 
 /// Explicit byte assignments for characters the AGL lookup may miss

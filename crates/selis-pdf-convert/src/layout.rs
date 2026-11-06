@@ -215,6 +215,204 @@ pub(crate) fn lay_out(
     Ok(pages)
 }
 
+/// Internal horizontal gap around table cells.
+const TABLE_CELL_PAD: f64 = 4.0;
+/// The floor of a column's width, in points.
+const TABLE_MIN_COL: f64 = 28.0;
+/// The line thickness of table rules.
+const TABLE_RULE_TOP: f64 = 0.9;
+/// The line thickness of table rules inside the body.
+const TABLE_RULE_MID: f64 = 0.5;
+/// The header row's background grey.
+const HEADER_BG: [f64; 3] = [0.93, 0.93, 0.93];
+/// The rule grey, a shade darker than the code-block background.
+const TABLE_RULE: [f64; 3] = [0.72, 0.72, 0.72];
+
+/// Lay a table out as, per row, wrapped cell lines on a shared baseline.
+///
+/// The style is booktabs: a heavy rule above the header, a lighter one below
+/// it, hairlines between body rows and a heavy rule at the bottom. There are
+/// no vertical rules; column separation is the padding. A row that does not
+/// fit moves to the next page whole.
+fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], indent: f64) {
+    let table_left = MARGIN + indent;
+    let avail = layout.max_x() - table_left;
+    let cols = head
+        .len()
+        .max(rows.iter().map(|row| row.len()).max().unwrap_or(0));
+    if cols == 0 || avail <= 0.0 {
+        layout.cursor += PARA_GAP;
+        return;
+    }
+
+    // Every row padded to the column count so the paths below cannot index
+    // past the end of a short row.
+    let pad_cell = |cell: &Vec<Span>| -> Vec<Span> { cell.clone() };
+    let normalize_row = |row: &[Vec<Span>]| -> Vec<Vec<Span>> {
+        let mut cells: Vec<Vec<Span>> = row.iter().map(&pad_cell).collect();
+        cells.resize(cols, Vec::new());
+        cells
+    };
+    let head_n = if head.is_empty() {
+        Vec::new()
+    } else {
+        normalize_row(head)
+    };
+    let rows_n: Vec<Vec<Vec<Span>>> = rows.iter().map(|row| normalize_row(row)).collect();
+
+    // Natural widths: the widest cell in each column, capped at the page.
+    let mut widths = vec![TABLE_MIN_COL; cols];
+    for (index, width) in widths.iter_mut().enumerate() {
+        let mut widest = 0.0f64;
+        let mut consider = |cell: &[Span], bold: bool| {
+            // Code cells are wider than Helvetica at the same size, so the
+            // natural width must be measured per span, not from plain text.
+            let cell_width: f64 = cell
+                .iter()
+                .map(|span| {
+                    let font = if bold {
+                        "Helvetica-Bold"
+                    } else {
+                        span.style.font()
+                    };
+                    measure(font, &span.text, BODY_SIZE)
+                })
+                .sum();
+            widest = widest.max(cell_width);
+        };
+        if let Some(cell) = head_n.get(index) {
+            consider(cell, true);
+        }
+        for row in &rows_n {
+            if let Some(cell) = row.get(index) {
+                consider(cell, false);
+            }
+        }
+        *width = (widest + 2.0 * TABLE_CELL_PAD).clamp(TABLE_MIN_COL, avail);
+    }
+    let natural: f64 = widths.iter().sum();
+    if natural > avail {
+        let floor = (avail / f64::from(u32::try_from(cols).unwrap_or(1))).max(8.0);
+        for width in &mut widths {
+            *width = (*width * avail / natural).max(floor);
+        }
+        let capped: f64 = widths.iter().sum();
+        if capped > avail {
+            let scale = avail / capped;
+            for width in &mut widths {
+                *width *= scale;
+            }
+        }
+    }
+    // Cumulative left edge of each column, relative to the table.
+    let mut offsets = vec![table_left; cols];
+    let mut x = table_left;
+    for (index, width) in widths.iter().enumerate() {
+        if let Some(slot) = offsets.get_mut(index) {
+            *slot = x;
+        }
+        x += width;
+    }
+
+    // Lay one row: returns its height, having appended its lines at the cursor.
+    let lay_row = |layout: &mut Layout, cells: &[Vec<Span>], bold: bool| -> f64 {
+        let size_of = |_s: Style| BODY_SIZE;
+        let mapped = |s: Style| if bold { s.with_bold() } else { s };
+        let mut wrapped: Vec<Vec<Vec<(Style, String)>>> = Vec::with_capacity(cells.len());
+        for (index, cell) in cells.iter().enumerate() {
+            let width = widths.get(index).copied().unwrap_or(TABLE_MIN_COL);
+            let left = offsets.get(index).copied().unwrap_or(table_left) + TABLE_CELL_PAD;
+            let right = left + width - 2.0 * TABLE_CELL_PAD;
+            wrapped.push(wrap_spans(cell, &mapped, &size_of, left, left, right));
+        }
+        let line_count = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        let height = f64::from(u32::try_from(line_count).unwrap_or(1)) * BODY_SIZE * LINE_FACTOR
+            + 2.0 * TABLE_CELL_PAD;
+        layout.ensure_room(height);
+        let top = layout.cursor;
+        if bold {
+            layout.current.push(Line {
+                top,
+                height,
+                baseline: top + BODY_SIZE + TABLE_CELL_PAD,
+                items: vec![Item::Rect {
+                    x: table_left,
+                    top,
+                    height,
+                    w: avail,
+                    h: height,
+                    color: HEADER_BG,
+                }],
+            });
+        }
+        for line_index in 0..line_count {
+            let mut items: Vec<Item> = Vec::new();
+            for (index, cell_lines) in wrapped.iter().enumerate() {
+                if let Some(line_runs) = cell_lines.get(line_index) {
+                    let mut cell_x =
+                        offsets.get(index).copied().unwrap_or(table_left) + TABLE_CELL_PAD;
+                    for (style, text) in line_runs.iter() {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let font = style.font();
+                        items.push(Item::Text {
+                            x: cell_x,
+                            font,
+                            size: BODY_SIZE,
+                            bytes: encode_text(text),
+                            color: BLACK,
+                        });
+                        cell_x += measure(font, text, BODY_SIZE);
+                    }
+                }
+            }
+            let baseline = top
+                + TABLE_CELL_PAD
+                + BODY_SIZE
+                + f64::from(u32::try_from(line_index).unwrap_or(0)) * BODY_SIZE * LINE_FACTOR;
+            layout.current.push(Line {
+                top: baseline - BODY_SIZE,
+                height: BODY_SIZE * LINE_FACTOR,
+                baseline,
+                items,
+            });
+        }
+        layout.cursor += height;
+        height
+    };
+
+    let rule = |layout: &mut Layout, thickness: f64| {
+        layout.ensure_room(thickness);
+        let top = layout.cursor;
+        layout.current.push(Line {
+            top,
+            height: thickness,
+            baseline: top + thickness,
+            items: vec![Item::Rect {
+                x: table_left,
+                top,
+                height: thickness,
+                w: avail,
+                h: thickness,
+                color: TABLE_RULE,
+            }],
+        });
+        layout.cursor += thickness;
+    };
+
+    rule(layout, TABLE_RULE_TOP);
+    if !head_n.is_empty() {
+        lay_row(layout, &head_n, true);
+        rule(layout, TABLE_RULE_MID);
+    }
+    for row in rows_n.iter() {
+        lay_row(layout, row, false);
+        rule(layout, TABLE_RULE_MID);
+    }
+    layout.cursor += PARA_GAP;
+}
+
 /// Render one block at the given indent.
 fn render_block(
     layout: &mut Layout,
@@ -386,6 +584,9 @@ fn render_block(
                 render_block(layout, child, indent + QUOTE_INDENT, true, &mut inner_first);
             }
             layout.cursor += 2.0;
+        }
+        Block::Table { head, rows } => {
+            render_table(layout, head, rows, indent);
         }
         Block::Rule => {
             layout.ensure_room(12.0);

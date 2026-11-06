@@ -12,27 +12,32 @@
 //! ATX headings (`#`–`######`), paragraphs with soft line breaks, bold /
 //! italic / inline code spans, fenced (``` ``` ```) and indented code blocks,
 //! bullet lists (`-`, `*`, `+`, nested by two-space indents), ordered lists
-//! (`1.`), blockquotes (`>`), horizontal rules, and links (rendered as their
-//! text with the URL in parentheses when it differs — no link annotations).
-//! Images, tables, reference links, and raw HTML inside Markdown are ignored
-//! or rendered as plain text.
+//! (`1.`), blockquotes (`>`), horizontal rules, GFM pipe tables (cells carry
+//! plain text; `:---:` alignment is dropped; `\|` escapes a pipe), and links
+//! (rendered as their text with the URL in parentheses when it differs — no
+//! link annotations). Images, reference links, and raw HTML inside Markdown
+//! are ignored or rendered as plain text.
 //!
 //! # Supported HTML subset
 //!
 //! `<h1>`–`<h6>`, `<p>`, `<br>`, `<hr>`, `<ul>`/`<ol>`/`<li>`, `<pre>` (with
 //! optional inner `<code>`), `<blockquote>`, `<b>`/`<strong>`, `<i>`/`<em>`,
-//! `<code>`, `<a href>` (same link rendering as Markdown), and block
-//! containers (`<div>`, `<section>`, `<article>`, `<main>`, `<table>` cells).
-//! `<script>` and `<style>` content is dropped; unknown tags unwrap to their
-//! text. Named (`&amp;`, `&eacute;`, …) and numeric (`&#8212;`, `&#x2014;`)
-//! entities are decoded.
+//! `<code>`, `<a href>` (same link rendering as Markdown), `<table>` with
+//! `<tr>`/`<th>`/`<td>` (inline cell content only; `<th>` in the first row
+//! makes a header row; nested tables and lists inside cells are not
+//! supported), and block containers (`<div>`, `<section>`, `<article>`,
+//! `<main>`, `<table>` cells). `<script>` and `<style>` content is dropped;
+//! unknown tags unwrap to their text. Named (`&amp;`, `&eacute;`, …) and
+//! numeric (`&#8212;`, `&#x2014;`) entities are decoded.
 //!
 //! # Typography
 //!
 //! US Letter or A4 pages, 54 pt margins, 11 pt Helvetica body (Helvetica-Bold
-//! headings, Helvetica-Oblique blockquotes, Courier code blocks). Text that
-//! cannot be represented in WinAnsiEncoding is replaced with `?`; wrapping is
-//! greedy word-wrap measured from the exact AFM widths.
+//! headings, Helvetica-Oblique blockquotes, Courier code blocks). Tables are
+//! set booktabs-style: a heavy rule above the header, hairlines between body
+//! rows, the header row on a light grey fill, columns sized to their widest
+//! cell. Text that cannot be represented in WinAnsiEncoding is replaced with
+//! `?`; wrapping is greedy word-wrap measured from the exact AFM widths.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -41,10 +46,15 @@ use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard};
 
 mod blocks;
+mod csv;
 mod emit;
+mod epub;
 mod html;
+mod latex;
 mod layout;
 mod markdown;
+mod svg;
+mod xmlmini;
 
 /// The target page size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +84,29 @@ pub struct Options {
     pub page_size: PageSize,
     /// The document title recorded in the `/Info` dictionary, if any.
     pub title: Option<String>,
+}
+
+/// Convert CSV (comma-separated, quoted-field aware) to PDF bytes.
+///
+/// The first row is set as the header and repeated at the top of every page;
+/// columns are evenly sized and cells are WinAnsi text, nothing more — this
+/// is a table print, not a spreadsheet renderer.
+///
+/// # Budget
+///
+/// Charges the generated object graph against `budget`.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document this engine and
+/// any conforming reader can open.
+pub fn csv_to_pdf(
+    input: &str,
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    csv::csv_to_pdf(input, opts, budget, g)
 }
 
 /// Convert Markdown (the documented subset) to PDF bytes.
@@ -126,6 +159,101 @@ pub fn html_to_pdf(
 ) -> Result<Vec<u8>> {
     let blocks = html::parse(input);
     emit::build(&blocks, opts, budget, g)
+}
+
+/// Convert LaTeX (the documented subset) to PDF bytes.
+///
+/// The subset is structure, not typography: `\chapter`/`\section`/
+/// `\subsection`/`\subsubsection` become headings, `itemize`/`enumerate` become
+/// list items, `verbatim` stays verbatim, `\title` + `\maketitle` puts the title
+/// where the document puts it, and `\textbf`/`\textit`/`\emph`/`\texttt` become
+/// styled runs. Comments are dropped, `\%` and friends survive, and a command
+/// this crate does not know loses its name but keeps its argument.
+///
+/// It does not typeset mathematics, tables, figures or a page layout: `$...$`,
+/// `tabular` and `\includegraphics` produce text-only output rather than an
+/// approximation that pretends to be LaTeX.
+///
+/// # Budget
+///
+/// Charges the generated object graph and output bytes against `budget`.
+///
+/// # Malformed Input
+///
+/// LaTeX never fails to parse — every input produces a document. Returns
+/// `BUDGET_*` on budget exhaustion.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document that this engine
+/// and any conforming reader can open; every page carries a valid content
+/// stream and font resources.
+pub fn latex_to_pdf(
+    input: &str,
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let blocks = latex::parse(input);
+    emit::build(&blocks, opts, budget, g)
+}
+
+/// Convert an EPUB package (OPF, container and the spine's content documents)
+/// to PDF bytes.
+///
+/// The package is read with the same reader the package writers use; the
+/// spine fixes the order; every content document is parsed with the HTML
+/// subset above. See the module docs for exactly what is not carried over
+/// (images, CSS, math, the book's own page breaks).
+///
+/// # Budget
+///
+/// Charges the expanded package bytes and the generated object graph against
+/// `budget`.
+///
+/// # Malformed Input
+///
+/// A package that is not a ZIP, has no container, no rootfile, or a spine
+/// document that is missing is refused with a message naming the part.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document this engine and
+/// any conforming reader can open.
+pub fn epub_to_pdf(
+    input: &[u8],
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    epub::epub_to_pdf(input, opts, budget, g)
+}
+
+/// Convert an SVG document (the documented subset) to a one-page PDF.
+///
+/// The page is exactly the SVG canvas and carries no margin; 1 px = 0.75 pt.
+/// See `svg`'s module documentation for the supported grammar, which arcs
+/// (`A`) are refused, and what is dropped.
+///
+/// # Budget
+///
+/// Charges the generated object graph against `budget`.
+///
+/// # Malformed Input
+///
+/// Malformed XML, an unsupported arc, an unsupported transform or a document
+/// with more than 20 000 elements is refused with a message.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document with one page.
+pub fn svg_to_pdf(
+    input: &str,
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    svg::svg_to_pdf(input, opts, budget, g)
 }
 
 #[cfg(test)]
@@ -274,5 +402,26 @@ mod tests {
         o.page_size = PageSize::A4;
         let a4 = markdown_to_pdf("text", &o, &Budget::unlimited(), &mut guard()).expect("write");
         assert_ne!(letter, a4);
+    }
+
+    #[test]
+    fn a_markdown_table_lays_out_with_rules_and_opens() {
+        let md = "| Name | Amount |\n| --- | --- |\n| Ada | 1200 |\n| Grace | 900 |\n";
+        let opts = Options::default();
+        let bytes = markdown_to_pdf(md, &opts, &Budget::unlimited(), &mut guard()).expect("write");
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        opens_with_page_count(&bytes, 1);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("1200"));
+        // The header row rides on a fill and the table is bounded by rules.
+        assert!(text.contains(" rg\n"), "{text}");
+    }
+
+    #[test]
+    fn a_wide_table_shrinks_to_the_page() {
+        let md = "| Very long header one here | Another long header two here | Third long header three here |\n| --- | --- | --- |\n| a wide cell with a great many words that would overflow a narrow column | another wide cell with just as many words in it | and a third wide cell with far too many words to hold on one line |\n";
+        let bytes = markdown_to_pdf(md, &Options::default(), &Budget::unlimited(), &mut guard())
+            .expect("write");
+        opens_with_page_count(&bytes, 1);
     }
 }

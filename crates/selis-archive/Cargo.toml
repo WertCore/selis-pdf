@@ -1,0 +1,15 @@
+[package]
+name = "selis-archive"
+description = "The ZIP container shared by the package writers and readers (EPUB, DOCX, PPTX, XLSX, bundles)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+miniz_oxide = { workspace = true }

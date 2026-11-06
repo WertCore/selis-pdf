@@ -1,12 +1,15 @@
-//! The `selis topdf` tool (SL-5.CONV.05 subset): Markdown/HTML → PDF via the
-//! `selis-pdf-convert` layout engine.
+//! The `selis topdf` tool (SL-5.CONV.05 subset): Markdown/HTML/LaTeX/CSV/
+//! SVG/EPUB → PDF via the `selis-pdf-convert` layout engine.
 
-use selis_pdf_convert::{html_to_pdf, markdown_to_pdf, Options, PageSize};
+use selis_pdf_convert::{
+    csv_to_pdf, epub_to_pdf, html_to_pdf, latex_to_pdf, markdown_to_pdf, svg_to_pdf, Options,
+    PageSize,
+};
 use selis_sandbox::Budget;
 
 use crate::{read_file, CliError, CliResult};
 
-/// Convert a Markdown or HTML file to PDF.
+/// Convert a Markdown, HTML, LaTeX, CSV, SVG or EPUB file to PDF.
 pub(crate) fn topdf(
     input: &str,
     output: &str,
@@ -21,14 +24,18 @@ pub(crate) fn topdf(
     let fmt = match format {
         "auto" => detect_format(input).ok_or_else(|| {
             CliError(format!(
-                "cannot infer format of {input}; pass --format md or --format html"
+                "cannot infer format of {input}; pass --format md, html, tex, csv, svg or epub"
             ))
         })?,
         "md" | "markdown" => "md",
-        "html" | "htm" => "html",
+        "html" | "htm" | "xhtml" => "html",
+        "tex" | "latex" => "tex",
+        "csv" => "csv",
+        "svg" => "svg",
+        "epub" => "epub",
         other => {
             return Err(CliError(format!(
-                "unknown format `{other}` (expected auto, md or html)"
+                "unknown format `{other}` (expected auto, md, html, tex, csv, svg or epub)"
             )))
         }
     };
@@ -51,6 +58,10 @@ pub(crate) fn topdf(
     };
     let bytes = match fmt {
         "md" => markdown_to_pdf(&text, &opts, &budget, &mut g),
+        "tex" => latex_to_pdf(&text, &opts, &budget, &mut g),
+        "csv" => csv_to_pdf(&text, &opts, &budget, &mut g),
+        "svg" => svg_to_pdf(&text, &opts, &budget, &mut g),
+        "epub" => epub_to_pdf(&data, &opts, &budget, &mut g),
         _ => html_to_pdf(&text, &opts, &budget, &mut g),
     }
     .map_err(|e| CliError(format!("{input}: {e}")))?;
@@ -79,6 +90,18 @@ fn detect_format(path: &str) -> Option<&'static str> {
     }
     if lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml") {
         return Some("html");
+    }
+    if lower.ends_with(".tex") || lower.ends_with(".latex") {
+        return Some("tex");
+    }
+    if lower.ends_with(".csv") {
+        return Some("csv");
+    }
+    if lower.ends_with(".svg") {
+        return Some("svg");
+    }
+    if lower.ends_with(".epub") {
+        return Some("epub");
     }
     None
 }

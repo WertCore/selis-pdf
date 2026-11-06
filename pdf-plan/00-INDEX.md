@@ -107,6 +107,7 @@ turned out to be wrong or under-specified.
 | `26-PRODUCT-SURFACE.md` | Competitor surface → SKU map, entitlement matrix, pricing shape. | Before scoping any product. |
 | `28-FIRST-RELEASE-SCOPE.md` | **Read before any code.** Competitive reality, the exposure model (what licensing attaches to build vs. distribute), and the month-4 owned-engine path. |
 | `29-WRITE05-06-DESIGN-NOTE.md` | WRITE.05/WRITE.06 draft design note (pre-sign-off): the structural verifier, the crash-atomicity sink/rollback fixes, the kill-test harness, and the human sign-off checklist. |
+| `36-TOOLS-PAGE-NAV-AND-ROUTES.md` | Working plan (5 Nov 2026) for the tools page: group the 42 cards into sections + jump nav (Slice A), then generate one static, crawlable page per tool at `/<slug>/` on a per-product subdomain root (Slice B). Carries the frozen decisions, the SW precache/cache-version rules, and the open slug list. | Before touching `tools-page.ts` layout, `tools.html`, `tools.css`, or the service worker's precache set. |
 | `27-COST-AND-LICENSING.md` | What money is actually required and when; the open-source/dual-licence analysis. | Before budgeting, and before changing ADR-P0030. |
 
 ---

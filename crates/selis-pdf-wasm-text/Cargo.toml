@@ -1,0 +1,25 @@
+[package]
+name = "selis-pdf-wasm-text"
+description = "Lazy WASM chunk: text extraction, tables, split-by-text and reflow in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The engine without `rng` and without `builtin-fallback-fonts`: extraction reads
+# the document's own fonts and never needs a face of our own, and `getrandom`
+# must not link because the page instantiates this chunk with an empty import
+# object. This is the same policy the HTML chunk follows.
+selis-pdf-engine = { workspace = true, default-features = false }
+selis-pdf-text = { workspace = true }
+selis-pdf-tools = { workspace = true, default-features = false, features = ["text"] }
+selis-sandbox = { workspace = true }

@@ -9,6 +9,23 @@ struct ListCtx {
     counter: usize,
 }
 
+/// An open table: the header cells (empty until a `<th>` row closes) and the
+/// body rows, each cell a span list.
+#[derive(Debug, Default)]
+struct TableBuilder {
+    head: Vec<Vec<Span>>,
+    rows: Vec<Vec<Vec<Span>>>,
+    row: Option<RowBuilder>,
+}
+
+/// A row being filled.
+#[derive(Debug, Default)]
+struct RowBuilder {
+    cells: Vec<Vec<Span>>,
+    cell: Option<Vec<Span>>,
+    saw_th: bool,
+}
+
 /// The iterative HTML-subset parser.
 #[derive(Debug)]
 struct Parser<'a> {
@@ -25,6 +42,7 @@ struct Parser<'a> {
     lists: Vec<ListCtx>,
     in_item: bool,
     item_ordinal: usize,
+    table: Option<TableBuilder>,
 }
 
 /// Parse an HTML subset into layout blocks.
@@ -48,6 +66,7 @@ pub(crate) fn parse(input: &str) -> Vec<Block> {
         lists: Vec::new(),
         in_item: false,
         item_ordinal: 0,
+        table: None,
     };
     p.run();
     p.finish();
@@ -69,12 +88,77 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// End-of-input: close any open list item or paragraph.
+    /// End-of-input: close any open list item, table or paragraph.
     fn finish(&mut self) {
         if self.in_item {
             self.close_item();
         }
+        self.close_table();
         self.flush_paragraph();
+    }
+
+    /// Whether a `<td>`/`<th>` is open: inline content is routed into it.
+    fn in_table_cell(&self) -> bool {
+        self.table
+            .as_ref()
+            .and_then(|table| table.row.as_ref())
+            .is_some_and(|row| row.cell.is_some())
+    }
+
+    /// Close the open cell, if any, moving its spans into the row.
+    fn close_cell(&mut self) {
+        if !self.in_table_cell() {
+            return;
+        }
+        self.flush_text();
+        self.heading = None;
+        let cell = std::mem::take(&mut self.spans);
+        if let Some(table) = self.table.as_mut() {
+            if let Some(row) = table.row.as_mut() {
+                row.cells.push(cell);
+                row.cell = None;
+            }
+        }
+    }
+
+    /// Close the open row, if any, filing it as the header or a body row.
+    fn close_row(&mut self) {
+        self.close_cell();
+        if let Some(table) = self.table.as_mut() {
+            if let Some(row) = table.row.take() {
+                if row.saw_th && table.head.is_empty() && table.rows.is_empty() {
+                    table.head = row.cells;
+                } else {
+                    table.rows.push(row.cells);
+                }
+            }
+        }
+    }
+
+    /// Close the table, if any, emitting it as a block.
+    fn close_table(&mut self) {
+        self.close_row();
+        if let Some(table) = self.table.take() {
+            let cols = table
+                .head
+                .len()
+                .max(table.rows.iter().map(|row| row.len()).max().unwrap_or(0));
+            if cols > 0 {
+                let normalize = |row: &[Vec<Span>]| -> Vec<Vec<Span>> {
+                    let mut cells = row.to_vec();
+                    cells.resize(cols, Vec::new());
+                    cells
+                };
+                let head: Vec<Vec<Span>> = if table.head.is_empty() {
+                    Vec::new()
+                } else {
+                    normalize(&table.head)
+                };
+                let rows: Vec<Vec<Vec<Span>>> =
+                    table.rows.iter().map(|row| normalize(row)).collect();
+                self.blocks.push(Block::Table { head, rows });
+            }
+        }
     }
 
     fn cur_style(&self) -> Style {
@@ -127,8 +211,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Flush the current spans as a paragraph (or heading, when one is open).
-    /// When a list item is open, the spans belong to it instead.
+    /// When a list item is open, the spans belong to it instead. Inside a
+    /// table cell the spans stay in the cell.
     fn flush_paragraph(&mut self) {
+        if self.in_table_cell() {
+            self.flush_text();
+            self.heading = None;
+            return;
+        }
         if self.in_item {
             self.close_item();
             return;
@@ -147,8 +237,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Close the current list item, emitting a `ListItem`.
+    /// Close the current list item, emitting a `ListItem`. Inside a table
+    /// cell the spans stay in the cell.
     fn close_item(&mut self) {
+        if self.in_table_cell() {
+            self.flush_text();
+            return;
+        }
         self.flush_text();
         if self.spans_are_empty() {
             self.spans.clear();
@@ -365,6 +460,10 @@ impl<'a> Parser<'a> {
                 self.blocks.push(Block::Quote(parse(&inner)));
             }
             "ul" | "ol" => {
+                if self.in_table_cell() {
+                    // Lists inside cells are text, not structure.
+                    return;
+                }
                 self.flush_paragraph();
                 self.lists.push(ListCtx {
                     ordered: name == "ol",
@@ -372,6 +471,10 @@ impl<'a> Parser<'a> {
                 });
             }
             "li" => {
+                if self.in_table_cell() {
+                    self.flush_text();
+                    return;
+                }
                 if self.in_item {
                     self.close_item();
                 }
@@ -414,9 +517,50 @@ impl<'a> Parser<'a> {
                     self.href_depth = self.href_depth.saturating_add(1);
                 }
             }
+            "table" => {
+                if self.in_table_cell() || self.table.is_some() {
+                    // Nested tables inside cells are text, not structure.
+                } else {
+                    self.flush_paragraph();
+                    self.table = Some(TableBuilder::default());
+                }
+            }
+            "thead" | "tbody" | "tfoot" | "caption" => {
+                // Section markers: no layout effect in the subset.
+            }
+            "tr" => {
+                if self.table.is_some() {
+                    self.close_row();
+                    if let Some(table) = self.table.as_mut() {
+                        table.row = Some(RowBuilder::default());
+                    }
+                    self.heading = None;
+                }
+            }
+            "td" | "th" => {
+                if self.table.is_some() {
+                    if self.table.as_ref().and_then(|t| t.row.as_ref()).is_none() {
+                        if let Some(table) = self.table.as_mut() {
+                            table.row = Some(RowBuilder::default());
+                        }
+                    }
+                    self.close_cell();
+                    if let Some(table) = self.table.as_mut() {
+                        if let Some(row) = table.row.as_mut() {
+                            if name == "th" {
+                                row.saw_th = true;
+                            }
+                            row.cell = Some(Vec::new());
+                        }
+                    }
+                    self.heading = None;
+                } else {
+                    self.flush_paragraph();
+                }
+            }
             "p" | "div" | "section" | "article" | "main" | "header" | "footer" | "nav"
-            | "aside" | "figure" | "figcaption" | "table" | "thead" | "tbody" | "tfoot" | "tr"
-            | "td" | "th" | "caption" | "form" | "fieldset" | "center" | "details" | "summary" => {
+            | "aside" | "figure" | "figcaption" | "form" | "fieldset" | "center" | "details"
+            | "summary" => {
                 self.flush_paragraph();
             }
             _ => {
@@ -428,9 +572,19 @@ impl<'a> Parser<'a> {
 
     fn close_tag(&mut self, name: &str) {
         match name {
+            "table" => {
+                self.close_table();
+            }
+            "td" | "th" => {
+                self.close_cell();
+            }
+            "tr" => {
+                self.close_row();
+            }
+            "thead" | "tbody" | "tfoot" | "caption" => {}
             "p" | "div" | "section" | "article" | "main" | "header" | "footer" | "nav"
-            | "aside" | "figure" | "figcaption" | "table" | "thead" | "tbody" | "tfoot" | "tr"
-            | "td" | "th" | "caption" | "form" | "fieldset" | "center" | "details" | "summary" => {
+            | "aside" | "figure" | "figcaption" | "form" | "fieldset" | "center" | "details"
+            | "summary" => {
                 self.flush_paragraph();
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
@@ -843,5 +997,51 @@ mod tests {
         };
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert!(joined.contains("bold runs on"));
+    }
+
+    #[test]
+    fn tables_parse_with_th_header() {
+        let blocks = parse(
+            "<table><tr><th>Name</th><th>Amount</th></tr><tr><td>Ada</td><td>1200</td></tr></table>",
+        );
+        assert_eq!(blocks.len(), 1);
+        let Block::Table { head, rows } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(
+            head.iter()
+                .map(|cell| cell.iter().map(|s| s.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>(),
+            vec!["Name".to_string(), "Amount".to_string()]
+        );
+        assert_eq!(
+            rows[0][1]
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            "1200"
+        );
+    }
+
+    #[test]
+    fn tables_without_th_get_no_head() {
+        let blocks = parse("<table><tr><td>a</td></tr></table>");
+        let Block::Table { head, rows } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert!(head.is_empty());
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn inline_markup_flows_into_cells() {
+        let blocks = parse("<table><tr><td><b>bold</b> cell</td></tr></table>");
+        let Block::Table { rows, .. } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        let cell = &rows[0][0];
+        assert!(cell
+            .iter()
+            .any(|s| s.style == Style::Bold && s.text == "bold"));
     }
 }

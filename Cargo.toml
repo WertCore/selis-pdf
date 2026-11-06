@@ -98,6 +98,7 @@ proptest    = "1"
 # Internal crates — L0
 selis-error   = { path = "crates/selis-error", version = "0.1.0" }
 selis-bytes   = { path = "crates/selis-bytes", version = "0.1.0" }
+selis-archive = { path = "crates/selis-archive", version = "0.1.0" }
 selis-geom    = { path = "crates/selis-geom", version = "0.1.0" }
 selis-color   = { path = "crates/selis-color", version = "0.1.0" }
 selis-log     = { path = "crates/selis-log", version = "0.1.0" }

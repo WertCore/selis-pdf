@@ -147,6 +147,7 @@ function createOrigin(): Origin {
 		"/assets/host/sw-register.js",
 		"/assets/host/tools/inputs.js",
 		"/assets/host/tools/protocol.js",
+		"/assets/host/tools/text-protocol.js",
 		"/assets/host/tools/tools-page.js",
 		"/assets/host/tools/security-protocol.js",
 		"/assets/host/tools/sign-protocol.js",

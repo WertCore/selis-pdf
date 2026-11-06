@@ -33,7 +33,30 @@ pub(crate) fn run(
     last: Option<usize>,
     format: &str,
     output: Option<&str>,
+    separators: bool,
+    quality_out: Option<&str>,
 ) -> CliResult<()> {
+    // The Phase 3 text formats read the document through the tools layer, which
+    // owns the same extraction ladder and reports its own quality. They are
+    // document-level answers (one table list, one article), not a per-page
+    // printout, so they branch before the per-page loop below.
+    if format == "tables"
+        || format == "reflow"
+        || format == "epub"
+        || format == "docx"
+        || format == "pptx"
+        || format == "xlsx"
+        || (format == "text" && separators)
+    {
+        let first = page.saturating_add(1);
+        let end = last.unwrap_or(page).saturating_add(1);
+        let selection = if end > first {
+            format!("{first}-{end}")
+        } else {
+            first.to_string()
+        };
+        return run_text_tool(path, format, &selection, output, quality_out);
+    }
     let src = read_file(path)?;
     let budget = Budget::profile(Surface::Viewer);
     let clock = crate::shell_clock();
@@ -95,6 +118,191 @@ pub(crate) fn run(
         }
         print!("{page_out}");
         first_output = false;
+    }
+    Ok(())
+}
+
+/// Run one of the Phase 3 text formats: the exports that answer for the whole
+/// document rather than for one page.
+///
+/// * `tables` writes the reconstructed tables as CSV.
+/// * `reflow` writes the reading-order HTML article.
+/// * `epub` writes the same article as an EPUB 3 package (needs `--output`).
+/// * `docx` writes the reading-order article as a Word document (needs `--output`).
+/// * `pptx` writes one slide per page with positioned text boxes (needs `--output`).
+/// * `xlsx` writes one sheet per reconstructed table plus a report sheet (needs `--output`).
+/// * `text` with `--separators` writes one plain-text document with a separator
+///   before every page, and its quality report (to `--quality-out`, or stderr).
+///
+/// # Errors
+///
+/// A typed message naming the document that could not be read, or a reflow that
+/// failed its own read-back.
+fn run_text_tool(
+    path: &str,
+    format: &str,
+    selection: &str,
+    output: Option<&str>,
+    quality_out: Option<&str>,
+) -> CliResult<()> {
+    if format == "tables" {
+        let export = selis_pdf_tools::extract_tables(path, Some(selection))
+            .map_err(|e| CliError(e.to_string()))?;
+        match output {
+            Some(target) => {
+                std::fs::write(target, &export.csv)
+                    .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+                eprintln!(
+                    "wrote {} table(s), {} row(s) to {target}",
+                    export.tables, export.rows
+                );
+            }
+            None => print!("{}", export.csv),
+        }
+        return Ok(());
+    }
+    if format == "epub" {
+        let title = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("PDF");
+        let export = selis_pdf_tools::reflow_epub(path, Some(selection), title)
+            .map_err(|e| CliError(e.to_string()))?;
+        match output {
+            Some(target) => {
+                std::fs::write(target, &export.epub)
+                    .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+                eprintln!(
+                    "wrote {} page(s), {} paragraph(s) to {target}",
+                    export.pages, export.paragraphs
+                );
+            }
+            None => {
+                return Err(CliError(
+                    "--format epub needs --output: the package is binary".to_string(),
+                ))
+            }
+        }
+        return Ok(());
+    }
+    if format == "docx" || format == "pptx" || format == "xlsx" {
+        let title = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("PDF");
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("document")
+            .to_string();
+        let (bytes, summary) = match format {
+            "docx" => {
+                let export = selis_pdf_tools::extract_docx(path, Some(selection), title)
+                    .map_err(|e| CliError(e.to_string()))?;
+                (export.bytes, format!("{} paragraph(s)", export.paragraphs))
+            }
+            "pptx" => {
+                let export = selis_pdf_tools::extract_pptx(path, Some(selection), title)
+                    .map_err(|e| CliError(e.to_string()))?;
+                (
+                    export.bytes,
+                    format!("{} page(s), {} text box(es)", export.pages, export.shapes),
+                )
+            }
+            _ => {
+                let export = selis_pdf_tools::extract_xlsx(path, Some(selection), title)
+                    .map_err(|e| CliError(e.to_string()))?;
+                (
+                    export.bytes,
+                    format!("{} table(s), {} row(s)", export.tables, export.rows),
+                )
+            }
+        };
+        match output {
+            Some(target) => {
+                std::fs::write(target, &bytes)
+                    .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+                eprintln!("wrote {target} ({summary})");
+            }
+            None => {
+                return Err(CliError(format!(
+                    "--format {format} needs --output: {stem}.{format} is binary"
+                )))
+            }
+        }
+        return Ok(());
+    }
+    if format == "reflow" {
+        let title = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("PDF");
+        let export = selis_pdf_tools::reflow_html(path, Some(selection), title)
+            .map_err(|e| CliError(e.to_string()))?;
+        match output {
+            Some(target) => {
+                std::fs::write(target, &export.html)
+                    .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+                eprintln!(
+                    "wrote {} page(s), {} paragraph(s) to {target}",
+                    export.pages, export.paragraphs
+                );
+            }
+            None => print!("{}", export.html),
+        }
+        return Ok(());
+    }
+    let export = selis_pdf_tools::extract_text(path, Some(selection))
+        .map_err(|e| CliError(e.to_string()))?;
+    match output {
+        Some(target) => {
+            std::fs::write(target, &export.text)
+                .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+            eprintln!(
+                "wrote {} page(s) to {target} ({})",
+                export.quality.pages,
+                export.quality.verdict()
+            );
+        }
+        None => print!("{}", export.text),
+    }
+    let report = export.quality.to_json();
+    match quality_out {
+        Some(target) => {
+            std::fs::write(target, &report)
+                .map_err(|e| CliError(format!("cannot write {target}: {e}")))?;
+        }
+        None => eprintln!("{report}"),
+    }
+    Ok(())
+}
+
+/// Split the document at every page whose text matches `find`.
+///
+/// The rule is stated before anything is written (it is the report's own
+/// `rule` field), every part is verified by the writer's structural gate, and
+/// the JSON report lists the parts and the pages that matched. A refusal (no
+/// page matches, or the only match is the first page) produces no file.
+///
+/// # Errors
+///
+/// A typed message from the tools layer, or a part that cannot be written.
+pub(crate) fn split(path: &str, find: &str, prefix: &str, json: bool) -> CliResult<()> {
+    let split =
+        selis_pdf_tools::split_by_text(path, find, prefix).map_err(|e| CliError(e.to_string()))?;
+    for (index, part) in split.parts.iter().enumerate() {
+        eprintln!(
+            "part {}: pages {}-{} -> {} ({} page(s), {})",
+            index.saturating_add(1),
+            part.first.saturating_add(1),
+            part.last.saturating_add(1),
+            part.output,
+            part.verification.pages_out,
+            part.verification.verdict
+        );
+    }
+    if json {
+        print!("{}", split.json);
     }
     Ok(())
 }

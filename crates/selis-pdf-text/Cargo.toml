@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
+selis-archive = { workspace = true }
 selis-geom = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-content = { workspace = true }

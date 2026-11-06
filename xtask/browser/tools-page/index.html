@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 42;
+      const CARD_COUNT = 43;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -1376,6 +1376,17 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
         const convertFiles = [
           { name: "notes.md", bytes: markdownFixture, type: "text/markdown" },
         ];
+        // A second fixture for the Phase 3 text card's table modes: one page,
+        // a two-column table with plain words, whose column edge the
+        // reconstruction has to find. The Excel leg's needles are only in this
+        // document if the table was reconstructed from the PDF the convert
+        // card made of it.
+        const tableFixture = new TextEncoder().encode(
+          "# Ledger\n\n| Item | Qty |\n| --- | --- |\n| Tea | 4 |\n| Coffee | 2 |\n",
+        );
+        const tableFiles = [
+          { name: "table.md", bytes: tableFixture, type: "text/markdown" },
+        ];
         // The repair leg needs a document whose cross-reference table is
         // unreadable, not merely mis-aimed: a wrong startxref is tolerated by
         // the parser, so the `xref` keyword itself has to be destroyed.
@@ -2245,6 +2256,95 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           network: onlineConvert.network,
         };
 
+        // The convert card's other five formats, one card invocation each:
+        // LaTeX, CSV, a pipe-table Markdown (the new table layout), SVG, and
+        // EPUB (a binary fixture, written with the same store-method layout
+        // the page's own bundles use). The needles come from each source's
+        // own words, so a format that silently produced nothing cannot pass.
+        const epubBytes = Uint8Array.from(
+          atob("UEsDBBQAAAAAAAAAIQBvYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAAAAAAACEAHgvXyd0AAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWw8P3htbCB2ZXJzaW9uPSIxLjAiPz48Y29udGFpbmVyIHZlcnNpb249IjEuMCIgeG1sbnM9InVybjpvYXNpczpuYW1lczp0YzpvcGVuZG9jdW1lbnQ6eG1sbnM6Y29udGFpbmVyIj48cm9vdGZpbGVzPjxyb290ZmlsZSBmdWxsLXBhdGg9Ik9FQlBTL2NvbnRlbnQub3BmIiBtZWRpYS10eXBlPSJhcHBsaWNhdGlvbi9vZWJwcy1wYWNrYWdlK3htbCIvPjwvcm9vdGZpbGVzPjwvY29udGFpbmVyPlBLAwQUAAAAAAAAACEAc10D7kYBAABGAQAAEQAAAE9FQlBTL2NvbnRlbnQub3BmPD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz48cGFja2FnZSB4bWxucz0iaHR0cDovL3d3dy5pZHBmLm9yZy8yMDA3L29wZiIgdmVyc2lvbj0iMy4wIj48bWV0YWRhdGEgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIj48ZGM6dGl0bGU+TGVkZ2VyPC9kYzp0aXRsZT48L21ldGFkYXRhPjxtYW5pZmVzdD48aXRlbSBpZD0ib25lIiBocmVmPSJvbmUueGh0bWwiIG1lZGlhLXR5cGU9ImFwcGxpY2F0aW9uL3hodG1sK3htbCIvPjwvbWFuaWZlc3Q+PHNwaW5lPjxpdGVtcmVmIGlkcmVmPSJvbmUiLz48L3NwaW5lPjwvcGFja2FnZT5QSwMEFAAAAAAAAAAhAEwCIwF0AAAAdAAAAA8AAABPRUJQUy9vbmUueGh0bWw8aHRtbCB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94aHRtbCI+PGJvZHk+PGgxPk9tbmlidXM8L2gxPjxwPlRoZSBMZWRnZXIgYXJyaXZlcyBieSBldmVuaW5nLjwvcD48L2JvZHk+PC9odG1sPlBLAQIUABQAAAAAAAAAIQBvYassFAAAABQAAAAIAAAAAAAAAAAAAAAAAAAAAABtaW1ldHlwZVBLAQIUABQAAAAAAAAAIQAeC9fJ3QAAAN0AAAAWAAAAAAAAAAAAAAAAADoAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAAAAAAhAHNdA+5GAQAARgEAABEAAAAAAAAAAAAAAAAASwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAAAAAAhAEwCIwF0AAAAdAAAAA8AAAAAAAAAAAAAAAAAwAIAAE9FQlBTL29uZS54aHRtbFBLBQYAAAAABAAEAPYAAABhAwAAAAA="),
+          (ch) => ch.charCodeAt(0),
+        );
+        const latexFixture = new TextEncoder().encode(
+          "\\section{Quarto}\n\nA short \\textbf{quarto} paragraph.\n",
+        );
+        const csvFixture = new TextEncoder().encode("Item,Qty\nTea,4\nCoffee,2\n");
+        const svgFixture = new TextEncoder().encode(
+          '<svg width="120" height="40" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="116" height="36" fill="#2244ff" stroke="#000"/><text x="10" y="26" font-size="14" fill="#ffffff">Ledgers</text></svg>',
+        );
+        const formatLegs = [
+          {
+            key: "latex",
+            label: "online LaTeX",
+            files: [{ name: "quarto.tex", bytes: latexFixture, type: "application/x-tex" }],
+            inputs: { format: "latex", title: "Quarto" },
+            title: "quarto-converted.pdf",
+            needles: ["Quarto"],
+          },
+          {
+            key: "csv",
+            label: "online CSV",
+            files: [{ name: "ledger.csv", bytes: csvFixture, type: "text/csv" }],
+            inputs: { format: "csv", title: "Ledger" },
+            title: "ledger-converted.pdf",
+            needles: ["Tea", "Coffee"],
+          },
+          {
+            key: "svg",
+            label: "online SVG",
+            files: [{ name: "mark.svg", bytes: svgFixture, type: "image/svg+xml" }],
+            inputs: { format: "svg", title: "Mark" },
+            title: "mark-converted.pdf",
+            needles: ["Ledgers"],
+          },
+          {
+            key: "epub",
+            label: "online EPUB",
+            files: [{ name: "book.epub", bytes: epubBytes, type: "application/epub+zip" }],
+            inputs: { format: "epub", title: "" },
+            title: "book-converted.pdf",
+            needles: ["Omnibus"],
+          },
+          {
+            key: "table",
+            label: "online table",
+            files: tableFiles,
+            inputs: { format: "md", title: "Ledger" },
+            title: "table-converted.pdf",
+            needles: ["Ledger", "Tea"],
+          },
+        ];
+        for (const leg of formatLegs) {
+          const name = leg.files[0].name;
+          const stem = name.replace(/\.[^.]+$/, "");
+          const run = await toolInFrame(
+            frame,
+            null,
+            null,
+            leg.label,
+            "convert",
+            leg.inputs,
+            leg.needles,
+            [],
+            leg.files,
+          );
+          const want = leg.title || (stem + "-converted.pdf");
+          const first = run.outputs && run.outputs[0] ? run.outputs[0] : null;
+          if (first && first.name !== want) {
+            throw new Error(leg.label + " produced " + first.name + ", expected " + want);
+          }
+          out[leg.key] = {
+            fileRows: run.fileRows,
+            runLabel: run.runLabel,
+            noUpload: run.noUpload,
+            status: run.status,
+            result: run.result,
+            outputs: run.outputs,
+            output: run.output,
+            network: run.network,
+          };
+        }
+
         // The form-fill leg is the only card whose own DOM carries the proof:
         // seven fixture fields render, the signature row is disabled with the
         // page's own invalidation warning beside it, and the Blob that comes
@@ -2269,6 +2369,273 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           signatureFieldDisabled: onlineFormFill.signatureFieldDisabled,
           readOnlyDisabled: onlineFormFill.readOnlyDisabled,
           fieldRows: onlineFormFill.fieldRows,
+        };
+
+        // The text leg drives the Phase 3 card end to end. It reads a document
+        // that certainly HAS text — the PDF the convert leg just made from the
+        // markdown notes — because the report fixture draws no glyphs, and a
+        // page count with zero characters would prove the separator and nothing
+        // else. Both the separator and a word from the source must come back in
+        // the downloaded text.
+        const convertedBytes = onlineConvert.outputs && onlineConvert.outputs[0]
+          ? onlineConvert.outputs[0].raw
+          : null;
+        if (!convertedBytes) {
+          throw new Error("the convert leg left no bytes for the text leg");
+        }
+        const onlineText = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online text",
+          "text",
+          { textMode: "text" },
+          ["--- page 1 of 1 ---", "Parity Report"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: new Uint8Array(convertedBytes.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        out.text = {
+          fileRows: onlineText.fileRows,
+          runLabel: onlineText.runLabel,
+          noUpload: onlineText.noUpload,
+          status: onlineText.status,
+          result: onlineText.result,
+          outputs: onlineText.outputs,
+          output: onlineText.output,
+          network: onlineText.network,
+        };
+
+        // The Phase 3 document modes: Word, PowerPoint and Excel, all reading
+        // the same converted PDF the text leg read. The Word and PowerPoint
+        // legs take the notes-converted document (paragraphs, headings) so the
+        // needles come from the source's own words; the Excel leg takes the
+        // table document, whose cells are only in the workbook if the table
+        // was reconstructed.
+        const onlineTableConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online table convert",
+          "convert",
+          { format: "md", title: "Ledger" },
+          ["Ledger"],
+          [],
+          tableFiles,
+        );
+        const onlineTableBytes = onlineTableConvert.outputs && onlineTableConvert.outputs[0]
+          ? onlineTableConvert.outputs[0].raw
+          : null;
+        if (!onlineTableBytes) {
+          throw new Error("the table convert leg left no bytes for the Excel leg");
+        }
+        const notesBytesForOoxml = [
+          {
+            name: "notes-converted.pdf",
+            bytes: new Uint8Array(convertedBytes.slice(0)),
+            type: "application/pdf",
+          },
+        ];
+        const tableBytesForExcel = [
+          {
+            name: "table-converted.pdf",
+            bytes: new Uint8Array(onlineTableBytes.slice(0)),
+            type: "application/pdf",
+          },
+        ];
+        // The other four text modes: tables (reading the table document the
+        // Excel leg used), reflow and EPUB (reading the notes), and split at a
+        // phrase (needs two pages, so this converts a chapter fixture of its
+        // own first — Chapter 2 lands on page two by construction).
+        const filler = Array.from(
+          { length: 40 },
+          (_, i) => "Filler line " + (i + 1) + " keeps the page turning with ordinary prose.\n",
+        ).join("\n");
+        const chapterFixture = new TextEncoder().encode(
+          "# Chapter 1\n\n" + filler + "\n# Chapter 2\n\nThe second chapter begins here.\n",
+        );
+        const chapterConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online chapter convert",
+          "convert",
+          { format: "md", title: "Chapter" },
+          [],
+          [],
+          [{ name: "chapter.md", bytes: chapterFixture, type: "text/markdown" }],
+        );
+        const chapterBytes = chapterConvert.outputs && chapterConvert.outputs[0]
+          ? chapterConvert.outputs[0].raw
+          : null;
+        if (!chapterBytes) {
+          throw new Error("the chapter convert leg left no bytes for the split leg");
+        }
+        const tablesBytesForText = [
+          {
+            name: "table-converted.pdf",
+            bytes: new Uint8Array(onlineTableBytes.slice(0)),
+            type: "application/pdf",
+          },
+        ];
+        const chapterBytesForSplit = [
+          {
+            name: "chapter-converted.pdf",
+            bytes: new Uint8Array(chapterBytes.slice(0)),
+            type: "application/pdf",
+          },
+        ];
+        const onlineTables = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online tables",
+          "text",
+          { textMode: "tables" },
+          ["Tea", "Coffee"],
+          [],
+          tablesBytesForText,
+        );
+        out.tables = {
+          fileRows: onlineTables.fileRows,
+          runLabel: onlineTables.runLabel,
+          noUpload: onlineTables.noUpload,
+          status: onlineTables.status,
+          result: onlineTables.result,
+          outputs: onlineTables.outputs,
+          output: onlineTables.output,
+          network: onlineTables.network,
+        };
+        const onlineSplitText = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online split",
+          "text",
+          { textMode: "split", find: "Chapter 2" },
+          ["part-1.pdf", "part-2.pdf"],
+          [],
+          chapterBytesForSplit,
+        );
+        out.splitText = {
+          fileRows: onlineSplitText.fileRows,
+          runLabel: onlineSplitText.runLabel,
+          noUpload: onlineSplitText.noUpload,
+          status: onlineSplitText.status,
+          result: onlineSplitText.result,
+          outputs: onlineSplitText.outputs,
+          output: onlineSplitText.output,
+          network: onlineSplitText.network,
+        };
+        const onlineReflow = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online reflow",
+          "text",
+          { textMode: "reflow" },
+          ["<article>", "Parity Report"],
+          [],
+          notesBytesForOoxml,
+        );
+        out.reflow = {
+          fileRows: onlineReflow.fileRows,
+          runLabel: onlineReflow.runLabel,
+          noUpload: onlineReflow.noUpload,
+          status: onlineReflow.status,
+          result: onlineReflow.result,
+          outputs: onlineReflow.outputs,
+          output: onlineReflow.output,
+          network: onlineReflow.network,
+        };
+        const onlineEpubBook = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online epub",
+          "text",
+          { textMode: "epub" },
+          ["application/epub+zip", "OEBPS/text/page-1.xhtml"],
+          [],
+          notesBytesForOoxml,
+        );
+        out.epubOut = {
+          fileRows: onlineEpubBook.fileRows,
+          runLabel: onlineEpubBook.runLabel,
+          noUpload: onlineEpubBook.noUpload,
+          status: onlineEpubBook.status,
+          result: onlineEpubBook.result,
+          outputs: onlineEpubBook.outputs,
+          output: onlineEpubBook.output,
+          network: onlineEpubBook.network,
+        };
+        const onlineWord = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online word",
+          "text",
+          { textMode: "word" },
+          ["word/document.xml", "Parity Report"],
+          [],
+          notesBytesForOoxml,
+        );
+        out.word = {
+          fileRows: onlineWord.fileRows,
+          runLabel: onlineWord.runLabel,
+          noUpload: onlineWord.noUpload,
+          status: onlineWord.status,
+          result: onlineWord.result,
+          outputs: onlineWord.outputs,
+          output: onlineWord.output,
+          network: onlineWord.network,
+        };
+        const onlineSlides = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online slides",
+          "text",
+          { textMode: "slides" },
+          ["ppt/slides/slide1.xml", "Parity Report"],
+          [],
+          notesBytesForOoxml,
+        );
+        out.slides = {
+          fileRows: onlineSlides.fileRows,
+          runLabel: onlineSlides.runLabel,
+          noUpload: onlineSlides.noUpload,
+          status: onlineSlides.status,
+          result: onlineSlides.result,
+          outputs: onlineSlides.outputs,
+          output: onlineSlides.output,
+          network: onlineSlides.network,
+        };
+        const onlineWorkbook = await toolInFrame(
+          frame,
+          null,
+          null,
+          "online workbook",
+          "text",
+          { textMode: "workbook" },
+          ["xl/workbook.xml", "Tea", "Coffee"],
+          [],
+          tableBytesForExcel,
+        );
+        out.workbook = {
+          fileRows: onlineWorkbook.fileRows,
+          runLabel: onlineWorkbook.runLabel,
+          noUpload: onlineWorkbook.noUpload,
+          status: onlineWorkbook.status,
+          result: onlineWorkbook.result,
+          outputs: onlineWorkbook.outputs,
+          output: onlineWorkbook.output,
+          network: onlineWorkbook.network,
         };
 
         // PDF to PNG runs in its own lazy chunk. The single-page leg must
@@ -3080,6 +3447,252 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           "offline form fill",
           { Name: "Browser Ada Lovelace", Agree: "Yes", Color: "Green", Size: "Large" },
         );
+        // The text chunk is runtime-cached on first use, like convert and the
+        // raster chunks: the online leg already fetched it, so this one proves
+        // the Phase 3 card still exports with the origin cut, and the WASM it
+        // needs cannot have come from the network. It reads the PDF the offline
+        // convert leg just made, so the words are the same ones the online leg
+        // recovered.
+        const offlineConvertedBytes = offlineConvert.outputs && offlineConvert.outputs[0]
+          ? offlineConvert.outputs[0].raw
+          : null;
+        if (!offlineConvertedBytes) {
+          throw new Error("the offline convert leg left no bytes for the text leg");
+        }
+        const offlineText = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline text",
+          "text",
+          { textMode: "text" },
+          ["--- page 1 of 1 ---", "Parity Report"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: new Uint8Array(offlineConvertedBytes.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        // The same three document modes, offline, reading the same PDFs.
+        const offlineTableConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline table convert",
+          "convert",
+          { format: "md", title: "Ledger" },
+          ["Ledger"],
+          [],
+          tableFiles,
+        );
+        const offlineTableBytes = offlineTableConvert.outputs && offlineTableConvert.outputs[0]
+          ? offlineTableConvert.outputs[0].raw
+          : null;
+        if (!offlineTableBytes) {
+          throw new Error("the offline table convert leg left no bytes for the Excel leg");
+        }
+        const offlineNotesBytes = new Uint8Array(offlineConvertedBytes.slice(0));
+        const offlineTableBytesArg = new Uint8Array(offlineTableBytes.slice(0));
+        const offlineWord = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline word",
+          "text",
+          { textMode: "word" },
+          ["word/document.xml", "Parity Report"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: offlineNotesBytes,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineSlides = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline slides",
+          "text",
+          { textMode: "slides" },
+          ["ppt/slides/slide1.xml", "Parity Report"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: offlineNotesBytes,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineWorkbook = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline workbook",
+          "text",
+          { textMode: "workbook" },
+          ["xl/workbook.xml", "Tea", "Coffee"],
+          [],
+          [
+            {
+              name: "table-converted.pdf",
+              bytes: offlineTableBytesArg,
+              type: "application/pdf",
+            },
+          ],
+        );
+        // The remaining text-card modes, offline, over the same PDFs the
+        // online legs used (the chapter PDF is converted again from the cached
+        // convert chunk, so the split leg has two pages without the network).
+        const offlineChapterConvert = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline chapter convert",
+          "convert",
+          { format: "md", title: "Chapter" },
+          [],
+          [],
+          [{ name: "chapter.md", bytes: chapterFixture, type: "text/markdown" }],
+        );
+        const offlineChapterBytes = offlineChapterConvert.outputs
+          && offlineChapterConvert.outputs[0]
+          ? offlineChapterConvert.outputs[0].raw
+          : null;
+        if (!offlineChapterBytes) {
+          throw new Error("the offline chapter convert leg left no bytes for the split leg");
+        }
+        const offlineTables = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline tables",
+          "text",
+          { textMode: "tables" },
+          ["Tea", "Coffee"],
+          [],
+          [
+            {
+              name: "table-converted.pdf",
+              bytes: offlineTableBytesArg,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineSplitText = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline split",
+          "text",
+          { textMode: "split", find: "Chapter 2" },
+          ["part-1.pdf", "part-2.pdf"],
+          [],
+          [
+            {
+              name: "chapter-converted.pdf",
+              bytes: new Uint8Array(offlineChapterBytes.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineReflow = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline reflow",
+          "text",
+          { textMode: "reflow" },
+          ["<article>", "Parity Report"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: offlineNotesBytes,
+              type: "application/pdf",
+            },
+          ],
+        );
+        const offlineEpubOut = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline epub",
+          "text",
+          { textMode: "epub" },
+          ["application/epub+zip", "OEBPS/text/page-1.xhtml"],
+          [],
+          [
+            {
+              name: "notes-converted.pdf",
+              bytes: offlineNotesBytes,
+              type: "application/pdf",
+            },
+          ],
+        );
+        // The convert card's other five formats, offline: the same cached
+        // chunk and the same fixtures the online legs used.
+        const offlineLatex = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline LaTeX",
+          "convert",
+          { format: "latex", title: "Quarto" },
+          ["Quarto"],
+          [],
+          [{ name: "quarto.tex", bytes: latexFixture, type: "application/x-tex" }],
+        );
+        const offlineCsv = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline CSV",
+          "convert",
+          { format: "csv", title: "Ledger" },
+          ["Tea", "Coffee"],
+          [],
+          [{ name: "ledger.csv", bytes: csvFixture, type: "text/csv" }],
+        );
+        const offlineSvg = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline SVG",
+          "convert",
+          { format: "svg", title: "Mark" },
+          ["Ledgers"],
+          [],
+          [{ name: "mark.svg", bytes: svgFixture, type: "image/svg+xml" }],
+        );
+        const offlineEpub = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline EPUB convert",
+          "convert",
+          { format: "epub", title: "" },
+          ["Omnibus"],
+          [],
+          [{ name: "book.epub", bytes: epubBytes, type: "application/epub+zip" }],
+        );
+        const offlineTable = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline table convert",
+          "convert",
+          { format: "md", title: "Ledger" },
+          ["Ledger", "Tea"],
+          [],
+          tableFiles,
+        );
         // The raster chunk is runtime-cached on first use, like convert, so the
         // offline leg proves the renderer still loads and renders with the
         // origin cut. Both the single PNG and the ZIP are re-run.
@@ -3527,6 +4140,136 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           outputs: offline.outputs,
           output: offline.output,
           network: offline.network,
+          text: {
+            fileRows: offlineText.fileRows,
+            runLabel: offlineText.runLabel,
+            noUpload: offlineText.noUpload,
+            status: offlineText.status,
+            result: offlineText.result,
+            outputs: offlineText.outputs,
+            output: offlineText.output,
+            network: offlineText.network,
+          },
+          word: {
+            fileRows: offlineWord.fileRows,
+            runLabel: offlineWord.runLabel,
+            noUpload: offlineWord.noUpload,
+            status: offlineWord.status,
+            result: offlineWord.result,
+            outputs: offlineWord.outputs,
+            output: offlineWord.output,
+            network: offlineWord.network,
+          },
+          slides: {
+            fileRows: offlineSlides.fileRows,
+            runLabel: offlineSlides.runLabel,
+            noUpload: offlineSlides.noUpload,
+            status: offlineSlides.status,
+            result: offlineSlides.result,
+            outputs: offlineSlides.outputs,
+            output: offlineSlides.output,
+            network: offlineSlides.network,
+          },
+          workbook: {
+            fileRows: offlineWorkbook.fileRows,
+            runLabel: offlineWorkbook.runLabel,
+            noUpload: offlineWorkbook.noUpload,
+            status: offlineWorkbook.status,
+            result: offlineWorkbook.result,
+            outputs: offlineWorkbook.outputs,
+            output: offlineWorkbook.output,
+            network: offlineWorkbook.network,
+          },
+          tables: {
+            fileRows: offlineTables.fileRows,
+            runLabel: offlineTables.runLabel,
+            noUpload: offlineTables.noUpload,
+            status: offlineTables.status,
+            result: offlineTables.result,
+            outputs: offlineTables.outputs,
+            output: offlineTables.output,
+            network: offlineTables.network,
+          },
+          splitText: {
+            fileRows: offlineSplitText.fileRows,
+            runLabel: offlineSplitText.runLabel,
+            noUpload: offlineSplitText.noUpload,
+            status: offlineSplitText.status,
+            result: offlineSplitText.result,
+            outputs: offlineSplitText.outputs,
+            output: offlineSplitText.output,
+            network: offlineSplitText.network,
+          },
+          reflow: {
+            fileRows: offlineReflow.fileRows,
+            runLabel: offlineReflow.runLabel,
+            noUpload: offlineReflow.noUpload,
+            status: offlineReflow.status,
+            result: offlineReflow.result,
+            outputs: offlineReflow.outputs,
+            output: offlineReflow.output,
+            network: offlineReflow.network,
+          },
+          epubOut: {
+            fileRows: offlineEpubOut.fileRows,
+            runLabel: offlineEpubOut.runLabel,
+            noUpload: offlineEpubOut.noUpload,
+            status: offlineEpubOut.status,
+            result: offlineEpubOut.result,
+            outputs: offlineEpubOut.outputs,
+            output: offlineEpubOut.output,
+            network: offlineEpubOut.network,
+          },
+          latex: {
+            fileRows: offlineLatex.fileRows,
+            runLabel: offlineLatex.runLabel,
+            noUpload: offlineLatex.noUpload,
+            status: offlineLatex.status,
+            result: offlineLatex.result,
+            outputs: offlineLatex.outputs,
+            output: offlineLatex.output,
+            network: offlineLatex.network,
+          },
+          csv: {
+            fileRows: offlineCsv.fileRows,
+            runLabel: offlineCsv.runLabel,
+            noUpload: offlineCsv.noUpload,
+            status: offlineCsv.status,
+            result: offlineCsv.result,
+            outputs: offlineCsv.outputs,
+            output: offlineCsv.output,
+            network: offlineCsv.network,
+          },
+          svg: {
+            fileRows: offlineSvg.fileRows,
+            runLabel: offlineSvg.runLabel,
+            noUpload: offlineSvg.noUpload,
+            status: offlineSvg.status,
+            result: offlineSvg.result,
+            outputs: offlineSvg.outputs,
+            output: offlineSvg.output,
+            network: offlineSvg.network,
+          },
+          epub: {
+            fileRows: offlineEpub.fileRows,
+            runLabel: offlineEpub.runLabel,
+            noUpload: offlineEpub.noUpload,
+            status: offlineEpub.status,
+            result: offlineEpub.result,
+            outputs: offlineEpub.outputs,
+            output: offlineEpub.output,
+            network: offlineEpub.network,
+          },
+          table: {
+            fileRows: offlineTable.fileRows,
+            runLabel: offlineTable.runLabel,
+            noUpload: offlineTable.noUpload,
+            status: offlineTable.status,
+            result: offlineTable.result,
+            outputs: offlineTable.outputs,
+            output: offlineTable.output,
+            network: offlineTable.network,
+          },
           mix: {
             fileRows: offlineMix.fileRows,
             runLabel: offlineMix.runLabel,

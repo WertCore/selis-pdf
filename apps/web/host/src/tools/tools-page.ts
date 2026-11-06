@@ -60,6 +60,14 @@ import {
 	signatureRows,
 	signingStamp,
 } from "./sign-protocol.js";
+import {
+	type TextOp,
+	type TextOutput,
+	TextProtocolError,
+	type TextWasm,
+	loadTextChunk,
+	runTextOp,
+} from "./text-protocol.js";
 
 interface ConvertWasm {
 	readonly exports: {
@@ -131,6 +139,7 @@ type ToolId =
 	| "tiff"
 	| "webp"
 	| "html"
+	| "text"
 	| "unlock"
 	| "protect"
 	| "clear_permissions"
@@ -142,14 +151,7 @@ type ToolId =
 /** One AcroForm field as the read op reports it. */
 interface FormFieldJson {
 	readonly name: string;
-	readonly kind:
-		| "text"
-		| "checkbox"
-		| "radio"
-		| "choice"
-		| "signature"
-		| "push_button"
-		| "unknown";
+	readonly kind: "text" | "checkbox" | "radio" | "choice" | "signature" | "push_button" | "unknown";
 	readonly value?: string;
 	readonly options?: readonly string[];
 	readonly labels?: readonly string[];
@@ -176,8 +178,62 @@ type SecurityToolId = "unlock" | "protect" | "clear_permissions" | "permissions"
 /** The cards that hand their pages to the lazy raster chunk. */
 type RasterToolId = "png" | "jpg" | "tiff" | "webp";
 
+/**
+ * The sections the card grid is organised into. Forty-two cards in one flat
+ * list is not a menu, it is a wall: the groups are named after what a reader
+ * has come to *do*, in the order the operations build on each other — arrange
+ * the pages, change what they are, mark them up, then decide who may open
+ * them. `TOOL_GROUPS` is the display order; a card with no group is a bug, so
+ * the type makes the field required rather than optional.
+ */
+type ToolGroup =
+	| "organise"
+	| "convert"
+	| "stamp"
+	| "metadata"
+	| "security"
+	| "attach"
+	| "repair"
+	| "bundle";
+
+const TOOL_GROUPS: readonly {
+	readonly id: ToolGroup;
+	readonly label: string;
+	readonly note: string;
+}[] = [
+	{ id: "organise", label: "Organise pages", note: "Put pages in the order you want them." },
+	{
+		id: "convert",
+		label: "Convert",
+		note: "Change a PDF into another format, or another format into a PDF.",
+	},
+	{
+		id: "stamp",
+		label: "Stamp & annotate",
+		note: "Write numbers, marks and bookmarks onto the pages.",
+	},
+	{
+		id: "metadata",
+		label: "Metadata",
+		note: "Read the document’s own description, edit it, or remove it.",
+	},
+	{
+		id: "security",
+		label: "Security & signatures",
+		note: "Passwords, permissions, forms and signatures.",
+	},
+	{ id: "attach", label: "Attachments", note: "Files carried inside the document." },
+	{ id: "repair", label: "Optimise & repair", note: "Make it smaller, or make it open again." },
+	{
+		id: "bundle",
+		label: "Batch & archive",
+		note: "Run one tool over many files, or collect them into a ZIP.",
+	},
+];
+
 interface ToolDef {
 	readonly id: ToolId;
+	readonly group: ToolGroup;
 	readonly mark: string;
 	readonly title: string;
 	readonly blurb: string;
@@ -195,6 +251,7 @@ interface ToolDef {
 const TOOLS: readonly ToolDef[] = [
 	{
 		id: "merge",
+		group: "organise",
 		mark: "⇄",
 		title: "Merge PDF",
 		blurb: "Combine several PDFs into one, in the order you choose.",
@@ -203,6 +260,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "mix",
+		group: "organise",
 		mark: "⇆",
 		title: "Mix pages",
 		blurb: "Interleave pages from two or more PDFs, round-robin, into one document.",
@@ -211,6 +269,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "split",
+		group: "organise",
 		mark: "✂",
 		title: "Split PDF",
 		blurb: "Split by range, every N pages, in half, by size, by bookmarks, or extract pages.",
@@ -219,6 +278,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "rotate",
+		group: "organise",
 		mark: "↻",
 		title: "Rotate PDF",
 		blurb: "Turn all pages or a selection by 90, 180, or 270 degrees.",
@@ -227,6 +287,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "crop",
+		group: "organise",
 		mark: "⌗",
 		title: "Crop PDF",
 		blurb: "Trim page edges by points, measured in the page's displayed orientation.",
@@ -235,6 +296,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "flip",
+		group: "organise",
 		mark: "⇋",
 		title: "Flip PDF",
 		blurb: "Mirror page content horizontally or vertically.",
@@ -243,6 +305,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "page_labels",
+		group: "organise",
 		mark: "L",
 		title: "Page labels",
 		blurb: "Set the numbering readers show: decimal, roman, letters, or a prefix.",
@@ -251,6 +314,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "resize",
+		group: "organise",
 		mark: "⤢",
 		title: "Resize pages",
 		blurb: "Scale pages to A4, Letter, or a custom size in points.",
@@ -259,6 +323,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "nup",
+		group: "organise",
 		mark: "▦",
 		title: "N-up pages",
 		blurb: "Place 2, 4, 6, or 9 pages on each sheet.",
@@ -267,6 +332,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "delete",
+		group: "organise",
 		mark: "⌫",
 		title: "Delete pages",
 		blurb: "Remove the pages you no longer need.",
@@ -275,6 +341,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "reorder",
+		group: "organise",
 		mark: "⇅",
 		title: "Organize pages",
 		blurb: "Reorder pages, duplicate pages, or insert blank pages.",
@@ -283,6 +350,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "metadata_report",
+		group: "metadata",
 		mark: "ℹ",
 		title: "Read metadata",
 		blurb: "Export the Info dictionary, XMP packet, and structure as JSON.",
@@ -291,6 +359,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "metadata",
+		group: "metadata",
 		mark: "Aa",
 		title: "Edit metadata",
 		blurb: "Set the title, author, subject, and keywords.",
@@ -299,6 +368,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "strip_metadata",
+		group: "metadata",
 		mark: "×",
 		title: "Remove metadata",
 		blurb: "Strip the Info dictionary and the XMP packet from the document.",
@@ -307,6 +377,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "page_numbers",
+		group: "stamp",
 		mark: "1",
 		title: "Add page numbers",
 		blurb: "Stamp page numbers on every page or a selection.",
@@ -315,6 +386,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "watermark",
+		group: "stamp",
 		mark: "W",
 		title: "Watermark PDF",
 		blurb: "Add a translucent diagonal or horizontal text watermark.",
@@ -323,6 +395,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "image_watermark",
+		group: "stamp",
 		mark: "IW",
 		title: "Image watermark",
 		blurb: "Stamp a PNG or JPEG logo or seal across the pages you choose.",
@@ -333,6 +406,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "outline",
+		group: "stamp",
 		mark: "BM",
 		title: "Edit bookmarks",
 		blurb: "Add, rename, retarget, or remove the document's bookmarks.",
@@ -341,6 +415,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "header_footer",
+		group: "stamp",
 		mark: "HF",
 		title: "Header & footer",
 		blurb: "Add header and footer lines with page placeholders.",
@@ -349,6 +424,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "bates",
+		group: "stamp",
 		mark: "B",
 		title: "Bates numbering",
 		blurb: "Apply sequential legal-style numbers with a prefix and padding.",
@@ -357,6 +433,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "compress",
+		group: "repair",
 		mark: "Z",
 		title: "Compress PDF",
 		blurb: "Lossless cleanup: drop unreachable objects and re-encode streams.",
@@ -365,6 +442,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "attachments",
+		group: "attach",
 		mark: "A",
 		title: "Extract attachments",
 		blurb: "Download the files embedded inside a PDF, individually or as a ZIP.",
@@ -373,6 +451,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "attach",
+		group: "attach",
 		mark: "＋",
 		title: "Embed files",
 		blurb: "Attach files inside a PDF so they travel with it.",
@@ -381,6 +460,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "detach",
+		group: "attach",
 		mark: "－",
 		title: "Remove attachments",
 		blurb: "Delete every file embedded inside a PDF.",
@@ -389,6 +469,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "repair",
+		group: "repair",
 		mark: "R",
 		title: "Repair PDF",
 		blurb: "Recover the pages of a damaged PDF into a clean, consistent file.",
@@ -397,6 +478,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "batch",
+		group: "bundle",
 		mark: "≡",
 		title: "Batch queue",
 		blurb: "Run one tool over several PDFs; each file gets its own verified result.",
@@ -407,6 +489,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "image_to_pdf",
+		group: "convert",
 		mark: "▣",
 		title: "Image to PDF",
 		blurb: "Turn PNG and JPEG images into a PDF, one page per image.",
@@ -417,15 +500,17 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "convert",
+		group: "convert",
 		mark: "▾",
 		title: "Convert to PDF",
-		blurb: "Turn Markdown, HTML, or CSV text into a PDF.",
+		blurb: "Turn Markdown, HTML, CSV, LaTeX, SVG or EPUB into a PDF.",
 		verb: "Convert to PDF",
 		multiple: false,
 		accepts: "text",
 	},
 	{
 		id: "png",
+		group: "convert",
 		mark: "▧",
 		title: "PDF to PNG",
 		blurb: "Render every page, or a selection, to lossless PNG images.",
@@ -435,6 +520,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "jpg",
+		group: "convert",
 		mark: "▨",
 		title: "PDF to JPG",
 		blurb: "Render every page, or a selection, to compact JPEG images.",
@@ -444,6 +530,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "tiff",
+		group: "convert",
 		mark: "▤",
 		title: "PDF to TIFF",
 		blurb: "Render every page, or a selection, into one lossless multi-page TIFF.",
@@ -453,6 +540,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "webp",
+		group: "convert",
 		mark: "▥",
 		title: "PDF to WebP",
 		blurb: "Render every page, or a selection, to lossless WebP images.",
@@ -462,6 +550,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "html",
+		group: "convert",
 		mark: "◩",
 		title: "PDF to HTML",
 		blurb: "Write every page, or a selection, as one positioned HTML document.",
@@ -470,7 +559,19 @@ const TOOLS: readonly ToolDef[] = [
 		accepts: "pdf",
 	},
 	{
+		id: "text",
+		group: "convert",
+		mark: "¶",
+		title: "Extract text",
+		blurb:
+			"Recover the document's text, its tables, a reading-order article, a Word document, a PowerPoint deck, or an Excel workbook.",
+		verb: "Extract text",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
 		id: "zip",
+		group: "bundle",
 		mark: "▣",
 		title: "ZIP files",
 		blurb: "Bundle several files into one deterministic ZIP.",
@@ -481,6 +582,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "fill_forms",
+		group: "security",
 		mark: "☑",
 		title: "Fill forms",
 		blurb: "Read an AcroForm, fill its fields, and save the filled PDF.",
@@ -490,6 +592,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "unlock",
+		group: "security",
 		mark: "◇",
 		title: "Remove password",
 		blurb: "Open a protected PDF with its password and save it without one.",
@@ -499,6 +602,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "protect",
+		group: "security",
 		mark: "◆",
 		title: "Protect with password",
 		blurb: "Encrypt a PDF with AES-256 and choose what a reader may do with it.",
@@ -508,6 +612,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "clear_permissions",
+		group: "security",
 		mark: "◈",
 		title: "Clear permissions",
 		blurb: "Lift the print, copy, modify and annotate restrictions, with the owner password.",
@@ -517,6 +622,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "permissions",
+		group: "security",
 		mark: "◉",
 		title: "Set permissions",
 		blurb: "Write the permission bits a document should carry, guarded by an owner password.",
@@ -526,6 +632,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "sign",
+		group: "security",
 		mark: "✍",
 		title: "Sign PDF",
 		blurb: "Draw a typed or freehand stamp, or sign with a key that never leaves this device.",
@@ -535,6 +642,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "certificate",
+		group: "security",
 		mark: "◊",
 		title: "Certificate validation",
 		blurb: "Read every signature and say whether its chain ends at a certificate you trust.",
@@ -544,6 +652,7 @@ const TOOLS: readonly ToolDef[] = [
 	},
 	{
 		id: "workflow",
+		group: "security",
 		mark: "⤳",
 		title: "Approval workflow",
 		blurb: "Record an approval decision on the document itself, with no server in the loop.",
@@ -767,7 +876,80 @@ function reportRows(
 	if (typeof parsed !== "object" || parsed === null) {
 		return [{ label: "Metadata", value: "the report held no object" }];
 	}
+	// The Phase 3 reports are not metadata reports: each names its own schema,
+	// and the card shows the facts a reader acts on rather than dumping JSON.
+	const schema = (parsed as { schema?: unknown }).schema;
+	if (schema === "selis-extract-quality/1") {
+		return textQualityRows(parsed as TextQualityJson);
+	}
+	if (schema === "selis-tables/1") {
+		const report = parsed as TablesReportJson;
+		return [
+			{ label: "Tables found", value: String(report.tables ?? 0) },
+			{ label: "Rows", value: String(report.rows ?? 0) },
+			{
+				label: "Lowest confidence",
+				value: typeof report.min_confidence === "number" ? report.min_confidence.toFixed(2) : "—",
+			},
+		];
+	}
+	if (schema === "selis-split-text/1") {
+		const report = parsed as SplitTextJson;
+		const pages = (report.matched_pages ?? []).join(", ");
+		return [
+			{ label: "Rule", value: report.rule ?? "a new part starts at each matching page" },
+			{ label: "Matched pages", value: pages === "" ? "none" : pages },
+			{ label: "Parts", value: String((report.parts ?? []).length) },
+		];
+	}
 	return metadataRows(parsed as MetadataReportJson);
+}
+
+/** The text export's quality report, as the chunk writes it. */
+interface TextQualityJson {
+	readonly verdict?: string;
+	readonly pages?: number;
+	readonly characters?: number;
+	readonly lines?: number;
+	readonly blank_pages?: number;
+	readonly pages_with_text?: number;
+	readonly low_confidence_pages?: number;
+}
+
+/** The table report's shape. */
+interface TablesReportJson {
+	readonly tables?: number;
+	readonly rows?: number;
+	readonly min_confidence?: number;
+}
+
+/** The split report's shape. */
+interface SplitTextJson {
+	readonly rule?: string;
+	readonly matched_pages?: readonly number[];
+	readonly parts?: readonly unknown[];
+}
+
+/**
+ * The rows a text export shows: what was recovered, and the two facts that make
+ * the verdict honest — pages that recovered nothing, and pages that drew text
+ * the extractor could not read.
+ */
+function textQualityRows(report: TextQualityJson): VerificationRow[] {
+	return [
+		{ label: "Verdict", value: report.verdict ?? "unknown" },
+		{ label: "Pages", value: String(report.pages ?? 0) },
+		{ label: "Characters", value: String(report.characters ?? 0) },
+		{ label: "Lines", value: String(report.lines ?? 0) },
+		{ label: "Pages with text", value: String(report.pages_with_text ?? 0) },
+		{
+			label: "Low confidence",
+			value:
+				(report.low_confidence_pages ?? 0) === 0
+					? "no page lost its text"
+					: `${report.low_confidence_pages ?? 0} page(s) drew text nothing could read`,
+		},
+	];
 }
 
 /** The longest failure the queue prints in a row; the full text is in the log. */
@@ -892,9 +1074,8 @@ function init(): void {
 		runButton.textContent = busy ? "Working locally…" : tool.verb;
 	}
 
-	function renderToolGrid(): void {
-		const cards: HTMLElement[] = [];
-		for (const tool of TOOLS) {
+	function toolCard(tool: ToolDef): HTMLElement {
+		{
 			const card = button("", "tool-card");
 			card.dataset.tool = tool.id;
 			card.append(
@@ -923,9 +1104,35 @@ function init(): void {
 			card.addEventListener("click", () => {
 				selectTool(tool.id);
 			});
-			cards.push(card);
+			return card;
 		}
-		toolGrid.replaceChildren(...cards);
+	}
+
+	/**
+	 * The grid is one section per group, in `TOOL_GROUPS` order. A tool whose
+	 * group is missing from that list would silently disappear, so the count is
+	 * checked before anything is rendered.
+	 */
+	function renderToolGrid(): void {
+		const sections = TOOL_GROUPS.map((group) => {
+			const section = make("section", "tool-group");
+			section.id = `tool-group-${group.id}`;
+			const head = make("div", "tool-group-head");
+			const title = make("h2", "tool-group-title");
+			title.textContent = group.label;
+			const note = make("p", "tool-group-note");
+			note.textContent = group.note;
+			head.append(title, note);
+			const grid = make("div", "tool-grid");
+			grid.append(...TOOLS.filter((tool) => tool.group === group.id).map(toolCard));
+			section.append(head, grid);
+			return section;
+		});
+		toolGrid.replaceChildren(...sections);
+		const dark = toolGrid.querySelectorAll(".tool-card").length;
+		if (dark !== TOOLS.length) {
+			throw new Error(`tool grid rendered ${dark} of ${TOOLS.length} cards`);
+		}
 	}
 
 	function addField(key: string, labelText: string, control: Control, hint?: string): Control {
@@ -1107,15 +1314,16 @@ function init(): void {
 	type FormFieldRow = { readonly name: string; readonly value: () => string };
 
 	/** The label for a choice option: the parallel `/Opt` label when the file carries one, the export value otherwise. */
-	function choiceLabel(labels: readonly string[] | undefined, value: string, index: number): string {
+	function choiceLabel(
+		labels: readonly string[] | undefined,
+		value: string,
+		index: number,
+	): string {
 		const label = labels?.[index];
 		return label === undefined || label === "" ? value : label;
 	}
 
-	function buildFormFieldRow(
-		rows: FormFieldRow[],
-		field: FormFieldJson,
-	): HTMLElement {
+	function buildFormFieldRow(rows: FormFieldRow[], field: FormFieldJson): HTMLElement {
 		const row = make("div", "form-field");
 		row.dataset.field = field.name;
 		const id = `field-${rows.length}`;
@@ -1155,10 +1363,7 @@ function init(): void {
 			// A read-only field is shown for completeness and never submitted; the
 			// engine refuses it too, and hiding it would make a signed or
 			// locked form look filled.
-			return disabledFormControl(
-				id,
-				field.value ?? "read-only",
-			);
+			return disabledFormControl(id, field.value ?? "read-only");
 		}
 		switch (field.kind) {
 			case "text": {
@@ -1178,10 +1383,7 @@ function init(): void {
 			case "radio": {
 				const states = field.states ?? [];
 				if (states.length === 0) {
-					return disabledFormControl(
-						id,
-						"No appearance states — not fillable",
-					);
+					return disabledFormControl(id, "No appearance states — not fillable");
 				}
 				const select = make("select", "control");
 				select.id = id;
@@ -1199,10 +1401,7 @@ function init(): void {
 			}
 			case "choice": {
 				if (field.multi_select === true) {
-					return disabledFormControl(
-						id,
-						"Multiple values — not supported by this tool",
-					);
+					return disabledFormControl(id, "Multiple values — not supported by this tool");
 				}
 				const options = field.options ?? [];
 				if (options.length > 0 && field.editable !== true) {
@@ -1221,10 +1420,7 @@ function init(): void {
 					// A stored value that is no longer an option stays selectable
 					// — clearing it would silently erase something this tool
 					// cannot bring back.
-					if (
-						field.value !== undefined &&
-						!options.includes(field.value)
-					) {
+					if (field.value !== undefined && !options.includes(field.value)) {
 						const option = document.createElement("option");
 						option.value = field.value;
 						option.textContent = `${field.value} (current)`;
@@ -1244,10 +1440,7 @@ function init(): void {
 				return input;
 			}
 			case "signature":
-				return disabledFormControl(
-					id,
-					"Signature — filling is a signing operation",
-				);
+				return disabledFormControl(id, "Signature — filling is a signing operation");
 			case "push_button":
 				return disabledFormControl(id, "Button — no value to fill");
 			default:
@@ -1264,15 +1457,12 @@ function init(): void {
 		}
 		if (report.fields.length === 0) {
 			const empty = make("p", "field-hint");
-			empty.textContent =
-				"This PDF carries no fillable AcroForm fields.";
+			empty.textContent = "This PDF carries no fillable AcroForm fields.";
 			formFieldControls = [];
 			list.replaceChildren(empty);
 			return;
 		}
-		const elements = report.fields.map((field) =>
-			buildFormFieldRow(rows, field),
-		);
+		const elements = report.fields.map((field) => buildFormFieldRow(rows, field));
 		formFieldControls = rows;
 		list.replaceChildren(...elements);
 	}
@@ -1329,16 +1519,11 @@ function init(): void {
 			const output = result.outputs[0];
 			const report = output === undefined ? null : parseFieldsJson(output.bytes);
 			if (report === null || report.status !== "ok") {
-				throw new ToolProtocolError(
-					"the fields report could not be read.",
-				);
+				throw new ToolProtocolError("the fields report could not be read.");
 			}
 			renderFormFields(list, report);
 			const count = report.fields.length;
-			setStatus(
-				`${count} field${count === 1 ? "" : "s"} found.`,
-				"ok",
-			);
+			setStatus(`${count} field${count === 1 ? "" : "s"} found.`, "ok");
 		} catch (error) {
 			const message =
 				error instanceof ToolProtocolError
@@ -1451,6 +1636,54 @@ function init(): void {
 			options.append(note);
 			syncSplitFields();
 			mode.addEventListener("change", syncSplitFields);
+			return;
+		}
+		if (tool.id === "text") {
+			const mode = make("select", "control");
+			for (const [value, label] of [
+				["text", "Plain text, one separator per page"],
+				["tables", "Tables as CSV"],
+				["reflow", "Reading-order HTML article"],
+				["epub", "EPUB 3 book, one chapter per page"],
+				["word", "Word document (.docx), reading order"],
+				["slides", "PowerPoint deck (.pptx), one slide per page"],
+				["workbook", "Excel workbook (.xlsx), one sheet per table"],
+				["split", "Split at a phrase"],
+			] as const) {
+				const choice = document.createElement("option");
+				choice.value = value;
+				choice.textContent = label;
+				mode.append(choice);
+			}
+			const modeField = addField(
+				"textMode",
+				"What to recover",
+				mode,
+				"A table is inferred from where words start, not from drawn rules, and reports the share of cells that landed in their column.",
+			);
+			const pagesField = addField(
+				"pages",
+				"Pages (optional)",
+				textInput("pages", "text", "All pages, or 1-3, 7"),
+				"1-based page numbers or ranges; they stay in document order.",
+			);
+			const findField = addField(
+				"find",
+				"Split at this text",
+				textInput("find", "text", "Chapter 2"),
+				"A new part starts at each page whose text contains the phrase, except the first. The page names the rule before anything is written.",
+			);
+			const syncTextFields = (): void => {
+				const split = optionValue("textMode") === "split";
+				pagesField.disabled = split;
+				findField.disabled = !split;
+			};
+			modeField.addEventListener("change", syncTextFields);
+			syncTextFields();
+			const note = make("p", "option-note");
+			note.textContent =
+				"The text comes from the document's own fonts and its own mapping tables; a page that drew text the extractor cannot read is marked low-confidence in the quality report rather than shown as a blank page. Nothing is uploaded, and nothing is sent to a model.";
+			options.append(note);
 			return;
 		}
 		if (tool.id === "rotate") {
@@ -2258,11 +2491,7 @@ function init(): void {
 			addField(
 				"certKey",
 				"Private key (PEM)",
-				fileChooser(
-					"certKey",
-					".pem,.key,application/x-pem-file,application/octet-stream",
-					false,
-				),
+				fileChooser("certKey", ".pem,.key,application/x-pem-file,application/octet-stream", false),
 				"A PKCS#8 or PKCS#1 RSA key of at least 2048 bits. It is read in this tab, used once, and never written anywhere — not into the PDF, not into a download, not into a request.",
 			);
 			addField(
@@ -2328,7 +2557,7 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Every signature is checked against the exact bytes it names, on this device, and the report says what was checked and what was not. Revocation is never claimed: this build has no network, so no CRL or OCSP response is fetched and the report says \"not checked\" instead of implying a status it did not look up. A signature that does not verify is still listed, with its reason, because hiding it would be worse than reporting it.";
+				'Every signature is checked against the exact bytes it names, on this device, and the report says what was checked and what was not. Revocation is never claimed: this build has no network, so no CRL or OCSP response is fetched and the report says "not checked" instead of implying a status it did not look up. A signature that does not verify is still listed, with its reason, because hiding it would be worse than reporting it.';
 			options.append(note);
 			return;
 		}
@@ -2377,6 +2606,9 @@ function init(): void {
 				["md", "Markdown"],
 				["html", "HTML"],
 				["csv", "CSV"],
+				["latex", "LaTeX (subset)"],
+				["svg", "SVG (documented subset)"],
+				["epub", "EPUB 3"],
 			] as const) {
 				const choice = document.createElement("option");
 				choice.value = value;
@@ -2387,7 +2619,7 @@ function init(): void {
 			addField("title", "Title", textInput("title", "text", "Document title"));
 			const note = make("p", "option-note");
 			note.textContent =
-				"Markdown, HTML and CSV are converted on this device through the owned engine. The output is a generated PDF.";
+				"Markdown, HTML, CSV, LaTeX, SVG and EPUB are converted on this device through the owned engine. The output is a generated PDF.";
 			options.append(note);
 			return;
 		}
@@ -2424,7 +2656,7 @@ function init(): void {
 				: tool.accepts === "pdf-image"
 					? "application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg"
 					: tool.accepts === "text"
-						? ".md,.markdown,.html,.htm,.csv,.txt"
+						? ".md,.markdown,.html,.htm,.xhtml,.csv,.txt,.tex,.latex,.svg,.epub"
 						: id === "attach"
 							? ""
 							: "application/pdf,.pdf";
@@ -2440,7 +2672,7 @@ function init(): void {
 					: tool.accepts === "image"
 						? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
 						: tool.accepts === "text"
-							? "Choose a Markdown, HTML, or CSV file. It is read here, not sent anywhere."
+							? "Choose a Markdown, HTML, CSV, LaTeX, SVG or EPUB file. It is read here, not sent anywhere."
 							: tool.multiple
 								? "Choose two or more PDFs. They are read here, not sent anywhere."
 								: "Choose a PDF. It is read here, not sent anywhere.",
@@ -3119,11 +3351,23 @@ function init(): void {
 				format = 1;
 			} else if (formatOption === "csv") {
 				format = 2;
+			} else if (formatOption === "latex") {
+				format = 3;
+			} else if (formatOption === "epub") {
+				format = 4;
+			} else if (formatOption === "svg") {
+				format = 5;
 			} else {
-				if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+				if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml")) {
 					format = 1;
 				} else if (lower.endsWith(".csv")) {
 					format = 2;
+				} else if (lower.endsWith(".tex") || lower.endsWith(".latex")) {
+					format = 3;
+				} else if (lower.endsWith(".epub")) {
+					format = 4;
+				} else if (lower.endsWith(".svg")) {
+					format = 5;
 				} else {
 					format = 0;
 				}
@@ -3183,7 +3427,7 @@ function init(): void {
 			}
 			const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
 			exports.selis_convert_free(resultPtr, outLen);
-			const name = file.name.replace(/\.[^.]+$/, "") + "-converted.pdf";
+			const name = `${file.name.replace(/\.[^.]+$/, "")}-converted.pdf`;
 			const report: ToolOutputReport = {
 				name,
 				kind: "pdf",
@@ -3394,6 +3638,125 @@ function init(): void {
 					: "The tool could not finish. Your files were not uploaded.";
 			setStatus(message, "error");
 			console.error("Selis tools failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	let textWasmPromise: Promise<TextWasm> | null = null;
+	function getTextWasm(): Promise<TextWasm> {
+		if (textWasmPromise === null) {
+			textWasmPromise = loadTextChunk().catch((error: unknown) => {
+				textWasmPromise = null;
+				throw error;
+			});
+		}
+		return textWasmPromise;
+	}
+
+	/**
+	 * The eight text surfaces in one card, because they all read the same
+	 * document through the same chunk and differ only in what they return: the
+	 * separated text and its quality report, the tables as CSV, the reflowed
+	 * article, the same article as an EPUB book, a Word document, a PowerPoint
+	 * deck, an Excel workbook, or a ZIP of parts split at a phrase. The mode
+	 * select decides, and the card says which one it will run.
+	 */
+	async function runText(): Promise<void> {
+		setBusy(true);
+		clearResult();
+		setStatus("Reading your PDF on this device…", "info");
+		try {
+			const file = files[0];
+			if (file === undefined) {
+				throw new ToolInputError("Choose a PDF first.");
+			}
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (!hasPdfHeader(bytes)) {
+				throw new ToolInputError(`${file.name} does not look like a PDF.`);
+			}
+			const mode = optionValue("textMode");
+			const options: Record<string, string> = {
+				name: file.name,
+				title: file.name.replace(/\.[^.]+$/, ""),
+			};
+			if (mode === "split") {
+				const find = optionValue("find").trim();
+				if (find === "") {
+					throw new ToolInputError("Type the phrase to split at.");
+				}
+				options.find = find;
+			} else {
+				const pages = optionValue("pages").trim();
+				if (pages !== "") {
+					options.pages = pages;
+				}
+			}
+			const wasm = await getTextWasm();
+			setStatus("Recovering the text locally…", "info");
+			await nextPaint();
+			const op: TextOp =
+				mode === "split"
+					? "split"
+					: mode === "tables"
+						? "tables"
+						: mode === "reflow"
+							? "reflow"
+							: mode === "epub"
+								? "epub"
+								: mode === "word"
+									? "word"
+									: mode === "slides"
+										? "slides"
+										: mode === "workbook"
+											? "workbook"
+											: "text";
+			const outputs = runTextOp(wasm, bytes, op, options);
+			const reports: ToolOutputReport[] = outputs.map((output: TextOutput) => ({
+				name: output.name,
+				kind: output.kind,
+				pages: 0,
+				bytes: output.bytes.byteLength,
+				verdict: "read",
+			}));
+			const bytesOut = outputs.reduce((total, output) => total + output.bytes.byteLength, 0);
+			const verification: Verification = {
+				pages_out: 0,
+				annotations_out: 0,
+				fields_out: 0,
+				ocgs_out: 0,
+				outline_entries_out: 0,
+				embedded_files_out: 0,
+				bytes_in: bytes.byteLength,
+				bytes_out: bytesOut,
+				verdict: "read",
+				checked: [],
+			};
+			const result = {
+				verification,
+				reports,
+				outputs: outputs.map((output) => ({ name: output.name, bytes: output.bytes })),
+			};
+			try {
+				await requestRecorder.assertNoUpload([bytes]);
+			} catch (error) {
+				console.error("The local no-upload check failed:", error);
+				throw new ToolProtocolError(
+					"The local no-upload check failed, so the result was discarded. Nothing was sent.",
+				);
+			}
+			document.documentElement.dataset.noUpload = "verified";
+			showResult(result);
+			setStatus("Done. The export was read from the document on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError ||
+				error instanceof TextProtocolError ||
+				error instanceof ToolInputError
+					? error.message
+					: "The text tool could not finish. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis text tools failed:", error);
 		} finally {
 			setBusy(false);
 		}
@@ -4040,11 +4403,7 @@ function init(): void {
 	 * card is the one result that cannot be downloaded by accident, because a
 	 * signature report is a statement about the document, not a document.
 	 */
-	function showReportCard(
-		title: string,
-		meta: string,
-		rows: readonly VerificationRow[],
-	): void {
+	function showReportCard(title: string, meta: string, rows: readonly VerificationRow[]): void {
 		clearResult();
 		resultTitle.textContent = title;
 		resultMeta.textContent = meta;
@@ -4132,6 +4491,18 @@ function init(): void {
 			if (report.kind === "image") {
 				meta.textContent = `${raster.label} | ${formatBytes(output.bytes.byteLength)} | ${report.verdict}`;
 			}
+			if (report.kind === "text") {
+				meta.textContent = `Plain text | ${formatBytes(output.bytes.byteLength)}`;
+			}
+			if (report.kind === "tables") {
+				meta.textContent = `Tables (CSV) | ${formatBytes(output.bytes.byteLength)}`;
+			}
+			if (report.kind === "html") {
+				meta.textContent = `HTML article | ${formatBytes(output.bytes.byteLength)}`;
+			}
+			if (report.kind === "file") {
+				meta.textContent = `Document | ${formatBytes(output.bytes.byteLength)}`;
+			}
 			info.append(name, meta);
 
 			const actions = make("div", "output-actions");
@@ -4210,17 +4581,16 @@ function init(): void {
 				await runConvert();
 				return;
 			}
-			if (
-				tool.id === "png" ||
-				tool.id === "jpg" ||
-				tool.id === "tiff" ||
-				tool.id === "webp"
-			) {
+			if (tool.id === "png" || tool.id === "jpg" || tool.id === "tiff" || tool.id === "webp") {
 				await runRaster(tool.id);
 				return;
 			}
 			if (tool.id === "html") {
 				await runHtml();
+				return;
+			}
+			if (tool.id === "text") {
+				await runText();
 				return;
 			}
 			if (

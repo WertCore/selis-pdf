@@ -245,7 +245,7 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         quality: u32,
     },
-    /// Extract a page's content (text|json|md|html|image|embedded).
+    /// Extract a page's content (text|json|md|html|image|embedded|tables|reflow|epub|docx|pptx|xlsx).
     Extract {
         /// The PDF file to extract from.
         path: String,
@@ -255,12 +255,35 @@ enum Command {
         /// The last page (0-based; default: the first page).
         #[arg(long)]
         last: Option<usize>,
-        /// The output format: text|json|md|html|image|embedded.
+        /// The output format: text|json|md|html|image|embedded|tables|reflow|epub|docx|pptx|xlsx.
         #[arg(long, default_value = "text")]
         format: String,
-        /// The output file (format=html) or directory (format=embedded).
+        /// The output file (format=html, tables, reflow, epub, docx, pptx, xlsx,
+        /// or a text export) or directory (format=embedded).
         #[arg(long)]
         output: Option<String>,
+        /// Write the whole range as one text document with a separator before
+        /// every page, and report what was recovered.
+        #[arg(long)]
+        separators: bool,
+        /// Write the extraction quality report (format=text --separators) here
+        /// instead of printing it on stderr.
+        #[arg(long)]
+        quality_out: Option<String>,
+    },
+    /// Split a PDF at every page whose text contains a phrase.
+    SplitText {
+        /// The input PDF.
+        path: String,
+        /// The phrase to split at.
+        #[arg(long)]
+        find: String,
+        /// The output name prefix (`prefix0.pdf`, `prefix1.pdf`, ...).
+        #[arg(short, long, default_value = "part-")]
+        output: String,
+        /// Print the boundary rule and the parts as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Convert a page range to PPM images in an output directory.
     Convert {
@@ -725,12 +748,12 @@ enum Command {
     },
     /// Convert a Markdown or HTML file to PDF (documented subset).
     Topdf {
-        /// The input file (.md/.markdown or .html/.htm).
+        /// The input file (.md/.markdown, .html/.htm, .tex/.latex, .csv, .svg or .epub).
         input: String,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
-        /// The input format: auto, md or html.
+        /// The input format: auto, md, html, tex, csv, svg or epub.
         #[arg(long, default_value = "auto")]
         format: String,
         /// The page size: letter or a4.
@@ -921,7 +944,23 @@ fn run() {
             last,
             format,
             output,
-        } => extract::run(&path, page, last, &format, output.as_deref()),
+            separators,
+            quality_out,
+        } => extract::run(
+            &path,
+            page,
+            last,
+            &format,
+            output.as_deref(),
+            separators,
+            quality_out.as_deref(),
+        ),
+        Command::SplitText {
+            path,
+            find,
+            output,
+            json,
+        } => extract::split(&path, &find, &output, json),
         Command::Convert {
             path,
             output,

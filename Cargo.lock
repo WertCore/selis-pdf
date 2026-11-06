@@ -1619,6 +1619,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-archive"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+]
+
+[[package]]
 name = "selis-bench"
 version = "0.1.0"
 dependencies = [
@@ -1758,6 +1765,7 @@ dependencies = [
 name = "selis-pdf-convert"
 version = "0.1.0"
 dependencies = [
+ "selis-archive",
  "selis-bytes",
  "selis-error",
  "selis-font",
@@ -1891,6 +1899,7 @@ name = "selis-pdf-text"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "selis-archive",
  "selis-bytes",
  "selis-error",
  "selis-font",
@@ -1905,6 +1914,7 @@ name = "selis-pdf-tools"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "selis-archive",
  "selis-bytes",
  "selis-crypto",
  "selis-error",
@@ -1917,6 +1927,7 @@ dependencies = [
  "selis-pdf-filter",
  "selis-pdf-form",
  "selis-pdf-sign",
+ "selis-pdf-text",
  "selis-sandbox",
  "serde",
  "serde_json",
@@ -2030,6 +2041,16 @@ dependencies = [
  "selis-pdf-tools",
  "selis-sandbox",
  "serde_json",
+]
+
+[[package]]
+name = "selis-pdf-wasm-text"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-engine",
+ "selis-pdf-text",
+ "selis-pdf-tools",
+ "selis-sandbox",
 ]
 
 [[package]]

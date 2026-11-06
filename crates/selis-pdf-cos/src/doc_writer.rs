@@ -544,6 +544,154 @@ impl ContentBuilder {
         self
     }
 
+    /// Set the stroking colour (device RGB, 0..1).
+    pub fn set_stroke(&mut self, r: f64, g: f64, b: f64) -> &mut Self {
+        self.push_fmt(format!("{} {} {} RG\n", trim(r), trim(g), trim(b)));
+        self
+    }
+
+    /// Set the stroke width in points.
+    pub fn set_line_width(&mut self, width: f64) -> &mut Self {
+        self.push_fmt(format!("{} w\n", trim(width)));
+        self
+    }
+
+    /// Set the line cap (`0` butt, `1` round, `2` square).
+    pub fn set_line_cap(&mut self, cap: u32) -> &mut Self {
+        self.push_fmt(format!("{cap} J\n"));
+        self
+    }
+
+    /// Set the line join (`0` miter, `1` round, `2` bevel).
+    pub fn set_line_join(&mut self, join: u32) -> &mut Self {
+        self.push_fmt(format!("{join} j\n"));
+        self
+    }
+
+    /// Set the dash pattern (`[]` is a solid line) and phase.
+    pub fn set_dash(&mut self, pattern: &[f64], phase: f64) -> &mut Self {
+        self.push(b"[");
+        for segment in pattern {
+            self.push_fmt(format!("{} ", trim(*segment)));
+        }
+        self.push_fmt(format!("] {} d\n", trim(phase)));
+        self
+    }
+
+    /// Save the graphics state (`q`).
+    pub fn save_state(&mut self) -> &mut Self {
+        self.push(b"q\n");
+        self
+    }
+
+    /// Restore the graphics state (`Q`).
+    pub fn restore_state(&mut self) -> &mut Self {
+        self.push(b"Q\n");
+        self
+    }
+
+    /// Concatenate a matrix onto the current transformation matrix (`cm`).
+    /// `a b c d e f` maps user space; SVG documents use this for their own
+    /// transforms with the y axis already flipped by the enclosing flip.
+    pub fn concat(&mut self, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> &mut Self {
+        self.push_fmt(format!(
+            "{} {} {} {} {} {} cm\n",
+            trim(a),
+            trim(b),
+            trim(c),
+            trim(d),
+            trim(e),
+            trim(f)
+        ));
+        self
+    }
+
+    /// Start a new subpath at `(x, y)` (`m`).
+    pub fn move_to(&mut self, x: f64, y: f64) -> &mut Self {
+        self.push_fmt(format!("{} {} m\n", trim(x), trim(y)));
+        self
+    }
+
+    /// Draw a straight line to `(x, y)` (`l`).
+    pub fn line_to(&mut self, x: f64, y: f64) -> &mut Self {
+        self.push_fmt(format!("{} {} l\n", trim(x), trim(y)));
+        self
+    }
+
+    /// Discard the current path without painting it (`n`).
+    pub fn discard_path(&mut self) -> &mut Self {
+        self.push(b"n\n");
+        self
+    }
+
+    /// Draw a cubic Bézier curve through two control points to `(x, y)` (`c`).
+    pub fn cubic_to(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: f64) -> &mut Self {
+        self.push_fmt(format!(
+            "{} {} {} {} {} {} c\n",
+            trim(x1),
+            trim(y1),
+            trim(x2),
+            trim(y2),
+            trim(x),
+            trim(y)
+        ));
+        self
+    }
+
+    /// Close the current subpath (`h`).
+    pub fn close_path(&mut self) -> &mut Self {
+        self.push(b"h\n");
+        self
+    }
+
+    /// Fill the current path (nonzero winding, `f`).
+    pub fn fill(&mut self) -> &mut Self {
+        self.push(b"f\n");
+        self
+    }
+
+    /// Fill the current path (even-odd rule, `f*`).
+    pub fn fill_even_odd(&mut self) -> &mut Self {
+        self.push(b"f*\n");
+        self
+    }
+
+    /// Stroke the current path (`S`).
+    pub fn stroke(&mut self) -> &mut Self {
+        self.push(b"S\n");
+        self
+    }
+
+    /// Fill then stroke the current path (nonzero, `B`).
+    pub fn fill_stroke(&mut self) -> &mut Self {
+        self.push(b"B\n");
+        self
+    }
+
+    /// Fill then stroke the current path (even-odd, `B*`).
+    pub fn fill_stroke_even_odd(&mut self) -> &mut Self {
+        self.push(b"B*\n");
+        self
+    }
+
+    /// Close, fill then stroke the current path (nonzero, `b`).
+    pub fn close_fill_stroke(&mut self) -> &mut Self {
+        self.push(b"b\n");
+        self
+    }
+
+    /// Close, fill then stroke the current path (even-odd, `b*`).
+    pub fn close_fill_stroke_even_odd(&mut self) -> &mut Self {
+        self.push(b"b*\n");
+        self
+    }
+
+    /// Stroke the current path, closing it first (`s`).
+    pub fn close_stroke(&mut self) -> &mut Self {
+        self.push(b"s\n");
+        self
+    }
+
     /// Fill a rectangle (PDF `re f`).
     pub fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Self {
         self.push_fmt(format!(

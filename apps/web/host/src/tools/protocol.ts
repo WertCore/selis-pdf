@@ -142,12 +142,13 @@ export interface ToolOutput {
  *
  * `pdf` is a rewritten document, `zip` a bundle, `file` an extracted
  * attachment, `report` a read-only export such as the metadata JSON, `image`
- * a raster page produced by the lazy raster chunk and `html` the positioned
- * HTML document produced by the lazy html chunk.
+ * a raster page produced by the lazy raster chunk, `html` the positioned
+ * HTML document produced by the lazy html chunk, and `text`/`tables` the
+ * plain-text and CSV exports of the lazy text chunk.
  */
 export interface ToolOutputReport {
 	readonly name: string;
-	readonly kind: "pdf" | "zip" | "file" | "report" | "image" | "html";
+	readonly kind: "pdf" | "zip" | "file" | "report" | "image" | "html" | "text" | "tables";
 	readonly pages: number;
 	readonly bytes: number;
 	readonly verdict: string;
@@ -372,7 +373,9 @@ function decodeReports(
 			kind !== "file" &&
 			kind !== "report" &&
 			kind !== "image" &&
-			kind !== "html"
+			kind !== "html" &&
+			kind !== "text" &&
+			kind !== "tables"
 		) {
 			throw new ToolProtocolError("the tool chunk returned an unknown output kind");
 		}

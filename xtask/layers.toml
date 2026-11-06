@@ -11,6 +11,7 @@
 # L0 — Foundation
 selis-error = 0
 selis-bytes = 0
+selis-archive = 0
 selis-geom  = 0
 selis-color = 0
 selis-log   = 0

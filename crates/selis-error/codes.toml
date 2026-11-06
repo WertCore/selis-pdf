@@ -825,3 +825,24 @@ meaning = "A request crossing a binding boundary named an operation, source adap
 user_msg = "That action is not available in this version of Selis."
 retryable = false
 doc_state = "Unchanged"
+
+# ---------------------------------------------------------------------------
+# 3400–3599 — OCR and conversion
+# ---------------------------------------------------------------------------
+[[code]]
+id = 3400
+name = "CONVERT_MALFORMED"
+kind = "Malformed"
+meaning = "An input to one of the converter crates does not follow the format being converted (malformed XML, a corrupt package, a bad xref offset, an unknown header)."
+user_msg = "This file could not be converted: its contents are malformed."
+retryable = false
+doc_state = "NotLoaded"
+
+[[code]]
+id = 3401
+name = "CONVERT_UNSUPPORTED"
+kind = "Unsupported"
+meaning = "A construct in the input is valid but this build of the converter does not implement it (for example an SVG arc command)."
+user_msg = "This file uses a feature this converter does not support."
+retryable = false
+doc_state = "NotLoaded"

@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
+selis-archive = { workspace = true }
 selis-sandbox = { workspace = true }
 # No `rng`: this crate parses and emits only. Encryption lives behind
 # `selis-pdf-cos/rng`, and enabling it drags `getrandom`'s wasm-bindgen shims

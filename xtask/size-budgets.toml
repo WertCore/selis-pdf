@@ -29,6 +29,9 @@ chunk = "ocr"
 artifact = "selis_pdf_wasm_ocr"
 budget = 800000
 
+# The convert chunk (Markdown, HTML, CSV, LaTeX, EPUB, SVG → PDF). It is the
+# smallest lazy chunk; the six converters cost 122 336 B brotli (371 631 B raw)
+# measured together, all behind their format codes.
 [[budget]]
 chunk = "convert"
 artifact = "selis_pdf_wasm_convert"
@@ -107,4 +110,16 @@ budget = 400000
 [[budget]]
 chunk = "engine-viewer"
 artifact = "xtask"
+budget = 400000
+
+# The text chunk (Phase 3: PDF → text with its quality report, tables, split by
+# text, reflow, Word, PowerPoint, Excel). It is the second chunk that links the
+# engine's extraction pipeline (the HTML chunk was the first), so it is budgeted
+# on its own rather than at the tools chunk's door: `selis-pdf-tools` ships the
+# text tools behind a `text` feature and the plain tools chunk does not enable
+# it. Measured at 306 946 B brotli (1 019 379 B raw) with all eight operations,
+# hence the 400 000 ceiling.
+[[budget]]
+chunk = "text"
+artifact = "selis_pdf_wasm_text"
 budget = 400000

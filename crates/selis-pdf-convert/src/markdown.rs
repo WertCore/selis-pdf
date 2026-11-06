@@ -97,6 +97,19 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
             continue;
         }
 
+        // GFM pipe table: a header row followed by a |---|---| delimiter row.
+        if trimmed.starts_with('|') {
+            if let Some(delimiter) = lines.get(i.saturating_add(1)) {
+                if let Some(cols) = delimiter_cell_count(delimiter.trim_start()) {
+                    let header = split_pipe_cells(trimmed);
+                    if header.len() == cols {
+                        out.push(pipe_table(lines, &mut i, header, cols));
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Indented code block (4 spaces / 1 tab) outside lists.
         if (line.starts_with("    ") || line.starts_with('\t')) && base_indent == 0 {
             let mut code: Vec<String> = Vec::new();
@@ -133,6 +146,11 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
                 || t.starts_with("```")
                 || t.starts_with("~~~")
                 || t.starts_with('>')
+                || (t.starts_with('|')
+                    && !para.is_empty()
+                    && lines
+                        .get(i.saturating_add(1))
+                        .is_some_and(|next| delimiter_cell_count(next.trim_start()).is_some()))
                 || is_rule(t)
                 || list_marker(t).is_some()
                 || heading_here
@@ -163,6 +181,106 @@ fn is_rule(trimmed: &str) -> bool {
         }
     }
     false
+}
+
+/// Split one pipe-table line into its cells, honouring `\|` as an escaped
+/// pipe. Leading and trailing pipes are dropped.
+fn split_pipe_cells(line: &str) -> Vec<String> {
+    let mut cells: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            if ch == '|' {
+                buf.push('|');
+            } else {
+                buf.push('\\');
+                buf.push(ch);
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '|' => {
+                cells.push(buf.trim().to_string());
+                buf.clear();
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if escaped {
+        buf.push('\\');
+    }
+    cells.push(buf.trim().to_string());
+    // A leading or trailing pipe contributes an empty outer cell.
+    if cells.first().is_some_and(|cell| cell.is_empty()) {
+        cells.remove(0);
+    }
+    if cells.last().is_some_and(|cell| cell.is_empty()) {
+        cells.pop();
+    }
+    cells
+}
+
+/// If `trimmed` is a pipe-table delimiter row (`| --- | :-: |`), return the
+/// number of cells it declares.
+fn delimiter_cell_count(trimmed: &str) -> Option<usize> {
+    if !trimmed.contains('|') || !trimmed.contains('-') {
+        return None;
+    }
+    let cells = split_pipe_cells(trimmed);
+    if cells.is_empty() {
+        return None;
+    }
+    for cell in &cells {
+        let core = cell.trim().trim_start_matches(':').trim_end_matches(':');
+        if core.len() < 2 || !core.chars().all(|ch| ch == '-') {
+            return None;
+        }
+    }
+    Some(cells.len())
+}
+
+/// A cell as span lists: pipe-table cells carry plain text, not inline markup.
+fn table_cell(text: &str) -> Vec<crate::blocks::Span> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![crate::blocks::Span {
+        style: crate::blocks::Style::Regular,
+        text: text.to_string(),
+    }]
+}
+
+/// Consume the delimiter and the body rows starting at `*i + 1` and build the
+/// table block; `i` is advanced past the last row.
+fn pipe_table(
+    lines: &[&str],
+    i: &mut usize,
+    header: Vec<String>,
+    cols: usize,
+) -> crate::blocks::Block {
+    let mut rows: Vec<Vec<Vec<crate::blocks::Span>>> = Vec::new();
+    let mut j = i.saturating_add(2);
+    while let Some(l) = lines.get(j) {
+        let trimmed = l.trim_start();
+        if trimmed.trim().is_empty() || !trimmed.contains('|') {
+            break;
+        }
+        if delimiter_cell_count(trimmed).is_some() {
+            // A second delimiter is not a row; stop before it.
+            break;
+        }
+        let mut cells = split_pipe_cells(trimmed);
+        cells.resize(cols, String::new());
+        cells.truncate(cols);
+        rows.push(cells.iter().map(|cell| table_cell(cell)).collect());
+        j = j.saturating_add(1);
+    }
+    *i = j;
+    let head = header.iter().map(|cell| table_cell(cell)).collect();
+    crate::blocks::Block::Table { head, rows }
 }
 
 /// The list marker at the start of a trimmed line, if any:
@@ -475,5 +593,63 @@ mod tests {
     fn indented_code_block() {
         let blocks = parse("intro paragraph\n\n    line one\n    line two\n");
         assert!(matches!(&blocks[1], Block::Code(_)));
+    }
+
+    #[test]
+    fn pipe_tables_parse_with_a_header() {
+        let blocks = parse("| Name | Amount |\n| --- | ---: |\n| Ada | 1200 |\n| Grace | 900 |\n");
+        assert_eq!(blocks.len(), 1);
+        let Block::Table { head, rows } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(
+            head.iter()
+                .map(|cell| cell.iter().map(|s| s.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>(),
+            vec!["Name".to_string(), "Amount".to_string()]
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0][1]
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            "1200"
+        );
+    }
+
+    #[test]
+    fn pipe_tables_escape_pipes_and_ignore_alignment() {
+        let blocks = parse("| A \\| B | C |\n| :--- | ---: |\n| a | b |\n");
+        let Block::Table { head, rows } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(
+            head[0].iter().map(|s| s.text.as_str()).collect::<String>(),
+            "A | B"
+        );
+        assert_eq!(
+            rows[0][0]
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            "a"
+        );
+    }
+
+    #[test]
+    fn a_table_without_a_delimiter_is_a_paragraph() {
+        let blocks = parse("| just | text |\n");
+        assert!(matches!(&blocks[0], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn short_rows_are_padded() {
+        let blocks = parse("| A | B | C |\n| --- | --- | --- |\n| only |\n");
+        let Block::Table { rows, .. } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(rows[0].len(), 3);
+        assert!(rows[0][2].is_empty());
     }
 }

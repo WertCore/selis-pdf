@@ -67,7 +67,7 @@
  * browser's own update detection (a changed `sw.js`, byte for byte) is the
  * trigger; this constant is the *namespace*, not the trigger.
  */
-export const CACHE_VERSION = "2";
+export const CACHE_VERSION = "3";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
@@ -137,6 +137,7 @@ export const TOOLS_PRECACHE_PATHS: readonly string[] = [
 	"/assets/host/sw-register.js",
 	"/assets/host/tools/inputs.js",
 	"/assets/host/tools/protocol.js",
+	"/assets/host/tools/text-protocol.js",
 	"/assets/host/tools/tools-page.js",
 	"/assets/host/tools/security-protocol.js",
 	"/assets/host/tools/sign-protocol.js",

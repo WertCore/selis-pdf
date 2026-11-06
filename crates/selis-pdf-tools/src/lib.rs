@@ -46,6 +46,8 @@ pub mod runtime;
 pub mod security;
 #[cfg(feature = "sign")]
 pub mod sign;
+#[cfg(feature = "text")]
+pub mod text;
 mod tools;
 mod verify_report;
 pub mod write_gate;
@@ -68,6 +70,12 @@ pub use sign::{
     sign_pdf, signature_report, signature_report_bytes, stamp_pdf, DigitalOptions, DigitalReport,
     SignatureReport, SignaturesReport, TrustReport, VisualLine, VisualOptions, VisualReport,
     VisualStroke,
+};
+#[cfg(feature = "text")]
+pub use text::{
+    extract_docx, extract_pptx, extract_tables, extract_text, extract_xlsx, reflow_epub,
+    reflow_html, split_by_text, EpubExport, HtmlExport, SlidesExport, TablesExport, TextExport,
+    TextPage, TextSplit, WordExport, WorkbookExport,
 };
 pub use verify_report::Verification;
 

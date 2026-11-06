@@ -157,12 +157,12 @@ fn font_key(name: &str) -> String {
 }
 
 /// Allocate the builder's next object number.
-fn take_num(b: &mut DocumentBuilder) -> u32 {
+pub(crate) fn take_num(b: &mut DocumentBuilder) -> u32 {
     let n = *b.next_num_mut();
     *b.next_num_mut() = n.saturating_add(1);
     n
 }
 
-fn bytes(v: &[u8]) -> Bytes {
+pub(crate) fn bytes(v: &[u8]) -> Bytes {
     Bytes::copy_from_slice(v)
 }

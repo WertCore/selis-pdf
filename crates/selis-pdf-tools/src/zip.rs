@@ -6,10 +6,11 @@
 //! PDF writer already spends the CPU on the documents, and an uncompressed
 //! container is simple enough to verify byte-for-byte in this crate.
 //!
-//! Entries are flat file names, UTF-8 flagged, and deterministic (fixed DOS
-//! timestamp). The writer rejects absolute paths, separators, control
-//! characters, and `..` markers so a bundle cannot turn into a directory
-//! traversal when a user extracts it.
+//! The container itself lives in `selis-archive`, the same writer the EPUB,
+//! Word, PowerPoint and Excel packages use. This module owns only the rule that
+//! makes a bundle safe: flat file names, no separators, no `..` marker and no
+//! control characters, so a bundle cannot turn into a directory traversal when
+//! a user extracts it.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -17,51 +18,8 @@
     clippy::indexing_slicing
 )]
 
-/// The CRC-32 table (IEEE polynomial), computed at compile time.
-const CRC_TABLE: [u32; 256] = {
-    let mut table = [0u32; 256];
-    let mut i = 0;
-    while i < 256 {
-        let mut crc = i as u32;
-        let mut bit = 0;
-        while bit < 8 {
-            crc = if crc & 1 != 0 {
-                0xedb8_8320 ^ (crc >> 1)
-            } else {
-                crc >> 1
-            };
-            bit += 1;
-        }
-        table[i] = crc;
-        i += 1;
-    }
-    table
-};
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in data {
-        let index = ((crc ^ u32::from(byte)) & 0xff) as usize;
-        crc = CRC_TABLE[index] ^ (crc >> 8);
-    }
-    !crc
-}
-
-fn push_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn checked_u32(value: usize, what: &str) -> Result<u32, String> {
-    u32::try_from(value).map_err(|_| format!("ZIP {what} exceeds the 4 GiB format limit"))
-}
-
-fn checked_u16(value: usize, what: &str) -> Result<u16, String> {
-    u16::try_from(value).map_err(|_| format!("ZIP {what} exceeds the 65535-entry format limit"))
-}
+#[cfg(test)]
+use selis_archive::crc32;
 
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -94,72 +52,16 @@ pub(crate) fn store_bundle(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
     if entries.is_empty() {
         return Err("a ZIP bundle needs at least one file".to_string());
     }
-    checked_u16(entries.len(), "entry count")?;
-
-    let mut out: Vec<u8> = Vec::new();
-    let mut central: Vec<u8> = Vec::new();
-
+    if entries.len() > usize::from(u16::MAX) {
+        return Err("ZIP entry count exceeds the 65535-entry format limit".to_string());
+    }
     for (name, data) in entries {
         validate_name(name)?;
-        let name_bytes = name.as_bytes();
-        let name_len = checked_u16(name_bytes.len(), "entry name length")?;
-        let data_len = checked_u32(data.len(), "entry size")?;
-        let offset = checked_u32(out.len(), "entry offset")?;
-        let crc = crc32(data);
-
-        // Local file header. Bit 11 marks the name as UTF-8; the DOS
-        // timestamp is the epoch (1980-01-01 00:00:00) so equal inputs
-        // produce equal bytes.
-        push_u32(&mut out, 0x0403_4b50);
-        push_u16(&mut out, 20);
-        push_u16(&mut out, 0x0800);
-        push_u16(&mut out, 0);
-        push_u16(&mut out, 0);
-        push_u16(&mut out, 0x0021);
-        push_u32(&mut out, crc);
-        push_u32(&mut out, data_len);
-        push_u32(&mut out, data_len);
-        push_u16(&mut out, name_len);
-        push_u16(&mut out, 0);
-        out.extend_from_slice(name_bytes);
-        out.extend_from_slice(data);
-
-        // Central directory header, filled with the same sizes and offset.
-        push_u32(&mut central, 0x0201_4b50);
-        push_u16(&mut central, 20);
-        push_u16(&mut central, 20);
-        push_u16(&mut central, 0x0800);
-        push_u16(&mut central, 0);
-        push_u16(&mut central, 0);
-        push_u16(&mut central, 0x0021);
-        push_u32(&mut central, crc);
-        push_u32(&mut central, data_len);
-        push_u32(&mut central, data_len);
-        push_u16(&mut central, name_len);
-        push_u16(&mut central, 0);
-        push_u16(&mut central, 0);
-        push_u16(&mut central, 0);
-        push_u16(&mut central, 0);
-        push_u32(&mut central, 0);
-        push_u32(&mut central, offset);
-        central.extend_from_slice(name_bytes);
+        if u32::try_from(data.len()).is_err() {
+            return Err("ZIP entry size exceeds the 4 GiB format limit".to_string());
+        }
     }
-
-    let central_offset = checked_u32(out.len(), "central-directory offset")?;
-    let central_size = checked_u32(central.len(), "central-directory size")?;
-    let count = checked_u16(entries.len(), "entry count")?;
-    out.extend_from_slice(&central);
-
-    // End of central directory.
-    push_u32(&mut out, 0x0605_4b50);
-    push_u16(&mut out, 0);
-    push_u16(&mut out, 0);
-    push_u16(&mut out, count);
-    push_u16(&mut out, count);
-    push_u32(&mut out, central_size);
-    push_u32(&mut out, central_offset);
-    push_u16(&mut out, 0);
-    Ok(out)
+    Ok(selis_archive::store_zip(entries))
 }
 
 #[cfg(test)]

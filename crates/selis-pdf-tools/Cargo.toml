@@ -30,15 +30,22 @@ security = ["dep:selis-crypto", "dep:selis-pdf-doc", "dep:selis-pdf-engine"]
 # is most of the weight of the sign chunk, so the plain tools chunk must not
 # carry them.
 sign = ["dep:selis-pdf-sign"]
+# The Phase 3 text tools (extract text with its quality report, tables, split
+# by text, reflow). Off by default for the same reason as the two features
+# above: text extraction links the engine's display list, and the plain tools
+# chunk must not carry it. The text chunk enables exactly this feature.
+text = ["dep:selis-pdf-engine", "dep:selis-pdf-text"]
 
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
+selis-archive = { workspace = true }
 selis-io = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-form = { workspace = true }
+selis-pdf-text = { workspace = true, optional = true }
 selis-image = { workspace = true }
 selis-font = { workspace = true }
 serde = { workspace = true }

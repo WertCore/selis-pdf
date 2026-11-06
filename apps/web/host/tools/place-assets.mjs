@@ -888,3 +888,47 @@ console.log(
 		`and the signing chunk (${signBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );
+
+// The Phase 3 text chunk. Same contract as the chunks above: prefer the
+// wasm-opt output, fall back to the plain build, fail the build (rather than
+// skip) when neither exists, and refuse a module that declares an import.
+{
+	const candidates = targetDirs().flatMap((dir) => [
+		join(dir, "wasm32-unknown-unknown/release/selis_pdf_wasm_text.opt.wasm"),
+		join(dir, "wasm32-unknown-unknown/release/selis_pdf_wasm_text.wasm"),
+	]);
+	const found = candidates.find((candidate) => {
+		try {
+			readFileSync(candidate);
+			return true;
+		} catch {
+			return false;
+		}
+	});
+	if (found === undefined) {
+		console.error(
+			[
+				"place-assets: the text chunk was not built.",
+				"",
+				"  cargo build -p selis-pdf-wasm-text --target wasm32-unknown-unknown --release",
+				"",
+				"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+				"build is redirected; this script reads it.)",
+			].join("\n"),
+		);
+		process.exit(1);
+	}
+	const textOut = join(publicRoot, "wasm/selis_pdf_wasm_text.wasm");
+	mkdirSync(dirname(textOut), { recursive: true });
+	copyFileSync(found, textOut);
+	const textImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(textOut)));
+	if (textImports.length > 0) {
+		console.error(
+			`place-assets: the text chunk has host imports; it must run with none: ${textImports
+				.map((entry) => `${entry.module}.${entry.name}`)
+				.join(", ")}`,
+		);
+		process.exit(1);
+	}
+	console.log(`place-assets: copied the text chunk (${readFileSync(textOut).length} B, 0 imports)`);
+}

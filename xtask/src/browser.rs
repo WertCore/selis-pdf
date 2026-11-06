@@ -1405,6 +1405,17 @@ const IMAGE_NEEDLES: [&str; 3] = [
 /// bytes: the heading font and the heading text. A page that never rendered
 /// Markdown has neither.
 const CONVERT_NEEDLES: [&str; 2] = ["/BaseFont /Helvetica-Bold", "Parity Report"];
+/// The online LaTeX leg: the source's own section title, rendered bold.
+const LATEX_NEEDLES: [&str; 1] = ["Quarto"];
+/// The online CSV leg: two cells from the first data row.
+const CSV_NEEDLES: [&str; 2] = ["Tea", "Coffee"];
+/// The online SVG leg: the text element's own words.
+const SVG_NEEDLES: [&str; 1] = ["Ledgers"];
+/// The online EPUB leg: the one chapter's heading.
+const EPUB_NEEDLES: [&str; 1] = ["Omnibus"];
+/// The online pipe-table leg: the caption and a cell, so the table had to
+/// survive parsing, laying out and the page gate.
+const TABLE_NEEDLES: [&str; 2] = ["Ledger", "Tea"];
 
 /// The strings the image-watermark leg requires to be PRESENT in the real
 /// downloaded bytes: the embedded RGB XObject and at least one placement that
@@ -1427,7 +1438,545 @@ const OUTLINE_NEEDLES: [&str; 3] = ["/Type /Outlines", "(Chapter 1)", "(Section)
 /// no imports, and is wired to the card. The chunk is runtime-cached rather
 /// than precached, so the offline leg additionally proves the second run comes
 /// out of Cache Storage with the origin cut.
-fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
+/// The Phase 3 text leg: one document in, its own text plus a quality report
+/// out, and the text really carries the words the source drew.
+///
+/// A page separator alone would pass on any PDF, including one that draws no
+/// glyphs, so the leg pins the character count and the "pages with text" row as
+/// well. The output the browser hands back is the same download the user gets.
+fn check_text_leg(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Extract text" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Extract text\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("on this device") {
+        return Err(format!(
+            "the {label} status did not say the export was read on the device (status = {status:?})"
+        ));
+    }
+
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no report rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Verdict") != "ok" {
+        return Err(format!(
+            "the {label} run reported Verdict {:?}, expected \"ok\" (the text was empty or the export failed)",
+            row_value("Verdict")
+        ));
+    }
+    if row_value("Pages with text") != "1" {
+        return Err(format!(
+            "the {label} run reported Pages with text {:?}, expected \"1\"",
+            row_value("Pages with text")
+        ));
+    }
+    let characters: u64 = row_value("Characters").parse().unwrap_or(0);
+    if characters == 0 {
+        return Err(format!(
+            "the {label} run recovered no characters (Characters = {:?})",
+            row_value("Characters")
+        ));
+    }
+    if row_value("Verification") != "read" {
+        return Err(format!(
+            "the {label} run reported Verification {:?}, expected \"read\"",
+            row_value("Verification")
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 2 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected the text and its quality report",
+            outputs.len()
+        ));
+    }
+    let text = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if text.get("kind").and_then(Json::as_str) != Some("text") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"text\"",
+            text.get("kind")
+        ));
+    }
+    let name = text
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} text output had no name"))?;
+    if !name.ends_with(".txt") {
+        return Err(format!(
+            "the {label} text output was named {name:?}, expected a .txt file"
+        ));
+    }
+    if text.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} text output did not use a Blob URL for its download"
+        ));
+    }
+    if text.get("bytes").and_then(Json::as_u64).unwrap_or(0) == 0 {
+        return Err(format!(
+            "the {label} download was empty (bytes = {:?})",
+            text.get("bytes")
+        ));
+    }
+    // The needles are the separator and a word from the source document, both
+    // searched for inside the downloaded bytes rather than in the DOM.
+    let found = text
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} download was never searched for the expected words"))?;
+    if found.is_empty() || !found.iter().all(|hit| hit.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} downloaded text did not contain the separator and the source's own words (found = {found:?})"
+        ));
+    }
+    let quality = outputs
+        .get(1)
+        .ok_or_else(|| format!("the {label} run produced no quality report"))?;
+    if quality.get("kind").and_then(Json::as_str) != Some("report") {
+        return Err(format!(
+            "the {label} quality report had kind {:?}, expected \"report\"",
+            quality.get("kind")
+        ));
+    }
+    let quality_name = quality
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} quality report had no name"))?;
+    if !quality_name.ends_with("-quality.json") {
+        return Err(format!(
+            "the {label} quality report was named {quality_name:?}, expected a -quality.json file"
+        ));
+    }
+    Ok(())
+}
+
+/// The Phase 3 document legs (Word, PowerPoint, Excel). They take the same
+/// shape: one store-method package, handed over as a Blob, with no upload and
+/// no network beyond the runtime-cached text chunk. The needles are the
+/// package's own parts (which a store-method ZIP keeps in plain sight) and
+/// the source's own words, so a leg cannot pass by downloading an empty
+/// container.
+fn check_ooxml_leg(leg: &Json, label: &str, extension: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Extract text" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Extract text\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("on this device") {
+        return Err(format!(
+            "the {label} status did not say the export was read on the device (status = {status:?})"
+        ));
+    }
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one package and nothing else",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("file") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"file\"",
+            output.get("kind")
+        ));
+    }
+    let name = output
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} output had no name"))?;
+    if !name.ends_with(extension) {
+        return Err(format!(
+            "the {label} output was named {name:?}, expected a {extension} file"
+        ));
+    }
+    if output.get("zip").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} output was not a ZIP container it could be opened with"
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} output did not use a Blob URL for its download"
+        ));
+    }
+    if output.get("bytes").and_then(Json::as_u64).unwrap_or(0) == 0 {
+        return Err(format!(
+            "the {label} download was empty (bytes = {:?})",
+            output.get("bytes")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} download was never searched for its parts"))?;
+    if found.is_empty() || !found.iter().all(|hit| hit.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} package did not contain the parts it was written from (found = {found:?})"
+        ));
+    }
+    let network = leg
+        .get("network")
+        .ok_or_else(|| format!("the {label} leg reported no network ledger"))?;
+    let paths = network
+        .get("paths")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} leg reported no network paths"))?;
+    if !paths
+        .iter()
+        .any(|path| path.as_str() == Some("/wasm/selis_pdf_wasm_text.wasm"))
+    {
+        return Err(format!(
+            "the {label} leg did not load the text chunk (paths = {paths:?})"
+        ));
+    }
+    if let Some(foreign) = network.get("foreign").and_then(Json::as_array) {
+        if !foreign.is_empty() {
+            return Err(format!(
+                "the {label} leg touched a foreign origin (foreign = {foreign:?})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The shared shape of every text-card leg: one selected file, the run
+/// button labelled for what it writes, a result that names this device, and
+/// a network ledger that only ever names the runtime-cached chunks.
+fn text_card_run(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Extract text" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Extract text\"",
+            leg.get("runLabel")
+        ));
+    }
+    let status = string_field(leg, "status")?;
+    if !status.contains("on this device") {
+        return Err(format!(
+            "the {label} status did not say the export was read on the device (status = {status:?})"
+        ));
+    }
+    let network = leg
+        .get("network")
+        .ok_or_else(|| format!("the {label} leg reported no network ledger"))?;
+    let paths = network
+        .get("paths")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} leg reported no network paths"))?;
+    if !paths
+        .iter()
+        .any(|path| path.as_str() == Some("/wasm/selis_pdf_wasm_text.wasm"))
+    {
+        return Err(format!(
+            "the {label} leg did not load the text chunk (paths = {paths:?})"
+        ));
+    }
+    if let Some(foreign) = network.get("foreign").and_then(Json::as_array) {
+        if !foreign.is_empty() {
+            return Err(format!(
+                "the {label} leg touched a foreign origin (foreign = {foreign:?})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The outputs of one text-card leg, in order.
+fn text_card_outputs(leg: &Json, label: &str) -> Result<Vec<Json>, String> {
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    Ok(outputs.clone())
+}
+
+/// The CSVs the table leg must contain, the kind the download must carry,
+/// and the report the page must show for the table count.
+fn check_tables_leg(leg: &Json, label: &str) -> Result<(), String> {
+    text_card_run(leg, label)?;
+    let outputs = text_card_outputs(leg, label)?;
+    if outputs.len() != 2 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected the CSV and its report",
+            outputs.len()
+        ));
+    }
+    let csv = &outputs[0];
+    if csv.get("kind").and_then(Json::as_str) != Some("tables") {
+        return Err(format!(
+            "the {label} CSV had kind {:?}, expected \"tables\"",
+            csv.get("kind")
+        ));
+    }
+    let name = csv
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} CSV output had no name"))?;
+    if !name.ends_with("-tables.csv") {
+        return Err(format!(
+            "the {label} CSV output was named {name:?}, expected a -tables.csv file"
+        ));
+    }
+    if csv.get("blob").and_then(Json::as_bool) != Some(true)
+        || csv.get("bytes").and_then(Json::as_u64).unwrap_or(0) == 0
+    {
+        return Err(format!("the {label} CSV download was empty or not a Blob"));
+    }
+    let found = csv
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} download was never searched for its cells"))?;
+    if found.is_empty() || !found.iter().all(|hit| hit.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} CSV did not contain the cell text from the table (found = {found:?})"
+        ));
+    }
+    let report_out = &outputs[1];
+    if report_out.get("kind").and_then(Json::as_str) != Some("report") {
+        return Err(format!(
+            "the {label} report output had kind {:?}, expected \"report\"",
+            report_out.get("kind")
+        ));
+    }
+    let report_name = report_out
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} report output had no name"))?;
+    if !report_name.ends_with("-tables.json") {
+        return Err(format!(
+            "the {label} report output was named {report_name:?}, expected a -tables.json file"
+        ));
+    }
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no report rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Tables found") != "1" {
+        return Err(format!(
+            "the {label} run found {:?} tables, expected \"1\"",
+            row_value("Tables found")
+        ));
+    }
+    if row_value("Verification") != "read" {
+        return Err(format!(
+            "the {label} run did not report a read verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+    Ok(())
+}
+
+/// The split bundle: a ZIP of parts, plus the report that names the rule the
+/// split used before anything was written.
+fn check_text_split_leg(leg: &Json, label: &str) -> Result<(), String> {
+    text_card_run(leg, label)?;
+    let outputs = text_card_outputs(leg, label)?;
+    if outputs.len() != 2 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected the ZIP and its report",
+            outputs.len()
+        ));
+    }
+    let bundle = &outputs[0];
+    if bundle.get("kind").and_then(Json::as_str) != Some("zip") {
+        return Err(format!(
+            "the {label} bundle had kind {:?}, expected \"zip\"",
+            bundle.get("kind")
+        ));
+    }
+    let name = bundle
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} bundle output had no name"))?;
+    if !name.ends_with("-split.zip") {
+        return Err(format!(
+            "the {label} bundle was named {name:?}, expected a -split.zip file"
+        ));
+    }
+    if bundle.get("zip").and_then(Json::as_bool) != Some(true)
+        || bundle.get("bytes").and_then(Json::as_u64).unwrap_or(0) == 0
+    {
+        return Err(format!(
+            "the {label} split bundle was not a real ZIP it could be opened with"
+        ));
+    }
+    let found = bundle
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} download was never searched for the part names"))?;
+    if found.is_empty() || !found.iter().all(|hit| hit.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} bundle did not contain both parts (found = {found:?})"
+        ));
+    }
+    let report_out = &outputs[1];
+    if report_out.get("kind").and_then(Json::as_str) != Some("report") {
+        return Err(format!(
+            "the {label} report output had kind {:?}, expected \"report\"",
+            report_out.get("kind")
+        ));
+    }
+    let report_name = report_out
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} report output had no name"))?;
+    if !report_name.ends_with("-split.json") {
+        return Err(format!(
+            "the {label} report output was named {report_name:?}, expected a -split.json file"
+        ));
+    }
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no report rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Parts") != "2" {
+        return Err(format!(
+            "the {label} split made {:?} parts, expected \"2\"",
+            row_value("Parts")
+        ));
+    }
+    if row_value("Matched pages") != "2" {
+        return Err(format!(
+            "the {label} split matched {:?} pages, expected page 2",
+            row_value("Matched pages")
+        ));
+    }
+    Ok(())
+}
+
+/// The reflow article: one HTML document, carrying the article it was
+/// reflowed into and the paragraphs from the source's own words.
+fn check_reflow_leg(leg: &Json, label: &str) -> Result<(), String> {
+    text_card_run(leg, label)?;
+    let outputs = text_card_outputs(leg, label)?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one HTML document",
+            outputs.len()
+        ));
+    }
+    let output = &outputs[0];
+    if output.get("kind").and_then(Json::as_str) != Some("html") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"html\"",
+            output.get("kind")
+        ));
+    }
+    let name = output
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| format!("the {label} output had no name"))?;
+    if !name.ends_with(".html") {
+        return Err(format!(
+            "the {label} output was named {name:?}, expected a .html file"
+        ));
+    }
+    if output.get("blob").and_then(Json::as_bool) != Some(true)
+        || output.get("bytes").and_then(Json::as_u64).unwrap_or(0) == 0
+    {
+        return Err(format!("the {label} HTML download was empty or not a Blob"));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} download was never searched for its words"))?;
+    if found.is_empty() || !found.iter().all(|hit| hit.as_bool() == Some(true)) {
+        return Err(format!(
+            "the {label} article did not contain its own structure and the source's words (found = {found:?})"
+        ));
+    }
+    Ok(())
+}
+
+fn check_convert_leg(
+    leg: &Json,
+    label: &str,
+    expected_title: &str,
+    needles: &[&str],
+) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
             "the {label} leg did not show one selected file (fileRows = {:?})",
@@ -1456,9 +2005,9 @@ fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("result")
         .and_then(Json::as_object)
         .ok_or_else(|| format!("the {label} leg reported no result object"))?;
-    if result.get("title").and_then(Json::as_str) != Some("notes-converted.pdf") {
+    if result.get("title").and_then(Json::as_str) != Some(expected_title) {
         return Err(format!(
-            "the {label} result was named {:?}, expected \"notes-converted.pdf\"",
+            "the {label} result was named {:?}, expected {expected_title:?}",
             result.get("title")
         ));
     }
@@ -1507,9 +2056,9 @@ fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
             output.get("kind")
         ));
     }
-    if output.get("name").and_then(Json::as_str) != Some("notes-converted.pdf") {
+    if output.get("name").and_then(Json::as_str) != Some(expected_title) {
         return Err(format!(
-            "the {label} output was named {:?}, expected \"notes-converted.pdf\"",
+            "the {label} output was named {:?}, expected {expected_title:?}",
             output.get("name")
         ));
     }
@@ -1532,9 +2081,9 @@ fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
             output.get("header")
         ));
     }
-    if output.get("downloadName").and_then(Json::as_str) != Some("notes-converted.pdf") {
+    if output.get("downloadName").and_then(Json::as_str) != Some(expected_title) {
         return Err(format!(
-            "the {label} download was named {:?}, expected \"notes-converted.pdf\"",
+            "the {label} download was named {:?}, expected {expected_title:?}",
             output.get("downloadName")
         ));
     }
@@ -1542,17 +2091,17 @@ fn check_convert_leg(leg: &Json, label: &str) -> Result<(), String> {
         .get("found")
         .and_then(Json::as_array)
         .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
-    if found.len() != CONVERT_NEEDLES.len() {
+    if found.len() != needles.len() {
         return Err(format!(
             "the {label} output reported {} content checks, expected {}",
             found.len(),
-            CONVERT_NEEDLES.len()
+            needles.len()
         ));
     }
     if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
         return Err(format!(
-            "the {label} output is missing {:?}; the Markdown was not rendered",
-            CONVERT_NEEDLES[index]
+            "the {label} output is missing {:?}; the source was not rendered",
+            needles[index]
         ));
     }
 
@@ -4749,7 +5298,7 @@ const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 42] = [
+const TOOLS_PAGE_CARDS: [&str; 43] = [
     "attach",
     "attachments",
     "batch",
@@ -4786,6 +5335,7 @@ const TOOLS_PAGE_CARDS: [&str; 42] = [
     "sign",
     "split",
     "strip_metadata",
+    "text",
     "tiff",
     "unlock",
     "watermark",
@@ -5476,11 +6026,60 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     let convert = report
         .get("convert")
         .ok_or_else(|| "the page reported no convert leg (convert = None)".to_string())?;
-    check_convert_leg(convert, "online convert")?;
+    check_convert_leg(
+        convert,
+        "online convert",
+        "notes-converted.pdf",
+        &CONVERT_NEEDLES,
+    )?;
+    for (key, title, needles) in [
+        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..]),
+        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..]),
+        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..]),
+        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..]),
+        ("table", "table-converted.pdf", &TABLE_NEEDLES[..]),
+    ] {
+        let leg = report
+            .get(key)
+            .ok_or_else(|| format!("the page reported no {key} leg ({key} = None)"))?;
+        check_convert_leg(leg, &format!("online {key}"), title, needles)?;
+    }
+    let tables = report
+        .get("tables")
+        .ok_or_else(|| "the page reported no tables leg (tables = None)".to_string())?;
+    check_tables_leg(tables, "online tables")?;
+    let split = report
+        .get("splitText")
+        .ok_or_else(|| "the page reported no split leg (splitText = None)".to_string())?;
+    check_text_split_leg(split, "online split")?;
+    let reflow = report
+        .get("reflow")
+        .ok_or_else(|| "the page reported no reflow leg (reflow = None)".to_string())?;
+    check_reflow_leg(reflow, "online reflow")?;
+    let epub_out = report
+        .get("epubOut")
+        .ok_or_else(|| "the page reported no EPUB leg (epubOut = None)".to_string())?;
+    check_ooxml_leg(epub_out, "online EPUB", ".epub")?;
     let form_fill = report
         .get("formFill")
         .ok_or_else(|| "the page reported no form-fill leg (formFill = None)".to_string())?;
     check_fill_forms_leg(form_fill, "online form fill")?;
+    let text = report
+        .get("text")
+        .ok_or_else(|| "the page reported no text leg (text = None)".to_string())?;
+    check_text_leg(text, "online text")?;
+    let word = report
+        .get("word")
+        .ok_or_else(|| "the page reported no Word leg (word = None)".to_string())?;
+    check_ooxml_leg(word, "online word", ".docx")?;
+    let slides = report
+        .get("slides")
+        .ok_or_else(|| "the page reported no slides leg (slides = None)".to_string())?;
+    check_ooxml_leg(slides, "online slides", ".pptx")?;
+    let workbook = report
+        .get("workbook")
+        .ok_or_else(|| "the page reported no workbook leg (workbook = None)".to_string())?;
+    check_ooxml_leg(workbook, "online workbook", ".xlsx")?;
     let png = report
         .get("png")
         .ok_or_else(|| "the page reported no PDF-to-PNG leg (png = None)".to_string())?;
@@ -5975,11 +6574,60 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     let offline_convert = offline
         .get("convert")
         .ok_or_else(|| "the offline leg reported no convert result".to_string())?;
-    check_convert_leg(offline_convert, "offline convert")?;
+    check_convert_leg(
+        offline_convert,
+        "offline convert",
+        "notes-converted.pdf",
+        &CONVERT_NEEDLES,
+    )?;
     let offline_form_fill = offline
         .get("formFill")
         .ok_or_else(|| "the offline leg reported no form-fill result".to_string())?;
     check_fill_forms_leg(offline_form_fill, "offline form fill")?;
+    let offline_text = offline
+        .get("text")
+        .ok_or_else(|| "the offline leg reported no text result".to_string())?;
+    check_text_leg(offline_text, "offline text")?;
+    let offline_word = offline
+        .get("word")
+        .ok_or_else(|| "the offline leg reported no Word result".to_string())?;
+    check_ooxml_leg(offline_word, "offline word", ".docx")?;
+    let offline_slides = offline
+        .get("slides")
+        .ok_or_else(|| "the offline leg reported no slides result".to_string())?;
+    check_ooxml_leg(offline_slides, "offline slides", ".pptx")?;
+    let offline_workbook = offline
+        .get("workbook")
+        .ok_or_else(|| "the offline leg reported no workbook result".to_string())?;
+    check_ooxml_leg(offline_workbook, "offline workbook", ".xlsx")?;
+    let offline_tables = offline
+        .get("tables")
+        .ok_or_else(|| "the offline leg reported no tables result".to_string())?;
+    check_tables_leg(offline_tables, "offline tables")?;
+    let offline_split_text = offline
+        .get("splitText")
+        .ok_or_else(|| "the offline leg reported no split result".to_string())?;
+    check_text_split_leg(offline_split_text, "offline split")?;
+    let offline_reflow = offline
+        .get("reflow")
+        .ok_or_else(|| "the offline leg reported no reflow result".to_string())?;
+    check_reflow_leg(offline_reflow, "offline reflow")?;
+    let offline_epub_out = offline
+        .get("epubOut")
+        .ok_or_else(|| "the offline leg reported no EPUB export result".to_string())?;
+    check_ooxml_leg(offline_epub_out, "offline EPUB export", ".epub")?;
+    for (key, title, needles) in [
+        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..]),
+        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..]),
+        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..]),
+        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..]),
+        ("table", "table-converted.pdf", &TABLE_NEEDLES[..]),
+    ] {
+        let leg = offline
+            .get(key)
+            .ok_or_else(|| format!("the offline leg reported no {key} result"))?;
+        check_convert_leg(leg, &format!("offline {key}"), title, needles)?;
+    }
     let offline_png = offline
         .get("png")
         .ok_or_else(|| "the offline leg reported no PDF-to-PNG result".to_string())?;
@@ -10717,6 +11365,50 @@ mod tests {
             },
         })
     }
+    /// One of the convert card's other formats. All five share the shape and
+    /// the network ledger of the Markdown leg: the same lazy chunk, nothing
+    /// else fetched, and the needles are each source's own words.
+    fn convert_format_leg(title: &str, declared_bytes: u64, found: Vec<bool>) -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": title,
+            "pages": 1,
+            "declaredBytes": declared_bytes,
+            "bytes": declared_bytes,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": title,
+            "header": "%PDF-",
+            "zip": false,
+            "found": found,
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Convert to PDF",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": title,
+                "meta": "1 file \u{00b7} 1.5 kB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 2,
+                "foreign": [],
+                "paths": [
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                    "/wasm/selis_pdf_wasm_convert.wasm",
+                ],
+            },
+        })
+    }
+
     fn real_tools_form_fill_leg() -> Json {
         let output = json!({
             "kind": "pdf",
@@ -10758,6 +11450,355 @@ mod tests {
             "signatureFieldDisabled": true,
             "readOnlyDisabled": true,
             "fieldRows": 7,
+        })
+    }
+    /// The Phase 3 text leg: one `.txt` plus its quality report, and a report
+    /// that proves the run recovered characters rather than a bare separator.
+    fn real_tools_text_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "0 PDFs",
+                "meta": "2 files \u{00b7} 378 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Verdict", "value": "ok" },
+                    { "label": "Pages", "value": "1" },
+                    { "label": "Characters", "value": "57" },
+                    { "label": "Lines", "value": "4" },
+                    { "label": "Pages with text", "value": "1" },
+                    { "label": "Verification", "value": "read" },
+                ],
+            },
+            "outputs": [
+                {
+                    "kind": "text",
+                    "name": "notes-converted.txt",
+                    "declaredBytes": 85,
+                    "bytes": 85,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted.txt",
+                    "header": "--- p",
+                    "found": [true, true],
+                },
+                {
+                    "kind": "report",
+                    "name": "notes-converted-quality.json",
+                    "declaredBytes": 293,
+                    "bytes": 293,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted-quality.json",
+                    "found": [false, false],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+    /// The Phase 3 document legs. Same shape as the text leg: one package,
+    /// one Blob, nothing fetched but the runtime-cached chunk. The needles
+    /// are written into the package by the writers themselves, so a fixture
+    /// that downloads an empty container fails the leg.
+    fn real_tools_word_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "notes-converted.docx",
+                "meta": "1 file \u{00b7} 2.1 kB \u{00b7} verified locally",
+                "rows": [],
+            },
+            "outputs": [
+                {
+                    "kind": "file",
+                    "name": "notes-converted.docx",
+                    "declaredBytes": 2100,
+                    "bytes": 2100,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted.docx",
+                    "zip": true,
+                    "found": [true, true],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
+    fn real_tools_slides_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "notes-converted.pptx",
+                "meta": "1 file \u{00b7} 2.3 kB \u{00b7} verified locally",
+                "rows": [],
+            },
+            "outputs": [
+                {
+                    "kind": "file",
+                    "name": "notes-converted.pptx",
+                    "declaredBytes": 2300,
+                    "bytes": 2300,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted.pptx",
+                    "zip": true,
+                    "found": [true, true],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
+    fn real_tools_workbook_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "table-converted.xlsx",
+                "meta": "1 file \u{00b7} 2.0 kB \u{00b7} verified locally",
+                "rows": [],
+            },
+            "outputs": [
+                {
+                    "kind": "file",
+                    "name": "table-converted.xlsx",
+                    "declaredBytes": 2000,
+                    "bytes": 2000,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "table-converted.xlsx",
+                    "zip": true,
+                    "found": [true, true, true],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+    fn real_tools_tables_leg() -> Json {
+        let csv = json!({
+            "kind": "tables",
+            "name": "table-converted-tables.csv",
+            "declaredBytes": 200,
+            "bytes": 200,
+            "blob": true,
+            "previewBlob": null,
+            "downloadName": "table-converted-tables.csv",
+            "found": [true, true],
+        });
+        let report_json = json!({
+            "kind": "report",
+            "name": "table-converted-tables.json",
+            "declaredBytes": 110,
+            "bytes": 110,
+            "blob": true,
+            "previewBlob": null,
+            "downloadName": "table-converted-tables.json",
+            "found": [true, false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "0 PDFs",
+                "meta": "2 files \u{00b7} 310 B \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Tables found", "value": "1" },
+                    { "label": "Rows", "value": "2" },
+                    { "label": "Lowest confidence", "value": "0.90" },
+                    { "label": "Verification", "value": "read" },
+                ],
+            },
+            "outputs": [csv, report_json],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
+    fn real_tools_split_text_leg() -> Json {
+        let bundle = json!({
+            "kind": "zip",
+            "name": "chapter-converted-split.zip",
+            "declaredBytes": 3400,
+            "bytes": 3400,
+            "blob": true,
+            "previewBlob": null,
+            "downloadName": "chapter-converted-split.zip",
+            "zip": true,
+            "found": [true, true],
+        });
+        let report_json = json!({
+            "kind": "report",
+            "name": "chapter-converted-split.json",
+            "declaredBytes": 180,
+            "bytes": 180,
+            "blob": true,
+            "previewBlob": null,
+            "downloadName": "chapter-converted-split.json",
+            "found": [true, false],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "0 PDFs and a ZIP",
+                "meta": "2 files \u{00b7} 3.6 kB \u{00b7} verified locally",
+                "rows": [
+                    { "label": "Rule", "value": "a new part starts at each matching page" },
+                    { "label": "Matched pages", "value": "2" },
+                    { "label": "Parts", "value": "2" },
+                ],
+            },
+            "outputs": [bundle, report_json],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
+    fn real_tools_reflow_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "notes-converted.html",
+                "meta": "1 file · 2.0 kB · verified locally",
+                "rows": [],
+            },
+            "outputs": [
+                {
+                    "kind": "html",
+                    "name": "notes-converted.html",
+                    "declaredBytes": 2000,
+                    "bytes": 2000,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted.html",
+                    "found": [true, true],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
+
+    fn real_tools_epub_out_leg() -> Json {
+        json!({
+            "fileRows": 1,
+            "runLabel": "Extract text",
+            "noUpload": "verified",
+            "status": "Done. The export was read from the document on this device.",
+            "result": {
+                "title": "notes-converted.epub",
+                "meta": "1 file · 2.1 kB · verified locally",
+                "rows": [],
+            },
+            "outputs": [
+                {
+                    "kind": "file",
+                    "name": "notes-converted.epub",
+                    "declaredBytes": 2100,
+                    "bytes": 2100,
+                    "blob": true,
+                    "previewBlob": null,
+                    "downloadName": "notes-converted.epub",
+                    "zip": true,
+                    "found": [true, true],
+                },
+            ],
+            "output": null,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 3,
+                "foreign": [],
+                "paths": [
+                    "/assets/host/tools/text-protocol.js",
+                    "/wasm/selis_pdf_wasm_text.wasm",
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
         })
     }
     /// The metadata-strip leg: the page-preserving stamp shape, plus the
@@ -11385,7 +12426,23 @@ mod tests {
         report["imageWatermark"] = real_tools_image_watermark_leg();
         report["outline"] = real_tools_outline_leg();
         report["convert"] = real_tools_convert_leg();
+        // The other five convert formats share the checker's shape: one PDF,
+        // the same lazy chunk (the needle proves the bytes), the new formats'
+        // own words, and no fetch beyond it.
+        report["latex"] = convert_format_leg("quarto-converted.pdf", 1200, vec![true]);
+        report["csv"] = convert_format_leg("ledger-converted.pdf", 900, vec![true, true]);
+        report["svg"] = convert_format_leg("mark-converted.pdf", 1100, vec![true]);
+        report["epub"] = convert_format_leg("book-converted.pdf", 1300, vec![true]);
+        report["table"] = convert_format_leg("table-converted.pdf", 1400, vec![true, true]);
         report["formFill"] = real_tools_form_fill_leg();
+        report["text"] = real_tools_text_leg();
+        report["word"] = real_tools_word_leg();
+        report["slides"] = real_tools_slides_leg();
+        report["workbook"] = real_tools_workbook_leg();
+        report["tables"] = real_tools_tables_leg();
+        report["splitText"] = real_tools_split_text_leg();
+        report["reflow"] = real_tools_reflow_leg();
+        report["epubOut"] = real_tools_epub_out_leg();
         report["security"] = json!({
             "protect": real_tools_security_leg(&PROTECT_LEG),
             "permissions": real_tools_security_leg(&PERMISSIONS_LEG),
@@ -11445,6 +12502,19 @@ mod tests {
         report["offline"]["imageWatermark"] = report["imageWatermark"].clone();
         report["offline"]["outline"] = report["outline"].clone();
         report["offline"]["formFill"] = report["formFill"].clone();
+        report["offline"]["text"] = report["text"].clone();
+        report["offline"]["word"] = report["word"].clone();
+        report["offline"]["slides"] = report["slides"].clone();
+        report["offline"]["workbook"] = report["workbook"].clone();
+        report["offline"]["tables"] = report["tables"].clone();
+        report["offline"]["splitText"] = report["splitText"].clone();
+        report["offline"]["reflow"] = report["reflow"].clone();
+        report["offline"]["epubOut"] = report["epubOut"].clone();
+        report["offline"]["latex"] = report["latex"].clone();
+        report["offline"]["csv"] = report["csv"].clone();
+        report["offline"]["svg"] = report["svg"].clone();
+        report["offline"]["epub"] = report["epub"].clone();
+        report["offline"]["table"] = report["table"].clone();
         report["offline"]["convert"] = report["convert"].clone();
         report["offline"]["security"] = report["security"].clone();
         report["offline"]["sign"] = report["sign"].clone();
@@ -11849,6 +12919,83 @@ mod tests {
         assert!(
             verdict_tools_page(&attachment_no_zip).is_err(),
             "an attachment leg without a real ZIP header must not pass"
+        );
+
+        let mut word_wrong_kind = report.clone();
+        *word_wrong_kind.pointer_mut("/word/outputs/0/kind").unwrap() = json!("zip");
+        assert!(
+            verdict_tools_page(&word_wrong_kind).is_err(),
+            "a Word leg whose package was downloaded as a plain ZIP must not pass"
+        );
+
+        let mut slides_missing_needles = report.clone();
+        *slides_missing_needles
+            .pointer_mut("/slides/outputs/0/found")
+            .unwrap() = json!([true, false]);
+        assert!(
+            verdict_tools_page(&slides_missing_needles).is_err(),
+            "a slides leg whose package lost its parts must not pass"
+        );
+
+        let mut epub_not_pdf = report.clone();
+        *epub_not_pdf.pointer_mut("/epub/outputs/0/header").unwrap() = json!("PK");
+        assert!(
+            verdict_tools_page(&epub_not_pdf).is_err(),
+            "an EPUB convert leg that returned something other than a PDF must not pass"
+        );
+
+        let mut table_unrendered = report.clone();
+        *table_unrendered
+            .pointer_mut("/table/outputs/0/found")
+            .unwrap() = json!([true, false]);
+        assert!(
+            verdict_tools_page(&table_unrendered).is_err(),
+            "a pipe-table leg whose table never reached the page must not pass"
+        );
+
+        let mut tables_unfound = report.clone();
+        *tables_unfound
+            .pointer_mut("/tables/outputs/0/found")
+            .unwrap() = json!([false, false]);
+        assert!(
+            verdict_tools_page(&tables_unfound).is_err(),
+            "a tables leg whose CSV lost the table's cells must not pass"
+        );
+
+        let mut reflow_wrong_kind = report.clone();
+        *reflow_wrong_kind
+            .pointer_mut("/reflow/outputs/0/kind")
+            .unwrap() = json!("file");
+        assert!(
+            verdict_tools_page(&reflow_wrong_kind).is_err(),
+            "a reflow leg whose article came back as a raw file must not pass"
+        );
+
+        let mut offline_tables_unfound = report.clone();
+        *offline_tables_unfound
+            .pointer_mut("/offline/tables/outputs/0/found")
+            .unwrap() = json!([false, false]);
+        assert!(
+            verdict_tools_page(&offline_tables_unfound).is_err(),
+            "an offline tables leg whose CSV lost the table's cells must not pass"
+        );
+
+        let mut offline_split_one_part = report.clone();
+        *offline_split_one_part
+            .pointer_mut("/offline/splitText/result/rows/2/value")
+            .unwrap() = json!("1");
+        assert!(
+            verdict_tools_page(&offline_split_one_part).is_err(),
+            "an offline split leg that produced one part must not pass"
+        );
+
+        let mut offline_latex_not_pdf = report.clone();
+        *offline_latex_not_pdf
+            .pointer_mut("/offline/latex/outputs/0/header")
+            .unwrap() = json!("PK");
+        assert!(
+            verdict_tools_page(&offline_latex_not_pdf).is_err(),
+            "an offline LaTeX leg that returned something other than a PDF must not pass"
         );
 
         let mut image_wrong_title = report.clone();
