@@ -340,7 +340,9 @@ image→PDF, the metadata JSON export, the AcroForm, sign, validate and approve 
 queue have all shipped too.
 
 **Exit:** every object-graph tool has CLI + browser parity, verification, a corpus entry, and a
-size budget; the browser check drives all forty-two cards in both phases. The raster claim is
+size budget; the browser check drives all forty-three cards in both phases. The grid is grouped
+into eight named sections with a sticky jump bar, and the operation count in the heading is read
+from the registry rather than written by hand (it had drifted twice). The raster claim is
 separate and starts in Phase 2 — PDF → PNG, PDF → JPG, PDF → TIFF and PDF → WebP now ship there,
 each with its own read-back verification.
 
@@ -594,7 +596,7 @@ PDF/A, PDF/UA, and any standards requiring procured specifications.
 - [x] Import-free check in `place-assets` and the loader.
 - [x] Size budget + baseline.
 - [x] Web unit tests for protocol/input parsing.
-- [x] Browser check drives all forty-two cards end-to-end, downloads every output, asserts the
+- [x] Browser check drives all forty-three cards end-to-end, downloads every output, asserts the
       network log, reads the stamped marker strings and written label tree from downloaded PDF
       bytes, proves the A4 page box landed in the resize output, proves the N-up sheets carry
       Form XObjects, proves removed metadata is absent

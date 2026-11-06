@@ -733,6 +733,44 @@ function byId<T extends HTMLElement>(id: string): T {
 	return element as T;
 }
 
+/**
+ * The card count as a word, because the heading reads as a sentence.
+ *
+ * Past twenty the spelled form gets long and stops being something a reader
+ * parses at a glance, so the numeral takes over — and any number without a word
+ * falls back to the numeral rather than throwing, because a heading is not worth
+ * a failed page load.
+ */
+function spellOut(count: number): string {
+	const words = [
+		"zero",
+		"one",
+		"two",
+		"three",
+		"four",
+		"five",
+		"six",
+		"seven",
+		"eight",
+		"nine",
+		"ten",
+		"eleven",
+		"twelve",
+		"thirteen",
+		"fourteen",
+		"fifteen",
+		"sixteen",
+		"seventeen",
+		"eighteen",
+		"nineteen",
+		"twenty",
+	];
+	if (count >= 0 && count < words.length) {
+		return words[count] ?? String(count);
+	}
+	return String(count);
+}
+
 function make<K extends keyof HTMLElementTagNameMap>(
 	tag: K,
 	className?: string,
@@ -995,6 +1033,8 @@ function batchRows(batch: BatchSummary | undefined): VerificationRow[] {
 function init(): void {
 	const toolsSection = byId<HTMLElement>("tools");
 	const toolGrid = byId<HTMLDivElement>("tool-grid");
+	const sectionNav = byId<HTMLUListElement>("tool-jump");
+	const toolsHeading = byId<HTMLHeadingElement>("tools-heading");
 	const workspace = byId<HTMLElement>("workspace");
 	const backButton = byId<HTMLButtonElement>("back-to-tools");
 	const workspaceTitle = byId<HTMLHeadingElement>("workspace-title");
@@ -1118,7 +1158,7 @@ function init(): void {
 			const section = make("section", "tool-group");
 			section.id = `tool-group-${group.id}`;
 			const head = make("div", "tool-group-head");
-			const title = make("h2", "tool-group-title");
+			const title = make("h3", "tool-group-title");
 			title.textContent = group.label;
 			const note = make("p", "tool-group-note");
 			note.textContent = group.note;
@@ -1129,10 +1169,91 @@ function init(): void {
 			return section;
 		});
 		toolGrid.replaceChildren(...sections);
-		const dark = toolGrid.querySelectorAll(".tool-card").length;
-		if (dark !== TOOLS.length) {
-			throw new Error(`tool grid rendered ${dark} of ${TOOLS.length} cards`);
+		const rendered = toolGrid.querySelectorAll(".tool-card").length;
+		if (rendered !== TOOLS.length) {
+			throw new Error(`tool grid rendered ${rendered} of ${TOOLS.length} cards`);
 		}
+	}
+
+	/**
+	 * The jump bar beside the grid: one link per section that has cards, in display
+	 * order.
+	 *
+	 * Ordinary anchors, not buttons — its whole job is to move the document's own
+	 * scroll position, so it must work with no JS at all, keep middle-click and
+	 * "open in new tab", and give the browser's back key something real to undo.
+	 */
+	function renderSectionNav(): void {
+		const items: HTMLElement[] = [];
+		for (const group of TOOL_GROUPS) {
+			if (!TOOLS.some((tool) => tool.group === group.id)) {
+				continue;
+			}
+			const item = make("li", "tool-jump-item");
+			const link = make("a", "tool-jump-link");
+			link.href = `#tool-group-${group.id}`;
+			link.textContent = group.label;
+			item.append(link);
+			items.push(item);
+		}
+		sectionNav.replaceChildren(...items);
+	}
+
+	/**
+	 * Mark the section the reader is inside, so the jump bar says where you are
+	 * rather than just being a list of links.
+	 *
+	 * An observer, not a scroll handler: a listener that measures offsets every
+	 * frame is jank on the page that already renders forty-odd cards. The margin
+	 * names a band near the top of the viewport, so the mark moves as a heading
+	 * arrives instead of after the reader has passed it.
+	 */
+	function watchSections(): void {
+		const links = new Map<string, HTMLAnchorElement>();
+		for (const link of Array.from(sectionNav.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
+			const target = link.getAttribute("href")?.slice(1);
+			if (target !== undefined && target !== "") {
+				links.set(target, link);
+			}
+		}
+		let current = "";
+		const observer = new IntersectionObserver(
+			(entries) => {
+				for (const entry of entries) {
+					if (!entry.isIntersecting || entry.target.id === current) {
+						continue;
+					}
+					current = entry.target.id;
+					for (const [id, link] of links) {
+						if (id === current) {
+							link.setAttribute("aria-current", "true");
+						} else {
+							link.removeAttribute("aria-current");
+						}
+					}
+				}
+			},
+			{ rootMargin: "-20% 0px -70% 0px" },
+		);
+		for (const id of links.keys()) {
+			const section = document.getElementById(id);
+			if (section !== null) {
+				observer.observe(section);
+			}
+		}
+	}
+
+	/**
+	 * The operation count in the section heading, read out of the registry.
+	 *
+	 * This sentence used to live in the HTML as prose ("Forty-three operations")
+	 * and drifted twice: one slice added cards without touching it, the next fixed
+	 * it by hand until the following card broke it again. Only the registry knows
+	 * how many tools there are, so the number comes from here and the markup
+	 * carries none.
+	 */
+	function renderToolCount(): void {
+		toolsHeading.textContent = `${spellOut(TOOLS.length)} operations. Zero uploads.`;
 	}
 
 	function addField(key: string, labelText: string, control: Control, hint?: string): Control {
@@ -4884,6 +5005,9 @@ function init(): void {
 	});
 
 	renderToolGrid();
+	renderSectionNav();
+	renderToolCount();
+	watchSections();
 	const firstTool = TOOLS[0];
 	if (firstTool !== undefined) {
 		renderOptions(firstTool);

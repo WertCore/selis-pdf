@@ -1,6 +1,6 @@
 # 36 — Tools page: grouping, navigation, and per-tool routes
 
-**Status:** working plan, opened 5 November 2026.
+**Status:** Slice A shipped 5 November 2026; Slice B not started (blocked on the slug list).
 **Owner:** AI+ (implementation) · HUMAN (slug list, copy sign-off).
 **Depends on:** `34-TOOLS-SITE-ROADMAP.md` (the card set), `35-PARITY-CHECKLIST.md` (the gate
 rule), `14-PHASE-4-web-alpha.md` (§ SEO landing page per tool — this file is that row's plan).
@@ -87,62 +87,62 @@ without reading 42 near-identical cards. No URL changes.
 - [x] Assign `group` to all 42 cards from an explicit mapping (script-checked: 42 ids in, 42 ids
       out, no unmapped and no absent id). A card without a group must be a type error, not a
       silent fallback into the first section.
-- [ ] Unit test: `TOOL_GROUPS` order is unique, every `TOOLS[i].group` appears in it, and the
+- [x] Unit test: `TOOL_GROUPS` order is unique, every `TOOLS[i].group` appears in it, and the
       union of sections equals `TOOLS` exactly (this is the regression test for a future card
       that forgets a group).
 
 ### A2. Grid: sections inside `#tool-grid`
 
-- [ ] `renderToolGrid()` groups `TOOLS` by `group` and emits, per section, a
+- [x] `renderToolGrid()` groups `TOOLS` by `group` and emits, per section, a
       `<section class="tool-section" id="tools-<group>" aria-labelledby="tools-<group>-title">`
       containing an `<h3>` title, the section `note` as a `<p class="tool-section-note">`, and a
       `<div class="tool-grid">` of that section's `.tool-card` buttons.
-- [ ] Keep `#tool-grid` as the outer container so `#tool-grid .tool-card` still matches all 42
+- [x] Keep `#tool-grid` as the outer container so `#tool-grid .tool-card` still matches all 42
       (the harness selector must not change).
-- [ ] Cards keep `data-tool`, their `button` element, their click handler and their order within
+- [x] Cards keep `data-tool`, their `button` element, their click handler and their order within
       a section. Keyboard order must follow the visual order section by section.
-- [ ] Empty sections are not rendered (defensive: a group with no cards is a mapping bug, and the
+- [x] Empty sections are not rendered (defensive: a group with no cards is a mapping bug, and the
       A1 test is the place to catch it, not the page).
 
 ### A3. Jump nav and the stale count
 
-- [ ] Sticky `nav.tool-jump` under the header, one link per section, `href="#tools-<group>"`,
+- [x] Sticky `nav.tool-jump` under the header, one link per section, `href="#tools-<group>"`,
       horizontally scrollable at narrow widths (no wrapping into five rows).
-- [ ] Mark the section currently in view with `aria-current="true"` using one
+- [x] Mark the section currently in view with `aria-current="true"` using one
       `IntersectionObserver`; no scroll listener doing layout reads per frame.
-- [ ] Visible focus ring on each link (`:focus-visible`), and the bar must not cover an anchored
+- [x] Visible focus ring on each link (`:focus-visible`), and the bar must not cover an anchored
       heading when jumped to (`scroll-margin-top` sized to the header + bar).
-- [ ] Replace the hard-coded copy in `tools.html`:
+- [x] Replace the hard-coded copy in `tools.html`:
       `Thirty-nine operations. Zero uploads.` → derived from `TOOLS.length`
       (`forty-two operations…` in words, or the numeral — pick one and keep it in one place).
       The same number must not be written twice.
-- [ ] Keep `#tools` and the hero CTA working; the jump bar is additive, not a replacement.
+- [x] Keep `#tools` and the hero CTA working; the jump bar is additive, not a replacement.
 
 ### A4. Card and section visual pass
 
-- [ ] Section headings read as headings, not as cards: smaller than the page `h2`, with the
+- [x] Section headings read as headings, not as cards: smaller than the page `h2`, with the
       `--muted` note beside/below, and a hairline `--line` rule that spans the content column.
-- [ ] Card: one accent edge on hover/focus only — never a border plus a same-colour inset ring
+- [x] Card: one accent edge on hover/focus only — never a border plus a same-colour inset ring
       (reads as a stray border on click). `:focus-visible` gets the ring; `:hover` gets the lift.
-- [ ] Consistent density: same mark box, title size and blurb clamp across all 42. Long titles
+- [x] Consistent density: same mark box, title size and blurb clamp across all 42. Long titles
       (`Certificate validation`, `Clear permissions`) must not push the blurb out of line.
 - [ ] Re-check the three breakpoints already in `tools.css` (3 columns, 2 at ≤940 px, 1 at
       ≤660 px). A section of 3 cards must not leave an odd column gap at 2-up.
-- [ ] Honour `prefers-reduced-motion` for the hover lift (the rule already exists at the end of
+- [x] Honour `prefers-reduced-motion` for the hover lift (the rule already exists at the end of
       the file — extend it, don't duplicate it).
-- [ ] Contrast: section note and `tool-meta` at `--muted` on `--paper` must clear 4.5:1; verify
+- [x] Contrast: section note and `tool-meta` at `--muted` on `--paper` must clear 4.5:1; verify
       with the axe scan the harness already runs, not by eye.
 
 ### A5. Slice A gate
 
-- [ ] `pnpm --filter @selis/web-host build` (58 modules placed; no new bare specifier).
-- [ ] `pnpm --filter @selis/web-host test` (registry/grouping unit tests included).
-- [ ] `pnpm exec biome check apps/web/host/src` clean (tabs, width 100, no `any`).
-- [ ] `cargo test -p xtask -- --test-threads=1` — real Edge, 42 cards, 7 online + 7 offline
+- [x] `pnpm --filter @selis/web-host build` (58 modules placed; no new bare specifier).
+- [x] `pnpm --filter @selis/web-host test` (registry/grouping unit tests included).
+- [x] `pnpm exec biome check apps/web/host/src` clean (tabs, width 100, no `any`).
+- [x] `cargo test -p xtask -- --test-threads=1` — real Edge, 42 cards, 7 online + 7 offline
       security legs, all pass; axe reports no new serious/critical violations.
-- [ ] `cargo xtask size-check --strict` — all budgets met (Slice A changes JS only; the wasm
+- [x] `cargo xtask size-check --strict` — all budgets met (Slice A changes JS only; the wasm
       chunks should not move, which is itself the check that no Rust was touched).
-- [ ] Docs: note the sections in `34-TOOLS-SITE-ROADMAP.md`; add the stale-count fix to the
+- [x] Docs: note the sections in `34-TOOLS-SITE-ROADMAP.md`; add the stale-count fix to the
       commit message. Do **not** tick the "SEO landing page per tool" row — that is Slice B.
 - [ ] Commit → push `feature/tools-site` → fast-forward `main` → push `origin/main`.
 
