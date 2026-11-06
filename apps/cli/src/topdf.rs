@@ -1,15 +1,17 @@
 //! The `selis topdf` tool (SL-5.CONV.05 subset): Markdown/HTML/LaTeX/CSV/
-//! SVG/EPUB → PDF via the `selis-pdf-convert` layout engine.
+//! SVG/EPUB/Word/PowerPoint/Excel → PDF via the `selis-pdf-convert` layout
+//! engine.
 
 use selis_pdf_convert::{
-    csv_to_pdf, epub_to_pdf, html_to_pdf, latex_to_pdf, markdown_to_pdf, svg_to_pdf, Options,
-    PageSize,
+    csv_to_pdf, docx_to_pdf, epub_to_pdf, html_to_pdf, latex_to_pdf, markdown_to_pdf, pptx_to_pdf,
+    svg_to_pdf, xlsx_to_pdf, Options, PageSize,
 };
 use selis_sandbox::Budget;
 
 use crate::{read_file, CliError, CliResult};
 
-/// Convert a Markdown, HTML, LaTeX, CSV, SVG or EPUB file to PDF.
+/// Convert a Markdown, HTML, LaTeX, CSV, SVG, EPUB, Word, PowerPoint or
+/// Excel file to PDF.
 pub(crate) fn topdf(
     input: &str,
     output: &str,
@@ -19,12 +21,11 @@ pub(crate) fn topdf(
 ) -> CliResult<crate::verify_report::Verification> {
     let data = read_file(input)?;
     let in_bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-    let text = String::from_utf8_lossy(&data);
 
     let fmt = match format {
         "auto" => detect_format(input).ok_or_else(|| {
             CliError(format!(
-                "cannot infer format of {input}; pass --format md, html, tex, csv, svg or epub"
+                "cannot infer format of {input}; pass --format md, html, tex, csv, svg, epub, docx, pptx or xlsx"
             ))
         })?,
         "md" | "markdown" => "md",
@@ -33,11 +34,22 @@ pub(crate) fn topdf(
         "csv" => "csv",
         "svg" => "svg",
         "epub" => "epub",
+        "docx" | "word" => "docx",
+        "pptx" | "powerpoint" => "pptx",
+        "xlsx" | "excel" => "xlsx",
         other => {
             return Err(CliError(format!(
-                "unknown format `{other}` (expected auto, md, html, tex, csv, svg or epub)"
+                "unknown format `{other}` (expected auto, md, html, tex, csv, svg, epub, docx, pptx or xlsx)"
             )))
         }
+    };
+
+    // Only the text formats need their input decoded; the OOXML and EPUB
+    // paths read the bytes themselves, so a binary file is never turned into a
+    // lossy string it would only throw away.
+    let text = match fmt {
+        "md" | "html" | "tex" | "csv" | "svg" => String::from_utf8_lossy(&data).into_owned(),
+        _ => String::new(),
     };
     let size = match page_size {
         "letter" => PageSize::Letter,
@@ -62,6 +74,9 @@ pub(crate) fn topdf(
         "csv" => csv_to_pdf(&text, &opts, &budget, &mut g),
         "svg" => svg_to_pdf(&text, &opts, &budget, &mut g),
         "epub" => epub_to_pdf(&data, &opts, &budget, &mut g),
+        "docx" => docx_to_pdf(&data, &opts, &budget, &mut g),
+        "pptx" => pptx_to_pdf(&data, &opts, &budget, &mut g),
+        "xlsx" => xlsx_to_pdf(&data, &opts, &budget, &mut g),
         _ => html_to_pdf(&text, &opts, &budget, &mut g),
     }
     .map_err(|e| CliError(format!("{input}: {e}")))?;
@@ -102,6 +117,15 @@ fn detect_format(path: &str) -> Option<&'static str> {
     }
     if lower.ends_with(".epub") {
         return Some("epub");
+    }
+    if lower.ends_with(".docx") {
+        return Some("docx");
+    }
+    if lower.ends_with(".pptx") {
+        return Some("pptx");
+    }
+    if lower.ends_with(".xlsx") {
+        return Some("xlsx");
     }
     None
 }

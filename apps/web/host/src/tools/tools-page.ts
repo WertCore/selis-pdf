@@ -503,7 +503,7 @@ const TOOLS: readonly ToolDef[] = [
 		group: "convert",
 		mark: "▾",
 		title: "Convert to PDF",
-		blurb: "Turn Markdown, HTML, CSV, LaTeX, SVG or EPUB into a PDF.",
+		blurb: "Turn Markdown, HTML, CSV, LaTeX, SVG, EPUB, Word, PowerPoint or Excel into a PDF.",
 		verb: "Convert to PDF",
 		multiple: false,
 		accepts: "text",
@@ -2609,6 +2609,9 @@ function init(): void {
 				["latex", "LaTeX (subset)"],
 				["svg", "SVG (documented subset)"],
 				["epub", "EPUB 3"],
+				["docx", "Word (.docx)"],
+				["pptx", "PowerPoint (.pptx)"],
+				["xlsx", "Excel (.xlsx)"],
 			] as const) {
 				const choice = document.createElement("option");
 				choice.value = value;
@@ -2619,7 +2622,7 @@ function init(): void {
 			addField("title", "Title", textInput("title", "text", "Document title"));
 			const note = make("p", "option-note");
 			note.textContent =
-				"Markdown, HTML, CSV, LaTeX, SVG and EPUB are converted on this device through the owned engine. The output is a generated PDF.";
+				"Markdown, HTML, CSV, LaTeX, SVG, EPUB, Word, PowerPoint and Excel are converted on this device through the owned engine. The output is a generated PDF. Encrypted Office files are refused.";
 			options.append(note);
 			return;
 		}
@@ -2656,7 +2659,7 @@ function init(): void {
 				: tool.accepts === "pdf-image"
 					? "application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg"
 					: tool.accepts === "text"
-						? ".md,.markdown,.html,.htm,.xhtml,.csv,.txt,.tex,.latex,.svg,.epub"
+						? ".md,.markdown,.html,.htm,.xhtml,.csv,.txt,.tex,.latex,.svg,.epub,.docx,.pptx,.xlsx"
 						: id === "attach"
 							? ""
 							: "application/pdf,.pdf";
@@ -2672,7 +2675,7 @@ function init(): void {
 					: tool.accepts === "image"
 						? "Choose one or more PNG or JPEG images. They are read here, not sent anywhere."
 						: tool.accepts === "text"
-							? "Choose a Markdown, HTML, CSV, LaTeX, SVG or EPUB file. It is read here, not sent anywhere."
+							? "Choose a Markdown, HTML, CSV, LaTeX, SVG, EPUB, Word, PowerPoint or Excel file. It is read here, not sent anywhere."
 							: tool.multiple
 								? "Choose two or more PDFs. They are read here, not sent anywhere."
 								: "Choose a PDF. It is read here, not sent anywhere.",
@@ -3357,6 +3360,12 @@ function init(): void {
 				format = 4;
 			} else if (formatOption === "svg") {
 				format = 5;
+			} else if (formatOption === "docx") {
+				format = 6;
+			} else if (formatOption === "pptx") {
+				format = 7;
+			} else if (formatOption === "xlsx") {
+				format = 8;
 			} else {
 				if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml")) {
 					format = 1;
@@ -3368,6 +3377,12 @@ function init(): void {
 					format = 4;
 				} else if (lower.endsWith(".svg")) {
 					format = 5;
+				} else if (lower.endsWith(".docx")) {
+					format = 6;
+				} else if (lower.endsWith(".pptx")) {
+					format = 7;
+				} else if (lower.endsWith(".xlsx")) {
+					format = 8;
 				} else {
 					format = 0;
 				}
@@ -3643,6 +3658,157 @@ function init(): void {
 		}
 	}
 
+	/**
+	 * Base64 for the deck path: chunked so a whole page image never lands on
+	 * the call stack, matching what `btoa` produces for the text chunk.
+	 */
+	function bytesToBase64(bytes: Uint8Array): string {
+		let binary = "";
+		const chunk = 0x8000;
+		for (let at = 0; at < bytes.length; at += chunk) {
+			const slice = bytes.subarray(at, Math.min(at + chunk, bytes.length));
+			binary += String.fromCharCode.apply(null, Array.from(slice));
+		}
+		return btoa(binary);
+	}
+
+	/**
+	 * Read the entries of a Selis store-method ZIP (no compression, no data
+	 * descriptor): the exact layout `bundle_zip` writes. A foreign writer is
+	 * refused by the explicit method check instead of being misread.
+	 */
+	function readStoreZipEntries(bytes: Uint8Array): { name: string; bytes: Uint8Array }[] {
+		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+		const local = [0x50, 0x4b, 0x03, 0x04];
+		const names: { name: string; bytes: Uint8Array }[] = [];
+		let at = 0;
+		for (;;) {
+			let found = -1;
+			for (let i = at; i + 4 <= bytes.length; i += 1) {
+				if (
+					bytes[i] === local[0] &&
+					bytes[i + 1] === local[1] &&
+					bytes[i + 2] === local[2] &&
+					bytes[i + 3] === local[3]
+				) {
+					found = i;
+					break;
+				}
+			}
+			if (found === -1) {
+				break;
+			}
+			if (found + 30 > bytes.length) {
+				throw new ToolProtocolError("the renderer's bundle ended inside a file header");
+			}
+			const method = view.getUint16(found + 8, true);
+			if (method !== 0) {
+				throw new ToolProtocolError(
+					"the renderer's bundle used a compression Selis refuses to read",
+				);
+			}
+			const compressedSize = view.getUint32(found + 18, true);
+			const nameLength = view.getUint16(found + 26, true);
+			const extraLength = view.getUint16(found + 28, true);
+			const nameStart = found + 30;
+			const dataStart = nameStart + nameLength + extraLength;
+			if (dataStart + compressedSize > bytes.length) {
+				throw new ToolProtocolError("the renderer's bundle ended inside an entry");
+			}
+			names.push({
+				name: new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLength)),
+				bytes: bytes.subarray(dataStart, dataStart + compressedSize).slice(),
+			});
+			at = dataStart + compressedSize;
+		}
+		if (names.length === 0) {
+			throw new ToolProtocolError("the renderer's bundle carried no entries");
+		}
+		return names;
+	}
+
+	/**
+	 * Render the selected pages to PNGs through the raster chunk and return one
+	 * base64 PNG per page, in selection order — the exact order the text
+	 * chunk's `slideImages` option lays the package out in. Falls back to
+	 * `null` only if the caller asked for no pages.
+	 */
+	async function renderPagesForDeck(
+		bytes: Uint8Array,
+		selection: string,
+	): Promise<string[] | null> {
+		const selectionBytes = new TextEncoder().encode(selection);
+		const wasm = await getRasterWasm();
+		setStatus("Rendering the page images locally…", "info");
+		await nextPaint();
+		const exports = wasm.exports;
+		const memory = exports.memory;
+		const inputPtr = exports.selis_raster_alloc(bytes.length);
+		if (inputPtr === 0) {
+			throw new ToolProtocolError("the renderer could not allocate input memory");
+		}
+		new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+		let pagesPtr = 0;
+		if (selectionBytes.length > 0) {
+			pagesPtr = exports.selis_raster_alloc(selectionBytes.length);
+			if (pagesPtr === 0) {
+				exports.selis_raster_free(inputPtr, bytes.length);
+				throw new ToolProtocolError("the renderer could not allocate page memory");
+			}
+			new Uint8Array(memory.buffer, pagesPtr, selectionBytes.length).set(selectionBytes);
+		}
+		const outLenPtr = exports.selis_raster_alloc(4);
+		const outFilesPtr = exports.selis_raster_alloc(4);
+		if (outLenPtr === 0 || outFilesPtr === 0) {
+			exports.selis_raster_free(inputPtr, bytes.length);
+			if (pagesPtr !== 0) {
+				exports.selis_raster_free(pagesPtr, selectionBytes.length);
+			}
+			throw new ToolProtocolError("the renderer could not allocate result memory");
+		}
+		const resultPtr = exports.selis_raster_run(
+			inputPtr,
+			bytes.length,
+			pagesPtr,
+			selectionBytes.length,
+			96,
+			0, // PNG: lossless, and the smallest format the encoder verifies
+			90,
+			outLenPtr,
+			outFilesPtr,
+		);
+		exports.selis_raster_free(inputPtr, bytes.length);
+		if (pagesPtr !== 0) {
+			exports.selis_raster_free(pagesPtr, selectionBytes.length);
+		}
+		const view = new DataView(memory.buffer);
+		const outLen = view.getUint32(outLenPtr, true);
+		const outFiles = view.getUint32(outFilesPtr, true);
+		exports.selis_raster_free(outLenPtr, 4);
+		exports.selis_raster_free(outFilesPtr, 4);
+		if (resultPtr === 0) {
+			const errLenPtr = exports.selis_raster_alloc(4);
+			const errPtr = exports.selis_raster_last_error(errLenPtr);
+			const errLen = new DataView(memory.buffer).getUint32(errLenPtr, true);
+			let message = "The pages could not be rendered.";
+			if (errPtr !== 0 && errLen > 0) {
+				message = new TextDecoder().decode(new Uint8Array(memory.buffer, errPtr, errLen));
+				exports.selis_raster_free(errPtr, errLen);
+			}
+			exports.selis_raster_free(errLenPtr, 4);
+			throw new ToolProtocolError(message);
+		}
+		const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+		exports.selis_raster_free(resultPtr, outLen);
+		if (outFiles === 0) {
+			throw new ToolProtocolError("the renderer returned no pages.");
+		}
+		if (outFiles === 1) {
+			return [bytesToBase64(outBytes)];
+		}
+		return readStoreZipEntries(outBytes).map((entry) => bytesToBase64(entry.bytes));
+	}
+
 	let textWasmPromise: Promise<TextWasm> | null = null;
 	function getTextWasm(): Promise<TextWasm> {
 		if (textWasmPromise === null) {
@@ -3676,7 +3842,7 @@ function init(): void {
 				throw new ToolInputError(`${file.name} does not look like a PDF.`);
 			}
 			const mode = optionValue("textMode");
-			const options: Record<string, string> = {
+			const options: Record<string, string | string[]> = {
 				name: file.name,
 				title: file.name.replace(/\.[^.]+$/, ""),
 			};
@@ -3691,6 +3857,16 @@ function init(): void {
 				if (pages !== "") {
 					options.pages = pages;
 				}
+			}
+			if (mode === "slides") {
+				// The deck embeds the page's own ink: render every selected
+				// page through the raster chunk and hand the PNGs to the
+				// text chunk, which lays the same pages the export selects.
+				const images = await renderPagesForDeck(bytes, optionValue("pages").trim());
+				if (images === null || images.length === 0) {
+					throw new ToolProtocolError("the renderer returned no pages for the deck.");
+				}
+				options.slideImages = images;
 			}
 			const wasm = await getTextWasm();
 			setStatus("Recovering the text locally…", "info");

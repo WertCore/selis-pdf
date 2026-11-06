@@ -47,13 +47,17 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 mod blocks;
 mod csv;
+mod docx;
 mod emit;
 mod epub;
 mod html;
 mod latex;
 mod layout;
 mod markdown;
+mod ooxml;
+mod pptx;
 mod svg;
+mod xlsx;
 mod xmlmini;
 
 /// The target page size.
@@ -229,6 +233,101 @@ pub fn epub_to_pdf(
     epub::epub_to_pdf(input, opts, budget, g)
 }
 
+/// Convert a Word document package (OPF, relationships and `word/document.xml`)
+/// to PDF bytes.
+///
+/// The body is mapped onto the same block model the Markdown/HTML converters
+/// lay out: headings, paragraphs with bold/italic runs, list items, tables.
+/// See the module docs for what is not carried (page setup, alignment, fonts,
+/// images, text boxes, footnotes, tracked changes).
+///
+/// # Budget
+///
+/// Charges the expanded package bytes and the generated object graph against
+/// `budget`.
+///
+/// # Malformed Input
+///
+/// A package that is not a ZIP, has no `word/document.xml`, or whose parts
+/// are not parseable XML is refused with a message naming the part.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document this engine and
+/// any conforming reader can open.
+pub fn docx_to_pdf(
+    input: &[u8],
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    docx::docx_to_pdf(input, opts, budget, g)
+}
+
+/// Convert a PowerPoint deck package (presentation order, `.pptx`) to PDF
+/// bytes.
+///
+/// Every slide starts on a new page: title/subtitle placeholders become
+/// headings, body paragraphs become paragraphs with bold/italic runs,
+/// bulleted or numbered items become list items at their indent level, and
+/// DrawingML tables become real tables. See the module docs for what is not
+/// carried (slide size, theme, images, charts, SmartArt, speaker notes).
+///
+/// # Budget
+///
+/// Charges the expanded package bytes and the generated object graph against
+/// `budget`.
+///
+/// # Malformed Input
+///
+/// A package that is not a ZIP, has no `ppt/presentation.xml`, or whose
+/// parts are not parseable XML is refused with a message naming the part. A
+/// deck whose slide list resolves to no slides converts as one empty page.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document this engine and
+/// any conforming reader can open.
+pub fn pptx_to_pdf(
+    input: &[u8],
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    pptx::pptx_to_pdf(input, opts, budget, g)
+}
+
+/// Convert an Excel workbook package (`xl/workbook.xml` sheet order,
+/// shared and inline strings) to PDF bytes.
+///
+/// Every sheet starts on a new page: a level-2 heading carries its name, then
+/// one table prints the used range with cached formula values. See the module
+/// docs for what is not carried (cell formats, dates as serial numbers,
+/// column widths, merged cells, charts).
+///
+/// # Budget
+///
+/// Charges the expanded package bytes and the generated object graph against
+/// `budget`.
+///
+/// # Malformed Input
+///
+/// A package that is not a ZIP, has no `xl/workbook.xml`, or whose parts are
+/// not parseable XML is refused with a message naming the part.
+///
+/// # Output Guarantees
+///
+/// The bytes are a complete single-revision PDF 1.4 document this engine and
+/// any conforming reader can open.
+pub fn xlsx_to_pdf(
+    input: &[u8],
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    xlsx::xlsx_to_pdf(input, opts, budget, g)
+}
+
 /// Convert an SVG document (the documented subset) to a one-page PDF.
 ///
 /// The page is exactly the SVG canvas and carries no margin; 1 px = 0.75 pt.
@@ -256,19 +355,15 @@ pub fn svg_to_pdf(
     svg::svg_to_pdf(input, opts, budget, g)
 }
 
+/// Helpers shared by the reader module unit tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testkit {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
-    use super::*;
     use selis_sandbox::{Budget, CancelToken, FixedClock};
 
-    fn guard() -> BudgetGuard<'static> {
-        Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
-    }
-
     /// The output must open with selis's own parser and expose every page.
-    fn opens_with_page_count(bytes: &[u8], expected_pages: usize) {
+    pub(crate) fn opens_with_page_count(bytes: &[u8], expected_pages: usize) {
         let budget = Budget::unlimited();
         let mut g = Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new());
         let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).expect("startxref");
@@ -298,6 +393,22 @@ mod tests {
             }
         }
         assert_eq!(pages, expected_pages, "page count mismatch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
+    use super::*;
+    use selis_sandbox::{Budget, CancelToken, FixedClock};
+
+    fn guard() -> BudgetGuard<'static> {
+        Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
+    }
+
+    fn opens_with_page_count(bytes: &[u8], expected_pages: usize) {
+        crate::testkit::opens_with_page_count(bytes, expected_pages);
     }
 
     #[test]

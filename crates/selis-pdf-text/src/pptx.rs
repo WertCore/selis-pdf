@@ -2,10 +2,13 @@
 //!
 //! One slide per page, each recovered line a text box placed where the page put
 //! it. The page canvas is the PDF page at 72 DPI with `/Rotate` applied, so a
-//! box lands where the raster export paints the same words. That is the honest
-//! fidelity this format can hold without rendering the page: the text is real,
-//! editable and positioned, while images, colour, vector art and exact font
-//! faces are not carried.
+//! box lands where the raster export paints the same words. When the caller
+//! supplies the page rendered as a PNG (same view), the deck carries it
+//! full-bleed behind the text boxes and the file is a facsimile: the image
+//! paints the page exactly as the viewer does, and the words stay real,
+//! editable and positioned on top of it. Colour, vector art and exact font
+//! faces inside the embedded image are the caller's render, not the deck's
+//! reconstruction; the text boxes remain the editable layer.
 //!
 //! Packaging and the read-back check live here, in the core crate, so the CLI,
 //! the browser chunk and the desktop app produce the same deck.
@@ -53,6 +56,13 @@ pub struct Slide {
     pub height: f64,
     /// The page's text boxes.
     pub shapes: Vec<TextShape>,
+    /// The page rendered as a PNG, placed full-bleed behind the text boxes,
+    /// or `None` when the caller did not supply one.
+    ///
+    /// The image is a background, not a measurement: the boxes are still the
+    /// same page-fitted coordinates and the words still selectable. It is
+    /// what makes the deck a facsimile rather than an editable article.
+    pub image: Option<Vec<u8>>,
 }
 
 /// Recovered lines as positioned text boxes.
@@ -101,6 +111,7 @@ pub fn slide_from_lines(
         width: width.max(1.0),
         height: height.max(1.0),
         shapes,
+        image: None,
     }
 }
 
@@ -127,6 +138,7 @@ fn content_types(slides: &[Slide]) -> String {
 <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
 <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
 <Default Extension=\"xml\" ContentType=\"application/xml\"/>\
+<Default Extension=\"png\" ContentType=\"image/png\"/>\
 <Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>\
 <Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/>\
 <Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/>\
@@ -285,8 +297,18 @@ xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><
 <p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>\
 <p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"0\" cy=\"0\"/></a:xfrm></p:grpSpPr>",
     );
+    if slide.image.is_some() {
+        let cx = emu(slide.width);
+        let cy = emu(slide.height);
+        out.push_str(&format!(
+            "<p:pic><p:nvPicPr><p:cNvPr id=\"2\" name=\"Background 2\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"0\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rId2\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>"
+        ));
+    }
+    // The background image takes id 2, so text boxes start at 3 when one is
+    // there, or at 2 otherwise: ids must be unique per slide.
+    let base_id = if slide.image.is_some() { 3 } else { 2 };
     for (index, shape) in slide.shapes.iter().enumerate() {
-        let id = index.saturating_add(2);
+        let id = index.saturating_add(base_id);
         let size = shape.size.clamp(1.0, 400.0);
         let points = (size * 100.0).round();
         #[allow(clippy::cast_possible_truncation)]
@@ -314,13 +336,20 @@ xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><
     out
 }
 
-fn slide_rels() -> String {
-    String::from(
+fn slide_rels(slide: &Slide) -> String {
+    let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
 <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
-<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>\
-</Relationships>\n",
-    )
+<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>\n",
+    );
+    if slide.image.is_some() {
+        out.push_str(&format!(
+            "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/slideImage{}.png\"/>\n",
+            slide.number
+        ));
+    }
+    out.push_str("</Relationships>\n");
+    out
 }
 
 /// Build and verify a PowerPoint deck for the extracted slides.
@@ -341,48 +370,55 @@ pub fn to_pptx(title: &str, slides: &[Slide]) -> Result<Vec<u8>, String> {
     let layout_rels = slide_layout_rels();
     let theme_xml = theme();
     let slide_bodies: Vec<String> = slides.iter().map(slide).collect();
-    let slide_rel = slide_rels();
 
-    let mut owned: Vec<(String, &[u8])> =
-        Vec::with_capacity(slides.len().saturating_mul(2).saturating_add(9));
-    owned.push(("[Content_Types].xml".to_string(), content.as_bytes()));
-    owned.push(("_rels/.rels".to_string(), root.as_bytes()));
-    owned.push(("docProps/core.xml".to_string(), core_props.as_bytes()));
-    owned.push(("ppt/presentation.xml".to_string(), pres.as_bytes()));
+    let mut owned: Vec<(String, Vec<u8>)> =
+        Vec::with_capacity(slides.len().saturating_mul(3).saturating_add(10));
+    owned.push(("[Content_Types].xml".to_string(), content.into_bytes()));
+    owned.push(("_rels/.rels".to_string(), root.into_bytes()));
+    owned.push(("docProps/core.xml".to_string(), core_props.into_bytes()));
+    owned.push(("ppt/presentation.xml".to_string(), pres.into_bytes()));
     owned.push((
         "ppt/_rels/presentation.xml.rels".to_string(),
-        pres_rels.as_bytes(),
+        pres_rels.into_bytes(),
     ));
     owned.push((
         "ppt/slideMasters/slideMaster1.xml".to_string(),
-        master.as_bytes(),
+        master.into_bytes(),
     ));
     owned.push((
         "ppt/slideMasters/_rels/slideMaster1.xml.rels".to_string(),
-        master_rels.as_bytes(),
+        master_rels.into_bytes(),
     ));
     owned.push((
         "ppt/slideLayouts/slideLayout1.xml".to_string(),
-        layout.as_bytes(),
+        layout.into_bytes(),
     ));
     owned.push((
         "ppt/slideLayouts/_rels/slideLayout1.xml.rels".to_string(),
-        layout_rels.as_bytes(),
+        layout_rels.into_bytes(),
     ));
-    owned.push(("ppt/theme/theme1.xml".to_string(), theme_xml.as_bytes()));
-    for (index, body) in slide_bodies.iter().enumerate() {
+    owned.push(("ppt/theme/theme1.xml".to_string(), theme_xml.into_bytes()));
+    for (index, (body, pres_slide)) in slide_bodies.iter().zip(slides.iter()).enumerate() {
+        let one_based = index.saturating_add(1);
         owned.push((
-            format!("ppt/slides/slide{}.xml", index.saturating_add(1)),
-            body.as_bytes(),
+            format!("ppt/slides/slide{one_based}.xml"),
+            body.clone().into_bytes(),
         ));
+        let rels = slide_rels(pres_slide);
         owned.push((
-            format!("ppt/slides/_rels/slide{}.xml.rels", index.saturating_add(1)),
-            slide_rel.as_bytes(),
+            format!("ppt/slides/_rels/slide{one_based}.xml.rels"),
+            rels.into_bytes(),
         ));
+        if let Some(image) = &pres_slide.image {
+            owned.push((
+                format!("ppt/media/slideImage{}.png", pres_slide.number),
+                image.clone(),
+            ));
+        }
     }
     let entries: Vec<(&str, &[u8])> = owned
         .iter()
-        .map(|(name, data)| (name.as_str(), *data))
+        .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
     let pptx = store_zip(&entries);
     verify_pptx(&pptx, slides)?;
@@ -414,6 +450,18 @@ pub fn verify_pptx(pptx: &[u8], slides: &[Slide]) -> Result<(), String> {
             .find(|(entry, _)| entry == &name)
             .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
             .ok_or_else(|| format!("slide {} is missing from the package", slide.number))?;
+        if slide.image.is_some() {
+            let media = format!("ppt/media/slideImage{}.png", slide.number);
+            if !has(&media) {
+                return Err(format!("slide {} lost its page image", slide.number));
+            }
+            if !body.contains("r:embed=\"rId2\"") {
+                return Err(format!(
+                    "slide {} never referenced its page image",
+                    slide.number
+                ));
+            }
+        }
         let mut cursor = 0usize;
         for shape in &slide.shapes {
             let needle = xml_text(&shape.text);
@@ -524,6 +572,35 @@ mod tests {
         // y=700 in user space becomes 92 px from the top at 72 DPI.
         assert!((slides[0].shapes[0].y - 82.0).abs() < 0.001);
         assert_eq!(slides[0].shapes[0].width, 40.0);
+    }
+
+    #[test]
+    fn embedded_page_images_ride_in_the_package() {
+        let mut slides = deck();
+        slides[0].image = Some(b"FAKEPNG-not-a-real-image".to_vec());
+        // The other slide keeps no image: the deck must still verify and
+        // carry only the one it was given.
+        let pptx = to_pptx("Deck", &slides).expect("the deck should verify");
+        verify_pptx(&pptx, &slides).expect("the check should pass");
+        let entries = read_zip(&pptx).expect("read back");
+        let media = entries
+            .iter()
+            .find(|(name, _)| name == "ppt/media/slideImage1.png")
+            .map(|(_, data)| data.clone())
+            .expect("slide 1's image");
+        assert_eq!(media, b"FAKEPNG-not-a-real-image");
+        let slide1 = entries
+            .iter()
+            .find(|(name, _)| name == "ppt/slides/slide1.xml")
+            .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
+            .expect("slide 1");
+        assert!(slide1.contains("r:embed=\"rId2\""));
+        let rels = entries
+            .iter()
+            .find(|(name, _)| name == "ppt/slides/_rels/slide1.xml.rels")
+            .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
+            .expect("slide 1 rels");
+        assert!(rels.contains("slideImage1.png"));
     }
 
     #[test]

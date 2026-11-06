@@ -22,7 +22,10 @@ pub mod table;
 pub mod xlsx;
 mod xml;
 
-pub use docx::{to_docx, verify_docx, DOCX_MEDIA_TYPE};
+pub use docx::{
+    frame_page_from_lines, to_docx, to_docx_frames, verify_docx, verify_docx_frames, FrameLine,
+    FramePage, DOCX_MEDIA_TYPE,
+};
 pub use epub::{read_stored_zip, store_zip, to_epub, verify_epub};
 pub mod text_layer;
 

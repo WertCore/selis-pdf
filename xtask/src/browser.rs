@@ -1416,6 +1416,9 @@ const EPUB_NEEDLES: [&str; 1] = ["Omnibus"];
 /// The online pipe-table leg: the caption and a cell, so the table had to
 /// survive parsing, laying out and the page gate.
 const TABLE_NEEDLES: [&str; 2] = ["Ledger", "Tea"];
+const DOCX_NEEDLES: [&str; 3] = ["Quarterly plan", "First item", "Quarter"];
+const PPTX_NEEDLES: [&str; 3] = ["Zebra slide", "Quarter", "Amount"];
+const XLSX_NEEDLES: [&str; 3] = ["Quarter", "Amount", "cached"];
 
 /// The strings the image-watermark leg requires to be PRESENT in the real
 /// downloaded bytes: the embedded RGB XObject and at least one placement that
@@ -1976,6 +1979,7 @@ fn check_convert_leg(
     label: &str,
     expected_title: &str,
     needles: &[&str],
+    expected_pages: u32,
 ) -> Result<(), String> {
     if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
@@ -2024,9 +2028,9 @@ fn check_convert_leg(
     };
     // A generated document has no input page count, so the row is the output
     // count alone.
-    if row_value("Pages") != "1" {
+    if row_value("Pages") != expected_pages.to_string() {
         return Err(format!(
-            "the {label} run reported Pages {:?}, expected \"1\"",
+            "the {label} run reported Pages {:?}, expected {expected_pages}",
             row_value("Pages")
         ));
     }
@@ -2062,9 +2066,9 @@ fn check_convert_leg(
             output.get("name")
         ));
     }
-    if output.get("pages").and_then(Json::as_u64) != Some(1) {
+    if output.get("pages").and_then(Json::as_u64) != Some(u64::from(expected_pages)) {
         return Err(format!(
-            "the {label} output reported {:?} pages, expected 1",
+            "the {label} output reported {:?} pages, expected {expected_pages}",
             output.get("pages")
         ));
     }
@@ -6031,18 +6035,22 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "online convert",
         "notes-converted.pdf",
         &CONVERT_NEEDLES,
+        1,
     )?;
-    for (key, title, needles) in [
-        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..]),
-        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..]),
-        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..]),
-        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..]),
-        ("table", "table-converted.pdf", &TABLE_NEEDLES[..]),
+    for (key, title, needles, pages) in [
+        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..], 1),
+        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..], 1),
+        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..], 1),
+        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..], 1),
+        ("table", "table-converted.pdf", &TABLE_NEEDLES[..], 1),
+        ("docx", "letter-converted.pdf", &DOCX_NEEDLES[..], 1),
+        ("pptx", "deck-converted.pdf", &PPTX_NEEDLES[..], 2),
+        ("xlsx", "book2-converted.pdf", &XLSX_NEEDLES[..], 2),
     ] {
         let leg = report
             .get(key)
             .ok_or_else(|| format!("the page reported no {key} leg ({key} = None)"))?;
-        check_convert_leg(leg, &format!("online {key}"), title, needles)?;
+        check_convert_leg(leg, &format!("online {key}"), title, needles, pages)?;
     }
     let tables = report
         .get("tables")
@@ -6579,6 +6587,7 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "offline convert",
         "notes-converted.pdf",
         &CONVERT_NEEDLES,
+        1,
     )?;
     let offline_form_fill = offline
         .get("formFill")
@@ -6616,17 +6625,20 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("epubOut")
         .ok_or_else(|| "the offline leg reported no EPUB export result".to_string())?;
     check_ooxml_leg(offline_epub_out, "offline EPUB export", ".epub")?;
-    for (key, title, needles) in [
-        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..]),
-        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..]),
-        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..]),
-        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..]),
-        ("table", "table-converted.pdf", &TABLE_NEEDLES[..]),
+    for (key, title, needles, pages) in [
+        ("latex", "quarto-converted.pdf", &LATEX_NEEDLES[..], 1),
+        ("csv", "ledger-converted.pdf", &CSV_NEEDLES[..], 1),
+        ("svg", "mark-converted.pdf", &SVG_NEEDLES[..], 1),
+        ("epub", "book-converted.pdf", &EPUB_NEEDLES[..], 1),
+        ("table", "table-converted.pdf", &TABLE_NEEDLES[..], 1),
+        ("docx", "letter-converted.pdf", &DOCX_NEEDLES[..], 1),
+        ("pptx", "deck-converted.pdf", &PPTX_NEEDLES[..], 2),
+        ("xlsx", "book2-converted.pdf", &XLSX_NEEDLES[..], 2),
     ] {
         let leg = offline
             .get(key)
             .ok_or_else(|| format!("the offline leg reported no {key} result"))?;
-        check_convert_leg(leg, &format!("offline {key}"), title, needles)?;
+        check_convert_leg(leg, &format!("offline {key}"), title, needles, pages)?;
     }
     let offline_png = offline
         .get("png")
@@ -11365,14 +11377,14 @@ mod tests {
             },
         })
     }
-    /// One of the convert card's other formats. All five share the shape and
+    /// One of the convert card's other formats. All eight share the shape and
     /// the network ledger of the Markdown leg: the same lazy chunk, nothing
     /// else fetched, and the needles are each source's own words.
-    fn convert_format_leg(title: &str, declared_bytes: u64, found: Vec<bool>) -> Json {
+    fn convert_format_leg(title: &str, declared_bytes: u64, found: Vec<bool>, pages: u32) -> Json {
         let output = json!({
             "kind": "pdf",
             "name": title,
-            "pages": 1,
+            "pages": pages,
             "declaredBytes": declared_bytes,
             "bytes": declared_bytes,
             "blob": true,
@@ -11391,7 +11403,7 @@ mod tests {
                 "title": title,
                 "meta": "1 file \u{00b7} 1.5 kB \u{00b7} verified locally",
                 "rows": [
-                    { "label": "Pages", "value": "1" },
+                    { "label": "Pages", "value": pages.to_string() },
                     { "label": "Verification", "value": "ok" },
                 ],
             },
@@ -12426,14 +12438,18 @@ mod tests {
         report["imageWatermark"] = real_tools_image_watermark_leg();
         report["outline"] = real_tools_outline_leg();
         report["convert"] = real_tools_convert_leg();
-        // The other five convert formats share the checker's shape: one PDF,
+        // The other eight convert formats share the checker's shape: one PDF,
         // the same lazy chunk (the needle proves the bytes), the new formats'
         // own words, and no fetch beyond it.
-        report["latex"] = convert_format_leg("quarto-converted.pdf", 1200, vec![true]);
-        report["csv"] = convert_format_leg("ledger-converted.pdf", 900, vec![true, true]);
-        report["svg"] = convert_format_leg("mark-converted.pdf", 1100, vec![true]);
-        report["epub"] = convert_format_leg("book-converted.pdf", 1300, vec![true]);
-        report["table"] = convert_format_leg("table-converted.pdf", 1400, vec![true, true]);
+        report["latex"] = convert_format_leg("quarto-converted.pdf", 1200, vec![true], 1);
+        report["csv"] = convert_format_leg("ledger-converted.pdf", 900, vec![true, true], 1);
+        report["svg"] = convert_format_leg("mark-converted.pdf", 1100, vec![true], 1);
+        report["epub"] = convert_format_leg("book-converted.pdf", 1300, vec![true], 1);
+        report["table"] = convert_format_leg("table-converted.pdf", 1400, vec![true, true], 1);
+        report["docx"] =
+            convert_format_leg("letter-converted.pdf", 1600, vec![true, true, true], 1);
+        report["pptx"] = convert_format_leg("deck-converted.pdf", 1600, vec![true, true, true], 2);
+        report["xlsx"] = convert_format_leg("book2-converted.pdf", 1900, vec![true, true, true], 2);
         report["formFill"] = real_tools_form_fill_leg();
         report["text"] = real_tools_text_leg();
         report["word"] = real_tools_word_leg();
@@ -12515,6 +12531,9 @@ mod tests {
         report["offline"]["svg"] = report["svg"].clone();
         report["offline"]["epub"] = report["epub"].clone();
         report["offline"]["table"] = report["table"].clone();
+        report["offline"]["docx"] = report["docx"].clone();
+        report["offline"]["pptx"] = report["pptx"].clone();
+        report["offline"]["xlsx"] = report["xlsx"].clone();
         report["offline"]["convert"] = report["convert"].clone();
         report["offline"]["security"] = report["security"].clone();
         report["offline"]["sign"] = report["sign"].clone();

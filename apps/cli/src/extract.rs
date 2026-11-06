@@ -22,6 +22,11 @@ use selis_sandbox::{Budget, Surface};
 /// lands where the rendered page puts the ink.
 const HTML_DPI: f64 = 72.0;
 
+/// The DPI the page images are painted at for the deck: small enough for
+/// reasonable files, sharp enough that the page stays legible under the text
+/// boxes.
+const DECK_DPI: f64 = 96.0;
+
 /// Extract a page's text or images.
 ///
 /// # Errors
@@ -138,6 +143,93 @@ pub(crate) fn run(
 ///
 /// A typed message naming the document that could not be read, or a reflow that
 /// failed its own read-back.
+/// Parse the one- and two-part selections the CLI builds (`"2"`, `"1-3"`),
+/// returning 0-based page indices.
+fn selection_indices(selection: &str) -> Option<Vec<usize>> {
+    let text = selection.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut out: Vec<usize> = Vec::new();
+    for part in text.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (first, last) = match part.split_once('-') {
+            Some((a, b)) => (
+                a.trim().parse::<usize>().ok()?,
+                b.trim().parse::<usize>().ok()?,
+            ),
+            None => {
+                let n = part.parse::<usize>().ok()?;
+                (n, n)
+            }
+        };
+        if first == 0 || first > last {
+            return None;
+        }
+        for n in first..=last {
+            out.push(n.saturating_sub(1));
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Render the selected pages to PNGs at `dpi`, in selection order.
+///
+/// The deck export embeds these; the text the deck places is from the same
+/// pages the raster tools paint, so the two always agree.
+///
+/// # Errors
+///
+/// A sentence naming the page that could not be opened or rendered.
+fn render_pages_png(path: &str, selection: &str, dpi: f64) -> CliResult<Vec<Vec<u8>>> {
+    let src = read_file(path)?;
+    let budget = Budget::profile(Surface::Viewer);
+    let clock = crate::shell_clock();
+    let session = Session::open(src, &budget, &clock)
+        .map_err(|e| CliError(format!("cannot open PDF: {e}")))?;
+    let pages = selection_indices(selection)
+        .ok_or_else(|| CliError(format!("cannot parse the page selection {selection:?}")))?;
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(pages.len());
+    for page in pages {
+        if page >= session.len() {
+            return Err(CliError(format!(
+                "page {} out of range (document has {} pages)",
+                page.saturating_add(1),
+                session.len()
+            )));
+        }
+        let mut g = budget.guard_with(&clock, crate::runtime::token());
+        let pixels = session
+            .render_page_rgba(page, dpi, &budget, &mut g)
+            .map_err(|e| {
+                CliError(format!(
+                    "page {} could not be rendered: {e}",
+                    page.saturating_add(1)
+                ))
+            })?;
+        let image = selis_image::Image {
+            width: pixels.width,
+            height: pixels.height,
+            rgba: pixels.rgba,
+        };
+        let png = selis_image::encode_png(&image, 0, &mut g).map_err(|e| {
+            CliError(format!(
+                "page {} could not be encoded as PNG: {e}",
+                page.saturating_add(1)
+            ))
+        })?;
+        out.push(png);
+    }
+    Ok(out)
+}
+
 fn run_text_tool(
     path: &str,
     format: &str,
@@ -202,8 +294,14 @@ fn run_text_tool(
                 (export.bytes, format!("{} paragraph(s)", export.paragraphs))
             }
             "pptx" => {
-                let export = selis_pdf_tools::extract_pptx(path, Some(selection), title)
-                    .map_err(|e| CliError(e.to_string()))?;
+                let images = render_pages_png(path, selection, DECK_DPI)?;
+                let export = selis_pdf_tools::extract_pptx_with_images(
+                    path,
+                    Some(selection),
+                    title,
+                    Some(&images),
+                )
+                .map_err(|e| CliError(e.to_string()))?;
                 (
                     export.bytes,
                     format!("{} page(s), {} text box(es)", export.pages, export.shapes),

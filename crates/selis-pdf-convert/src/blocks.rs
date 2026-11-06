@@ -81,6 +81,10 @@ pub(crate) enum Block {
     Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
+    /// Force the block that follows onto a new page. Only the OOXML slide
+    /// and sheet readers emit this: a deck's slide and a workbook's sheet are
+    /// page boundaries a flow layout would otherwise blur.
+    PageBreak,
     /// A table: the header row (empty when the source had none) and the body
     /// rows. Every row has the same number of cells; the parsers pad short
     /// rows with empty cells rather than fail.

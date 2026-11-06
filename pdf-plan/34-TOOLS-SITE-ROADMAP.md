@@ -164,9 +164,9 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | HEIC → PDF | — | yes | Raster codec | Needs an owned HEIF/HEVC decoder that does not exist in the tree, plus licence and platform review; the WebP coder above is not reusable here — HEIC is a lossy DCT container, not VP8L. |
 | TIFF (multi-page) → PDF | — | yes | Raster codec | Codec no longer the blocker: `selis-image::tiff` decodes the baseline profile this device writes, and page order and DPI come off the IFD chain. Not shipped — a card would have to prove every decoded page lands in the produced PDF, and that verification does not exist yet. |
 | SVG → PDF | — | yes | Text/Vector | SVG subset renderer; do not claim full SVG. |
-| Word → PDF | yes | yes | Text/Office | OOXML layout is a separate product-sized problem; Phase 5 at the earliest. |
-| PowerPoint → PDF | yes | yes | Text/Office | Same. |
-| Excel → PDF | yes | yes | Text/Office | Same; CSV → PDF can ship earlier as a table renderer. |
+| Word → PDF | yes | yes | Text/Office | Structure, not laid-out Word: headings, bold/italic runs, list items at their indent level, tables (header from `tblHeader`). Not carried: page setup, alignment, spacing, colour, fonts, images, text boxes, footnotes, fields, tracked changes. See the Phase 3 table below. |
+| PowerPoint → PDF | yes | yes | Text/Office | Structure, not rendered slides: one page per slide in presentation order, title/subtitle placeholders, bold/italic runs, bulleted/numbered items at `lvl`, DrawingML tables. Not carried: slide size, theme, fonts, images, charts, SmartArt, speaker notes. See below. |
+| Excel → PDF | yes | yes | Text/Office | Structure, not a spreadsheet renderer: one page per sheet, its used range as a table; shared/inline strings, formula cached values, Booleans as TRUE/FALSE. Not carried: cell formats (dates print as stored serials), formulas not evaluated, charts. See below. |
 | HTML → PDF | yes | yes | Text | Owned HTML/CSS subset; print media; no browser engine dependency in the product path. |
 | Markdown → PDF | — | yes | 1A.1/Text | `selis-pdf-convert` exists for Markdown/HTML → PDF; expose it in a lazy convert chunk. |
 | LaTeX → PDF | — | yes | Text | Needs a TeX layout subset or an explicit "unsupported" refusal; no shelling out to a TeX distribution. |
@@ -647,23 +647,46 @@ browser check drives each leg online.
 | Split by text | `selis-pdf-tools::split_by_text` | `selis split-text --find` | op 3 | Extract text — "Split at a phrase" |
 | PDF → HTML reflow | `selis-pdf-text::reflow` | `selis extract --format reflow` | op 4 | Extract text — "Reading-order HTML" |
 | PDF → EPUB | `selis-pdf-text::epub` | `selis extract --format epub` | op 5 | Extract text — "EPUB 3 book" |
-| PDF → Word | `selis-pdf-text::docx` | `selis extract --format docx` | op 6 | Extract text — "Word document" |
-| PDF → PowerPoint | `selis-pdf-text::pptx` | `selis extract --format pptx` | op 7 | Extract text — "PowerPoint deck" |
+| PDF → Word | `selis-pdf-text::docx` (frame facsimile) | `selis extract --format docx` | op 6 | Extract text — "Word document" |
+| PDF → PowerPoint | `selis-pdf-text::pptx` (embedded page ink) | `selis extract --format pptx` | op 7 | Extract text — "PowerPoint deck" |
 | PDF → Excel | `selis-pdf-text::xlsx` | `selis extract --format xlsx` | op 8 | Extract text — "Excel workbook" |
-| Markdown / HTML / CSV / LaTeX / SVG / EPUB → PDF | `selis-pdf-convert` (six format modules + shared layout) | `selis topdf --format` | `selis-pdf-wasm-convert` format codes 0–5 | Convert to PDF |
+| Markdown / HTML / CSV / LaTeX / SVG / EPUB / Word / PowerPoint / Excel → PDF | `selis-pdf-convert` (nine format modules + shared layout, OOXML readers) | `selis topdf --format` | `selis-pdf-wasm-convert` format codes 0–8 | Convert to PDF |
+| Word → PDF | `selis-pdf-convert::docx` | `selis topdf --format docx` (and `.docx` auto-detect) | convert `FORMAT_DOCX = 6` | Convert to PDF — Word |
+| PowerPoint → PDF | `selis-pdf-convert::pptx` | `selis topdf --format pptx` | convert `FORMAT_PPTX = 7` | Convert to PDF — PowerPoint |
+| Excel → PDF | `selis-pdf-convert::xlsx` | `selis topdf --format xlsx` | convert `FORMAT_XLSX = 8` | Convert to PDF — Excel |
+
+`selis-pdf-text::docx` writes the frame facsimile by default: every recovered line an
+absolutely positioned frame on a page the size of the source page (zero margins,
+`hAnchor="page"`, one section per page), so the export's text lands where the PDF drew
+it and the file still opens in Word as a document. `selis-pdf-text::pptx` embeds the
+page rendered at the same 72 DPI canvas the text boxes are fitted to, full-bleed behind
+them: a facsimile whose words stay editable. The CLI renders those PNGs natively; the
+browser path renders them through the raster chunk and passes them to the text chunk as
+`slideImages` (base64 PNG per selected page, in selection order). The Word phrasing and
+limits are in `selis-pdf-text::docx`'s module docs; the deck's in `pptx`'s.
 
 `selis-pdf-wasm-text` is a new lazy, import-free chunk with a framed `SLTX` response: one call
 returns every output a card needs (the `.txt` and its quality JSON, the CSV and its report, the
 split ZIP and its rule report, the OOXML/HTML/EPUB file), so a document is opened once per run.
 The tools chunk is untouched: `selis-pdf-tools` keeps the engine out of it by putting these
 wrappers behind a `text` feature, exactly as the security and sign chunks do. Measured at
-306 946 B brotli (1 019 379 B raw), all eight operations, under its own 400 000 B budget.
+309 126 B brotli (1 030 683 B raw), all eight operations, under its own 400 000 B budget.
+
+The convert chunk gained the three reverse directions (`.docx`, `.pptx`, `.xlsx` → PDF) as
+`selis-pdf-convert::{docx,pptx,xlsx}`, package readers on the shared archive/XML helpers: the
+readers recover structure, not layout — Word carries headings/paragraph runs/list levels/tables,
+PowerPoint is one page per slide in presentation order with title and subtitle placeholders and
+bulleted/numbered bodies, and Excel prints each sheet's used range with shared/inline strings and
+formula cached values. The budget moved to 136 633 B brotli (424 456 B raw); the 2% regression
+gate accepted that drift and the budget stays at 600 000.
 
 The ZIP writer/reader those packages share moved down into `crates/selis-archive`, so the text,
 tools and convert crates open the same containers; `selis-pdf-convert` also gained EPUB, SVG,
 CSV and pipe-table/HTML-table support, with a small shared XML reader.
 
-What is **not** claimed: layout fidelity in Word (an editable article with headings, no page
-canvas), page images in PowerPoint (positioned text boxes only), links or tables in the reflow
-article, table borders/merged cells, full SVG (arcs are refused) or full EPUB (no CSS, fonts,
-images or fixed layout).
+What is **not** claimed: images, fills, vectors and exact font faces in either OOXML export
+path (words and position only — the Word facsimile is frames on the page, the deck is a
+raster painted behind positioned text boxes), links or tables in the reflow article, table
+borders/merged cells, full Word to PDF layout (page setup, alignment, fonts, footnotes,
+tracked changes are not carried), full SVG (arcs are refused) or full EPUB (no CSS, fonts,
+images or fixed layout), and formula evaluation in Excel (cached values print).

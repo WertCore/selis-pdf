@@ -210,7 +210,7 @@ export function runTextOp(
 	wasm: TextWasm,
 	input: Uint8Array,
 	op: TextOp,
-	options: Record<string, string>,
+	options: Record<string, string | string[]>,
 ): TextOutput[] {
 	const { exports } = wasm;
 	const encoder = new TextEncoder();

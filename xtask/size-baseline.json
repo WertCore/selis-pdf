@@ -1,15 +1,15 @@
 {
   "selis_pdf_wasm": 667076,
   "selis_pdf_wasm_cjk": 5000,
-  "selis_pdf_wasm_convert": 122336,
+  "selis_pdf_wasm_convert": 136633,
   "selis_pdf_wasm_editor": 4988,
-  "selis_pdf_wasm_html": 228482,
+  "selis_pdf_wasm_html": 228268,
   "selis_pdf_wasm_jpx": 5008,
   "selis_pdf_wasm_ocr": 4981,
   "selis_pdf_wasm_raster": 1115147,
   "selis_pdf_wasm_security": 144509,
   "selis_pdf_wasm_sign": 220113,
-  "selis_pdf_wasm_text": 306946,
+  "selis_pdf_wasm_text": 309126,
   "selis_pdf_wasm_tools": 321457,
   "xtask": 188181
 }

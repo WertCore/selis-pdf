@@ -266,34 +266,7 @@ mod tests {
 
     /// The output must open with selis's own parser.
     fn opens_with_page_count(bytes: &[u8], expected_pages: usize) {
-        let budget = Budget::unlimited();
-        let mut g = Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new());
-        let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).expect("startxref");
-        let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("open");
-        let rev = doc.revisions().last().expect("revision");
-        let mut pages = 0usize;
-        for &num in rev.entries.keys() {
-            if let Ok(selis_pdf_cos::Obj::Dict(pairs)) = selis_pdf_cos::resolve_object(
-                bytes,
-                rev.entries
-                    .get(&num)
-                    .map(|e| match e {
-                        selis_pdf_cos::XrefEntry::InUse { offset, .. } => *offset,
-                        _ => 0,
-                    })
-                    .unwrap_or(0),
-                &budget,
-                &mut g,
-            ) {
-                if pairs.iter().any(|(k, v)| {
-                    k.as_slice() == b"Type"
-                        && matches!(v, selis_pdf_cos::Obj::Name(n) if n.as_slice() == b"Page")
-                }) {
-                    pages += 1;
-                }
-            }
-        }
-        assert_eq!(pages, expected_pages, "page count mismatch");
+        crate::testkit::opens_with_page_count(bytes, expected_pages);
     }
 
     #[test]

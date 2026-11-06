@@ -375,6 +375,106 @@ fn page_selection(options: &str) -> Option<String> {
     option(options, "pages").filter(|pages| !pages.trim().is_empty())
 }
 
+/// Parse a `["...", "..."]` string array from one option.
+///
+/// Only the shapes a small hand-written reader can honestly guarantee: the
+/// array for `slideImages` holds standard base64 (A–Z, a–z, 0–9, `+`, `/`,
+/// `=`), which contains no quotes or commas, so trimming and quote-stripping
+/// cannot mis-split a payload.
+fn option_strings(json: &str, key: &str) -> Option<Vec<String>> {
+    let needle = format!("\"{key}\"");
+    let start = json.find(&needle)?;
+    let rest = json.get(start.saturating_add(needle.len())..)?;
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('[')?.trim_start();
+    let close = rest.find(']')?;
+    let inner = &rest[..close];
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for token in inner.split(',') {
+        let token = token.trim();
+        let value = token
+            .strip_prefix('"')
+            .and_then(|t| t.strip_suffix('"'))
+            .unwrap_or(token);
+        out.push(value.to_string());
+    }
+    Some(out)
+}
+
+#[allow(clippy::arithmetic_side_effects)]
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        b'=' => Some(64),
+        _ => None,
+    }
+}
+
+/// Decode standard base64 (with padding) as the JS `btoa` produces it.
+///
+/// # Errors
+///
+/// `None` on a length that is not a multiple of four, padding in the wrong
+/// chunk, or an alphabet byte.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::indexing_slicing
+)]
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let bytes: Vec<u8> = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut values = [0u8; 4];
+        let mut padding = 0usize;
+        for (index, &byte) in chunk.iter().enumerate() {
+            let value = base64_value(byte)?;
+            if value == 64 {
+                // Padding is only honest in the final two positions.
+                if index < 2 {
+                    return None;
+                }
+                padding = padding.saturating_add(1);
+                values[index] = 0;
+            } else if padding > 0 {
+                // A data byte after a padding byte makes the chunk malformed.
+                return None;
+            } else {
+                values[index] = value;
+            }
+        }
+        if padding > 2 {
+            return None;
+        }
+        let triple = u32::from(values[0]) << 18
+            | u32::from(values[1]) << 12
+            | u32::from(values[2]) << 6
+            | u32::from(values[3]);
+        out.push(((triple >> 16) & 0xff) as u8);
+        if padding < 2 {
+            out.push(((triple >> 8) & 0xff) as u8);
+        }
+        if padding < 1 {
+            out.push((triple & 0xff) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// The safe body of [`selis_text_run`], unit-testable on the host.
 fn run_impl(input: &[u8], op: Op, options: &str) -> Result<(Outputs, u32), String> {
     let stem =
@@ -481,8 +581,29 @@ fn run_impl(input: &[u8], op: Op, options: &str) -> Result<(Outputs, u32), Strin
         }
         Op::Slides => {
             let title = option(options, "title").unwrap_or_else(|| stem.clone());
-            let export = selis_pdf_tools::extract_pptx("in/0", pages.as_deref(), &title)
-                .map_err(|e| e.to_string())?;
+            // The deck carries the page rendered by the caller when one
+            // supplied it — `slideImages` holds one base64 PNG per selected
+            // page, in selection order. A deck the caller could not render
+            // keeps the positioned-text-boxes facsimile instead.
+            let images = match option_strings(options, "slideImages") {
+                None => None,
+                Some(decoded) => {
+                    let mut out: Vec<Vec<u8>> = Vec::with_capacity(decoded.len());
+                    for (index, encoded) in decoded.iter().enumerate() {
+                        let bytes = decode_base64(encoded)
+                            .ok_or_else(|| format!("slideImages[{index}] is not valid base64"))?;
+                        out.push(bytes);
+                    }
+                    Some(out)
+                }
+            };
+            let export = selis_pdf_tools::extract_pptx_with_images(
+                "in/0",
+                pages.as_deref(),
+                &title,
+                images.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
             let pages_out = u32::try_from(export.pages).unwrap_or(u32::MAX);
             Ok((
                 vec![(format!("{stem}.pptx"), "file", export.bytes)],
@@ -811,6 +932,26 @@ mod tests {
         assert!(has(b"ppt/slides/slide1.xml"));
         assert!(has(b"ppt/slides/slide2.xml"));
         assert!(!has(b"ppt/slides/slide3.xml"));
+    }
+
+    #[test]
+    fn slides_embed_the_caller_supplied_page_images() {
+        // A tiny fake PNG: the embedder does not decode it, the package just
+        // carries it. The needle is the media part's own file name, which
+        // appears in the archive's local and central headers.
+        let fake_png = "iVBORw0KGgoAAAANSUhEUg=="; // "\x89PNG\r\n\x1a\n\0IEND"
+        let options = format!(
+            r#"{{"name":"deck.pdf","title":"Deck","slideImages":["{fake_png}","{fake_png}"]}}"#
+        );
+        let (outputs, pages) = run(NAV, Op::Slides, &options);
+        assert_eq!(pages, 2);
+        let (name, kind, bytes) = &outputs[0];
+        assert_eq!(name, "deck.pptx");
+        assert_eq!(*kind, "file");
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"ppt/media/slideImage1.png"));
+        assert!(has(b"ppt/media/slideImage2.png"));
+        assert!(has(b"r:embed=\"rId2\""));
     }
 
     #[test]

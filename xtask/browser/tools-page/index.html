@@ -1271,6 +1271,21 @@
           if (!r.ok) throw new Error("locked.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
+        // OOXML fixtures for the convert card's Word/PowerPoint/Excel legs;
+        // written with the same store-method layout the page's own bundles
+        // use, so the page's readers are exercised end to end.
+        const docxFixture = await fetch("letter.docx").then((r) => {
+          if (!r.ok) throw new Error("letter.docx fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const pptxFixture = await fetch("deck.pptx").then((r) => {
+          if (!r.ok) throw new Error("deck.pptx fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const xlsxFixture = await fetch("book2.xlsx").then((r) => {
+          if (!r.ok) throw new Error("book2.xlsx fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
         // Signing fixtures: the committed test key the core signing crate uses,
         // its leaf certificate and the root it chains to. The key is not a
         // secret and signs nothing but this harness's own document. The leaf is
@@ -2313,6 +2328,48 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             title: "table-converted.pdf",
             needles: ["Ledger", "Tea"],
           },
+          {
+            key: "docx",
+            label: "online Word",
+            files: [
+              {
+                name: "letter.docx",
+                bytes: new Uint8Array(docxFixture),
+                type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              },
+            ],
+            inputs: { format: "docx", title: "" },
+            title: "letter-converted.pdf",
+            needles: ["Quarterly plan", "First item", "Quarter"],
+          },
+          {
+            key: "pptx",
+            label: "online PowerPoint",
+            files: [
+              {
+                name: "deck.pptx",
+                bytes: new Uint8Array(pptxFixture),
+                type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              },
+            ],
+            inputs: { format: "pptx", title: "" },
+            title: "deck-converted.pdf",
+            needles: ["Zebra slide", "Quarter", "Amount"],
+          },
+          {
+            key: "xlsx",
+            label: "online Excel",
+            files: [
+              {
+                name: "book2.xlsx",
+                bytes: new Uint8Array(xlsxFixture),
+                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              },
+            ],
+            inputs: { format: "xlsx", title: "" },
+            title: "book2-converted.pdf",
+            needles: ["Quarter", "Amount", "cached"],
+          },
         ];
         for (const leg of formatLegs) {
           const name = leg.files[0].name;
@@ -2602,7 +2659,7 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           "online slides",
           "text",
           { textMode: "slides" },
-          ["ppt/slides/slide1.xml", "Parity Report"],
+          ["ppt/slides/slide1.xml", "Parity Report", "ppt/media/slideImage1.png"],
           [],
           notesBytesForOoxml,
         );
@@ -3520,7 +3577,7 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           "offline slides",
           "text",
           { textMode: "slides" },
-          ["ppt/slides/slide1.xml", "Parity Report"],
+          ["ppt/slides/slide1.xml", "Parity Report", "ppt/media/slideImage1.png"],
           [],
           [
             {
@@ -3692,6 +3749,57 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           ["Ledger", "Tea"],
           [],
           tableFiles,
+        );
+        const offlineDocx = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline Word",
+          "convert",
+          { format: "docx", title: "" },
+          ["Quarterly plan", "First item", "Quarter"],
+          [],
+          [
+            {
+              name: "letter.docx",
+              bytes: new Uint8Array(docxFixture.slice(0)),
+              type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            },
+          ],
+        );
+        const offlinePptx = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline PowerPoint",
+          "convert",
+          { format: "pptx", title: "" },
+          ["Zebra slide", "Quarter", "Amount"],
+          [],
+          [
+            {
+              name: "deck.pptx",
+              bytes: new Uint8Array(pptxFixture.slice(0)),
+              type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
+          ],
+        );
+        const offlineXlsx = await toolInFrame(
+          frame,
+          null,
+          null,
+          "offline Excel",
+          "convert",
+          { format: "xlsx", title: "" },
+          ["Quarter", "Amount", "cached"],
+          [],
+          [
+            {
+              name: "book2.xlsx",
+              bytes: new Uint8Array(xlsxFixture.slice(0)),
+              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            },
+          ],
         );
         // The raster chunk is runtime-cached on first use, like convert, so the
         // offline leg proves the renderer still loads and renders with the
@@ -4269,6 +4377,36 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             outputs: offlineTable.outputs,
             output: offlineTable.output,
             network: offlineTable.network,
+          },
+          docx: {
+            fileRows: offlineDocx.fileRows,
+            runLabel: offlineDocx.runLabel,
+            noUpload: offlineDocx.noUpload,
+            status: offlineDocx.status,
+            result: offlineDocx.result,
+            outputs: offlineDocx.outputs,
+            output: offlineDocx.output,
+            network: offlineDocx.network,
+          },
+          pptx: {
+            fileRows: offlinePptx.fileRows,
+            runLabel: offlinePptx.runLabel,
+            noUpload: offlinePptx.noUpload,
+            status: offlinePptx.status,
+            result: offlinePptx.result,
+            outputs: offlinePptx.outputs,
+            output: offlinePptx.output,
+            network: offlinePptx.network,
+          },
+          xlsx: {
+            fileRows: offlineXlsx.fileRows,
+            runLabel: offlineXlsx.runLabel,
+            noUpload: offlineXlsx.noUpload,
+            status: offlineXlsx.status,
+            result: offlineXlsx.result,
+            outputs: offlineXlsx.outputs,
+            output: offlineXlsx.output,
+            network: offlineXlsx.network,
           },
           mix: {
             fileRows: offlineMix.fileRows,

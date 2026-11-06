@@ -606,6 +606,13 @@ fn render_block(
             });
             layout.cursor += 12.0;
         }
+        Block::PageBreak => {
+            if !layout.current.is_empty() {
+                let lines = std::mem::take(&mut layout.current);
+                layout.pages.push(Page { lines });
+                layout.cursor = MARGIN;
+            }
+        }
     }
     *first_block = false;
 }

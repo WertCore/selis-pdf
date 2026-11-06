@@ -547,57 +547,21 @@ pub struct WorkbookExport {
     pub rows: usize,
 }
 
-/// Write the selection as a Word document.
-///
-/// The document is the reading-order article, not a page facsimile: paragraphs
-/// and headings only. The package and its read-back check are
-/// `selis_pdf_text::to_docx`; this wrapper supplies the reflowed pages.
+/// Write the selection as a Word document: the frame facsimile, one frame per
+/// recovered line on a page the size of the source page, zero margins. The
+/// package and its read-back check are `selis_pdf_text::to_docx_frames`; this
+/// wrapper measures each page view and builds the frames from the same lines
+/// the text layer reports.
 ///
 /// # Errors
 ///
-/// As [`extract_text`], plus a package that fails its own read-back.
+/// As [`extract_text`], plus a page with no view or a package that fails its
+/// read-back.
 pub fn extract_docx(path: &str, pages: Option<&str>, title: &str) -> ToolResult<WordExport> {
     with_session(path, |session, budget| {
         let clock = crate::shell_clock();
         let selected = parse_pages(pages, session.len())?;
-        let mut reflowed: Vec<ReflowPage> = Vec::with_capacity(selected.len());
-        for page in selected {
-            let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
-            let mut g = crate::runtime::cli_guard(budget, &clock);
-            let (lines, line_texts, _) = page_lines(session, page, budget, &mut g)?;
-            reflowed.push(ReflowPage {
-                number,
-                paragraphs: selis_pdf_text::paragraphs(&lines, &line_texts),
-            });
-        }
-        let bytes = selis_pdf_text::to_docx(title, &reflowed).map_err(|e| {
-            CliError(format!(
-                "{path}: the Word document failed its own check: {e}"
-            ))
-        })?;
-        let paragraphs = reflowed.iter().fold(0usize, |total, page| {
-            total.saturating_add(page.paragraphs.len())
-        });
-        Ok(WordExport {
-            bytes,
-            pages: u64::try_from(reflowed.len()).unwrap_or(u64::MAX),
-            paragraphs,
-        })
-    })
-}
-
-/// Write the selection as a PowerPoint deck: one slide per page, one text box
-/// per recovered line, placed on the page's own 72-DPI canvas.
-///
-/// # Errors
-///
-/// As [`extract_text`], plus a page with no view or a package that fails its own
-/// read-back.
-pub fn extract_pptx(path: &str, pages: Option<&str>, _title: &str) -> ToolResult<SlidesExport> {
-    with_session(path, |session, budget| {
-        let clock = crate::shell_clock();
-        let selected = parse_pages(pages, session.len())?;
-        let mut slides: Vec<selis_pdf_text::Slide> = Vec::with_capacity(selected.len());
+        let mut frame_pages: Vec<selis_pdf_text::FramePage> = Vec::with_capacity(selected.len());
         for page in selected {
             let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
             let view = session
@@ -605,7 +569,7 @@ pub fn extract_pptx(path: &str, pages: Option<&str>, _title: &str) -> ToolResult
                 .ok_or_else(|| CliError(format!("page {number}: cannot measure the page")))?;
             let mut g = crate::runtime::cli_guard(budget, &clock);
             let (lines, line_texts, _) = page_lines(session, page, budget, &mut g)?;
-            slides.push(selis_pdf_text::slide_from_lines(
+            frame_pages.push(selis_pdf_text::frame_page_from_lines(
                 number,
                 f64::from(view.width),
                 f64::from(view.height),
@@ -614,7 +578,80 @@ pub fn extract_pptx(path: &str, pages: Option<&str>, _title: &str) -> ToolResult
                 &line_texts,
             ));
         }
-        let bytes = selis_pdf_text::to_pptx(_title, &slides).map_err(|e| {
+        let bytes = selis_pdf_text::to_docx_frames(title, &frame_pages).map_err(|e| {
+            CliError(format!(
+                "{path}: the Word document failed its own check: {e}"
+            ))
+        })?;
+        let paragraphs = frame_pages
+            .iter()
+            .fold(0usize, |total, page| total.saturating_add(page.lines.len()));
+        Ok(WordExport {
+            bytes,
+            pages: u64::try_from(frame_pages.len()).unwrap_or(u64::MAX),
+            paragraphs,
+        })
+    })
+}
+
+/// Write the selection as a PowerPoint deck: one slide per page, each recovered
+/// line placed on the page's own 72-DPI canvas. The caller may supply the page
+/// rendered as a PNG (see [`extract_pptx_with_images`]) and the deck then
+/// carries it full-bleed behind the text boxes; without it the deck is the
+/// positioned-text-boxes facsimile without a page image.
+///
+/// # Errors
+///
+/// As [`extract_text`], plus a page with no view or a package that fails its
+/// read-back.
+pub fn extract_pptx(path: &str, pages: Option<&str>, title: &str) -> ToolResult<SlidesExport> {
+    extract_pptx_with_images(path, pages, title, None)
+}
+
+/// Write the selection as a PowerPoint deck with the page images supplied by
+/// the caller: one PNG per selected page, in selection order. The images are
+/// placed full-bleed behind the text boxes, so the deck reads as a facsimile
+/// and the words stay editable on top of the page's own ink.
+pub fn extract_pptx_with_images(
+    path: &str,
+    pages: Option<&str>,
+    title: &str,
+    images: Option<&[Vec<u8>]>,
+) -> ToolResult<SlidesExport> {
+    with_session(path, |session, budget| {
+        let clock = crate::shell_clock();
+        let selected = parse_pages(pages, session.len())?;
+        if let Some(images) = images {
+            if images.len() != selected.len() {
+                return Err(CliError(format!(
+                    "the images do not line up with the selected pages ({} vs {})",
+                    images.len(),
+                    selected.len()
+                )));
+            }
+        }
+        let mut slides: Vec<selis_pdf_text::Slide> = Vec::with_capacity(selected.len());
+        for (position, page) in selected.into_iter().enumerate() {
+            let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
+            let view = session
+                .page_view(page, 72.0)
+                .ok_or_else(|| CliError(format!("page {number}: cannot measure the page")))?;
+            let mut g = crate::runtime::cli_guard(budget, &clock);
+            let (lines, line_texts, _) = page_lines(session, page, budget, &mut g)?;
+            let mut slide = selis_pdf_text::slide_from_lines(
+                number,
+                f64::from(view.width),
+                f64::from(view.height),
+                view.ctm,
+                &lines,
+                &line_texts,
+            );
+            if let Some(images) = images {
+                slide.image = images.get(position).cloned();
+            }
+            slides.push(slide);
+        }
+        let bytes = selis_pdf_text::to_pptx(title, &slides).map_err(|e| {
             CliError(format!(
                 "{path}: the PowerPoint deck failed its own check: {e}"
             ))

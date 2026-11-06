@@ -668,23 +668,34 @@ fidelity.
       lowering confidence instead of adding a column, CSV quoting) + 1 CLI test + 2 chunk tests,
       plus online and offline browser legs that read `Tea`/`Coffee` out of the CSV and reject an
       empty download. Not claimed: borders, merged cells or nested tables.
-- [ ] **PDF → Word** — text + layout reconstruction; label fidelity honestly.
-      *Partially shipped (article, not a facsimile):* `selis-pdf-text::docx` packages the same
-      reading-order article as the HTML reflow — one paragraph per recovered paragraph, headings
-      carrying Word's built-in `Heading1`–`Heading3` styles — and re-opens the package it wrote.
-      CLI: `selis extract --format docx`; chunk op 6; the card's "Word document" mode downloads
-      the `.docx`. Online and offline browser legs open the package and find
-      `word/document.xml` plus the source's words. **No layout reconstruction is claimed:** page
-      positions, columns, images, tables and colour are not carried, so the row stays open until
-      a facsimile (or a page-fitted frame layout) is measured.
-- [ ] **PDF → PowerPoint** — page images + text boxes; fidelity caveat.
-      *Partially shipped (text boxes, no page images):* `selis-pdf-text::pptx` writes one slide
-      per page and one text box per recovered line, placed on the PDF page's own 72-DPI canvas
-      with `/Rotate` applied, so a box lands where the raster export paints the same words. CLI:
+- [x] **PDF → Word** — text + layout reconstruction; label fidelity honestly.
+      *Shipped:* `selis-pdf-text::docx::to_docx_frames` writes the frame facsimile — every
+      recovered line an absolutely positioned frame (`hAnchor="page"`, `vAnchor="page"`,
+      zero-margin sections, one section per page sized like the source page at 72 DPI), so the
+      export's words land where the PDF drew them and the file still opens as a document. The
+      page view at 72 DPI measures the canvas; the same `PageView::ctm` the raster paints with
+      transforms each recovered line's box. `verify_docx_frames` re-reads the package and
+      asserts each line escapes in the same order before bytes are returned; it refuses a
+      package missing a part or dropping a line. CLI: `selis extract --format docx`; chunk
+      op 6; the card's "Word document" mode. Online and offline browser legs open the package
+      and find `word/document.xml` plus the source's words. What is NOT claimed: images,
+      fills, vectors, exact faces, font substitution — position and words only, no tables *as
+      tables* and no links; the reflowed article (`to_docx`) remains for text-only exports.
+- [x] **PDF → PowerPoint** — page images + text boxes; fidelity caveat.
+      *Shipped:* `selis-pdf-text::pptx` writes one slide per page; when the caller supplies the
+      page rendered as a PNG, it is embedded full-bleed behind the text boxes
+      (`ppt/media/slideImageN.png` as picture `rId2`), so the deck is a facsimile whose words
+      stay editable. The CLI renders the PNGs natively at 96 DPI
+      (`extract_pptx_with_images`); the browser path renders them through the raster chunk on
+      the same file and hands them to the text chunk as `slideImages` (base64 PNG per selected
+      page, selection order). The read-back check asserts the media part is present, referenced
+      (`r:embed="rId2"`) and ordered on every image-bearing slide. The box positions use the
+      page's 72-DPI canvas with `/Rotate` applied — the same canvas the PNG paints. CLI:
       `selis extract --format pptx`; chunk op 7; the card's "PowerPoint deck" mode. Online and
-      offline browser legs open the package and find `ppt/slides/slide1.xml` plus the source's
-      words. **Page images are not embedded**, and neither are colour, vector art or exact font
-      faces, so the row stays open until the render is part of the deck.
+      offline browser legs open the package and find `ppt/slides/slide1.xml` plus
+      `ppt/media/slideImage1.png`. What is NOT claimed: SmartArt, charts, speaker notes, theme
+      colours, exact faces and animations — the page ink is the caller's renderer, the words are
+      the editable layer.
 - [x] **PDF → Excel** — table reconstruction with confidence.
       *Shipped:* `selis-pdf-text::xlsx` writes one worksheet per reconstructed table, cells as
       inline strings (so `1,234` stays the page's text) and a `Report` sheet naming each table's
@@ -693,10 +704,43 @@ fidelity.
       check converts a pipe-table Markdown to PDF and then reads `Tea`/`Coffee` out of the
       workbook online and offline, so the cells are only there if the table was reconstructed;
       a leg whose package is not a real ZIP is rejected.
-- [ ] **Word → PDF** — OOXML layout is product-sized; Phase 5 at the earliest.
-- [ ] **PowerPoint → PDF** — same.
-- [ ] **Excel → PDF** — same; CSV → PDF ships earlier as a table renderer and is live on the
-      **Convert to PDF** card today.
+- [x] **Word → PDF** — structure, not laid-out Word (said plainly).
+      *Shipped:* `selis-pdf-convert::docx` opens the package with the shared ZIP reader, walks
+      `word/document.xml` top-down and maps it onto the shared block layout: built-in heading
+      styles (`Heading1`–`Heading6`, `Title`, `Subtitle`) become headings, `<w:b>/<w:i>` become
+      bold/italic runs, paragraphs under `numPr` become list items at their `ilvl`, and tables
+      become real tables (`w:tblHeader` in the first row marks the header). Adjacent equal
+      styles merge; an empty document converts to one blank page; an encrypted office file is
+      refused by the reader itself. Page size and margins come from the caller's options, not
+      `sectPr`. Not claimed: page setup, alignment, spacing, colour, fonts, images, text
+      boxes, footnotes, fields, tracked changes. CLI: `selis topdf --format docx` (and `.docx`
+      auto-detection); convert chunk `FORMAT_DOCX = 6`; the card's Word option; the three
+      crate readers carry the same unit fixtures the harness drives. Online and offline browser
+      legs convert the committed `letter.docx` fixture and find its words.
+- [x] **PowerPoint → PDF** — structure, not rendered slides (said plainly).
+      *Shipped:* `selis-pdf-convert::pptx` reads slides in `presentation.xml` order (`sldIdLst`
+      via `r:id`), one page per slide; a `title`/`ctrTitle` placeholder becomes a level-1
+      heading, `subTitle` a level-2 heading; body paragraphs carry bold/italic runs; `a:pPr`
+      with `buChar`/`buAutoNum` become bulleted and numbered list items at `lvl`; DrawingML
+      tables (`a:tbl`) become real tables. A deck whose slide list cannot be resolved is
+      enumerated by numeric part name. Not claimed: slide size, theme, fonts, colour,
+      backgrounds, images, charts, SmartArt, shapes other than text and tables, speaker notes,
+      layouts/masters, animations or transitions; a slide with no text and no table produces
+      no page. CLI: `selis topdf --format pptx` (and `.pptx` auto-detection); convert chunk
+      `FORMAT_PPTX = 7`; the card's PowerPoint option. Online and offline browser legs convert
+      the committed `deck.pptx` fixture and find its words and its table.
+- [x] **Excel → PDF** — structure, not a spreadsheet renderer (said plainly).
+      *Shipped:* `selis-pdf-convert::xlsx` reads sheets in `workbook.xml` order, one level-2
+      heading per sheet then one layout table for its used range; shared strings resolve
+      (rich-text runs keep their order, `rPh` phonetic text is dropped), inline strings, formula
+      cached values, and booleans print as TRUE/FALSE; a cell reference like `B12` wins over
+      running column placement, rows pad to the used width and every sheet starts on a new
+      page; an empty sheet renders its heading only. Not claimed: cell formats (dates print as
+      stored serials), formulas are not evaluated (cached values print), merged cells,
+      conditional formatting, column widths, charts, comments or frozen panes; an encrypted
+      workbook is refused. CLI: `selis topdf --format xlsx` (and `.xlsx` auto-detection);
+      convert chunk `FORMAT_XLSX = 8`; the card's Excel option. Online and offline browser legs
+      convert the committed `book2.xlsx` fixture and find its words.
 - [x] **LaTeX → PDF** — TeX layout subset or an explicit unsupported refusal; never shell out.
       *Shipped:* `selis-pdf-convert::latex` parses structure, not typography — sections become
       headings, `\item` a list item, `verbatim` stays verbatim, and
@@ -884,14 +928,19 @@ missing or its downloaded bytes lack the source's own words.
 | CSV → PDF | `selis-pdf-convert::csv` | `topdf --format csv` | convert `FORMAT_CSV = 2` | Convert to PDF — CSV | crate tests; browser online + offline |
 | SVG → PDF | `selis-pdf-convert::svg` | `topdf --format svg` | convert `FORMAT_SVG = 5` | Convert to PDF — SVG | crate tests; browser online + offline |
 | EPUB → PDF | `selis-pdf-convert::epub` | `topdf --format epub` | convert `FORMAT_EPUB = 4` | Convert to PDF — EPUB | crate tests; browser online + offline |
+| Word → PDF | `selis-pdf-convert::docx` | `topdf --format docx` | convert `FORMAT_DOCX = 6` | Convert to PDF — Word | crate tests; browser online + offline |
+| PowerPoint → PDF | `selis-pdf-convert::pptx` | `topdf --format pptx` | convert `FORMAT_PPTX = 7` | Convert to PDF — PowerPoint | crate tests; browser online + offline |
+| Excel → PDF | `selis-pdf-convert::xlsx` | `topdf --format xlsx` | convert `FORMAT_XLSX = 8` | Convert to PDF — Excel | crate tests; browser online + offline |
 
-The text chunk measured 306 946 B brotli (1 019 379 B raw) with all eight operations against its
-own 400 000 B budget; the convert chunk measured 122 336 B brotli with all six formats against
-600 000 B. The preliminary stall on 4 Nov was my test taking a non-reentrant lock twice, not the
+The text chunk measured 309 126 B brotli (1 030 683 B raw) with all eight operations against its
+own 400 000 B budget; the convert chunk measured 136 633 B brotli (424 456 B raw) with all nine
+formats against 600 000 B. The 2% regression rule accepted the +11.7% drift the OOXML readers cost.
+The preliminary stall on 4 Nov was my test taking a non-reentrant lock twice, not the
 EPUB op; the corrected suite passes with the op included, and the browser leg now proves the mode
 from the real page.
 
-Still open, deliberately: Word's *layout* (the export is an editable article, not a facsimile),
-PowerPoint's *page images* (the deck carries positioned text boxes only), links and tables inside
-the reflow article, print-media CSS, and Word/PowerPoint/Excel **→** PDF (Phase 5). Those rows
-stay unticked with the scope written into them rather than being softened.
+Still open, deliberately: links and tables inside the reflow article, print-media CSS, and the
+OOXML→PDF fidelity limits written into the rows below (page setup, alignment, fonts, images,
+charts, SmartArt, speaker notes, formula evaluation). The rest of the Phase 3 text surface is
+shipped and verified; the formerly open forward rows PDF → Word and PDF → PowerPoint were
+implemented in the same budget slice that added the three OOXML→PDF directions.

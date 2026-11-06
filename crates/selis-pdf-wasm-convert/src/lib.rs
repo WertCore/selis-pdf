@@ -12,8 +12,8 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::sync::Mutex;
 
 use selis_pdf_convert::{
-    csv_to_pdf, epub_to_pdf, html_to_pdf, latex_to_pdf, markdown_to_pdf, svg_to_pdf, Options,
-    PageSize,
+    csv_to_pdf, docx_to_pdf, epub_to_pdf, html_to_pdf, latex_to_pdf, markdown_to_pdf, pptx_to_pdf,
+    svg_to_pdf, xlsx_to_pdf, Options, PageSize,
 };
 
 use selis_sandbox::{Budget, CancelToken, FixedClock};
@@ -35,6 +35,12 @@ pub const FORMAT_LATEX: u32 = 3;
 pub const FORMAT_EPUB: u32 = 4;
 /// SVG input (the documented subset in `selis-pdf-convert::svg`).
 pub const FORMAT_SVG: u32 = 5;
+/// Word input (a binary ZIP package; the text path is bypassed).
+pub const FORMAT_DOCX: u32 = 6;
+/// PowerPoint input (a binary ZIP package; the text path is bypassed).
+pub const FORMAT_PPTX: u32 = 7;
+/// Excel input (a binary ZIP package; the text path is bypassed).
+pub const FORMAT_XLSX: u32 = 8;
 
 /// Page size selector.
 pub const PAGE_LETTER: u32 = 0;
@@ -171,10 +177,10 @@ pub unsafe extern "C" fn selis_convert_last_error(out_len: *mut u32) -> *mut u8 
 
 /// Capability query: which converters this chunk offers (bitmask).
 /// Bit 0: Markdown, Bit 1: HTML, Bit 2: CSV, Bit 3: LaTeX, Bit 4: EPUB,
-/// Bit 5: SVG.
+/// Bit 5: SVG, Bit 6: Word, Bit 7: PowerPoint, Bit 8: Excel.
 #[no_mangle]
 pub extern "C" fn selis_convert_capabilities() -> u32 {
-    0b111111
+    0b1_1111_1111
 }
 
 /// Availability probe.
@@ -185,7 +191,8 @@ pub extern "C" fn selis_convert_available() -> u32 {
 
 /// Convert one input document into PDF bytes.
 ///
-/// `format`: 0 = Markdown, 1 = HTML, 2 = CSV, 3 = LaTeX, 4 = EPUB, 5 = SVG.
+/// `format`: 0 = Markdown, 1 = HTML, 2 = CSV, 3 = LaTeX, 4 = EPUB, 5 = SVG,
+/// 6 = Word, 7 = PowerPoint, 8 = Excel.
 /// `page_size`: 0 = Letter, 1 = A4.
 /// `title_ptr`/`title_len`: optional title (may be null/0).
 ///
@@ -219,7 +226,7 @@ pub unsafe extern "C" fn selis_convert_run(
     }
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len as usize) };
     let text = match format {
-        FORMAT_EPUB => String::new(),
+        FORMAT_EPUB | FORMAT_DOCX | FORMAT_PPTX | FORMAT_XLSX => String::new(),
         _ => match std::str::from_utf8(input) {
             Ok(value) => value.to_string(),
             Err(_) => {
@@ -256,6 +263,9 @@ pub unsafe extern "C" fn selis_convert_run(
         FORMAT_LATEX => latex_to_pdf(&text, &opts, &budget, &mut guard),
         FORMAT_EPUB => epub_to_pdf(input, &opts, &budget, &mut guard),
         FORMAT_SVG => svg_to_pdf(&text, &opts, &budget, &mut guard),
+        FORMAT_DOCX => docx_to_pdf(input, &opts, &budget, &mut guard),
+        FORMAT_PPTX => pptx_to_pdf(input, &opts, &budget, &mut guard),
+        FORMAT_XLSX => xlsx_to_pdf(input, &opts, &budget, &mut guard),
         _ => {
             set_error("unknown format".to_string());
             return std::ptr::null_mut();
@@ -323,6 +333,6 @@ mod tests {
     }
     #[test]
     fn caps_cover_all_current_formats() {
-        assert_eq!(selis_convert_capabilities(), 0b111111);
+        assert_eq!(selis_convert_capabilities(), 0b1_1111_1111);
     }
 }

@@ -748,12 +748,12 @@ enum Command {
     },
     /// Convert a Markdown or HTML file to PDF (documented subset).
     Topdf {
-        /// The input file (.md/.markdown, .html/.htm, .tex/.latex, .csv, .svg or .epub).
+        /// The input file (.md/.markdown, .html/.htm, .tex/.latex, .csv, .svg, .epub, .docx, .pptx or .xlsx).
         input: String,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
-        /// The input format: auto, md, html, tex, csv, svg or epub.
+        /// The input format: auto, md, html, tex, csv, svg, epub, docx, pptx or xlsx.
         #[arg(long, default_value = "auto")]
         format: String,
         /// The page size: letter or a4.

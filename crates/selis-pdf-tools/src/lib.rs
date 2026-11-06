@@ -73,9 +73,9 @@ pub use sign::{
 };
 #[cfg(feature = "text")]
 pub use text::{
-    extract_docx, extract_pptx, extract_tables, extract_text, extract_xlsx, reflow_epub,
-    reflow_html, split_by_text, EpubExport, HtmlExport, SlidesExport, TablesExport, TextExport,
-    TextPage, TextSplit, WordExport, WorkbookExport,
+    extract_docx, extract_pptx, extract_pptx_with_images, extract_tables, extract_text,
+    extract_xlsx, reflow_epub, reflow_html, split_by_text, EpubExport, HtmlExport, SlidesExport,
+    TablesExport, TextExport, TextPage, TextSplit, WordExport, WorkbookExport,
 };
 pub use verify_report::Verification;
 
