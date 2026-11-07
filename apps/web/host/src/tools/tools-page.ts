@@ -539,6 +539,8 @@ function init(): void {
 	const workspaceTitle = byId<HTMLHeadingElement>("workspace-title");
 	const workspaceBlurb = byId<HTMLParagraphElement>("workspace-blurb");
 	const dropzone = byId<HTMLDivElement>("dropzone");
+	const dropTitle = byId<HTMLSpanElement>("drop-title");
+	const dropLink = byId<HTMLSpanElement>("drop-link");
 	const fileInput = byId<HTMLInputElement>("file-input");
 	const fileList = byId<HTMLUListElement>("file-list");
 	const options = byId<HTMLDivElement>("options");
@@ -2307,6 +2309,26 @@ function init(): void {
 		updateRunState();
 		workspaceTitle.textContent = tool.title;
 		workspaceBlurb.textContent = tool.blurb;
+		// The dropzone copy is per-tool: an image tool that says "Drop PDFs
+		// here" is a wrong instruction, not a cosmetic one. The generated
+		// pages carry the same strings statically (build-pages.mjs), so the
+		// no-JS/pre-JS page reads correctly too.
+		if (tool.accepts === "image") {
+			dropTitle.textContent = "Drop your images here";
+			dropLink.textContent = "choose images";
+			fileInput.setAttribute("aria-label", "Choose images");
+			fileList.setAttribute("aria-label", "Selected images");
+		} else if (tool.accepts === "text") {
+			dropTitle.textContent = "Drop your file here";
+			dropLink.textContent = "choose a file";
+			fileInput.setAttribute("aria-label", "Choose a file");
+			fileList.setAttribute("aria-label", "Selected files");
+		} else {
+			dropTitle.textContent = "Drop PDFs here";
+			dropLink.textContent = "choose files";
+			fileInput.setAttribute("aria-label", "Choose PDF files");
+			fileList.setAttribute("aria-label", "Selected PDFs");
+		}
 		fileInput.multiple = tool.multiple;
 		// Attach accepts opaque payloads after the first file, so the picker
 		// must not restrict the whole selection to PDFs.

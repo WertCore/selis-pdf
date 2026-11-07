@@ -170,6 +170,30 @@ const FOOTER = `		<footer class="site-footer">
  * `/tools.html` keeps its own `h2` inside the same shell.
  */
 function workspace(tool) {
+	// The dropzone copy names what the tool eats, not what the app is for:
+	// image tools must not say "Drop PDFs here". Mirrors selectTool in
+	// tools-page.ts, so the static page and the JS-updated page agree.
+	const drop =
+		tool.accepts === "image"
+			? {
+					title: "Drop your images here",
+					link: "choose images",
+					label: "Choose images",
+					list: "Selected images",
+				}
+			: tool.accepts === "text"
+				? {
+						title: "Drop your file here",
+						link: "choose a file",
+						label: "Choose a file",
+						list: "Selected files",
+					}
+				: {
+						title: "Drop PDFs here",
+						link: "choose files",
+						label: "Choose PDF files",
+						list: "Selected PDFs",
+					};
 	return `			<section id="workspace" class="workspace" aria-labelledby="workspace-title">
 				<a id="back-to-tools" class="back" href="/tools.html">← All tools</a>
 				<div class="workspace-grid">
@@ -184,10 +208,10 @@ function workspace(tool) {
 						     note in tools.html about why it carries no role/tabindex. -->
 						<div id="dropzone" class="dropzone">
 							<span class="drop-icon" aria-hidden="true">↓</span>
-							<span class="drop-title">Drop PDFs here</span>
+							<span id="drop-title" class="drop-title">${escapeHtml(drop.title)}</span>
 							<span class="drop-hint"
-								>or <span class="drop-link">choose files</span> · up to 256 MiB per
-								run</span
+								>or <span id="drop-link" class="drop-link">${escapeHtml(drop.link)}</span> ·
+								up to 256 MiB per run</span
 							>
 							<input
 								id="file-input"
@@ -195,11 +219,11 @@ function workspace(tool) {
 								type="file"
 								accept="application/pdf,.pdf"
 								multiple
-								aria-label="Choose PDF files"
+								aria-label="${escapeHtml(drop.label)}"
 							/>
 						</div>
 
-						<ul id="file-list" class="file-list" aria-label="Selected PDFs"></ul>
+						<ul id="file-list" class="file-list" aria-label="${escapeHtml(drop.list)}"></ul>
 						<div id="options" class="options"></div>
 
 						<div class="run-row">
