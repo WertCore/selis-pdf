@@ -376,8 +376,9 @@ export const TOOLS: readonly ToolDef[] = [
 		group: "repair",
 		mark: "Z",
 		title: "Compress PDF",
-		blurb: "Lossless cleanup: drop unreachable objects and re-encode streams.",
-		note: "Lossless only: unreachable objects go, streams are re-encoded, pages stay as they are.",
+		blurb:
+			"Compress PDF in three lossy levels with an optional target size. Images re-encoded, text kept. No watermark, no daily limit — files never leave your device.",
+		note: "Choose Less, Recommended or Extreme and an optional target size in KiB. Images are re-encoded; text and structure stay intact, and the result is never larger than the input.",
 		verb: "Compress PDF",
 		multiple: false,
 	},

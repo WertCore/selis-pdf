@@ -529,12 +529,31 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
-        Op::Compress => vec![Produced {
-            output: "out.pdf".to_string(),
-            name: format!("{stem}-compressed.pdf"),
-            verification: selis_pdf_tools::compress("in/0", "out.pdf")?,
-            over_target: false,
-        }],
+        Op::Compress => {
+            let level = match option_str(&options, "level").as_deref() {
+                None => None,
+                Some(name) => Some(
+                    selis_pdf_tools::CompressionLevel::from_name(name).ok_or_else(|| {
+                        ToolError(format!(
+                            "compress level must be less, recommended or extreme (got {name})"
+                        ))
+                    })?,
+                ),
+            };
+            let target_kib = option_u64(&options, "targetKiB");
+            let compress_options = selis_pdf_tools::CompressOptions { level, target_kib };
+            let (report, verification) =
+                selis_pdf_tools::compress_file_with_options("in/0", "out.pdf", &compress_options)?;
+            let over_target = target_kib.is_some_and(|kib| {
+                u64::try_from(report.out_bytes).unwrap_or(u64::MAX) > kib.saturating_mul(1024)
+            });
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-compressed.pdf"),
+                verification,
+                over_target,
+            }]
+        }
         Op::Attachments => return run_attachments(&stem, first_input_len),
         Op::Crop => {
             let pages = option_str(&options, "pages");
@@ -2138,6 +2157,55 @@ mod tests {
     }
 
     #[test]
+    fn compress_lossy_level_shrinks_a_scanned_pdf() {
+        let pdf = scanned_pdf();
+        let in_len = pdf.len();
+        let response = run_request(&request(
+            11,
+            br#"{"level":"recommended"}"#,
+            &[("scan.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "compress failed: {message}");
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(outputs[0].0, "scan-compressed.pdf");
+        let out_len = outputs[0].1.len();
+        assert!(out_len < in_len, "lossy output is smaller");
+        assert_eq!(message["outputs"][0]["overTarget"], false);
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(text.contains("DCTDecode"), "image became a JPEG stream");
+    }
+
+    #[test]
+    fn compress_over_target_is_reported() {
+        let pdf = scanned_pdf();
+        let response = run_request(&request(
+            11,
+            br#"{"level":"extreme","targetKiB":1}"#,
+            &[("scan.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "compress failed: {message}");
+        assert_eq!(message["outputs"][0]["overTarget"], true);
+        let out_len = outputs[0].1.len();
+        let in_len = pdf.len();
+        assert!(
+            out_len < in_len,
+            "an unreachable target still never grows the file"
+        );
+    }
+
+    #[test]
+    fn compress_rejects_an_unknown_level() {
+        let pdf = multipage_pdf(1);
+        let response = run_request(&request(11, br#"{"level":"bogus"}"#, &[("doc.pdf", &pdf)]));
+        assert!(
+            error_text(&response).contains("level"),
+            "the typed error names the level"
+        );
+    }
+
+    #[test]
     fn attachments_operation_returns_files_and_a_zip() {
         let pdf = attachment_pdf();
         let response = run_request(&request(12, b"", &[("bundle.pdf", &pdf)]));
@@ -2417,6 +2485,54 @@ mod tests {
         for object in &objects {
             offsets.push(out.len());
             out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    /// A single-page scanned-style PDF: a raw RGB noise image XObject that
+    /// Flate cannot shrink but a low-quality JPEG can.
+    fn scanned_pdf() -> Vec<u8> {
+        let mut samples = Vec::with_capacity(200 * 150 * 3);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..(200 * 150 * 3) {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            samples.push(u8::try_from(state >> 24).expect("high byte fits u8"));
+        }
+        let content = b"q 200 0 0 150 0 0 cm /Im0 Do Q\n";
+        let mut objects: Vec<Vec<u8>> = vec![
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec(),
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec(),
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 150] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n".to_vec(),
+        ];
+        let mut obj4 = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        obj4.extend_from_slice(content);
+        obj4.extend_from_slice(b"\nendstream\nendobj\n");
+        objects.push(obj4);
+        let mut obj5 = format!(
+            "5 0 obj\n<< /Type /XObject /Subtype /Image /Width 200 /Height 150 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream\n",
+            samples.len()
+        )
+        .into_bytes();
+        obj5.extend_from_slice(&samples);
+        obj5.extend_from_slice(b"\nendstream\nendobj\n");
+        objects.push(obj5);
+
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object);
         }
         let xref = out.len();
         let size = offsets.len().saturating_add(1);

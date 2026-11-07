@@ -56,7 +56,9 @@ mod zip;
 use selis_sandbox::Clock;
 
 pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
-pub use compress::{compress, compress_file, CompressionReport};
+pub use compress::{
+    compress, compress_file, compress_file_with_options, CompressOptions, CompressionReport,
+};
 pub use forms::{
     fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
 };
@@ -65,6 +67,7 @@ pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
+pub use selis_pdf_optimize::CompressionLevel;
 #[cfg(feature = "sign")]
 pub use sign::{
     sign_pdf, signature_report, signature_report_bytes, stamp_pdf, DigitalOptions, DigitalReport,

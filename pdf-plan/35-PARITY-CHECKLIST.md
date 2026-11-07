@@ -499,8 +499,26 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       the committed tools-page check, and seven verdict negatives show those witnesses are load-bearing:
       a bundle holding two of three rendered pages for each of the three formats, a PNG archive handed to
       the viewer as a preview, and an online-only bundle for each format.
-- [ ] **Lossy compression with a target** — quality/size search, measured result shown,
+- [x] **Lossy compression with a target** — quality/size search, measured result shown,
       never labelled lossless.
+      *Shipped:* the Compress card offers three levels (Less / Recommended / Extreme) and an optional
+      target size in KiB. The engine is core (`selis-pdf-optimize`, shared by the browser tools chunk
+      and a later desktop shell): eligible image XObjects — plain 8-bit `DeviceRGB`/`DeviceGray` samples
+      behind no filter, Flate or DCT — are re-encoded as baseline JPEG at the level's quality and
+      box-downsampled past its pixel cap, while masked, indexed, JPX and non-8-bit images are left
+      untouched and text, annotations, forms and outlines are never opened. The lossless rewrite is
+      always the floor, every lossy pass is cloned from it (no compounding), the search runs at most
+      three quality-lowering passes and stops at the first that fits the target, and the smallest
+      candidate wins — the result is never larger than the input, falling back to the original bytes
+      when nothing beats them. The card's copy says "lossy: images are re-encoded at a lower quality",
+      and an unmet target is reported on the result row as "· over target" from the engine's own flag.
+      Evidence: `selis-pdf-optimize` unit tests pin the shrink, the pass schedule, the downsample cap
+      and the never-larger rule; `selis-pdf-tools` and the wasm protocol tests run a scanned-style
+      fixture end to end (90661 → 18954 B at Recommended across the bounded search, 7685 B at Extreme
+      with an unreachable 1 KiB target flagged over target); and the offline `compressLossy` /
+      `compressOverTarget` legs of the committed tools-page check drive the real card in a real engine,
+      asserting the JPEG filter in the downloaded bytes (31532 B meeting a 50 KiB target) and the
+      over-target flag (7685 B missing a 1 KiB target).
 - [ ] **Invert colours** — render-based; verify pixel inversion on a known fixture.
 - [ ] **Flatten annotations** — render appearance streams; never claim flatten without a
       render check.

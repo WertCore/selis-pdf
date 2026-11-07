@@ -1872,10 +1872,8 @@ version = "0.1.0"
 dependencies = [
  "selis-bytes",
  "selis-error",
- "selis-io",
+ "selis-image",
  "selis-pdf-cos",
- "selis-pdf-doc",
- "selis-pdf-edit",
  "selis-pdf-filter",
  "selis-sandbox",
 ]
@@ -1926,6 +1924,7 @@ dependencies = [
  "selis-pdf-engine",
  "selis-pdf-filter",
  "selis-pdf-form",
+ "selis-pdf-optimize",
  "selis-pdf-sign",
  "selis-pdf-text",
  "selis-sandbox",

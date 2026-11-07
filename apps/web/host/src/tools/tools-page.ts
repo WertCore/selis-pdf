@@ -864,6 +864,47 @@ function init(): void {
 	}
 
 	/**
+	 * A labelled radio group. Each button is registered under `${key}-${value}`
+	 * so `setBusy` disables every button and the harness can check one by id;
+	 * the group itself is the field registered under `key`. A fieldset/legend
+	 * gives the group an accessible name and each button a wrapping label.
+	 */
+	function radioGroup(
+		key: string,
+		legendText: string,
+		choices: ReadonlyArray<readonly [string, string]>,
+		defaultValue: string,
+	): void {
+		const field = make("fieldset", "field");
+		field.dataset.option = key;
+		optionFields.set(key, field);
+		const legend = make("legend", "field-label");
+		legend.textContent = legendText;
+		field.append(legend);
+		for (const [value, labelText] of choices) {
+			const id = `option-${key}-${value}`;
+			const input = make("input");
+			input.type = "radio";
+			input.name = key;
+			input.id = id;
+			input.value = value;
+			input.checked = value === defaultValue;
+			optionControls.set(`${key}-${value}`, input);
+			const label = make("label", "radio-choice");
+			label.htmlFor = id;
+			label.append(input, document.createTextNode(labelText));
+			field.append(label);
+			input.addEventListener("input", () => {
+				clearResult();
+			});
+			input.addEventListener("change", () => {
+				clearResult();
+			});
+		}
+		options.append(field);
+	}
+
+	/**
 	 * A local file the card reads in the tab (a key, a certificate, or the
 	 * anchors a report trusts). The bytes are read with `File.text()` and travel
 	 * only into the signing chunk's own memory.
@@ -1866,9 +1907,25 @@ function init(): void {
 			return;
 		}
 		if (tool.id === "compress") {
+			radioGroup(
+				"level",
+				"Compression level",
+				[
+					["less", "Less — higher quality, larger file"],
+					["recommended", "Recommended — balanced"],
+					["extreme", "Extreme — smallest file"],
+				],
+				"recommended",
+			);
+			addField(
+				"target-kib",
+				"Target size (KiB, optional)",
+				textInput("target-kib", "number", "e.g. 500"),
+				"Leave empty for no target. The tool lowers quality in bounded steps until the file fits, and reports when the target could not be met. 1 KiB = 1024 bytes.",
+			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Lossless only: unreachable objects are removed and streams are re-encoded. Images and fonts are not downsampled. Encrypted files are refused.";
+				"Lossy: images are re-encoded at a lower quality; text, annotations, forms and outlines are not changed. The result is never larger than the input. Encrypted files are refused.";
 			options.append(note);
 			return;
 		}
@@ -2636,6 +2693,16 @@ function init(): void {
 		return control instanceof HTMLInputElement && control.checked;
 	}
 
+	/** The checked Compress level; the balanced default when none is checked. */
+	function compressLevelValue(): "less" | "recommended" | "extreme" {
+		for (const value of ["less", "recommended", "extreme"] as const) {
+			if (optionChecked(`level-${value}`)) {
+				return value;
+			}
+		}
+		return "recommended";
+	}
+
 	/** The four boxes every permission-writing card offers, all granted by default. */
 	function addPermissionFields(): void {
 		for (const [key, label] of [
@@ -2958,7 +3025,11 @@ function init(): void {
 			return { op: "bates", options, files: wireFiles };
 		}
 		if (tool.id === "compress") {
-			return { op: "compress", files: wireFiles };
+			const options: Record<string, unknown> = { level: compressLevelValue() };
+			if (optionValue("target-kib").trim() !== "") {
+				options.targetKiB = numberInRange("target-kib", "Target size", 1, 100_000_000, 1, true);
+			}
+			return { op: "compress", options, files: wireFiles };
 		}
 		if (tool.id === "zip") {
 			return { op: "zip", files: wireFiles };

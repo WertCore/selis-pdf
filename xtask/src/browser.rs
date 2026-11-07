@@ -961,6 +961,41 @@ fn check_tiled_watermark_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The lossy Compress leg: the stamp shape (one PDF in, one out, page count
+/// held) plus the two things only the lossy tier produces — the JPEG filter that
+/// proves the images were re-encoded, and the `overTarget` flag the target
+/// search sets when it cannot reach the requested size.
+///
+/// The flag is read from the output row's `data-over-target`, not searched for
+/// in the bytes: the word "target" appears in no part of a valid PDF, so a
+/// byte-needle could never witness it.
+fn check_lossy_compress_leg(
+    leg: &Json,
+    label: &str,
+    expect_over_target: bool,
+) -> Result<(), String> {
+    check_stamp_leg(
+        leg,
+        label,
+        "scan-compressed.pdf",
+        "Compress PDF",
+        1,
+        &["/DCTDecode"],
+    )?;
+    let output = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .and_then(|outputs| outputs.first())
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("overTarget").and_then(Json::as_bool) != Some(expect_over_target) {
+        return Err(format!(
+            "the {label} run reported overTarget={:?}, expected {expect_over_target}",
+            output.get("overTarget")
+        ));
+    }
+    Ok(())
+}
+
 /// The same proof for a leg that deliberately changes the page count (N-up).
 fn check_page_count_leg(
     leg: &Json,
@@ -6140,6 +6175,20 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &[],
     )?;
+    let compress_lossy = report
+        .get("compressLossy")
+        .ok_or_else(|| "the page reported no compressLossy leg (compressLossy = None)".to_string())?;
+    check_lossy_compress_leg(compress_lossy, "online compress lossy", false)?;
+    let compress_over_target = report
+        .get("compressOverTarget")
+        .ok_or_else(|| {
+            "the page reported no compressOverTarget leg (compressOverTarget = None)".to_string()
+        })?;
+    check_lossy_compress_leg(
+        compress_over_target,
+        "online compress over target",
+        true,
+    )?;
     let crop = report
         .get("crop")
         .ok_or_else(|| "the page reported no crop leg (crop = None)".to_string())?;
@@ -6691,6 +6740,19 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         "Compress PDF",
         3,
         &[],
+    )?;
+    let offline_compress_lossy = offline.get("compressLossy").ok_or_else(|| {
+        "the offline leg reported no lossy compress result (compressLossy = None)".to_string()
+    })?;
+    check_lossy_compress_leg(offline_compress_lossy, "offline compress lossy", false)?;
+    let offline_compress_over_target = offline.get("compressOverTarget").ok_or_else(|| {
+        "the offline leg reported no over-target compress result (compressOverTarget = None)"
+            .to_string()
+    })?;
+    check_lossy_compress_leg(
+        offline_compress_over_target,
+        "offline compress over target",
+        true,
     )?;
     let offline_crop = offline
         .get("crop")
@@ -12721,6 +12783,30 @@ mod tests {
             &["(ABC-0009) Tj", "(ABC-0010) Tj"],
         );
         report["compress"] = real_tools_stamp_leg("report-compressed.pdf", "Compress PDF", 3, &[]);
+        // The lossy tier re-encodes the scanned image, so its output carries a
+        // JPEG stream (/DCTDecode). The target search reports `overTarget` on the
+        // output row; the reachable 50 KiB target is false, the 1 KiB one true.
+        report["compressLossy"] = real_tools_stamp_leg(
+            "scan-compressed.pdf",
+            "Compress PDF",
+            1,
+            &["/DCTDecode"],
+        );
+        for pointer in ["/outputs/0/bytes", "/outputs/0/declaredBytes"] {
+            (*report["compressLossy"].pointer_mut(pointer).unwrap()) = json!(31532);
+        }
+        report["compressOverTarget"] = real_tools_stamp_leg(
+            "scan-compressed.pdf",
+            "Compress PDF",
+            1,
+            &["/DCTDecode"],
+        );
+        for pointer in ["/outputs/0/bytes", "/outputs/0/declaredBytes"] {
+            (*report["compressOverTarget"].pointer_mut(pointer).unwrap()) = json!(7685);
+        }
+        for pointer in ["/outputs/0/overTarget", "/output/overTarget"] {
+            (*report["compressOverTarget"].pointer_mut(pointer).unwrap()) = json!(true);
+        }
         report["crop"] = real_tools_stamp_leg("report-cropped.pdf", "Crop PDF", 3, &[]);
         report["flip"] = real_tools_stamp_leg("report-flipped.pdf", "Flip PDF", 3, &[]);
         report["pageLabels"] = real_tools_stamp_leg(
@@ -12844,6 +12930,8 @@ mod tests {
         report["offline"]["headerFooter"] = report["headerFooter"].clone();
         report["offline"]["bates"] = report["bates"].clone();
         report["offline"]["compress"] = report["compress"].clone();
+        report["offline"]["compressLossy"] = report["compressLossy"].clone();
+        report["offline"]["compressOverTarget"] = report["compressOverTarget"].clone();
         report["offline"]["crop"] = report["crop"].clone();
         report["offline"]["flip"] = report["flip"].clone();
         report["offline"]["pageLabels"] = report["pageLabels"].clone();

@@ -1089,7 +1089,7 @@
         for (const [key, value] of Object.entries(inputs || {})) {
           const field = doc.getElementById("option-" + key);
           if (!field) throw new Error("the " + toolId + " page offered no " + key + " field");
-          if (field.type === "checkbox") {
+          if (field.type === "checkbox" || field.type === "radio") {
             field.checked = Boolean(value);
           } else {
             field.value = String(value);
@@ -1353,6 +1353,10 @@
         });
         const splitFixture = await fetch("report.pdf").then((r) => {
           if (!r.ok) throw new Error("report.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        const scanFixture = await fetch("scan.pdf").then((r) => {
+          if (!r.ok) throw new Error("scan.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
         const outlinedFixture = await fetch("outlined.pdf").then((r) => {
@@ -1912,6 +1916,52 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           outputs: onlineCompress.outputs,
           output: onlineCompress.output,
           network: onlineCompress.network,
+        };
+
+        const onlineCompressLossy = await toolInFrame(
+          frame,
+          scanFixture,
+          "scan.pdf",
+          "online compress lossy",
+          "compress",
+          {
+            "level-recommended": true,
+            "target-kib": "50",
+          },
+          ["/DCTDecode"],
+        );
+        out.compressLossy = {
+          fileRows: onlineCompressLossy.fileRows,
+          runLabel: onlineCompressLossy.runLabel,
+          noUpload: onlineCompressLossy.noUpload,
+          status: onlineCompressLossy.status,
+          result: onlineCompressLossy.result,
+          outputs: onlineCompressLossy.outputs,
+          output: onlineCompressLossy.output,
+          network: onlineCompressLossy.network,
+        };
+
+        const onlineCompressOverTarget = await toolInFrame(
+          frame,
+          scanFixture,
+          "scan.pdf",
+          "online compress over target",
+          "compress",
+          {
+            "level-extreme": true,
+            "target-kib": "1",
+          },
+          ["/DCTDecode"],
+        );
+        out.compressOverTarget = {
+          fileRows: onlineCompressOverTarget.fileRows,
+          runLabel: onlineCompressOverTarget.runLabel,
+          noUpload: onlineCompressOverTarget.noUpload,
+          status: onlineCompressOverTarget.status,
+          result: onlineCompressOverTarget.result,
+          outputs: onlineCompressOverTarget.outputs,
+          output: onlineCompressOverTarget.output,
+          network: onlineCompressOverTarget.network,
         };
 
         const onlineCrop = await toolInFrame(
@@ -3539,6 +3589,31 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           {},
           [],
         );
+        const offlineCompressLossy = await toolInFrame(
+          frame,
+          scanFixture,
+          "scan.pdf",
+          "offline compress lossy",
+          "compress",
+          {
+            "level-recommended": true,
+            "target-kib": "50",
+          },
+          ["/DCTDecode"],
+        );
+
+        const offlineCompressOverTarget = await toolInFrame(
+          frame,
+          scanFixture,
+          "scan.pdf",
+          "offline compress over target",
+          "compress",
+          {
+            "level-extreme": true,
+            "target-kib": "1",
+          },
+          ["/DCTDecode"],
+        );
         const offlineCrop = await toolInFrame(
           frame,
           splitFixture,
@@ -4729,6 +4804,26 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             outputs: offlineCompress.outputs,
             output: offlineCompress.output,
             network: offlineCompress.network,
+          },
+          compressLossy: {
+            fileRows: offlineCompressLossy.fileRows,
+            runLabel: offlineCompressLossy.runLabel,
+            noUpload: offlineCompressLossy.noUpload,
+            status: offlineCompressLossy.status,
+            result: offlineCompressLossy.result,
+            outputs: offlineCompressLossy.outputs,
+            output: offlineCompressLossy.output,
+            network: offlineCompressLossy.network,
+          },
+          compressOverTarget: {
+            fileRows: offlineCompressOverTarget.fileRows,
+            runLabel: offlineCompressOverTarget.runLabel,
+            noUpload: offlineCompressOverTarget.noUpload,
+            status: offlineCompressOverTarget.status,
+            result: offlineCompressOverTarget.result,
+            outputs: offlineCompressOverTarget.outputs,
+            output: offlineCompressOverTarget.output,
+            network: offlineCompressOverTarget.network,
           },
           crop: {
             fileRows: offlineCrop.fileRows,

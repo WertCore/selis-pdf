@@ -1,5 +1,6 @@
 ﻿[package]
 name = "selis-pdf-optimize"
+description = "Document optimisation passes shared by the CLI, desktop and browser tools: lossy image downsample/re-encode for the Compress tool's level/target tiers."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,15 +13,14 @@ workspace = true
 
 [features]
 default = []
-# Forwarded to the COS and document layers; see `selis-pdf-doc`.
-rng = ["selis-pdf-cos/rng", "selis-pdf-doc/rng", "selis-pdf-edit/rng"]
+# Forwarded to the COS layer; the document and edit layers forward their own
+# rng features directly from `selis-pdf-engine`.
+rng = ["selis-pdf-cos/rng"]
 
 [dependencies]
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
-selis-io = { workspace = true }
 selis-pdf-cos = { workspace = true }
-selis-pdf-doc = { workspace = true }
-selis-pdf-edit = { workspace = true }
 selis-pdf-filter = { workspace = true }
+selis-image = { workspace = true }

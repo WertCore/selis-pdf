@@ -1,7 +1,7 @@
-//! Lossless compression for the browser and CLI tools.
+//! Compression for the browser and CLI tools.
 //!
-//! The operation is a full-document rewrite that keeps every rendered pixel
-//! identical:
+//! The lossless tier is a full-document rewrite that keeps every rendered
+//! pixel identical:
 //!
 //! * only objects reachable from the catalog (and `/Info`) are kept;
 //! * unfiltered streams gain `FlateDecode`, and existing Flate streams are
@@ -9,12 +9,22 @@
 //! * byte-identical objects are deduplicated and every reference is redirected
 //!   at the survivor.
 //!
+//! The lossy tier ([`CompressOptions::level`]) adds the shared image pass from
+//! [`selis_pdf_optimize`]: simple image XObjects are re-encoded as JPEG at a
+//! reduced quality and downsampled past a pixel cap. With a target size the
+//! search runs up to [`selis_pdf_optimize::MAX_PASSES`] quality-lowering
+//! passes, each from the lossless baseline (no generational loss), until the
+//! output fits or stops shrinking. Text, annotations, forms and outlines are
+//! never touched, and the output is never larger than the input — when no
+//! candidate beats the original bytes, the original is returned verbatim.
+//!
 //! Encrypted documents are refused. Removing encryption is the separate
 //! unlock operation, not a side effect of compression.
 
 use selis_pdf_cos::copy::{collect_objects, dedup_objects};
 use selis_pdf_cos::doc_writer::write_objects_as_document_with_trailer;
 use selis_pdf_cos::{Obj, Ref};
+use selis_pdf_optimize::{CompressionLevel, MAX_PASSES};
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::verify_report::Verification;
@@ -27,7 +37,21 @@ const RECODE_LIMIT: u64 = 256 * 1024 * 1024;
 /// The zlib level used when re-encoding streams.
 const RECODE_LEVEL: u8 = 10;
 
-/// The measured result of one lossless rewrite.
+/// Which tier the Compress tool runs. The default is the lossless-only
+/// rewrite; a `level` opts into the shared lossy image pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompressOptions {
+    /// The lossy level (`less`, `recommended`, `extreme`); `None` keeps the
+    /// lossless-only behaviour.
+    pub level: Option<CompressionLevel>,
+    /// Optional target size in KiB. With a level set, the search lowers the
+    /// quality across bounded passes until the output fits or stops
+    /// shrinking. Without a level the target is ignored (lossless cannot
+    /// trade quality for size).
+    pub target_kib: Option<u64>,
+}
+
+/// The measured result of one rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompressionReport {
     /// Objects reachable from the root (after GC, before dedup).
@@ -36,6 +60,10 @@ pub struct CompressionReport {
     pub deduplicated: usize,
     /// Streams re-encoded (new Flate, or smaller Flate).
     pub streams_recoded: usize,
+    /// Image XObjects the lossy tier re-encoded (0 when lossless only).
+    pub images_reencoded: usize,
+    /// Lossy passes actually run (0 when lossless only).
+    pub lossy_passes: usize,
     /// Input size in bytes.
     pub in_bytes: usize,
     /// Output size in bytes.
@@ -59,13 +87,15 @@ impl CompressionReport {
 pub fn compress(path: &str, output: &str) -> CliResult<Verification> {
     let (report, verification) = compress_file(path, output)?;
     eprintln!(
-        "compressed {path}: {} -> {} bytes (saved {}), {} objects, {} deduplicated, {} streams re-encoded -> {output}",
+        "compressed {path}: {} -> {} bytes (saved {}), {} objects, {} deduplicated, {} streams re-encoded, {} images re-encoded in {} lossy pass(es) -> {output}",
         report.in_bytes,
         report.out_bytes,
         report.saved(),
         report.objects,
         report.deduplicated,
-        report.streams_recoded
+        report.streams_recoded,
+        report.images_reencoded,
+        report.lossy_passes
     );
     verification.emit_line();
     Ok(verification)
@@ -74,7 +104,31 @@ pub fn compress(path: &str, output: &str) -> CliResult<Verification> {
 /// Compress `path` and return both the measured report and verification.
 ///
 /// This is the shared entry point for batch mode and the browser protocol.
+/// It runs the lossless tier only; [`compress_file_with_options`] adds the
+/// lossy level/target search.
 pub fn compress_file(path: &str, output: &str) -> CliResult<(CompressionReport, Verification)> {
+    compress_file_with_options(path, output, &CompressOptions::default())
+}
+
+/// Compress `path` with an explicit tier and return the report and
+/// verification.
+///
+/// The lossless rewrite is always computed first and is the floor every
+/// lossy candidate must beat. With a level set, up to
+/// [`selis_pdf_optimize::MAX_PASSES`] passes re-encode images at progressively
+/// lower quality, each cloned from the lossless baseline so quality never
+/// compounds. The smallest candidate wins; when none beats the input bytes
+/// the input is returned verbatim, so the output is never larger than the
+/// input. Verification ([`PRESERVE_ALL`]) runs once on the chosen bytes.
+///
+/// # Errors
+///
+/// As [`compress_file`].
+pub fn compress_file_with_options(
+    path: &str,
+    output: &str,
+    options: &CompressOptions,
+) -> CliResult<(CompressionReport, Verification)> {
     let src = read_file(path)?;
     let in_bytes = src.len();
     let budget = Budget::unlimited();
@@ -116,8 +170,12 @@ pub fn compress_file(path: &str, output: &str) -> CliResult<(CompressionReport, 
         .map_err(|e| CliError(format!("{path}: {e}")))?;
     let object_count = objects.len();
     let new_root = remap.get(&root.num).copied().unwrap_or(root.num);
+    // The trailer is outside the object graph, so its `/Info` reference is
+    // folded through the collect remap here and the dedup remap per candidate.
+    let info_num = info.and_then(|reference| remap.get(&reference.num).copied());
 
-    // Re-encode streams losslessly.
+    // Re-encode streams losslessly. This baseline is the floor every lossy
+    // candidate must beat, and the output when no level is requested.
     let mut streams_recoded = 0usize;
     for (_num, obj) in objects.iter_mut() {
         if recode_stream(obj, &budget, &mut g) {
@@ -125,43 +183,70 @@ pub fn compress_file(path: &str, output: &str) -> CliResult<(CompressionReport, 
         }
     }
 
-    // Deduplicate byte-identical objects, redirecting refs at the survivor.
-    // The trailer is outside the object graph, so its `/Root` and `/Info`
-    // references have to be folded through the same remap explicitly.
-    let (objects, dedup_remap, deduplicated) = dedup_objects(objects, &budget, &mut g);
-    let root_num = dedup_remap.get(&new_root).copied().unwrap_or(new_root);
-    let root_ref = Ref::new(root_num, 0);
+    let (mut best, mut best_dedup) =
+        render_candidate(objects.clone(), new_root, info_num, path, &budget, &mut g)?;
+    let mut images_reencoded = 0usize;
+    let mut lossy_passes = 0usize;
 
-    // Carry the remapped /Info reference into the new trailer. Without this
-    // the object survives GC but is unreachable, so metadata silently
-    // disappears even though the compressed file verifies structurally.
-    let mut trailer = Vec::new();
-    if let Some(info) = info {
-        if let Some(&new_num) = remap.get(&info.num) {
-            let new_num = dedup_remap.get(&new_num).copied().unwrap_or(new_num);
-            trailer.push((b"Info".to_vec(), Obj::Ref(Ref::new(new_num, 0))));
+    if let Some(level) = options.level {
+        let target_bytes = options.target_kib.map(|kib| kib.saturating_mul(1024));
+        let mut prev_len: Option<usize> = None;
+        for index in 0..MAX_PASSES {
+            // Each pass starts from the lossless baseline, not the previous
+            // pass's output, so re-encoding never compounds quality loss.
+            let mut candidate = objects.clone();
+            let image_report =
+                selis_pdf_optimize::recompress_images(&mut candidate, level.pass(index), &mut g);
+            lossy_passes = lossy_passes.saturating_add(1);
+            if image_report.eligible == 0 {
+                // Nothing this tier can touch; harder passes cannot help.
+                break;
+            }
+            let (bytes, dedup) =
+                render_candidate(candidate, new_root, info_num, path, &budget, &mut g)?;
+            let len = bytes.len();
+            if len < best.len() {
+                best = bytes;
+                best_dedup = dedup;
+                images_reencoded = image_report.reencoded;
+            }
+            if target_bytes
+                .is_some_and(|target| u64::try_from(best.len()).unwrap_or(u64::MAX) <= target)
+            {
+                break;
+            }
+            // No further shrinkage: a harder pass that does not beat the
+            // previous one ends the bounded search.
+            if prev_len.is_some_and(|previous| len >= previous) {
+                break;
+            }
+            prev_len = Some(len);
+        }
+        // Never larger than the input: when no candidate beats the original
+        // bytes, return the original verbatim.
+        if best.len() >= in_bytes {
+            best = src.clone();
+            best_dedup = 0;
+            images_reencoded = 0;
         }
     }
 
-    let bytes =
-        write_objects_as_document_with_trailer(&objects, root_ref, &trailer, &budget, &mut g)
-            .map_err(|e| CliError(format!("{path}: write: {e}")))?;
-    let out_bytes = bytes.len();
+    let out_bytes = best.len();
 
     // Structural verification: the output must reparse, every reference must
     // resolve, and the input's surveyed counts must hold. Commit is atomic.
     let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
     let expected = write_gate::expectations_from(&observed, &PRESERVE_ALL);
-    let verdict = write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+    let verdict = write_gate::write_verified(&best, output, &expected, &budget, &mut g)?;
 
     // The output must also expose a usable page tree. A root graph that parses
     // but has no /Pages is not a compressible document; refuse rather than
     // ship a broken file.
-    let out_startxref = selis_pdf_cos::xref::find_startxref(&bytes, 4096).unwrap_or(0);
-    let out_doc = selis_pdf_cos::parse_revisions(&bytes, out_startxref, &budget, &mut g)
+    let out_startxref = selis_pdf_cos::xref::find_startxref(&best, 4096).unwrap_or(0);
+    let out_doc = selis_pdf_cos::parse_revisions(&best, out_startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output does not reparse: {e}")))?;
-    crate::tools::page_refs_of(&bytes, &out_doc, &budget, &mut g)
+    crate::tools::page_refs_of(&best, &out_doc, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output has no usable page tree: {e}")))?;
 
     let verification = Verification::from_gate(
@@ -174,13 +259,39 @@ pub fn compress_file(path: &str, output: &str) -> CliResult<(CompressionReport, 
     Ok((
         CompressionReport {
             objects: object_count,
-            deduplicated,
+            deduplicated: best_dedup,
             streams_recoded,
+            images_reencoded,
+            lossy_passes,
             in_bytes,
             out_bytes,
         },
         verification,
     ))
+}
+
+/// Deduplicate a candidate object graph, fold the root and `/Info` references
+/// through the dedup remap, and render it to bytes. Returns the bytes and the
+/// number of duplicates removed.
+fn render_candidate(
+    objects: Vec<(u32, Obj)>,
+    new_root: u32,
+    info_num: Option<u32>,
+    path: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> CliResult<(Vec<u8>, usize)> {
+    let (objects, dedup_remap, deduplicated) = dedup_objects(objects, budget, g);
+    let root_num = dedup_remap.get(&new_root).copied().unwrap_or(new_root);
+    let root_ref = Ref::new(root_num, 0);
+    let mut trailer = Vec::new();
+    if let Some(num) = info_num {
+        let num = dedup_remap.get(&num).copied().unwrap_or(num);
+        trailer.push((b"Info".to_vec(), Obj::Ref(Ref::new(num, 0))));
+    }
+    let bytes = write_objects_as_document_with_trailer(&objects, root_ref, &trailer, budget, g)
+        .map_err(|e| CliError(format!("{path}: write: {e}")))?;
+    Ok((bytes, deduplicated))
 }
 
 /// Re-encode one stream in place when it loses weight. Returns whether the
@@ -254,6 +365,8 @@ mod tests {
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
         clippy::panic
     )]
 
@@ -439,5 +552,229 @@ mod tests {
         let result = compress_file(input.to_str().unwrap(), output.to_str().unwrap());
         assert!(result.is_err());
         assert!(!output.exists());
+    }
+
+    /// Deterministic photographic-style noise (an LCG over the sample index)
+    /// that Flate cannot shrink but a low-quality JPEG can — the scanned-page
+    /// case the lossy tier exists for.
+    fn noise_rgb(width: usize, height: usize) -> Vec<u8> {
+        let count = width * height * 3;
+        let mut out = Vec::with_capacity(count);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..count {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            out.push((state >> 24) as u8);
+        }
+        out
+    }
+
+    /// A single-page scanned-style PDF: a raw RGB noise image XObject, a
+    /// content stream that paints it, and one text annotation so the
+    /// preservation set is exercised on a non-zero count.
+    fn scanned_pdf() -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let name = |v: &[u8]| Obj::Name(selis_bytes::Bytes::copy_from_slice(v));
+        let key = |v: &[u8]| selis_bytes::Bytes::copy_from_slice(v);
+        let samples = noise_rgb(200, 150);
+        let content = b"q 200 0 0 150 0 0 cm /Im0 Do Q\n";
+        let objects = vec![
+            (
+                1u32,
+                Obj::Dict(vec![
+                    (key(b"Type"), name(b"Catalog")),
+                    (key(b"Pages"), Obj::Ref(Ref::new(2, 0))),
+                ]),
+            ),
+            (
+                2u32,
+                Obj::Dict(vec![
+                    (key(b"Type"), name(b"Pages")),
+                    (key(b"Kids"), Obj::Array(vec![Obj::Ref(Ref::new(3, 0))])),
+                    (key(b"Count"), Obj::Int(1)),
+                ]),
+            ),
+            (
+                3u32,
+                Obj::Dict(vec![
+                    (key(b"Type"), name(b"Page")),
+                    (key(b"Parent"), Obj::Ref(Ref::new(2, 0))),
+                    (
+                        key(b"MediaBox"),
+                        Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(200), Obj::Int(150)]),
+                    ),
+                    (
+                        key(b"Resources"),
+                        Obj::Dict(vec![(
+                            key(b"XObject"),
+                            Obj::Dict(vec![(key(b"Im0"), Obj::Ref(Ref::new(5, 0)))]),
+                        )]),
+                    ),
+                    (key(b"Contents"), Obj::Ref(Ref::new(4, 0))),
+                    (key(b"Annots"), Obj::Array(vec![Obj::Ref(Ref::new(6, 0))])),
+                ]),
+            ),
+            (
+                4u32,
+                Obj::Stream {
+                    dict: vec![(
+                        key(b"Length"),
+                        Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                    )],
+                    data: selis_bytes::Bytes::copy_from_slice(content),
+                },
+            ),
+            (
+                5u32,
+                Obj::Stream {
+                    dict: vec![
+                        (key(b"Type"), name(b"XObject")),
+                        (key(b"Subtype"), name(b"Image")),
+                        (key(b"Width"), Obj::Int(200)),
+                        (key(b"Height"), Obj::Int(150)),
+                        (key(b"ColorSpace"), name(b"DeviceRGB")),
+                        (key(b"BitsPerComponent"), Obj::Int(8)),
+                        (
+                            key(b"Length"),
+                            Obj::Int(i64::try_from(samples.len()).unwrap_or(i64::MAX)),
+                        ),
+                    ],
+                    data: selis_bytes::Bytes::from(samples),
+                },
+            ),
+            (
+                6u32,
+                Obj::Dict(vec![
+                    (key(b"Type"), name(b"Annot")),
+                    (key(b"Subtype"), name(b"Text")),
+                    (
+                        key(b"Rect"),
+                        Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(10), Obj::Int(10)]),
+                    ),
+                    (
+                        key(b"Contents"),
+                        Obj::String(selis_bytes::Bytes::copy_from_slice(b"note")),
+                    ),
+                ]),
+            ),
+        ];
+        selis_pdf_cos::doc_writer::write_objects_as_document_with_trailer(
+            &objects,
+            Ref::new(1, 0),
+            &[],
+            &budget,
+            &mut g,
+        )
+        .expect("write scanned fixture")
+    }
+
+    /// The lossy tier re-encodes the scanned image as JPEG, shrinks the file,
+    /// and preserves the page and its annotation.
+    #[test]
+    fn lossy_tier_shrinks_a_scanned_style_fixture() {
+        let dir = temp_dir("lossy-scan");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, scanned_pdf()).expect("write input");
+        let options = CompressOptions {
+            level: Some(CompressionLevel::Recommended),
+            target_kib: None,
+        };
+        let (report, verification) =
+            compress_file_with_options(input.to_str().unwrap(), output.to_str().unwrap(), &options)
+                .expect("compress");
+        assert!(report.images_reencoded >= 1, "the image was re-encoded");
+        assert!(report.lossy_passes >= 1);
+        assert!(
+            report.out_bytes < report.in_bytes,
+            "lossy output is smaller"
+        );
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(verification.pages_out, 1);
+        assert_eq!(verification.annotations_out, 1, "annotation preserved");
+        let bytes = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("DCTDecode"), "image became a JPEG stream");
+        assert!(text.contains("(note)"), "annotation content survived");
+    }
+
+    /// A reachable target is met within the bounded pass count.
+    #[test]
+    fn lossy_target_is_met_when_reachable() {
+        let dir = temp_dir("lossy-target");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, scanned_pdf()).expect("write input");
+        let options = CompressOptions {
+            level: Some(CompressionLevel::Recommended),
+            target_kib: Some(50),
+        };
+        let (report, _) =
+            compress_file_with_options(input.to_str().unwrap(), output.to_str().unwrap(), &options)
+                .expect("compress");
+        assert!(
+            report.out_bytes <= 50 * 1024,
+            "output {} fits the 50 KiB target",
+            report.out_bytes
+        );
+        assert!(report.lossy_passes <= MAX_PASSES, "search stayed bounded");
+    }
+
+    /// An unreachable target still returns a smaller file (never larger than
+    /// the input) and runs the full bounded search rather than looping.
+    #[test]
+    fn unreachable_target_stays_bounded_and_never_grows() {
+        let dir = temp_dir("lossy-unreachable");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, scanned_pdf()).expect("write input");
+        let options = CompressOptions {
+            level: Some(CompressionLevel::Extreme),
+            target_kib: Some(1),
+        };
+        let (report, verification) =
+            compress_file_with_options(input.to_str().unwrap(), output.to_str().unwrap(), &options)
+                .expect("compress");
+        assert_eq!(report.lossy_passes, MAX_PASSES, "ran the bounded search");
+        assert!(report.out_bytes > 1024, "the 1 KiB target was not met");
+        assert!(
+            report.out_bytes < report.in_bytes,
+            "still smaller than input"
+        );
+        assert_eq!(verification.verdict, "ok");
+    }
+
+    /// The never-larger guarantee holds for a text-only document too: with no
+    /// eligible image the lossy tier falls back to the lossless floor, and an
+    /// already-optimised input is never grown by a second rewrite.
+    #[test]
+    fn lossy_never_returns_a_larger_file() {
+        let dir = temp_dir("lossy-never-larger");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, plain_pdf()).expect("write input");
+        let options = CompressOptions {
+            level: Some(CompressionLevel::Extreme),
+            target_kib: None,
+        };
+        let (report, verification) =
+            compress_file_with_options(input.to_str().unwrap(), output.to_str().unwrap(), &options)
+                .expect("compress");
+        assert_eq!(report.images_reencoded, 0, "no image to re-encode");
+        assert!(
+            report.out_bytes <= report.in_bytes,
+            "never larger than input"
+        );
+        assert_eq!(verification.verdict, "ok");
+
+        // Re-compressing the already-optimised output must not grow it.
+        let again = dir.join("again.pdf");
+        let (report2, _) =
+            compress_file_with_options(output.to_str().unwrap(), again.to_str().unwrap(), &options)
+                .expect("compress again");
+        assert!(
+            report2.out_bytes <= report2.in_bytes,
+            "a second rewrite never grows the file"
+        );
     }
 }
