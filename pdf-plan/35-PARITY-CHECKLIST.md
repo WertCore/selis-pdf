@@ -520,6 +520,22 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       asserting the JPEG filter in the downloaded bytes (31532 B meeting a 50 KiB target) and the
       over-target flag (7685 B missing a 1 KiB target).
 - [ ] **Invert colours** — render-based; verify pixel inversion on a known fixture.
+      *Implemented:* `selis-pdf-engine::invert_colors` renders every page to RGBA, complements each
+      colour channel (alpha kept; `!x == 255 - x`, no arithmetic), and embeds the result full-bleed
+      as a lossless Flate `DeviceRGB` image on a new page of the original size — so text, vectors,
+      shadings and images invert together, which a content-stream rewrite could not promise. The
+      core lives in the engine because it needs both the renderer and the `doc_writer`; the CLI, the
+      browser raster chunk and a later desktop shell call it unchanged. DPI is bounded 1–600
+      (default 150). CLI twin `selis invert <in> <out> [--dpi N]`; the browser path is raster-chunk
+      format code 4 (the chunk returns one PDF, never a ZIP, with the page count in the out-files
+      slot); the 46th web card ("Invert colours", slug `invert-pdf-colours`, group Convert) reports
+      `kind: "pdf"`. Pixel inversion is proven directly: an engine test renders a blank page to white
+      and asserts the output's centre renders back black, and the raster-chunk test inverts the
+      fixture's known black centre and reads it back white. Evidence: 4 engine tests (pure invert
+      math, white→black round-trip, page-count preserved, bad-dpi refused), 1 CLI test (valid
+      image-PDF, input untouched), 1 raster-chunk test (colours flipped) plus the ABI format-code
+      test, registry/typecheck clean, `cargo fmt` clean. **Open gate:** the real-Edge
+      `browser-check` leg and `size-check` need the Edge/WASM-build harness, absent here.
 - [ ] **Flatten annotations** — render appearance streams; never claim flatten without a
       render check.
 - [ ] **Flatten forms** — form appearance generation is its own correctness surface.

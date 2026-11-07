@@ -52,6 +52,7 @@ export type ToolId =
 	| "jpg"
 	| "tiff"
 	| "webp"
+	| "invert"
 	| "html"
 	| "text"
 	| "zip"
@@ -535,6 +536,18 @@ export const TOOLS: readonly ToolDef[] = [
 		blurb: "Render every page, or a selection, to lossless WebP images.",
 		note: "Lossless WebP page renders; several pages arrive as one ZIP.",
 		verb: "Render WebPs",
+		multiple: false,
+		accepts: "pdf",
+	},
+	{
+		id: "invert",
+		slug: "invert-pdf-colours",
+		group: "convert",
+		mark: "◐",
+		title: "Invert colours",
+		blurb: "Flip every colour for dark-mode reading; text, vectors and images alike.",
+		note: "Each page is rendered on this device, inverted, and embedded in a new PDF the same size.",
+		verb: "Invert colours",
 		multiple: false,
 		accepts: "pdf",
 	},

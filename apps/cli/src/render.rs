@@ -133,6 +133,25 @@ pub(crate) fn run(
     Ok(())
 }
 
+/// Invert a PDF's colours: render each page, complement every colour, and write
+/// a new PDF whose pages are the inverted raster. The core lives in the engine
+/// (`selis_pdf_engine::invert_colors`), shared with the browser raster chunk.
+///
+/// # Errors
+///
+/// A typed engine error when the document cannot be opened or rendered, or
+/// `IO_WRITE_FAILED` when the output cannot be written.
+pub(crate) fn invert(path: &str, output: &str, dpi: u32) -> CliResult<()> {
+    let src = read_file(path)?;
+    let budget = Budget::profile(Surface::Viewer);
+    let clock = crate::shell_clock();
+    let bytes = selis_pdf_engine::invert_colors(src, dpi, &budget, &clock)
+        .map_err(|e| CliError(format!("invert failed: {e}")))?;
+    std::fs::write(output, &bytes).map_err(|e| CliError(format!("cannot write {output}: {e}")))?;
+    eprintln!("wrote inverted PDF to {output} at {dpi} DPI");
+    Ok(())
+}
+
 pub(crate) fn write_ppm(path: &str, rgba: &[u8], w: u32, h: u32) -> CliResult<()> {
     let header = format!("P6\n{w} {h}\n255\n");
     let pixel_count = (w as usize).saturating_mul(h as usize);

@@ -167,7 +167,7 @@ interface FormFieldsJson {
 type SecurityToolId = "unlock" | "protect" | "clear_permissions" | "permissions";
 
 /** The cards that hand their pages to the lazy raster chunk. */
-type RasterToolId = "png" | "jpg" | "tiff" | "webp";
+type RasterToolId = "png" | "jpg" | "tiff" | "webp" | "invert";
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -199,6 +199,7 @@ const RASTERS: ReadonlyMap<string, RasterInfo> = new Map([
 	["jpg", { mime: "image/jpeg", label: "JPEG image", preview: true }],
 	["tif", { mime: "image/tiff", label: "TIFF image", preview: false }],
 	["webp", { mime: "image/webp", label: "WebP image", preview: true }],
+	["pdf", { mime: "application/pdf", label: "inverted PDF", preview: false }],
 ]);
 
 /**
@@ -211,6 +212,7 @@ const RASTER_FORMATS: Record<RasterToolId, { code: number; extension: string }> 
 	jpg: { code: 1, extension: "jpg" },
 	tiff: { code: 2, extension: "tif" },
 	webp: { code: 3, extension: "webp" },
+	invert: { code: 4, extension: "pdf" },
 };
 
 const UNNAMED_RASTER: RasterInfo = {
@@ -2235,6 +2237,24 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "invert") {
+			const dpi = textInput("dpi", "number", "150");
+			dpi.min = "1";
+			dpi.max = "600";
+			dpi.step = "1";
+			dpi.value = "150";
+			addField(
+				"dpi",
+				"Resolution (DPI)",
+				dpi,
+				"1 to 600. Higher is sharper and larger; 150 is a good screen/print default.",
+			);
+			const note = make("p", "option-note");
+			note.textContent =
+				"Every page is rendered on this device, its colours complemented, and embedded as a lossless image in a new PDF the same size — so text, vectors and images all invert together, for dark-mode reading. The whole document is processed; there is no page selection.";
+			options.append(note);
+			return;
+		}
 		if (tool.id === "html") {
 			addField(
 				"pages",
@@ -3491,11 +3511,14 @@ function init(): void {
 			const dpi = numberInRange("dpi", "Resolution", 1, 600, 150, true);
 			const format = RASTER_FORMATS[toolId].code;
 			const extension = RASTER_FORMATS[toolId].extension;
-			// A TIFF is a container: several pages live in one file, so unlike the
-			// per-page formats its page count never turns the result into a ZIP.
+			const isInvert = toolId === "invert";
+			// A TIFF is a container, and invert returns one PDF: neither per-page
+			// format turns the result into a ZIP.
 			const container = toolId === "tiff";
-			const quality = numberInRange("quality", "Quality", 1, 100, 90, true);
-			const selection = optionValue("pages").trim();
+			// Invert renders the whole document and has no quality knob, so it reads
+			// neither the quality nor the page-selection field (its card has neither).
+			const quality = isInvert ? 90 : numberInRange("quality", "Quality", 1, 100, 90, true);
+			const selection = isInvert ? "" : optionValue("pages").trim();
 			const selectionBytes = new TextEncoder().encode(selection);
 			const wasm = await getRasterWasm();
 			setStatus("Rendering locally…", "info");
@@ -3563,11 +3586,16 @@ function init(): void {
 				throw new ToolProtocolError("the renderer returned no pages.");
 			}
 			const stem = file.name.replace(/\.[^.]+$/, "");
-			const bundle = outFiles > 1 && !container;
-			const name = bundle ? `${stem}-pages.zip` : `${stem}.${extension}`;
+			const bundle = outFiles > 1 && !container && !isInvert;
+			const name = isInvert
+				? `${stem}-inverted.pdf`
+				: bundle
+					? `${stem}-pages.zip`
+					: `${stem}.${extension}`;
+			const kind: ToolOutputReport["kind"] = isInvert ? "pdf" : bundle ? "zip" : "image";
 			const report: ToolOutputReport = {
 				name,
-				kind: bundle ? "zip" : "image",
+				kind,
 				pages: bundle ? 0 : outFiles,
 				bytes: outBytes.length,
 				verdict: "ok",
@@ -4750,7 +4778,13 @@ function init(): void {
 				await runConvert();
 				return;
 			}
-			if (tool.id === "png" || tool.id === "jpg" || tool.id === "tiff" || tool.id === "webp") {
+			if (
+				tool.id === "png" ||
+				tool.id === "jpg" ||
+				tool.id === "tiff" ||
+				tool.id === "webp" ||
+				tool.id === "invert"
+			) {
 				await runRaster(tool.id);
 				return;
 			}

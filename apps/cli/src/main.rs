@@ -269,6 +269,18 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         quality: u32,
     },
+    /// Invert a PDF's colours for dark-mode reading: render every page,
+    /// complement each colour channel, and write a new PDF of the inverted
+    /// raster. Render-based, so it inverts text, vectors and images alike.
+    Invert {
+        /// The PDF file to invert.
+        path: String,
+        /// The output PDF file.
+        output: String,
+        /// The render resolution in DPI (default 150; 1-600).
+        #[arg(long, default_value_t = selis_pdf_engine::DEFAULT_INVERT_DPI)]
+        dpi: u32,
+    },
     /// Extract a page's content (text|json|md|html|image|embedded|tables|reflow|epub|docx|pptx|xlsx).
     Extract {
         /// The PDF file to extract from.
@@ -987,6 +999,7 @@ fn run() {
             format,
             quality,
         } => render::run(&path, page, &output, dpi, &format, quality),
+        Command::Invert { path, output, dpi } => render::invert(&path, &output, dpi),
         Command::Extract {
             path,
             page,

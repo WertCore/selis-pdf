@@ -256,7 +256,8 @@ pub extern "C" fn selis_raster_available() -> u32 {
 /// `pages_ptr`/`pages_len` is a UTF-8 selection in the same 1-based syntax the
 /// page's other tools use (`""` = every page, `"1-3,5"` = those four).
 /// `format` selects the writer — `0` is PNG, `1` is JPEG, `2` is TIFF, `3` is
-/// WebP — and `quality` is the JPEG knob (1..=100). PNG ignores it and keeps its
+/// WebP, `4` is invert (a colour-inverted PDF of every page, not an image) —
+/// and `quality` is the JPEG knob (1..=100). PNG ignores it and keeps its
 /// own fixed compression level; TIFF and WebP are lossless, so they have no
 /// quality to be given. PNG, JPEG and WebP return one file per page, bundled
 /// into a deterministic ZIP when the selection has more than one page. TIFF
@@ -347,6 +348,10 @@ enum Format {
     Tiff,
     /// Lossless WebP, verified sample for sample, alpha and all.
     WebP,
+    /// Not an image: a colour-inverted copy of the whole document, written as a
+    /// PDF whose pages are the inverted raster. It shares this ABI because it is
+    /// render-based like the others, but it returns one `.pdf`, never a ZIP.
+    Invert,
 }
 
 impl Format {
@@ -359,6 +364,7 @@ impl Format {
             1 => Ok(Self::Jpg),
             2 => Ok(Self::Tiff),
             3 => Ok(Self::WebP),
+            4 => Ok(Self::Invert),
             other => Err(format!("unknown image format code {other}")),
         }
     }
@@ -370,6 +376,7 @@ impl Format {
             Self::Jpg => "jpg",
             Self::Tiff => "tif",
             Self::WebP => "webp",
+            Self::Invert => "pdf",
         }
     }
 }
@@ -387,6 +394,19 @@ fn run_impl(
     }
     let budget = Budget::profile(Surface::Batch);
     let clock = FixedClock(0);
+    // Invert is not an image op: it renders every page, complements the colours,
+    // and returns one PDF. The engine owns the whole thing, so there is no
+    // selection, no per-page file and no ZIP here. The out-files slot carries the
+    // page count (as the TIFF container does), so the page can say how many pages
+    // the inverted document holds — a quick re-parse, cheap next to rendering.
+    if format == Format::Invert {
+        let page_count = Session::open(input.to_vec(), &budget, &clock)
+            .map(|session| u32::try_from(session.len()).unwrap_or(u32::MAX))
+            .map_err(|e| format!("cannot open PDF: {e}"))?;
+        let bytes = selis_pdf_engine::invert_colors(input.to_vec(), dpi, &budget, &clock)
+            .map_err(|e| format!("invert failed: {e}"))?;
+        return Ok((bytes, page_count));
+    }
     let session = Session::open(input.to_vec(), &budget, &clock)
         .map_err(|e| format!("cannot open PDF: {e}"))?;
     let pages = parse_pages(selection, session.len())?;
@@ -399,7 +419,8 @@ fn run_impl(
     // module's own choice and WebP's coder has none to be given. JPEG's is the
     // user's, and 1..=100 is what the writer accepts.
     let level = match format {
-        Format::Png | Format::WebP => 0,
+        // Invert returned above; it is listed only to keep the match exhaustive.
+        Format::Png | Format::WebP | Format::Invert => 0,
         Format::Jpg => {
             if quality == 0 || quality > 100 {
                 return Err("JPEG quality must be between 1 and 100".to_string());
@@ -451,6 +472,10 @@ fn run_impl(
             // there is no per-page file to make here.
             Format::Tiff => {
                 return Err("a TIFF is built from every selected page at once".to_string());
+            }
+            // Invert returned above as one PDF; it never reaches the page loop.
+            Format::Invert => {
+                return Err("invert is written as one PDF, not per page".to_string());
             }
         };
         rendered.push((
@@ -942,6 +967,25 @@ mod tests {
     }
 
     #[test]
+    fn invert_returns_a_pdf_whose_colours_are_flipped() {
+        let (bytes, files) = run_impl(MINIMAL, "", 72, Format::Invert, 0).expect("invert");
+        assert_eq!(
+            files, 1,
+            "the out-files slot carries the page count (1 here)"
+        );
+        assert!(bytes.starts_with(b"%PDF-"), "the output is a PDF");
+        // The MINIMAL page has a black centre (see the PNG test); after inverting
+        // and re-rendering the output PDF, that same centre is white.
+        let (image, _g) = page_image(&bytes, 0, 72);
+        let centre = ((image.height / 2) * image.width + image.width / 2) as usize * 4;
+        let px = image.rgba.get(centre..centre + 3).expect("centre pixel");
+        assert!(
+            px.iter().all(|&c| c >= 250),
+            "a black centre inverts to white, got {px:?}"
+        );
+    }
+
+    #[test]
     fn rendering_the_same_page_twice_is_byte_identical() {
         let (a, _) = run_impl(MINIMAL, "1", 96, Format::Png, 0).expect("first");
         let (b, _) = run_impl(MINIMAL, " 1 ", 96, Format::Png, 0).expect("second");
@@ -1016,12 +1060,14 @@ mod tests {
         assert_eq!(Format::from_code(1).unwrap(), Format::Jpg);
         assert_eq!(Format::from_code(2).unwrap(), Format::Tiff);
         assert_eq!(Format::from_code(3).unwrap(), Format::WebP);
-        let err = Format::from_code(4).expect_err("unknown code");
-        assert!(err.contains("unknown image format code 4"), "{err}");
+        assert_eq!(Format::from_code(4).unwrap(), Format::Invert);
+        let err = Format::from_code(5).expect_err("unknown code");
+        assert!(err.contains("unknown image format code 5"), "{err}");
         assert_eq!(Format::Png.extension(), "png");
         assert_eq!(Format::Jpg.extension(), "jpg");
         assert_eq!(Format::Tiff.extension(), "tif");
         assert_eq!(Format::WebP.extension(), "webp");
+        assert_eq!(Format::Invert.extension(), "pdf");
     }
 
     #[test]
