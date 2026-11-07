@@ -30,6 +30,8 @@
 
 pub mod attachments;
 pub mod batch;
+#[cfg(feature = "text")]
+pub mod compare;
 pub mod compress;
 pub mod fingerprint;
 pub mod forms;
@@ -58,6 +60,8 @@ mod zip;
 use selis_sandbox::Clock;
 
 pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
+#[cfg(feature = "text")]
+pub use compare::{compare_pdfs, ComparisonReport, PageComparison};
 pub use compress::{
     compress, compress_file, compress_file_with_options, CompressOptions, CompressionReport,
 };

@@ -540,6 +540,23 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       render check.
 - [ ] **Flatten forms** — form appearance generation is its own correctness surface.
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
+      *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
+      `text` feature, which links both the renderer and the text ladder) renders each page of both
+      documents through the same engine at the same DPI and compares them sample for sample — so the
+      verdict is deterministic — and compares the whole-document extracted text alongside. The report
+      (`ComparisonReport::to_json`, schema `selis-compare/1`) carries each document's page count, an
+      overall `identical`, a `text_identical`, and one row per page position: `present_in`
+      (both/a_only/b_only), `pixels_identical`, and a `diff_fraction` (0.0–1.0; a page of different
+      dimensions is fully different). DPI is bounded 1–600. The core is reusable by the CLI and a
+      later desktop shell. CLI twin `selis compare <a> <b> [--dpi N] [-o report.json]`.
+      Evidence: 5 engine/core tests (identical blanks equal, white-vs-black pixel difference with the
+      text halves still equal, a differing page count detected, serialization, bad-dpi refused),
+      2 CLI tests (a file vs itself is identical; a file vs its inverted copy is not), `cargo fmt`
+      clean. **Deferred — browser card:** compare needs *two* inputs plus both the rasteriser and the
+      text ladder in one chunk; the single-input raster chunk and the no-rasteriser text chunk fit
+      neither, so the web card needs a dedicated two-input render+text chunk (new ABI). That is real
+      work and is not browser-verifiable in this environment, so it is left as a named deferral rather
+      than half-wired. The CLI delivers the feature today.
 - [ ] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
       incremental revisions; structural part may ship before the raster part.
       *Implemented (structural part):* `selis-pdf-tools::fingerprint_report` owns the export shape

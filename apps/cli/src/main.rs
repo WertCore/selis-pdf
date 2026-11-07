@@ -122,6 +122,23 @@ mod tools {
         Ok(())
     }
 
+    /// Compare two documents, page by page (pixels) and whole-document (text).
+    /// The report is the output; neither file is modified.
+    pub(crate) fn compare(
+        path_a: &str,
+        path_b: &str,
+        output: Option<&str>,
+        dpi: u32,
+    ) -> CliResult<()> {
+        let report = selis_pdf_tools::compare_pdfs(path_a, path_b, dpi).map_err(CliError::from)?;
+        let json = report.to_json().map_err(CliError::from)?;
+        if let Some(file) = output {
+            return super::write_file(file, &json);
+        }
+        println!("{}", String::from_utf8_lossy(&json));
+        Ok(())
+    }
+
     pub(crate) fn redact(
         path: &str,
         rects: &[(f64, f64, f64, f64)],
@@ -279,6 +296,20 @@ enum Command {
         output: String,
         /// The render resolution in DPI (default 150; 1-600).
         #[arg(long, default_value_t = selis_pdf_engine::DEFAULT_INVERT_DPI)]
+        dpi: u32,
+    },
+    /// Compare two PDFs: render both page by page and diff the pixels, and
+    /// compare their extracted text. A read-only JSON report; nothing is changed.
+    Compare {
+        /// The first PDF.
+        path_a: String,
+        /// The second PDF.
+        path_b: String,
+        /// Where to write the JSON report. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+        /// The render resolution in DPI (default 150; 1-600).
+        #[arg(long, default_value_t = 150)]
         dpi: u32,
     },
     /// Extract a page's content (text|json|md|html|image|embedded|tables|reflow|epub|docx|pptx|xlsx).
@@ -1000,6 +1031,12 @@ fn run() {
             quality,
         } => render::run(&path, page, &output, dpi, &format, quality),
         Command::Invert { path, output, dpi } => render::invert(&path, &output, dpi),
+        Command::Compare {
+            path_a,
+            path_b,
+            output,
+            dpi,
+        } => tools::compare(&path_a, &path_b, output.as_deref(), dpi),
         Command::Extract {
             path,
             page,
