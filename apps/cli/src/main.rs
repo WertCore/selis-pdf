@@ -110,6 +110,18 @@ mod tools {
         Ok(())
     }
 
+    /// Scan a document for privacy risks. The report is the output, so nothing
+    /// is rewritten and an encrypted PDF reports only that it cannot be scanned.
+    pub(crate) fn privacy(path: &str, output: Option<&str>) -> CliResult<()> {
+        let report = selis_pdf_tools::privacy_report(path).map_err(CliError::from)?;
+        let json = report.to_json().map_err(CliError::from)?;
+        if let Some(file) = output {
+            return super::write_file(file, &json);
+        }
+        println!("{}", String::from_utf8_lossy(&json));
+        Ok(())
+    }
+
     pub(crate) fn redact(
         path: &str,
         rects: &[(f64, f64, f64, f64)],
@@ -439,6 +451,18 @@ enum Command {
     /// a fingerprint; a re-save moves the trailer's changing `/ID`. An encrypted
     /// PDF reports only the envelope and the `/ID`, which is never encrypted.
     Fingerprint {
+        /// The input PDF.
+        path: String,
+        /// Where to write the JSON report. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Scan a PDF for privacy risks — revisions, metadata trails, hidden layers,
+    /// embedded files, JavaScript and external references — as JSON.
+    ///
+    /// The document is not modified and nothing is auto-fixed: the report names
+    /// each risk so a reader can decide. An encrypted PDF cannot be scanned.
+    Privacy {
         /// The input PDF.
         path: String,
         /// Where to write the JSON report. Prints it on stdout when omitted.
@@ -1083,6 +1107,7 @@ fn run() {
             tools::metadata_report(&path, output.as_deref())
         }
         Command::Fingerprint { path, output } => tools::fingerprint(&path, output.as_deref()),
+        Command::Privacy { path, output } => tools::privacy(&path, output.as_deref()),
         Command::Redact {
             path,
             rects,

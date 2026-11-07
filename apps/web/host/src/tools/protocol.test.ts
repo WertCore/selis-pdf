@@ -123,6 +123,11 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "fingerprint", files }), 8)).toBe(31);
 	});
 
+	it("encodes the privacy scan at 32", () => {
+		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
+		expect(readU32(encodeToolRequest({ op: "privacy", files }), 8)).toBe(32);
+	});
+
 	it("encodes the batch queue at 28", () => {
 		const files = [
 			{ name: "a.pdf", bytes: new Uint8Array([0x25]) },

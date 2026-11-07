@@ -39,6 +39,7 @@ mod memory;
 pub mod metadata;
 pub mod outline;
 pub mod overlay;
+pub mod privacy;
 #[cfg(feature = "native-fs")]
 mod progress;
 pub mod repair;
@@ -69,6 +70,7 @@ pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
+pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
 pub use selis_pdf_optimize::CompressionLevel;
 #[cfg(feature = "sign")]
 pub use sign::{

@@ -62,7 +62,8 @@ export type ToolOp =
 	| "batch"
 	| "form_fields"
 	| "fill_forms"
-	| "fingerprint";
+	| "fingerprint"
+	| "privacy";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -97,6 +98,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	form_fields: 29,
 	fill_forms: 30,
 	fingerprint: 31,
+	privacy: 32,
 };
 
 /** One input file on the wire. */

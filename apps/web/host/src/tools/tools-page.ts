@@ -468,6 +468,50 @@ function fingerprintRows(report: FingerprintReportJson): VerificationRow[] {
 	return rows;
 }
 
+/** The privacy report the engine exports. */
+interface PrivacyReportJson {
+	readonly status?: string;
+	readonly risk?: string;
+	readonly findings?: readonly {
+		readonly category?: string;
+		readonly severity?: string;
+		readonly count?: number;
+		readonly detail?: string;
+	}[];
+}
+
+/** Friendly labels for each privacy finding category. */
+const PRIVACY_LABELS: Record<string, string> = {
+	incremental_revisions: "Earlier revisions",
+	metadata_trails: "Metadata trails",
+	optional_content: "Hidden layers",
+	embedded_files: "Embedded files",
+	javascript: "JavaScript",
+	external_references: "External links",
+	possible_hidden_text: "Possible hidden text",
+	encrypted: "Encrypted",
+};
+
+/**
+ * The rows a privacy scan adds to the result card: the overall risk, then one
+ * row per finding with the engine's own sentence. A clean document says so.
+ */
+function privacyRows(report: PrivacyReportJson): VerificationRow[] {
+	const rows: VerificationRow[] = [{ label: "Overall risk", value: report.risk ?? "unknown" }];
+	const findings = report.findings ?? [];
+	if (findings.length === 0) {
+		rows.push({ label: "Result", value: "no privacy risks found" });
+		return rows;
+	}
+	for (const finding of findings) {
+		const label = PRIVACY_LABELS[finding.category ?? ""] ?? finding.category ?? "Risk";
+		if (finding.detail !== undefined) {
+			rows.push({ label, value: clipReportValue(finding.detail) });
+		}
+	}
+	return rows;
+}
+
 /** The report rows of one run, when the run produced a report at all. */
 function reportRows(
 	reports: readonly ToolOutputReport[],
@@ -518,6 +562,9 @@ function reportRows(
 	}
 	if (schema === "selis-fingerprint/1") {
 		return fingerprintRows(parsed as FingerprintReportJson);
+	}
+	if (schema === "selis-privacy/1") {
+		return privacyRows(parsed as PrivacyReportJson);
 	}
 	return metadataRows(parsed as MetadataReportJson);
 }

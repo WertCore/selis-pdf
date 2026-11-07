@@ -278,7 +278,7 @@ fn resources_fingerprint(
 
 /// Resolve an indirect reference, returning [`Obj::Null`] on a dangling one so
 /// a damaged resource entry is skipped rather than failing the whole report.
-fn resolve_inline(
+pub(crate) fn resolve_inline(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     obj: Obj,
@@ -400,7 +400,7 @@ fn is_image(dict: &[(Bytes, Obj)]) -> bool {
 }
 
 /// A `/Name` value by key, as text.
-fn find_name(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<String> {
+pub(crate) fn find_name(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<String> {
     dict.iter()
         .find(|(k, _)| k.as_slice() == key)
         .and_then(|(_, v)| match v {
@@ -410,7 +410,7 @@ fn find_name(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<String> {
 }
 
 /// A direct integer value by key.
-fn find_int(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<u64> {
+pub(crate) fn find_int(dict: &[(Bytes, Obj)], key: &[u8]) -> Option<u64> {
     dict.iter()
         .find(|(k, _)| k.as_slice() == key)
         .and_then(|(_, v)| match v {

@@ -547,6 +547,27 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       build is absent), which is why the box is not yet ticked — run them to close it.
 - [ ] **Privacy risk scanner** — revisions, metadata/author trails, hidden OC layers, embedded
       files, JavaScript, external references, text under images; report only, no auto-fix.
+      *Implemented:* `selis-pdf-tools::privacy_report` owns the export shape
+      (`PrivacyReport::to_json`, schema `selis-privacy/1`) and a severity-ranked finding list with
+      an overall `risk`. It scans, structurally, for: saved revisions (earlier content may be
+      recoverable — medium), authoring metadata and the XMP trail (low), optional-content layers
+      with the count hidden by the default config (medium when any are hidden, else low), embedded
+      files (medium), JavaScript via the open action / name-tree scripts / catalog additional
+      actions / an XFA form (high), and actions that reach outside the document — `URI`, `Launch`,
+      `GoToR`, `SubmitForm`, `ImportData` — in the open action and every page annotation (medium).
+      One finding is a labelled heuristic: a page carrying both a text layer and a large image may
+      be a scan whose OCR text sits under the picture (info). Report only — nothing is removed or
+      auto-fixed, per the row. An encrypted document reports that it cannot be scanned rather than
+      guessing over ciphertext. The core walk is pure COS over the session backend (reusing the
+      fingerprint helpers), so the CLI, the browser chunk and a later desktop shell share it.
+      CLI twin `selis privacy [-o report.json]`; WASM op 32 `Privacy` (the mask now fills the
+      `u32`), one `report`-kind output; the 45th web card ("Privacy scan", slug
+      `pdf-privacy-scan`) renders the overall risk and one row per finding from the guest's JSON.
+      Evidence: 8 engine tests (javascript, external refs, hidden layers, metadata trails, embedded
+      files, the heuristic, a clean document, encrypted), 2 CLI tests (byte-identical read; `-o`
+      writes the report), 1 wasm dispatch test, 1 protocol test (op 32), the registry/rendering
+      vitest, `cargo fmt` and `tsc` clean. **Open gate:** same as the fingerprint row — the
+      real-Edge `browser-check` leg and `size-check` need the Edge/WASM-build harness, absent here.
 
 ### OCR and scanning
 

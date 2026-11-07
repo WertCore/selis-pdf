@@ -31,6 +31,7 @@ export type ToolId =
 	| "reorder"
 	| "metadata_report"
 	| "fingerprint"
+	| "privacy"
 	| "metadata"
 	| "strip_metadata"
 	| "page_numbers"
@@ -290,6 +291,17 @@ export const TOOLS: readonly ToolDef[] = [
 		blurb: "Report identifiers, authoring trails, fonts, and image hashes as JSON.",
 		note: "A read-only report; the document itself is not modified. Two files from the same source share a fingerprint.",
 		verb: "Fingerprint",
+		multiple: false,
+	},
+	{
+		id: "privacy",
+		slug: "pdf-privacy-scan",
+		group: "metadata",
+		mark: "⚠",
+		title: "Privacy scan",
+		blurb: "Find revisions, metadata trails, hidden layers, embedded files, JavaScript, and external links.",
+		note: "A read-only report; nothing is changed or removed. Review each risk yourself before sharing the file.",
+		verb: "Scan for risks",
 		multiple: false,
 	},
 	{
