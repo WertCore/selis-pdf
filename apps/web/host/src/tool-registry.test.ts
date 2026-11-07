@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(43);
+		expect(TOOLS.length).toBe(44);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 

@@ -30,6 +30,7 @@ export type ToolId =
 	| "delete"
 	| "reorder"
 	| "metadata_report"
+	| "fingerprint"
 	| "metadata"
 	| "strip_metadata"
 	| "page_numbers"
@@ -278,6 +279,17 @@ export const TOOLS: readonly ToolDef[] = [
 		blurb: "Export the Info dictionary, XMP packet, and structure as JSON.",
 		note: "A read-only report; the document itself is not modified.",
 		verb: "Read metadata",
+		multiple: false,
+	},
+	{
+		id: "fingerprint",
+		slug: "pdf-fingerprint",
+		group: "metadata",
+		mark: "❖",
+		title: "Fingerprint",
+		blurb: "Report identifiers, authoring trails, fonts, and image hashes as JSON.",
+		note: "A read-only report; the document itself is not modified. Two files from the same source share a fingerprint.",
+		verb: "Fingerprint",
 		multiple: false,
 	},
 	{

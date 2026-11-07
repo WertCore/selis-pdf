@@ -97,6 +97,7 @@ enum Op {
     Batch,
     FormFields,
     FillForms,
+    Fingerprint,
 }
 
 impl Op {
@@ -132,6 +133,7 @@ impl Op {
             28 => Some(Self::Batch),
             29 => Some(Self::FormFields),
             30 => Some(Self::FillForms),
+            31 => Some(Self::Fingerprint),
             _ => None,
         }
     }
@@ -168,10 +170,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
 /// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
 /// 25 outline editing, 26 metadata report, 27 batch queue, 28 form fields,
-/// 29 fill forms.
+/// 29 fill forms, 30 fingerprint.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
-    (1u32 << 30) - 1
+    (1u32 << 31) - 1
 }
 
 /// Allocate `len` bytes of guest memory. The host writes a request into it.
@@ -752,6 +754,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             }]
         }
         Op::MetadataReport => return run_metadata_report(&stem, first_input_len),
+        Op::Fingerprint => return run_fingerprint(&stem, first_input_len),
         Op::Batch => return run_batch_op(&input_files, &options),
         Op::FormFields => return run_form_fields(&stem, first_input_len),
         Op::FillForms => {
@@ -963,6 +966,50 @@ fn run_metadata_report(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolErr
         repair_mode: None,
     };
     let name = format!("{stem}-metadata.json");
+    let reports = vec![serde_json::json!({
+        "name": name,
+        "kind": "report",
+        "pages": 0,
+        "bytes": json.len(),
+        "verdict": verification.verdict,
+    })];
+    Ok((verification, reports, vec![(name, json)], None))
+}
+
+/// Report the document's structural fingerprint as JSON.
+///
+/// Nothing is rewritten: like the metadata report the output is the report
+/// itself, never a PDF, so no preview is offered. An encrypted document reports
+/// only the envelope and the trailer `/ID`.
+fn run_fingerprint(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
+    let report = selis_pdf_tools::fingerprint_report("in/0")?;
+    let json = report.to_json()?;
+    let readable = report.status == "ok";
+    let held = u64::try_from(bytes_in).unwrap_or(u64::MAX);
+    let verification = Verification {
+        pages_in: report.pages,
+        pages_out: report.pages.unwrap_or(0),
+        annotations_in: None,
+        annotations_out: 0,
+        fields_in: None,
+        fields_out: 0,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: None,
+        embedded_files_out: 0,
+        bytes_in: held,
+        bytes_out: held,
+        verdict: if readable { "read" } else { "encrypted" }.to_string(),
+        checked: if readable {
+            vec!["identifiers", "fonts", "images"]
+        } else {
+            vec!["identifiers"]
+        },
+        repair_mode: None,
+    };
+    let name = format!("{stem}-fingerprint.json");
     let reports = vec![serde_json::json!({
         "name": name,
         "kind": "report",
@@ -1536,11 +1583,11 @@ mod tests {
 
     #[test]
     fn capabilities_cover_every_operation() {
-        // Ops 1-30: the twenty-three object-graph tools, Zip, the image
+        // Ops 1-31: the twenty-three object-graph tools, Zip, the image
         // watermark, outline editing, the read-only metadata report, the
-        // batch queue, and the AcroForm read/fill pair. Op N sets bit N-1,
-        // so the mask is 30 ones.
-        assert_eq!(selis_tools_capabilities(), (1u32 << 30) - 1);
+        // batch queue, the AcroForm read/fill pair, and the structural
+        // fingerprint report. Op N sets bit N-1, so the mask is 31 ones.
+        assert_eq!(selis_tools_capabilities(), (1u32 << 31) - 1);
     }
 
     #[test]
@@ -1677,8 +1724,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 30 is the fill-forms op now, so the probe moves past it.
-        let response = run_request(&request(31, b"", &[("doc.pdf", &pdf)]));
+        // Op 31 is the fingerprint op now, so the probe moves past it.
+        let response = run_request(&request(32, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -1711,6 +1758,27 @@ mod tests {
             .contains("xmpmeta"));
         assert_eq!(report["counts"]["annotations"], 0);
         assert_eq!(report["counts"]["embedded_files"], 0);
+    }
+
+    #[test]
+    fn fingerprint_operation_is_dispatched() {
+        let pdf = metadata_pdf();
+        let response = run_request(&request(31, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "fingerprint failed: {message}");
+        assert_eq!(message["verdict"], "read");
+        assert_eq!(message["outputs"][0]["kind"], "report");
+        assert_eq!(outputs[0].0, "doc-fingerprint.json");
+        let report: serde_json::Value =
+            serde_json::from_slice(&outputs[0].1).expect("the report is JSON");
+        assert_eq!(report["status"], "ok");
+        assert_eq!(report["pdf_version"], "1.4");
+        assert!(
+            report["ids"].is_object(),
+            "the trailer /ID pair is reported"
+        );
+        assert!(report["fonts"].is_array(), "fonts are an array");
+        assert!(report["images"].is_array(), "images are an array");
     }
 
     /// The queue is the one operation whose answer is not a single document, so

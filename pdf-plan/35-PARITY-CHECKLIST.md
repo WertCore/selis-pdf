@@ -526,6 +526,25 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
 - [ ] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
       incremental revisions; structural part may ship before the raster part.
+      *Implemented (structural part):* `selis-pdf-tools::fingerprint_report` owns the export shape
+      (`FingerprintReport::to_json`, schema `selis-fingerprint/1`) — it reads the trailer `/ID`
+      pair and reports whether the changing half moved, the revision count, `/Info`
+      producer/creator/CreationDate/ModDate, the leaf page count, every distinct font
+      (base font, subtype, embedded — following a `Type0` to its descendant CIDFont) and every
+      distinct image stream (a 64-bit FNV-1a hash of the stored bytes, width/height/filter),
+      deduplicated with a per-identity reference count and capped so a hostile resource tree
+      cannot grow the report. An encrypted document reports only the envelope and the `/ID`,
+      which is never encrypted — nothing else is invented. The core walk is pure COS over the
+      session backend, so the CLI, the browser chunk and a later desktop shell share it unchanged.
+      CLI twin `selis fingerprint [-o report.json]`; WASM op 31 `Fingerprint` (capability mask
+      now 31 ones), returning one `report`-kind output, never a PDF; the 44th web card
+      ("Fingerprint", slug `pdf-fingerprint`) renders the identity rows from the guest's own JSON.
+      Evidence: 5 engine tests (ids/info/fonts/images, embedded-via-descendant, shared-resource
+      dedup+count, determinism+schema+serialize, encrypted-envelope-only), 2 CLI tests (the read
+      is byte-identical; `-o` writes the report), 1 wasm dispatch test, 1 protocol test (op 31),
+      the registry/rendering vitest, `cargo fmt` and `tsc` clean. **Open gate:** the real-Edge
+      `browser-check` leg and `size-check` were not run in this environment (no Edge; the WASM/UI
+      build is absent), which is why the box is not yet ticked — run them to close it.
 - [ ] **Privacy risk scanner** — revisions, metadata/author trails, hidden OC layers, embedded
       files, JavaScript, external references, text under images; report only, no auto-fix.
 

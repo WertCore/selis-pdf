@@ -5337,7 +5337,7 @@ const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 43] = [
+const TOOLS_PAGE_CARDS: [&str; 44] = [
     "attach",
     "attachments",
     "batch",
@@ -5350,6 +5350,7 @@ const TOOLS_PAGE_CARDS: [&str; 43] = [
     "delete",
     "detach",
     "fill_forms",
+    "fingerprint",
     "flip",
     "header_footer",
     "html",
@@ -6175,20 +6176,14 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         3,
         &[],
     )?;
-    let compress_lossy = report
-        .get("compressLossy")
-        .ok_or_else(|| "the page reported no compressLossy leg (compressLossy = None)".to_string())?;
+    let compress_lossy = report.get("compressLossy").ok_or_else(|| {
+        "the page reported no compressLossy leg (compressLossy = None)".to_string()
+    })?;
     check_lossy_compress_leg(compress_lossy, "online compress lossy", false)?;
-    let compress_over_target = report
-        .get("compressOverTarget")
-        .ok_or_else(|| {
-            "the page reported no compressOverTarget leg (compressOverTarget = None)".to_string()
-        })?;
-    check_lossy_compress_leg(
-        compress_over_target,
-        "online compress over target",
-        true,
-    )?;
+    let compress_over_target = report.get("compressOverTarget").ok_or_else(|| {
+        "the page reported no compressOverTarget leg (compressOverTarget = None)".to_string()
+    })?;
+    check_lossy_compress_leg(compress_over_target, "online compress over target", true)?;
     let crop = report
         .get("crop")
         .ok_or_else(|| "the page reported no crop leg (crop = None)".to_string())?;
@@ -12786,21 +12781,13 @@ mod tests {
         // The lossy tier re-encodes the scanned image, so its output carries a
         // JPEG stream (/DCTDecode). The target search reports `overTarget` on the
         // output row; the reachable 50 KiB target is false, the 1 KiB one true.
-        report["compressLossy"] = real_tools_stamp_leg(
-            "scan-compressed.pdf",
-            "Compress PDF",
-            1,
-            &["/DCTDecode"],
-        );
+        report["compressLossy"] =
+            real_tools_stamp_leg("scan-compressed.pdf", "Compress PDF", 1, &["/DCTDecode"]);
         for pointer in ["/outputs/0/bytes", "/outputs/0/declaredBytes"] {
             (*report["compressLossy"].pointer_mut(pointer).unwrap()) = json!(31532);
         }
-        report["compressOverTarget"] = real_tools_stamp_leg(
-            "scan-compressed.pdf",
-            "Compress PDF",
-            1,
-            &["/DCTDecode"],
-        );
+        report["compressOverTarget"] =
+            real_tools_stamp_leg("scan-compressed.pdf", "Compress PDF", 1, &["/DCTDecode"]);
         for pointer in ["/outputs/0/bytes", "/outputs/0/declaredBytes"] {
             (*report["compressOverTarget"].pointer_mut(pointer).unwrap()) = json!(7685);
         }

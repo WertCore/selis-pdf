@@ -179,7 +179,7 @@ impl MetadataReport {
 }
 
 /// The header version from the `%PDF-x.y` marker, empty when the file has none.
-fn header_version(src: &[u8]) -> String {
+pub(crate) fn header_version(src: &[u8]) -> String {
     let Some(rest) = src.strip_prefix(b"%PDF-".as_slice()) else {
         return String::new();
     };
@@ -193,7 +193,7 @@ fn header_version(src: &[u8]) -> String {
 
 /// The `/Info` dictionary: the newest revision's trailer entry, falling back
 /// to a catalog `/Info` the way the writer's carry check does.
-fn info_fields(
+pub(crate) fn info_fields(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     budget: &Budget,

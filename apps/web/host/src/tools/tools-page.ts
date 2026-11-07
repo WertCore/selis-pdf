@@ -392,6 +392,82 @@ function metadataRows(report: MetadataReportJson): VerificationRow[] {
 	return rows;
 }
 
+/** Shorten a reported value so a hostile field cannot grow the card. */
+function clipReportValue(value: string): string {
+	return value.length > MAX_REPORT_VALUE ? `${value.slice(0, MAX_REPORT_VALUE)}…` : value;
+}
+
+/**
+ * The structural fingerprint the engine exports. Only what the card shows is
+ * typed; the downloaded JSON carries the full font and image lists with hashes.
+ */
+interface FingerprintReportJson {
+	readonly status?: string;
+	readonly pdf_version?: string;
+	readonly revisions?: number;
+	readonly incrementally_updated?: boolean;
+	readonly ids?: {
+		readonly original?: string;
+		readonly current?: string;
+		readonly changed?: boolean;
+	};
+	readonly producer?: string;
+	readonly creator?: string;
+	readonly creation_date?: string;
+	readonly mod_date?: string;
+	readonly pages?: number;
+	readonly fonts?: readonly { readonly base_font?: string; readonly embedded?: boolean }[];
+	readonly images?: readonly { readonly hash?: string }[];
+}
+
+/**
+ * The rows a fingerprint adds to the result card. The downloadable JSON holds
+ * the full font and image lists with their hashes; these are the identity facts
+ * a reader acts on.
+ */
+function fingerprintRows(report: FingerprintReportJson): VerificationRow[] {
+	if (report.status === "encrypted") {
+		return [
+			{
+				label: "Fingerprint",
+				value: "encrypted — only the envelope and the /ID are readable without the password",
+			},
+			{ label: "Identifier", value: report.ids?.current ?? "none" },
+		];
+	}
+	const rows: VerificationRow[] = [];
+	if (report.pdf_version !== undefined && report.pdf_version !== "") {
+		rows.push({ label: "PDF version", value: report.pdf_version });
+	}
+	if (report.revisions !== undefined) {
+		const updated = report.incrementally_updated === true ? " (updated since creation)" : "";
+		rows.push({ label: "Revisions", value: `${report.revisions}${updated}` });
+	}
+	if (report.producer !== undefined) {
+		rows.push({ label: "Producer", value: clipReportValue(report.producer) });
+	}
+	if (report.creator !== undefined) {
+		rows.push({ label: "Creator", value: clipReportValue(report.creator) });
+	}
+	if (report.creation_date !== undefined) {
+		rows.push({ label: "Created", value: clipReportValue(report.creation_date) });
+	}
+	if (report.mod_date !== undefined) {
+		rows.push({ label: "Modified", value: clipReportValue(report.mod_date) });
+	}
+	if (report.ids !== undefined) {
+		rows.push({
+			label: "Identifier",
+			value: report.ids.changed === true ? "changed since creation" : "unchanged since creation",
+		});
+	}
+	const fonts = report.fonts ?? [];
+	const embedded = fonts.filter((font) => font.embedded === true).length;
+	rows.push({ label: "Fonts", value: `${fonts.length} (${embedded} embedded)` });
+	rows.push({ label: "Images", value: String((report.images ?? []).length) });
+	return rows;
+}
+
 /** The report rows of one run, when the run produced a report at all. */
 function reportRows(
 	reports: readonly ToolOutputReport[],
@@ -439,6 +515,9 @@ function reportRows(
 			{ label: "Matched pages", value: pages === "" ? "none" : pages },
 			{ label: "Parts", value: String((report.parts ?? []).length) },
 		];
+	}
+	if (schema === "selis-fingerprint/1") {
+		return fingerprintRows(parsed as FingerprintReportJson);
 	}
 	return metadataRows(parsed as MetadataReportJson);
 }
