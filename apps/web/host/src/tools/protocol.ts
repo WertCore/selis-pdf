@@ -608,6 +608,65 @@ export function formatBytes(bytes: number): string {
 	return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit] ?? "KiB"}`;
 }
 
+/**
+ * Count a PDF's leaf pages by scanning its bytes for `/Type /Page` marks.
+ *
+ * Each leaf page in a page tree carries `/Type /Page`; the page-tree nodes
+ * carry `/Type /Pages`, so only an exact `/Page` (never `/Pages`, never a
+ * longer name) counts. This is a display aid for the file list — "3 pages"
+ * before the run — not a structural claim: object-stream-compressed files
+ * (where the marks are not in the clear) yield 0 and the page shows size
+ * only, and every operation still re-reads the real structure before it
+ * promises anything.
+ */
+export function countPdfPages(bytes: Uint8Array): number {
+	let count = 0;
+	const n = bytes.length;
+	for (let i = 0; i + 7 < n; i += 1) {
+		if (bytes[i] !== 0x2f) continue; // '/'
+		if (
+			bytes[i + 1] !== 0x54 ||
+			bytes[i + 2] !== 0x79 ||
+			bytes[i + 3] !== 0x70 ||
+			bytes[i + 4] !== 0x65
+		) {
+			continue; // '/Type'
+		}
+		let j = i + 5;
+		while (
+			j < n &&
+			(bytes[j] === 0x20 ||
+				bytes[j] === 0x09 ||
+				bytes[j] === 0x0a ||
+				bytes[j] === 0x0d ||
+				bytes[j] === 0x00)
+		) {
+			j += 1;
+		}
+		if (
+			bytes[j] !== 0x2f ||
+			bytes[j + 1] !== 0x50 ||
+			bytes[j + 2] !== 0x61 ||
+			bytes[j + 3] !== 0x67 ||
+			bytes[j + 4] !== 0x65
+		) {
+			continue; // '/Page'
+		}
+		const next = bytes[j + 5];
+		if (
+			next !== undefined &&
+			((next >= 0x41 && next <= 0x5a) ||
+				(next >= 0x61 && next <= 0x7a) ||
+				(next >= 0x30 && next <= 0x39))
+		) {
+			continue; // '/Pages' or a longer name
+		}
+		count += 1;
+		i = j + 4;
+	}
+	return count;
+}
+
 /** The rows the result card displays. */
 export interface VerificationRow {
 	readonly label: string;

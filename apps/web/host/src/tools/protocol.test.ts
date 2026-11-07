@@ -4,6 +4,7 @@ import {
 	RESPONSE_MAGIC,
 	ToolProtocolError,
 	type Verification,
+	countPdfPages,
 	decodeToolResponse,
 	encodeToolRequest,
 	formatBytes,
@@ -477,5 +478,35 @@ describe("formatBytes", () => {
 		expect(formatBytes(1024 * 1024)).toBe("1.0 MiB");
 		expect(formatBytes(-1)).toBe("—");
 		expect(formatBytes(Number.NaN)).toBe("—");
+	});
+});
+
+describe("countPdfPages", () => {
+	function pdf(lines: string[]): Uint8Array {
+		return new Uint8Array(new TextEncoder().encode(lines.join("\n")));
+	}
+
+	it("counts leaf /Page marks and ignores /Pages", () => {
+		const bytes = pdf([
+			"1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj",
+			"2 0 obj <</Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R]>> endobj",
+			"3 0 obj <</Type /Page /Parent 2 0 R>> endobj",
+			"4 0 obj <</Type/Page/Parent 2 0 R>> endobj",
+			"5 0 obj <</Type	/Page /Parent 2 0 R>> endobj",
+		]);
+		expect(countPdfPages(bytes)).toBe(3);
+	});
+
+	it("yields 0 for non-PDF bytes and compressed documents", () => {
+		expect(countPdfPages(new Uint8Array([0xff, 0xd8, 0xff, 0x00]))).toBe(0);
+		expect(countPdfPages(new Uint8Array(0))).toBe(0);
+		// An object stream hides the leaves; the count function must say
+		// "unknown" (0) rather than guess.
+		expect(countPdfPages(pdf(["<</Type /ObjStm>>"]))).toBe(0);
+	});
+
+	it("does not count longer name keys that merely start with Page", () => {
+		const bytes = pdf(["<</PageMode /UseOutlines /PageOrigin [0 0]>>", "<</Type /PageObject>>"]);
+		expect(countPdfPages(bytes)).toBe(0);
 	});
 });

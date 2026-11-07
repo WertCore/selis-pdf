@@ -223,6 +223,11 @@ function workspace(tool) {
 							/>
 						</div>
 
+						<div id="file-toolbar" class="file-toolbar" hidden>
+							<button id="sort-files" class="text-button" type="button">
+								Sort by name
+							</button>
+						</div>
 						<ul id="file-list" class="file-list" aria-label="${escapeHtml(drop.list)}"></ul>
 						<div id="options" class="options"></div>
 
@@ -248,6 +253,15 @@ function workspace(tool) {
 									Verified against the input structure after the write. The
 									result is a Blob in this tab.
 								</p>
+								<div id="result-chain" class="result-chain" hidden>
+									<label for="result-chain-file">Continue with</label>
+									<select id="result-chain-file" class="control"></select>
+									<label for="result-chain-tool">in</label>
+									<select id="result-chain-tool" class="control"></select>
+									<button id="result-chain-go" class="text-button" type="button">
+										Continue
+									</button>
+								</div>
 								<button id="result-again" class="text-button" type="button">
 									Start another
 								</button>
@@ -261,6 +275,7 @@ function workspace(tool) {
 							<li>Your PDFs are read in this tab and copied into WebAssembly memory.</li>
 							<li>No request carries a document body, filename, or page text.</li>
 							<li>The result is downloaded with a Blob URL created here.</li>
+							<li>No watermark, no daily limit, no account.</li>
 						</ul>
 						<p class="aside-note">
 							The first run fetches a small WebAssembly chunk from this same

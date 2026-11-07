@@ -768,6 +768,33 @@ main {
 	list-style: none;
 }
 
+.file-toolbar {
+	display: flex;
+	justify-content: flex-end;
+	margin: 0.5rem 0 0;
+}
+
+.file-toolbar[hidden] {
+	display: none;
+}
+
+.result-chain {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	margin-top: 0.75rem;
+}
+
+.result-chain[hidden] {
+	display: none;
+}
+
+.result-chain label {
+	color: var(--muted);
+	font-size: 0.9rem;
+}
+
 .file-list:empty {
 	display: none;
 }

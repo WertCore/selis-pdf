@@ -43,6 +43,7 @@ import {
 	type Verification,
 	type VerificationRow,
 	type WireFile,
+	countPdfPages,
 	formatBytes,
 	loadTools,
 	runTool,
@@ -542,6 +543,8 @@ function init(): void {
 	const dropTitle = byId<HTMLSpanElement>("drop-title");
 	const dropLink = byId<HTMLSpanElement>("drop-link");
 	const fileInput = byId<HTMLInputElement>("file-input");
+	const fileToolbar = byId<HTMLDivElement>("file-toolbar");
+	const sortFiles = byId<HTMLButtonElement>("sort-files");
 	const fileList = byId<HTMLUListElement>("file-list");
 	const options = byId<HTMLDivElement>("options");
 	const runButton = byId<HTMLButtonElement>("run-tool");
@@ -550,6 +553,10 @@ function init(): void {
 	const resultTitle = byId<HTMLHeadingElement>("result-title");
 	const resultMeta = byId<HTMLParagraphElement>("result-meta");
 	const resultOutputs = byId<HTMLUListElement>("result-outputs");
+	const resultChain = byId<HTMLDivElement>("result-chain");
+	const resultChainFile = byId<HTMLSelectElement>("result-chain-file");
+	const resultChainTool = byId<HTMLSelectElement>("result-chain-tool");
+	const resultChainGo = byId<HTMLButtonElement>("result-chain-go");
 	const resultRows = byId<HTMLDListElement>("result-rows");
 	const againButton = byId<HTMLButtonElement>("result-again");
 	// The page is local-only by construction (CSP connect-src 'self', no form
@@ -562,10 +569,23 @@ function init(): void {
 
 	let selectedTool: ToolId | null = null;
 	let files: File[] = [];
+	/**
+	 * Leaf-page counts read from the file bytes, keyed by File identity.
+	 * Filled when files are added so the list can say "3 pages" before the
+	 * run (0/absent means "unknown", e.g. compressed object streams).
+	 */
+	const pageCounts = new Map<File, number>();
 	let draggedFileIndex: number | null = null;
 	let busy = false;
 	let wasmPromise: Promise<ToolsWasm> | null = null;
 	let resultUrls: string[] = [];
+	/**
+	 * PDF outputs of the last shown result, kept byte-for-byte so "Continue
+	 * in" can hand one to the next tool as a File without re-reading or any
+	 * server round-trip. Only PDF-kind outputs are chainable: a JSON report
+	 * or an image is not a document a PDF tool can take.
+	 */
+	let resultFiles: Array<{ readonly name: string; readonly bytes: Uint8Array }> = [];
 	const optionControls = new Map<string, Control>();
 	const optionFields = new Map<string, HTMLElement>();
 	/**
@@ -599,6 +619,10 @@ function init(): void {
 			URL.revokeObjectURL(url);
 		}
 		resultUrls = [];
+		resultFiles = [];
+		resultChain.hidden = true;
+		resultChainFile.replaceChildren();
+		resultChainTool.replaceChildren();
 		resultCard.hidden = true;
 		resultOutputs.replaceChildren();
 		resultRows.replaceChildren();
@@ -1225,7 +1249,7 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent =
 				tool.id === "merge"
-					? "Files are merged top to bottom. Use ↑ and ↓ to change the order."
+					? "Files are merged top to bottom. Use ↑ and ↓, drag rows, or Sort by name."
 					: "Pages alternate round-robin: page 1 of each file, then page 2, and so on. Use ↑ and ↓ to change the rotation order.";
 			options.append(note);
 			return;
@@ -2303,6 +2327,7 @@ function init(): void {
 		}
 		selectedTool = id;
 		files = [];
+		pageCounts.clear();
 		clearResult();
 		renderOptions(tool);
 		renderFiles();
@@ -2381,6 +2406,7 @@ function init(): void {
 		}
 		selectedTool = null;
 		files = [];
+		pageCounts.clear();
 		clearResult();
 		optionControls.clear();
 		optionFields.clear();
@@ -2401,7 +2427,10 @@ function init(): void {
 	}
 
 	function fileMeta(file: File, index: number): string {
-		return `${index + 1}. ${formatBytes(file.size)}`;
+		const pages = pageCounts.get(file);
+		return pages === undefined
+			? `${index + 1}. ${formatBytes(file.size)}`
+			: `${index + 1}. ${formatBytes(file.size)} · ${pages} page${pages === 1 ? "" : "s"}`;
 	}
 
 	function renderFiles(): void {
@@ -2491,6 +2520,7 @@ function init(): void {
 			rows.push(row);
 		});
 		fileList.replaceChildren(...rows);
+		fileToolbar.hidden = !(tool?.multiple === true && files.length > 1);
 	}
 
 	function moveFile(index: number, delta: number): void {
@@ -2510,8 +2540,21 @@ function init(): void {
 		updateRunState();
 	}
 
+	/** Sort the pick by name (what the merge note promises). Stable and case-folded. */
+	function sortFilesByName(): void {
+		files = [...files].sort((a, b) =>
+			a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+		);
+		clearResult();
+		renderFiles();
+		updateRunState();
+	}
+
 	function removeFile(index: number): void {
-		files = files.filter((_, current) => current !== index);
+		const [removed] = files.splice(index, 1);
+		if (removed !== undefined) {
+			pageCounts.delete(removed);
+		}
 		clearResult();
 		renderFiles();
 		updateRunState();
@@ -2557,6 +2600,24 @@ function init(): void {
 		clearResult();
 		renderFiles();
 		updateRunState();
+		// Read the page count off the bytes so the list can say "3 pages"
+		// before the run — the same fact the result rows prove afterwards.
+		// Display-only: operations re-read the real structure themselves.
+		void Promise.all(
+			incoming.map(async (file) => {
+				if (file.type === "image/png" || file.type === "image/jpeg") return;
+				try {
+					const count = countPdfPages(new Uint8Array(await file.arrayBuffer()));
+					if (count > 0 && files.includes(file)) {
+						pageCounts.set(file, count);
+						renderFiles();
+					}
+				} catch {
+					// Unreadable here; the run will read the file properly
+					// and say so. The list just shows the size.
+				}
+			}),
+		);
 		setStatus("Ready. Files stay on this device.", "info");
 		if (tool.id === "fill_forms") {
 			// The fields list drives the inputs, so read it as soon as a PDF
@@ -4408,6 +4469,39 @@ function init(): void {
 		});
 		resultOutputs.replaceChildren(...outputRows);
 
+		// "Continue in" chaining (what ihatepdf sells as workflow): hand a
+		// PDF output straight to the next tool as a File, no re-upload step
+		// (there is no upload step here at all). Only tools that take PDFs
+		// are offered, and never the tool that just ran.
+		const pdfOutputs = result.outputs.filter(
+			(_output, index) => result.reports[index]?.kind === "pdf",
+		);
+		if (pdfOutputs.length > 0) {
+			resultFiles = pdfOutputs.map((output) => ({
+				name: output.name,
+				bytes: output.bytes,
+			}));
+			resultChainFile.replaceChildren();
+			for (const output of pdfOutputs) {
+				const choice = document.createElement("option");
+				choice.value = output.name;
+				choice.textContent = output.name;
+				resultChainFile.append(choice);
+			}
+			resultChainFile.hidden = pdfOutputs.length === 1;
+			resultChainTool.replaceChildren();
+			const current = currentTool();
+			for (const tool of TOOLS) {
+				if (tool.id === current?.id) continue;
+				if (tool.accepts === "image" || tool.accepts === "text") continue;
+				const choice = document.createElement("option");
+				choice.value = tool.id;
+				choice.textContent = tool.title;
+				resultChainTool.append(choice);
+			}
+			resultChain.hidden = resultChainTool.options.length === 0;
+		}
+
 		const rows: HTMLElement[] = [];
 		const shown = [
 			...batchRows(result.batch),
@@ -4524,6 +4618,7 @@ function init(): void {
 
 	function resetForAnother(): void {
 		files = [];
+		pageCounts.clear();
 		clearResult();
 		const tool = currentTool();
 		if (tool !== null) {
@@ -4563,6 +4658,19 @@ function init(): void {
 		void run();
 	});
 	againButton.addEventListener("click", resetForAnother);
+	resultChainGo.addEventListener("click", () => {
+		const target = resultChainTool.value;
+		const name = resultChainFile.value;
+		const output = resultFiles.find((file) => file.name === name);
+		if (target === "" || output === undefined) {
+			return;
+		}
+		selectTool(target as ToolId);
+		const file = new File([output.bytes.slice()], output.name, {
+			type: "application/pdf",
+		});
+		void addFiles([file]);
+	});
 
 	dropzone.addEventListener("click", () => {
 		if (!busy) {
@@ -4596,6 +4704,9 @@ function init(): void {
 		if (!busy) {
 			void addFiles(Array.from(event.dataTransfer?.files ?? []));
 		}
+	});
+	sortFiles.addEventListener("click", () => {
+		sortFilesByName();
 	});
 	window.addEventListener("beforeunload", () => {
 		for (const url of resultUrls) {
