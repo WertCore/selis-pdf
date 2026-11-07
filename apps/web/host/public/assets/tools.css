@@ -502,8 +502,10 @@ main {
 	border-radius: var(--radius);
 	background: linear-gradient(145deg, rgba(255, 253, 247, 0.96), rgba(248, 245, 235, 0.86));
 	box-shadow: 0 4px 0 rgba(23, 34, 31, 0.03);
+	color: inherit;
 	cursor: pointer;
 	text-align: left;
+	text-decoration: none;
 	transition:
 		transform 180ms ease,
 		border-color 180ms ease,
@@ -631,8 +633,17 @@ main {
 
 .workspace-blurb {
 	max-width: 620px;
-	margin: 0.8rem 0 1.5rem;
+	margin: 0.8rem 0 0.6rem;
 	color: var(--muted);
+}
+
+/* The honest one-line note a generated page carries below its lead. */
+.workspace-note {
+	max-width: 620px;
+	margin: 0 0 1.5rem;
+	color: var(--muted);
+	font-size: 0.88rem;
+	line-height: 1.5;
 }
 
 .workspace-aside {
@@ -643,6 +654,7 @@ main {
 	color: #e9eee9;
 }
 
+.workspace-aside h2,
 .workspace-aside h3 {
 	margin: 0 0 0.9rem;
 	font-family: var(--font);
@@ -695,6 +707,14 @@ main {
 .dropzone.is-dragging {
 	border-color: var(--accent);
 	background: var(--accent-soft);
+}
+
+/* The file input inside is clipped to 1px, so its own focus ring is
+   invisible; the ring belongs on the dropzone it sits in. */
+.dropzone:focus-within {
+	border-color: var(--accent-strong);
+	outline: 2px solid var(--accent-strong);
+	outline-offset: 2px;
 }
 
 .dropzone.is-dragging {
@@ -1147,6 +1167,42 @@ main {
 	border-radius: var(--radius-small);
 	background: var(--danger-soft);
 	color: var(--danger);
+}
+
+/*
+ * Related tools on a generated `/<slug>/` page. Real anchors, because the whole
+ * point of the page is that a crawler and a middle-click can follow them.
+ */
+.related {
+	margin: 0 0 clamp(4rem, 8vw, 7rem);
+	padding-top: 1.2rem;
+	border-top: 1px solid var(--line);
+}
+
+.related h2 {
+	margin: 0 0 0.7rem;
+	color: var(--accent-strong);
+	font-family: var(--font);
+	font-size: 1.12rem;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+.related-list {
+	display: grid;
+	gap: 0.5rem;
+	max-width: 720px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	color: var(--muted);
+	font-size: 0.88rem;
+	line-height: 1.5;
+}
+
+.related-list a {
+	color: var(--accent-strong);
+	font-weight: 600;
 }
 
 @media (max-width: 940px) {

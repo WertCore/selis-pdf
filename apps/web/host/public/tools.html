@@ -9,6 +9,7 @@
 			content="A private, browser-local PDF toolkit. Merge, split, rotate, delete, reorder, and set metadata without uploading a byte."
 		/>
 		<title>Selis Tools — PDFs, handled here</title>
+		<link rel="canonical" href="https://pdf.selis.com/tools.html" />
 		<link rel="stylesheet" href="/assets/tools.css" />
 	</head>
 	<body>
@@ -66,20 +67,19 @@
 			</section>
 
 			<section id="workspace" class="workspace" aria-labelledby="workspace-title" hidden>
-				<button id="back-to-tools" class="back" type="button">← All tools</button>
+				<a id="back-to-tools" class="back" href="/tools.html">← All tools</a>
 				<div class="workspace-grid">
 					<div class="workspace-main">
 						<p class="eyebrow">Local workspace</p>
 						<h2 id="workspace-title">Merge PDF</h2>
 						<p id="workspace-blurb" class="workspace-blurb"></p>
 
-						<div
-							id="dropzone"
-							class="dropzone"
-							role="button"
-							tabindex="0"
-							aria-label="Choose PDF files"
-						>
+						<!-- The dropzone is a mouse/drag target only. The labelled file
+							input inside it is the actual control (keyboard users tab to
+							it, screen readers announce "Choose PDF files"), so the
+							dropzone carries no role or tabindex: a focusable button
+							wrapped around an input is a nested-interactive violation. -->
+						<div id="dropzone" class="dropzone">
 							<span class="drop-icon" aria-hidden="true">↓</span>
 							<span class="drop-title">Drop PDFs here</span>
 							<span class="drop-hint"
@@ -92,7 +92,7 @@
 								type="file"
 								accept="application/pdf,.pdf"
 								multiple
-								tabindex="-1"
+								aria-label="Choose PDF files"
 							/>
 						</div>
 

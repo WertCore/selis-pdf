@@ -23,6 +23,7 @@ import {
 	SHELL_ALIASES,
 	SHELL_PRECACHE_PATHS,
 	TOOLS_PRECACHE_PATHS,
+	TOOL_PAGE_PATHS,
 	chooseEvictionKey,
 	classifyRequest,
 	isStaleCacheName,
@@ -30,6 +31,7 @@ import {
 	shellLookupPaths,
 } from "./sw-policy.js";
 import type { RequestFacts, ResponseFacts } from "./sw-policy.js";
+import { TOOLS, TOOL_PAGE_SLUGS } from "./tool-registry.js";
 
 const SCOPE = "https://viewer.selis.test/";
 
@@ -93,10 +95,12 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 		// lazy ones), so it belongs here beside `protocol.js`.
 		expect(TOOLS_PRECACHE_PATHS).toEqual([
 			"/tools.html",
+			...TOOL_PAGE_SLUGS.map((slug) => `/${slug}/`),
 			"/assets/tools.css",
 			"/assets/host/no-upload.js",
 			"/assets/host/sw-policy.js",
 			"/assets/host/sw-register.js",
+			"/assets/host/tool-registry.js",
 			"/assets/host/tools/inputs.js",
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/text-protocol.js",
@@ -110,6 +114,14 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 		]);
 	});
 
+	it("precaches one page per registry entry, and no page that is not in the registry", () => {
+		// The generator and the worker read the same `TOOL_PAGE_SLUGS`; this is
+		// the check that they cannot disagree about what a page is.
+		expect(TOOL_PAGE_PATHS).toEqual(TOOL_PAGE_SLUGS.map((slug) => `/${slug}/`));
+		expect(TOOL_PAGE_PATHS.length).toBe(TOOLS.length);
+		expect(new Set(TOOL_PAGE_PATHS).size).toBe(TOOL_PAGE_PATHS.length);
+	});
+
 	it("is exactly the two named groups, in one install list", () => {
 		expect(PRECACHE_PATHS).toEqual([...SHELL_PRECACHE_PATHS, ...TOOLS_PRECACHE_PATHS]);
 		expect(PRECACHE_PATHS).toEqual([
@@ -118,10 +130,12 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/style.css",
 			"/assets/boot.js",
 			"/tools.html",
+			...TOOL_PAGE_SLUGS.map((slug) => `/${slug}/`),
 			"/assets/tools.css",
 			"/assets/host/no-upload.js",
 			"/assets/host/sw-policy.js",
 			"/assets/host/sw-register.js",
+			"/assets/host/tool-registry.js",
 			"/assets/host/tools/inputs.js",
 			"/assets/host/tools/protocol.js",
 			"/assets/host/tools/text-protocol.js",
@@ -381,7 +395,20 @@ describe("shell cache housekeeping", () => {
 		expect(shellLookupPaths("/")).toEqual(["/", "/index.html"]);
 		expect(shellLookupPaths("/index.html")).toEqual(["/index.html", "/"]);
 		expect(shellLookupPaths("/assets/style.css")).toEqual(["/assets/style.css"]);
-		expect(Object.keys(SHELL_ALIASES).sort()).toEqual(["/", "/index.html"]);
+	});
+
+	it("treats /<slug>/ and /<slug>/index.html as the same cached document", () => {
+		for (const slug of TOOL_PAGE_SLUGS) {
+			expect(shellLookupPaths(`/${slug}/`)).toEqual([`/${slug}/`, `/${slug}/index.html`]);
+			expect(shellLookupPaths(`/${slug}/index.html`)).toEqual([`/${slug}/index.html`, `/${slug}/`]);
+		}
+		expect(Object.keys(SHELL_ALIASES).sort()).toEqual(
+			[
+				"/",
+				"/index.html",
+				...TOOL_PAGE_SLUGS.flatMap((slug) => [`/${slug}/`, `/${slug}/index.html`]),
+			].sort(),
+		);
 	});
 
 	it("purges our own stale versions and nothing else", () => {

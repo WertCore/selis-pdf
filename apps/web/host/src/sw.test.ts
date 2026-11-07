@@ -44,6 +44,7 @@ import {
 	requestFactsFrom,
 	responseFactsFrom,
 } from "./sw.js";
+import { TOOL_PAGE_SLUGS } from "./tool-registry.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE = "https://viewer.selis.test/";
@@ -145,6 +146,7 @@ function createOrigin(): Origin {
 		"/assets/host/no-upload.js",
 		"/assets/host/sw-policy.js",
 		"/assets/host/sw-register.js",
+		"/assets/host/tool-registry.js",
 		"/assets/host/tools/inputs.js",
 		"/assets/host/tools/protocol.js",
 		"/assets/host/tools/text-protocol.js",
@@ -164,6 +166,17 @@ function createOrigin(): Origin {
 				headers: { "Content-Type": "application/wasm", "Content-Length": "5" },
 			}),
 	);
+	// One generated page per tool, served through the same directory-index rule
+	// the host applies: `/slug/` is the install URL.
+	for (const slug of TOOL_PAGE_SLUGS) {
+		origin.serve(
+			`/${slug}/`,
+			() =>
+				new Response(`<!doctype html><title>${slug}</title><h1>${slug}</h1>`, {
+					headers: shellHeaders(),
+				}),
+		);
+	}
 	return origin;
 }
 
@@ -776,7 +789,14 @@ describe("the cache allow-list is structural", () => {
 
 	it("precaches only files that exist in public/, so install cannot fail at deploy", () => {
 		for (const path of PRECACHE_PATHS) {
-			const relative = path === "/" ? "index.html" : path.replace(/^\//, "");
+			// A trailing-slash URL is a directory; only its `index.html` proves
+			// the page was generated.
+			const relative =
+				path === "/"
+					? "index.html"
+					: path.endsWith("/")
+						? `${path.replace(/^\//, "")}index.html`
+						: path.replace(/^\//, "");
 			expect(() => readFileSync(join(pkgRoot, "public", relative)), path).not.toThrow();
 		}
 	});

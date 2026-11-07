@@ -32,8 +32,17 @@ const packScript = readFileSync(join(pkgRoot, "tools", "place-sw.mjs"), "utf8");
 describe("the deployment serves what the policy expects", () => {
 	it("has a file behind every precached URL, so install cannot fail in the field", () => {
 		for (const path of PRECACHE_PATHS) {
-			const file = path === "/" ? "index.html" : path.replace(/^\//, "");
-			expect(existsSync(join(pkgRoot, "public", file)), path).toBe(true);
+			// A directory URL is only satisfied by its `index.html`; `existsSync`
+			// on the bare directory would pass even when the page was never
+			// generated, which is the failure this test exists to catch.
+			const file =
+				path === "/"
+					? "index.html"
+					: path.endsWith("/")
+						? `${path.replace(/^\//, "")}index.html`
+						: path.replace(/^\//, "");
+			const target = join(pkgRoot, "public", file);
+			expect(existsSync(target), `${path} -> ${file}`).toBe(true);
 		}
 	});
 

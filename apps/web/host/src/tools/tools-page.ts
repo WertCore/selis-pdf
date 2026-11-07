@@ -15,6 +15,15 @@
 import { installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
 import {
+	TOOLS,
+	TOOL_BY_ID,
+	TOOL_BY_SLUG,
+	TOOL_GROUPS,
+	type ToolDef,
+	type ToolId,
+	spellOut,
+} from "../tool-registry.js";
+import {
 	ToolInputError,
 	hasImageHeader,
 	hasPdfHeader,
@@ -26,7 +35,6 @@ import {
 } from "./inputs.js";
 import {
 	type BatchSummary,
-	type ToolOp,
 	type ToolOutput,
 	type ToolOutputReport,
 	ToolProtocolError,
@@ -130,24 +138,6 @@ interface HtmlWasm {
 	};
 }
 
-/** Every card the page can open: a tools-chunk op or a lazy-chunk tool. */
-type ToolId =
-	| ToolOp
-	| "convert"
-	| "png"
-	| "jpg"
-	| "tiff"
-	| "webp"
-	| "html"
-	| "text"
-	| "unlock"
-	| "protect"
-	| "clear_permissions"
-	| "permissions"
-	| "sign"
-	| "certificate"
-	| "workflow";
-
 /** One AcroForm field as the read op reports it. */
 interface FormFieldJson {
 	readonly name: string;
@@ -177,492 +167,6 @@ type SecurityToolId = "unlock" | "protect" | "clear_permissions" | "permissions"
 
 /** The cards that hand their pages to the lazy raster chunk. */
 type RasterToolId = "png" | "jpg" | "tiff" | "webp";
-
-/**
- * The sections the card grid is organised into. Forty-two cards in one flat
- * list is not a menu, it is a wall: the groups are named after what a reader
- * has come to *do*, in the order the operations build on each other — arrange
- * the pages, change what they are, mark them up, then decide who may open
- * them. `TOOL_GROUPS` is the display order; a card with no group is a bug, so
- * the type makes the field required rather than optional.
- */
-type ToolGroup =
-	| "organise"
-	| "convert"
-	| "stamp"
-	| "metadata"
-	| "security"
-	| "attach"
-	| "repair"
-	| "bundle";
-
-const TOOL_GROUPS: readonly {
-	readonly id: ToolGroup;
-	readonly label: string;
-	readonly note: string;
-}[] = [
-	{ id: "organise", label: "Organise pages", note: "Put pages in the order you want them." },
-	{
-		id: "convert",
-		label: "Convert",
-		note: "Change a PDF into another format, or another format into a PDF.",
-	},
-	{
-		id: "stamp",
-		label: "Stamp & annotate",
-		note: "Write numbers, marks and bookmarks onto the pages.",
-	},
-	{
-		id: "metadata",
-		label: "Metadata",
-		note: "Read the document’s own description, edit it, or remove it.",
-	},
-	{
-		id: "security",
-		label: "Security & signatures",
-		note: "Passwords, permissions, forms and signatures.",
-	},
-	{ id: "attach", label: "Attachments", note: "Files carried inside the document." },
-	{ id: "repair", label: "Optimise & repair", note: "Make it smaller, or make it open again." },
-	{
-		id: "bundle",
-		label: "Batch & archive",
-		note: "Run one tool over many files, or collect them into a ZIP.",
-	},
-];
-
-interface ToolDef {
-	readonly id: ToolId;
-	readonly group: ToolGroup;
-	readonly mark: string;
-	readonly title: string;
-	readonly blurb: string;
-	readonly verb: string;
-	readonly multiple: boolean;
-	/** The fewest files a run needs; defaults to 2 for multi-file tools. */
-	readonly minimum?: number;
-	/**
-	 * The input containers this tool accepts; defaults to PDF. `pdf-image`
-	 * takes exactly one PDF plus one PNG/JPEG watermark image.
-	 */
-	readonly accepts?: "pdf" | "image" | "text" | "pdf-image";
-}
-
-const TOOLS: readonly ToolDef[] = [
-	{
-		id: "merge",
-		group: "organise",
-		mark: "⇄",
-		title: "Merge PDF",
-		blurb: "Combine several PDFs into one, in the order you choose.",
-		verb: "Merge PDFs",
-		multiple: true,
-	},
-	{
-		id: "mix",
-		group: "organise",
-		mark: "⇆",
-		title: "Mix pages",
-		blurb: "Interleave pages from two or more PDFs, round-robin, into one document.",
-		verb: "Mix pages",
-		multiple: true,
-	},
-	{
-		id: "split",
-		group: "organise",
-		mark: "✂",
-		title: "Split PDF",
-		blurb: "Split by range, every N pages, in half, by size, by bookmarks, or extract pages.",
-		verb: "Split PDF",
-		multiple: false,
-	},
-	{
-		id: "rotate",
-		group: "organise",
-		mark: "↻",
-		title: "Rotate PDF",
-		blurb: "Turn all pages or a selection by 90, 180, or 270 degrees.",
-		verb: "Rotate PDF",
-		multiple: false,
-	},
-	{
-		id: "crop",
-		group: "organise",
-		mark: "⌗",
-		title: "Crop PDF",
-		blurb: "Trim page edges by points, measured in the page's displayed orientation.",
-		verb: "Crop PDF",
-		multiple: false,
-	},
-	{
-		id: "flip",
-		group: "organise",
-		mark: "⇋",
-		title: "Flip PDF",
-		blurb: "Mirror page content horizontally or vertically.",
-		verb: "Flip PDF",
-		multiple: false,
-	},
-	{
-		id: "page_labels",
-		group: "organise",
-		mark: "L",
-		title: "Page labels",
-		blurb: "Set the numbering readers show: decimal, roman, letters, or a prefix.",
-		verb: "Apply page labels",
-		multiple: false,
-	},
-	{
-		id: "resize",
-		group: "organise",
-		mark: "⤢",
-		title: "Resize pages",
-		blurb: "Scale pages to A4, Letter, or a custom size in points.",
-		verb: "Resize pages",
-		multiple: false,
-	},
-	{
-		id: "nup",
-		group: "organise",
-		mark: "▦",
-		title: "N-up pages",
-		blurb: "Place 2, 4, 6, or 9 pages on each sheet.",
-		verb: "Place pages",
-		multiple: false,
-	},
-	{
-		id: "delete",
-		group: "organise",
-		mark: "⌫",
-		title: "Delete pages",
-		blurb: "Remove the pages you no longer need.",
-		verb: "Delete pages",
-		multiple: false,
-	},
-	{
-		id: "reorder",
-		group: "organise",
-		mark: "⇅",
-		title: "Organize pages",
-		blurb: "Reorder pages, duplicate pages, or insert blank pages.",
-		verb: "Organize pages",
-		multiple: false,
-	},
-	{
-		id: "metadata_report",
-		group: "metadata",
-		mark: "ℹ",
-		title: "Read metadata",
-		blurb: "Export the Info dictionary, XMP packet, and structure as JSON.",
-		verb: "Read metadata",
-		multiple: false,
-	},
-	{
-		id: "metadata",
-		group: "metadata",
-		mark: "Aa",
-		title: "Edit metadata",
-		blurb: "Set the title, author, subject, and keywords.",
-		verb: "Save metadata",
-		multiple: false,
-	},
-	{
-		id: "strip_metadata",
-		group: "metadata",
-		mark: "×",
-		title: "Remove metadata",
-		blurb: "Strip the Info dictionary and the XMP packet from the document.",
-		verb: "Remove metadata",
-		multiple: false,
-	},
-	{
-		id: "page_numbers",
-		group: "stamp",
-		mark: "1",
-		title: "Add page numbers",
-		blurb: "Stamp page numbers on every page or a selection.",
-		verb: "Add page numbers",
-		multiple: false,
-	},
-	{
-		id: "watermark",
-		group: "stamp",
-		mark: "W",
-		title: "Watermark PDF",
-		blurb: "Add a translucent diagonal or horizontal text watermark.",
-		verb: "Add watermark",
-		multiple: false,
-	},
-	{
-		id: "image_watermark",
-		group: "stamp",
-		mark: "IW",
-		title: "Image watermark",
-		blurb: "Stamp a PNG or JPEG logo or seal across the pages you choose.",
-		verb: "Add image watermark",
-		multiple: true,
-		minimum: 2,
-		accepts: "pdf-image",
-	},
-	{
-		id: "outline",
-		group: "stamp",
-		mark: "BM",
-		title: "Edit bookmarks",
-		blurb: "Add, rename, retarget, or remove the document's bookmarks.",
-		verb: "Save bookmarks",
-		multiple: false,
-	},
-	{
-		id: "header_footer",
-		group: "stamp",
-		mark: "HF",
-		title: "Header & footer",
-		blurb: "Add header and footer lines with page placeholders.",
-		verb: "Add header & footer",
-		multiple: false,
-	},
-	{
-		id: "bates",
-		group: "stamp",
-		mark: "B",
-		title: "Bates numbering",
-		blurb: "Apply sequential legal-style numbers with a prefix and padding.",
-		verb: "Add Bates numbers",
-		multiple: false,
-	},
-	{
-		id: "compress",
-		group: "repair",
-		mark: "Z",
-		title: "Compress PDF",
-		blurb: "Lossless cleanup: drop unreachable objects and re-encode streams.",
-		verb: "Compress PDF",
-		multiple: false,
-	},
-	{
-		id: "attachments",
-		group: "attach",
-		mark: "A",
-		title: "Extract attachments",
-		blurb: "Download the files embedded inside a PDF, individually or as a ZIP.",
-		verb: "Extract attachments",
-		multiple: false,
-	},
-	{
-		id: "attach",
-		group: "attach",
-		mark: "＋",
-		title: "Embed files",
-		blurb: "Attach files inside a PDF so they travel with it.",
-		verb: "Embed files",
-		multiple: true,
-	},
-	{
-		id: "detach",
-		group: "attach",
-		mark: "－",
-		title: "Remove attachments",
-		blurb: "Delete every file embedded inside a PDF.",
-		verb: "Remove attachments",
-		multiple: false,
-	},
-	{
-		id: "repair",
-		group: "repair",
-		mark: "R",
-		title: "Repair PDF",
-		blurb: "Recover the pages of a damaged PDF into a clean, consistent file.",
-		verb: "Repair PDF",
-		multiple: false,
-	},
-	{
-		id: "batch",
-		group: "bundle",
-		mark: "≡",
-		title: "Batch queue",
-		blurb: "Run one tool over several PDFs; each file gets its own verified result.",
-		verb: "Run the queue",
-		multiple: true,
-		minimum: 2,
-		accepts: "pdf",
-	},
-	{
-		id: "image_to_pdf",
-		group: "convert",
-		mark: "▣",
-		title: "Image to PDF",
-		blurb: "Turn PNG and JPEG images into a PDF, one page per image.",
-		verb: "Create PDF",
-		multiple: true,
-		minimum: 1,
-		accepts: "image",
-	},
-	{
-		id: "convert",
-		group: "convert",
-		mark: "▾",
-		title: "Convert to PDF",
-		blurb: "Turn Markdown, HTML, CSV, LaTeX, SVG, EPUB, Word, PowerPoint or Excel into a PDF.",
-		verb: "Convert to PDF",
-		multiple: false,
-		accepts: "text",
-	},
-	{
-		id: "png",
-		group: "convert",
-		mark: "▧",
-		title: "PDF to PNG",
-		blurb: "Render every page, or a selection, to lossless PNG images.",
-		verb: "Render PNGs",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "jpg",
-		group: "convert",
-		mark: "▨",
-		title: "PDF to JPG",
-		blurb: "Render every page, or a selection, to compact JPEG images.",
-		verb: "Render JPGs",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "tiff",
-		group: "convert",
-		mark: "▤",
-		title: "PDF to TIFF",
-		blurb: "Render every page, or a selection, into one lossless multi-page TIFF.",
-		verb: "Render TIFF",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "webp",
-		group: "convert",
-		mark: "▥",
-		title: "PDF to WebP",
-		blurb: "Render every page, or a selection, to lossless WebP images.",
-		verb: "Render WebPs",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "html",
-		group: "convert",
-		mark: "◩",
-		title: "PDF to HTML",
-		blurb: "Write every page, or a selection, as one positioned HTML document.",
-		verb: "Export HTML",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "text",
-		group: "convert",
-		mark: "¶",
-		title: "Extract text",
-		blurb:
-			"Recover the document's text, its tables, a reading-order article, a Word document, a PowerPoint deck, or an Excel workbook.",
-		verb: "Extract text",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "zip",
-		group: "bundle",
-		mark: "▣",
-		title: "ZIP files",
-		blurb: "Bundle several files into one deterministic ZIP.",
-		verb: "Create ZIP",
-		multiple: true,
-		minimum: 2,
-		accepts: "pdf",
-	},
-	{
-		id: "fill_forms",
-		group: "security",
-		mark: "☑",
-		title: "Fill forms",
-		blurb: "Read an AcroForm, fill its fields, and save the filled PDF.",
-		verb: "Fill form",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "unlock",
-		group: "security",
-		mark: "◇",
-		title: "Remove password",
-		blurb: "Open a protected PDF with its password and save it without one.",
-		verb: "Remove password",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "protect",
-		group: "security",
-		mark: "◆",
-		title: "Protect with password",
-		blurb: "Encrypt a PDF with AES-256 and choose what a reader may do with it.",
-		verb: "Protect PDF",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "clear_permissions",
-		group: "security",
-		mark: "◈",
-		title: "Clear permissions",
-		blurb: "Lift the print, copy, modify and annotate restrictions, with the owner password.",
-		verb: "Clear permissions",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "permissions",
-		group: "security",
-		mark: "◉",
-		title: "Set permissions",
-		blurb: "Write the permission bits a document should carry, guarded by an owner password.",
-		verb: "Set permissions",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "sign",
-		group: "security",
-		mark: "✍",
-		title: "Sign PDF",
-		blurb: "Draw a typed or freehand stamp, or sign with a key that never leaves this device.",
-		verb: "Sign PDF",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "certificate",
-		group: "security",
-		mark: "◊",
-		title: "Certificate validation",
-		blurb: "Read every signature and say whether its chain ends at a certificate you trust.",
-		verb: "Validate signatures",
-		multiple: false,
-		accepts: "pdf",
-	},
-	{
-		id: "workflow",
-		group: "security",
-		mark: "⤳",
-		title: "Approval workflow",
-		blurb: "Record an approval decision on the document itself, with no server in the loop.",
-		verb: "Record approval",
-		multiple: false,
-		accepts: "pdf",
-	},
-];
-
-const TOOL_BY_ID = new Map<ToolId, ToolDef>(TOOLS.map((tool) => [tool.id, tool]));
 
 /** Browser memory is finite; this keeps one run comfortably copyable. */
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -734,41 +238,36 @@ function byId<T extends HTMLElement>(id: string): T {
 }
 
 /**
- * The card count as a word, because the heading reads as a sentence.
- *
- * Past twenty the spelled form gets long and stops being something a reader
- * parses at a glance, so the numeral takes over — and any number without a word
- * falls back to the numeral rather than throwing, because a heading is not worth
- * a failed page load.
+ * An element a generated tool page does not carry. The card grid and its jump
+ * bar exist only on `/tools.html`; a `/<slug>/` page boots straight into the
+ * workspace and must not require the grid's markup to be present.
  */
-function spellOut(count: number): string {
-	const words = [
-		"zero",
-		"one",
-		"two",
-		"three",
-		"four",
-		"five",
-		"six",
-		"seven",
-		"eight",
-		"nine",
-		"ten",
-		"eleven",
-		"twelve",
-		"thirteen",
-		"fourteen",
-		"fifteen",
-		"sixteen",
-		"seventeen",
-		"eighteen",
-		"nineteen",
-		"twenty",
-	];
-	if (count >= 0 && count < words.length) {
-		return words[count] ?? String(count);
+function optionalById<T extends HTMLElement>(id: string): T | null {
+	return document.getElementById(id) as T | null;
+}
+
+/**
+ * The one place a URL decides which tool is open.
+ *
+ * A generated page declares its tool on `<html data-tool="…">`, so no path
+ * parsing is needed there. `/tools.html` still honours the old `#merge` deep
+ * link, and a hand-typed `/<slug>/index.html` is accepted because the static
+ * host serves both spellings. Everything else reads as "no tool".
+ */
+function bootTool(): ToolDef | null {
+	const declared = document.documentElement.dataset.tool;
+	if (declared !== undefined && declared !== "") {
+		return TOOL_BY_SLUG.get(declared) ?? null;
 	}
-	return String(count);
+	const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
+	if (path !== "" && !path.includes("/")) {
+		const tool = TOOL_BY_SLUG.get(path);
+		if (tool !== undefined) {
+			return tool;
+		}
+	}
+	const hash = window.location.hash.slice(1);
+	return hash === "" ? null : (TOOL_BY_ID.get(hash as ToolId) ?? null);
 }
 
 function make<K extends keyof HTMLElementTagNameMap>(
@@ -1031,12 +530,12 @@ function batchRows(batch: BatchSummary | undefined): VerificationRow[] {
 }
 
 function init(): void {
-	const toolsSection = byId<HTMLElement>("tools");
-	const toolGrid = byId<HTMLDivElement>("tool-grid");
-	const sectionNav = byId<HTMLUListElement>("tool-jump");
-	const toolsHeading = byId<HTMLHeadingElement>("tools-heading");
+	const toolsSection = optionalById<HTMLElement>("tools");
+	const toolGrid = optionalById<HTMLDivElement>("tool-grid");
+	const sectionNav = optionalById<HTMLUListElement>("tool-jump");
+	const toolsHeading = optionalById<HTMLHeadingElement>("tools-heading");
 	const workspace = byId<HTMLElement>("workspace");
-	const backButton = byId<HTMLButtonElement>("back-to-tools");
+	const backButton = optionalById<HTMLElement>("back-to-tools");
 	const workspaceTitle = byId<HTMLHeadingElement>("workspace-title");
 	const workspaceBlurb = byId<HTMLParagraphElement>("workspace-blurb");
 	const dropzone = byId<HTMLDivElement>("dropzone");
@@ -1115,37 +614,53 @@ function init(): void {
 	}
 
 	function toolCard(tool: ToolDef): HTMLElement {
-		{
-			const card = button("", "tool-card");
-			card.dataset.tool = tool.id;
-			card.append(
-				(() => {
-					const mark = make("span", "tool-mark");
-					mark.textContent = tool.mark;
-					mark.setAttribute("aria-hidden", "true");
-					return mark;
-				})(),
-				(() => {
-					const title = make("span", "tool-title");
-					title.textContent = tool.title;
-					return title;
-				})(),
-				(() => {
-					const blurb = make("span", "tool-blurb");
-					blurb.textContent = tool.blurb;
-					return blurb;
-				})(),
-				(() => {
-					const meta = make("span", "tool-meta");
-					meta.textContent = "Runs on this device →";
-					return meta;
-				})(),
-			);
-			card.addEventListener("click", () => {
-				selectTool(tool.id);
-			});
-			return card;
-		}
+		// A real anchor, not a button: middle-click, "open in new tab", a crawler
+		// and the no-JS case all get the tool's own URL. A plain click is
+		// intercepted into the in-page workspace so `/tools.html` keeps its
+		// existing behaviour (and its browser check), while the address bar shows
+		// the same `/<slug>/` a direct visit would use.
+		const card = make("a", "tool-card");
+		card.href = `/${tool.slug}/`;
+		card.dataset.tool = tool.id;
+		card.append(
+			(() => {
+				const mark = make("span", "tool-mark");
+				mark.textContent = tool.mark;
+				mark.setAttribute("aria-hidden", "true");
+				return mark;
+			})(),
+			(() => {
+				const title = make("span", "tool-title");
+				title.textContent = tool.title;
+				return title;
+			})(),
+			(() => {
+				const blurb = make("span", "tool-blurb");
+				blurb.textContent = tool.blurb;
+				return blurb;
+			})(),
+			(() => {
+				const meta = make("span", "tool-meta");
+				meta.textContent = "Runs on this device →";
+				return meta;
+			})(),
+		);
+		card.addEventListener("click", (event) => {
+			const mouse = event as MouseEvent;
+			if (
+				mouse.defaultPrevented ||
+				mouse.button !== 0 ||
+				mouse.metaKey ||
+				mouse.ctrlKey ||
+				mouse.shiftKey ||
+				mouse.altKey
+			) {
+				return;
+			}
+			event.preventDefault();
+			selectTool(tool.id);
+		});
+		return card;
 	}
 
 	/**
@@ -1154,6 +669,9 @@ function init(): void {
 	 * checked before anything is rendered.
 	 */
 	function renderToolGrid(): void {
+		if (toolGrid === null) {
+			return;
+		}
 		const sections = TOOL_GROUPS.map((group) => {
 			const section = make("section", "tool-group");
 			section.id = `tool-group-${group.id}`;
@@ -1184,6 +702,9 @@ function init(): void {
 	 * "open in new tab", and give the browser's back key something real to undo.
 	 */
 	function renderSectionNav(): void {
+		if (sectionNav === null) {
+			return;
+		}
 		const items: HTMLElement[] = [];
 		for (const group of TOOL_GROUPS) {
 			if (!TOOLS.some((tool) => tool.group === group.id)) {
@@ -1209,6 +730,9 @@ function init(): void {
 	 * arrives instead of after the reader has passed it.
 	 */
 	function watchSections(): void {
+		if (sectionNav === null) {
+			return;
+		}
 		const links = new Map<string, HTMLAnchorElement>();
 		for (const link of Array.from(sectionNav.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
 			const target = link.getAttribute("href")?.slice(1);
@@ -1253,6 +777,9 @@ function init(): void {
 	 * carries none.
 	 */
 	function renderToolCount(): void {
+		if (toolsHeading === null) {
+			return;
+		}
 		toolsHeading.textContent = `${spellOut(TOOLS.length)} operations. Zero uploads.`;
 	}
 
@@ -2758,7 +2285,16 @@ function init(): void {
 		);
 	}
 
-	function selectTool(id: ToolId): void {
+	/**
+	 * Open one tool's workspace.
+	 *
+	 * `record` says whether this is a reader action (push a history entry, so
+	 * Back returns to the grid) or a boot/popstate restore (replace, so the
+	 * initial load does not push a duplicate). The URL is the tool's real path
+	 * either way; `/tools.html` and `/<slug>/` then show the same tool at the
+	 * same address.
+	 */
+	function selectTool(id: ToolId, record = true): void {
 		const tool = TOOL_BY_ID.get(id);
 		if (tool === undefined) {
 			return;
@@ -2785,9 +2321,18 @@ function init(): void {
 							? ""
 							: "application/pdf,.pdf";
 		fileInput.value = "";
-		toolsSection.hidden = true;
+		if (toolsSection !== null) {
+			toolsSection.hidden = true;
+		}
 		workspace.hidden = false;
-		history.replaceState(null, "", `#${id}`);
+		const target = `/${tool.slug}/`;
+		if (window.location.pathname !== target) {
+			if (record) {
+				history.pushState({ tool: id }, "", target);
+			} else {
+				history.replaceState({ tool: id }, "", target);
+			}
+		}
 		setStatus(
 			id === "attach"
 				? "Choose the PDF first, then the files to embed. They are read here, not sent anywhere."
@@ -2802,10 +2347,16 @@ function init(): void {
 								: "Choose a PDF. It is read here, not sent anywhere.",
 			"info",
 		);
-		dropzone.focus();
+		fileInput.focus();
 	}
 
-	function clearTool(): void {
+	function clearTool(record = true): void {
+		if (toolsSection === null) {
+			// A generated page has no grid to reveal, so "back to tools" is a
+			// real navigation rather than a hidden-panel swap.
+			window.location.assign("/tools.html");
+			return;
+		}
 		selectedTool = null;
 		files = [];
 		clearResult();
@@ -2814,8 +2365,16 @@ function init(): void {
 		options.replaceChildren();
 		renderFiles();
 		workspace.hidden = true;
-		toolsSection.hidden = false;
-		history.replaceState(null, "", window.location.pathname + window.location.search);
+		if (toolsSection !== null) {
+			toolsSection.hidden = false;
+		}
+		if (window.location.pathname !== "/tools.html") {
+			if (record) {
+				history.pushState(null, "", "/tools.html");
+			} else {
+				history.replaceState(null, "", "/tools.html");
+			}
+		}
 		updateRunState();
 	}
 
@@ -4951,10 +4510,33 @@ function init(): void {
 		renderFiles();
 		updateRunState();
 		setStatus("Files stay on this device.", "info");
-		dropzone.focus();
+		fileInput.focus();
 	}
 
-	backButton.addEventListener("click", clearTool);
+	// The back control is a real link to `/tools.html`, so it works with no JS
+	// and with pagefind-style crawling. On the landing page it returns to the
+	// grid in place; on a generated `/<slug>/` page there is no grid to reveal,
+	// so the link navigates for real.
+	if (backButton !== null) {
+		backButton.addEventListener("click", (event) => {
+			if (toolsSection === null) {
+				return;
+			}
+			const mouse = event as MouseEvent;
+			if (
+				mouse.defaultPrevented ||
+				mouse.button !== 0 ||
+				mouse.metaKey ||
+				mouse.ctrlKey ||
+				mouse.shiftKey ||
+				mouse.altKey
+			) {
+				return;
+			}
+			event.preventDefault();
+			clearTool();
+		});
+	}
 	runButton.addEventListener("click", () => {
 		void run();
 	});
@@ -4965,14 +4547,9 @@ function init(): void {
 			fileInput.click();
 		}
 	});
-	dropzone.addEventListener("keydown", (event) => {
-		if (event.key === "Enter" || event.key === " ") {
-			event.preventDefault();
-			if (!busy) {
-				fileInput.click();
-			}
-		}
-	});
+	// No dropzone keydown: the file input is the keyboard control (it opens
+	// the picker natively), and a second key handler on the wrapper would be
+	// the `nested-interactive` pattern axe rejects.
 	fileInput.addEventListener("change", () => {
 		const chosen = Array.from(fileInput.files ?? []);
 		fileInput.value = "";
@@ -5013,13 +4590,26 @@ function init(): void {
 		renderOptions(firstTool);
 	}
 	updateRunState();
-	const hash = window.location.hash.slice(1);
-	if (TOOL_BY_ID.has(hash as ToolId)) {
-		selectTool(hash as ToolId);
+	const initialTool = bootTool();
+	if (initialTool !== null) {
+		selectTool(initialTool.id, false);
 	} else {
+		selectedTool = null;
 		workspace.hidden = true;
-		toolsSection.hidden = false;
+		if (toolsSection !== null) {
+			toolsSection.hidden = false;
+		}
 	}
+	// Back/forward across the entries `selectTool` and `clearTool` push. The
+	// URL is the source of truth, so this is the same function that booted.
+	window.addEventListener("popstate", () => {
+		const tool = bootTool();
+		if (tool !== null) {
+			selectTool(tool.id, false);
+			return;
+		}
+		clearTool(false);
+	});
 }
 
 /**

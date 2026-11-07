@@ -60,14 +60,28 @@
  * isolation headers explicitly (see `offlineFallback` in `sw.ts`).
  */
 
+import { TOOL_PAGE_SLUGS } from "./tool-registry.js";
+
+/**
+ * The cache key of every generated page, in registry order.
+ *
+ * The trailing slash is the canonical spelling (`/<slug>/`); the alias table
+ * below maps it to the `index.html` the install actually fetched.
+ */
+export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => `/${slug}/`);
+
 /**
  * Cache namespace version. Bump on every release that changes the shell or the
  * asset set: a new worker opens `…-v<N+1>` and `activate` deletes the old
  * name, so a stale shell is never served across a version boundary. The
  * browser's own update detection (a changed `sw.js`, byte for byte) is the
  * trigger; this constant is the *namespace*, not the trigger.
+ *
+ * v4 adds one generated page per tool (`/<slug>/`) to the install set. Without
+ * the bump an existing install keeps v3 and every new route 503s offline while
+ * the old worker still looks healthy.
  */
-export const CACHE_VERSION = "3";
+export const CACHE_VERSION = "4";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
@@ -131,10 +145,14 @@ export const SHELL_PRECACHE_PATHS: readonly string[] = [
  */
 export const TOOLS_PRECACHE_PATHS: readonly string[] = [
 	"/tools.html",
+	// One directory-index URL per tool. `build-pages.mjs` writes exactly these
+	// from the same registry, and `sw-ship.test.ts` asserts each has a file.
+	...TOOL_PAGE_PATHS,
 	"/assets/tools.css",
 	"/assets/host/no-upload.js",
 	"/assets/host/sw-policy.js",
 	"/assets/host/sw-register.js",
+	"/assets/host/tool-registry.js",
 	"/assets/host/tools/inputs.js",
 	"/assets/host/tools/protocol.js",
 	"/assets/host/tools/text-protocol.js",
@@ -156,10 +174,26 @@ export const PRECACHE_PATHS: readonly string[] = [...SHELL_PRECACHE_PATHS, ...TO
  * One shell path stands in for another when the host routes `/` and
  * `/index.html` differently. Without this, precaching `/` and then navigating
  * to `/index.html` offline would miss and 503.
+ *
+ * The same rule covers every generated tool page: `/<slug>/` and
+ * `/<slug>/index.html` are one document, and either spelling has to resolve to
+ * the entry the install wrote. Without the pair, a direct visit to one form
+ * works offline while the other 503s — the exact mismatch this table exists to
+ * prevent.
  */
+function toolPageAliases(): Record<string, readonly string[]> {
+	const aliases: Record<string, readonly string[]> = {};
+	for (const path of TOOL_PAGE_PATHS) {
+		aliases[path] = [`${path}index.html`];
+		aliases[`${path}index.html`] = [path];
+	}
+	return aliases;
+}
+
 export const SHELL_ALIASES: Readonly<Record<string, readonly string[]>> = {
 	"/": ["/index.html"],
 	"/index.html": ["/"],
+	...toolPageAliases(),
 };
 
 /**

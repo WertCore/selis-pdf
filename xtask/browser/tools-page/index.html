@@ -182,6 +182,92 @@
       }
 
       /**
+       * Open a generated tool page the way a search result does: a direct
+       * navigation to `/<slug>/`, no card to click. The workspace must already
+       * be on screen when the document loads, and the page must carry the slug
+       * on `<html data-tool>` and its own canonical URL. A generated page that
+       * fell back to the grid shell, or that needed a click to reveal the
+       * workspace, fails here instead of passing a leg that drove the wrong
+       * document.
+       */
+      async function openToolPage(frame, slug, label) {
+        const load = waitForLoad(frame);
+        frame.src = "/" + slug + "/";
+        await load;
+        const doc = frameDocument(frame);
+        const win = frame.contentWindow;
+        if (!win) throw new Error("the " + label + " iframe had no window");
+        await waitFor(
+          () => {
+            const workspace = doc.getElementById("workspace");
+            return workspace !== null && !workspace.hidden;
+          },
+          10_000,
+          "the " + slug + " workspace without a click (" + label + ")",
+        );
+        const heading = doc.getElementById("workspace-title");
+        const canonical = doc.querySelector('link[rel="canonical"]');
+        const record = {
+          slug: doc.documentElement.dataset.tool || "",
+          path: win.location.pathname,
+          title: doc.title,
+          heading: heading ? heading.textContent.trim() : "",
+          canonical: canonical ? canonical.getAttribute("href") : null,
+          hasGrid: doc.getElementById("tool-grid") !== null,
+          controlled: win.navigator.serviceWorker?.controller !== null,
+        };
+        if (record.slug !== slug) {
+          throw new Error(
+            "the " + label + " page declared data-tool=" + JSON.stringify(record.slug),
+          );
+        }
+        return record;
+      }
+
+      /**
+       * Load the staged axe-core copy into the tools frame and scan the
+       * generated page in its own window. The copy is staged at the origin
+       * root for every app-shelled check (`stage_axe` in xtask); it is a
+       * test dependency and never ships (ADR-P0016). The frame is same
+       * origin, so it can load it and axe can walk its document. `null`
+       * means the scan never ran, which the verdict treats as a failure
+       * rather than a pass — the same rule app-shell applies.
+       */
+      async function scanGeneratedPage(frame, label) {
+        const axe = await new Promise((resolve) => {
+          const doc = frameDocument(frame);
+          const win = frame.contentWindow;
+          if (!win) {
+            resolve(null);
+            return;
+          }
+          const script = doc.createElement("script");
+          script.src = "/axe.min.js";
+          script.onload = () => resolve(win.axe || null);
+          script.onerror = () => resolve(null);
+          doc.head.appendChild(script);
+        });
+        if (!axe || typeof axe.run !== "function") {
+          return { available: false, violations: [] };
+        }
+        const results = await axe.run(frameDocument(frame), {
+          runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+        });
+        return {
+          available: true,
+          passes: results.passes.length,
+          violations: results.violations.map((v) => ({
+            id: v.id,
+            impact: v.impact,
+            help: v.help,
+            nodes: v.nodes.length,
+            firstTarget:
+              v.nodes.length > 0 && v.nodes[0].target ? String(v.nodes[0].target) : null,
+          })),
+        };
+      }
+
+      /**
        * The frame of a JPEG, or null when the bytes are not a complete one.
        * A JPEG opens with SOI (FF D8) and closes with EOI (FF D9); the pixel
        * size lives in the first start-of-frame marker, so this walks the marker
@@ -977,20 +1063,23 @@
         absent,
         files,
         optionFiles,
+        direct = false,
       ) {
         const win = frame.contentWindow;
         const doc = frameDocument(frame);
-        if (doc.getElementById("tools").hidden) {
-          doc.getElementById("back-to-tools").click();
-          await waitFor(
-            () => !doc.getElementById("tools").hidden,
-            5_000,
-            "the tools grid (" + label + ")",
-          );
+        if (!direct) {
+          if (doc.getElementById("tools").hidden) {
+            doc.getElementById("back-to-tools").click();
+            await waitFor(
+              () => !doc.getElementById("tools").hidden,
+              5_000,
+              "the tools grid (" + label + ")",
+            );
+          }
+          const card = doc.querySelector('[data-tool="' + toolId + '"]');
+          if (!card) throw new Error("the page offered no " + toolId + " card");
+          markClick(card);
         }
-        const card = doc.querySelector('[data-tool="' + toolId + '"]');
-        if (!card) throw new Error("the page offered no " + toolId + " card");
-        markClick(card);
         await waitFor(
           () => !doc.getElementById("workspace").hidden,
           5_000,
@@ -1211,6 +1300,26 @@
         out.cards = await waitForCards(frame, "the forty-two tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
+
+        // The manifest the build writes from the same registry. Only three
+        // pages are driven by URL below, so every slug the manifest lists is
+        // fetched once here: a registry entry with no generated page fails this
+        // gate even though nobody clicked it.
+        const manifest = await fetch("/pages.json").then((response) => {
+          if (!response.ok) throw new Error("pages.json returned " + response.status);
+          return response.json();
+        });
+        const missingPages = [];
+        for (const entry of manifest.pages) {
+          const response = await fetch("/" + entry.slug + "/");
+          if (!response.ok) missingPages.push(entry.slug);
+        }
+        out.pages = {
+          count: manifest.pages.length,
+          missing: missingPages,
+          ids: manifest.pages.map((entry) => entry.id).sort(),
+          origin: manifest.origin,
+        };
 
         // The page registers the worker itself. Wait for that registration to
         // finish and for the worker to claim THIS document, so the online merge
@@ -3200,6 +3309,102 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           report: legRecord(onlineReport),
         };
 
+        out.byUrl = { online: {}, offline: {} };
+
+        // B5: three generated pages, opened the way a search result opens
+        // them. There is no card to click on these documents, so `direct` legs
+        // prove the workspace boots from the URL alone, then run one operation
+        // each. The pages are the highest-intent ones in their groups: merge
+        // (whole documents), unlock (remove a password) and sign (a stamp).
+        const byUrlMergePage = await openToolPage(frame, "merge-pdf", "online by-URL merge");
+        // The plan's axe gate: one generated page, scanned in its pristine
+        // pre-run state, against WCAG 2.0/2.1 A/AA. Runs before the leg so
+        // the result panel cannot mask a violation.
+        const byUrlMergeA11y = await scanGeneratedPage(frame, "online by-URL merge-pdf");
+        const byUrlMerge = await toolInFrame(
+          frame,
+          fixture,
+          "alpha.pdf",
+          "online by-URL merge-pdf",
+          "merge",
+          {},
+          ["/Type /Pages"],
+          [],
+          [
+            {
+              name: "alpha.pdf",
+              bytes: new Uint8Array(fixture.slice(0)),
+              type: "application/pdf",
+            },
+            {
+              name: "beta.pdf",
+              bytes: new Uint8Array(fixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+          null,
+          true,
+        );
+        out.byUrl.online.merge = {
+          page: byUrlMergePage,
+          a11y: byUrlMergeA11y,
+          ...legRecord(byUrlMerge),
+        };
+
+        const byUrlUnlockPage = await openToolPage(frame, "unlock-pdf", "online by-URL unlock");
+        const byUrlUnlock = await toolInFrame(
+          frame,
+          lockedFixture,
+          "locked.pdf",
+          "online by-URL unlock-pdf",
+          "unlock",
+          { password: "selis-open" },
+          ["/Type /Pages", "/Count 3"],
+          ["/Encrypt", "/Filter /Standard", "/AESV3"],
+          null,
+          null,
+          true,
+        );
+        out.byUrl.online.unlock = {
+          page: byUrlUnlockPage,
+          ...legRecord(byUrlUnlock),
+        };
+
+        const byUrlSignPage = await openToolPage(frame, "sign-pdf", "online by-URL sign");
+        const byUrlSign = await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online by-URL sign-pdf",
+          "sign",
+          {
+            signMode: "stamp",
+            stampText: "Browser Approved",
+            page: "2",
+            signerName: "Ada Lovelace",
+          },
+          ["/SelisSigF", "(Browser Approved) Tj", "(Ada Lovelace"],
+          ["/ByteRange"],
+          null,
+          null,
+          true,
+        );
+        out.byUrl.online.sign = {
+          page: byUrlSignPage,
+          ...legRecord(byUrlSign),
+        };
+
+        // Back to the grid for the offline phase, which reloads this document.
+        const backToGrid = waitForLoad(frame);
+        frame.src = "/tools.html";
+        await backToGrid;
+        await waitForCards(frame, "the tool cards after the by-URL legs");
+        await waitFor(
+          () => frame.contentWindow?.navigator.serviceWorker.controller !== null,
+          10_000,
+          "the worker to claim the tools page again",
+        );
+
         // Cut the harness origin. The worker still has the complete tools page;
         // an uncached module, stylesheet, or chunk gets a 503 and the reload
         // never reaches the card grid.
@@ -4853,6 +5058,59 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             workflow: legRecord(offlineWorkflow),
             report: legRecord(offlineReport),
           },
+        };
+
+        // B5's offline half: navigate straight to a generated page that the
+        // origin can no longer serve. The worker has it from the install set,
+        // so the workspace opens and a merge still completes with every byte
+        // from the cache. Then an unknown path must land on the worker's 503
+        // fallback, not on some cached tool page (the soft-404 the plan calls
+        // out).
+        const offlineByUrlPage = await openToolPage(
+          frame,
+          "merge-pdf",
+          "offline by-URL merge",
+        );
+        const offlineByUrlMerge = await toolInFrame(
+          frame,
+          fixture,
+          "alpha.pdf",
+          "offline by-URL merge-pdf",
+          "merge",
+          {},
+          ["/Type /Pages"],
+          [],
+          [
+            {
+              name: "alpha.pdf",
+              bytes: new Uint8Array(fixture.slice(0)),
+              type: "application/pdf",
+            },
+            {
+              name: "beta.pdf",
+              bytes: new Uint8Array(fixture.slice(0)),
+              type: "application/pdf",
+            },
+          ],
+          null,
+          true,
+        );
+        out.byUrl.offline.merge = {
+          page: offlineByUrlPage,
+          ...legRecord(offlineByUrlMerge),
+        };
+
+        const unknownLoad = waitForLoad(frame);
+        frame.src = "/no-such-tool/";
+        await unknownLoad;
+        const unknownDoc = frameDocument(frame);
+        const unknownHeading = unknownDoc.querySelector("h1");
+        out.byUrl.offline.unknown = {
+          title: unknownDoc.title,
+          heading: unknownHeading ? unknownHeading.textContent.trim() : "",
+          body: unknownDoc.body ? unknownDoc.body.textContent.trim() : "",
+          hasGrid: unknownDoc.getElementById("tool-grid") !== null,
+          slug: unknownDoc.documentElement.dataset.tool || null,
         };
 
         out.clicked = clickRecord();

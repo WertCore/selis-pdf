@@ -82,3 +82,13 @@ apps/web/host/public/assets/host/sw-register.js
 apps/web/host/public/assets/host/tools/
 apps/web/host/public/wasm/
 apps/web/host/public/app-manifest.json
+# The per-tool pages, their manifest, sitemap and robots file are rendered from
+# `src/tool-registry.ts` by `tools/build-pages.mjs`; the copied registry module
+# reaches the deployment root twice (worker + page). Committing the output would
+# let a page drift from the registry it claims to describe.
+apps/web/host/public/*/index.html
+apps/web/host/public/pages.json
+apps/web/host/public/sitemap.xml
+apps/web/host/public/robots.txt
+apps/web/host/public/tool-registry.js
+apps/web/host/public/assets/host/tool-registry.js

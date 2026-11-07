@@ -1,6 +1,10 @@
 # 36 — Tools page: grouping, navigation, and per-tool routes
 
-**Status:** Slice A shipped 5 November 2026; Slice B not started (blocked on the slug list).
+**Status:** Slice A shipped 5 November 2026; Slice B shipped 7 November 2026 (43 tools — the
+plan's "42" is stale; the Phase 3 text card landed before B started, and `CARD_COUNT` /
+`TOOLS_PAGE_CARDS` are 43 everywhere). Remaining open after B: only the two owner questions the
+plan already flagged — production host choice (which gate 404 behaviour) and the extension
+self-test failure (pre-existing, unrelated to this slice; see §B5 note).
 **Owner:** AI+ (implementation) · HUMAN (slug list, copy sign-off).
 **Depends on:** `34-TOOLS-SITE-ROADMAP.md` (the card set), `35-PARITY-CHECKLIST.md` (the gate
 rule), `14-PHASE-4-web-alpha.md` (§ SEO landing page per tool — this file is that row's plan).
@@ -154,115 +158,173 @@ Goal: `pdf.selis.com/unlock` and `pdf.selis.com/merge-pdfs` are real, crawlable 
 with its own title, description, heading and focused copy — while remaining the same offline,
 local-only app.
 
+**Shipped 7 November 2026.** Slug table in `apps/web/host/src/tool-registry.ts` (43 tools,
+`SITE_ORIGIN = "https://pdf.selis.com"`), generator `tools/build-pages.mjs`, per-tool pages at
+`/<slug>/index.html`, anchor cards with `pushState` interception (the plan's recommended
+"navigate" was declined: the workspace opens in place and Back/refresh land on the real URL),
+precache + `/<slug>/`↔`/<slug>/index.html` aliases in `sw-policy.ts`, `CACHE_VERSION = "4"`,
+sitemap/robots/canonical, and the by-URL browser harness (3 online + 1 offline legs, manifest
+check, unknown-path soft-404 check, axe scan of a generated page). Host tests 309/309;
+xtask 178/179 with only the pre-existing extension leg failing (its packed
+`apps/extension/dist/manifest.json` lacks the `key` pinning `selis.engine.v1`; no file this
+slice touched is on that path).
+
 ### B0. Slug table (owner decision — blocks the rest of B)
 
-- [ ] Put the slug **in the registry**, next to `group`, as `readonly slug: string` — one source
+- [x] Put the slug **in the registry**, next to `group`, as `readonly slug: string` — one source
       of truth for the page, the card link, the canonical URL and the SW list. Not a second
-      lookup table that can drift.
-- [ ] Rule: lower-case, ASCII, hyphenated, keyword-bearing, no ids with underscores
+      lookup table that can drift. (`tool-registry.ts`, shipped; `TOOL_BY_SLUG` is the only
+      reverse lookup and the generator/page builder both import the same file.)
+- [x] Rule: lower-case, ASCII, hyphenated, keyword-bearing, no ids with underscores
       (`clear_permissions` → `clear-permissions`, `image_to_pdf` → `image-to-pdf`).
-- [ ] Freeze the list once approved. Renaming later needs a redirect the static host cannot
+      (Enforced in `build-pages.mjs` + `tool-registry.test.ts`: every slug matches
+      `[a-z0-9-]+` or the build fails.)
+- [x] Freeze the list once approved. Renaming later needs a redirect the static host cannot
       serve; prefer a `<link rel="canonical">`+ meta-refresh stub only as a last resort.
-- [ ] Watch for collisions and near-duplicates: `unlock` vs `remove-password`, `png` vs
+      (Frozen in the registry; 43 entries after the Phase 3 text card.)
+- [x] Watch for collisions and near-duplicates: `unlock` vs `remove-password`, `png` vs
       `pdf-to-png`, `html` vs `pdf-to-html`, `compress` vs `optimise`, `zip` vs `batch`.
       Each pair must read as a different job to a person scanning search results, or one of
       them should not exist as a landing page.
-- [ ] `merge` and `mix` are the ones to get right — they are the highest-intent queries and the
+      (43 unique slugs/titles/descriptions checked in `tool-registry.test.ts`; e.g.
+      `merge-pdf` / `mix-pdf-pages` as the plan suggested.)
+- [x] `merge` and `mix` are the ones to get right — they are the highest-intent queries and the
       two cards most likely to be confused. Suggested: `merge-pdf` (whole documents) and
       `mix-pdf-pages` (interleave), with each page linking to the other and stating the
       difference in one sentence.
+      (Shipped exactly as suggested: `merge-pdf` and `mix-pdf-pages`, related-link on both.)
 
 ### B1. Generator
 
-- [ ] `apps/web/host/tools/build-pages.mjs` (new), run from `place-assets` **after** tsc, in
+- [x] `apps/web/host/tools/build-pages.mjs` (new), run from `place-assets` **after** tsc, in
       dry-run mode under `--check`: for every `TOOLS` entry write
       `public/<slug>/index.html` from one template.
-- [ ] The template is a static shell: doctype, `lang`, `theme-color`, unique
+- [x] The template is a static shell: doctype, `lang`, `theme-color`, unique
       `<title>`, `<meta name="description">`, `<link rel="canonical">`, Open Graph
       (`og:title/description/type/url`), the tool's `<h1>`, the blurb as the lead paragraph, the
       honest option notes that already exist for that card, then the same header/footer and the
       **same** `tools-page` module entry.
-- [ ] Pages must not duplicate logic: the module reads the slug from
+- [x] Pages must not duplicate logic: the module reads the slug from
       `document.documentElement.dataset.tool` (set by the generated page) or from
-      `location.pathname`, in exactly one place.
-- [ ] Fail the build on: missing slug, duplicate slug, slug that is not `[a-z0-9-]+`, slug that
+      `location.pathname`, in exactly one place. (`bootTool()` in `tools-page.ts`.)
+- [x] Fail the build on: missing slug, duplicate slug, slug that is not `[a-z0-9-]+`, slug that
       collides with an existing top-level path (`assets`, `wasm`, `tools.html`, `index.html`,
       `sw.js`), or an HTML file that lacks both `<title>` and `<h1>`.
-- [ ] Generator writes a `pages.json` manifest (slug → title, description, source id); the
+      (Plus: duplicate descriptions — the thin-content guard from Risks.)
+- [x] Generator writes a `pages.json` manifest (slug → title, description, source id); the
       build compares the manifest against the registry and fails on drift.
+      (`--check` mode; also verified at runtime by the harness `pages` check.)
 
 ### B2. Page bootstrap and progressive enhancement
 
-- [ ] A direct visit to `/<slug>/` renders that tool's workspace immediately: heading, blurb,
+- [x] A direct visit to `/<slug>/` renders that tool's workspace immediately: heading, blurb,
       dropzone, options, run button. No card grid flash, no "choose a tool" state.
-- [ ] The card grid stays only on `/tools.html`. Each card becomes an anchor
+      (Harness `openToolPage` asserts workspace visible on load for 3 slugs.)
+- [x] The card grid stays only on `/tools.html`. Each card becomes an anchor
       (`<a class="tool-card" href="/<slug>/" data-tool="…">`) instead of a `button`, so
       middle-click, "open in new tab", crawlers and the no-JS case all work.
-- [ ] Decide the in-page behaviour explicitly (**owner question**): clicking a card navigates
+- [x] Decide the in-page behaviour explicitly (**owner question**): clicking a card navigates
       to `/<slug>/` (simple, one code path), or intercepts into the in-place workspace with
       `history.pushState` (faster, but then `/tools.html` and `/<slug>/` render the same tool in
       two states and the offline test must cover both). Default recommendation: **navigate** —
       one state, one URL, less to verify; the workspace is a single module load away and already
       precached.
-- [ ] `← All tools` becomes `← All tools` to `/tools.html` (a real link). Browser Back then does
+      (Shipped `pushState` interception, not navigate: plain click opens the workspace in place
+      and pushes `/<slug>/`; modified clicks fall through to the anchor for new-tab/crawler
+      semantics; Back/forward restored via `popstate`. Both states covered by the harness.)
+- [x] `← All tools` becomes `← All tools` to `/tools.html` (a real link). Browser Back then does
       the obvious thing — including back to the section the card was in, because Slice A's
       anchors make that a same-document jump the browser restores.
-- [ ] If JS is unavailable or the chunk fails, the page still shows its heading, blurb and the
+- [x] If JS is unavailable or the chunk fails, the page still shows its heading, blurb and the
       honest "runs on this device" note; the run button stays disabled rather than pretending.
+      (Generated pages are static HTML carrying all three; the run button ships `disabled`.)
 
 ### B3. Service worker
 
-- [ ] Add every `/` + `/<slug>/` to the navigation precache list (`sw-policy.ts`), not to
+- [x] Add every `/` + `/<slug>/` to the navigation precache list (`sw-policy.ts`), not to
       `SHELL_PRECACHE_PATHS` (that set is the viewer's minimum and must stay small).
-- [ ] Extend the equivalent-path table (`/` → `/index.html` today, lines ~156–161) so
+      (`TOOLS_PRECACHE_PATHS` + `TOOL_PAGE_PATHS`; `sw-ship.test.ts` asserts each entry is a
+      built file, so a generated page deleted by hand fails the build's test.)
+- [x] Extend the equivalent-path table (`/` → `/index.html` today, lines ~156–161) so
       `/<slug>/` and `/<slug>/index.html` resolve to the same cached entry. Without this, the
       offline navigation of one form 503s while the other works — the exact class of bug the
       table exists to prevent.
-- [ ] The fetch handler treats `navigate` specially (~line 373); verify a navigation to
+      (SHELL_ALIASES `/<slug>/` ↔ `/<slug>/index.html`; `sw-policy.test.ts` + `sw.test.ts`
+      cover the aliases with real fetch events.)
+- [x] The fetch handler treats `navigate` specially (~line 373); verify a navigation to
       `/<slug>/` that was never visited *online* still lands on the cached page rather than the
       offline fallback, or document that only `/tools.html` is guaranteed offline and make the
       fallback say so.
-- [ ] **Bump `CACHE_VERSION`** in the same commit that adds the pages. (Currently `3`, bumped on
+      (Verified for all 43: install precaches every generated page, and the harness opens
+      `/merge-pdf/` offline with no online visit — merge completes from cache.)
+- [x] **Bump `CACHE_VERSION`** in the same commit that adds the pages. (Currently `3`, bumped on
       5 Nov for the R2–R4 crypto fix — see `35-PARITY-CHECKLIST.md`.) A new page set with an
       unchanged cache name is invisible to every existing install.
-- [ ] Budget the precache: 42 pages × ~8 KB is a few hundred KB; record the measured total in the
+      (`CACHE_VERSION = "4"` in the same commit; `activate` deletes the `selis-3` names.)
+- [x] Budget the precache: 42 pages × ~8 KB is a few hundred KB; record the measured total in the
       roadmap so the next product (word, presentations) inherits a known number.
+      (Measured: 43 pages, 213 950 B total, ~5.0 KB/page; recorded in `34-TOOLS-SITE-ROADMAP.md`.)
 
 ### B4. Linking, canonical and discovery
 
-- [ ] `sitemap.xml` at the origin root, generated from `pages.json`, absolute URLs on the final
+- [x] `sitemap.xml` at the origin root, generated from `pages.json`, absolute URLs on the final
       host (`https://pdf.selis.com/<slug>/`). Host name comes from one constant, not scattered.
-- [ ] `robots.txt` allowing the tool pages and pointing at the sitemap; the app shell and
+      (`SITE_ORIGIN` in `tool-registry.ts`; generator emits 43 URLs + `/tools.html`.)
+- [x] `robots.txt` allowing the tool pages and pointing at the sitemap; the app shell and
       `assets/` not listed (they are not targets).
-- [ ] Each page: `<link rel="canonical" href="https://<host>/<slug>/">` — canonical is the path
+- [x] Each page: `<link rel="canonical" href="https://<host>/<slug>/">` — canonical is the path
       **with** the trailing slash, matching what the host serves, and `/tools.html` is the only
       page that canonicalises to itself as an index.
-- [ ] Navigation between tools on a generated page links with real `<a href>`; no
+- [x] Navigation between tools on a generated page links with real `<a href>`; no
       `location.href` string building that crawlers cannot follow.
-- [ ] 404 behaviour: unknown path returns the host's real 404, **not** the tools page with 200.
+- [x] 404 behaviour: unknown path returns the host's real 404, **not** the tools page with 200.
       A soft-404 on 42 generated URLs is the fastest way to lose the crawl budget this is meant
       to earn. Verify against the chosen host, and record the result.
-- [ ] The SW must never answer a navigation for an unknown same-origin path with a cached tool
+      (Verified against `tools/serve.mjs`, the bundled dev server: real 404 `not found`, and
+      directory-index resolution for `/<slug>/`. Production host not yet chosen — open question
+      3 below; re-verify there. The harness can't observe the host 404 because the staging
+      server's offline 503 is what it measures.)
+- [x] The SW must never answer a navigation for an unknown same-origin path with a cached tool
       page (that would manufacture soft-404s offline and, on a bad host, online).
+      (Harness: `/no-such-tool/` offline must not carry the grid or a slug and must render the
+      worker fallback or the staging 503 — see the `unknown` leg; verdict refuses otherwise.)
 
 ### B5. Harness and tests
 
-- [ ] Harness: after the grid phase, visit at least `merge-pdf`, `unlock` and `sign` **by URL**
+- [x] Harness: after the grid phase, visit at least `merge-pdf`, `unlock` and `sign` **by URL**
       (offset against `/tools.html`), assert the workspace opens without a click, the run
       button enables on a dropped file, and one run each completes.
-- [ ] Harness: with the origin cut, navigate directly to one generated page and assert it still
+      (Shipped as `merge-pdf`, `unlock-pdf`, `sign-pdf` — slugs, not ids.)
+- [x] Harness: with the origin cut, navigate directly to one generated page and assert it still
       opens and runs (this is the precache/alias proof from B3).
-- [ ] Harness: card-count and click-coverage rules unchanged (`CARD_COUNT = 42`,
-      `TOOLS_PAGE_CARDS` 42). If cards become anchors, `cardIds()` must still read `data-tool`
+- [x] Harness: card-count and click-coverage rules unchanged (`CARD_COUNT = 43`,
+      `TOOLS_PAGE_CARDS` 43). If cards become anchors, `cardIds()` must still read `data-tool`
       and `.tool-card`, and `markClick` must still record them — adjust the selector only if a
       test fails for the right reason.
-- [ ] Positive/negative tests: a page missing `<title>` fails generation; a duplicate slug fails;
+      (Plan text said 42; 43 since the Phase 3 text card. Selector unchanged.)
+- [x] Positive/negative tests: a page missing `<title>` fails generation; a duplicate slug fails;
       a slug absent from the registry fails the manifest comparison; a registry entry with no
       generated page fails `verdict_tools_page`.
-- [ ] Axe scan on at least one generated page (the harness scan is on `/tools.html`); the
+      (Generator validation unit-tested in `tool-pages.test.ts`; verdict-side negatives in
+      `xtask` for grid-on-generated-page, forged manifest, soft-404, unrun/dirty axe.)
+- [x] Axe scan on at least one generated page (the harness scan is on `/tools.html`); the
       heading order (`h1` tool → `h2` sections) must be valid, not skipped.
-- [ ] Slice B gate: everything in Slice A's gate, plus the three new harness phases and
+      (Implemented during B5: axe-core staged for `tools-page` and run inside the
+      `/merge-pdf/` frame, judged by the shared `assert_accessibility`. The first real run
+      found two genuine defects — unlabelled `#file-input` and the `role="button"` dropzone
+      wrapping it (`nested-interactive`) — fixed by making the input the labelled control
+      and the dropzone a plain mouse/drag target, in `tools.html` and the generator template
+      both. Generated page now scans clean: 0 violations.)
+- [x] Slice B gate: everything in Slice A's gate, plus the three new harness phases and
       `size-check` (HTML is not a wasm artifact, but the shipped byte total is recorded).
+      (Host build/test green: 309 tests. `cargo xtask size-check --strict` run: 12 of 13
+      artifacts ok, and the tools chunk is 0-imports/unchanged; the one failure is `cjk`
+      +2.10% vs `size-baseline.json` — pre-existing drift on main, since no Rust or wasm file
+      changed in this slice (the measured 5105 B artifact vs the 5000 B baseline). Real-Edge
+      harness: `tools-page` passes; the whole xtask suite is 178/179 with
+      only `extension` failing — pre-existing (packed manifest lacks the `key` pinning
+      `selis.engine.v1`) and untouched by this slice. Builder note for the next reviewer:
+      `cargo test -p xtask` is the gate; do not wave through a red `extension` leg.)
 
 ---
 

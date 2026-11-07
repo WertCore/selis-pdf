@@ -5348,6 +5348,12 @@ const TOOLS_PAGE_CARDS: [&str; 43] = [
     "zip",
 ];
 
+/// The generated pages this check opens by URL (plan 36 §B5). Only these three
+/// slugs are hard-coded here; every other page is covered by the manifest check
+/// below. A rename in `tool-registry.ts` that this file does not follow fails
+/// the run instead of silently testing an alias.
+const TOOLS_PAGE_BY_URL: [&str; 3] = ["merge-pdf", "unlock-pdf", "sign-pdf"];
+
 /// The gate the roadmap words as "the browser check drives every card online and
 /// after an offline reload". A card that renders and is never opened is an
 /// untested card, so the driver names every id in the grid and records the ids
@@ -5399,6 +5405,263 @@ fn check_card_coverage(report: &Json) -> Result<(), String> {
                 missing
             ));
         }
+    }
+    Ok(())
+}
+
+/// The generated page's own identity: the slug it declares, the path it was
+/// served at, the canonical URL, a non-empty heading and the absence of the
+/// card grid. A page that carries the grid is `/tools.html` wearing a slug.
+fn check_tool_page_identity(page: &Json, slug: &str, label: &str) -> Result<(), String> {
+    if string_field(page, "slug")? != slug {
+        return Err(format!(
+            "the {label} page declared data-tool={:?}, expected {slug:?}",
+            page.get("slug")
+        ));
+    }
+    let path = format!("/{slug}/");
+    if string_field(page, "path")? != path {
+        return Err(format!(
+            "the {label} page was served at {:?}, expected {path:?}",
+            page.get("path")
+        ));
+    }
+    let canonical = string_field(page, "canonical")?;
+    let canonical_path = format!("/{slug}/");
+    if !canonical.ends_with(&canonical_path) {
+        return Err(format!(
+            "the {label} page canonicalised to {canonical:?}, expected a URL ending {canonical_path:?}"
+        ));
+    }
+    if string_field(page, "heading")?.trim().is_empty() {
+        return Err(format!(
+            "the {label} page had no workspace heading; a generated page must name its tool"
+        ));
+    }
+    if page.get("hasGrid").and_then(Json::as_bool) != Some(false) {
+        return Err(format!(
+            "the {label} page carried the card grid (hasGrid = {:?})",
+            page.get("hasGrid")
+        ));
+    }
+    Ok(())
+}
+
+/// `pages.json` against the grid: one generated page per registry entry, and no
+/// registry entry without a page. The driver fetches every slug the manifest
+/// lists, so a build that dropped one file fails here.
+fn check_tool_page_manifest(report: &Json) -> Result<(), String> {
+    let pages = report
+        .get("pages")
+        .ok_or_else(|| "the page reported no generated-page manifest (pages = None)".to_string())?;
+    if pages.get("count").and_then(Json::as_u64) != Some(TOOLS_PAGE_CARDS.len() as u64) {
+        return Err(format!(
+            "pages.json listed {:?} pages, expected {}",
+            pages.get("count"),
+            TOOLS_PAGE_CARDS.len()
+        ));
+    }
+    let missing: Vec<&str> = pages
+        .get("missing")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no missing-page list".to_string())?
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} generated page(s) in pages.json could not be fetched: {missing:?}",
+            missing.len()
+        ));
+    }
+    let ids: Vec<String> = pages
+        .get("ids")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no manifest id list".to_string())?
+        .iter()
+        .filter_map(Json::as_str)
+        .map(str::to_string)
+        .collect();
+    let expected: Vec<String> = TOOLS_PAGE_CARDS
+        .iter()
+        .map(|card| (*card).to_string())
+        .collect();
+    if ids != expected {
+        return Err(format!(
+            "pages.json does not describe the rendered cards: got {ids:?}, expected {expected:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// One merge leg opened from a generated page: two files in, one `%PDF-` out,
+/// with the page's own no-upload assertion still in force.
+fn check_by_url_merge(leg: &Json, label: &str) -> Result<(), String> {
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(2) {
+        return Err(format!(
+            "the {label} leg did not show two selected PDFs (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Merge PDFs" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Merge PDFs\"",
+            leg.get("runLabel")
+        ));
+    }
+    if string_field(leg, "noUpload")? != "verified" {
+        return Err(format!(
+            "the {label} leg never set data-no-upload=verified; the local request check did not pass"
+        ));
+    }
+    let result = leg
+        .get("result")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no result object"))?;
+    if result.get("title").and_then(Json::as_str) != Some("merged.pdf") {
+        return Err(format!(
+            "the {label} result was named {:?}, expected \"merged.pdf\"",
+            result.get("title")
+        ));
+    }
+    let rows = result
+        .get("rows")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} result had no verification rows"))?;
+    let row_value = |wanted: &str| {
+        rows.iter()
+            .find(|row| row.get("label").and_then(Json::as_str) == Some(wanted))
+            .and_then(|row| row.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("")
+    };
+    if row_value("Pages") != "2 \u{2192} 2" {
+        return Err(format!(
+            "the {label} merge reported Pages {:?}, expected \"2 \u{2192} 2\"",
+            row_value("Pages")
+        ));
+    }
+    if row_value("Verification") != "ok" {
+        return Err(format!(
+            "the {label} result did not report a passing structural verification (got {:?})",
+            row_value("Verification")
+        ));
+    }
+    let output = leg
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no output object"))?;
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} result download was not a Blob URL"));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} downloaded bytes did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    if output.get("bytes").and_then(Json::as_u64).unwrap_or(0) <= 500 {
+        return Err(format!(
+            "the {label} downloaded PDF is only {:?} bytes; two 423-byte inputs should produce more",
+            output.get("bytes")
+        ));
+    }
+    Ok(())
+}
+
+/// B5's by-URL legs: three generated pages opened without a click online, one
+/// of them again with the origin cut, and an unknown path that must not become
+/// a cached tool page.
+fn check_by_url_legs(report: &Json) -> Result<(), String> {
+    let by_url = report
+        .get("byUrl")
+        .ok_or_else(|| "the driver reported no by-URL legs (byUrl = None)".to_string())?;
+    let online = by_url
+        .get("online")
+        .ok_or_else(|| "the driver reported no online by-URL legs".to_string())?;
+
+    let merge = online
+        .get("merge")
+        .ok_or_else(|| "the driver never opened merge-pdf by URL".to_string())?;
+    check_tool_page_identity(
+        merge
+            .get("page")
+            .ok_or_else(|| "the merge-pdf leg reported no page identity".to_string())?,
+        TOOLS_PAGE_BY_URL[0],
+        "online merge-pdf",
+    )?;
+    check_by_url_merge(merge, "online merge-pdf")?;
+    // The generated-page accessibility gate: the axe-core scan of the
+    // merge-pdf page, judged exactly like app-shell's (an unrun scan is a
+    // failure, and "axe-core clean" means zero violations).
+    assert_accessibility(merge).map_err(|why| format!("the merge-pdf page scan: {why}"))?;
+
+    let unlock = online
+        .get("unlock")
+        .ok_or_else(|| "the driver never opened unlock-pdf by URL".to_string())?;
+    check_tool_page_identity(
+        unlock
+            .get("page")
+            .ok_or_else(|| "the unlock-pdf leg reported no page identity".to_string())?,
+        TOOLS_PAGE_BY_URL[1],
+        "online unlock-pdf",
+    )?;
+    check_security_leg(unlock, "online unlock-pdf", &UNLOCK_LEG)?;
+
+    let sign = online
+        .get("sign")
+        .ok_or_else(|| "the driver never opened sign-pdf by URL".to_string())?;
+    check_tool_page_identity(
+        sign.get("page")
+            .ok_or_else(|| "the sign-pdf leg reported no page identity".to_string())?,
+        TOOLS_PAGE_BY_URL[2],
+        "online sign-pdf",
+    )?;
+    check_sign_document(sign, "online sign-pdf", &STAMP_LEG)?;
+
+    let offline = by_url
+        .get("offline")
+        .ok_or_else(|| "the driver reported no offline by-URL legs".to_string())?;
+    let offline_merge = offline
+        .get("merge")
+        .ok_or_else(|| "the driver never opened a generated page offline".to_string())?;
+    check_tool_page_identity(
+        offline_merge
+            .get("page")
+            .ok_or_else(|| "the offline by-URL leg reported no page identity".to_string())?,
+        TOOLS_PAGE_BY_URL[0],
+        "offline merge-pdf",
+    )?;
+    check_by_url_merge(offline_merge, "offline merge-pdf")?;
+
+    let unknown = offline
+        .get("unknown")
+        .ok_or_else(|| "the driver never tried an unknown path offline".to_string())?;
+    if unknown.get("hasGrid").and_then(Json::as_bool) != Some(false) {
+        return Err(format!(
+            "an unknown offline path was answered with the tools grid (hasGrid = {:?})",
+            unknown.get("hasGrid")
+        ));
+    }
+    if unknown.get("slug").is_some_and(|slug| !slug.is_null()) {
+        return Err(format!(
+            "an unknown offline path was answered with the tool page {:?}",
+            unknown.get("slug")
+        ));
+    }
+    // Offline here is the staging server's 503, not a dead socket, so the
+    // worker's `offlineFallback()` HTML is only one of the two honest
+    // answers: the other's body is the server's own "offline" text, which
+    // still proves no cached tool page was served. A blank error page
+    // matches neither.
+    let heading = string_field(unknown, "heading")?;
+    let body = string_field(unknown, "body")?;
+    if heading != "Not available offline yet" && body != "offline" {
+        return Err(format!(
+            "an unknown offline path was answered with heading {:?} and body {:?}, not the worker's offline fallback or the staging server's offline 503",
+            unknown.get("heading"),
+            unknown.get("body")
+        ));
     }
     Ok(())
 }
@@ -5665,6 +5928,8 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         ));
     }
     check_card_coverage(report)?;
+    check_tool_page_manifest(report)?;
+    check_by_url_legs(report)?;
     if report.get("fileRows").and_then(Json::as_u64) != Some(2) {
         return Err(format!(
             "the page did not show two selected PDFs (fileRows = {:?})",
@@ -9905,6 +10170,13 @@ fn resolve(root: &Path, target: &str) -> Option<PathBuf> {
         }
         out.push(part);
     }
+    // Directory-index resolution is the one host behaviour plan 36's routes
+    // are designed around: `/merge-pdf/` and `/merge-pdf` both serve
+    // `merge-pdf/index.html`. Doing it here keeps the harness's origin honest
+    // instead of making the test depend on a server quirk no host guarantees.
+    if out.is_dir() {
+        out.push("index.html");
+    }
     out.starts_with(root).then_some(out)
 }
 
@@ -12238,6 +12510,61 @@ mod tests {
         })
     }
 
+    /// One generated page's report identity, matching what `openToolPage()`
+    /// records in the harness. The values are representative; the gate is about
+    /// the slug, path, canonical and the absence of the grid.
+    fn by_url_page(slug: &str) -> Json {
+        json!({
+            "slug": slug,
+            "path": format!("/{slug}/"),
+            "title": format!("{slug} - Selis Tools"),
+            "heading": "Generated page heading",
+            "canonical": format!("https://pdf.selis.com/{slug}/"),
+            "hasGrid": false,
+            "controlled": true,
+        })
+    }
+
+    /// A leg with the generated page's identity folded in.
+    fn by_url_leg(page: Json, mut leg: Json) -> Json {
+        leg.as_object_mut()
+            .expect("leg object")
+            .insert("page".to_string(), page);
+        leg
+    }
+
+    /// A merge leg as a generated page reports it: two inputs, one PDF out.
+    fn real_tools_merge_by_url_leg() -> Json {
+        json!({
+            "page": by_url_page("merge-pdf"),
+            "a11y": { "available": true, "passes": 22, "violations": [] },
+            "fileRows": 2,
+            "runLabel": "Merge PDFs",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "merged.pdf",
+                "rows": [
+                    { "label": "Pages", "value": "2 \u{2192} 2" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "output": {
+                "blob": true,
+                "previewBlob": true,
+                "downloadName": "merged.pdf",
+                "bytes": 848,
+                "header": "%PDF-",
+            },
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 6,
+                "foreign": [],
+                "paths": [],
+            },
+        })
+    }
+
     fn real_tools_page_report() -> Json {
         let mut report = json!({
             "schema": SCHEMA,
@@ -12284,6 +12611,35 @@ mod tests {
             "splitBookmarks": real_tools_bookmark_split_leg(),
             "duplicate": real_tools_organize_leg("outlined-duplicated.pdf"),
             "blanks": real_tools_organize_leg("outlined-blanks.pdf"),
+            "pages": {
+                "count": TOOLS_PAGE_CARDS.len(),
+                "missing": [],
+                "ids": TOOLS_PAGE_CARDS.as_slice(),
+                "origin": "https://pdf.selis.com",
+            },
+            "byUrl": {
+                "online": {
+                    "merge": real_tools_merge_by_url_leg(),
+                    "unlock": by_url_leg(
+                        by_url_page("unlock-pdf"),
+                        real_tools_security_leg(&UNLOCK_LEG),
+                    ),
+                    "sign": by_url_leg(
+                        by_url_page("sign-pdf"),
+                        real_tools_sign_leg(&STAMP_LEG),
+                    ),
+                },
+                "offline": {
+                    "merge": real_tools_merge_by_url_leg(),
+                    "unknown": {
+                        "title": "Selis PDF Viewer - offline",
+                        "heading": "Not available offline yet",
+                        "body": "Not available offline yetThis copy of the Selis viewer has not finished installing. Reconnect once, then it will open local files with no network at all.",
+                        "hasGrid": false,
+                        "slug": Json::Null,
+                    },
+                },
+            },
             "sw": {
                 "registration": "registered",
                 "script": "http://127.0.0.1:1234/sw.js",
@@ -13326,6 +13682,68 @@ mod tests {
             "an online-only resize must not pass the offline gate"
         );
 
+        let mut no_by_url = report.clone();
+        no_by_url
+            .as_object_mut()
+            .expect("report object")
+            .remove("byUrl");
+        assert!(
+            verdict_tools_page(&no_by_url).is_err(),
+            "a run that never opened a generated page by URL must not pass"
+        );
+
+        let mut missing_page = report.clone();
+        *missing_page.pointer_mut("/pages/missing").unwrap() = json!(["unlock-pdf"]);
+        assert!(
+            verdict_tools_page(&missing_page).is_err(),
+            "a registry entry with no generated page must not pass"
+        );
+
+        let mut grid_on_generated = report.clone();
+        *grid_on_generated
+            .pointer_mut("/byUrl/online/sign/page/hasGrid")
+            .unwrap() = json!(true);
+        assert!(
+            verdict_tools_page(&grid_on_generated).is_err(),
+            "a generated page that carried the card grid must not pass"
+        );
+
+        let mut bad_merge_header = report.clone();
+        *bad_merge_header
+            .pointer_mut("/byUrl/online/merge/output/header")
+            .unwrap() = json!("NOPE");
+        assert!(
+            verdict_tools_page(&bad_merge_header).is_err(),
+            "a by-URL merge whose download is not a PDF must not pass"
+        );
+
+        let mut soft_404 = report.clone();
+        *soft_404
+            .pointer_mut("/byUrl/offline/unknown/heading")
+            .unwrap() = json!("Selis Tools");
+        assert!(
+            verdict_tools_page(&soft_404).is_err(),
+            "an unknown offline path answered with a cached tool page must not pass"
+        );
+
+        let mut a11y_unrun = report.clone();
+        *a11y_unrun
+            .pointer_mut("/byUrl/online/merge/a11y/available")
+            .unwrap() = json!(false);
+        assert!(
+            verdict_tools_page(&a11y_unrun).is_err(),
+            "a generated page whose axe scan never ran must not pass"
+        );
+
+        let mut a11y_dirty = report.clone();
+        *a11y_dirty
+            .pointer_mut("/byUrl/online/merge/a11y/violations")
+            .unwrap() = json!([{ "id": "color-contrast", "impact": "serious", "help": "Fix contrast", "nodes": 1, "firstTarget": "#workspace-title" }]);
+        assert!(
+            verdict_tools_page(&a11y_dirty).is_err(),
+            "a generated page with an axe violation must not pass"
+        );
+
         let mut nup_no_form = report.clone();
         *nup_no_form.pointer_mut("/nup/outputs/0/found/0").unwrap() = json!(false);
         assert!(
@@ -14161,6 +14579,32 @@ mod tests {
         ] {
             assert!(resolve(root, target).is_none(), "{target} must not resolve");
         }
+    }
+
+    /// A generated tool page is a directory, not a file, and the harness has to
+    /// serve it the same way the deployment host will.
+    #[test]
+    fn a_directory_url_resolves_to_its_index_page() {
+        let root = std::env::temp_dir().join(format!("selis-index-test-{}", std::process::id()));
+        let page = root.join("merge-pdf");
+        std::fs::create_dir_all(&page).unwrap();
+        std::fs::write(page.join("index.html"), b"<h1>Merge PDF</h1>").unwrap();
+
+        for target in ["/merge-pdf/", "/merge-pdf", "/merge-pdf/index.html"] {
+            let found = resolve(&root, target).expect("a directory URL must resolve");
+            assert!(
+                found.ends_with("merge-pdf/index.html") || found.ends_with("merge-pdf\\index.html"),
+                "{target} resolved to {}",
+                found.display()
+            );
+        }
+        // A missing slug has no directory to index, so the served file does
+        // not exist and the origin answers a real 404 rather than the tools
+        // page (the soft-404 the plan calls out).
+        let missing = resolve(&root, "/no-such-tool/").expect("a path is still a path");
+        assert!(!missing.exists(), "{} must not exist", missing.display());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

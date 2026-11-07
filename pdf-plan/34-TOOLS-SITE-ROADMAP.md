@@ -228,7 +228,7 @@ the form, signature, or crypto surface; **Edit** = Phase 5 editing; **AI/Collab*
 | Collaborative whiteboard | — | yes | AI/Collab | Separate CRDT surface; PDF export via the writer. |
 | Client-side task queue / batch | — | yes | 1A.1 | Live. The browser queue runs one tool over up to 64 files with per-file isolation: a refused file is reported with its own reason and never cancels the queue, and the survivors come back as their own verified downloads inside one ZIP. |
 | Offline PWA | — | yes | 1A.1 | Live. Viewer shell and the complete tools page graph are precached; the browser check cuts the origin, reloads `/tools.html`, and merges again from the worker. |
-| SEO landing page per tool | — | — | Ship | One route per operation; the privacy claim in the meta description is the differentiator. |
+| SEO landing page per tool | — | — | Ship | Shipped (36, Slice B, 7 Nov 2026): one statically generated route per operation at `/<slug>/` on pdf.selis.com (43 tools, `tool-registry.ts` + `tools/build-pages.mjs`), each with its own title/meta/canonical, plus generated `sitemap.xml`/`robots.txt`. Slugs are frozen; the web privacy claim stays in every meta description. Measured precache cost: 43 pages, 213 950 B total (~5.0 KB/page) — the number word/presentations products inherit. Production-host 404 behaviour still to verify once the host is chosen. |
 
 ---
 

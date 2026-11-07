@@ -106,11 +106,30 @@ check proves the engine delivers `install`/`activate`, that `clients.claim()` re
 a controller, and that `respondWith` really returns the precached body — the three behaviours the
 Node double has to fake. `app-shell` runs this package's own `sw.js` behind the viewer; `tools-page`
 runs it behind the real `/tools.html`, then cuts the origin, reloads the page, and merges again
-from the cache.
+from the cache. `tools-page` also opens generated per-tool pages by URL
+(`merge-pdf`, `unlock-pdf`, `sign-pdf`), repeats the merge leg offline, refuses an unknown
+path that is answered with a cached tool page (soft-404), and runs an axe-core scan inside
+`/merge-pdf/` — the scan, not the eye, holds the generated page's accessibility gate.
 
 **Not** covered by either, and still to be confirmed at deploy or in a real browser: real Cache
 Storage quota behaviour, and the DoD's manual airplane-mode pass (open a local PDF, view, search,
 print, and run a tools operation).
+
+### Per-tool routes and running it locally
+
+Every tool has a statically generated page at `/<slug>/index.html`, produced by
+`tools/build-pages.mjs` from the single source of truth in `src/tool-registry.ts`
+(43 slugs, titles, blurbs, option notes). The generator also writes `pages.json`,
+`sitemap.xml` and `robots.txt` under `public/`; all four are build artifacts and are
+gitignored, never hand-edited. `pnpm --filter @selis/web-host pages:check` re-runs the
+generator in `--check` mode and fails on any drift.
+
+To serve the built app locally (directory-index resolution, isolation headers, real 404s):
+
+```
+pnpm --filter @selis/web-host build   # regenerate pages + assets
+pnpm --filter @selis/web-host serve    # http://127.0.0.1:4173/tools.html
+```
 
 ## Entry points (all local)
 
