@@ -148,7 +148,8 @@ without reading 42 near-identical cards. No URL changes.
       chunks should not move, which is itself the check that no Rust was touched).
 - [x] Docs: note the sections in `34-TOOLS-SITE-ROADMAP.md`; add the stale-count fix to the
       commit message. Do **not** tick the "SEO landing page per tool" row — that is Slice B.
-- [ ] Commit → push `feature/tools-site` → fast-forward `main` → push `origin/main`.
+- [x] Commit → push `feature/tools-site` → fast-forward `main` → push `origin/main`.
+      (Done 7 Nov 2026 with the Slice B commit `9319a002`, both branches at it.)
 
 ---
 
