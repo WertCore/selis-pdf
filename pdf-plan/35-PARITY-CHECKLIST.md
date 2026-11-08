@@ -878,8 +878,23 @@ fidelity.
 - [ ] **HTML/CSS/Markdown refinements** — print media, pagination, tables, links.
       *Partially shipped:* GFM pipe tables and HTML `<table>` now lay out as real tables with a
       header row, rules and per-column wrapping; links render as their text plus the URL, and
-      pagination is the shared layout engine. Print-media CSS, page-break control and external
-      stylesheets are not interpreted, so the row stays open.
+      pagination is the shared layout engine.
+      *Page-break control added:* `selis-pdf-convert::html` now reads a `style` attribute and the
+      one piece of CSS the converter interprets — `page-break-before`/`page-break-after` and the
+      modern `break-before`/`break-after` with a forcing value (`always`, `page`, `left`, `right`) —
+      and emits the existing `Block::PageBreak` the layout engine already honours: a break *before*
+      an element at its open tag, a break *after* it at its matching close (tracked on a small
+      stack), and `avoid`/`auto`/absent is no break. So `<div style="page-break-before:always">` and
+      `<h2 style="break-before:page">` start a new PDF page. The CSS parse is deliberately narrow —
+      every other declaration in a `style` attribute is still ignored, as the crate docs say.
+      Markdown has no page-break construct and does not route raw HTML through the parser, so this is
+      an HTML/CSS feature; `topdf --format html` and the Convert card's HTML option carry it.
+      Evidence: 4 new `html.rs` tests (break-before between paragraphs, break-after after the
+      element, the modern `break-before:page`, and a non-forcing `avoid` that does nothing) inside
+      the convert crate's 75; `cargo fmt` clean.
+      Still open (so the row is not ticked): print-media `@media print` rules and external
+      stylesheets are not interpreted — those need a CSS cascade the converter deliberately does not
+      carry — and the real-Edge `browser-check` leg needs the harness absent here.
 
 ---
 

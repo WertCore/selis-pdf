@@ -43,6 +43,10 @@ struct Parser<'a> {
     in_item: bool,
     item_ordinal: usize,
     table: Option<TableBuilder>,
+    /// Open elements that asked for a page break *after* them (CSS
+    /// `page-break-after`/`break-after`), so the break can be emitted when the
+    /// matching close tag arrives.
+    break_after_stack: Vec<String>,
 }
 
 /// Parse an HTML subset into layout blocks.
@@ -67,6 +71,7 @@ pub(crate) fn parse(input: &str) -> Vec<Block> {
         in_item: false,
         item_ordinal: 0,
         table: None,
+        break_after_stack: Vec::new(),
     };
     p.run();
     p.finish();
@@ -333,8 +338,9 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Read attributes (only href is kept) and find the tag's end.
+        // Read attributes (href and style are kept) and find the tag's end.
         let mut href: Option<String> = None;
+        let mut style: Option<String> = None;
         let mut self_closing = false;
         let mut q = p;
         loop {
@@ -396,8 +402,10 @@ impl<'a> Parser<'a> {
                             if quoted {
                                 q = q.saturating_add(1);
                             }
-                            if attr == "href" {
-                                href = Some(value);
+                            match attr.as_str() {
+                                "href" => href = Some(value),
+                                "style" => style = Some(value),
+                                _ => {}
                             }
                         } else {
                             let vstart = q;
@@ -411,8 +419,10 @@ impl<'a> Parser<'a> {
                                 .chars
                                 .get(vstart..q)
                                 .map_or_else(String::new, |s| s.iter().collect());
-                            if attr == "href" {
-                                href = Some(value);
+                            match attr.as_str() {
+                                "href" => href = Some(value),
+                                "style" => style = Some(value),
+                                _ => {}
                             }
                         }
                     }
@@ -424,11 +434,37 @@ impl<'a> Parser<'a> {
         }
         self.pos = q;
 
+        let (break_before, break_after) = css_page_breaks(style.as_deref());
         if closing {
             self.close_tag(&name);
+            // A break the matching open tag asked for lands after its content.
+            if self
+                .break_after_stack
+                .last()
+                .is_some_and(|open| open == &name)
+            {
+                self.break_after_stack.pop();
+                self.emit_page_break();
+            }
         } else {
+            if break_before {
+                self.emit_page_break();
+            }
             self.open_tag(&name, href.as_deref(), self_closing);
+            if break_after {
+                if self_closing {
+                    self.emit_page_break();
+                } else {
+                    self.break_after_stack.push(name.clone());
+                }
+            }
         }
+    }
+
+    /// Close any open paragraph and start a new page.
+    fn emit_page_break(&mut self) {
+        self.flush_paragraph();
+        self.blocks.push(Block::PageBreak);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -862,6 +898,31 @@ fn decode_entity(name: &str) -> Option<String> {
 }
 
 /// Case-insensitive prefix match at `pos`.
+/// Read the page-break intent from a `style` attribute: `(before, after)`.
+///
+/// Honours both the classic `page-break-before`/`page-break-after` and the
+/// modern `break-before`/`break-after`, with any forcing value (`always`,
+/// `page`, `left`, `right`). `avoid`, `auto`, an absent property, or any other
+/// value is no break. This is the one piece of CSS the converter interprets;
+/// everything else in a `style` attribute is ignored, as the crate docs say.
+fn css_page_breaks(style: Option<&str>) -> (bool, bool) {
+    let Some(style) = style else {
+        return (false, false);
+    };
+    let lower = style.to_ascii_lowercase();
+    let forces = |property: &str| -> bool {
+        lower.split(';').any(|declaration| {
+            let mut parts = declaration.splitn(2, ':');
+            let key = parts.next().unwrap_or("").trim();
+            let value = parts.next().unwrap_or("").split_whitespace().next();
+            key == property && matches!(value, Some("always" | "page" | "left" | "right"))
+        })
+    };
+    let before = forces("page-break-before") || forces("break-before");
+    let after = forces("page-break-after") || forces("break-after");
+    (before, after)
+}
+
 fn starts_with_ci(chars: &[char], pos: usize, needle: &str) -> bool {
     let mut p = pos;
     for n in needle.chars() {
@@ -908,6 +969,50 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// The 1-based index of the first page break in `blocks`, if any.
+    fn first_break(blocks: &[Block]) -> Option<usize> {
+        blocks.iter().position(|b| matches!(b, Block::PageBreak))
+    }
+
+    #[test]
+    fn page_break_before_starts_a_new_page() {
+        let blocks = parse("<p>one</p><div style=\"page-break-before:always\"><p>two</p></div>");
+        let at = first_break(&blocks).expect("a page break");
+        // The break sits between the first paragraph and the second.
+        assert!(matches!(&blocks[at - 1], Block::Paragraph(_)), "{blocks:?}");
+        assert!(matches!(&blocks[at + 1], Block::Paragraph(_)), "{blocks:?}");
+    }
+
+    #[test]
+    fn page_break_after_lands_after_the_element() {
+        let blocks = parse("<div style=\"page-break-after:always\"><p>one</p></div><p>two</p>");
+        let at = first_break(&blocks).expect("a page break");
+        // "one" is before the break, "two" after it.
+        let Block::Paragraph(before) = &blocks[at - 1] else {
+            panic!("expected a paragraph before the break: {blocks:?}");
+        };
+        assert!(before.iter().any(|s| s.text.contains("one")));
+        let Block::Paragraph(after) = &blocks[at + 1] else {
+            panic!("expected a paragraph after the break: {blocks:?}");
+        };
+        assert!(after.iter().any(|s| s.text.contains("two")));
+    }
+
+    #[test]
+    fn the_modern_break_before_page_syntax_is_honoured() {
+        let blocks = parse("<h2 style=\"break-before: page\">Next</h2>");
+        assert_eq!(first_break(&blocks), Some(0), "break is before the heading");
+    }
+
+    #[test]
+    fn a_non_forcing_break_value_does_nothing() {
+        let blocks = parse("<div style=\"page-break-before:avoid\"><p>x</p></div>");
+        assert!(
+            first_break(&blocks).is_none(),
+            "avoid is not a break: {blocks:?}"
+        );
+    }
 
     #[test]
     fn headings_paragraphs_and_styles() {
