@@ -3122,3 +3122,46 @@ globalThis.__selisSearch = function (base64, query) {
 		return { status: "threw", detail: error instanceof Error ? error.message : String(error) };
 	}
 };
+
+// ── Open a PDF (the file picker the viewer page surfaces) ─────────────────────
+//
+// The viewer accepts a document through the WEB.03 handoff (drag-drop, paste,
+// `?src=`), but a reader also needs an obvious button. This wires the header's
+// "Open a PDF" control to the same local-only path: the file is read into an
+// ArrayBuffer in the page — never uploaded — and handed to `__selisView`, which
+// opens it and paints the first page. The control lives in the header, not in
+// `#selis-app`, so `paintPage` replacing the canvas never removes it.
+function installOpenButton() {
+	const button = document.getElementById("selis-open-file-button");
+	const input = document.getElementById("selis-open-file");
+	if (button === null || input === null) return;
+	button.addEventListener("click", () => input.click());
+	input.addEventListener("change", async () => {
+		const file = input.files && input.files[0];
+		if (!file) return;
+		button.disabled = true;
+		button.textContent = "Opening…";
+		try {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			// Base64 the bytes in chunks so a large file does not blow the argument
+			// limit of a single `String.fromCharCode` call. The bytes stay in this
+			// page; `__selisView` opens them through the C ABI in local memory.
+			let binary = "";
+			for (let i = 0; i < bytes.length; i += 0x8000) {
+				binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+			}
+			globalThis.__selisView(btoa(binary));
+		} catch (error) {
+			showFailure(
+				{ message: error instanceof Error ? error.message : String(error) },
+				"opening the document",
+			);
+		} finally {
+			button.disabled = false;
+			button.textContent = "Open a PDF";
+			input.value = "";
+		}
+	});
+}
+
+installOpenButton();

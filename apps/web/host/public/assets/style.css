@@ -1641,6 +1641,29 @@ body {
 	background: var(--selis-color-accent);
 }
 
+.selis-viewer-bar__open {
+	appearance: none;
+	border: 1px solid var(--selis-color-accent);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-accent);
+	color: var(--selis-color-accent-fg);
+	font: inherit;
+	font-weight: 600;
+	font-size: 0.9rem;
+	padding: 0.42rem 0.95rem;
+	cursor: pointer;
+}
+
+.selis-viewer-bar__open:hover {
+	background: var(--selis-color-accent-hover);
+	border-color: var(--selis-color-accent-hover);
+}
+
+.selis-viewer-bar__open:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
 /*
  * PRINT PROGRESS (SL-4.UI.13).
  *

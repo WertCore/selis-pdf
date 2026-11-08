@@ -27,7 +27,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-JactW4KTweDz82fziEPzX79poyCCoKuE4s+s/Lxm1U9WYZ+lctvISgxYDf+YV9C1"
+			integrity="sha384-NqPpXUojQJmdHoQm0yKAt7qzmGjqPYOPJ5VoAEttSXFDkAHm7DNhKSpt84y+yzTc"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -39,6 +39,15 @@
 				<span>Selis <span class="selis-viewer-bar__mute">Viewer</span></span>
 			</a>
 			<nav class="selis-viewer-bar__nav" aria-label="Primary">
+				<button type="button" id="selis-open-file-button" class="selis-viewer-bar__open">
+					Open a PDF
+				</button>
+				<input
+					type="file"
+					id="selis-open-file"
+					accept="application/pdf,.pdf"
+					hidden
+				/>
 				<a href="/">All tools</a>
 				<span class="selis-viewer-bar__pill">No upload</span>
 			</nav>
@@ -59,7 +68,7 @@
 		</footer>
 		<script
 			src="/assets/boot.js"
-			integrity="sha384-bu0NPMmubEKr9YybkFmJDPr7vL1ZF9JdvlPCofW86kxvCniHzsGmz3Isao3mXf6H"
+			integrity="sha384-nIX3aB15JpvRFGAfpaQWOwuk57ccIijGn+hGC1mT7K3H9mJj40QV3o3tN3LFDgwY"
 			crossorigin="anonymous"
 			defer
 			type="module"
