@@ -27,7 +27,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-l/iGAplH3K1A3AeWIzUftuw3qIdAW9hM0a3Q2smk7uqViA/1nV78wkDgKxWNffZG"
+			integrity="sha384-3tGCx4lq6EdSsHyqSy0v9w1Gmsw+JK7iDg7XPLizADiJ50wi3k9Zxjtphm0WdSYr"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -68,6 +68,18 @@
 			</nav>
 		</header>
 
+		<!--
+			The failure panel (SL-4.UI.08). A sibling of #selis-app, not a child,
+			so it survives the mount replacing #selis-app's contents and is always
+			present for `showFailure` to populate. Hidden by CSS while empty.
+		-->
+		<div
+			id="selis-failure"
+			class="selis-failure"
+			role="alert"
+			aria-live="assertive"
+		></div>
+
 		<main id="selis-app" aria-busy="true">
 			<p class="selis-boot">Loading the private PDF viewer…</p>
 			<noscript>
@@ -83,7 +95,7 @@
 		</footer>
 		<script
 			src="/assets/boot.js"
-			integrity="sha384-uVt3r8vgh8/LumP4Pgdo+FSVSj+eIWHyp2+JF6PURFQhazBSbf9aZt/mVlBD9abp"
+			integrity="sha384-aX9+EmDmqqxmshppvNZ1WQjK5Zrk75LUKAtWsSNaBlkdE1ML5FBSwjyFLP+BsufT"
 			crossorigin="anonymous"
 			defer
 			type="module"

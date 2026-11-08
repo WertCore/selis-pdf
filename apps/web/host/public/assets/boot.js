@@ -3213,6 +3213,15 @@ globalThis.__selisOpenBase64 = async function (base64) {
 	if (opened && opened.status === "ok") {
 		clearFailure();
 		updatePager(opened.page, opened.pages ?? 1);
+	} else {
+		// A document that cannot be opened must SAY so — the viewer has a
+		// `#selis-failure` panel for exactly this, and routing every open through
+		// here means the message shows whether the bytes came from the button,
+		// a drop, a paste, or `?src=`.
+		void showFailure(
+			{ message: opened?.detail ?? opened?.status ?? "unknown" },
+			"opening the document",
+		);
 	}
 	return opened;
 };

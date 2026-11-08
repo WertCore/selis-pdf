@@ -148,6 +148,56 @@ body {
 	line-height: 1.5;
 }
 
+/*
+ * The failure panel (SL-4.UI.08). Hidden while empty; when `showFailure`
+ * populates it, a prominent danger-tinted alert so an open that could not
+ * render says why — rather than leaving the reader a blank page with no word.
+ */
+.selis-failure:empty {
+	display: none;
+}
+
+.selis-failure {
+	margin: 1rem clamp(1rem, 4vw, 2rem);
+	padding: 1rem 1.25rem;
+	border: 1px solid var(--selis-color-danger);
+	border-left-width: 4px;
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-danger-subtle);
+	color: var(--selis-color-fg);
+}
+
+.selis-failure [data-role="what"] {
+	margin: 0 0 0.35rem;
+	font-weight: 600;
+	color: var(--selis-color-danger-fg);
+}
+
+.selis-failure [data-role="docstate"],
+.selis-failure p {
+	margin: 0.25rem 0 0;
+	font-size: 0.92rem;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-failure button {
+	margin-top: 0.6rem;
+	appearance: none;
+	border: 1px solid var(--selis-color-accent);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-accent);
+	color: var(--selis-color-accent-fg);
+	font: inherit;
+	font-size: 0.9rem;
+	padding: 0.4rem 0.9rem;
+	cursor: pointer;
+}
+
+.selis-failure button:hover {
+	background: var(--selis-color-accent-hover);
+	border-color: var(--selis-color-accent-hover);
+}
+
 /* The disclosure panels + search readout + print status sit below the toolbar,
  * aligned to the same gutter as everything else. */
 #selis-search-result,
