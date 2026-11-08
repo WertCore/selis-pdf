@@ -71,6 +71,108 @@ body {
 #selis-app {
 	flex: 1 1 auto;
 	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: auto;
+}
+
+/* The reading controls, as one toolbar row that stays put while the page
+ * scrolls under it — not a stack of bare buttons above the document. */
+.selis-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.6rem clamp(1rem, 4vw, 2rem);
+	background: var(--selis-color-bg-raised);
+	border-bottom: 1px solid var(--selis-color-border);
+	position: sticky;
+	top: 0;
+	z-index: 5;
+}
+
+.selis-toolbar label {
+	font-size: 0.85rem;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-toolbar input[type="search"] {
+	flex: 0 1 15rem;
+	min-width: 7rem;
+	padding: 0.35rem 0.6rem;
+	border: 1px solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 0.9rem;
+}
+
+.selis-toolbar button {
+	appearance: none;
+	border: 1px solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 0.85rem;
+	padding: 0.35rem 0.75rem;
+	cursor: pointer;
+}
+
+.selis-toolbar button:hover {
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent);
+}
+
+/* The rendered page sits on the paper like a sheet: centered, with a margin and
+ * a soft shadow, so the white page reads as a document and not the background. */
+#selis-page {
+	display: block;
+	margin: clamp(1rem, 3vw, 2rem) auto;
+	max-width: 100%;
+	height: auto;
+	background: #fff;
+	border: 1px solid var(--selis-color-border);
+	box-shadow: 0 2px 14px rgba(23, 34, 31, 0.16);
+}
+
+/* Shown until the first page is painted. */
+.selis-empty {
+	margin: clamp(2.5rem, 9vw, 5rem) auto 0;
+	max-width: 32rem;
+	padding: 0 1.5rem;
+	text-align: center;
+	color: var(--selis-color-fg-muted);
+	font-size: 1.02rem;
+	line-height: 1.5;
+}
+
+/* The disclosure panels + search readout + print status sit below the toolbar,
+ * aligned to the same gutter as everything else. */
+#selis-search-result,
+#selis-health-rows,
+#selis-bookmark-rows,
+#selis-link-rows,
+#selis-outline-rows,
+#selis-print-status {
+	margin: 0;
+	padding: 0.4rem clamp(1rem, 4vw, 2rem);
+	font-size: 0.9rem;
+}
+
+#selis-print-cancel {
+	margin: 0.25rem clamp(1rem, 4vw, 2rem) 0.5rem;
+	align-self: flex-start;
+	appearance: none;
+	border: 1px solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 0.85rem;
+	padding: 0.3rem 0.7rem;
+	cursor: pointer;
 }
 
 /* The skip link stays off-screen until it is focused by the keyboard. */

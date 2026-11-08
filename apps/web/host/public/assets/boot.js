@@ -782,6 +782,10 @@ function paintPage(page, mount, pageNumber = 0) {
 	// one they are looking at.
 	const previous = mount.querySelector("#selis-page");
 	if (previous !== null) previous.remove();
+	// The empty-state prompt belongs to "nothing open"; the first painted page
+	// retires it.
+	const empty = mount.querySelector("#selis-empty");
+	if (empty !== null) empty.remove();
 	mount.appendChild(canvas);
 
 	// Read back what the browser actually holds.
@@ -1388,14 +1392,18 @@ const root = document.getElementById("selis-app");
 if (root !== null) {
 	root.removeAttribute("aria-busy");
 	if (state.mounted) {
-		root.textContent =
-			`Selis is ready. Viewer mounted (${state.engine?.exports ?? 0} engine exports).`;
+		// Clear the "Loading…" placeholder and build the reader chrome. (The engine
+		// export count is on `state` for the browser check; it is not shown to a
+		// reader — a viewer that greets them with "1393 engine exports" is a dev
+		// scaffold, not a product.)
+		root.replaceChildren();
 		// The search field is part of the VIEWER, not something built on first
 		// use. Building it lazily inside `reportSearch` meant it did not exist
 		// until a search had already run, which is the wrong order: a user has
 		// to be able to see the box to type in it, and the browser check failed
 		// with "the app exposed no search field" for exactly this reason.
 		searchControls();
+		showEmptyState();
 	} else {
 		// A boot that failed is the one failure with no registry code behind it:
 		// the engine never ran. The panel shows what the shell actually knows
@@ -2820,6 +2828,20 @@ async function requestPrint() {
 	printProgress = null;
 	return printed;
 }
+/** The "nothing open yet" prompt, shown until the first page is painted. */
+function showEmptyState() {
+	if (root === null) return;
+	if (root.querySelector("#selis-empty") !== null || root.querySelector("#selis-page") !== null) {
+		return;
+	}
+	const empty = document.createElement("p");
+	empty.id = "selis-empty";
+	empty.className = "selis-empty";
+	empty.textContent =
+		"Open a PDF to start reading. Your file is opened on this device and never uploaded.";
+	root.appendChild(empty);
+}
+
 /**
  * The search box, its result line, and the Print control.
  *
@@ -2830,6 +2852,11 @@ async function requestPrint() {
 function searchControls() {
 	if (searchUi.input !== null) return searchUi;
 	if (root === null) return null;
+	// The reading controls go in one toolbar row, not stacked as bare siblings of
+	// the page: the page is the document, these are the chrome around it.
+	const bar = document.createElement("div");
+	bar.className = "selis-toolbar";
+	root.appendChild(bar);
 	const input = document.createElement("input");
 	input.type = "search";
 	input.id = "selis-search";
@@ -2840,8 +2867,8 @@ function searchControls() {
 	readout.id = "selis-search-result";
 	readout.setAttribute("role", "status");
 	readout.setAttribute("aria-live", "polite");
-	root.appendChild(label);
-	root.appendChild(input);
+	bar.appendChild(label);
+	bar.appendChild(input);
 	root.appendChild(readout);
 	// The print control is built with the viewer, for the same reason the
 	// search field is: a user has to be able to see the button to press it.
@@ -2878,7 +2905,7 @@ function searchControls() {
 				};
 			});
 	});
-	root.appendChild(print);
+	bar.appendChild(print);
 	// The health control, built with the viewer for the same reason as the print
 	// control: a user has to be able to see the button to press it.
 	const health = document.createElement("button");
@@ -2888,7 +2915,7 @@ function searchControls() {
 	health.addEventListener("click", () => {
 		globalThis.__selisHealth().then(renderHealthPanel);
 	});
-	root.appendChild(health);
+	bar.appendChild(health);
 	const healthOut = document.createElement("ul");
 	healthOut.id = "selis-health-rows";
 	healthOut.setAttribute("aria-live", "polite");
@@ -2929,7 +2956,7 @@ function searchControls() {
 				}),
 			);
 	});
-	root.appendChild(bookmarks);
+	bar.appendChild(bookmarks);
 	root.appendChild(bookmarkPanel);
 
 	// SL-4.UI.06: the LINKS on the page being shown. A disclosure, like the
@@ -2959,7 +2986,7 @@ function searchControls() {
 		if (!willOpen) return;
 		globalThis.__selisPageLinks(currentPage).then(renderLinkPanel);
 	});
-	root.appendChild(linkButton);
+	bar.appendChild(linkButton);
 	root.appendChild(linkPanel);
 	linkRows = linkPanel;
 
@@ -2988,7 +3015,7 @@ function searchControls() {
 		if (!willOpen) return;
 		globalThis.__selisStructure().then(renderStructurePanel);
 	});
-	root.appendChild(outline);
+	bar.appendChild(outline);
 	root.appendChild(outlinePanel);
 
 	// SL-4.UI.13: a real progress bar and a real Cancel button, in the document,
@@ -3027,9 +3054,12 @@ function searchControls() {
 		globalThis.__selisPrintCancel();
 	});
 	progressRoot.appendChild(track);
+	// The status line and Cancel live INSIDE the progress region, so they are
+	// hidden with it until a print job starts — an idle viewer showing a greyed
+	// "Cancel" is chrome for an action that is not happening.
+	progressRoot.appendChild(caption);
+	progressRoot.appendChild(cancel);
 	root.appendChild(progressRoot);
-	root.appendChild(caption);
-	root.appendChild(cancel);
 
 	printUi.root = progressRoot;
 	printUi.bar = fill;
