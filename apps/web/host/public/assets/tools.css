@@ -1413,3 +1413,32 @@ legend.field-label {
 	color: var(--danger);
 	font-size: 0.78rem;
 }
+
+/* ---- Document viewer (viewer.html) --------------------------------------
+ * The viewer shares this design system; it only needs a full-height column so
+ * the React viewer app fills the space between the shared header and footer.
+ * The viewer's own placeholder style.css still owns the engine-load progress
+ * bar and the print rules. */
+.viewer-body {
+	display: flex;
+	flex-direction: column;
+}
+
+.viewer-body .site-footer {
+	margin-top: auto;
+}
+
+.viewer-main {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	min-height: 0;
+}
+
+.viewer-loading {
+	margin: auto;
+	padding: 3rem 1.5rem;
+	color: var(--muted);
+	text-align: center;
+}

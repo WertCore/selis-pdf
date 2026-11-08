@@ -3,11 +3,19 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>Selis PDF Viewer</title>
+		<meta name="theme-color" content="#f4f1e8" />
+		<meta
+			name="description"
+			content="Read PDFs privately in your browser. Your document is opened on your own device and never uploaded — no account, no limits."
+		/>
+		<title>Selis PDF Viewer — read PDFs privately, no upload</title>
+		<link rel="canonical" href="https://pdf.selis.com/viewer.html" />
 		<!--
 			SL-4.WEB.01 static shell for the viewer. The tools grid is the home page
 			at "/"; this is the document viewer, reached from the grid's "Open a PDF
-			to read" action. The security contract is identical to the grid:
+			to read" action. It shares the grid's design system (tools.css) so the
+			two surfaces are one product, and keeps its own placeholder style.css for
+			the engine-load progress bar and the print rules.
 			- CSP is delivered via response headers (public/_headers + vercel.json,
 			  from src/headers.ts); no <meta http-equiv> fallback.
 			- Every asset carries integrity (sha384) + crossorigin, same-origin only
@@ -21,16 +29,46 @@
 		-->
 		<link
 			rel="stylesheet"
+			href="/assets/tools.css"
+			integrity="sha384-JS5YPOqUwTIK/WeBTHkNWIAkcrgtHC3HL7jxtjXtax/3z67xmsnEJCLT4q1PIQGD"
+			crossorigin="anonymous"
+		/>
+		<link
+			rel="stylesheet"
 			href="/assets/style.css"
 			integrity="sha384-EA44gG3wagwPqbPi417nWk9Nky0RGYB32F5boA5/+zZvVCh3HIv4bu2zd8j43oK8"
 			crossorigin="anonymous"
 		/>
 	</head>
-	<body>
-		<main id="selis-app" aria-busy="true">
-			<p>Loading Selis PDF Viewer...</p>
-			<noscript><p>Selis PDF Viewer needs JavaScript (local document processing, no upload).</p></noscript>
+	<body class="viewer-body">
+		<a class="skip-link" href="#selis-app">Skip to the document</a>
+		<header class="site-header">
+			<a class="brand" href="/" aria-label="Selis home">
+				<span class="brand-mark" aria-hidden="true">S</span>
+				<span class="brand-word">selis<span>viewer</span></span>
+			</a>
+			<nav class="site-nav" aria-label="Primary">
+				<a href="/">All tools</a>
+				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
+			</nav>
+		</header>
+
+		<main id="selis-app" class="viewer-main" aria-busy="true">
+			<p class="viewer-loading">Loading the private PDF viewer…</p>
+			<noscript>
+				<p>The Selis PDF Viewer needs JavaScript — it reads your document on
+				this device, with no upload.</p>
+			</noscript>
 		</main>
+
+		<footer class="site-footer">
+			<p>
+				<strong>Selis Viewer</strong> is part of the Selis PDF project.
+				Local-only by construction, not by policy alone — your document never
+				leaves your machine.
+			</p>
+			<p><a href="/">All tools</a></p>
+		</footer>
 		<script
 			src="/assets/boot.js"
 			integrity="sha384-bu0NPMmubEKr9YybkFmJDPr7vL1ZF9JdvlPCofW86kxvCniHzsGmz3Isao3mXf6H"
