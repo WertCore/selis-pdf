@@ -56,7 +56,7 @@ are why a buyer would switch.
 |---|---|---|---|
 | **Selis Tools** | Free, unlimited, no account | Merge, split, page ops, unlock, protect, compress, images→PDF, metadata. Local-only. | **P1A (mo 4)** |
 | **Selis Reader** | Free, forever | View, navigate, search, select/copy, print, form *fill* (not save), annotate for personal use, extension | P4 |
-| **Selis Editor** | Consumer subscription, perpetual-fallback option | Everything in Tools + Reader + edit text/images, page ops, OCR, convert, optimise, redact, compare, form authoring, sign | P5 |
+| **Selis Editor** | **Free for individuals** (desktop + web); commercial deployment is paid | Everything in Tools + Reader + edit text/images, page ops, OCR, convert, optimise, redact, compare, form authoring, sign | P5 |
 | **Selis Sign** | Per-seat or per-envelope | Signature workflows, identity tiers, audit trails, certification | P8 |
 | **Selis Scan** | Bundled with Editor; free tier on mobile | Camera capture, dewarp, enhance, OCR, multi-page | P7 |
 | **Selis Business** | Per-seat annual | Editor + collaboration, team libraries, SSO, admin console, policy, audit | P8–P9 |
@@ -67,19 +67,43 @@ are why a buyer would switch.
 
 ### The free/paid boundary
 
-**Tools and Reader are both free, permanently, with no daily task limit and no account.** Every
-competitor in the commodity-tools segment gates on tasks-per-day, because each conversion costs
-them server compute. Ours costs us nothing — the work happens in the user's tab (ADR-P0016). That
-asymmetry is the single most valuable thing about the local-first architecture commercially, and
-the right move is to spend it rather than hoard it: unlimited free tools is both a better product
-and a moat a server-side competitor cannot match without changing their unit economics.
+The boundary is **individual vs. commercial**, not view vs. modify. The authoritative statement of
+the monetization model is **`27-COST-AND-LICENSING.md §4A`** (proposed ADR-P0046); this section
+states how it lands on the SKU grid above.
 
-Reader is free permanently, and generously so — full-fidelity viewing, search, annotation, and form
-filling. It is the funnel, the credibility, and the corpus source. The paywall sits at **producing a
-modified document**: saving edits, OCR output, conversion, redaction, and signing.
+**For individuals, the whole product is free, forever — the web app *and* the desktop app, with no
+account, no watermark, and no daily task limit.** That includes editing, OCR, conversion, redaction,
+and signing, not just viewing and the tools surface. Every competitor in the commodity-tools segment
+gates on tasks-per-day, and the incumbents (Acrobat, Foxit) charge individuals for the editor; both
+do so because the work costs *them* server compute or they price the desktop app as the product.
+Ours costs us nothing — the work happens in the user's tab or on their own machine (ADR-P0016) — so
+the right move is to give individuals the full product and spend that asymmetry rather than hoard it.
+A free, genuinely complete, privacy-respecting Acrobat alternative is both a better product and a
+moat a server-side competitor cannot match without changing their unit economics; it is also the
+wedge that builds the audience and corpus the paid SDK is sold into.
 
-This boundary is defensible because it maps to real value and is easy to explain. It is also why
-ADR-P0015 matters: a lapsed licence must never trap a user's work behind it.
+**The paid relationship begins at commercial / enterprise use**, not at the individual's first edit.
+Revenue is the **SDK** (per-developer + runtime/OEM royalty), the **Server/API**, **commercial
+deployment** of the apps/CLI across an organisation's fleet, and the **Business / Enterprise /
+Accessibility** add-ons (SSO, admin, DLP, air-gap, compliance, SLA, support) — exactly the rows in
+the table above whose price shape is per-seat, per-core, per-developer, or negotiated. This is the
+Aspose/iText per-developer + per-deployment commercial model with the consumer side inverted: the
+incumbents charge individuals and enterprises; Selis charges only enterprises.
+
+The line between individual and commercial is **honour-based, not DRM** — a plain-language licence
+plus a CLA on the SDK code, not a technical lock on the local app (`27 §4A.4`). This is a deliberate
+consequence of ADR-P0014 (one binary, entitlements at runtime) and ADR-P0015 (a lapsed or absent
+licence must never trap a user's work behind it): a hard lock on a *local* app would contradict both
+and break the privacy guarantee it is built on. Enforcement sits where it is both enforceable and
+material — the SDK and Server are the paid artefacts, sold under a commercial licence with support,
+updates, indemnity, and source-escrow that a cracked local binary cannot provide; an enterprise
+cannot deploy unlicensed software across a fleet and pass an audit.
+
+> **Historical note (line moved).** Earlier drafts of this section drew the individual paywall at
+> "producing a modified document" (free Reader, paid consumer Editor subscription). The product-owner
+> decision in `27 §4A.6` moved it: individuals now get the full apps free, and the paid line is
+> commercial/enterprise use. The Editor SKU above is reframed accordingly — it is the free
+> individual app, with the *commercial deployment* of it as the paid artefact.
 
 ---
 
@@ -113,9 +137,10 @@ One enum, evaluated at runtime, in one binary. Adding a SKU is a row in a table,
 
 ## 4. Positioning
 
-**Against Adobe:** local-first, faster, a fraction of the price, no forced cloud, no subscription
-hostility. Adobe's structural weakness is that its architecture and its economics both assume the
-cloud; ours assume the device.
+**Against Adobe:** local-first, faster, no forced cloud, no subscription hostility — and for an
+individual, **free**, where Acrobat is a subscription. Adobe's structural weakness is that its
+architecture and its economics both assume the cloud and a paying individual; ours assume the device
+and monetise the enterprise instead (`27 §4A`).
 
 **Against Foxit / Nitro / PDF-XChange:** better engineering visibility (published conformance),
 better privacy, modern web-first distribution, a real SDK. They compete with Adobe on price; we

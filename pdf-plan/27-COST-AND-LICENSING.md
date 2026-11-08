@@ -9,7 +9,13 @@ arrangements that must be re-checked before you rely on them. Sources are listed
 ## 0. Context for a reader without the rest of the plan
 
 This document is one file of a larger engineering plan for **Selis**, a PDF product suite (browser
-extension, web app, desktop, mobile, SDK) built on a from-scratch Rust PDF engine. Four decisions
+extension, web app, desktop, mobile, SDK) built on a from-scratch Rust PDF engine. It answers two
+separate questions. The first is a **cost** question — *what money must actually be spent to build
+and ship, and when* (§§1–4). The second is a **business-model** question — *who pays, who does not,
+and what exactly is sold* (§4A). The two are related but distinct: §§1–4 argue the costs are small;
+§4A argues the revenue comes from a specific place and the rest of the product is free on purpose.
+
+Four decisions
 from that plan are referenced below and are treated here as given:
 
 - **Own engine.** The PDF engine is written from scratch in Rust. PDFium, pdf.js, qpdf, MuPDF and
@@ -247,6 +253,158 @@ Costs of that choice:
 
 ---
 
+## 4A. Monetization model — who pays, who does not, and what is sold
+
+§§1–4 are about *cost*. This section is about *revenue*, and it is a product-owner decision, recorded
+here so the rest of the plan has one place to cite. It supersedes nothing in the engine plan; it
+makes explicit a positioning that `26-PRODUCT-SURFACE.md` and `37-ASPOSE-PARITY.md` both assume.
+
+### 4A.1 The one-sentence model
+
+> **Individuals use Selis free, forever — both the desktop app and the web app. Companies that
+> embed the engine or deploy it commercially pay. The revenue product is the SDK and the commercial
+> deployment licence; the free apps are the wedge that makes the SDK worth buying.**
+
+This is the Aspose/iText commercial model with the consumer side **inverted**: the incumbents charge
+individuals (Acrobat's subscription, Smallpdf's task-gated tiers) and charge enterprises; Selis
+charges only enterprises and gives individuals the full product at no cost. The asymmetry is
+affordable for exactly one reason — **the work runs on the user's device, so an individual user
+costs us nothing to serve** (ADR-P0016). A server-side competitor cannot match "free and unlimited
+for individuals" without changing their unit economics; we can, because we have no per-document
+infrastructure cost to recover.
+
+### 4A.2 The competitive set
+
+Selis is positioned as a **direct competitor to Aspose.PDF, Foxit, and Adobe Acrobat** — not merely
+as another consumer web-tools site. Two distinct fronts:
+
+| Front | Incumbents | Selis product | How we differ |
+|---|---|---|---|
+| **The SDK / library** | Aspose.PDF (per-developer + per-deployment), Apryse/Nutrient, Foxit PDF SDK | **Selis SDK** (C ABI + WASM + language wrappers) | Own Rust engine (memory-safe by construction), permissively-licensed open parser core (ADR-P0030) that de-risks adoption, deterministic output (ADR-P0012), per-operation verification. Priced to undercut the incumbent SDKs. |
+| **The editor / app** | Adobe Acrobat (subscription), Foxit PDF Editor | **Selis desktop + web apps** | **Free for individuals, forever** — no account, no watermark, no daily limit. Local-first, no forced cloud. The paid relationship starts only at commercial/enterprise use. |
+
+The SDK front is where the money is. The app front is the wedge: a free, genuinely good,
+privacy-respecting Acrobat alternative builds the audience, the credibility, and the corpus that the
+SDK is then sold into. This is why **Aspose-surface parity is a primary product goal and not a
+nice-to-have** (`37-ASPOSE-PARITY.md`): the SDK is the business, so the engine must reach SDK-grade
+completeness. The parity matrix's gaps are the revenue roadmap.
+
+### 4A.3 What is free, and what is sold
+
+**Free, forever, for individuals — no account, no watermark, no daily task limit:**
+
+- The **web app** (the tools surface at `/tools.html` and the viewer) — every operation that runs
+  in the tab.
+- The **desktop app** (Tauri; Win/mac/Linux) — the same engine, offline.
+- Non-commercial use of the CLI.
+
+**Sold — this is the revenue line:**
+
+| What is sold | To whom | Price shape | Ships |
+|---|---|---|---|
+| **Selis SDK** — C ABI, WASM, language wrappers, source-escrow option | Software companies embedding the engine | Per-developer seat + runtime/OEM royalty (Aspose-style) | P9 |
+| **Commercial deployment licence** for the apps/CLI | Companies deploying Selis internally at scale or on managed fleets | Per-seat or per-site, negotiated | P9 (enforced earlier by honour + CLA) |
+| **Selis Server / API** — headless, self-hosted or managed | Companies wanting a server/batch surface | Per-core / per-instance | P9 |
+| **Enterprise add-ons** — SSO, admin/policy, DLP, air-gapped, FedRAMP path, SLA, support | Large organisations | Negotiated annual | P9 |
+| **Compliance SKUs** — PDF/A, PDF/UA validation + remediation, prepress | Government, archival, accessibility-regulated buyers | Per-seat add-on | P9 |
+
+The precise per-SKU entitlement grid is **`26-PRODUCT-SURFACE.md §2–3`**; this section sets only the
+*principle* that draws the free/paid line. Where the two appear to disagree, see §4A.6 — the line
+has moved and `26` is being brought into agreement in the same change set.
+
+> **No prices are committed here.** The Aspose/Apryse/Foxit public list prices are the reference
+> points to undercut, but the actual numbers are a go-to-market decision taken at Phase 9 against
+> real pipeline. Any figure that appears in planning before then is an **illustrative placeholder**
+> and must be labelled as one.
+
+### 4A.4 How "individual" vs "commercial" is drawn — and enforced
+
+The line is **honour-based, not DRM**, and this is a deliberate consequence of the local-first ADRs,
+not a concession:
+
+- **The definition.** "Individual / non-commercial" means a natural person using Selis for their own
+  work. "Commercial" means (a) embedding the engine or SDK in a product or service you ship or
+  operate, (b) deploying the apps/CLI across an organisation's fleet, or (c) running the Server/API
+  for a business. The SDK and Server licences are per the commercial agreement; the free apps carry
+  a plain-language licence stating the individual-use grant and the point at which commercial terms
+  apply.
+- **Why not DRM on the app.** ADR-P0014 ships one binary with entitlements evaluated at runtime, and
+  ADR-P0015 requires that a licence failure never destroys or traps a user's work. A hard
+  anti-tamper lock on a *local* app contradicts both: it would mean the engine phoning home or
+  refusing to open a document, which breaks the privacy guarantee (ADR-P0016) and the
+  never-lose-work guarantee (ADR-P0015) that are the product's whole pitch. We do not pay the
+  product's soul to stop a determined individual from using paid features locally — an acceptable
+  loss already recorded in ADR-P0014/P0015.
+- **What actually enforces it.** Commercial revenue is enforced where it is enforceable and where it
+  matters: the **SDK and Server are the paid artefacts**, delivered under a signed commercial licence
+  with support, updates, indemnity, and (optionally) source escrow — things an enterprise needs and
+  cannot get from a cracked local binary. Enterprises buy compliance and support, not bytes. For the
+  apps, enforcement is the licence agreement plus org-level procurement (an enterprise cannot deploy
+  unlicensed software across a fleet and pass an audit), not a technical lock.
+- **The CLA is the load-bearing legal instrument.** Because the paid SDK is built from the same
+  crates as the free apps, we must be able to license that code commercially. That requires a
+  **contributor licence agreement with a relicensing grant in place from the first outside
+  contributor** (§4.3, §4.4). This is the one piece of legal hygiene that is genuinely day-one, and
+  it is what makes the open-core model below legally available at all.
+
+### 4A.5 Open-core, reconciled with ADR-P0030 and the no-AGPL stance
+
+The monetization model is an **open-core / commercial-SDK posture**, and it must be read *together*
+with the licensing decisions in §4 and ADR-P0030 — they are consistent, and the consistency is the
+point:
+
+- **Open core.** The three parser crates (`selis-pdf-cos`, `selis-pdf-filter`, `selis-font`) are
+  Apache-2.0 (ADR-P0030). Apache-2.0, not AGPL — see §4.3–4.4: AGPL was considered and declined
+  because a meaningful share of enterprises ban it in procurement, which would collide with the
+  enterprise SKU that is the whole revenue thesis here. The permissive core is a *sales asset* for
+  the SDK (it de-risks adoption and buys OSS-Fuzz capacity), not a copyleft forcing function.
+- **Commercial shell.** The renderer, edit model, redaction, signing, the full engine, and all
+  product code stay **proprietary**. That proprietary surface is what the SDK and the apps are, and
+  it is where the moat lives (the renderer's correctness and the edit model, not the ability to read
+  an xref table — §4.4, ADR-P0030).
+- **This is "open-core," not "dual-license."** The distinction matters and the plan already draws it.
+  A *dual-license* model (iText-style AGPL-or-pay) was evaluated in §4.3 and **not adopted now**;
+  the current posture is *open-core*: a permissively-licensed component core plus a proprietary
+  commercial product on top. Dual-licensing the *whole engine* remains a Phase-9 option (§4.4), to
+  be decided when we know whether SDK buyers are independent developers (where AGPL pressure
+  converts) or enterprises (where it kills deals). Deciding then costs nothing; the CLA (§4A.4)
+  keeps the branch open.
+
+The net picture — "free permissive parser crates + free apps for individuals + paid proprietary SDK
+and enterprise deployment" — is the Aspose-style commercial model with an open, permissive core and
+a free consumer tier bolted on where the local-first architecture makes it free to give away.
+
+### 4A.6 Reconciliation note — the free/paid line has moved
+
+`26-PRODUCT-SURFACE.md §2` as previously written drew the individual paywall at **"producing a
+modified document"** (free Reader; paid consumer *Editor* subscription). This section records a
+**product-owner decision that moves that line**: for **individuals**, the desktop and web apps are
+now **free in full** — including editing, OCR, conversion, redaction, and signing — and the paid
+relationship begins at **commercial/enterprise use** (SDK, Server, fleet deployment, enterprise
+add-ons). The consumer-subscription Editor SKU is therefore reframed, not a paid individual tier.
+`26-PRODUCT-SURFACE.md` is updated in the same change set to agree; where any older text still
+implies a paid individual Editor, **this section and `26 §2` as revised are authoritative.**
+
+### 4A.7 Proposed ADR
+
+This is a business-model decision of the same weight as ADR-P0030, and it changes how `26` draws its
+free/paid line, so it should be recorded as an ADR rather than living only here. **Proposed
+ADR-P0046 — "Monetization: free for individuals (desktop + web), paid for commercial/enterprise;
+open-core SDK is the revenue product."** It would:
+
+1. State the free-for-individuals / paid-for-commercial split and name the SDK + commercial
+   deployment as the revenue line.
+2. Record the honour-based (not DRM) enforcement and tie it to ADR-P0014/P0015/P0016.
+3. Position the open-core posture as consistent with — and dependent on — ADR-P0030 and the
+   no-AGPL-now decision, with whole-engine dual-licensing left as the Phase-9 option.
+4. Supersede the `26 §2` "paywall at modify-document" framing for individuals.
+
+ADR-P0046 is the **next free number** (existing ADRs run to ADR-P0045; do not renumber them). It is
+recorded here as *proposed*; the actual ADR block belongs in `02-ADRS.md` once the product owner
+confirms the wording.
+
+---
+
 ## 5. Corrections this document makes to the rest of the plan
 
 | Plan item | Was | Now |
@@ -254,7 +412,9 @@ Costs of that choice:
 | `SL-0.LEAD.05` | "ISO 19005 and 14289 are paid… **Blocks all engine work.**" | **Wrong.** Split into `LEAD.05a` (free specs, week 1, genuinely blocks engine work) and `LEAD.05b` (paid PDF/A + PDF/UA specs, Phase 9, blocks only the compliance SKU). |
 | `SL-0.LEAD.06` | PDF Association membership as a day-1 long-lead item | Deferred to Phase 5. The free publications cover Phases 0–4. |
 | `SL-0.LEAD.07` | "Get counsel to confirm font embedding posture" | Downgraded. SIL OFL and GUST FL explicitly permit embedding and redistribution. Read the licences; this does not need a lawyer. |
-| `ADR-P0030` | unchanged | Reaffirmed, with the dual-licence revisit trigger recorded in §4.4. |
+| `ADR-P0030` | unchanged | Reaffirmed, with the dual-licence revisit trigger recorded in §4.4. §4A.5 reads it as the *open core* of an open-core business model. |
+| `26-PRODUCT-SURFACE.md §2` | individual paywall at "producing a modified document" (paid consumer Editor) | **Moved.** §4A.6: desktop + web are free in full for individuals; the paid line is commercial/enterprise use. `26 §2` updated to agree. |
+| New ADR | — | **Proposed ADR-P0046** (§4A.7) records the monetization model. Next free number; existing ADRs (→P0045) unchanged. |
 
 ---
 
@@ -268,6 +428,11 @@ Costs of that choice:
   dual-licensing question in particular is one to run past counsel before committing.
 - That open-sourcing is wrong in general — only that it does not solve a procurement-cost problem,
   and that the version which would (AGPL) carries costs that outweigh a single image codec.
+- That the §4A monetization numbers are set. No prices are committed; the incumbents' list prices are
+  reference points to undercut, and any figure before Phase 9 is an explicit placeholder (§4A.3).
+- That honour-based enforcement captures every individual who uses paid features locally. It does
+  not, by design (§4A.4, ADR-P0014/P0015) — the revenue is the SDK, Server, and audited enterprise
+  deployment, not a lock on the local app.
 
 ---
 

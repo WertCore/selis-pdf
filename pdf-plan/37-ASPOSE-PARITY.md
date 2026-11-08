@@ -48,6 +48,35 @@ licensing, and deployment model are the opposite.
 
 ---
 
+## Positioning & monetization — why this matrix is the revenue roadmap
+
+This file is not a feature wishlist. **Aspose parity is a primary product goal**, because the
+Selis SDK — the thing this matrix measures Selis against — is the business. The monetization
+model (`27-COST-AND-LICENSING.md §4A`; proposed ADR-P0046) is:
+
+- **Free for individuals, forever** — both the desktop app and the web/tools app, with no
+  account, no watermark, and no daily limit. This is affordable because the work runs on the
+  user's device (ADR-P0016), so an individual user costs nothing to serve.
+- **Paid for commercial / enterprise use** — the **SDK** (C ABI + WASM + language wrappers),
+  the Server/API, fleet deployment, and the enterprise/compliance add-ons. This is the
+  Aspose/iText per-developer + per-deployment commercial model, inverted on the consumer side:
+  the incumbents charge individuals *and* enterprises; Selis charges only enterprises.
+
+The consequence for this document: **Selis competes directly with Aspose.PDF, Foxit, and Adobe
+Acrobat**, and on the SDK front Aspose.PDF is the reference capability surface to match and
+undercut. So every 🟡/📋/⛔ row below is not merely a gap in a consumer tool site — it is a line
+on the **revenue roadmap**, because the SDK cannot be sold into an Aspose-shaped procurement
+until the engine reaches SDK-grade completeness on the capabilities that buyer expects. Read the
+gaps that way: closing them is what makes the paid product worth buying, and the §29 "Priority
+gaps to close next" list is ordered with that leverage in mind.
+
+The usual caveat still stands (and is sharpened by the model): a *direct* SDK-to-SDK comparison
+with Aspose is only fully fair at Phase 9, when the Selis SDK ships. Until then, parity is
+measured through the engine, CLI, and browser surfaces that are live today, and rows that depend
+on the not-yet-shipped SDK say so.
+
+---
+
 ## Status legend
 
 | Marker | Meaning |
@@ -436,8 +465,10 @@ Page operations are the single area where Selis is at or beyond full parity.
   construction.
 - **Page operations** are at or beyond full parity, including split-by-text and
   split-by-size that Aspose's typical split set does not offer.
-- **Free, unlimited, no account** for the tools surface (`26 §2`) vs a per-developer /
-  per-deployment commercial licence — a different economic model entirely.
+- **Free, unlimited, no account** for individuals — the web app *and* the desktop app, not just
+  the tools surface (`26 §2`; `27 §4A`) — against incumbents who charge individuals. Selis instead
+  charges only commercial/enterprise use (SDK, Server, fleet, add-ons): the Aspose per-developer /
+  per-deployment model inverted on the consumer side, which is a different economic model entirely.
 
 ### Where Aspose wins
 
