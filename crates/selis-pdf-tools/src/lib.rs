@@ -67,7 +67,7 @@ pub use compress::{
     compress, compress_file, compress_file_with_options, CompressOptions, CompressionReport,
 };
 pub use fingerprint::{fingerprint_report, FileIds, FingerprintReport, FontFact, ImageFact};
-pub use flatten::flatten_annotations;
+pub use flatten::{flatten_annotations, flatten_forms};
 pub use forms::{
     fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
 };

@@ -128,6 +128,12 @@ mod tools {
         selis_pdf_tools::flatten_annotations(path, output).map_err(CliError::from)
     }
 
+    /// Flatten a form: bake each widget's appearance into the page content and
+    /// drop the AcroForm. Returns the verification of the rewritten document.
+    pub(crate) fn flatten_forms(path: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::flatten_forms(path, output).map_err(CliError::from)
+    }
+
     /// Compare two documents, page by page (pixels) and whole-document (text).
     /// The report is the output; neither file is modified.
     pub(crate) fn compare(
@@ -322,6 +328,20 @@ enum Command {
     /// the page content and write a new PDF. Widget/form annotations are left for
     /// form flattening; an annotation with no appearance is kept as it was.
     Flatten {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Flatten a form: bake each widget's appearance into the page content, drop
+    /// the widgets and the AcroForm, and write a new PDF. A field with no
+    /// appearance is removed with the form; fill with appearance synthesis first
+    /// to bake a `/NeedAppearances` field's value.
+    FlattenForms {
         /// The input PDF.
         path: String,
         /// The output PDF.
@@ -1061,6 +1081,11 @@ fn run() {
             output,
             json,
         } => finish(tools::flatten(&path, &output), json),
+        Command::FlattenForms {
+            path,
+            output,
+            json,
+        } => finish(tools::flatten_forms(&path, &output), json),
         Command::Extract {
             path,
             page,

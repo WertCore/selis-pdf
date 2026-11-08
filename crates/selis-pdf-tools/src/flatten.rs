@@ -83,7 +83,7 @@ pub fn flatten_annotations(path: &str, output: &str) -> ToolResult<Verification>
             else {
                 continue;
             };
-            match bake_target(&src, &doc, &annot, &budget, &mut g) {
+            match bake_target(&src, &doc, &annot, false, &budget, &mut g) {
                 Some((appearance_ref, rect, bbox, matrix)) => {
                     bake(
                         &mut out,
@@ -142,6 +142,140 @@ pub fn flatten_annotations(path: &str, output: &str) -> ToolResult<Verification>
     )
 }
 
+/// The counts a form flatten preserves: everything except annotations (widgets
+/// move into content or are removed) and fields (the interactive form is gone).
+const PRESERVE_EXCEPT_FORMS: Preserved = Preserved {
+    pages: true,
+    annotations: false,
+    fields: false,
+    ocgs: true,
+    outlines: true,
+    embedded_files: true,
+};
+
+/// Flatten an AcroForm: bake each widget's appearance into the page content,
+/// drop the widgets from `/Annots`, and remove the `/AcroForm` dictionary — so
+/// the filled values become permanent page marks and the document is no longer
+/// an interactive form.
+///
+/// A widget that carries a normal appearance (`/AP /N`, with `/AS` resolved for
+/// a button) is baked by the ISO 32000-1 §12.5.5 placement, exactly as
+/// [`flatten_annotations`] bakes a non-widget mark. A widget with no appearance
+/// is removed with the rest of the form: fill with appearance synthesis first
+/// (`selis-pdf-form`'s `synthesize_appearances`) to bake a `/NeedAppearances`
+/// field's value rather than lose it. Non-widget annotations are left untouched.
+///
+/// # Errors
+///
+/// A typed [`CliError`] when the input cannot be read or parsed, the document is
+/// encrypted, or the output fails its structural verification.
+pub fn flatten_forms(path: &str, output: &str) -> ToolResult<Verification> {
+    let src = read_file(path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
+    crate::tools::refuse_encrypted_input(path, &doc)?;
+    let page_refs = crate::tools::page_refs_of(&src, &doc, &budget, &mut g).map_err(CliError)?;
+    let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+
+    let mut out = DocumentBuilder::new();
+    let mut next_num = 3u32;
+    let mut kept: Vec<crate::tools::KeptPage> = Vec::with_capacity(page_refs.len());
+
+    for (page_index, page_ref) in page_refs.iter().enumerate() {
+        let (_, _, _, _, annots) = crate::tools::page_info(&src, &doc, *page_ref, &budget, &mut g)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+        let merged_ref = crate::tools::copy_page_without_annots(
+            &mut out,
+            &src,
+            *page_ref,
+            &budget,
+            &mut g,
+            &mut next_num,
+        )
+        .map_err(|e| CliError(format!("{path}: {e}")))?;
+
+        let mut keep: Vec<Ref> = Vec::new();
+        for (local, annot_ref) in annotation_refs(&src, &doc, annots, &budget, &mut g)
+            .into_iter()
+            .enumerate()
+        {
+            let Obj::Dict(annot) = resolve_inline(&src, &doc, Obj::Ref(annot_ref), &budget, &mut g)
+            else {
+                continue;
+            };
+            let is_widget = find_name(&annot, b"Subtype").as_deref() == Some("Widget");
+            match bake_target(&src, &doc, &annot, true, &budget, &mut g) {
+                Some((appearance_ref, rect, bbox, matrix)) => {
+                    bake(
+                        &mut out,
+                        &src,
+                        &doc,
+                        merged_ref,
+                        page_index,
+                        local,
+                        appearance_ref,
+                        rect,
+                        bbox,
+                        matrix,
+                        &budget,
+                        &mut g,
+                    )
+                    .map_err(|e| CliError(format!("{path}: {e}")))?;
+                }
+                // A widget with no bakeable appearance is dropped with the form;
+                // a non-widget annotation is kept exactly as it was.
+                None => {
+                    if !is_widget {
+                        keep.push(annot_ref);
+                    }
+                }
+            }
+        }
+
+        if !keep.is_empty() {
+            let (objects, remap) =
+                collect_objects_with_doc(&src, &doc, &keep, out.next_num_mut(), &budget, &mut g)
+                    .map_err(|e| CliError(format!("{path}: copy kept annotations: {e}")))?;
+            for (num, obj) in objects {
+                out.add_object(num, obj);
+            }
+            let rebuilt: Vec<Obj> = keep
+                .iter()
+                .map(|r| Obj::Ref(Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), 0)))
+                .collect();
+            crate::overlay::set_page_entry(&mut out, merged_ref, b"Annots", Obj::Array(rebuilt))
+                .map_err(|e| CliError(format!("{path}: {e}")))?;
+        }
+
+        kept.push((page_index, page_ref.num, merged_ref));
+    }
+
+    crate::tools::reconcile_single_input(
+        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
+    )
+    .map_err(CliError)?;
+    // Drop the form: the interactive AcroForm is gone once its widgets are
+    // baked, and `retain_reachable` prunes the now-orphaned field/resource graph.
+    out.catalog_extra_mut()
+        .retain(|(key, _)| key.as_slice() != b"AcroForm");
+    out.retain_reachable();
+    crate::tools::write_document(
+        out,
+        output,
+        Some(&src),
+        PRESERVE_EXCEPT_FORMS,
+        Some(u64::try_from(page_refs.len()).unwrap_or(u64::MAX)),
+        None,
+        in_bytes,
+        &budget,
+        &mut g,
+    )
+}
+
 /// The annotation references on a page, from its (possibly indirect) `/Annots`.
 fn annotation_refs(
     src: &[u8],
@@ -173,10 +307,14 @@ fn bake_target(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     annot: &[(selis_bytes::Bytes, Obj)],
+    want_widgets: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Option<(Ref, [f64; 4], [f64; 4], [f64; 6])> {
-    if find_name(annot, b"Subtype").as_deref() == Some("Widget") {
+    // Annotation flatten bakes the page's marks and leaves the form widgets;
+    // form flatten does the opposite. One predicate selects which.
+    let is_widget = find_name(annot, b"Subtype").as_deref() == Some("Widget");
+    if is_widget != want_widgets {
         return None;
     }
     if let Some((_, Obj::Int(flags))) = annot.iter().find(|(k, _)| k.as_slice() == b"F") {
@@ -476,5 +614,54 @@ mod tests {
         assert!((m[3] - 4.0).abs() < 1e-9, "scale y");
         assert!((m[4] - 100.0).abs() < 1e-9, "origin x");
         assert!((m[5] - 10.0).abs() < 1e-9, "origin y");
+    }
+
+    /// A one-page AcroForm with a single text widget whose normal appearance
+    /// draws the value `(Baked)` — the mark the flatten must carry into content.
+    fn form_pdf() -> Vec<u8> {
+        let appearance: &[u8] =
+            b"/Tx BMC\nq\nBT\n0 g\n/Helv 12 Tf\n2 4 Td\n(Baked) Tj\nET\nQ\nEMC\n";
+        let ap_dict = format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] /Length {} >>",
+            appearance.len()
+        );
+        let objects = vec![
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>\nendobj\n".to_vec(),
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec(),
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>\nendobj\n".to_vec(),
+            b"4 0 obj\n<< /Type /Annot /Subtype /Widget /FT /Tx /T (Name) /V (Baked) /Rect [50 50 150 70] /AP << /N 5 0 R >> >>\nendobj\n".to_vec(),
+            stream_object(5, &ap_dict, appearance),
+            b"6 0 obj\n<< /Fields [4 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 7 0 R >> >> >>\nendobj\n".to_vec(),
+            b"7 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_vec(),
+        ];
+        build_xref(objects)
+    }
+
+    #[test]
+    fn flatten_forms_bakes_widgets_and_drops_the_acroform() {
+        let _session = MemorySession::activate();
+        insert_input("flatten/form/in.pdf", form_pdf());
+
+        let verification =
+            flatten_forms("flatten/form/in.pdf", "flatten/form/out.pdf").expect("flatten forms");
+        assert_eq!(verification.pages_out, 1, "the page survives");
+        assert_eq!(
+            verification.annotations_out, 0,
+            "the widget is baked and dropped"
+        );
+
+        let out = take_output("flatten/form/out.pdf").expect("output");
+        let text = String::from_utf8_lossy(&out);
+        assert!(out.starts_with(b"%PDF-"));
+        // The widget's appearance is carried into the page, drawn by a `Do`.
+        assert!(text.contains("(Baked) Tj"), "the appearance is embedded");
+        assert!(text.contains(" Do"), "a draw of the appearance is appended");
+        // The interactive form is gone: no widget annotation, no form dictionary.
+        assert!(!text.contains("/Widget"), "the widget is gone: {text}");
+        assert!(
+            !text.contains("/AcroForm"),
+            "the form dictionary is gone: {text}"
+        );
+        assert!(!text.contains("/Annots"), "no annotation array remains");
     }
 }
