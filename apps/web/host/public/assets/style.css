@@ -1664,6 +1664,47 @@ body {
 	cursor: default;
 }
 
+.selis-viewer-bar__pager {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+/* `display: inline-flex` above would otherwise defeat the `hidden` attribute. */
+.selis-viewer-bar__pager[hidden] {
+	display: none;
+}
+
+.selis-viewer-bar__page {
+	appearance: none;
+	border: 1px solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 1.15rem;
+	line-height: 1;
+	padding: 0.2rem 0.6rem;
+	cursor: pointer;
+}
+
+.selis-viewer-bar__page:hover:not(:disabled) {
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent);
+}
+
+.selis-viewer-bar__page:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.selis-viewer-bar__pageno {
+	font-size: 0.85rem;
+	color: var(--selis-color-fg-muted);
+	min-width: 6.5rem;
+	text-align: center;
+}
+
 /*
  * PRINT PROGRESS (SL-4.UI.13).
  *

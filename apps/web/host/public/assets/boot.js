@@ -2193,7 +2193,7 @@ globalThis.__selisGoto = async (page) => {
 			page,
 		);
 		currentPage = page;
-		return { status: "ok", page, label: documentPageLabel(page), painted };
+		return { status: "ok", page, pages: opened.pages, label: documentPageLabel(page), painted };
 	} catch (error) {
 		return {
 			status: "threw",
@@ -3123,14 +3123,70 @@ globalThis.__selisSearch = function (base64, query) {
 	}
 };
 
-// ── Open a PDF (the file picker the viewer page surfaces) ─────────────────────
+// ── Open a PDF + page navigation (the controls the viewer page surfaces) ──────
 //
 // The viewer accepts a document through the WEB.03 handoff (drag-drop, paste,
-// `?src=`), but a reader also needs an obvious button. This wires the header's
-// "Open a PDF" control to the same local-only path: the file is read into an
-// ArrayBuffer in the page — never uploaded — and handed to `__selisView`, which
-// opens it and paints the first page. The control lives in the header, not in
-// `#selis-app`, so `paintPage` replacing the canvas never removes it.
+// `?src=`), but a reader also needs an obvious "open" and a way to page through.
+// These wire the header's controls to the engine's existing local-only paths:
+// the file is read into an ArrayBuffer in the page — never uploaded — handed to
+// the engine, and `__selisGoto` renders a page onto the canvas. The controls
+// live in the header, not in `#selis-app`, so `paintPage` never removes them.
+
+/** Set the open-document source without rendering (used before `__selisGoto`). */
+globalThis.__selisSetSource = function (source) {
+	openDocumentSource = typeof source === "function" ? source : () => source;
+};
+
+let pagerTotal = 0;
+
+function updatePager(page, total) {
+	const bar = document.getElementById("selis-pager");
+	const indicator = document.getElementById("selis-page-indicator");
+	const prev = document.getElementById("selis-prev-page");
+	const next = document.getElementById("selis-next-page");
+	if (bar === null) return;
+	pagerTotal = total;
+	bar.hidden = false;
+	if (indicator !== null) indicator.textContent = `Page ${page + 1} of ${total}`;
+	if (prev !== null) prev.disabled = page <= 0;
+	if (next !== null) next.disabled = page >= total - 1;
+}
+
+function installPager() {
+	const prev = document.getElementById("selis-prev-page");
+	const next = document.getElementById("selis-next-page");
+	const go = async (target) => {
+		const result = await globalThis.__selisGoto(target);
+		if (result && result.status === "ok") {
+			updatePager(result.page, result.pages ?? pagerTotal);
+		}
+	};
+	prev?.addEventListener("click", () => {
+		void go(currentPage - 1);
+	});
+	next?.addEventListener("click", () => {
+		void go(currentPage + 1);
+	});
+}
+
+/**
+ * Open a base64-encoded PDF and show its first page, revealing the pager. This
+ * is the whole open sequence in one place: set the source, render page 0 (the
+ * only path that also reports the page count the pager needs), clear any prior
+ * failure panel, and update the pager. The file-open button is a thin wrapper
+ * over this; exposing it as a global also makes the reader drivable from a test
+ * without the native file picker (which script cannot populate).
+ */
+globalThis.__selisOpenBase64 = async function (base64) {
+	globalThis.__selisSetSource(base64);
+	const opened = await globalThis.__selisGoto(0);
+	if (opened && opened.status === "ok") {
+		clearFailure();
+		updatePager(opened.page, opened.pages ?? 1);
+	}
+	return opened;
+};
+
 function installOpenButton() {
 	const button = document.getElementById("selis-open-file-button");
 	const input = document.getElementById("selis-open-file");
@@ -3145,12 +3201,18 @@ function installOpenButton() {
 			const bytes = new Uint8Array(await file.arrayBuffer());
 			// Base64 the bytes in chunks so a large file does not blow the argument
 			// limit of a single `String.fromCharCode` call. The bytes stay in this
-			// page; `__selisView` opens them through the C ABI in local memory.
+			// page; the engine opens them through the C ABI in local memory.
 			let binary = "";
 			for (let i = 0; i < bytes.length; i += 0x8000) {
 				binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
 			}
-			globalThis.__selisView(btoa(binary));
+			const opened = await globalThis.__selisOpenBase64(btoa(binary));
+			if (!opened || opened.status !== "ok") {
+				showFailure(
+					{ message: opened?.detail ?? opened?.status ?? "unknown" },
+					"opening the document",
+				);
+			}
 		} catch (error) {
 			showFailure(
 				{ message: error instanceof Error ? error.message : String(error) },
@@ -3165,3 +3227,4 @@ function installOpenButton() {
 }
 
 installOpenButton();
+installPager();
