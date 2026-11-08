@@ -20,6 +20,19 @@ impl From<selis_pdf_edit::EditError> for crate::ToolError {
     }
 }
 
+/// Options for the browser/CLI edit-text tool, deserialized from the tools
+/// request. `page` is 0-based, matching [`edit_text`]; the web UI shows a
+/// 1-based page number and subtracts one before it sends the request.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EditTextOptions {
+    /// 0-based index of the page whose text is edited.
+    pub page: u32,
+    /// The exact run of text to find (ASCII / WinAnsi).
+    pub find: String,
+    /// The text to put in its place; may be empty to delete the run.
+    pub replace: String,
+}
+
 /// Replace the first occurrence of `find` with `replace` in the text of page
 /// `page` (0-based) and write the verified result to `output`.
 ///

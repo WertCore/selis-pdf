@@ -99,6 +99,7 @@ enum Op {
     FillForms,
     Fingerprint,
     Privacy,
+    EditText,
 }
 
 impl Op {
@@ -136,6 +137,7 @@ impl Op {
             30 => Some(Self::FillForms),
             31 => Some(Self::Fingerprint),
             32 => Some(Self::Privacy),
+            33 => Some(Self::EditText),
             _ => None,
         }
     }
@@ -172,8 +174,10 @@ pub unsafe extern "C" fn selis_tools_chunk_id(out_len: *mut u32) -> *mut u8 {
 /// 16 strip metadata, 17 resize, 18 N-up, 19 attach files, 20 remove
 /// attachments, 21 repair, 22 image to PDF, 23 ZIP, 24 image watermark,
 /// 25 outline editing, 26 metadata report, 27 batch queue, 28 form fields,
-/// 29 fill forms, 30 fingerprint, 31 privacy scan. With 32 operations the mask
-/// fills the whole `u32`; it is informational (no consumer gates on it).
+/// 29 fill forms, 30 fingerprint, 31 privacy scan. The 32 bits of the mask are
+/// full; operation 33 (edit text) has no bit of its own. The mask is purely
+/// informational — no consumer gates on it, and the op dispatch matches on the
+/// wire code directly — so the 33rd op is reached without widening the mask.
 #[no_mangle]
 pub extern "C" fn selis_tools_capabilities() -> u32 {
     u32::MAX
@@ -767,6 +771,21 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 output: "out.pdf".to_string(),
                 name: format!("{stem}-filled.pdf"),
                 verification: selis_pdf_tools::fill_forms("in/0", &options, "out.pdf")?,
+                over_target: false,
+            }]
+        }
+        Op::EditText => {
+            let options: selis_pdf_tools::EditTextOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-edited.pdf"),
+                verification: selis_pdf_tools::edit_text(
+                    "in/0",
+                    options.page,
+                    &options.find,
+                    &options.replace,
+                    "out.pdf",
+                )?,
                 over_target: false,
             }]
         }

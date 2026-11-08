@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 46;
+      const CARD_COUNT = 47;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -1302,7 +1302,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the forty-six tool cards");
+        out.cards = await waitForCards(frame, "the forty-seven tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -1378,6 +1378,12 @@
         });
         const metadataFixture = await fetch("metadata.pdf").then((r) => {
           if (!r.ok) throw new Error("metadata.pdf fixture returned " + r.status);
+          return r.arrayBuffer();
+        });
+        // A one-page invoice whose content shows `(Invoice total: 900 USD)`, so
+        // the edit-text card has a known run to find and replace.
+        const editFixture = await fetch("edit.pdf").then((r) => {
+          if (!r.ok) throw new Error("edit.pdf fixture returned " + r.status);
           return r.arrayBuffer();
         });
         // The password fixture is NOT one Selis wrote: `qpdf --encrypt` produced
@@ -1837,6 +1843,26 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           outputs: onlineWatermark.outputs,
           output: onlineWatermark.output,
           network: onlineWatermark.network,
+        };
+
+        const onlineEditText = await toolInFrame(
+          frame,
+          editFixture,
+          "edit.pdf",
+          "online edit text",
+          "edit_text",
+          { find: "900", replace: "1250", page: "1" },
+          ["(Invoice total: 1250 USD) Tj"],
+        );
+        out.editText = {
+          fileRows: onlineEditText.fileRows,
+          runLabel: onlineEditText.runLabel,
+          noUpload: onlineEditText.noUpload,
+          status: onlineEditText.status,
+          result: onlineEditText.result,
+          outputs: onlineEditText.outputs,
+          output: onlineEditText.output,
+          network: onlineEditText.network,
         };
 
         const onlineWatermarkTiled = await toolInFrame(
@@ -3518,7 +3544,7 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           : null;
         const offlineCards = await waitForCards(
           frame,
-          "the forty-six offline tool cards",
+          "the forty-seven offline tool cards",
         );
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
@@ -3591,6 +3617,15 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           "watermark",
           { text: "CONFIDENTIAL", opacity: "0.35", pages: "2" },
           ["(CONFIDENTIAL) Tj", "/SelisOverlayGS gs"],
+        );
+        const offlineEditText = await toolInFrame(
+          frame,
+          editFixture,
+          "edit.pdf",
+          "offline edit text",
+          "edit_text",
+          { find: "900", replace: "1250", page: "1" },
+          ["(Invoice total: 1250 USD) Tj"],
         );
         const offlineWatermarkTiled = await toolInFrame(
           frame,
@@ -4842,6 +4877,16 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             outputs: offlineWatermark.outputs,
             output: offlineWatermark.output,
             network: offlineWatermark.network,
+          },
+          editText: {
+            fileRows: offlineEditText.fileRows,
+            runLabel: offlineEditText.runLabel,
+            noUpload: offlineEditText.noUpload,
+            status: offlineEditText.status,
+            result: offlineEditText.result,
+            outputs: offlineEditText.outputs,
+            output: offlineEditText.output,
+            network: offlineEditText.network,
           },
           watermarkTiled: {
             fileRows: offlineWatermarkTiled.fileRows,

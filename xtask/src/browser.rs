@@ -3158,6 +3158,77 @@ fn check_fill_forms_leg(leg: &Json, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One edit-text leg: a one-page invoice whose text `900` is replaced with
+/// `1250`. The edit is written as an incremental update, so the output is a
+/// `%PDF-` file named after the input stem that carries the new show-text
+/// operator in its new revision, produced with no upload.
+fn check_edit_text_leg(leg: &Json, label: &str) -> Result<(), String> {
+    const NEEDLES: [&str; 1] = ["(Invoice total: 1250 USD) Tj"];
+    if leg.get("fileRows").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "the {label} leg did not show one selected file (fileRows = {:?})",
+            leg.get("fileRows")
+        ));
+    }
+    if string_field(leg, "runLabel")? != "Replace text" {
+        return Err(format!(
+            "the {label} button was labelled {:?}, expected \"Replace text\"",
+            leg.get("runLabel")
+        ));
+    }
+    check_no_upload_network(leg, label)?;
+
+    let outputs = leg
+        .get("outputs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} run reported no output list"))?;
+    if outputs.len() != 1 {
+        return Err(format!(
+            "the {label} run produced {} outputs, expected one PDF",
+            outputs.len()
+        ));
+    }
+    let output = outputs
+        .first()
+        .ok_or_else(|| format!("the {label} run produced no output"))?;
+    if output.get("kind").and_then(Json::as_str) != Some("pdf") {
+        return Err(format!(
+            "the {label} output had kind {:?}, expected \"pdf\"",
+            output.get("kind")
+        ));
+    }
+    if output.get("name").and_then(Json::as_str) != Some("edit-edited.pdf") {
+        return Err(format!(
+            "the {label} output was named {:?}, expected \"edit-edited.pdf\"",
+            output.get("name")
+        ));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} output did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    let found = output
+        .get("found")
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("the {label} output did not report its content checks"))?;
+    if found.len() != NEEDLES.len() {
+        return Err(format!(
+            "the {label} output reported {} content checks, expected {}",
+            found.len(),
+            NEEDLES.len()
+        ));
+    }
+    if let Some(index) = found.iter().position(|item| item.as_bool() != Some(true)) {
+        return Err(format!(
+            "the {label} output is missing {:?}; the edit did not take",
+            NEEDLES[index]
+        ));
+    }
+    Ok(())
+}
+
 /// One image→PDF leg: two image files (PNG + JPEG) become one PDF with one
 /// page per image, and the real Blob carries Flate-compressed DeviceRGB image
 /// XObjects. The page count row has no input count, because the output is
@@ -5337,7 +5408,7 @@ const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 46] = [
+const TOOLS_PAGE_CARDS: [&str; 47] = [
     "attach",
     "attachments",
     "batch",
@@ -5349,6 +5420,7 @@ const TOOLS_PAGE_CARDS: [&str; 46] = [
     "crop",
     "delete",
     "detach",
+    "edit_text",
     "fill_forms",
     "fingerprint",
     "flip",
@@ -6383,6 +6455,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("formFill")
         .ok_or_else(|| "the page reported no form-fill leg (formFill = None)".to_string())?;
     check_fill_forms_leg(form_fill, "online form fill")?;
+    let edit_text = report
+        .get("editText")
+        .ok_or_else(|| "the page reported no edit-text leg (editText = None)".to_string())?;
+    check_edit_text_leg(edit_text, "online edit text")?;
     let text = report
         .get("text")
         .ok_or_else(|| "the page reported no text leg (text = None)".to_string())?;
@@ -6917,6 +6993,10 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
         .get("formFill")
         .ok_or_else(|| "the offline leg reported no form-fill result".to_string())?;
     check_fill_forms_leg(offline_form_fill, "offline form fill")?;
+    let offline_edit_text = offline
+        .get("editText")
+        .ok_or_else(|| "the offline leg reported no edit-text result".to_string())?;
+    check_edit_text_leg(offline_edit_text, "offline edit text")?;
     let offline_text = offline
         .get("text")
         .ok_or_else(|| "the offline leg reported no text result".to_string())?;

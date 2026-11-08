@@ -56,6 +56,7 @@ export type ToolId =
 	| "html"
 	| "text"
 	| "zip"
+	| "edit_text"
 	| "fill_forms"
 	| "unlock"
 	| "protect"
@@ -372,6 +373,18 @@ export const TOOLS: readonly ToolDef[] = [
 		note: "Bookmarks are document structure, not page content; readers show them in their sidebar.",
 		verb: "Save bookmarks",
 		multiple: false,
+	},
+	{
+		id: "edit_text",
+		slug: "edit-pdf-text",
+		group: "stamp",
+		mark: "✎",
+		title: "Edit text",
+		blurb: "Find a run of text on a page and replace it, in place.",
+		note: "The change is saved as an incremental update: the original bytes are kept as an earlier revision, so a signature over them stays valid.",
+		verb: "Replace text",
+		multiple: false,
+		accepts: "pdf",
 	},
 	{
 		id: "header_footer",

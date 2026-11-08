@@ -1476,6 +1476,34 @@ function init(): void {
 			renderFillFormsOptions(options);
 			return;
 		}
+		if (tool.id === "edit_text") {
+			const note = make("p", "option-note");
+			note.textContent =
+				"The first run of text on the chosen page that matches Find is replaced. Standard-font (WinAnsi) text only; the file is saved as an incremental update and the result is verified before you download it — nothing leaves this device.";
+			options.append(note);
+			addField(
+				"find",
+				"Find text",
+				textInput("find", "text", "the exact text on the page"),
+				"Matched exactly, including spaces and letter case.",
+			);
+			addField(
+				"replace",
+				"Replace with",
+				textInput("replace", "text", "the new text"),
+				"Leave empty to delete the found text.",
+			);
+			const page = addField(
+				"page",
+				"Page number",
+				textInput("page", "number", "1"),
+				"1-based — the page the text is on.",
+			) as HTMLInputElement;
+			page.value = "1";
+			page.min = "1";
+			page.step = "1";
+			return;
+		}
 		if (tool.id === "merge" || tool.id === "mix") {
 			const note = make("p", "option-note");
 			note.textContent =
@@ -3108,6 +3136,19 @@ function init(): void {
 				options.pages = pages;
 			}
 			return { op: "page_numbers", options, files: wireFiles };
+		}
+		if (tool.id === "edit_text") {
+			const find = optionValue("find");
+			if (find === "") {
+				throw new ToolInputError("Enter the text to find.");
+			}
+			const page = numberInRange("page", "Page number", 1, 1_000_000, 1, true);
+			return {
+				op: "edit_text",
+				// The engine page index is 0-based; the control is 1-based.
+				options: { page: page - 1, find, replace: optionValue("replace") },
+				files: wireFiles,
+			};
 		}
 		if (tool.id === "watermark") {
 			const text = optionValue("text").trim();
