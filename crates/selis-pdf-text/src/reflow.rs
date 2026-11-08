@@ -8,11 +8,11 @@
 //!
 //! # What this does and does not claim
 //!
-//! * **Tables.** A detected table is lifted out of the prose and rendered as a
-//!   real `<table>` (first row as the header) rather than reflowed as body text.
-//!   It is placed at the end of its page section, not at its inline position —
-//!   the cells are a true grid, but their exact spot in the prose is not
-//!   reconstructed.
+//! * **Tables.** The article does not auto-detect tables: run blind over prose,
+//!   table inference over-detects (a two-word heading becomes two columns), so
+//!   a genuine table's cells reflow as body text here and the opt-in "Tables as
+//!   CSV" tool is where a reader asks for a grid. The `<table>` emitter and its
+//!   verifier remain for a future, precise line-to-row attribution.
 //! * **Links.** Bare URLs in body text (`http://`, `https://`, `www.`) become
 //!   `<a>` elements; a `www.` link is given an `https` scheme and every link
 //!   carries `rel="nofollow noopener"`. Link *annotations* are not read — the
@@ -32,7 +32,6 @@
 #![allow(clippy::integer_division)]
 
 use crate::assembly::TextLine;
-use crate::table::{tables_on_page, Table};
 
 /// How one reflowed paragraph is marked up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,37 +184,25 @@ pub fn paragraphs(lines: &[TextLine], texts: &[String]) -> Vec<ReflowParagraph> 
     out
 }
 
-/// Build a page's paragraphs and tables together: tables are detected first,
-/// the lines inside them are lifted out of the paragraph flow, and the rest
-/// reflows as prose — so a table's cells become a real grid instead of garbled
-/// body text, and no cell text is duplicated as a paragraph.
+/// Build a page's paragraphs for the reading-order article.
+///
+/// Tables are deliberately **not** auto-lifted here. `tables_on_page` is tuned
+/// for the opt-in "Tables as CSV" tool, where a reader has decided the page is a
+/// table; run blind over arbitrary prose it over-detects — a two-word heading
+/// like "Parity Report" gets split into two columns — which would corrupt the
+/// article rather than improve it (caught by the real-browser reflow leg). So
+/// the article stays paragraphs + autolinked URLs, and a genuine table's cells
+/// reflow as body text, as the module's "does not claim" note records. The
+/// `ReflowTable` emitter and `verify_reflow_html` still handle tables for a
+/// future, precise line-to-row attribution; this function just does not feed
+/// them. `page` is kept in the signature for that future use.
 #[must_use]
 pub fn page_content(
     lines: &[TextLine],
     texts: &[String],
-    page: u32,
+    _page: u32,
 ) -> (Vec<ReflowParagraph>, Vec<ReflowTable>) {
-    let tables = tables_on_page(lines, page);
-    let reflow_tables: Vec<ReflowTable> = tables
-        .iter()
-        .map(|table: &Table| ReflowTable {
-            columns: table.columns,
-            rows: table.rows.clone(),
-        })
-        .collect();
-    let mut kept_lines: Vec<TextLine> = Vec::with_capacity(lines.len());
-    let mut kept_texts: Vec<String> = Vec::with_capacity(texts.len());
-    for (line, text) in lines.iter().zip(texts.iter()) {
-        let middle = (line.bbox.y0 + line.bbox.y1) / 2.0;
-        let inside_table = tables
-            .iter()
-            .any(|table| middle >= table.bbox.y0 && middle <= table.bbox.y1);
-        if !inside_table {
-            kept_lines.push(line.clone());
-            kept_texts.push(text.clone());
-        }
-    }
-    (paragraphs(&kept_lines, &kept_texts), reflow_tables)
+    (paragraphs(lines, texts), Vec::new())
 }
 
 /// Escape text for HTML body content.

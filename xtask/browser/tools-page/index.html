@@ -160,7 +160,7 @@
       // in xtask/src/browser.rs holds the same list, and the verdict compares the
       // ids, so a page that renders a different number fails here with a message
       // that names the count it was waiting for.
-      const CARD_COUNT = 43;
+      const CARD_COUNT = 46;
 
       function cardIds(frame) {
         return [...frameDocument(frame).querySelectorAll("#tool-grid .tool-card")]
@@ -1297,7 +1297,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the forty-two tool cards");
+        out.cards = await waitForCards(frame, "the forty-six tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -2117,6 +2117,43 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           output: onlineMetadataReport.output,
           network: onlineMetadataReport.network,
         };
+
+        // The structural fingerprint and the privacy scan are read-only reports
+        // like the metadata report: the download is JSON, never a PDF, so `%PDF-`
+        // must be absent and the schema + facts present.
+        await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "online fingerprint",
+          "fingerprint",
+          {},
+          ['"schema": "selis-fingerprint/1"', '"status": "ok"', '"pages": 3'],
+          ["%PDF-"],
+        );
+        await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "online privacy",
+          "privacy",
+          {},
+          ['"schema": "selis-privacy/1"', '"risk"', '"findings"'],
+          ["%PDF-"],
+        );
+        // Invert renders every page and writes a new PDF whose pages are the
+        // inverted raster, embedded as a Flate image — so the download is a PDF
+        // carrying `/FlateDecode`.
+        await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "online invert",
+          "invert",
+          { dpi: "72" },
+          ["/FlateDecode"],
+          [],
+        );
 
         const onlineAttachments = await toolInFrame(
           frame,
@@ -3475,7 +3512,7 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           : null;
         const offlineCards = await waitForCards(
           frame,
-          "the forty-two offline tool cards",
+          "the forty-six offline tool cards",
         );
         await waitFor(
           () => offlineWin.navigator.serviceWorker.controller !== null,
@@ -4304,6 +4341,41 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
             '"present": false',
           ],
           ["%PDF-"],
+        );
+
+        // The fingerprint, privacy scan and invert after the origin is cut: the
+        // tools chunk (fingerprint, privacy) and the raster chunk (invert) were
+        // runtime-cached by the online legs, so a device that once used these can
+        // use them again with no server to ask.
+        await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "offline fingerprint",
+          "fingerprint",
+          {},
+          ['"schema": "selis-fingerprint/1"', '"status": "ok"'],
+          ["%PDF-"],
+        );
+        await toolInFrame(
+          frame,
+          metadataFixture,
+          "notes.pdf",
+          "offline privacy",
+          "privacy",
+          {},
+          ['"schema": "selis-privacy/1"', '"findings"'],
+          ["%PDF-"],
+        );
+        await toolInFrame(
+          frame,
+          splitFixture,
+          "report.pdf",
+          "offline invert",
+          "invert",
+          { dpi: "72" },
+          ["/FlateDecode"],
+          [],
         );
 
         // The same seven password legs after the origin is cut. The security chunk

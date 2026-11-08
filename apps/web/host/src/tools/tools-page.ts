@@ -3270,6 +3270,12 @@ function init(): void {
 		if (tool.id === "metadata_report") {
 			return { op: "metadata_report", files: wireFiles };
 		}
+		if (tool.id === "fingerprint") {
+			return { op: "fingerprint", files: wireFiles };
+		}
+		if (tool.id === "privacy") {
+			return { op: "privacy", files: wireFiles };
+		}
 		if (tool.id === "batch") {
 			return { op: "batch", options: { tool: optionValue("tool") }, files: wireFiles };
 		}
