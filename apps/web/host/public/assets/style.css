@@ -1471,7 +1471,47 @@
  */
 
 :root {
-	color-scheme: light dark;
+	color-scheme: light;
+}
+
+/*
+ * ONE design system across the product. The viewer app is built on @selis/ui-kit
+ * (the `--selis-color-*` tokens); the tools grid is the warm "paper + green"
+ * site design (tools.css). To keep the two surfaces visually identical, the
+ * ui-kit tokens are remapped here — loaded last in the assembled style.css, so
+ * these win — onto the exact site palette. The viewer then renders in the same
+ * colours, fonts and accents as the grid.
+ */
+:root {
+	--selis-color-bg: #f4f1e8;
+	--selis-color-bg-raised: #fffdf7;
+	--selis-color-bg-inset: #e9e4d7;
+	--selis-color-fg: #17221f;
+	--selis-color-fg-muted: #65716b;
+	--selis-color-fg-subtle: #65716b;
+	--selis-color-fg-disabled: #a7b0a8;
+	--selis-color-border: #d9d3c4;
+	--selis-color-border-strong: #bdb6a4;
+	--selis-color-focus-ring: #0b6b5e;
+	--selis-color-accent: #0b6b5e;
+	--selis-color-accent-hover: #084d43;
+	--selis-color-accent-subtle: #dcefe9;
+	--selis-color-accent-fg: #fffdf7;
+	--selis-color-link: #0b6b5e;
+	--selis-color-selection-bg: #0b6b5e;
+	--selis-color-selection-fg: #fffdf7;
+	--selis-color-highlight-bg: #f6e6a8;
+	--selis-color-highlight-active-bg: #e8c766;
+	--selis-color-highlight-fg: #17221f;
+	--selis-color-danger: #9d3327;
+	--selis-color-danger-subtle: #fae8e4;
+	--selis-color-danger-fg: #9d3327;
+	--selis-color-page-placeholder: #e9e4d7;
+	--selis-color-page-placeholder-fg: #65716b;
+	--selis-font-sans: "Segoe UI", "Aptos", "Helvetica Neue", Arial, sans-serif;
+	--selis-radius-sm: 7px;
+	--selis-radius-md: 11px;
+	--selis-radius-lg: 16px;
 }
 
 /* The viewer page is a column: a slim branded header, then the app, then a
