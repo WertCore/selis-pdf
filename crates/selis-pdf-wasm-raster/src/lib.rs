@@ -847,7 +847,8 @@ mod tests {
         clippy::expect_used,
         clippy::panic,
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing
+        clippy::indexing_slicing,
+        clippy::integer_division
     )]
 
     use super::*;

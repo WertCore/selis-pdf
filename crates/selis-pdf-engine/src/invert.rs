@@ -148,6 +148,12 @@ fn invert_rgba(rgba: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::integer_division
+    )]
+
     use super::*;
     use selis_sandbox::FixedClock;
 

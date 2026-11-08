@@ -1,6 +1,13 @@
 //! `selis flatten` with a render check: a link annotation whose appearance
 //! fills its box red is baked into the page, and rendering the flattened output
 //! shows the red mark in the page content (no annotation involved).
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::PathBuf;
 use std::process::Command;

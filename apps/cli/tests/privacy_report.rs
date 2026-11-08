@@ -1,5 +1,12 @@
 //! `selis privacy` end-to-end: the scan never rewrites the input, and the JSON
 //! twin carries the risk shape the browser card reads.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::PathBuf;
 use std::process::Command;

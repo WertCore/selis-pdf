@@ -166,7 +166,7 @@ fn diff_rgba(a: &RenderedPage, b: &RenderedPage) -> (bool, f64) {
     if a.rgba == b.rgba {
         return (true, 0.0);
     }
-    let total = (a.rgba.len() / 4).max(1);
+    let total = a.rgba.len().checked_div(4).unwrap_or(0).max(1);
     let differing = a
         .rgba
         .chunks_exact(4)

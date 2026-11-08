@@ -1,6 +1,13 @@
 //! `selis invert` end-to-end: it writes a valid image-PDF of the inverted
 //! raster and never rewrites the input. Pixel-level inversion is proven by the
 //! engine's own unit test; this proves the command wires through.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::PathBuf;
 use std::process::Command;

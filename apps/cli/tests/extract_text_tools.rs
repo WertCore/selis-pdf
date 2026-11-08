@@ -3,6 +3,13 @@
 //! The documents are built here rather than taken from a fixture: each test
 //! asserts one property of the export, and a synthetic page says exactly what
 //! that property is about. The binary is the one that shipped.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::Path;
 use std::process::Command;

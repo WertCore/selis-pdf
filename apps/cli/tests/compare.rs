@@ -1,5 +1,12 @@
 //! `selis compare` end-to-end: a file compared with itself is identical, and a
 //! file compared with a visibly-changed copy is not. Read-only on both inputs.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::PathBuf;
 use std::process::Command;

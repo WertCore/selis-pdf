@@ -1,5 +1,12 @@
 //! `selis fingerprint` end-to-end: the read never rewrites the input, and the
 //! JSON twin carries the fingerprint shape the browser card reads.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 
 use std::path::PathBuf;
 use std::process::Command;
