@@ -36,7 +36,13 @@ selis-pdf-content = { workspace = true }
 # vocabulary crosses the boundary. A strictly-downward L4 -> L2 edge, the same
 # one `selis-pdf-text` already is.
 selis-pdf-doc = { workspace = true }
-selis-pdf-engine = { workspace = true, features = ["rng"] }
+# `builtin-fallback-fonts` bakes the twelve Liberation faces into the module so a
+# PDF that names a non-embedded standard font (Helvetica, Times, Courier, …) has
+# glyphs to draw. Without it the viewer renders such pages blank — the runtime
+# fallback-fetch path (SL-3.FONT.12) is not yet wired in the web shell. The
+# feature only changes which bytes are resident, never which face substitutes, so
+# it cannot alter layout.
+selis-pdf-engine = { workspace = true, features = ["rng", "builtin-fallback-fonts"] }
 selis-pdf-text = { workspace = true }
 selis-sandbox = { workspace = true }
 # SHA-256 for the CJK chunk cache-poisoning guard (SL-4.WASM.07). Already
