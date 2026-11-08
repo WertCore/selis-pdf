@@ -105,7 +105,10 @@ fn run_tools(
         }
         selis_pdf_tools::fill_forms(
             &input,
-            &selis_pdf_tools::FillFormsOptions { fields: edits },
+            &selis_pdf_tools::FillFormsOptions {
+                fields: edits,
+                ..Default::default()
+            },
             out,
         )
         .map(|_| ())

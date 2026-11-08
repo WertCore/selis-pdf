@@ -251,6 +251,18 @@ pub struct FillFormsOptions {
     /// The values to set. Every name must match exactly one field; an empty
     /// list is refused rather than silently rewriting the document.
     pub fields: Vec<FieldEdit>,
+    /// Write a real `/AP /N` appearance stream for each filled **text** field,
+    /// not only `/V` + `/NeedAppearances` (SL-5.FORM.02). With this off (the
+    /// default) a viewer that honours `/NeedAppearances` rebuilds the display
+    /// and a viewer that does not shows an empty box; with it on the value is
+    /// drawn into a Form XObject the field carries, so it is visible in every
+    /// viewer and survives flattening. The appearance follows the field's `/DA`
+    /// (font, size, colour) resolved against the form's `/DR`, honours `/Q`
+    /// (quadding) and the multiline flag, and sizes auto (`/DA` size `0`) text
+    /// to the box. Choice and button fields are untouched by this flag: button
+    /// appearances already exist (the fill selects `/AS`), and choice appearance
+    /// synthesis is separate open work.
+    pub synthesize_appearances: bool,
 }
 
 /// Read the document's AcroForm fields.
@@ -440,11 +452,46 @@ pub fn fill_form(
         })?;
         apply_plan(&mut objects, &remap, record, plan)?;
     }
-    if planned
+    // Text and choice values need an appearance a viewer can show. With
+    // synthesis on, we draw text fields ourselves (a real `/AP /N` the value is
+    // visible in, and the flattener can bake); anything we do not synthesize
+    // (choice fields, or a text field with no resolvable font) still asks the
+    // viewer to rebuild via `/NeedAppearances`.
+    let has_variable = planned
         .iter()
-        .any(|(_, plan)| matches!(plan, Plan::Text(_) | Plan::Choice { .. }))
-    {
-        set_need_appearances(&mut objects, &remap, root.num, acroform_ref);
+        .any(|(_, plan)| matches!(plan, Plan::Text(_) | Plan::Choice { .. }));
+    if has_variable {
+        let mut needs_viewer_rebuild = !options.synthesize_appearances;
+        if options.synthesize_appearances {
+            let (default_da, dr_fonts) = form_defaults(&objects, &remap, root.num, acroform_ref);
+            for (index, plan) in &planned {
+                match plan {
+                    Plan::Text(value) => {
+                        let record = walked.records.get(*index).ok_or_else(|| {
+                            FormError::Malformed(
+                                "a planned field disappeared from the model".to_string(),
+                            )
+                        })?;
+                        if !synthesize_text_appearances(
+                            &mut objects,
+                            &remap,
+                            &mut next_num,
+                            record,
+                            value,
+                            &default_da,
+                            &dr_fonts,
+                        ) {
+                            needs_viewer_rebuild = true;
+                        }
+                    }
+                    Plan::Choice { .. } => needs_viewer_rebuild = true,
+                    Plan::Button { .. } => {}
+                }
+            }
+        }
+        if needs_viewer_rebuild {
+            set_need_appearances(&mut objects, &remap, root.num, acroform_ref);
+        }
     }
 
     let root_ref = Ref::new(remap.get(&root.num).copied().unwrap_or(root.num), 0);
@@ -1384,6 +1431,386 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+// --- Field appearance synthesis (SL-5.FORM.02) ---------------------------------
+//
+// A `/NeedAppearances` form shows nothing in a viewer that does not rebuild
+// appearances, and flattening such a form bakes an empty box. Synthesising the
+// appearance ourselves — a Form XObject that draws the field's value per its
+// `/DA`, placed in the widget's `/AP /N` — makes the value visible everywhere
+// and gives the flattener a real mark to bake. This is the ISO 32000-1
+// §12.7.3.3 variable-text appearance for text fields; choice and button fields
+// are out of this slice (buttons already carry appearances).
+
+/// A read-only view of a copied object's dictionary.
+fn object_dict(objects: &[(u32, Obj)], num: u32) -> Option<&Vec<(Bytes, Obj)>> {
+    objects
+        .iter()
+        .find(|(candidate, _)| *candidate == num)
+        .and_then(|(_, value)| match value {
+            Obj::Dict(pairs) => Some(pairs),
+            _ => None,
+        })
+}
+
+/// A number object as `f64`.
+fn num_f64(obj: &Obj) -> Option<f64> {
+    match obj {
+        Obj::Int(v) => Some(*v as f64),
+        Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(i32::from(*scale))),
+        _ => None,
+    }
+}
+
+/// A whole number serialises as `/Int`, anything else as a 3-digit `/Real`, so
+/// a box with integer corners stays integer in the output.
+fn num_obj(v: f64) -> Obj {
+    if v.fract() == 0.0 && v.abs() < 9.0e15 {
+        #[allow(clippy::cast_possible_truncation)] // integral and bounded by the guard
+        let n = v as i64;
+        Obj::Int(n)
+    } else {
+        let scaled = (v * 1000.0).round();
+        let clamped = if scaled >= i64::MAX as f64 {
+            i64::MAX
+        } else if scaled <= i64::MIN as f64 {
+            i64::MIN
+        } else {
+            #[allow(clippy::cast_possible_truncation)] // clamped into i64 range above
+            let n = scaled as i64;
+            n
+        };
+        Obj::Real {
+            scaled: clamped,
+            scale: 3,
+        }
+    }
+}
+
+/// `(x0, y0, x1, y1)` from a widget's `/Rect`, when present and numeric.
+fn read_rect(pairs: &[(Bytes, Obj)]) -> Option<(f64, f64, f64, f64)> {
+    let Obj::Array(a) = dict_get(pairs, b"Rect")? else {
+        return None;
+    };
+    let [x0, y0, x1, y1] = a.as_slice() else {
+        return None;
+    };
+    Some((num_f64(x0)?, num_f64(y0)?, num_f64(x1)?, num_f64(y1)?))
+}
+
+/// Format a coordinate without trailing zeros.
+fn fmt_num(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 9.0e15 {
+        #[allow(clippy::cast_possible_truncation)] // integral and bounded by the guard
+        let n = v as i64;
+        n.to_string()
+    } else {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// The font name, size and colour operator from a `/DA` string, e.g.
+/// `/Helv 12 Tf 0 g` -> (`Helv`, 12.0, `0 g`). Size 0 means auto-size. Missing
+/// pieces fall back to Helvetica / auto / black.
+fn parse_default_appearance(da: &[u8]) -> (Vec<u8>, f64, Vec<u8>) {
+    let text = String::from_utf8_lossy(da);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut font = b"Helv".to_vec();
+    let mut size = 0.0;
+    let mut color = b"0 g".to_vec();
+    if let Some(tf) = tokens.iter().position(|t| *t == "Tf") {
+        let name_tok = tf.checked_sub(2).and_then(|i| tokens.get(i));
+        let size_tok = tf.checked_sub(1).and_then(|i| tokens.get(i));
+        if let Some(name) = name_tok.and_then(|t| t.strip_prefix('/')) {
+            font = name.as_bytes().to_vec();
+        }
+        if let Some(parsed) = size_tok.and_then(|t| t.parse::<f64>().ok()) {
+            size = parsed;
+        }
+        if let Some(c) = tokens.get(tf.saturating_add(1)..).and_then(color_op) {
+            color = c;
+        } else if let Some(c) = tf
+            .checked_sub(2)
+            .and_then(|end| tokens.get(..end))
+            .and_then(color_op)
+        {
+            color = c;
+        }
+    }
+    (font, size, color)
+}
+
+/// The last colour-setting operator (`g`/`rg`/`k`) with its operands.
+fn color_op(tokens: &[&str]) -> Option<Vec<u8>> {
+    for (i, t) in tokens.iter().enumerate() {
+        let operands = match *t {
+            "g" => 1usize,
+            "rg" => 3,
+            "k" => 4,
+            _ => continue,
+        };
+        if let Some(start) = i.checked_sub(operands) {
+            if let Some(slice) = tokens.get(start..=i) {
+                return Some(slice.join(" ").into_bytes());
+            }
+        }
+    }
+    None
+}
+
+/// Escape one line for a PDF literal string, mapped to the single-byte range a
+/// standard-14 font draws (WinAnsi/Latin-1 overlap); anything wider becomes `?`.
+fn escape_pdf_literal(line: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ch in line.chars() {
+        // A code point that fits in one byte draws in a standard-14 font; wider
+        // code points (U+0100 and up) have no single-byte glyph, so they become
+        // `?`. `u8::try_from` does both the range check and the conversion.
+        let byte = u8::try_from(u32::from(ch)).unwrap_or(b'?');
+        match byte {
+            b'(' | b')' | b'\\' => {
+                out.push(b'\\');
+                out.push(byte);
+            }
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            _ => out.push(byte),
+        }
+    }
+    out
+}
+
+/// A rough text width in points (Helvetica averages ~0.5 em); used only to
+/// place centred / right-quadded lines, where exact metrics are follow-on work.
+fn approx_text_width(line: &str, size: f64) -> f64 {
+    line.chars().count() as f64 * size * 0.5
+}
+
+/// Build a `/Tx` variable-text appearance content stream: one `BT…ET` that
+/// draws `value` in a `width`×`height` box, honouring quadding and (by
+/// splitting on newlines) the multiline flag.
+#[allow(clippy::too_many_arguments)]
+fn text_appearance_content(
+    value: &str,
+    font: &[u8],
+    size: f64,
+    color: &[u8],
+    width: f64,
+    height: f64,
+    quadding: i64,
+    multiline: bool,
+) -> Vec<u8> {
+    const PAD: f64 = 2.0;
+    let font_size = if size > 0.0 {
+        size
+    } else if multiline {
+        12.0
+    } else {
+        (height - 2.0 * PAD).clamp(4.0, 12.0)
+    };
+    let leading = font_size * 1.15;
+    let lines: Vec<&str> = if multiline {
+        value.split(['\n', '\r']).collect()
+    } else {
+        vec![value]
+    };
+    let font_name = String::from_utf8_lossy(font);
+    let color_str = String::from_utf8_lossy(color);
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"/Tx BMC\nq\nBT\n");
+    out.extend_from_slice(
+        format!("{color_str}\n/{font_name} {} Tf\n", fmt_num(font_size)).as_bytes(),
+    );
+
+    let first_y = if multiline {
+        (height - PAD - font_size).max(0.0)
+    } else {
+        ((height - font_size) / 2.0).max(PAD) + font_size * 0.2
+    };
+    let mut prev_x = 0.0;
+    let mut prev_y = 0.0;
+    for (i, line) in lines.iter().enumerate() {
+        let text_w = approx_text_width(line, font_size);
+        let x = match quadding {
+            1 => ((width - text_w) / 2.0).max(PAD),
+            2 => (width - PAD - text_w).max(PAD),
+            _ => PAD,
+        };
+        let y = first_y - (i as f64) * leading;
+        out.extend_from_slice(
+            format!("{} {} Td\n", fmt_num(x - prev_x), fmt_num(y - prev_y)).as_bytes(),
+        );
+        out.push(b'(');
+        out.extend_from_slice(&escape_pdf_literal(line));
+        out.extend_from_slice(b") Tj\n");
+        prev_x = x;
+        prev_y = y;
+    }
+    out.extend_from_slice(b"ET\nQ\nEMC\n");
+    out
+}
+
+/// The form's default `/DA` and its `/DR /Font` name->ref map, from the copied
+/// `/AcroForm` (its refs are already remapped).
+fn form_defaults(
+    objects: &[(u32, Obj)],
+    remap: &HashMap<u32, u32>,
+    root_num: u32,
+    acroform_ref: Option<Ref>,
+) -> (Vec<u8>, Vec<(Bytes, Ref)>) {
+    let acro = match acroform_ref {
+        Some(r) => remap
+            .get(&r.num)
+            .copied()
+            .and_then(|n| object_dict(objects, n)),
+        None => object_dict(objects, root_num)
+            .and_then(|cat| dict_get(cat, b"AcroForm"))
+            .and_then(|v| match v {
+                Obj::Dict(d) => Some(d),
+                _ => None,
+            }),
+    };
+    let Some(acro) = acro else {
+        return (b"/Helv 0 Tf 0 g".to_vec(), Vec::new());
+    };
+    let da = match dict_get(acro, b"DA") {
+        Some(Obj::String(s)) => s.as_slice().to_vec(),
+        _ => b"/Helv 0 Tf 0 g".to_vec(),
+    };
+    let mut fonts = Vec::new();
+    if let Some(Obj::Dict(dr)) = dict_get(acro, b"DR") {
+        if let Some(Obj::Dict(font_dict)) = dict_get(dr, b"Font") {
+            for (name, value) in font_dict {
+                if let Obj::Ref(r) = value {
+                    fonts.push((name.clone(), *r));
+                }
+            }
+        }
+    }
+    (da, fonts)
+}
+
+/// Synthesize `/AP /N` appearance streams for one text field's widgets, wiring
+/// each widget's `/AP /N` to a new Form XObject. Returns true when at least one
+/// widget got an appearance (false when the field has no resolvable font, no
+/// widget, or a degenerate box — in which case the caller falls back to
+/// `/NeedAppearances`).
+fn synthesize_text_appearances(
+    objects: &mut Vec<(u32, Obj)>,
+    remap: &HashMap<u32, u32>,
+    next_num: &mut u32,
+    record: &FieldRecord,
+    value: &str,
+    default_da: &[u8],
+    dr_fonts: &[(Bytes, Ref)],
+) -> bool {
+    let Some(field_ref) = record.field_ref else {
+        return false;
+    };
+    let Some(field_num) = remap.get(&field_ref.num).copied() else {
+        return false;
+    };
+    let da = object_dict(objects, field_num)
+        .and_then(|d| dict_get(d, b"DA"))
+        .and_then(|o| match o {
+            Obj::String(s) => Some(s.as_slice().to_vec()),
+            _ => None,
+        })
+        .unwrap_or_else(|| default_da.to_vec());
+    let (font, size, color) = parse_default_appearance(&da);
+    let Some(font_ref) = dr_fonts
+        .iter()
+        .find(|(name, _)| name.as_slice() == font.as_slice())
+        .map(|(_, r)| *r)
+    else {
+        return false;
+    };
+    let flags = object_dict(objects, field_num)
+        .and_then(|d| dict_get(d, b"Ff"))
+        .and_then(as_i64)
+        .unwrap_or(0);
+    let multiline = flags & 0x1000 != 0; // /Ff bit 13 (multiline)
+    let quadding = object_dict(objects, field_num)
+        .and_then(|d| dict_get(d, b"Q"))
+        .and_then(as_i64)
+        .unwrap_or(0);
+
+    // Widget geometries first, so every read finishes before the pushes/mutates.
+    let mut jobs: Vec<(u32, f64, f64)> = Vec::new();
+    for widget in &record.widgets {
+        let Some(wref) = widget.obj_ref else { continue };
+        let Some(wnum) = remap.get(&wref.num).copied() else {
+            continue;
+        };
+        if let Some((x0, y0, x1, y1)) = object_dict(objects, wnum).and_then(|d| read_rect(d)) {
+            jobs.push((wnum, (x1 - x0).abs(), (y1 - y0).abs()));
+        }
+    }
+
+    let mut any = false;
+    for (wnum, width, height) in jobs {
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        let content = text_appearance_content(
+            value, &font, size, &color, width, height, quadding, multiline,
+        );
+        let xnum = *next_num;
+        *next_num = next_num.saturating_add(1);
+        let stream = Obj::Stream {
+            dict: vec![
+                (
+                    Bytes::copy_from_slice(b"Type"),
+                    Obj::Name(Bytes::copy_from_slice(b"XObject")),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Subtype"),
+                    Obj::Name(Bytes::copy_from_slice(b"Form")),
+                ),
+                (Bytes::copy_from_slice(b"FormType"), Obj::Int(1)),
+                (
+                    Bytes::copy_from_slice(b"BBox"),
+                    Obj::Array(vec![
+                        Obj::Int(0),
+                        Obj::Int(0),
+                        num_obj(width),
+                        num_obj(height),
+                    ]),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Resources"),
+                    Obj::Dict(vec![(
+                        Bytes::copy_from_slice(b"Font"),
+                        Obj::Dict(vec![(Bytes::copy_from_slice(&font), Obj::Ref(font_ref))]),
+                    )]),
+                ),
+                (
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                ),
+            ],
+            data: Bytes::copy_from_slice(&content),
+        };
+        objects.push((xnum, stream));
+        if let Some(wd) = object_dict_mut(objects, wnum) {
+            dict_set(
+                wd,
+                b"AP",
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"N"),
+                    Obj::Ref(Ref::new(xnum, 0)),
+                )]),
+            );
+            any = true;
+        }
+    }
+    any
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -1581,6 +2008,7 @@ mod tests {
                     value: (*value).to_string(),
                 })
                 .collect(),
+            ..FillFormsOptions::default()
         }
     }
 
@@ -1761,5 +2189,123 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("(Second)"));
         assert!(!text.contains("(First)"), "the replaced value is gone");
+    }
+
+    /// Resolve the output's `/AcroForm` dictionary.
+    fn acroform_of(bytes: &[u8]) -> Vec<(Bytes, Obj)> {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("parse");
+        let root = doc.revisions().last().unwrap().root.unwrap();
+        let Obj::Dict(cat) = resolve_ref(bytes, &doc, root, &budget, &mut g).unwrap() else {
+            panic!("catalog is not a dict");
+        };
+        match dict_get(&cat, b"AcroForm")
+            .expect("catalog has /AcroForm")
+            .clone()
+        {
+            Obj::Dict(d) => d,
+            Obj::Ref(r) => match resolve_ref(bytes, &doc, r, &budget, &mut g).unwrap() {
+                Obj::Dict(d) => d,
+                _ => panic!("/AcroForm is not a dict"),
+            },
+            _ => panic!("/AcroForm is neither a dict nor a reference"),
+        }
+    }
+
+    /// The `(dict, data)` of a field's `/AP /N` appearance stream in the output.
+    fn appearance_of(bytes: &[u8], field_name: &str) -> (Vec<(Bytes, Obj)>, Vec<u8>) {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("parse");
+        let acro = acroform_of(bytes);
+        let Some(Obj::Array(fields)) = dict_get(&acro, b"Fields") else {
+            panic!("/AcroForm has no /Fields");
+        };
+        for field in fields {
+            let Obj::Ref(fr) = field else { continue };
+            let Obj::Dict(fd) = resolve_ref(bytes, &doc, *fr, &budget, &mut g).unwrap() else {
+                continue;
+            };
+            if dict_get(&fd, b"T").and_then(decode_text).as_deref() != Some(field_name) {
+                continue;
+            }
+            let apd = match dict_get(&fd, b"AP").expect("the field carries /AP").clone() {
+                Obj::Dict(d) => d,
+                Obj::Ref(r) => match resolve_ref(bytes, &doc, r, &budget, &mut g).unwrap() {
+                    Obj::Dict(d) => d,
+                    _ => panic!("/AP is not a dict"),
+                },
+                _ => panic!("/AP is neither a dict nor a reference"),
+            };
+            let Obj::Ref(nr) = dict_get(&apd, b"N").expect("/AP carries /N").clone() else {
+                panic!("/AP /N is not a reference to a stream");
+            };
+            let Obj::Stream { dict, data } = resolve_ref(bytes, &doc, nr, &budget, &mut g).unwrap()
+            else {
+                panic!("/AP /N does not resolve to a stream");
+            };
+            return (dict, data.as_slice().to_vec());
+        }
+        panic!("no field named {field_name}");
+    }
+
+    #[test]
+    fn synthesizes_a_text_field_appearance_stream() {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let mut opts = edits(&[("Name", "Ada Lovelace")]);
+        opts.synthesize_appearances = true;
+        let (bytes, info) = fill_form(&form_fixture(), &opts, &budget, &mut g).expect("fill");
+        assert_eq!(info.filled, 1);
+
+        // The value still round-trips.
+        let report = report_of(&bytes);
+        let name = report
+            .fields
+            .iter()
+            .find(|f| f.name == "Name")
+            .expect("Name field");
+        assert_eq!(name.value.as_deref(), Some("Ada Lovelace"));
+
+        // The widget now carries a Form XObject appearance that draws the value.
+        let (dict, data) = appearance_of(&bytes, "Name");
+        let content = String::from_utf8_lossy(&data);
+        assert!(
+            content.contains("/Tx BMC"),
+            "marked-content text: {content}"
+        );
+        assert!(
+            content.contains(" Tf"),
+            "selects the DA font/size: {content}"
+        );
+        assert!(
+            content.contains("(Ada Lovelace) Tj"),
+            "draws the value: {content}"
+        );
+        assert_eq!(
+            dict_get(&dict, b"Subtype")
+                .and_then(as_name)
+                .as_ref()
+                .map(Bytes::as_slice),
+            Some(&b"Form"[..]),
+            "a Form XObject",
+        );
+        let Some(Obj::Array(bbox)) = dict_get(&dict, b"BBox") else {
+            panic!("the appearance has no /BBox");
+        };
+        assert_eq!(bbox.len(), 4);
+        assert_eq!(as_i64(&bbox[2]), Some(190), "BBox width = Rect width");
+        assert_eq!(as_i64(&bbox[3]), Some(20), "BBox height = Rect height");
+
+        // A text-only synthesized fill does not also force a viewer rebuild.
+        let acro = acroform_of(&bytes);
+        assert_ne!(
+            dict_get(&acro, b"NeedAppearances"),
+            Some(&Obj::Bool(true)),
+            "synthesized appearances should not force /NeedAppearances",
+        );
     }
 }

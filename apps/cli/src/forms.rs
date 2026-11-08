@@ -64,6 +64,9 @@ pub(crate) fn fill(
             value: value.to_string(),
         });
     }
-    let options = selis_pdf_tools::FillFormsOptions { fields };
+    let options = selis_pdf_tools::FillFormsOptions {
+        fields,
+        ..Default::default()
+    };
     selis_pdf_tools::fill_forms(path, &options, output).map_err(CliError::from)
 }
