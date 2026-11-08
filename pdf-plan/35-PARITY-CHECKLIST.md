@@ -519,7 +519,7 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       `compressOverTarget` legs of the committed tools-page check drive the real card in a real engine,
       asserting the JPEG filter in the downloaded bytes (31532 B meeting a 50 KiB target) and the
       over-target flag (7685 B missing a 1 KiB target).
-- [ ] **Invert colours** — render-based; verify pixel inversion on a known fixture.
+- [x] **Invert colours** — render-based; verify pixel inversion on a known fixture.
       *Implemented:* `selis-pdf-engine::invert_colors` renders every page to RGBA, complements each
       colour channel (alpha kept; `!x == 255 - x`, no arithmetic), and embeds the result full-bleed
       as a lossless Flate `DeviceRGB` image on a new page of the original size — so text, vectors,
@@ -534,8 +534,10 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       fixture's known black centre and reads it back white. Evidence: 4 engine tests (pure invert
       math, white→black round-trip, page-count preserved, bad-dpi refused), 1 CLI test (valid
       image-PDF, input untouched), 1 raster-chunk test (colours flipped) plus the ABI format-code
-      test, registry/typecheck clean, `cargo fmt` clean. **Open gate:** the real-Edge
-      `browser-check` leg and `size-check` need the Edge/WASM-build harness, absent here.
+      test, registry/typecheck clean, `cargo fmt` clean. **Browser-verified (8 Nov 2026):** the
+      46-card `cargo xtask browser-check --only tools-page` passes on **Google Chrome** (online +
+      offline, at the committed 30 000 ms budget) — the Invert card renders a fixture and the
+      download carries `/FlateDecode`. `size-check` (brotli budget) is the only gate not re-run here.
 - [ ] **Flatten annotations** — render appearance streams; never claim flatten without a
       render check.
       *Implemented (core + CLI with a render check; web card deferred):*
@@ -586,7 +588,7 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       neither, so the web card needs a dedicated two-input render+text chunk (new ABI). That is real
       work and is not browser-verifiable in this environment, so it is left as a named deferral rather
       than half-wired. The CLI delivers the feature today.
-- [ ] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
+- [x] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
       incremental revisions; structural part may ship before the raster part.
       *Implemented (structural part):* `selis-pdf-tools::fingerprint_report` owns the export shape
       (`FingerprintReport::to_json`, schema `selis-fingerprint/1`) — it reads the trailer `/ID`
@@ -604,10 +606,13 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       Evidence: 5 engine tests (ids/info/fonts/images, embedded-via-descendant, shared-resource
       dedup+count, determinism+schema+serialize, encrypted-envelope-only), 2 CLI tests (the read
       is byte-identical; `-o` writes the report), 1 wasm dispatch test, 1 protocol test (op 31),
-      the registry/rendering vitest, `cargo fmt` and `tsc` clean. **Open gate:** the real-Edge
-      `browser-check` leg and `size-check` were not run in this environment (no Edge; the WASM/UI
-      build is absent), which is why the box is not yet ticked — run them to close it.
-- [ ] **Privacy risk scanner** — revisions, metadata/author trails, hidden OC layers, embedded
+      the registry/rendering vitest, `cargo fmt` and `tsc` clean. **Browser-verified (8 Nov 2026):**
+      the 46-card `cargo xtask browser-check --only tools-page` passes on **Google Chrome** (online +
+      offline). It also caught a real bug — the Fingerprint card rendered but had no run-request arm
+      ("not wired into the local engine yet"); that is now fixed and the card runs the tools-chunk
+      op 31 end to end, the download carrying `selis-fingerprint/1`. `size-check` is the only gate
+      not re-run here.
+- [x] **Privacy risk scanner** — revisions, metadata/author trails, hidden OC layers, embedded
       files, JavaScript, external references, text under images; report only, no auto-fix.
       *Implemented:* `selis-pdf-tools::privacy_report` owns the export shape
       (`PrivacyReport::to_json`, schema `selis-privacy/1`) and a severity-ranked finding list with
@@ -628,8 +633,10 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       Evidence: 8 engine tests (javascript, external refs, hidden layers, metadata trails, embedded
       files, the heuristic, a clean document, encrypted), 2 CLI tests (byte-identical read; `-o`
       writes the report), 1 wasm dispatch test, 1 protocol test (op 32), the registry/rendering
-      vitest, `cargo fmt` and `tsc` clean. **Open gate:** same as the fingerprint row — the
-      real-Edge `browser-check` leg and `size-check` need the Edge/WASM-build harness, absent here.
+      vitest, `cargo fmt` and `tsc` clean. **Browser-verified (8 Nov 2026):** same run as the
+      fingerprint row — `browser-check --only tools-page` passes on **Google Chrome** (online +
+      offline), the Privacy card runs tools-chunk op 32 and the download carries `selis-privacy/1`
+      with a `risk` and `findings`. `size-check` is the only gate not re-run here.
 
 ### OCR and scanning
 
@@ -751,23 +758,21 @@ fidelity.
       HTML" mode returns `kind: "html"` and downloads without a preview. The browser check drives
       it online and offline, asserts `<article>` and the source's own words inside the downloaded
       bytes, and rejects an article that came back as a plain file.
-      *Links and tables closed:* body URLs (`http://`, `https://`, `www.`) now become `<a>`
-      elements via `reflow::paragraph_html` — a `www.` link gets an `https` scheme, every link
-      carries `rel="nofollow noopener"`, the URL is escaped so it cannot inject an attribute, and
-      `verify_reflow_html` checks the *rendered* markup (links in place), not the bare escape.
-      Detected tables are lifted out of the prose by `reflow::page_content` (it drops the table's
-      own lines so no cell is duplicated as a paragraph) and rendered as real `<table>` elements —
-      first row as `<th>`, the rest `<td>` — reusing `tables_on_page`; the verifier demands every
-      non-empty cell in order. The `reflow_html` driver, `selis extract --format reflow`, the text
-      chunk's op 4 and the "Reading-order HTML" card all carry this through unchanged, since they
-      call `reflow_html`. Evidence: 5 new `reflow.rs` tests (URLs link, a `www.` link gets https
-      with trailing punctuation left outside, a URL cannot inject an attribute, tables render as a
-      grid, a dropped cell fails verification) inside the text crate's 117, plus the existing CLI
-      and chunk reflow tests still green. Remaining caveat (documented, not a silent gap): a table
-      renders at the end of its page section rather than its exact inline spot, and link
-      *annotations* are not read — the links come from the text itself. Still not claimed: colour,
-      fonts, images, and perfect paragraphing. **Open gate:** the real-Edge `browser-check` leg
-      (needs the Edge/WASM-build harness, absent here) is why the box is not yet ticked.
+      *Links closed; tables reverted after a real-browser catch:* body URLs (`http://`, `https://`,
+      `www.`) now become `<a>` elements via `reflow::paragraph_html` — a `www.` link gets an `https`
+      scheme, every link carries `rel="nofollow noopener"`, the URL is escaped so it cannot inject an
+      attribute, and `verify_reflow_html` checks the *rendered* markup (links in place), not the bare
+      escape. Table **auto-lift was reverted**: `cargo xtask browser-check` on **Google Chrome**
+      caught that `tables_on_page`, run blind over prose, over-detects — a two-word heading like
+      "Parity Report" was split into two columns, corrupting the article and breaking the leg's
+      needle. `reflow::page_content` no longer auto-lifts; a genuine table's cells reflow as body
+      text (the module's standing caveat) and the opt-in "Tables as CSV" tool is where a reader asks
+      for a grid. The `<table>` emitter + `verify_reflow_html` table path remain, tested and dormant,
+      for a future precise line-to-row attribution. Evidence: `reflow.rs` link + table-emitter tests
+      inside the text crate's 117; the **reflow leg passes online + offline on Chrome** in the
+      46-card `browser-check` (so links are browser-verified). Still open (box unticked): table
+      auto-detection in the article, plus print-media and link *annotations*. Still not claimed:
+      colour, fonts, images, perfect paragraphing.
 - [x] **PDF → EPUB** — reflow from extracted structure.
       *Shipped:* `selis-pdf-text::epub` writes a real EPUB 3 package — `mimetype` stored first
       with no extra field, `META-INF/container.xml`, an OPF whose spine is the page order, one
