@@ -1921,6 +1921,7 @@ dependencies = [
  "selis-io",
  "selis-pdf-cos",
  "selis-pdf-doc",
+ "selis-pdf-edit",
  "selis-pdf-engine",
  "selis-pdf-filter",
  "selis-pdf-form",
