@@ -3183,20 +3183,14 @@ function updatePager(page, total) {
 }
 
 function installPager() {
-	const prev = document.getElementById("selis-prev-page");
-	const next = document.getElementById("selis-next-page");
-	const go = async (target) => {
-		const result = await globalThis.__selisGoto(target);
-		if (result && result.status === "ok") {
-			updatePager(result.page, result.pages ?? pagerTotal);
-		}
-	};
-	prev?.addEventListener("click", () => {
-		void go(currentPage - 1);
-	});
-	next?.addEventListener("click", () => {
-		void go(currentPage + 1);
-	});
+	// Prev/Next scroll the continuous reader to the neighbouring page rather than
+	// swapping a single canvas; the scroll handler keeps the indicator in step.
+	document
+		.getElementById("selis-prev-page")
+		?.addEventListener("click", () => scrollToPage(currentPage - 1));
+	document
+		.getElementById("selis-next-page")
+		?.addEventListener("click", () => scrollToPage(currentPage + 1));
 }
 
 /**
@@ -3209,10 +3203,17 @@ function installPager() {
  */
 globalThis.__selisOpenBase64 = async function (base64) {
 	globalThis.__selisSetSource(base64);
-	const opened = await globalThis.__selisGoto(0);
+	const opened = await renderDocument();
 	if (opened && opened.status === "ok") {
 		clearFailure();
-		updatePager(opened.page, opened.pages ?? 1);
+		const pager = document.getElementById("selis-pager");
+		if (pager !== null) pager.hidden = false;
+		const zoom = document.getElementById("selis-zoom");
+		if (zoom !== null) zoom.hidden = false;
+		const label = document.getElementById("selis-zoom-level");
+		if (label !== null) label.textContent = `${Math.round(READER.zoom * 100)}%`;
+		updatePager(0, opened.pages ?? 1);
+		installReaderScroll();
 	} else {
 		// A document that cannot be opened must SAY so — the viewer has a
 		// `#selis-failure` panel for exactly this, and routing every open through
@@ -3225,6 +3226,201 @@ globalThis.__selisOpenBase64 = async function (base64) {
 	}
 	return opened;
 };
+
+// ── Continuous-scroll reader (SL-4.UI) ───────────────────────────────────────
+//
+// Every page is rendered into one vertical scroll container, each page a raster
+// canvas with a positioned, selectable text layer over it; zoom re-renders at a
+// higher DPI. This is how a reader expects a PDF to behave — scroll down the
+// document, select text with the cursor — rather than one page at a time behind
+// a pair of buttons. All of it runs on the same local engine paths the
+// single-page view used (`openDocumentOnce`, the `render` and `text` dispatch
+// ops); nothing is uploaded.
+const READER = { doc: null, pages: 0, zoom: 1 };
+const READER_BASE_DPI = 96;
+const READER_ZOOM_MIN = 0.25;
+const READER_ZOOM_MAX = 5;
+let readerScrollWired = false;
+
+function readerDocEl() {
+	if (root === null) return null;
+	let el = root.querySelector("#selis-doc");
+	if (el === null) {
+		el = document.createElement("div");
+		el.id = "selis-doc";
+		el.className = "selis-doc";
+		root.appendChild(el);
+	}
+	return el;
+}
+
+/** Render one page's raster at `dpi` into a fresh canvas. */
+function readerRenderCanvas(doc, page, dpi) {
+	const { response, attachment } = dispatch({ op: "render", doc, page, params: { dpi } });
+	if (response.ok !== true || attachment === null) return null;
+	const w = response.value.width;
+	const h = response.value.height;
+	const canvas = document.createElement("canvas");
+	canvas.width = w;
+	canvas.height = h;
+	canvas.className = "selis-page-canvas";
+	canvas.setAttribute("role", "img");
+	canvas.setAttribute("aria-label", `Page ${page + 1}`);
+	const ctx = canvas.getContext("2d");
+	if (ctx === null) return null;
+	ctx.putImageData(
+		new ImageData(
+			new Uint8ClampedArray(attachment.buffer, attachment.byteOffset, attachment.byteLength),
+			w,
+			h,
+		),
+		0,
+		0,
+	);
+	return { canvas, w, h };
+}
+
+/** A positioned, selectable text overlay for a page, aligned to a `canvasW`-px
+ * canvas. The `text` op returns lines in page points (top-left origin); scaling
+ * by canvas-width/page-width lands each run over its rendered glyphs. */
+function readerTextLayer(doc, page, canvasW) {
+	let reply;
+	try {
+		reply = dispatch({ op: "textLayer", doc, page });
+	} catch (error) {
+		return null;
+	}
+	const value = reply.response?.ok === true ? reply.response.value : null;
+	if (value === null || !Array.isArray(value.lines) || !value.width || !value.height) return null;
+	const scale = canvasW / value.width;
+	const layer = document.createElement("div");
+	layer.className = "selis-text-layer";
+	for (const line of value.lines) {
+		if (typeof line.text !== "string" || line.text === "" || line.rect == null) continue;
+		const span = document.createElement("span");
+		span.textContent = line.text;
+		const size = line.rect.height * scale;
+		span.style.left = `${line.rect.x * scale}px`;
+		// The text op's rects are PDF y-up (origin bottom-left); the canvas is
+		// y-down (origin top-left). Flip so a run sits over its rendered glyphs.
+		span.style.top = `${(value.height - line.rect.y - line.rect.height) * scale}px`;
+		span.style.fontSize = `${size}px`;
+		span.style.height = `${size}px`;
+		// Stretch the invisible glyphs across the run's measured width so a
+		// drag-selection box tracks the rendered text, not the browser's font.
+		span.style.width = `${line.rect.width * scale}px`;
+		span.dataset.page = String(page);
+		layer.appendChild(span);
+	}
+	return layer;
+}
+
+/** Build the wrap (canvas + text layer) for one page at the current zoom. */
+function readerBuildPage(doc, page) {
+	const dpi = READER_BASE_DPI * READER.zoom;
+	const wrap = document.createElement("div");
+	wrap.className = "selis-page-wrap";
+	wrap.dataset.page = String(page);
+	const raster = readerRenderCanvas(doc, page, dpi);
+	if (raster === null) return wrap;
+	wrap.style.width = `${raster.w}px`;
+	wrap.appendChild(raster.canvas);
+	const text = readerTextLayer(doc, page, raster.w);
+	if (text !== null) wrap.appendChild(text);
+	return wrap;
+}
+
+/** Open the current source and render every page into the scroll container. */
+async function renderDocument() {
+	const bytes = openBytes();
+	if (bytes === null) return { status: "refused", detail: "no document is open" };
+	let opened;
+	try {
+		opened = openDocumentOnce(bytes);
+	} catch (error) {
+		return { status: "threw", detail: error instanceof Error ? error.message : String(error) };
+	}
+	READER.doc = opened.doc;
+	READER.pages = opened.pages;
+	const el = readerDocEl();
+	if (el === null) return { status: "refused", detail: "no mount" };
+	// The reader owns the page area: retire the single-page canvas + empty state.
+	root.querySelector("#selis-page")?.remove();
+	root.querySelector("#selis-empty")?.remove();
+	await globalThis.__selisPageLabels?.();
+	el.replaceChildren();
+	for (let page = 0; page < opened.pages; page += 1) {
+		el.appendChild(readerBuildPage(opened.doc, page));
+	}
+	currentPage = 0;
+	return { status: "ok", page: 0, pages: opened.pages, painted: true };
+}
+
+/** Re-render every page at a new zoom, preserving the reading position. */
+function applyZoom(nextZoom) {
+	const z = Math.min(READER_ZOOM_MAX, Math.max(READER_ZOOM_MIN, nextZoom));
+	if (z === READER.zoom || READER.doc === null) return;
+	const el = readerDocEl();
+	if (el === null) return;
+	const anchor = currentPage;
+	READER.zoom = z;
+	el.replaceChildren();
+	for (let page = 0; page < READER.pages; page += 1) {
+		el.appendChild(readerBuildPage(READER.doc, page));
+	}
+	const label = document.getElementById("selis-zoom-level");
+	if (label !== null) label.textContent = `${Math.round(z * 100)}%`;
+	scrollToPage(anchor);
+}
+
+function installZoom() {
+	document
+		.getElementById("selis-zoom-out")
+		?.addEventListener("click", () => applyZoom(READER.zoom - 0.25));
+	document
+		.getElementById("selis-zoom-in")
+		?.addEventListener("click", () => applyZoom(READER.zoom + 0.25));
+}
+
+/** Scroll page `index` into view and track it as the current page. */
+function scrollToPage(index) {
+	const el = readerDocEl();
+	if (el === null) return;
+	const clamped = Math.min(READER.pages - 1, Math.max(0, index));
+	const wrap = el.querySelector(`.selis-page-wrap[data-page="${clamped}"]`);
+	if (wrap instanceof HTMLElement) {
+		el.scrollTo({ top: wrap.offsetTop - el.offsetTop, behavior: "smooth" });
+	}
+	currentPage = clamped;
+	updatePager(clamped, READER.pages);
+}
+
+/** Track which page the reader is looking at as it scrolls. */
+function installReaderScroll() {
+	if (readerScrollWired) return;
+	const el = readerDocEl();
+	if (el === null) return;
+	readerScrollWired = true;
+	let ticking = false;
+	el.addEventListener("scroll", () => {
+		if (ticking) return;
+		ticking = true;
+		requestAnimationFrame(() => {
+			ticking = false;
+			const mid = el.scrollTop + el.clientHeight / 2;
+			let best = 0;
+			for (const wrap of el.querySelectorAll(".selis-page-wrap")) {
+				if (wrap instanceof HTMLElement && wrap.offsetTop - el.offsetTop <= mid) {
+					best = Number(wrap.dataset.page);
+				}
+			}
+			if (best !== currentPage) {
+				currentPage = best;
+				updatePager(best, READER.pages);
+			}
+		});
+	});
+}
 
 function installOpenButton() {
 	const button = document.getElementById("selis-open-file-button");
@@ -3267,3 +3463,4 @@ function installOpenButton() {
 
 installOpenButton();
 installPager();
+installZoom();

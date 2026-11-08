@@ -27,7 +27,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-3tGCx4lq6EdSsHyqSy0v9w1Gmsw+JK7iDg7XPLizADiJ50wi3k9Zxjtphm0WdSYr"
+			integrity="sha384-eabgNYIuPlKEXqhcFQCPHnBhqe9kgS3mF1tEK2RPaYKsGcUzfUBv7V2KLzgD+Uzi"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -63,6 +63,21 @@
 						aria-label="Next page"
 					>›</button>
 				</div>
+				<div class="selis-viewer-bar__zoom" id="selis-zoom" hidden>
+					<button
+						type="button"
+						id="selis-zoom-out"
+						class="selis-viewer-bar__page"
+						aria-label="Zoom out"
+					>−</button>
+					<span id="selis-zoom-level" class="selis-viewer-bar__pageno">100%</span>
+					<button
+						type="button"
+						id="selis-zoom-in"
+						class="selis-viewer-bar__page"
+						aria-label="Zoom in"
+					>+</button>
+				</div>
 				<a href="/">All tools</a>
 				<span class="selis-viewer-bar__pill">No upload</span>
 			</nav>
@@ -95,7 +110,7 @@
 		</footer>
 		<script
 			src="/assets/boot.js"
-			integrity="sha384-aX9+EmDmqqxmshppvNZ1WQjK5Zrk75LUKAtWsSNaBlkdE1ML5FBSwjyFLP+BsufT"
+			integrity="sha384-wuvKOj0rZkOynALXMHSGka8buI6EV8VQhMjR9aObCn6HGzhUjaqw7QYudyaolOQS"
 			crossorigin="anonymous"
 			defer
 			type="module"

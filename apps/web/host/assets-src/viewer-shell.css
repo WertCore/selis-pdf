@@ -73,7 +73,20 @@ body {
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
-	overflow: auto;
+	/* The continuous reader (`.selis-doc`) owns the scroll; the app frame holds
+	 * the toolbar fixed above it. Before a document opens it carries only the
+	 * toolbar and the empty-state prompt. */
+	overflow: hidden;
+}
+
+.selis-viewer-bar__zoom {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.selis-viewer-bar__zoom[hidden] {
+	display: none;
 }
 
 /* The reading controls, as one toolbar row that stays put while the page
@@ -196,6 +209,58 @@ body {
 .selis-failure button:hover {
 	background: var(--selis-color-accent-hover);
 	border-color: var(--selis-color-accent-hover);
+}
+
+/*
+ * THE CONTINUOUS READER (SL-4.UI). A vertical scroll of pages, each a raster
+ * canvas with a positioned, selectable text layer over it. The reader is the
+ * scroll container; the toolbar above it stays put.
+ */
+.selis-doc {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 1rem;
+	padding: 1.25rem;
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-page-wrap {
+	position: relative;
+	flex: 0 0 auto;
+	background: #fff;
+	border: 1px solid var(--selis-color-border);
+	box-shadow: 0 2px 14px rgba(23, 34, 31, 0.16);
+}
+
+.selis-page-canvas {
+	display: block;
+}
+
+/* The selectable text sits transparently over the raster: the glyphs the reader
+ * sees are the canvas's; these spans only carry the selection. */
+.selis-text-layer {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	line-height: 1;
+}
+
+.selis-text-layer span {
+	position: absolute;
+	color: transparent;
+	white-space: pre;
+	transform-origin: 0 0;
+	cursor: text;
+	user-select: text;
+}
+
+.selis-text-layer span::selection {
+	background: rgba(11, 107, 94, 0.35);
+	color: transparent;
 }
 
 /* The disclosure panels + search readout + print status sit below the toolbar,
