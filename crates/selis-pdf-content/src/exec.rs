@@ -148,7 +148,14 @@ fn execute_inner(
                 let d = num(operands, 3);
                 let e = num(operands, 4);
                 let f = num(operands, 5);
-                gstate.ctm = gstate.ctm.then(Matrix::new(a, b, c, d, e, f));
+                // `cm` PREMULTIPLIES: the operand maps the new user space into the
+                // current one, so it is applied FIRST, then the existing CTM
+                // (ISO 32000-1 §8.3.4, CTM' = M × CTM). Composing the other way
+                // round silently works for a single `cm` from the identity base
+                // but puts content off-page once two transforms accumulate (a
+                // top-level scale `cm` followed by a nested `cm`, e.g. Chrome's
+                // print output).
+                gstate.ctm = Matrix::new(a, b, c, d, e, f).then(gstate.ctm);
             }
             "w" => gstate.line_width = num(operands, 0),
             "J" => gstate.line_cap = clamp_u8(num(operands, 0)),
@@ -428,7 +435,10 @@ fn execute_inner(
                                 continue; // deviation: skip the form
                             }
                             let mut form_gstate = gstate.clone();
-                            form_gstate.ctm = form_gstate.ctm.then(matrix);
+                            // A form's /Matrix maps form space into the space where
+                            // the form is invoked, so it is applied FIRST, then the
+                            // CTM at invocation (same premultiply order as `cm`).
+                            form_gstate.ctm = matrix.then(form_gstate.ctm);
                             execute_inner(
                                 &content,
                                 font_width,
@@ -683,6 +693,37 @@ mod tests {
         .expect("execute");
         assert_eq!(dl.ops.len(), 1);
         assert!(matches!(dl.ops[0], Op::Fill { .. }));
+    }
+
+    #[test]
+    fn cm_premultiplies_so_accumulated_transforms_compose_in_order() {
+        // Two `cm`s accumulate before the fill: a 0.5 scale, then a 2x scale with
+        // a (10, 20) translate. PDF premultiplies (CTM' = M x CTM), so the second
+        // cm's translate is scaled by the first — ctm = [1,0,0,1,5,10]. Composing
+        // the other way round leaves it at [1,0,0,1,10,20], which is what pushed a
+        // Chrome print-PDF's content off the page.
+        let mut g = guard();
+        let dl = execute(
+            b".5 0 0 .5 0 0 cm 2 0 0 2 10 20 cm 0 0 m 1 1 l 1 0 l h f",
+            &const_width,
+            &no_cid,
+            &no_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        let fill = dl
+            .ops
+            .iter()
+            .find(|op| matches!(op, Op::Fill { .. }))
+            .expect("a fill op");
+        if let Op::Fill { state, .. } = fill {
+            let m = state.ctm;
+            assert!((m.a - 1.0).abs() < 1e-9, "a={}", m.a);
+            assert!((m.d - 1.0).abs() < 1e-9, "d={}", m.d);
+            assert!((m.e - 5.0).abs() < 1e-9, "e={} (wrong order gives 10)", m.e);
+            assert!((m.f - 10.0).abs() < 1e-9, "f={} (wrong order gives 20)", m.f);
+        }
     }
 
     #[test]

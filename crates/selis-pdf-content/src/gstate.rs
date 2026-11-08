@@ -140,9 +140,11 @@ impl GState {
         self.ctm = ctm;
     }
 
-    /// Concatenate `m` onto the CTM (`cm` semantics: CTM' = CTM × m).
+    /// Concatenate `m` onto the CTM (`cm` semantics: CTM' = M × CTM — the
+    /// operand maps the new user space into the current one, so it is applied
+    /// first, then the existing CTM).
     pub fn concat_ctm(&mut self, m: Matrix) {
-        self.ctm = self.ctm.then(m);
+        self.ctm = m.then(self.ctm);
     }
 
     /// Set the line width.
