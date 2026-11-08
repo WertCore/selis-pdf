@@ -922,6 +922,68 @@ function init(): void {
 	}
 
 	/**
+	 * Filter the grid as the reader types. The search is friendly, not technical:
+	 * it matches the tool's title, its one-line blurb and its category label, so
+	 * "password" finds Protect and Unlock and "picture" finds the image tools. An
+	 * empty box shows everything, so the default state (and the browser-coverage
+	 * check, which clicks every card) sees the full grid.
+	 */
+	function wireToolSearch(): void {
+		const search = optionalById<HTMLInputElement>("tool-search");
+		const count = optionalById<HTMLParagraphElement>("tool-search-count");
+		const empty = optionalById<HTMLParagraphElement>("tool-empty");
+		if (search === null || toolGrid === null) {
+			return;
+		}
+		const haystack = new Map<string, string>();
+		for (const tool of TOOLS) {
+			const group = TOOL_GROUPS.find((g) => g.id === tool.group);
+			haystack.set(
+				tool.id,
+				`${tool.title} ${tool.blurb} ${group?.label ?? ""}`.toLowerCase(),
+			);
+		}
+		const apply = (): void => {
+			const query = search.value.trim().toLowerCase();
+			let shown = 0;
+			for (const card of Array.from(toolGrid.querySelectorAll<HTMLElement>(".tool-card"))) {
+				const id = card.dataset.tool ?? "";
+				const match = query === "" || (haystack.get(id)?.includes(query) ?? false);
+				card.hidden = !match;
+				if (match) {
+					shown += 1;
+				}
+			}
+			// Hide a whole category whose cards all dropped out, and its jump link.
+			for (const group of TOOL_GROUPS) {
+				const section = document.getElementById(`tool-group-${group.id}`);
+				if (section === null) {
+					continue;
+				}
+				const anyShown = Array.from(section.querySelectorAll<HTMLElement>(".tool-card")).some(
+					(card) => !card.hidden,
+				);
+				section.hidden = !anyShown;
+			}
+			if (sectionNav !== null) {
+				for (const link of Array.from(sectionNav.querySelectorAll<HTMLAnchorElement>("a[href^='#tool-group-']"))) {
+					const target = link.getAttribute("href")?.slice(1) ?? "";
+					const section = document.getElementById(target);
+					(link.parentElement ?? link).hidden = section?.hidden ?? false;
+				}
+			}
+			if (empty !== null) {
+				empty.hidden = shown !== 0;
+			}
+			if (count !== null) {
+				count.textContent =
+					query === "" ? "" : `${shown} ${shown === 1 ? "tool" : "tools"} match “${search.value.trim()}”.`;
+			}
+		};
+		search.addEventListener("input", apply);
+	}
+
+	/**
 	 * The operation count in the section heading, read out of the registry.
 	 *
 	 * This sentence used to live in the HTML as prose ("Forty-three operations")
@@ -934,7 +996,7 @@ function init(): void {
 		if (toolsHeading === null) {
 			return;
 		}
-		toolsHeading.textContent = `${spellOut(TOOLS.length)} operations. Zero uploads.`;
+		toolsHeading.textContent = `${spellOut(TOOLS.length)} free tools, all private.`;
 	}
 
 	function addField(key: string, labelText: string, control: Control, hint?: string): Control {
@@ -4948,6 +5010,7 @@ function init(): void {
 	renderToolGrid();
 	renderSectionNav();
 	renderToolCount();
+	wireToolSearch();
 	watchSections();
 	const firstTool = TOOLS[0];
 	if (firstTool !== undefined) {

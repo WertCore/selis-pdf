@@ -6,9 +6,9 @@
 		<meta name="theme-color" content="#f4f1e8" />
 		<meta
 			name="description"
-			content="A private, browser-local PDF toolkit. Merge, split, rotate, delete, reorder, and set metadata without uploading a byte."
+			content="Free, private PDF tools that run on your device. Merge, split, convert, compress, protect and more — your PDF never leaves your machine. No upload, no account, no limits."
 		/>
-		<title>Selis Tools — PDFs, handled here</title>
+		<title>Selis — private PDF tools that never upload your files</title>
 		<link rel="canonical" href="https://pdf.selis.com/tools.html" />
 		<link rel="stylesheet" href="/assets/tools.css" />
 	</head>
@@ -28,41 +28,58 @@
 
 		<main id="main">
 			<section class="hero" aria-labelledby="hero-title">
-				<p class="eyebrow">Private PDF toolkit</p>
-				<h1 id="hero-title">PDFs, handled <em>here</em>.</h1>
+				<p class="eyebrow"><span aria-hidden="true">●</span> Your PDF never leaves your machine</p>
+				<h1 id="hero-title">Every PDF tool, <em>private by design</em>.</h1>
 				<p class="lede">
-					Merge, split, and tidy your PDFs in the browser. Document bytes never
-					leave this device — there is no upload step to disable.
+					Merge, split, convert, compress, protect and more — all on your own
+					device. Nothing is ever uploaded, so your documents stay yours.
 				</p>
 				<div class="hero-actions">
-					<a class="primary-link" href="#tools">Choose a tool</a>
-					<a class="secondary-link" href="/">Open the viewer</a>
+					<a class="primary-link" href="#tools">Pick a tool</a>
+					<a class="secondary-link" href="/">Open a PDF to read</a>
 				</div>
 				<ul class="trust-list">
-					<li><span aria-hidden="true">01</span> Files are read with the browser’s file API.</li>
-					<li><span aria-hidden="true">02</span> Writes happen in WebAssembly on this tab.</li>
-					<li><span aria-hidden="true">03</span> Downloads are Blob URLs, not server links.</li>
+					<li><span aria-hidden="true">🔒</span> Your files stay on your device — no upload, ever.</li>
+					<li><span aria-hidden="true">⚡</span> Everything runs right here in your browser.</li>
+					<li><span aria-hidden="true">✓</span> No account, no watermark, no daily limit.</li>
 				</ul>
 			</section>
 
 			<section id="tools" class="tools" aria-labelledby="tools-heading">
 				<div class="section-head">
 					<div>
-						<p class="eyebrow">Available now</p>
-						<h2 id="tools-heading">Every operation, zero uploads.</h2>
+						<p class="eyebrow">Free &amp; private</p>
+						<h2 id="tools-heading">What do you want to do with your PDF?</h2>
 					</div>
 					<p class="section-note">
-						Every tool uses the same in-memory engine as the command line and
-						shows the verification result before you download.
+						Every tool runs on your device and checks its own work before you
+						download. Pick one below, or search to jump straight to it.
 					</p>
+				</div>
+				<div class="tool-search-wrap">
+					<label class="visually-hidden" for="tool-search">Search tools</label>
+					<input
+						id="tool-search"
+						class="tool-search"
+						type="search"
+						inputmode="search"
+						autocomplete="off"
+						placeholder="Search tools — try “merge”, “compress”, “password”…"
+						aria-describedby="tool-search-count"
+					/>
+					<p id="tool-search-count" class="tool-search-count" role="status" aria-live="polite"></p>
 				</div>
 				<nav class="tool-jump-wrap" aria-label="Tool categories">
 					<ul id="tool-jump" class="tool-jump"></ul>
 				</nav>
 				<div id="tool-grid" class="tool-groups"></div>
+				<p id="tool-empty" class="tool-empty" hidden>
+					No tool matches that search yet — try a different word, or browse the
+					categories above.
+				</p>
 				<p class="tool-footnote">
-					More tools are on the roadmap below. Nothing in this list requires an
-					account, a queue, or a server-side copy of your document.
+					More tools are on the way (see the roadmap below). Nothing here needs an
+					account, a queue, or a copy of your file on someone else’s server.
 				</p>
 			</section>
 
@@ -123,8 +140,8 @@
 							<dl id="result-rows" class="result-rows"></dl>
 							<div class="result-foot">
 								<p>
-									Verified against the input structure after the write. The
-									result is a Blob in this tab.
+									We checked your result against the original before handing it
+									back — and it never left your device.
 								</p>
 								<div id="result-chain" class="result-chain" hidden>
 									<label for="result-chain-file">Continue with</label>
@@ -143,17 +160,17 @@
 					</div>
 
 					<aside class="workspace-aside" aria-labelledby="aside-title">
-						<h3 id="aside-title">What stays local</h3>
+						<h3 id="aside-title">Why this is private</h3>
 						<ul>
-							<li>Your PDFs are read in this tab and copied into WebAssembly memory.</li>
-							<li>No request carries a document body, filename, or page text.</li>
-							<li>The result is downloaded with a Blob URL created here.</li>
+							<li>Your PDF is opened on your device — it’s never sent anywhere.</li>
+							<li>No file, name, or page text ever goes over the network.</li>
+							<li>Your result downloads straight to you, instantly.</li>
 							<li>No watermark, no daily limit, no account.</li>
 						</ul>
 						<p class="aside-note">
-							The first run fetches a small WebAssembly chunk from this same
-							site. That request has no document bytes; after it loads, the
-							operation does not touch the network.
+							The first time you use a tool, a small piece of it loads from this
+							site — your document is never part of that. After it loads, the
+							tool works completely offline.
 						</p>
 					</aside>
 				</div>
