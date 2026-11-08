@@ -1445,12 +1445,17 @@ impl Session {
         let pending_rc: std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<&'static str>>> =
             std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
         let fallback_pending = std::rc::Rc::clone(&pending_rc);
+        // Fold every font reachable through the page's nested form XObjects into
+        // the resources the paint walk resolves against: a flattened `GlyphRun`
+        // carries only the font name, so text drawn inside a form whose
+        // `/Resources` omit `/Font` would otherwise find no face here.
+        let aug_font_res = augment_page_font_resources(self, page.resources.as_ref(), &budget_copy, g);
         let font_data = move |font_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
             font_data_inner(
                 &mut res,
-                page.resources.as_ref(),
+                aug_font_res.as_ref().or(page.resources.as_ref()),
                 font_name,
                 &mut bg,
                 cjk_attach.clone(),
@@ -1544,7 +1549,12 @@ impl Session {
         if content.is_empty() {
             return Ok(selis_pdf_content::display_list::DisplayList::default());
         }
-        build_display_list(self, content, page.resources.as_ref(), budget, g)
+        // Text may be drawn inside a form XObject whose `/Resources` omit
+        // `/Font`; fold every reachable face into the base resources so the
+        // interpreter resolves widths and CID-ness against the right font.
+        let augmented = augment_page_font_resources(self, page.resources.as_ref(), budget, g);
+        let base = augmented.as_ref().or(page.resources.as_ref());
+        build_display_list(self, content, base, budget, g)
     }
 
     /// The display list of a page's annotation appearance streams (SL-3.TEXT.14):
@@ -2084,6 +2094,140 @@ fn build_display_list(
 
 /// Resolve the resources dict for a resource key (a form XObject's object
 /// reference): its `/Resources` when present, else the caller's fallback.
+/// Merge a form XObject's `/Resources` over the enclosing (page) resources, so a
+/// form that omits a whole category — or an individual entry — still resolves
+/// against the page's. ISO 32000 asks a form to be self-contained, but a great
+/// many real-world PDFs are not (a CV whose body text lives in a form whose
+/// `/Resources` carries `/XObject` and `/ProcSet` but no `/Font`), and every
+/// mainstream viewer falls back this way rather than dropping the text. The
+/// form's own entries always win on a conflict.
+fn merge_resources(primary: &Obj, fallback: &Obj) -> Obj {
+    let (Obj::Dict(p), Obj::Dict(f)) = (primary, fallback) else {
+        return primary.clone();
+    };
+    let mut out: Vec<(Bytes, Obj)> = p.clone();
+    for (k, fv) in f {
+        match out.iter_mut().find(|(ok, _)| ok.as_slice() == k.as_slice()) {
+            Some((_, pv)) => {
+                // A category present in both (e.g. `/Font`): union the two
+                // sub-dictionaries, the form's entries winning. Only when both
+                // sides are inline dictionaries; an indirect sub-dict keeps the
+                // form's as-is.
+                if let (Obj::Dict(pd), Obj::Dict(fd)) = (&*pv, fv) {
+                    let mut merged: Vec<(Bytes, Obj)> = fd.clone();
+                    for (pk, pval) in pd {
+                        match merged.iter_mut().find(|(mk, _)| mk.as_slice() == pk.as_slice()) {
+                            Some((_, mv)) => *mv = pval.clone(),
+                            None => merged.push((pk.clone(), pval.clone())),
+                        }
+                    }
+                    *pv = Obj::Dict(merged);
+                }
+            }
+            None => out.push((k.clone(), fv.clone())),
+        }
+    }
+    Obj::Dict(out)
+}
+
+/// The deepest form-XObject nesting the font collector descends (a hostile or
+/// cyclic tree must terminate; `seen` also breaks cycles).
+const MAX_FONT_COLLECT_DEPTH: u32 = 16;
+
+/// Resolve a resources sub-entry (`/Font`, `/XObject`) that may be inline or an
+/// indirect reference, to its value.
+fn resolve_res_entry(
+    resolver: &mut Resolver<'_>,
+    resources: &Obj,
+    key: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Option<Obj> {
+    match dict_get(resources, key) {
+        Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
+        Some(other) => Some(other.clone()),
+        None => None,
+    }
+}
+
+/// Gather every `/Font` entry reachable from `resources` — its own, plus the
+/// `/Font` of every form XObject it references, recursively — into `out` (the
+/// first name seen wins, so the page's own fonts take precedence). Real-world
+/// PDFs (CVs exported by Office and the like) put the page's text inside form
+/// XObjects whose `/Resources` omit `/Font`; a flattened `GlyphRun` keeps only
+/// the font name, so the render walk resolves against one resources dictionary.
+/// Collecting the faces here lets that single dictionary see them all.
+fn collect_fonts_into(
+    session: &Session,
+    resources: &Obj,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    depth: u32,
+    seen: &mut std::collections::BTreeSet<(u32, u16)>,
+    out: &mut Vec<(Bytes, Obj)>,
+) {
+    if depth > MAX_FONT_COLLECT_DEPTH {
+        return;
+    }
+    let mut resolver = session.new_resolver(budget);
+    if let Some(Obj::Dict(pairs)) = resolve_res_entry(&mut resolver, resources, b"Font", g) {
+        for (k, v) in pairs {
+            if !out.iter().any(|(ok, _)| ok.as_slice() == k.as_slice()) {
+                out.push((k, v));
+            }
+        }
+    }
+    if let Some(Obj::Dict(pairs)) = resolve_res_entry(&mut resolver, resources, b"XObject", g) {
+        for (_, v) in &pairs {
+            let r = match v {
+                Obj::Ref(r) => *r,
+                _ => continue,
+            };
+            if !seen.insert((r.num, r.gen)) {
+                continue;
+            }
+            if let Ok(Obj::Stream { dict, .. }) = resolver.resolve(r, g) {
+                let form_res = match dict_get_obj(&dict, b"Resources") {
+                    Some(Obj::Ref(rr)) => resolver.resolve(*rr, g).ok(),
+                    Some(other) => Some(other.clone()),
+                    None => None,
+                };
+                if let Some(fr) = form_res {
+                    collect_fonts_into(session, &fr, budget, g, depth.saturating_add(1), seen, out);
+                }
+            }
+        }
+    }
+}
+
+/// Return `base` with its `/Font` sub-dictionary augmented by every font
+/// reachable through its nested form XObjects, so text drawn inside a form whose
+/// `/Resources` omit `/Font` still finds its faces. Returns `None` when `base`
+/// is absent, is not a dictionary, or no fonts are reachable — the caller then
+/// keeps the original resources unchanged.
+fn augment_page_font_resources(
+    session: &Session,
+    base: Option<&Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Option<Obj> {
+    let Obj::Dict(base_pairs) = base? else {
+        return None;
+    };
+    let mut fonts: Vec<(Bytes, Obj)> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    collect_fonts_into(session, base?, budget, g, 0, &mut seen, &mut fonts);
+    if fonts.is_empty() {
+        return None;
+    }
+    let mut out: Vec<(Bytes, Obj)> = base_pairs
+        .iter()
+        .filter(|(k, _)| k.as_slice() != b"Font")
+        .cloned()
+        .collect();
+    out.push((Bytes::copy_from_slice(b"Font"), Obj::Dict(fonts)));
+    Some(Obj::Dict(out))
+}
+
 fn resolve_resources_for_key(
     resolver: &mut Resolver<'_>,
     key: Option<&Bytes>,
@@ -2102,7 +2246,20 @@ fn resolve_resources_for_key(
         .resolve(selis_pdf_cos::Ref::new(num, gen), g)
         .ok()?;
     match &form {
-        Obj::Stream { dict, .. } => dict_get_obj(dict, b"Resources").cloned(),
+        Obj::Stream { dict, .. } => {
+            // Resolve the form's own `/Resources` (inline or indirect), then let
+            // the enclosing resources fill any category it omits.
+            let form_res = match dict_get_obj(dict, b"Resources") {
+                Some(Obj::Ref(r)) => resolver.resolve(*r, g).ok(),
+                Some(other) => Some(other.clone()),
+                None => None,
+            };
+            match (form_res, fallback) {
+                (Some(fr), Some(fb)) => Some(merge_resources(&fr, fb)),
+                (Some(fr), None) => Some(fr),
+                (None, _) => fallback.cloned(),
+            }
+        }
         _ => fallback.cloned(),
     }
 }
