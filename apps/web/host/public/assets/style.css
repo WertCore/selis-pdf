@@ -1,20 +1,1613 @@
-/* Selis web shell placeholder style (SL-4.WEB.01). Real theming ships via @selis/ui-kit in SL-4.UI.02+. */
+/* Selis viewer stylesheet — assembled by place-assets from @selis/ui-kit + apps/ui + viewer-shell. Do not edit by hand. */
+
+/* ===== packages/ui-kit/css/tokens.css ===== */
+/* GENERATED FILE — do not edit by hand.
+ * Source of truth: packages/ui-kit/src/tokens/*.ts
+ * Update: UPDATE_TOKENS_CSS=1 pnpm --filter @selis/ui-kit test
+ * Part of SL-4.UI.10 (design system + theming). */
+
+
+:root {
+	color-scheme: light;
+	--selis-color-bg: #f2f4f7;
+	--selis-color-bg-raised: #ffffff;
+	--selis-color-bg-inset: #e4e8ec;
+	--selis-color-fg: #171b1f;
+	--selis-color-fg-muted: #47525c;
+	--selis-color-fg-subtle: #5d6975;
+	--selis-color-fg-disabled: #9aa4ad;
+	--selis-color-border: #d3d9df;
+	--selis-color-border-strong: #8a949e;
+	--selis-color-focus-ring: #2557d0;
+	--selis-color-accent: #2b5bc4;
+	--selis-color-accent-hover: #234aa8;
+	--selis-color-accent-subtle: #dbe5fb;
+	--selis-color-accent-fg: #ffffff;
+	--selis-color-link: #1d4fc0;
+	--selis-color-selection-bg: #2b5bc4;
+	--selis-color-selection-fg: #ffffff;
+	--selis-color-highlight-bg: #ffe066;
+	--selis-color-highlight-active-bg: #ffab40;
+	--selis-color-highlight-fg: #171b1f;
+	--selis-color-success: #1e7d43;
+	--selis-color-success-subtle: #dcf2e3;
+	--selis-color-success-fg: #1a6b38;
+	--selis-color-warn: #7a4d00;
+	--selis-color-warn-subtle: #fdeec8;
+	--selis-color-warn-fg: #7a4d00;
+	--selis-color-danger: #b3261e;
+	--selis-color-danger-subtle: #fbe2e0;
+	--selis-color-danger-fg: #a12118;
+	--selis-color-page-placeholder: #dfe3e8;
+	--selis-color-page-placeholder-fg: #47525c;
+	--selis-color-scrollbar-thumb: #b8bfc7;
+	--selis-color-shadow: #0f1720;
+	--selis-shadow-1: 0 1px 2px rgba(15, 23, 32, 0.08), 0 2px 8px rgba(15, 23, 32, 0.10);
+	--selis-shadow-2: 0 8px 32px rgba(15, 23, 32, 0.22);
+	--selis-space-0: 0px;
+	--selis-space-1: 2px;
+	--selis-space-2: 4px;
+	--selis-space-3: 6px;
+	--selis-space-4: 8px;
+	--selis-space-5: 12px;
+	--selis-space-6: 16px;
+	--selis-space-7: 20px;
+	--selis-space-8: 24px;
+	--selis-space-9: 32px;
+	--selis-space-10: 40px;
+	--selis-space-11: 48px;
+	--selis-space-12: 64px;
+	--selis-radius-sm: 3px;
+	--selis-radius-md: 6px;
+	--selis-radius-lg: 10px;
+	--selis-radius-full: 999px;
+	--selis-border-hairline: 1px;
+	--selis-border-thick: 2px;
+	--selis-text-xs: 0.75rem;
+	--selis-text-sm: 0.8125rem;
+	--selis-text-md: 0.875rem;
+	--selis-text-lg: 1rem;
+	--selis-text-xl: 1.125rem;
+	--selis-text-2xl: 1.375rem;
+	--selis-text-3xl: 1.75rem;
+	--selis-leading-tight: 1.2;
+	--selis-leading-normal: 1.45;
+	--selis-weight-regular: 400;
+	--selis-weight-medium: 500;
+	--selis-weight-semibold: 600;
+	--selis-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--selis-font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+	--selis-duration-fast: 120ms;
+	--selis-duration-base: 200ms;
+	--selis-duration-slow: 320ms;
+	--selis-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+	--selis-ease-entrance: cubic-bezier(0, 0, 0.2, 1);
+	--selis-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+	--selis-z-base: 0;
+	--selis-z-toolbar: 10;
+	--selis-z-panel: 20;
+	--selis-z-dialog-backdrop: 40;
+	--selis-z-dialog: 50;
+	--selis-z-toast: 60;
+	--selis-density-control-height: 32px;
+	--selis-density-control-gap: 8px;
+	--selis-density-control-pad-x: 12px;
+	--selis-density-toolbar-pad-block: 6px;
+	--selis-density-toolbar-pad-inline: 8px;
+	--selis-density-panel-header-height: 40px;
+	--selis-density-row-height: 32px;
+	--selis-density-page-gap: 16px;
+}
+
+[data-theme="dark"] {
+	color-scheme: dark;
+	--selis-color-bg: #121519;
+	--selis-color-bg-raised: #1d2229;
+	--selis-color-bg-inset: #0d1014;
+	--selis-color-fg: #e9edf1;
+	--selis-color-fg-muted: #b6c0c9;
+	--selis-color-fg-subtle: #8f9aa4;
+	--selis-color-fg-disabled: #5c6670;
+	--selis-color-border: #333b44;
+	--selis-color-border-strong: #7d8892;
+	--selis-color-focus-ring: #8fb4f5;
+	--selis-color-accent: #3667dc;
+	--selis-color-accent-hover: #4a78ea;
+	--selis-color-accent-subtle: #223252;
+	--selis-color-accent-fg: #ffffff;
+	--selis-color-link: #9cbdf3;
+	--selis-color-selection-bg: #3667dc;
+	--selis-color-selection-fg: #ffffff;
+	--selis-color-highlight-bg: #7a5c00;
+	--selis-color-highlight-active-bg: #965700;
+	--selis-color-highlight-fg: #e9edf1;
+	--selis-color-success: #35a05f;
+	--selis-color-success-subtle: #1d3a28;
+	--selis-color-success-fg: #63c788;
+	--selis-color-warn: #ecc069;
+	--selis-color-warn-subtle: #413410;
+	--selis-color-warn-fg: #ecc069;
+	--selis-color-danger: #c33c30;
+	--selis-color-danger-subtle: #44201d;
+	--selis-color-danger-fg: #f28f85;
+	--selis-color-page-placeholder: #232a32;
+	--selis-color-page-placeholder-fg: #b6c0c9;
+	--selis-color-scrollbar-thumb: #454f59;
+	--selis-color-shadow: #000000;
+	--selis-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.50);
+	--selis-shadow-2: 0 8px 32px rgba(0, 0, 0, 0.65);
+}
+
+[data-theme="light"][data-contrast="high"] {
+	--selis-color-bg: #fafafa;
+	--selis-color-bg-raised: #ffffff;
+	--selis-color-bg-inset: #f0f0f0;
+	--selis-color-fg: #000000;
+	--selis-color-fg-muted: #1a1d21;
+	--selis-color-fg-subtle: #333a41;
+	--selis-color-border: #6d7780;
+	--selis-color-border-strong: #000000;
+	--selis-color-focus-ring: #00339e;
+	--selis-color-accent: #123a9e;
+	--selis-color-accent-hover: #0e2f82;
+	--selis-color-accent-subtle: #dce6ff;
+	--selis-color-link: #00339e;
+	--selis-color-selection-bg: #00339e;
+	--selis-color-highlight-bg: #ffd23f;
+	--selis-color-highlight-active-bg: #ff9e1f;
+	--selis-color-success: #0d5c2e;
+	--selis-color-success-subtle: #d6f0dd;
+	--selis-color-success-fg: #0d5c2e;
+	--selis-color-warn: #5f3d00;
+	--selis-color-warn-subtle: #ffefc2;
+	--selis-color-warn-fg: #5f3d00;
+	--selis-color-danger: #a81b12;
+	--selis-color-danger-subtle: #ffd9d5;
+	--selis-color-danger-fg: #8f1d15;
+	--selis-color-page-placeholder: #eceef1;
+	--selis-color-page-placeholder-fg: #1a1d21;
+	--selis-color-scrollbar-thumb: #6d7780;
+}
+
+[data-theme="dark"][data-contrast="high"] {
+	--selis-color-bg: #000000;
+	--selis-color-bg-raised: #0d1014;
+	--selis-color-bg-inset: #000000;
+	--selis-color-fg: #ffffff;
+	--selis-color-fg-muted: #dbe3ea;
+	--selis-color-fg-subtle: #c3ccd4;
+	--selis-color-fg-disabled: #6d7780;
+	--selis-color-border: #8a949e;
+	--selis-color-border-strong: #ffffff;
+	--selis-color-focus-ring: #bfe3ff;
+	--selis-color-accent: #2451c8;
+	--selis-color-accent-hover: #3763dd;
+	--selis-color-accent-subtle: #12233f;
+	--selis-color-link: #cfe2ff;
+	--selis-color-selection-bg: #2451c8;
+	--selis-color-highlight-bg: #6e5200;
+	--selis-color-highlight-active-bg: #7a4300;
+	--selis-color-highlight-fg: #ffffff;
+	--selis-color-success: #4cc27a;
+	--selis-color-success-subtle: #14301f;
+	--selis-color-success-fg: #7fe0a2;
+	--selis-color-warn: #ffd07a;
+	--selis-color-warn-subtle: #3a2c08;
+	--selis-color-warn-fg: #ffd07a;
+	--selis-color-danger: #c9372b;
+	--selis-color-danger-subtle: #431815;
+	--selis-color-danger-fg: #ffb0a6;
+	--selis-color-page-placeholder: #1d2229;
+	--selis-color-page-placeholder-fg: #ffffff;
+	--selis-color-scrollbar-thumb: #6d7780;
+}
+
+[data-density="compact"] {
+	--selis-density-control-height: 28px;
+	--selis-density-control-gap: 6px;
+	--selis-density-control-pad-x: 8px;
+	--selis-density-toolbar-pad-block: 4px;
+	--selis-density-toolbar-pad-inline: 6px;
+	--selis-density-panel-header-height: 34px;
+	--selis-density-row-height: 26px;
+	--selis-density-page-gap: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+		:root {
+		--selis-duration-fast: 0ms;
+		--selis-duration-base: 0ms;
+		--selis-duration-slow: 0ms;
+	}
+}
+
+[data-motion="reduced"] {
+	--selis-duration-fast: 0ms;
+	--selis-duration-base: 0ms;
+	--selis-duration-slow: 0ms;
+}
+
+
+/* ===== packages/ui-kit/css/base.css ===== */
+/* Selis base styles (SL-4.UI.10) — hand-rolled, token-driven, no component
+ * library (ADR-P0021). Every colour, space, radius, and duration comes from
+ * css/tokens.css custom properties; nothing here may hard-code a value the
+ * tokens define. Classnames stay under the `selis-` namespace (a unit test
+ * enforces both rules).
+ *
+ * Role names follow wertkit's naming contract (SL-4.UI.14). Identity vs
+ * structure, per that contract:
+ *   - IDENTITY (re-skinnable by an app): the `--selis-color-*` roles,
+ *     `--selis-radius-*`, `--selis-shadow-*`, `--selis-font-*`. Override the
+ *     role variable; never the raw value.
+ *   - STRUCTURE (do NOT override): `--selis-space-*`, `--selis-text-*`,
+ *     `--selis-leading-*`, `--selis-weight-*`, `--selis-duration-*`,
+ *     `--selis-ease-*`, `--selis-density-*`, and the focus treatment. The
+ *     cross-app family resemblance lives here. This file is the sanctioned
+ *     place to consume them, not to redefine them.
+ *
+ * Themes key on the host element (typically <html> or the viewer root):
+ *   [data-theme="light"|"dark"] [data-contrast="high"]
+ *   [data-density="compact"]    [data-motion="reduced"]
+ * Tokens default to light / normal contrast / comfortable / system motion.
+ */
+
+/* ── Shell ─────────────────────────────────────────────────────────────── */
+
+.selis-root,
+.selis-root * {
+	box-sizing: border-box;
+}
+
+.selis-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font-family: var(--selis-font-sans);
+	font-size: var(--selis-text-md);
+	line-height: var(--selis-leading-normal);
+	-webkit-font-smoothing: antialiased;
+}
+
+.selis-root :focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+	border-radius: var(--selis-radius-sm);
+}
+
+.selis-root ::selection {
+	background: var(--selis-color-selection-bg);
+	color: var(--selis-color-selection-fg);
+}
+
+.selis-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+
+.selis-toolbar {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-density-control-gap);
+	padding: var(--selis-density-toolbar-pad-block) var(--selis-density-toolbar-pad-inline);
+	background: var(--selis-color-bg-raised);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
+	z-index: var(--selis-z-toolbar);
+}
+
+.selis-toolbar__spacer {
+	flex: 1;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.selis-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--selis-space-2);
+	height: var(--selis-density-control-height);
+	padding: 0 var(--selis-density-control-pad-x);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-weight: var(--selis-weight-medium);
+	cursor: pointer;
+	transition: background-color var(--selis-duration-fast) var(--selis-ease-standard), border-color
+		var(--selis-duration-fast) var(--selis-ease-standard);
+}
+
+.selis-btn:hover:not(:disabled) {
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-btn:active:not(:disabled) {
+	border-color: var(--selis-color-border-strong);
+}
+
+.selis-btn:disabled {
+	color: var(--selis-color-fg-disabled);
+	border-color: var(--selis-color-border);
+	cursor: default;
+}
+
+.selis-btn--primary {
+	background: var(--selis-color-accent);
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent-fg);
+}
+
+.selis-btn--primary:hover:not(:disabled) {
+	background: var(--selis-color-accent-hover);
+	border-color: var(--selis-color-accent-hover);
+}
+
+.selis-btn--quiet {
+	border-color: transparent;
+	background: transparent;
+}
+
+.selis-btn--quiet:hover:not(:disabled) {
+	background: var(--selis-color-accent-subtle);
+}
+
+.selis-btn--danger {
+	background: var(--selis-color-danger);
+	border-color: var(--selis-color-danger);
+	color: var(--selis-color-accent-fg);
+}
+
+.selis-btn--danger:hover:not(:disabled) {
+	filter: brightness(1.1);
+}
+
+.selis-btn--icon {
+	width: var(--selis-density-control-height);
+	padding: 0;
+}
+
+/* ── Inputs ────────────────────────────────────────────────────────────── */
+
+.selis-input {
+	height: var(--selis-density-control-height);
+	padding: 0 var(--selis-density-control-pad-x);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font: inherit;
+}
+
+.selis-input::placeholder {
+	color: var(--selis-color-fg-subtle);
+}
+
+.selis-input:hover {
+	border-color: var(--selis-color-focus-ring);
+}
+
+/* ── Panels and lists (outline, thumbnails) ────────────────────────────── */
+
+.selis-panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: var(--selis-color-bg-raised);
+	border-right: var(--selis-border-hairline) solid var(--selis-color-border);
+	z-index: var(--selis-z-panel);
+}
+
+.selis-panel__header {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	height: var(--selis-density-panel-header-height);
+	padding: 0 var(--selis-space-4);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-semibold);
+	color: var(--selis-color-fg-muted);
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.selis-panel__body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: var(--selis-space-3);
+}
+
+.selis-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-1);
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.selis-list__item {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	min-height: var(--selis-density-row-height);
+	padding: 0 var(--selis-space-3);
+	border-radius: var(--selis-radius-md);
+	color: var(--selis-color-fg-muted);
+	cursor: pointer;
+}
+
+.selis-list__item:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-list__item[aria-current="true"] {
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-fg);
+	font-weight: var(--selis-weight-medium);
+}
+
+/* ── Document area and page tiles ──────────────────────────────────────── */
+
+.selis-doc-area {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	background: var(--selis-color-bg-inset);
+	padding: var(--selis-space-6);
+}
+
+.selis-page-list {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--selis-density-page-gap);
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.selis-page-tile {
+	position: relative;
+	background: var(--selis-color-bg-raised);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-sm);
+	box-shadow: var(--selis-shadow-1);
+	overflow: hidden;
+}
+
+.selis-page-tile--loading {
+	background: var(--selis-color-page-placeholder);
+	box-shadow: none;
+}
+
+.selis-page-tile__label {
+	position: absolute;
+	inset-inline-end: var(--selis-space-2);
+	inset-block-end: var(--selis-space-2);
+	padding: 0 var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	background: var(--selis-color-page-placeholder);
+	color: var(--selis-color-page-placeholder-fg);
+	font-family: var(--selis-font-mono);
+	font-size: var(--selis-text-xs);
+	line-height: var(--selis-leading-tight);
+}
+
+/* ── Text layer, selection, search highlights (UI.04/UI.05 build on these) ── */
+
+.selis-text-layer {
+	position: absolute;
+	inset: 0;
+	color: transparent;
+	cursor: text;
+	user-select: text;
+}
+
+.selis-highlight {
+	position: absolute;
+	background: var(--selis-color-highlight-bg);
+	border-radius: var(--selis-radius-sm);
+	mix-blend-mode: multiply;
+}
+
+[data-theme="dark"] .selis-highlight {
+	mix-blend-mode: screen;
+}
+
+.selis-highlight--active {
+	background: var(--selis-color-highlight-active-bg);
+}
+
+/* ── Badges and status (health panel, UI.09) ───────────────────────────── */
+
+.selis-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--selis-space-2);
+	height: var(--selis-density-row-height);
+	padding: 0 var(--selis-space-3);
+	border-radius: var(--selis-radius-full);
+	font-size: var(--selis-text-xs);
+	font-weight: var(--selis-weight-medium);
+}
+
+.selis-badge--success {
+	background: var(--selis-color-success-subtle);
+	color: var(--selis-color-success-fg);
+}
+
+.selis-badge--warning {
+	background: var(--selis-color-warn-subtle);
+	color: var(--selis-color-warn-fg);
+}
+
+.selis-badge--danger {
+	background: var(--selis-color-danger-subtle);
+	color: var(--selis-color-danger-fg);
+}
+
+/* ── Dialogs, error and empty states (UI.12) ───────────────────────────── */
+
+.selis-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--selis-color-bg) 60%, transparent);
+	z-index: var(--selis-z-dialog-backdrop);
+}
+
+.selis-dialog {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	max-width: 32rem;
+	padding: var(--selis-space-6);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-lg);
+	background: var(--selis-color-bg-raised);
+	box-shadow: var(--selis-shadow-2);
+	z-index: var(--selis-z-dialog);
+}
+
+.selis-dialog__title {
+	margin: 0;
+	font-size: var(--selis-text-xl);
+	font-weight: var(--selis-weight-semibold);
+	line-height: var(--selis-leading-tight);
+}
+
+.selis-dialog__body {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-dialog__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--selis-density-control-gap);
+}
+
+.selis-error-state__code {
+	font-family: var(--selis-font-mono);
+	font-size: var(--selis-text-xs);
+	color: var(--selis-color-danger-fg);
+}
+
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
+
+.selis-root * {
+	scrollbar-color: var(--selis-color-scrollbar-thumb) transparent;
+	scrollbar-width: thin;
+}
+
+/* ── Motion discipline ─────────────────────────────────────────────────── */
+/* Duration tokens collapse to 0ms under prefers-reduced-motion or
+ * [data-motion="reduced"] (generated in tokens.css); the placeholder pulse
+ * is gated separately because it is an animation, not a transition. */
+
+@media (prefers-reduced-motion: no-preference) {
+	.selis-page-tile--loading {
+		animation: selis-placeholder-pulse var(--selis-duration-slow) var(--selis-ease-standard)
+			infinite alternate;
+	}
+}
+
+[data-motion="reduced"] .selis-page-tile--loading {
+	animation: none;
+}
+
+/* The pulse breathes the tile's *background*, not the tile group: fading the
+   group also fades the page label inside it, which sends its composited
+   contrast below the WCAG floor mid-pulse — exactly what the chrome check's
+   axe scan caught on the loading tile. The label pill above the pulse keeps
+   its own opaque pair, so its ratio never varies. */
+@keyframes selis-placeholder-pulse {
+	from {
+		background-color: var(--selis-color-page-placeholder);
+	}
+
+	to {
+		background-color: color-mix(
+			in srgb,
+			var(--selis-color-page-placeholder),
+			var(--selis-color-bg-inset) 45%
+		);
+	}
+}
+
+
+/* ===== packages/ui-kit/css/wertkit-bridge.css ===== */
+/* The `--wk-*` -> `--selis-*` bridge (SL-4.UI.14 stage 3).
+ *
+ * `@wertkit/ui/styles.css` consumes 87 `--wk-*` variables and defines none of
+ * them. `@wertkit/ui/tokens.css` is deliberately NOT imported: it is a second
+ * theme system, with no `data-contrast="high"` variant, and UI.10's 7:1
+ * high-contrast gate is owned by the generated `--selis-*` tokens in
+ * `tokens.css`.
+ *
+ * This file is the whole translation layer. Every value on the right is a
+ * selis token or a derived structural value; no colour literal appears here.
+ * `apps/ui/src/chrome/wertkit-bridge.test.ts` extracts the `var(--wk-*)` names
+ * from the installed `@wertkit/ui/styles.css` and fails if one is not defined
+ * below, or if a definition introduces a raw colour.
+ *
+ * ## Scope, and why it is repeated
+ *
+ * The aliases are declared on the theme scopes, not only on `:root`. A custom
+ * property value is substituted where it is declared, so an alias defined only
+ * at `:root` would capture the default theme even when `data-theme="dark"` is
+ * on a nested `.selis-root`. Repeating the block makes the alias resolve
+ * against the nearest theme scope.
+ *
+ * Chrome still sets its theme attributes on `document.documentElement`. Radix
+ * portals (Dialog, Select, Menu, Tooltip) mount under `<body>`; a theme scoped
+ * only to `.selis-root` would leave those portals on the default theme, and
+ * `@wertkit/ui@0.1.8` exposes no portal-container prop.
+ *
+ * ## The non-mechanical choices
+ *
+ * - `bg-subtle` -> `bg-inset`: selis has one recessed surface role.
+ * - `fg-on-solid` -> `accent-fg`: white on the solid accent/danger fills in
+ *   all four themes.
+ * - `info*` -> the accent family. Selis has no info role; inventing one here
+ *   would bypass UI.10's contrast gate. If info semantics become a product
+ *   need, add a gated token first.
+ * - `overlay` is derived from `--selis-color-shadow`, not a black literal.
+ * - `syntax-variable` -> `fg`; selis ships no syntax palette, and this is the
+ *   only syntax variable the component CSS consumes.
+ * - z-index values map onto the selis layering ladder; popovers sit one below
+ *   toasts so a toast remains the top transient surface.
+ * - safe-area values are `env()` because they are host facts, not design
+ *   tokens.
+ * - leading/tracking fall back to the selis body rhythm; copying wertkit's px
+ *   line-heights would fork the typography scale.
+ * - control heights derive from the selis density control height, so compact
+ *   density moves wertkit controls with the rest of the shell.
+ */
+
+:root,
+.selis-root,
+[data-theme],
+[data-contrast],
+[data-density],
+[data-motion] {
+	--wk-accent: var(--selis-color-accent);
+	--wk-accent-fg: var(--selis-color-accent-fg);
+	--wk-accent-hover: var(--selis-color-accent-hover);
+	--wk-accent-subtle: var(--selis-color-accent-subtle);
+	--wk-bg: var(--selis-color-bg);
+	--wk-bg-inset: var(--selis-color-bg-inset);
+	--wk-bg-raised: var(--selis-color-bg-raised);
+	--wk-bg-subtle: var(--selis-color-bg-inset);
+	--wk-border: var(--selis-color-border);
+	--wk-border-strong: var(--selis-color-border-strong);
+	--wk-border-thick: var(--selis-border-thick);
+	--wk-border-thin: var(--selis-border-hairline);
+	--wk-cell-py: var(--selis-space-4);
+	--wk-control-h-lg: calc(var(--selis-density-control-height) + 8px);
+	--wk-control-h-md: var(--selis-density-control-height);
+	--wk-control-h-sm: calc(var(--selis-density-control-height) - 4px);
+	--wk-control-px: var(--selis-density-control-pad-x);
+	--wk-danger: var(--selis-color-danger);
+	--wk-danger-fg: var(--selis-color-danger-fg);
+	--wk-danger-subtle: var(--selis-color-danger-subtle);
+	--wk-dialog-w: 480px;
+	--wk-fg: var(--selis-color-fg);
+	--wk-fg-muted: var(--selis-color-fg-muted);
+	--wk-fg-on-solid: var(--selis-color-accent-fg);
+	--wk-fg-subtle: var(--selis-color-fg-subtle);
+	--wk-focus-ring: var(--selis-color-focus-ring);
+	--wk-focus-width: var(--selis-border-thick);
+	--wk-font-mono: var(--selis-font-mono);
+	--wk-font-sans: var(--selis-font-sans);
+	--wk-image-ar: auto;
+	--wk-info: var(--selis-color-accent);
+	--wk-info-fg: var(--selis-color-link);
+	--wk-info-subtle: var(--selis-color-accent-subtle);
+	--wk-leading-2xl: var(--selis-leading-normal);
+	--wk-leading-lg: var(--selis-leading-normal);
+	--wk-leading-md: var(--selis-leading-normal);
+	--wk-leading-sm: var(--selis-leading-normal);
+	--wk-leading-xl: var(--selis-leading-normal);
+	--wk-leading-xs: var(--selis-leading-normal);
+	--wk-motion-base: var(--selis-duration-base);
+	--wk-motion-ease: var(--selis-ease-standard);
+	--wk-motion-ease-out: var(--selis-ease-entrance);
+	--wk-motion-fast: var(--selis-duration-fast);
+	--wk-overlay: color-mix(in srgb, var(--selis-color-shadow) 55%, transparent);
+	--wk-radius-full: var(--selis-radius-full);
+	--wk-radius-lg: var(--selis-radius-lg);
+	--wk-radius-md: var(--selis-radius-md);
+	--wk-radius-sm: var(--selis-radius-sm);
+	--wk-safe-b: env(safe-area-inset-bottom, 0px);
+	--wk-safe-l: env(safe-area-inset-left, 0px);
+	--wk-safe-r: env(safe-area-inset-right, 0px);
+	--wk-safe-t: env(safe-area-inset-top, 0px);
+	--wk-shadow-md: var(--selis-shadow-2);
+	--wk-shadow-sm: var(--selis-shadow-1);
+	--wk-sidebar-w: 240px;
+	--wk-space-1: var(--selis-space-1);
+	--wk-space-12: var(--selis-space-12);
+	--wk-space-2: var(--selis-space-2);
+	--wk-space-3: var(--selis-space-3);
+	--wk-space-4: var(--selis-space-4);
+	--wk-space-6: var(--selis-space-6);
+	--wk-space-8: var(--selis-space-8);
+	--wk-success: var(--selis-color-success);
+	--wk-success-fg: var(--selis-color-success-fg);
+	--wk-success-subtle: var(--selis-color-success-subtle);
+	--wk-surface-p: var(--selis-space-8);
+	--wk-syntax-variable: var(--selis-color-fg);
+	--wk-table-header-bg: var(--selis-color-bg-raised);
+	--wk-table-max-block: 60vh;
+	--wk-text-2xl: var(--selis-text-2xl);
+	--wk-text-lg: var(--selis-text-lg);
+	--wk-text-md: var(--selis-text-md);
+	--wk-text-sm: var(--selis-text-sm);
+	--wk-text-xl: var(--selis-text-xl);
+	--wk-text-xs: var(--selis-text-xs);
+	--wk-titlebar-h: var(--selis-density-panel-header-height);
+	--wk-tracking-tight: normal;
+	--wk-warn: var(--selis-color-warn);
+	--wk-warn-fg: var(--selis-color-warn-fg);
+	--wk-warn-subtle: var(--selis-color-warn-subtle);
+	--wk-weight-medium: var(--selis-weight-medium);
+	--wk-weight-semibold: var(--selis-weight-semibold);
+	--wk-z-modal: var(--selis-z-dialog);
+	--wk-z-overlay: var(--selis-z-dialog-backdrop);
+	--wk-z-popover: calc(var(--selis-z-toast) - 1);
+	--wk-z-sticky: var(--selis-z-toolbar);
+	--wk-z-toast: var(--selis-z-toast);
+}
+
+
+/* ===== apps/ui/src/chrome/chrome.css ===== */
+/* The React chrome (SL-4.UI.14 stage 3) — app-level layout only.
+ *
+ * Everything here is token-driven and under the `selis-` namespace. The
+ * wertkit components supply their own appearance; this file only places the
+ * shell's workspace, sidebar content and status bar. Page-tile geometry stays
+ * in `page-list.css` and is supplied by the UI.02 controller as inline custom
+ * properties.
+ *
+ * The chrome needs `base.css` as well as `page-list.css`: UI.02's tile class
+ * names (`selis-page-tile`, `selis-page-tile--loading`, `selis-page-tile__label`)
+ * and the document-area baseline are defined there. The stage 3 proposal's
+ * five-file list omitted it; the host links it between `tokens.css` and the
+ * bridge so the page list is not shipped as unstyled boxes.
+ */
+
+.selis-chrome {
+	height: 100dvh;
+}
+
+.selis-chrome__workspace {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.selis-chrome__doc-area {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-chrome__empty {
+	display: block;
+	margin: 0;
+	padding: var(--selis-space-12);
+	color: var(--selis-color-fg-muted);
+	text-align: center;
+}
+
+.selis-chrome__brand {
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-semibold);
+	white-space: nowrap;
+}
+
+.selis-chrome__doc-name {
+	overflow: hidden;
+	min-width: 0;
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-sm);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.selis-chrome__statusbar {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--selis-space-3);
+	min-height: var(--selis-density-panel-header-height);
+	padding: var(--selis-space-2) var(--selis-space-6);
+	border-top: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+}
+
+.selis-chrome__statusbar-spacer {
+	flex: 1;
+}
+
+.selis-chrome__sidebar {
+	padding: var(--selis-space-6);
+}
+
+.selis-chrome__tabs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-6);
+}
+
+.selis-chrome__tab-content {
+	display: grid;
+	gap: var(--selis-space-6);
+	margin: 0;
+	padding: var(--selis-space-2) 0 0;
+}
+
+/* The vendored tabs primitive paints the *active* tab with the accent token.
+   As a fill behind `accentFg` that is enough; as ink on the panel background
+   the accent only reaches 4.5:1 in themes whose accent is light. In the dark
+   themes the same accent reads under 3:1 — the chrome check's axe scan caught
+   the View tab exactly there — so in a dark theme the chrome keeps the
+   accent's underline but reads the word in the foreground ink, which clears
+   the floor, and leaves the light themes' accent ink untouched. */
+[data-theme="dark"] .selis-chrome [role="tab"][data-state="active"] {
+	color: var(--selis-color-fg);
+}
+
+.selis-chrome__field {
+	display: grid;
+	gap: var(--selis-space-2);
+}
+
+.selis-chrome__field-label {
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-medium);
+}
+
+.selis-chrome__checks {
+	display: grid;
+	gap: var(--selis-space-4);
+}
+
+.selis-chrome__facts {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: var(--selis-space-2) var(--selis-space-4);
+	margin: 0;
+	font-size: var(--selis-text-sm);
+}
+
+.selis-chrome__facts dt {
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-chrome__facts dd {
+	margin: 0;
+	color: var(--selis-color-fg);
+	overflow-wrap: anywhere;
+}
+
+.selis-chrome__hint {
+	margin: 0;
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+	line-height: var(--selis-leading-normal);
+}
+
+@media (max-width: 720px) {
+	.selis-chrome__doc-name {
+		display: none;
+	}
+}
+
+
+/* ===== apps/ui/src/viewer/navigation.css ===== */
+/* Navigation surfaces (SL-4.UI.06) — outline panel and thumbnail rail.
+ *
+ * The same discipline as `page-list.css`, and the same reason: everything here
+ * is token-driven, every class stays under the `selis-` namespace, and
+ * `navigation.css.test.ts` checks all of it against the *generated* token set
+ * rather than against the committed file — so a token that exists only in the
+ * source does not pass.
+ *
+ * The two surfaces are in one file because they are one decision: the outline
+ * panel and the thumbnail rail are the two columns of a navigation sidebar, they
+ * share a background and a divider, and splitting them would mean a border
+ * colour defined twice.
+ *
+ * Geometry carriers (`--thumb-w`, `--row-indent`) are *document data*, not design
+ * tokens, and stay outside the `--selis-*` namespace exactly as `--tile-x` does
+ * in `page-list.css`: a pixel value computed from a document that picked up the
+ * token namespace is how a "temporary" value becomes a design decision by
+ * accident. Indentation is in `em` of the row's own text so it tracks the
+ * density and the reader's font size rather than a fixed number of pixels.
+ */
+
+/* The sidebar itself. `contain` keeps the outline's repaint off the document. */
+.selis-navigation {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	font-size: var(--selis-text-sm);
+	overflow: hidden;
+}
+
+.selis-navigation__section {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.selis-navigation__heading {
+	margin: 0;
+	padding: var(--selis-space-2) var(--selis-space-3);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+	font-weight: var(--selis-weight-medium);
+	text-transform: uppercase;
+	letter-spacing: var(--selis-leading-tight);
+}
+
+/* The outline tree. A `list` with `list-style: none`, not a `listbox`:
+ * bookmarks are not options, and a listbox would promise selection semantics the
+ * viewer does not have (the page list's own reasoning, applied unchanged). */
+.selis-outline {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	/* The scroller is the one element here that can be tall; bounding its layout
+	 * keeps a 2 000-row outline from costing the document a reflow. */
+	contain: layout paint;
+}
+
+.selis-outline__row {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-2);
+	padding-inline-start: calc(var(--selis-space-2) + var(--row-indent, 0em));
+	padding-inline-end: var(--selis-space-2);
+	min-height: var(--selis-density-row-height);
+	color: var(--selis-color-fg);
+	background: transparent;
+	border: 0;
+	font: inherit;
+	text-align: start;
+	cursor: pointer;
+}
+
+.selis-outline__row:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+/* The current page's bookmark. `outline` rather than `border` or `box-shadow`,
+ * for the same no-shift reason the page tile uses it. */
+.selis-outline__row--current {
+	color: var(--selis-color-accent);
+	outline: var(--selis-border-hairline) solid var(--selis-color-accent);
+	outline-offset: calc(-1 * var(--selis-border-hairline));
+}
+
+.selis-outline__row:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: calc(-1 * var(--selis-border-thick));
+}
+
+/* The expander. A button, not a glyph in a text node: it is a control, and a
+ * triangle drawn with borders would be invisible in forced-colours mode. */
+.selis-outline__expander {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--selis-space-5);
+	height: var(--selis-space-5);
+	padding: 0;
+	color: var(--selis-color-fg-muted);
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+}
+
+.selis-outline__expander--collapsed {
+	transform: rotate(0deg);
+}
+
+.selis-outline__expander--expanded {
+	transform: rotate(90deg);
+}
+
+.selis-outline__title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* A row pointing at a destination the document does not define. A muted colour
+ * rather than a strikethrough: the item is real, and a reader who cannot follow
+ * it deserves to see that it is there. */
+.selis-outline__row--unresolved .selis-outline__title {
+	color: var(--selis-color-fg-subtle);
+}
+
+/* The rail. Fixed width from the shell; the previews inside carry their own
+ * boxes, so nothing here can move a thumbnail when its bitmap lands. */
+.selis-thumbnail-rail {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-2);
+	padding: var(--selis-space-2);
+	margin: 0;
+	list-style: none;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	contain: layout paint;
+}
+
+/* The rail renders only the rows in its window, so the scroller's height is
+ * carried by one spacer rather than by the thumbnails that are absent. It is
+ * a flex item with no width; the absolutely positioned rows do not affect
+ * layout, which is what keeps a 2 000-page rail from becoming a 2 000-row
+ * DOM. */
+.selis-thumbnail-rail__spacer {
+	flex: 0 0 auto;
+	width: 0;
+	height: var(--rail-content-h, 0px);
+}
+
+/* One windowed row. Its box is the controller's geometry (`--thumb-y`,
+ * `--thumb-w`, `--thumb-h`), and the thumbnail button fills it. Absolute
+ * positioning against the rail's padding box is why the top carries the
+ * rail's own inset: the controller's origin is the content's first row. */
+.selis-thumbnail-rail__item {
+	position: absolute;
+	inset-block-start: calc(var(--selis-space-2) + var(--thumb-y, 0px));
+	inset-inline-start: var(--selis-space-2);
+	width: var(--thumb-w, 0px);
+	height: var(--thumb-h, 0px);
+}
+
+.selis-thumbnail__preview {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: fill;
+}
+
+.selis-thumbnail {
+	position: relative;
+	display: block;
+	width: var(--thumb-w, 0px);
+	height: var(--thumb-h, 0px);
+	padding: 0;
+	background: var(--selis-color-page-placeholder);
+	color: var(--selis-color-fg);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-sm);
+	/* Isolate each preview's layout and paint: a rail of a hundred boxes is cheap
+	 * to scroll only if each box is cheap to paint. */
+	contain: layout paint;
+	cursor: pointer;
+}
+
+/* The low-res rung: stretched pixels read as "not yet sharp", which is the honest
+ * signal. No filter — a blur radius is a value the tokens do not define, and
+ * inventing one in a component is what the token layer exists to prevent. */
+.selis-thumbnail--lowres {
+	background: var(--selis-color-page-placeholder);
+}
+
+/* A preview that is not the current page. The border is stated rather than left
+ * to inheritance so both states are explicit: `--current` overrides it, and a
+ * reader who cannot see colour still has the outline to tell them apart. */
+.selis-thumbnail--idle {
+	border-color: var(--selis-color-border);
+}
+
+.selis-thumbnail--current {
+	border-color: var(--selis-color-accent);
+	outline: var(--selis-border-thick) solid var(--selis-color-accent);
+	outline-offset: var(--selis-space-1);
+}
+
+.selis-thumbnail:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+}
+
+/* The page number under a preview. Small and muted so it reads as a caption to
+ * the image rather than as a second heading. */
+.selis-thumbnail__label {
+	position: absolute;
+	inset-block-end: var(--selis-space-1);
+	inset-inline: var(--selis-space-1);
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-xs);
+	text-align: center;
+}
+
+/* The prompt's backdrop. `z-dialog-backdrop` is the token for "above everything
+ * in the app"; inventing a number here would be a second z-ordering scheme. */
+.selis-navigation__backdrop {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--selis-space-6);
+	background: var(--selis-color-shadow);
+	z-index: var(--selis-z-dialog-backdrop);
+}
+
+.selis-navigation__dialog {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-4);
+	max-width: var(--selis-space-12);
+	padding: var(--selis-space-6);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+	border-radius: var(--selis-radius-md);
+	box-shadow: var(--selis-shadow-2);
+	z-index: var(--selis-z-dialog);
+}
+
+/* The destination, in full. A monospace face because a URL is an identifier:
+ * proportional fonts make `l` and `1`, and `.` and `,`, hard to tell apart — and
+ * this is the one string a reader is expected to *check*. `overflow-wrap:
+ * anywhere` because a URL has no spaces to break at, and without it the dialog
+ * scrolls sideways on a narrow window. */
+.selis-navigation__url {
+	font-family: var(--selis-font-mono);
+	font-size: var(--selis-text-sm);
+	color: var(--selis-color-fg);
+	overflow-wrap: anywhere;
+}
+
+.selis-navigation__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--selis-space-3);
+}
+
+/* Forced colours: the system pair replaces ours, and the focus outline is stated
+ * explicitly because forced-colours mode drops author `outline-color` in some
+ * engines — which would leave a keyboard reader with no visible focus at all. */
+@media (forced-colors: active) {
+	.selis-outline__row--current,
+	.selis-thumbnail--current {
+		border-color: Highlight;
+	}
+
+	.selis-outline__row:focus-visible,
+	.selis-thumbnail:focus-visible {
+		outline: var(--selis-border-thick) solid CanvasText;
+	}
+
+	.selis-navigation__dialog {
+		border-color: CanvasText;
+	}
+}
+
+
+/* ===== apps/ui/src/viewer/page-list.css ===== */
+/* The virtualised page list (SL-4.UI.02) — app-level component styles.
+ *
+ * Per `@selis/ui-kit`'s rules for UI.02+: new components live in the app and are
+ * styled with ui-kit tokens; only genuinely shared primitives go in
+ * `packages/ui-kit/css/base.css`. Everything here is therefore token-driven —
+ * no colour, space, radius, duration or font is hard-coded — and every class
+ * stays under the `selis-` namespace, which `page-list.css.test.ts` asserts
+ * against the *generated* token set (the same discipline ui-kit applies to its
+ * own base.css).
+ *
+ * The only literal numbers are `0` and `1` (unitless) and the two
+ * `translate`-free absolute-positioning keywords. Page geometry — width,
+ * height, x, y — is *document data* computed in `layout.ts`, not a design
+ * value, so the shell sets it as inline custom properties rather than as an
+ * inline `style` string, which keeps all presentation in this file and lets a
+ * density or theme change re-style a page without recomputing the layout.
+ *
+ * Those carriers are deliberately **outside** the `--selis-*` namespace
+ * (`--tile-x`, not `--selis-tile-x`): `--selis-*` is reserved for design
+ * tokens, and `page-list.css.test.ts` fails the build if this file references a
+ * `--selis-*` name the generator does not define. Geometry is data, and mixing
+ * the two namespaces is how a "temporary" pixel value becomes a token by
+ * accident.
+ *
+ * The critical property here is the *placed* tile: `position: absolute` with
+ * its box fully determined before any tile exists, so the placeholder, the
+ * low-res bitmap and the full-res bitmap all occupy the same box and resolving
+ * one cannot move anything (the DoD's "no layout shift when a tile resolves").
+ * `contain` keeps each tile's layout and paint inside its own box, which is
+ * what makes a 2 000-page window cheap to scroll.
+ */
+
+/* The scroll container's child: a positioned plane the size of the document.
+ * Height/width come from the shell as `--page-list-height/-width`. */
+.selis-page-list--virtual {
+	position: relative;
+	width: var(--page-list-width, 100%);
+	height: var(--page-list-height, 0px);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	/* The list is sized entirely by the plane above; nothing in it can affect
+	 * the scroll height, so a tile resolving cannot reflow the document. */
+	contain: layout style;
+}
+
+.selis-page-tile--placed {
+	position: absolute;
+	inset-block-start: var(--tile-y, 0px);
+	inset-inline-start: var(--tile-x, 0px);
+	width: var(--tile-w, 0px);
+	height: var(--tile-h, 0px);
+	/* Isolate each tile's layout and paint. `content-visibility` is
+	 * deliberately not used: the window already decides what exists, and
+	 * skipping rendering for tiles the compositor (UI.03) is mid-upload to
+	 * would be a second, conflicting source of truth. */
+	contain: layout paint;
+}
+
+/* Low-res rung: stretched pixels read as "not yet sharp", which is the honest
+ * signal. The compositor (UI.03) swaps `image-rendering` when the full-res
+ * tile lands; no filter is applied here, because a filter radius is a value
+ * the tokens do not define and inventing one in a component is exactly what
+ * the token layer exists to prevent. */
+.selis-page-tile--lowres {
+	background: var(--selis-color-page-placeholder);
+}
+
+/* The current page. `outline` rather than `border` or `box-shadow` so the
+ * indicator never changes the tile's box — the same no-shift rule. */
+.selis-page-tile--current {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+}
+
+/* A page tile is focusable (roving tabindex) but only the current one is in
+ * the tab order; the ring is the ui-kit focus token, not a local colour. */
+.selis-page-tile--current:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: var(--selis-space-1);
+}
+
+/* Link annotations (SL-4.UI.06). The page tile is the positioned box; this
+ * layer is the transparent part of it that carries one control per annotation.
+ * `pointer-events: none` on the layer means the tile's own hit area is
+ * unchanged; only the rectangles the document named take a click. */
+.selis-page-link-overlay {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.selis-page-link {
+	position: absolute;
+	inset-block-start: var(--link-y, 0px);
+	inset-inline-start: var(--link-x, 0px);
+	width: var(--link-w, 0px);
+	height: var(--link-h, 0px);
+	padding: 0;
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+	pointer-events: auto;
+}
+
+/* The rectangle is document geometry, so the ring is the only visual the
+ * viewer adds. `outline` keeps that ring from changing the rectangle's box. */
+.selis-page-link:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: 0;
+}
+
+/* The bitmap itself, sized by the compositor (UI.03) to the tile's device
+ * pixels. `max-width: 100%` keeps a stale bitmap from ever widening a box. */
+.selis-page-tile__image {
+	display: block;
+	width: 100%;
+	height: 100%;
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: fill;
+	background: var(--selis-color-bg-raised);
+}
+
+/* The compositor's surface (SL-4.UI.03).
+ *
+ * The canvas is a *viewport-sized* painting of the list, not a replacement for
+ * it: the DOM tiles above keep their labels, their roles and their tab stops,
+ * and the canvas is transparent to input so every click, drag and key still
+ * lands on the element that handles it. `aria-hidden` belongs on the element in
+ * the shell's markup, not here — a canvas has no accessible content to hide, and
+ * announcing an empty drawing would be noise in a screen reader.
+ *
+ * Its backing store is sized in *device* pixels by the compositor
+ * (`surface.ts`), and CSS sizes only the element box: a canvas stretched by CSS
+ * without a matching backing store is the blurry-canvas bug, and the compositor
+ * is what prevents it. Nothing here may set a pixel size, which is why there is
+ * no width/height in this rule. */
+.selis-page-list__surface {
+	position: absolute;
+	inset-block-start: 0;
+	inset-inline-start: 0;
+	width: 100%;
+	height: 100%;
+	/* The list underneath is the interactive thing; the canvas is a picture of
+	 * it. Without this the canvas would swallow every pointer event over the
+	 * document area, which is the one place the reader clicks. */
+	pointer-events: none;
+}
+
+/* Keyboard focus on the page *list* (not a tile) when the list itself is the
+ * tab stop before any page is current. */
+.selis-page-list--virtual:focus-visible {
+	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
+	outline-offset: calc(-1 * var(--selis-border-thick));
+}
+
+/* Search highlights (SL-4.UI.05).
+ *
+ * These are positioned the way the text layer is: absolutely, inside the page
+ * tile, at CSS pixels relative to that tile's box. The geometry is projected
+ * from the engine's user-space quads at `PlacedPage.scale`, so it needs no
+ * device pixel ratio, no tile rung and no canvas - which is what lets a
+ * highlight stay exactly on the glyphs during a zoom, while the tile under it
+ * is still a provisional bitmap from the previous scale (see `DrawOp.
+ * provisional`). That is the whole reason these are DOM boxes and not canvas
+ * draw ops.
+ *
+ * The highlight sits *under* the text layer's own text so the glyphs stay
+ * legible; the text layer is transparent apart from its text, so a z-order
+ * here is enough and no opacity is invented.
+ *
+ * Geometry carriers follow the file's convention: `--match-*`, outside the
+ * `--selis-*` token namespace, because they are document data rather than
+ * design tokens. */
+.selis-search-highlight {
+	position: absolute;
+	inset-block-start: var(--match-y, 0px);
+	inset-inline-start: var(--match-x, 0px);
+	width: var(--match-w, 0px);
+	height: var(--match-h, 0px);
+	background: var(--selis-color-highlight-bg);
+	border-radius: var(--selis-radius-sm);
+	/* A highlight must never take a pointer event from the text layer above
+	 * it: clicking a match is selecting the words under it, and a transparent
+	 * overlay that swallowed the click would make the match unselectable. */
+	pointer-events: none;
+}
+
+/* The current match. A different token, not a different opacity, so it stays
+ * distinguishable in the high-contrast theme where alpha is not available. */
+.selis-search-highlight--current {
+	background: var(--selis-color-highlight-active-bg);
+}
+
+/* Forced colours: the highlight tokens are colours, and a reader in a
+ * high-contrast mode gets the system pair instead of ours. `Canvas` and
+ * `Highlight` are the system colours for exactly this, and using the same
+ * pair for both states is honest - the browser cannot express "more current"
+ * in forced-colours mode, and pretending otherwise would hide the current
+ * match. */
+@media (forced-colors: active) {
+	.selis-search-highlight {
+		background: Canvas;
+		border: var(--selis-border-hairline) solid Highlight;
+	}
+
+	.selis-search-highlight--current {
+		background: Highlight;
+	}
+}
+
+
+/* ===== apps/web/host/assets-src/viewer-shell.css ===== */
+/*
+ * Viewer-shell CSS appended to the assembled `style.css` (SL-4.WEB.01).
+ *
+ * The design system itself ships in `@selis/ui-kit/css` (tokens + base) and the
+ * app's own `apps/ui/src/**` CSS; `place-assets.mjs` concatenates those first,
+ * then this file. What lives here is only the two things the component library
+ * does not own: the engine-load progress bar and the print rules.
+ */
+
 :root {
 	color-scheme: light dark;
+}
+
+/* The viewer page is a column: a slim branded header, then the app, then a
+ * footer. The app (`#selis-app`) fills the space between. */
+html,
+body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font-family: var(--selis-font-sans, system-ui, sans-serif);
+}
+
+#selis-app {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* The skip link stays off-screen until it is focused by the keyboard. */
+.skip-link {
+	position: absolute;
+	left: -9999px;
+	top: 0;
+	z-index: 20;
+}
+
+.skip-link:focus {
+	left: 0.5rem;
+	top: 0.5rem;
+	padding: 0.5rem 0.9rem;
+	border-radius: 0.5rem;
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	box-shadow: 0 0 0 2px var(--selis-color-accent);
+}
+
+/* A slim branded header/footer for the viewer page, themed with the ui-kit
+ * tokens so it matches the app it frames (no second design system). */
+.selis-viewer-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.7rem clamp(1rem, 4vw, 2rem);
+	background: var(--selis-color-bg-raised);
+	border-bottom: 1px solid var(--selis-color-border);
+}
+
+.selis-viewer-foot {
+	padding: 1rem clamp(1rem, 4vw, 2rem);
+	border-top: 1px solid var(--selis-color-border);
+	color: var(--selis-color-fg-muted);
+	font-size: 0.85rem;
+	background: var(--selis-color-bg-raised);
+}
+
+.selis-viewer-foot a,
+.selis-viewer-bar__nav a {
+	color: var(--selis-color-fg-muted);
+	text-decoration: none;
+}
+
+.selis-viewer-foot a:hover,
+.selis-viewer-bar__nav a:hover {
+	color: var(--selis-color-fg);
+	text-decoration: underline;
+}
+
+.selis-viewer-bar__brand {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.55rem;
+	font-weight: 600;
+	font-size: 1.05rem;
+	color: var(--selis-color-fg);
+	text-decoration: none;
+}
+
+.selis-viewer-bar__mark {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.9rem;
+	height: 1.9rem;
+	border-radius: 0.55rem;
+	background: var(--selis-color-accent);
+	color: var(--selis-color-bg-raised);
+	font-weight: 700;
+}
+
+.selis-viewer-bar__mute {
+	color: var(--selis-color-fg-muted);
+	font-weight: 400;
+}
+
+.selis-viewer-bar__nav {
+	display: inline-flex;
+	align-items: center;
+	gap: 1rem;
+	font-size: 0.9rem;
+}
+
+.selis-viewer-bar__pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.3rem 0.7rem;
+	border: 1px solid var(--selis-color-border);
+	border-radius: 999px;
+	font-size: 0.75rem;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer-bar__pill::before {
+	content: "";
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 999px;
+	background: var(--selis-color-accent);
 }
 
 /*
  * PRINT PROGRESS (SL-4.UI.13).
  *
- * The bar has to be able to say "I do not know how long this is", and CSS is
- * where that is expressed: a determinate bar is a fill with a width, and an
- * indeterminate one is a fill with a WIDTH OF 0 plus a moving stripe. So
- * `data-indeterminate` is not decoration - it is the only thing telling a
- * sighted reader the same thing `aria-valuenow`'s absence tells assistive tech.
- *
- * `prefers-reduced-motion` disables the sweep. A bar that animates forever is
- * exactly the kind of thing that setting exists for, and an indeterminate bar
- * is the one case here that animates at all.
+ * The bar has to be able to say "I do not know how long this is": a determinate
+ * bar is a fill with a width, an indeterminate one is a fill with a width of 0
+ * plus a moving stripe. `data-indeterminate` is the only thing telling a sighted
+ * reader what `aria-valuenow`'s absence tells assistive tech.
  */
 .selis-progress-track {
 	width: 100%;
@@ -35,16 +1628,8 @@
 }
 
 [data-indeterminate="true"] .selis-progress-fill {
-	/* No width at all: a partial fill would claim a percentage we do not have.
-	 * The gradient is drawn across the track instead, so the bar reads as
-	 * "working" and never as "some fraction done". */
 	width: 100%;
-	background: linear-gradient(
-		90deg,
-		transparent 0%,
-		currentColor 45%,
-		transparent 90%
-	);
+	background: linear-gradient(90deg, transparent 0%, currentColor 45%, transparent 90%);
 	background-size: 200% 100%;
 	animation: selis-progress-sweep 1.2s linear infinite;
 }
@@ -72,28 +1657,15 @@
 /*
  * PRINT. What is printed is the PAGE, not the application.
  *
- * Without this, printing from the shell emits the search box, the result line
- * and the status text as well as the document - which is exactly what a user
- * gets if nobody writes these rules, and the reason a viewer that "supports
- * print" is not the same as one that prints correctly.
- *
- * Three things have to be true of the output, and each has a rule:
  *   - the document is visible;             (`#selis-page` kept)
  *   - the shell's own chrome is not;       (everything else hidden)
  *   - the page is not cropped or shrunk.   (`@page` margin 0, size left alone)
  */
 @media print {
-	/* Hide every part of the shell that is not the document. The status line
-	 * goes too: it reports the engine's export count, which is a developer
-	 * fact and does not belong on paper. `display:none` rather than
-	 * `visibility:hidden` so the chrome takes no room in the printed flow. */
 	#selis-app > *:not(#selis-page) {
 		display: none !important;
 	}
 
-	/* The page itself, full-bleed and unscaled. The canvas is already at the
-	 * document's own pixel size; a print stylesheet that sized it would put a
-	 * resampled document on paper where the screen showed a crisp one. */
 	#selis-page {
 		display: block !important;
 		width: auto !important;
@@ -103,14 +1675,12 @@
 		border: 0 !important;
 	}
 
-	/* No page furniture. */
 	@page {
 		margin: 0;
 	}
 
-	/* Force the document's own light scheme. A page printed from a dark-mode
-	 * shell should still be a page, not a dark rectangle. */
 	:root {
 		color-scheme: light;
 	}
 }
+

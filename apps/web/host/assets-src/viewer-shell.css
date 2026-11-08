@@ -1,0 +1,222 @@
+/*
+ * Viewer-shell CSS appended to the assembled `style.css` (SL-4.WEB.01).
+ *
+ * The design system itself ships in `@selis/ui-kit/css` (tokens + base) and the
+ * app's own `apps/ui/src/**` CSS; `place-assets.mjs` concatenates those first,
+ * then this file. What lives here is only the two things the component library
+ * does not own: the engine-load progress bar and the print rules.
+ */
+
+:root {
+	color-scheme: light dark;
+}
+
+/* The viewer page is a column: a slim branded header, then the app, then a
+ * footer. The app (`#selis-app`) fills the space between. */
+html,
+body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font-family: var(--selis-font-sans, system-ui, sans-serif);
+}
+
+#selis-app {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* The skip link stays off-screen until it is focused by the keyboard. */
+.skip-link {
+	position: absolute;
+	left: -9999px;
+	top: 0;
+	z-index: 20;
+}
+
+.skip-link:focus {
+	left: 0.5rem;
+	top: 0.5rem;
+	padding: 0.5rem 0.9rem;
+	border-radius: 0.5rem;
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	box-shadow: 0 0 0 2px var(--selis-color-accent);
+}
+
+/* A slim branded header/footer for the viewer page, themed with the ui-kit
+ * tokens so it matches the app it frames (no second design system). */
+.selis-viewer-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.7rem clamp(1rem, 4vw, 2rem);
+	background: var(--selis-color-bg-raised);
+	border-bottom: 1px solid var(--selis-color-border);
+}
+
+.selis-viewer-foot {
+	padding: 1rem clamp(1rem, 4vw, 2rem);
+	border-top: 1px solid var(--selis-color-border);
+	color: var(--selis-color-fg-muted);
+	font-size: 0.85rem;
+	background: var(--selis-color-bg-raised);
+}
+
+.selis-viewer-foot a,
+.selis-viewer-bar__nav a {
+	color: var(--selis-color-fg-muted);
+	text-decoration: none;
+}
+
+.selis-viewer-foot a:hover,
+.selis-viewer-bar__nav a:hover {
+	color: var(--selis-color-fg);
+	text-decoration: underline;
+}
+
+.selis-viewer-bar__brand {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.55rem;
+	font-weight: 600;
+	font-size: 1.05rem;
+	color: var(--selis-color-fg);
+	text-decoration: none;
+}
+
+.selis-viewer-bar__mark {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.9rem;
+	height: 1.9rem;
+	border-radius: 0.55rem;
+	background: var(--selis-color-accent);
+	color: var(--selis-color-bg-raised);
+	font-weight: 700;
+}
+
+.selis-viewer-bar__mute {
+	color: var(--selis-color-fg-muted);
+	font-weight: 400;
+}
+
+.selis-viewer-bar__nav {
+	display: inline-flex;
+	align-items: center;
+	gap: 1rem;
+	font-size: 0.9rem;
+}
+
+.selis-viewer-bar__pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.3rem 0.7rem;
+	border: 1px solid var(--selis-color-border);
+	border-radius: 999px;
+	font-size: 0.75rem;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--selis-color-fg-muted);
+}
+
+.selis-viewer-bar__pill::before {
+	content: "";
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 999px;
+	background: var(--selis-color-accent);
+}
+
+/*
+ * PRINT PROGRESS (SL-4.UI.13).
+ *
+ * The bar has to be able to say "I do not know how long this is": a determinate
+ * bar is a fill with a width, an indeterminate one is a fill with a width of 0
+ * plus a moving stripe. `data-indeterminate` is the only thing telling a sighted
+ * reader what `aria-valuenow`'s absence tells assistive tech.
+ */
+.selis-progress-track {
+	width: 100%;
+	max-width: 28rem;
+	height: 0.5rem;
+	margin: 0.5rem 0 0.25rem;
+	border-radius: 999px;
+	background: color-mix(in srgb, currentColor 18%, transparent);
+	overflow: hidden;
+}
+
+.selis-progress-fill {
+	height: 100%;
+	width: 0;
+	border-radius: inherit;
+	background: currentColor;
+	transition: width 120ms linear;
+}
+
+[data-indeterminate="true"] .selis-progress-fill {
+	width: 100%;
+	background: linear-gradient(90deg, transparent 0%, currentColor 45%, transparent 90%);
+	background-size: 200% 100%;
+	animation: selis-progress-sweep 1.2s linear infinite;
+}
+
+@keyframes selis-progress-sweep {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -100% 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-indeterminate="true"] .selis-progress-fill {
+		animation: none;
+		background: currentColor;
+		opacity: 0.4;
+	}
+	.selis-progress-fill {
+		transition: none;
+	}
+}
+
+/*
+ * PRINT. What is printed is the PAGE, not the application.
+ *
+ *   - the document is visible;             (`#selis-page` kept)
+ *   - the shell's own chrome is not;       (everything else hidden)
+ *   - the page is not cropped or shrunk.   (`@page` margin 0, size left alone)
+ */
+@media print {
+	#selis-app > *:not(#selis-page) {
+		display: none !important;
+	}
+
+	#selis-page {
+		display: block !important;
+		width: auto !important;
+		height: auto !important;
+		margin: 0 !important;
+		box-shadow: none !important;
+		border: 0 !important;
+	}
+
+	@page {
+		margin: 0;
+	}
+
+	:root {
+		color-scheme: light;
+	}
+}

@@ -3,7 +3,7 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<meta name="theme-color" content="#f4f1e8" />
+		<meta name="theme-color" content="#f2f4f7" />
 		<meta
 			name="description"
 			content="Read PDFs privately in your browser. Your document is opened on your own device and never uploaded — no account, no limits."
@@ -11,63 +11,51 @@
 		<title>Selis PDF Viewer — read PDFs privately, no upload</title>
 		<link rel="canonical" href="https://pdf.selis.com/viewer.html" />
 		<!--
-			SL-4.WEB.01 static shell for the viewer. The tools grid is the home page
-			at "/"; this is the document viewer, reached from the grid's "Open a PDF
-			to read" action. It shares the grid's design system (tools.css) so the
-			two surfaces are one product, and keeps its own placeholder style.css for
-			the engine-load progress bar and the print rules.
-			- CSP is delivered via response headers (public/_headers + vercel.json,
-			  from src/headers.ts); no <meta http-equiv> fallback.
-			- Every asset carries integrity (sha384) + crossorigin, same-origin only
-			  (ADR-P0016: no third-party scripts on the document path). sri.test.ts
-			  fails the build otherwise. Recompute digests with
-			  `node -e "crypto.createHash('sha384')..."` when an asset changes.
-			- The boot script is a module; it imports /sw-register.js, which registers
-			  the offline service worker (SL-4.WEB.02).
-			- Threads need COOP/COEP (src/isolation.ts); without them the engine uses
-			  the identical single-threaded path.
+			SL-4.WEB.01 static shell for the document viewer, reached from the tools
+			grid's "Open a PDF to read" action. The React viewer app (boot.js) mounts
+			into #selis-app; style.css is its design system, assembled by place-assets
+			from @selis/ui-kit (tokens + base) + the app's own CSS + the viewer-shell
+			header/footer — one design system, so the page frame and the app match.
+			- CSP via response headers (src/headers.ts); every asset carries integrity
+			  (sha384) + crossorigin, same-origin only (ADR-P0016). Recompute
+			  style.css's digest when the ui-kit/app CSS changes (the build prints it);
+			  boot.js's when the app bundle changes.
+			- boot.js is a module; it imports /sw-register.js (offline worker,
+			  SL-4.WEB.02). Threads need COOP/COEP; without them the engine uses the
+			  identical single-threaded path.
 		-->
 		<link
 			rel="stylesheet"
-			href="/assets/tools.css"
-			integrity="sha384-JS5YPOqUwTIK/WeBTHkNWIAkcrgtHC3HL7jxtjXtax/3z67xmsnEJCLT4q1PIQGD"
-			crossorigin="anonymous"
-		/>
-		<link
-			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-EA44gG3wagwPqbPi417nWk9Nky0RGYB32F5boA5/+zZvVCh3HIv4bu2zd8j43oK8"
+			integrity="sha384-CV9mvxi7fydWItqU2Lb1N07APbU2bSMuDuUFKiSWxgumxlWmRFwRVgEDhBJlvPYz"
 			crossorigin="anonymous"
 		/>
 	</head>
-	<body class="viewer-body">
+	<body>
 		<a class="skip-link" href="#selis-app">Skip to the document</a>
-		<header class="site-header">
-			<a class="brand" href="/" aria-label="Selis home">
-				<span class="brand-mark" aria-hidden="true">S</span>
-				<span class="brand-word">selis<span>viewer</span></span>
+		<header class="selis-viewer-bar">
+			<a class="selis-viewer-bar__brand" href="/" aria-label="Selis home">
+				<span class="selis-viewer-bar__mark" aria-hidden="true">S</span>
+				<span>Selis <span class="selis-viewer-bar__mute">Viewer</span></span>
 			</a>
-			<nav class="site-nav" aria-label="Primary">
+			<nav class="selis-viewer-bar__nav" aria-label="Primary">
 				<a href="/">All tools</a>
-				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
+				<span class="selis-viewer-bar__pill">No upload</span>
 			</nav>
 		</header>
 
-		<main id="selis-app" class="viewer-main" aria-busy="true">
-			<p class="viewer-loading">Loading the private PDF viewer…</p>
+		<main id="selis-app" aria-busy="true">
+			<p class="selis-boot">Loading the private PDF viewer…</p>
 			<noscript>
 				<p>The Selis PDF Viewer needs JavaScript — it reads your document on
 				this device, with no upload.</p>
 			</noscript>
 		</main>
 
-		<footer class="site-footer">
-			<p>
-				<strong>Selis Viewer</strong> is part of the Selis PDF project.
-				Local-only by construction, not by policy alone — your document never
-				leaves your machine.
-			</p>
-			<p><a href="/">All tools</a></p>
+		<footer class="selis-viewer-foot">
+			<strong>Selis Viewer</strong> is part of the Selis PDF project.
+			Local-only by construction — your document never leaves your machine.
+			<a href="/">All tools</a>
 		</footer>
 		<script
 			src="/assets/boot.js"

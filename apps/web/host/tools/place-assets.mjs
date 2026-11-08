@@ -932,3 +932,36 @@ console.log(
 	}
 	console.log(`place-assets: copied the text chunk (${readFileSync(textOut).length} B, 0 imports)`);
 }
+
+// ---- Viewer stylesheet (SL-4.WEB.01) ---------------------------------------
+//
+// The viewer app's design system is @selis/ui-kit (tokens + base) plus the
+// app's own per-feature CSS; none of it is bundled into boot.js, so it is
+// assembled here — with the viewer-shell header/footer and the progress/print
+// rules — into one `style.css`. The ORDER is load-bearing: tokens first (they
+// declare the custom properties), then base, then the component CSS, then the
+// shell. When this output changes, recompute viewer.html's style.css SRI (the
+// size printed below is a quick change signal).
+const VIEWER_CSS_SOURCES = [
+	"packages/ui-kit/css/tokens.css",
+	"packages/ui-kit/css/base.css",
+	"packages/ui-kit/css/wertkit-bridge.css",
+	"apps/ui/src/chrome/chrome.css",
+	"apps/ui/src/viewer/navigation.css",
+	"apps/ui/src/viewer/page-list.css",
+	"apps/web/host/assets-src/viewer-shell.css",
+];
+let viewerCss =
+	"/* Selis viewer stylesheet — assembled by place-assets from @selis/ui-kit + apps/ui + viewer-shell. Do not edit by hand. */\n";
+for (const rel of VIEWER_CSS_SOURCES) {
+	const abs = join(workspaceRoot, rel);
+	if (!existsSync(abs)) {
+		console.error(`place-assets: viewer CSS source missing: ${rel}`);
+		process.exit(1);
+	}
+	viewerCss += `\n/* ===== ${rel} ===== */\n${readFileSync(abs, "utf8")}\n`;
+}
+writeFileSync(join(publicRoot, "assets", "style.css"), viewerCss);
+console.log(
+	`place-assets: assembled the viewer stylesheet (${viewerCss.length} B, ${VIEWER_CSS_SOURCES.length} sources) into assets/style.css`,
+);
