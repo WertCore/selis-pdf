@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Selis PDF Viewer</title>
+		<!--
+			SL-4.WEB.01 static shell for the viewer. The tools grid is the home page
+			at "/"; this is the document viewer, reached from the grid's "Open a PDF
+			to read" action. The security contract is identical to the grid:
+			- CSP is delivered via response headers (public/_headers + vercel.json,
+			  from src/headers.ts); no <meta http-equiv> fallback.
+			- Every asset carries integrity (sha384) + crossorigin, same-origin only
+			  (ADR-P0016: no third-party scripts on the document path). sri.test.ts
+			  fails the build otherwise. Recompute digests with
+			  `node -e "crypto.createHash('sha384')..."` when an asset changes.
+			- The boot script is a module; it imports /sw-register.js, which registers
+			  the offline service worker (SL-4.WEB.02).
+			- Threads need COOP/COEP (src/isolation.ts); without them the engine uses
+			  the identical single-threaded path.
+		-->
+		<link
+			rel="stylesheet"
+			href="/assets/style.css"
+			integrity="sha384-EA44gG3wagwPqbPi417nWk9Nky0RGYB32F5boA5/+zZvVCh3HIv4bu2zd8j43oK8"
+			crossorigin="anonymous"
+		/>
+	</head>
+	<body>
+		<main id="selis-app" aria-busy="true">
+			<p>Loading Selis PDF Viewer...</p>
+			<noscript><p>Selis PDF Viewer needs JavaScript (local document processing, no upload).</p></noscript>
+		</main>
+		<script
+			src="/assets/boot.js"
+			integrity="sha384-bu0NPMmubEKr9YybkFmJDPr7vL1ZF9JdvlPCofW86kxvCniHzsGmz3Isao3mXf6H"
+			crossorigin="anonymous"
+			defer
+			type="module"
+		></script>
+	</body>
+</html>

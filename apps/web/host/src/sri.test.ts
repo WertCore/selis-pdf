@@ -60,12 +60,23 @@ describe("WEB.01 subresource integrity", () => {
 		expect(collectAssetReferences(good)).toHaveLength(1);
 	});
 
-	it("served index.html has no third-party scripts and pins every asset", () => {
-		const html = readFileSync(join(pkgRoot, "public", "index.html"), "utf8");
+	it("served viewer.html has no third-party scripts and pins every asset", () => {
+		// The document viewer boots the up-to-3-MB engine, so its two assets
+		// (style.css, boot.js) carry sha384 integrity. The grid (the home page)
+		// loads small same-origin modules and is checked separately below.
+		const html = readFileSync(join(pkgRoot, "public", "viewer.html"), "utf8");
 		expect(findThirdPartyRefs(html), "remote script/style hosts are forbidden").toEqual([]);
 		expect(
 			findAssetsWithoutSri(html),
 			"every <script src>/<link rel=stylesheet> needs integrity + crossorigin",
 		).toEqual([]);
+	});
+
+	it("the tools grid (index.html) loads only same-origin assets", () => {
+		// The grid is the home page. Like the old tools.html it loads same-origin
+		// modules (CSP enforces same-origin on the document path, ADR-P0016); SRI
+		// is the viewer shell's belt-and-suspenders, not required for these.
+		const html = readFileSync(join(pkgRoot, "public", "index.html"), "utf8");
+		expect(findThirdPartyRefs(html), "remote script/style hosts are forbidden").toEqual([]);
 	});
 });

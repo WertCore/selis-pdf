@@ -76,6 +76,7 @@ interface Origin {
 }
 
 const SHELL_HTML = "<!doctype html><title>Selis PDF Viewer</title><main id=selis-app>";
+const GRID_HTML = "<!doctype html><title>Selis Tools</title><main id=tool-grid>";
 
 /** Headers the deployment sends for a shell navigation (WEB.01). */
 function shellHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -111,9 +112,11 @@ function createOrigin(): Origin {
 		},
 	};
 
-	// The static deployment, as WEB.01 left it.
-	origin.serve("/", () => new Response(SHELL_HTML, { headers: shellHeaders() }));
-	origin.serve("/index.html", () => new Response(SHELL_HTML, { headers: shellHeaders() }));
+	// The static deployment. "/" and "/index.html" are the tools grid (the home
+	// page); "/viewer.html" is the document viewer. All three are shell-cached.
+	origin.serve("/", () => new Response(GRID_HTML, { headers: shellHeaders() }));
+	origin.serve("/index.html", () => new Response(GRID_HTML, { headers: shellHeaders() }));
+	origin.serve("/viewer.html", () => new Response(SHELL_HTML, { headers: shellHeaders() }));
 	origin.serve(
 		"/assets/style.css",
 		() => new Response("body{}", { headers: { "Content-Type": "text/css" } }),
@@ -442,7 +445,7 @@ describe("airplane mode: the DoD's precondition", () => {
 		const { handlers, origin } = createWorker();
 		await handlers.install();
 		origin.online = false;
-		const served = await dispatch(handlers, navigationRequest(SCOPE));
+		const served = await dispatch(handlers, navigationRequest(`${SCOPE}viewer.html`));
 		expect(served).not.toBe("browser");
 		if (served === "browser") {
 			return;
@@ -474,7 +477,7 @@ describe("airplane mode: the DoD's precondition", () => {
 		await handlers.install();
 		origin.online = false;
 
-		const page = await dispatch(handlers, navigationRequest(`${SCOPE}tools.html`));
+		const page = await dispatch(handlers, navigationRequest(SCOPE));
 		if (page === "browser") {
 			throw new Error("a tools navigation must never be passed through");
 		}
@@ -502,7 +505,8 @@ describe("airplane mode: the DoD's precondition", () => {
 		if (served === "browser") {
 			throw new Error("a navigation must never be passed through");
 		}
-		expect(await served.text()).toContain("Selis PDF Viewer");
+		// /index.html is the tools grid (the home page) now, not the viewer.
+		expect(await served.text()).toContain("Selis Tools");
 	});
 
 	it("answers with an honest 503 when the shell is not installed and there is no network", async () => {

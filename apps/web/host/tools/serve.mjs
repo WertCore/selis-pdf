@@ -36,9 +36,9 @@ const publicRoot = join(pkgRoot, "public");
 const port = Number.parseInt(process.env.SELIS_PORT ?? "4173", 10);
 const host = process.env.SELIS_HOST ?? "127.0.0.1";
 
-if (!existsSync(join(publicRoot, "tools.html"))) {
+if (!existsSync(join(publicRoot, "index.html"))) {
 	console.error(
-		"serve: public/tools.html is missing. Build the app first:\n\n" +
+		"serve: public/index.html is missing. Build the app first:\n\n" +
 			"  pnpm --filter @selis/web-host build\n",
 	);
 	process.exit(1);
@@ -106,7 +106,7 @@ const server = createServer((request, response) => {
 			'<!doctype html><html lang="en"><meta charset="utf-8">' +
 			"<title>Not found — Selis Tools</title><h1>404</h1>" +
 			"<p>That path is not a page on this site.</p>" +
-			'<p><a href="/tools.html">All tools</a></p>';
+			'<p><a href="/">All tools</a></p>';
 		response.writeHead(404, {
 			...common,
 			"Content-Type": "text/html; charset=utf-8",
@@ -132,7 +132,7 @@ const server = createServer((request, response) => {
 });
 
 server.listen(port, host, () => {
-	console.log(`serve: Selis Tools at http://${host}:${port}/tools.html`);
+	console.log(`serve: Selis Tools at http://${host}:${port}/`);
 	console.log(`serve: one generated page, e.g. http://${host}:${port}/merge-pdf/`);
 	console.log("serve: press Ctrl+C to stop");
 });

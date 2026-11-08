@@ -1292,6 +1292,11 @@
 
       (async () => {
         const frame = document.getElementById("tools");
+        // The grid's home is "/", but the harness serves its OWN index.html at
+        // "/" to report the verdict, so the app's grid at "/" is shadowed in this
+        // one context. "/tools.html" is the byte-identical, precached mirror the
+        // app ships for exactly this: a named entry to the same grid that is not
+        // shadowed and survives the offline reload below.
         const firstLoad = waitForLoad(frame);
         frame.src = "/tools.html";
         await firstLoad;
@@ -3482,6 +3487,7 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
         };
 
         // Back to the grid for the offline phase, which reloads this document.
+        // The mirror path (not "/") for the same reason as the first load above.
         const backToGrid = waitForLoad(frame);
         frame.src = "/tools.html";
         await backToGrid;

@@ -2665,8 +2665,9 @@ function init(): void {
 	function clearTool(record = true): void {
 		if (toolsSection === null) {
 			// A generated page has no grid to reveal, so "back to tools" is a
-			// real navigation rather than a hidden-panel swap.
-			window.location.assign("/tools.html");
+			// real navigation rather than a hidden-panel swap. The grid is the
+			// home page at "/".
+			window.location.assign("/");
 			return;
 		}
 		selectedTool = null;
@@ -2681,11 +2682,11 @@ function init(): void {
 		if (toolsSection !== null) {
 			toolsSection.hidden = false;
 		}
-		if (window.location.pathname !== "/tools.html") {
+		if (window.location.pathname !== "/" && window.location.pathname !== "/index.html") {
 			if (record) {
-				history.pushState(null, "", "/tools.html");
+				history.pushState(null, "", "/");
 			} else {
-				history.replaceState(null, "", "/tools.html");
+				history.replaceState(null, "", "/");
 			}
 		}
 		updateRunState();

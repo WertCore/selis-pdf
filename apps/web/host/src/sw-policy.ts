@@ -117,8 +117,12 @@ export const SW_SCOPE = "/";
  * routes them (see {@link SHELL_ALIASES}).
  */
 export const SHELL_PRECACHE_PATHS: readonly string[] = [
+	// "/" and "/index.html" are the tools grid — the product's home page. The
+	// document viewer now lives at "/viewer.html" and boots from the same two
+	// assets.
 	"/",
 	"/index.html",
+	"/viewer.html",
 	"/assets/style.css",
 	"/assets/boot.js",
 ];
@@ -144,9 +148,17 @@ export const SHELL_PRECACHE_PATHS: readonly string[] = [
  * instantiate it until an operation runs.
  */
 export const TOOLS_PRECACHE_PATHS: readonly string[] = [
+	// The grid's home is "/" (in the shell list above). "/tools.html" is a
+	// byte-identical mirror of that page, kept so an old bookmark still works and
+	// so the offline story has a *named* entry to the grid: a static host and the
+	// browser check both own "/" for their own document, and a named path is the
+	// only one guaranteed to resolve to the grid in every deployment. Its
+	// canonical URL still points at "/". `build-pages.mjs` writes it from
+	// `index.html`, and `sw-ship.test.ts` asserts the file exists.
 	"/tools.html",
-	// One directory-index URL per tool. `build-pages.mjs` writes exactly these
-	// from the same registry, and `sw-ship.test.ts` asserts each has a file.
+	// One directory-index URL per tool, plus the grid's assets. `build-pages.mjs`
+	// writes exactly these from the same registry, and `sw-ship.test.ts` asserts
+	// each has a file.
 	...TOOL_PAGE_PATHS,
 	"/assets/tools.css",
 	"/assets/host/no-upload.js",

@@ -44,8 +44,9 @@ const publicRoot = join(pkgRoot, "public");
 export const RESERVED_TOP_LEVEL = Object.freeze({
 	assets: "the built UI and the tools page module",
 	wasm: "the engine chunks",
-	"tools.html": "the card grid",
-	"index.html": "the viewer shell",
+	"tools.html": "the card grid mirror",
+	"index.html": "the card grid (home page)",
+	"viewer.html": "the document viewer shell",
 	"sw.js": "the service worker",
 	"sw-register.js": "the page-side worker registrar",
 	"pages.json": "the generated manifest",
@@ -140,14 +141,14 @@ export function validateRegistry(tools, groups = TOOL_GROUPS) {
 
 /** The header markup shared with `tools.html`. */
 const HEADER = `		<header class="site-header">
-			<a class="brand" href="/tools.html" aria-label="Selis Tools home">
+			<a class="brand" href="/" aria-label="Selis Tools home">
 				<span class="brand-mark" aria-hidden="true">S</span>
 				<span class="brand-word">selis<span>tools</span></span>
 			</a>
 			<nav class="site-nav" aria-label="Primary">
-				<a href="/">Viewer</a>
-				<a href="/tools.html#tools">All tools</a>
-				<a href="/tools.html#roadmap">Roadmap</a>
+				<a href="/viewer.html">Viewer</a>
+				<a href="/#tools">All tools</a>
+				<a href="/#roadmap">Roadmap</a>
 				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
 			</nav>
 		</header>`;
@@ -158,7 +159,7 @@ const FOOTER = `		<footer class="site-footer">
 				<strong>Selis Tools</strong> is part of the Selis PDF project. Local-only
 				by construction, not by policy alone.
 			</p>
-			<p><a href="/">Viewer</a> · <a href="/tools.html">All tools</a></p>
+			<p><a href="/viewer.html">Viewer</a> · <a href="/">All tools</a></p>
 		</footer>`;
 
 /**
@@ -195,7 +196,7 @@ function workspace(tool) {
 						list: "Selected PDFs",
 					};
 	return `			<section id="workspace" class="workspace" aria-labelledby="workspace-title">
-				<a id="back-to-tools" class="back" href="/tools.html">← All tools</a>
+				<a id="back-to-tools" class="back" href="/">← All tools</a>
 				<div class="workspace-grid">
 					<div class="workspace-main">
 						<p class="eyebrow">Local workspace</p>
@@ -440,6 +441,22 @@ function main() {
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, content, "utf8");
 	}
+	// "/tools.html" is a byte-identical mirror of the home grid (see
+	// TOOLS_PRECACHE_PATHS for why a named entry to the grid has to exist). The
+	// home page is hand-authored rather than registry-generated, so the mirror is
+	// produced from the file on disk here instead of from `renderOutputs`, which
+	// stays pure for the tests.
+	const home = join(publicRoot, "index.html");
+	const mirror = join(publicRoot, "tools.html");
+	const homeHtml = existsSync(home) ? readFileSync(home, "utf8") : null;
+	if (check) {
+		const mirrorHtml = existsSync(mirror) ? readFileSync(mirror, "utf8") : null;
+		if (homeHtml !== mirrorHtml) {
+			drifted.push("tools.html");
+		}
+	} else if (homeHtml !== null) {
+		writeFileSync(mirror, homeHtml, "utf8");
+	}
 	if (check) {
 		if (drifted.length > 0) {
 			console.error(
@@ -451,7 +468,7 @@ function main() {
 		return;
 	}
 	console.log(
-		`build-pages: wrote ${TOOLS.length} tool pages, pages.json, sitemap.xml and robots.txt`,
+		`build-pages: wrote ${TOOLS.length} tool pages, the /tools.html grid mirror, pages.json, sitemap.xml and robots.txt`,
 	);
 }
 

@@ -127,6 +127,7 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 		expect(PRECACHE_PATHS).toEqual([
 			"/",
 			"/index.html",
+			"/viewer.html",
 			"/assets/style.css",
 			"/assets/boot.js",
 			"/tools.html",
@@ -184,8 +185,8 @@ describe("requests the worker answers from a cache", () => {
 	});
 
 	it("answers an offline tools navigation and its chunk from the shell cache", () => {
-		const navigation = classifyRequest(facts({ url: `${SCOPE}tools.html`, mode: "navigate" }));
-		expect(navigation).toEqual({ kind: "shell", path: "/tools.html", respond: true });
+		const navigation = classifyRequest(facts({ url: `${SCOPE}`, mode: "navigate" }));
+		expect(navigation).toEqual({ kind: "shell", path: "/", respond: true });
 		const chunk = classifyRequest(facts({ url: `${SCOPE}wasm/selis_pdf_wasm_tools.wasm` }));
 		expect(chunk).toEqual({
 			kind: "shell",

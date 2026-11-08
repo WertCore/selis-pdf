@@ -21,7 +21,7 @@ import { PRECACHE_PATHS, SERVICE_WORKER_PATH, SW_SCOPE } from "./sw-policy.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const html = readFileSync(join(pkgRoot, "public", "index.html"), "utf8");
-const toolsHtml = readFileSync(join(pkgRoot, "public", "tools.html"), "utf8");
+const viewer = readFileSync(join(pkgRoot, "public", "viewer.html"), "utf8");
 const boot = readFileSync(join(pkgRoot, "public", "assets", "boot.js"), "utf8");
 const toolsPage = readFileSync(
 	join(pkgRoot, "public", "assets", "host", "tools", "tools-page.js"),
@@ -77,7 +77,8 @@ describe("the page registers the worker", () => {
 	});
 
 	it("the tools page registers the same worker, from same-origin modules only", () => {
-		expect(toolsHtml).toContain('src="/assets/host/tools/tools-page.js"');
+		// The tools grid is now the home page (index.html).
+		expect(html).toContain('src="/assets/host/tools/tools-page.js"');
 		expect(toolsPage).toContain("registerServiceWorker");
 		const specifiers: string[] = [...toolsPage.matchAll(/from\s+"([^"]+)"/g)]
 			.map((match) => match[1] ?? "")
@@ -90,9 +91,10 @@ describe("the page registers the worker", () => {
 	});
 
 	it("loads boot.js as a module, because it has an import", () => {
-		const tag = collectAssetReferences(html).find((ref) => ref.src === "/assets/boot.js");
-		expect(tag, "boot.js must be referenced by index.html").toBeDefined();
-		expect(html).toMatch(/<script[^>]*src="\/assets\/boot\.js"[^>]*type="module"/);
+		// boot.js lives on the viewer shell (viewer.html), not the grid.
+		const tag = collectAssetReferences(viewer).find((ref) => ref.src === "/assets/boot.js");
+		expect(tag, "boot.js must be referenced by viewer.html").toBeDefined();
+		expect(viewer).toMatch(/<script[^>]*src="\/assets\/boot\.js"[^>]*type="module"/);
 	});
 
 	it("pins the digest of the boot script it ships", () => {
@@ -101,6 +103,6 @@ describe("the page registers the worker", () => {
 		const digest = computeSri(
 			new Uint8Array(readFileSync(join(pkgRoot, "public", "assets", "boot.js"))),
 		);
-		expect(html).toContain(`integrity="${digest}"`);
+		expect(viewer).toContain(`integrity="${digest}"`);
 	});
 });
