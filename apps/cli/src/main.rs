@@ -134,6 +134,18 @@ mod tools {
         selis_pdf_tools::flatten_forms(path, output).map_err(CliError::from)
     }
 
+    /// Edit text: replace the first occurrence of `find` with `replace` on a
+    /// page, saved as an incremental update (the original bytes are preserved).
+    pub(crate) fn edit_text(
+        path: &str,
+        page: u32,
+        find: &str,
+        replace: &str,
+        output: &str,
+    ) -> CliResult<Verification> {
+        selis_pdf_tools::edit_text(path, page, find, replace, output).map_err(CliError::from)
+    }
+
     /// Compare two documents, page by page (pixels) and whole-document (text).
     /// The report is the output; neither file is modified.
     pub(crate) fn compare(
@@ -344,6 +356,29 @@ enum Command {
     FlattenForms {
         /// The input PDF.
         path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit text: replace the first occurrence of `--find` with `--replace` on a
+    /// page, saved as an incremental update — the original bytes are preserved,
+    /// so a signature over the original revision stays valid. In-place only: a
+    /// very different length will not re-flow the line yet.
+    EditText {
+        /// The input PDF.
+        path: String,
+        /// The text to find (the first match on the page is replaced).
+        #[arg(long)]
+        find: String,
+        /// The replacement text.
+        #[arg(long)]
+        replace: String,
+        /// The 0-based page to edit.
+        #[arg(long, default_value_t = 0)]
+        page: u32,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
@@ -1086,6 +1121,14 @@ fn run() {
             output,
             json,
         } => finish(tools::flatten_forms(&path, &output), json),
+        Command::EditText {
+            path,
+            find,
+            replace,
+            page,
+            output,
+            json,
+        } => finish(tools::edit_text(&path, page, &find, &replace, &output), json),
         Command::Extract {
             path,
             page,

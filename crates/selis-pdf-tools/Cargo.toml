@@ -46,6 +46,7 @@ selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-optimize = { workspace = true }
 selis-pdf-form = { workspace = true }
+selis-pdf-edit = { workspace = true }
 selis-pdf-text = { workspace = true, optional = true }
 selis-image = { workspace = true }
 selis-font = { workspace = true }

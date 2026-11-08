@@ -33,6 +33,7 @@ pub mod batch;
 #[cfg(feature = "text")]
 pub mod compare;
 pub mod compress;
+pub mod edit;
 pub mod fingerprint;
 pub mod flatten;
 pub mod forms;
@@ -66,6 +67,7 @@ pub use compare::{compare_pdfs, ComparisonReport, PageComparison};
 pub use compress::{
     compress, compress_file, compress_file_with_options, CompressOptions, CompressionReport,
 };
+pub use edit::{edit_text, EditError, EditReport};
 pub use fingerprint::{fingerprint_report, FileIds, FingerprintReport, FontFact, ImageFact};
 pub use flatten::{flatten_annotations, flatten_forms};
 pub use forms::{
