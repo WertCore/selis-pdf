@@ -122,6 +122,12 @@ mod tools {
         Ok(())
     }
 
+    /// Flatten annotations: bake each eligible annotation's appearance into the
+    /// page content. Returns the verification of the rewritten document.
+    pub(crate) fn flatten(path: &str, output: &str) -> CliResult<Verification> {
+        selis_pdf_tools::flatten_annotations(path, output).map_err(CliError::from)
+    }
+
     /// Compare two documents, page by page (pixels) and whole-document (text).
     /// The report is the output; neither file is modified.
     pub(crate) fn compare(
@@ -311,6 +317,19 @@ enum Command {
         /// The render resolution in DPI (default 150; 1-600).
         #[arg(long, default_value_t = 150)]
         dpi: u32,
+    },
+    /// Flatten annotations: bake each (non-widget) annotation's appearance into
+    /// the page content and write a new PDF. Widget/form annotations are left for
+    /// form flattening; an annotation with no appearance is kept as it was.
+    Flatten {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
     },
     /// Extract a page's content (text|json|md|html|image|embedded|tables|reflow|epub|docx|pptx|xlsx).
     Extract {
@@ -1037,6 +1056,11 @@ fn run() {
             output,
             dpi,
         } => tools::compare(&path_a, &path_b, output.as_deref(), dpi),
+        Command::Flatten {
+            path,
+            output,
+            json,
+        } => finish(tools::flatten(&path, &output), json),
         Command::Extract {
             path,
             page,

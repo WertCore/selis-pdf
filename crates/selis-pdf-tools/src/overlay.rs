@@ -1400,7 +1400,7 @@ fn parse_page_number(value: &str, part: &str) -> Result<usize, String> {
 
 /// Collect resource names already used by any `/Font` or `/ExtGState`
 /// subdictionary, so the overlay never shadows an existing resource.
-fn resource_names_in_use(
+pub(crate) fn resource_names_in_use(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     page_refs: &[Ref],
@@ -1454,7 +1454,7 @@ fn resolve_value(
 }
 
 /// Pick a resource name not present in `used`.
-fn unique_name(base: &str, used: &HashSet<Vec<u8>>) -> String {
+pub(crate) fn unique_name(base: &str, used: &HashSet<Vec<u8>>) -> String {
     if !used.contains(base.as_bytes()) {
         return base.to_string();
     }
@@ -1488,7 +1488,7 @@ fn gs_object(opacity: f64) -> Obj {
 }
 
 /// Add one content stream object and return its reference.
-fn add_stream(out: &mut DocumentBuilder, content: &[u8]) -> Ref {
+pub(crate) fn add_stream(out: &mut DocumentBuilder, content: &[u8]) -> Ref {
     let num = out.allocate();
     out.add_object(
         num,
@@ -1509,7 +1509,11 @@ fn object_index(objects: &[(u32, Obj)], num: u32) -> Option<usize> {
 }
 
 /// Append `extra` after the page's existing content streams.
-fn append_content(out: &mut DocumentBuilder, page: Ref, extra: Ref) -> Result<(), String> {
+pub(crate) fn append_content(
+    out: &mut DocumentBuilder,
+    page: Ref,
+    extra: Ref,
+) -> Result<(), String> {
     let page_index = object_index(out.objects_mut().as_slice(), page.num)
         .ok_or_else(|| format!("page object {} was not found", page.num))?;
     let contents = {
@@ -1565,7 +1569,7 @@ fn append_content(out: &mut DocumentBuilder, page: Ref, extra: Ref) -> Result<()
 }
 
 /// Ensure the page has an indirect `/Resources` dictionary and return it.
-fn ensure_resources_ref(out: &mut DocumentBuilder, page: Ref) -> Result<Ref, String> {
+pub(crate) fn ensure_resources_ref(out: &mut DocumentBuilder, page: Ref) -> Result<Ref, String> {
     let page_index = object_index(out.objects_mut().as_slice(), page.num)
         .ok_or_else(|| format!("page object {} was not found", page.num))?;
     let existing = {
@@ -1602,7 +1606,7 @@ fn ensure_resources_ref(out: &mut DocumentBuilder, page: Ref) -> Result<Ref, Str
 }
 
 /// Set or append one page-dictionary entry.
-fn set_page_entry(
+pub(crate) fn set_page_entry(
     out: &mut DocumentBuilder,
     page: Ref,
     key: &[u8],
@@ -1627,7 +1631,7 @@ fn set_page_entry(
 
 /// Add `value` under `name` in the resources' `owner_key` subdictionary,
 /// following one indirect reference when the subdictionary is indirect.
-fn add_subdict_entry(
+pub(crate) fn add_subdict_entry(
     out: &mut DocumentBuilder,
     resources: Ref,
     owner_key: &[u8],

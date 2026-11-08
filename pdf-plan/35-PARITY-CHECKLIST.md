@@ -538,7 +538,36 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       `browser-check` leg and `size-check` need the Edge/WASM-build harness, absent here.
 - [ ] **Flatten annotations** — render appearance streams; never claim flatten without a
       render check.
+      *Implemented (core + CLI with a render check; web card deferred):*
+      `selis-pdf-tools::flatten_annotations` bakes each non-widget annotation's normal appearance
+      (`/AP /N`, resolving an appearance subdictionary through `/AS`) into the page content and
+      drops it from `/Annots`; widget (form) annotations, hidden annotations (`/F` bit 2), and any
+      annotation with no appearance are kept exactly as they were, so nothing is silently lost. The
+      appearance is placed by the ISO 32000-1 §12.5.5 algorithm — its `/BBox` is transformed by its
+      `/Matrix`, the result mapped into the annotation's `/Rect` — so the baked mark lands where the
+      viewer drew it; the appearance's own `/Matrix` and `/BBox` clip are applied by the `Do`. The
+      op reuses the shared full-rewrite scaffold: a new `copy_page_without_annots` copies the page
+      without its annotation array, the baked appearances are copied in with
+      `collect_objects_with_doc` and drawn through the overlay helpers, the kept annotations are
+      rebuilt into a fresh `/Annots`, and `reconcile_single_input` + `write_document` finalise with a
+      `PRESERVE_EXCEPT_ANNOTATIONS` contract (the annotation count is *expected* to drop). Encrypted
+      inputs are refused. CLI twin `selis flatten <in> -o <out> [--json]`.
+      **Render check (the row's own bar):** a CLI test builds a link annotation whose appearance
+      fills its box red, flattens it, renders the flattened output, and reads the red mark back from
+      the pixels — proving the mark is in the page content, not an annotation. Evidence: 3 core tests
+      (a link appearance baked and the annotation dropped with `annotations_out == 0`; a widget left
+      untouched with `annotations_out == 1`; the §12.5.5 placement matrix), 1 CLI render-check test,
+      and the full 123-test tools suite still green after the `copy_page` change. `cargo fmt` clean.
+      **Deferred — browser card:** the tools-chunk op (and its `u32` capability-mask saturation past
+      32 ops) plus the web card are additional wiring that is not browser-verifiable here; the engine
+      core and the CLI deliver the feature today.
 - [ ] **Flatten forms** — form appearance generation is its own correctness surface.
+      *Deferred (builds on flatten annotations):* flattening a *form* is flatten-annotations applied
+      to the widget annotations plus dropping `/AcroForm`, and — the hard, open part the row names —
+      *synthesising* an appearance for a field that has none (a `/NeedAppearances` form), which needs
+      a field-appearance generator (text/‍choice/button layout with the field's `/DA`). The
+      annotation-flatten machinery above is the reusable half; the appearance-synthesis half is left
+      as the named open work, so this is not claimed.
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
       *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
       `text` feature, which links both the renderer and the text ladder) renders each page of both

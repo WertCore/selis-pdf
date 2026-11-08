@@ -34,6 +34,7 @@ pub mod batch;
 pub mod compare;
 pub mod compress;
 pub mod fingerprint;
+pub mod flatten;
 pub mod forms;
 pub mod images;
 mod io;
@@ -66,6 +67,7 @@ pub use compress::{
     compress, compress_file, compress_file_with_options, CompressOptions, CompressionReport,
 };
 pub use fingerprint::{fingerprint_report, FileIds, FingerprintReport, FontFact, ImageFact};
+pub use flatten::flatten_annotations;
 pub use forms::{
     fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
 };

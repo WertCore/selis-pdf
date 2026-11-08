@@ -3566,6 +3566,31 @@ pub(crate) fn copy_page(
         _next_num,
         Vec::new(),
         true,
+        true,
+    )
+}
+
+/// Copy a leaf page but drop its `/Annots`, for the flatten operation which
+/// bakes the annotation appearances into the page content itself.
+pub(crate) fn copy_page_without_annots(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    page_ref: Ref,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    next_num: &mut u32,
+) -> Result<Ref, String> {
+    copy_page_inner(
+        merged,
+        src,
+        None,
+        page_ref,
+        budget,
+        g,
+        next_num,
+        Vec::new(),
+        true,
+        false,
     )
 }
 
@@ -3593,6 +3618,7 @@ pub(crate) fn copy_page_from_doc(
         next_num,
         Vec::new(),
         true,
+        true,
     )
 }
 
@@ -3610,7 +3636,7 @@ fn copy_page_extra(
     extra: Vec<(Vec<u8>, Obj)>,
 ) -> Result<Ref, String> {
     copy_page_inner(
-        merged, src, None, page_ref, budget, g, _next_num, extra, false,
+        merged, src, None, page_ref, budget, g, _next_num, extra, false, true,
     )
 }
 
@@ -3625,6 +3651,7 @@ fn copy_page_inner(
     _next_num: &mut u32,
     extra: Vec<(Vec<u8>, Obj)>,
     preserve_rotation: bool,
+    copy_annots: bool,
 ) -> Result<Ref, String> {
     let parsed;
     let doc = match doc {
@@ -3668,8 +3695,10 @@ fn copy_page_inner(
     if preserve_rotation {
         extra.extend(rotate_extra(rotate));
     }
-    if let Some(annots_ref) = materialize_object(merged, src, doc, annots, budget, g)? {
-        extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
+    if copy_annots {
+        if let Some(annots_ref) = materialize_object(merged, src, doc, annots, budget, g)? {
+            extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
+        }
     }
     let page = merged.add_page_with_extra(media.0, media.1, &new_contents, new_resources, extra);
     apply_page_boxes(merged, page, boxes);
