@@ -180,24 +180,27 @@
 				<div class="section-head">
 					<div>
 						<p class="eyebrow">Roadmap</p>
-						<h2 id="roadmap-heading">The rest of the toolkit.</h2>
+						<h2 id="roadmap-heading">What's shipped, and what's next.</h2>
 					</div>
 					<p class="section-note">
-						The feature matrix is public and staged. Each entry ships through
-						the same local-only path; none is a link to a third-party service.
+						Dozens of tools are already live above. This is the bigger picture —
+						what has shipped as full workflows, and what is coming next. Every
+						entry runs through the same local-only path; none is a third-party
+						service.
 					</p>
 				</div>
 				<div class="roadmap-grid">
 					<article class="roadmap-card">
 						<p class="roadmap-status">Next</p>
-						<h3>Compress, repair, OCR</h3>
+						<h3>OCR &amp; searchable scans</h3>
 						<p>
-							Target-size compression, structural repair, searchable scans,
-							and a PII scanner with review before any redaction is committed.
+							On-device OCR for scanned pages with an honest confidence report,
+							then a searchable-PDF export — no upload. Compression, repair and
+							the privacy scanner are already live above.
 						</p>
 					</article>
 					<article class="roadmap-card">
-						<p class="roadmap-status">Next</p>
+						<p class="roadmap-status">Shipped</p>
 						<h3>Convert in both directions</h3>
 						<p>
 							WebP, HEIC and TIFF to PDF; PDF to Word, PowerPoint,
@@ -207,7 +210,7 @@
 						</p>
 					</article>
 					<article class="roadmap-card">
-						<p class="roadmap-status">Planned</p>
+						<p class="roadmap-status">Shipped</p>
 						<h3>Secure and sign</h3>
 						<p>
 							Protect, unlock, permissions, certificates, signatures,
@@ -216,7 +219,7 @@
 						</p>
 					</article>
 					<article class="roadmap-card">
-						<p class="roadmap-status">Planned</p>
+						<p class="roadmap-status">Shipped</p>
 						<h3>Organize and edit</h3>
 						<p>
 							Crop, resize, N-up, flip, alternate and mix pages, split by size,
@@ -225,12 +228,12 @@
 						</p>
 					</article>
 					<article class="roadmap-card">
-						<p class="roadmap-status">Planned</p>
+						<p class="roadmap-status">Shipped</p>
 						<h3>Forms and review</h3>
 						<p>
-							Fill forms, compare revisions, redact with preview, add
-							handwriting or a thumbmark, and summarize a document without
-							sending it away.
+							Fill forms and read every value back, flatten them, and compare
+							two revisions page-by-page and word-by-word — all on your own
+							device.
 						</p>
 					</article>
 					<article class="roadmap-card">
@@ -243,14 +246,49 @@
 					</article>
 				</div>
 			</section>
+
+			<section id="platform" class="roadmap" aria-labelledby="platform-heading">
+				<div class="section-head">
+					<div>
+						<p class="eyebrow">Beyond the browser</p>
+						<h2 id="platform-heading">One engine, more ways to use it.</h2>
+					</div>
+					<p class="section-note">
+						Every tool here is <strong>made with Selis PDF</strong> — our own
+						PDF engine, written from scratch. No third-party PDF library, no
+						server. Two more ways to use that engine are on the way.
+					</p>
+				</div>
+				<div class="roadmap-grid">
+					<article class="roadmap-card">
+						<p class="roadmap-status">Coming soon</p>
+						<h3>Selis.PDF — the developer SDK</h3>
+						<p>
+							The same engine as a library you can build on: a C ABI,
+							WebAssembly and native language bindings for generating,
+							converting, editing and signing PDF — running on your own
+							machine. Free for individuals, licensed for commercial use.
+						</p>
+					</article>
+					<article class="roadmap-card">
+						<p class="roadmap-status">Coming soon</p>
+						<h3>Desktop app</h3>
+						<p>
+							The full Selis experience as a native desktop app — offline by
+							default, the same tools and the same engine, with nothing ever
+							uploaded.
+						</p>
+					</article>
+				</div>
+			</section>
 		</main>
 
 		<footer class="site-footer">
 			<p>
-				<strong>Selis Tools</strong> is part of the Selis PDF project. Local-only
+				<strong>Selis Tools</strong> is made with <strong>Selis PDF</strong>, our own PDF engine. Local-only
 				by construction, not by policy alone.
 			</p>
-			<p><a href="/viewer.html">Viewer</a> · <a href="/">Tools</a></p>
+			<p><a href="/viewer.html">Viewer</a> · <a href="/">Tools</a> · Selis.PDF SDK &amp; desktop app coming soon</p>
 		</footer>
 
 		<noscript>
