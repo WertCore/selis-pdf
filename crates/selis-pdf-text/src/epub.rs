@@ -239,6 +239,7 @@ mod tests {
                         kind: ParagraphKind::Body,
                     },
                 ],
+                tables: vec![],
             },
             ReflowPage {
                 number: 2,
@@ -246,6 +247,7 @@ mod tests {
                     text: "Second page, second chapter.".to_string(),
                     kind: ParagraphKind::Body,
                 }],
+                tables: vec![],
             },
         ]
     }
@@ -292,6 +294,7 @@ mod tests {
                 text: "A page that was never written.".to_string(),
                 kind: ParagraphKind::Body,
             }],
+            tables: vec![],
         });
         assert!(verify_epub(&epub, &broken).is_err());
     }

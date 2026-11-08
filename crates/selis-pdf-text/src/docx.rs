@@ -481,6 +481,7 @@ mod tests {
                         kind: ParagraphKind::Body,
                     },
                 ],
+                tables: vec![],
             },
             ReflowPage {
                 number: 2,
@@ -488,6 +489,7 @@ mod tests {
                     text: "Second page.".to_string(),
                     kind: ParagraphKind::Body,
                 }],
+                tables: vec![],
             },
         ]
     }

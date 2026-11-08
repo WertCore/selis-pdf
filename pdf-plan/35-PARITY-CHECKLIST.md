@@ -721,8 +721,24 @@ fidelity.
       `selis extract --format reflow`; chunk op 4; the **Extract text** card's "Reading-order
       HTML" mode returns `kind: "html"` and downloads without a preview. The browser check drives
       it online and offline, asserts `<article>` and the source's own words inside the downloaded
-      bytes, and rejects an article that came back as a plain file. Not claimed: links, colour,
-      fonts, tables (cells reflow as body text) and images.
+      bytes, and rejects an article that came back as a plain file.
+      *Links and tables closed:* body URLs (`http://`, `https://`, `www.`) now become `<a>`
+      elements via `reflow::paragraph_html` — a `www.` link gets an `https` scheme, every link
+      carries `rel="nofollow noopener"`, the URL is escaped so it cannot inject an attribute, and
+      `verify_reflow_html` checks the *rendered* markup (links in place), not the bare escape.
+      Detected tables are lifted out of the prose by `reflow::page_content` (it drops the table's
+      own lines so no cell is duplicated as a paragraph) and rendered as real `<table>` elements —
+      first row as `<th>`, the rest `<td>` — reusing `tables_on_page`; the verifier demands every
+      non-empty cell in order. The `reflow_html` driver, `selis extract --format reflow`, the text
+      chunk's op 4 and the "Reading-order HTML" card all carry this through unchanged, since they
+      call `reflow_html`. Evidence: 5 new `reflow.rs` tests (URLs link, a `www.` link gets https
+      with trailing punctuation left outside, a URL cannot inject an attribute, tables render as a
+      grid, a dropped cell fails verification) inside the text crate's 117, plus the existing CLI
+      and chunk reflow tests still green. Remaining caveat (documented, not a silent gap): a table
+      renders at the end of its page section rather than its exact inline spot, and link
+      *annotations* are not read — the links come from the text itself. Still not claimed: colour,
+      fonts, images, and perfect paragraphing. **Open gate:** the real-Edge `browser-check` leg
+      (needs the Edge/WASM-build harness, absent here) is why the box is not yet ticked.
 - [x] **PDF → EPUB** — reflow from extracted structure.
       *Shipped:* `selis-pdf-text::epub` writes a real EPUB 3 package — `mimetype` stored first
       with no extra field, `META-INF/container.xml`, an OPF whose spine is the page order, one

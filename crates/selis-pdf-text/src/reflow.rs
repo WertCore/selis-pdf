@@ -6,12 +6,20 @@
 //! reading order, headings inferred from type size, no coordinates — for the
 //! reader who wants the article rather than the page.
 //!
-//! # What this does not claim
+//! # What this does and does not claim
 //!
+//! * **Tables.** A detected table is lifted out of the prose and rendered as a
+//!   real `<table>` (first row as the header) rather than reflowed as body text.
+//!   It is placed at the end of its page section, not at its inline position —
+//!   the cells are a true grid, but their exact spot in the prose is not
+//!   reconstructed.
+//! * **Links.** Bare URLs in body text (`http://`, `https://`, `www.`) become
+//!   `<a>` elements; a `www.` link is given an `https` scheme and every link
+//!   carries `rel="nofollow noopener"`. Link *annotations* are not read — the
+//!   links come from the text itself.
 //! * **Layout fidelity.** Reflow discards positions by design.
-//! * **Tables and figures.** A table's cells reflow as body text; images are not
-//!   extracted, so a figure's caption is all that survives.
-//! * **Colour, fonts and links.** The extraction model carries none of them.
+//! * **Figures, colour and fonts.** Images are not extracted (a figure's caption
+//!   is all that survives), and the extraction model carries no colour or faces.
 //! * **Perfect paragraphing.** A paragraph break is inferred from the vertical
 //!   gap, the indent and the type size. A page with generous leading will break
 //!   more often than its author did, and the export never claims otherwise.
@@ -24,6 +32,7 @@
 #![allow(clippy::integer_division)]
 
 use crate::assembly::TextLine;
+use crate::table::{tables_on_page, Table};
 
 /// How one reflowed paragraph is marked up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +52,15 @@ pub struct ReflowParagraph {
     pub kind: ParagraphKind,
 }
 
+/// One table lifted out of the reading flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflowTable {
+    /// How many columns the table has.
+    pub columns: usize,
+    /// The rows, each holding one cell per column (an absent cell is empty).
+    pub rows: Vec<Vec<String>>,
+}
+
 /// One page of reflowed paragraphs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReflowPage {
@@ -50,6 +68,12 @@ pub struct ReflowPage {
     pub number: u32,
     /// The page's paragraphs, in reading order.
     pub paragraphs: Vec<ReflowParagraph>,
+    /// Tables recovered on the page, lifted out of the paragraph flow and
+    /// rendered as real `<table>` elements after the page's paragraphs. A table
+    /// at the end of its page section is a deliberate, documented limitation:
+    /// the cells are a true grid rather than garbled body text, but their inline
+    /// position within the prose is not reconstructed.
+    pub tables: Vec<ReflowTable>,
 }
 
 /// A heading is at least this many times the body size.
@@ -161,6 +185,39 @@ pub fn paragraphs(lines: &[TextLine], texts: &[String]) -> Vec<ReflowParagraph> 
     out
 }
 
+/// Build a page's paragraphs and tables together: tables are detected first,
+/// the lines inside them are lifted out of the paragraph flow, and the rest
+/// reflows as prose — so a table's cells become a real grid instead of garbled
+/// body text, and no cell text is duplicated as a paragraph.
+#[must_use]
+pub fn page_content(
+    lines: &[TextLine],
+    texts: &[String],
+    page: u32,
+) -> (Vec<ReflowParagraph>, Vec<ReflowTable>) {
+    let tables = tables_on_page(lines, page);
+    let reflow_tables: Vec<ReflowTable> = tables
+        .iter()
+        .map(|table: &Table| ReflowTable {
+            columns: table.columns,
+            rows: table.rows.clone(),
+        })
+        .collect();
+    let mut kept_lines: Vec<TextLine> = Vec::with_capacity(lines.len());
+    let mut kept_texts: Vec<String> = Vec::with_capacity(texts.len());
+    for (line, text) in lines.iter().zip(texts.iter()) {
+        let middle = (line.bbox.y0 + line.bbox.y1) / 2.0;
+        let inside_table = tables
+            .iter()
+            .any(|table| middle >= table.bbox.y0 && middle <= table.bbox.y1);
+        if !inside_table {
+            kept_lines.push(line.clone());
+            kept_texts.push(text.clone());
+        }
+    }
+    (paragraphs(&kept_lines, &kept_texts), reflow_tables)
+}
+
 /// Escape text for HTML body content.
 #[must_use]
 pub fn escape_html(text: &str) -> String {
@@ -178,6 +235,95 @@ pub fn escape_html(text: &str) -> String {
     out
 }
 
+/// The URL prefixes the autolinker recognises.
+const URL_PREFIXES: [&str; 3] = ["https://", "http://", "www."];
+
+/// Find the first autolinkable URL in `text`, as a `(start, end)` byte range.
+///
+/// A URL must start at a word boundary (so `xhttp://…` is not one), runs to the
+/// first whitespace or URL-hostile character, and sheds trailing sentence
+/// punctuation so `(see https://x.test).` links `https://x.test`.
+fn find_url(text: &str) -> Option<(usize, usize)> {
+    for (index, _) in text.char_indices() {
+        let at_boundary = index == 0
+            || !text
+                .get(..index)
+                .and_then(|prefix| prefix.chars().next_back())
+                .is_some_and(|ch| ch.is_ascii_alphanumeric());
+        if !at_boundary {
+            continue;
+        }
+        let rest = text.get(index..).unwrap_or("");
+        for prefix in URL_PREFIXES {
+            if rest.starts_with(prefix) {
+                let after = index.saturating_add(prefix.len());
+                let mut end = after;
+                for (offset, ch) in text.get(after..).unwrap_or("").char_indices() {
+                    if ch.is_whitespace() || "<>\"'{}|\\^`".contains(ch) {
+                        break;
+                    }
+                    end = after.saturating_add(offset).saturating_add(ch.len_utf8());
+                }
+                while end > after {
+                    let last = text.get(..end).and_then(|s| s.chars().next_back());
+                    match last {
+                        Some(ch) if ".,;:!?)]}".contains(ch) => {
+                            end = end.saturating_sub(ch.len_utf8());
+                        }
+                        _ => break,
+                    }
+                }
+                if end > after {
+                    return Some((index, end));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Render body text as HTML, turning bare URLs into links. Everything is
+/// escaped; a `www.` URL is linked over `https://`. The link carries
+/// `rel="nofollow noopener"` and no target, so nothing external can act through
+/// it beyond the navigation the reader chose.
+#[must_use]
+pub fn paragraph_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((start, end)) = find_url(rest) {
+        out.push_str(&escape_html(rest.get(..start).unwrap_or("")));
+        let url = rest.get(start..end).unwrap_or("");
+        let href = if url.starts_with("www.") {
+            format!("https://{url}")
+        } else {
+            url.to_string()
+        };
+        out.push_str("<a href=\"");
+        out.push_str(&escape_html(&href));
+        out.push_str("\" rel=\"nofollow noopener\">");
+        out.push_str(&escape_html(url));
+        out.push_str("</a>");
+        rest = rest.get(end..).unwrap_or("");
+    }
+    out.push_str(&escape_html(rest));
+    out
+}
+
+/// Render one recovered table as an HTML `<table>`; the first row is the header.
+fn table_html(table: &ReflowTable) -> String {
+    let mut out = String::from("<table>\n");
+    for (row_index, row) in table.rows.iter().enumerate() {
+        out.push_str("<tr>");
+        let tag = if row_index == 0 { "th" } else { "td" };
+        for cell in row {
+            out.push_str(&format!("<{tag}>{}</{tag}>", escape_html(cell)));
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</table>\n");
+    out
+}
+
 /// The stylesheet every reflow document carries: one column, readable measure,
 /// and no external reference of any kind.
 const STYLE: &str = "body{margin:0;background:#fff;color:#111;font:16px/1.55 Georgia,serif}\
@@ -186,6 +332,10 @@ section.page{border-top:1px solid #e5e5e5;padding-top:1.5rem}\
 section.page:first-child{border-top:0;padding-top:0}\
 h1,h2,h3{line-height:1.2;margin:1.4em 0 .5em}\
 p{margin:0 0 .9em}\
+a{color:#06c}\
+table{border-collapse:collapse;margin:0 0 1em;font-size:.95em}\
+th,td{border:1px solid #ccc;padding:.3em .6em;text-align:left;vertical-align:top}\
+th{background:#f3f3f3;font-weight:600}\
 .marker{color:#a33;font-family:ui-monospace,monospace;font-size:.85em}";
 
 /// Write the reflowed pages as one HTML document.
@@ -209,18 +359,21 @@ pub fn to_reflow_html(title: &str, pages: &[ReflowPage]) -> String {
             page.number
         ));
         for paragraph in &page.paragraphs {
-            let text = escape_html(&paragraph.text);
             match paragraph.kind {
                 ParagraphKind::Body => {
                     out.push_str("<p>");
-                    out.push_str(&text);
+                    out.push_str(&paragraph_html(&paragraph.text));
                     out.push_str("</p>\n");
                 }
                 ParagraphKind::Heading(level) => {
                     let level = level.clamp(1, 3);
+                    let text = escape_html(&paragraph.text);
                     out.push_str(&format!("<h{level}>{text}</h{level}>\n"));
                 }
             }
+        }
+        for table in &page.tables {
+            out.push_str(&table_html(table));
         }
         out.push_str("</section>\n");
     }
@@ -250,20 +403,41 @@ pub fn verify_reflow_html(document: &str, pages: &[ReflowPage]) -> Result<(), St
         ));
     }
     let mut cursor = 0usize;
+    let mut find_in_order = |needle: &str| -> Option<usize> {
+        let found = document
+            .get(cursor..)
+            .and_then(|rest| rest.find(needle))
+            .map(|offset| cursor.saturating_add(offset))?;
+        cursor = found.saturating_add(needle.len());
+        Some(found)
+    };
     for page in pages {
         for paragraph in &page.paragraphs {
-            let needle = escape_html(&paragraph.text);
-            let Some(found) = document
-                .get(cursor..)
-                .and_then(|rest| rest.find(&needle))
-                .map(|offset| cursor.saturating_add(offset))
-            else {
+            // Body text is autolinked, so its rendered markup — not the bare
+            // escape — is what must appear; a heading is escaped plainly.
+            let needle = match paragraph.kind {
+                ParagraphKind::Body => paragraph_html(&paragraph.text),
+                ParagraphKind::Heading(_) => escape_html(&paragraph.text),
+            };
+            if find_in_order(&needle).is_none() {
                 return Err(format!(
                     "page {} lost a paragraph: {:?}",
                     page.number, paragraph.text
                 ));
-            };
-            cursor = found.saturating_add(needle.len());
+            }
+        }
+        for table in &page.tables {
+            for cell in table.rows.iter().flatten() {
+                if cell.is_empty() {
+                    continue;
+                }
+                if find_in_order(&escape_html(cell)).is_none() {
+                    return Err(format!(
+                        "page {} lost a table cell: {:?}",
+                        page.number, cell
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -361,11 +535,84 @@ mod tests {
                 text: "a <script>alert(1)</script> & b".to_string(),
                 kind: ParagraphKind::Body,
             }],
+            tables: vec![],
         };
         let document = to_reflow_html("<t>", &[page]);
         assert!(!document.contains("<script>"), "{document}");
         assert!(document.contains("&lt;script&gt;"));
         assert!(document.contains("<title>&lt;t&gt;</title>"));
+    }
+
+    #[test]
+    fn urls_in_body_become_links() {
+        let page = ReflowPage {
+            number: 1,
+            paragraphs: vec![ReflowParagraph {
+                text: "see https://selis.test/docs and www.example.org, thanks".to_string(),
+                kind: ParagraphKind::Body,
+            }],
+            tables: vec![],
+        };
+        let document = to_reflow_html("T", std::slice::from_ref(&page));
+        assert!(
+            document.contains("<a href=\"https://selis.test/docs\" rel=\"nofollow noopener\">https://selis.test/docs</a>"),
+            "{document}"
+        );
+        // A www link is given an https scheme; the trailing comma stays outside.
+        assert!(
+            document.contains("<a href=\"https://www.example.org\" rel=\"nofollow noopener\">www.example.org</a>,"),
+            "{document}"
+        );
+        // The document still verifies against its own model with links in place.
+        verify_reflow_html(&document, std::slice::from_ref(&page)).expect("verifies");
+    }
+
+    #[test]
+    fn a_url_cannot_inject_an_attribute() {
+        let page = ReflowPage {
+            number: 1,
+            paragraphs: vec![ReflowParagraph {
+                text: "http://x.test/\"><img src=x>".to_string(),
+                kind: ParagraphKind::Body,
+            }],
+            tables: vec![],
+        };
+        let document = to_reflow_html("T", &[page]);
+        assert!(
+            !document.contains("<img"),
+            "the injection is escaped: {document}"
+        );
+        assert!(document.contains("&lt;img"));
+    }
+
+    #[test]
+    fn tables_render_as_html_tables() {
+        let page = ReflowPage {
+            number: 1,
+            paragraphs: vec![],
+            tables: vec![ReflowTable {
+                columns: 2,
+                rows: vec![
+                    vec!["Name".to_string(), "Count".to_string()],
+                    vec!["Tea".to_string(), "3".to_string()],
+                ],
+            }],
+        };
+        let document = to_reflow_html("T", std::slice::from_ref(&page));
+        assert!(document.contains("<table>"), "{document}");
+        assert!(
+            document.contains("<th>Name</th><th>Count</th>"),
+            "header row: {document}"
+        );
+        assert!(
+            document.contains("<td>Tea</td><td>3</td>"),
+            "body row: {document}"
+        );
+        verify_reflow_html(&document, std::slice::from_ref(&page)).expect("verifies");
+        let dropped = document.replace("<td>Tea</td><td>3</td></tr>\n", "");
+        assert!(verify_reflow_html(&dropped, std::slice::from_ref(&page))
+            .unwrap_err()
+            .contains("lost a table cell"),);
     }
 
     #[test]
@@ -382,6 +629,7 @@ mod tests {
                     kind: ParagraphKind::Body,
                 },
             ],
+            tables: vec![],
         };
         let document = to_reflow_html("T", std::slice::from_ref(&page));
         verify_reflow_html(&document, std::slice::from_ref(&page)).expect("intact");

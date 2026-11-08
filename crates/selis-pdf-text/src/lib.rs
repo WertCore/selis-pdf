@@ -45,8 +45,8 @@ pub use order::{order_lines, LineWithMcid, OrderResult, ReadingOrder};
 pub use pptx::{slide_from_lines, to_pptx, verify_pptx, Slide, TextShape, PPTX_MEDIA_TYPE};
 pub use quality::{page_separator, to_text_with_page_separators, ExtractionQuality, PageQuality};
 pub use reflow::{
-    escape_html, paragraphs, to_reflow_html, verify_reflow_html, ParagraphKind, ReflowPage,
-    ReflowParagraph,
+    escape_html, page_content, paragraph_html, paragraphs, to_reflow_html, verify_reflow_html,
+    ParagraphKind, ReflowPage, ReflowParagraph, ReflowTable,
 };
 pub use search::{search, search_lines, SearchMatch};
 pub use selection::{caret_at, glyph_rect, line_glyphs, quads, select_range, Caret, GlyphQuad};

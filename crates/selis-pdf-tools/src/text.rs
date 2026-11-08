@@ -447,9 +447,11 @@ pub fn reflow_html(path: &str, pages: Option<&str>, title: &str) -> ToolResult<H
             let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
             let mut g = crate::runtime::cli_guard(budget, &clock);
             let (lines, line_texts, _) = page_lines(session, page, budget, &mut g)?;
+            let (paragraphs, tables) = selis_pdf_text::page_content(&lines, &line_texts, number);
             reflowed.push(ReflowPage {
                 number,
-                paragraphs: selis_pdf_text::paragraphs(&lines, &line_texts),
+                paragraphs,
+                tables,
             });
         }
         let html = selis_pdf_text::to_reflow_html(title, &reflowed);
@@ -499,6 +501,7 @@ pub fn reflow_epub(path: &str, pages: Option<&str>, title: &str) -> ToolResult<E
             reflowed.push(ReflowPage {
                 number,
                 paragraphs: selis_pdf_text::paragraphs(&lines, &line_texts),
+                tables: Vec::new(),
             });
         }
         let epub = selis_pdf_text::to_epub(title, &reflowed)
