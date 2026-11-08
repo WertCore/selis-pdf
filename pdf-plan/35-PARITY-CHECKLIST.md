@@ -564,12 +564,24 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       32 ops) plus the web card are additional wiring that is not browser-verifiable here; the engine
       core and the CLI deliver the feature today.
 - [ ] **Flatten forms** — form appearance generation is its own correctness surface.
-      *Deferred (builds on flatten annotations):* flattening a *form* is flatten-annotations applied
-      to the widget annotations plus dropping `/AcroForm`, and — the hard, open part the row names —
-      *synthesising* an appearance for a field that has none (a `/NeedAppearances` form), which needs
-      a field-appearance generator (text/‍choice/button layout with the field's `/DA`). The
-      annotation-flatten machinery above is the reusable half; the appearance-synthesis half is left
-      as the named open work, so this is not claimed.
+      *Implemented (core + CLI; web card + render-check deferred):* two halves now exist.
+      (1) **Field-appearance synthesis (SL-5.FORM.02, text fields):** `fill_form` writes a real
+      `/AP /N` Form XObject per filled text field when `FillFormsOptions.synthesize_appearances` is
+      set — the ISO 32000-1 §12.7.3.3 variable-text appearance from the field's effective `/DA`
+      (font/size/colour resolved against `/DR`), honouring `/Q` quadding, the multiline flag and
+      auto-size — so the value is visible without `/NeedAppearances`. Choice/button appearances are
+      untouched (buttons already carry them; the fill selects `/AS`). (2) **The flatten itself:**
+      `selis-pdf-tools::flatten_forms` bakes each widget's `/AP /N` into page content by the §12.5.5
+      placement (the annotation-flatten machinery with the widget filter flipped), drops the widgets
+      from `/Annots`, and removes `/AcroForm` (`catalog_extra_mut` + `retain_reachable`). A
+      `/NeedAppearances` field with no appearance is removed with the form — fill with
+      `synthesize_appearances` first to bake its value. CLI twin `selis flatten-forms <in> -o <out>
+      [--json]`. **Tests:** `synthesizes_a_text_field_appearance_stream` (the widget's `/AP /N` is a
+      Form XObject whose `/BBox` matches `/Rect` and whose content draws the value; no forced
+      `/NeedAppearances`) and `flatten_forms_bakes_widgets_and_drops_the_acroform` (appearance baked
+      into content + `Do`, widget and `/AcroForm` gone, annotation count zero).
+      **Deferred:** choice/listbox appearance synthesis, the WASM op + web card, and a pixel-level
+      render-check of the baked field (needs the raster harness; the structural proof stands today).
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
       *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
       `text` feature, which links both the renderer and the text ladder) renders each page of both

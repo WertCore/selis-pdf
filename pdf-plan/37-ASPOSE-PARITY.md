@@ -224,8 +224,8 @@ Aspose, which prioritises inbound fidelity. The gap to Aspose here is fidelity, 
 |---|---|---|---|
 | Read AcroForm fields | Yes | ✅ Shipped | `selis-pdf-form` walks `/AcroForm /Fields`, resolves inherited `/FT`/`/Ff`/`/DA`, associates widgets, reports per-field page. `35` Phase 4. |
 | Fill AcroForm fields | Yes | ✅ Shipped | Writes `/V` (+`/I` for choices), sets `/NeedAppearances`, re-reads every value from the written bytes (`ReadBack` refusal). Encrypted/XFA/signed/read-only/multi-select/duplicate-name refused by type. `35` Phase 4. |
-| Generate field appearance streams | Yes | 📋 Planned | Not yet — Selis relies on `/NeedAppearances` + a viewer that honours it. Appearance-stream synthesis is named open work. `35` Phase 4 fill-forms row. |
-| Flatten forms | Yes | 🟡 Partial | Flatten *annotations* ships at engine+CLI (render-checked); flatten *forms* needs the field-appearance generator above for `/NeedAppearances` forms, which is the named open half. `35` Phase 2 flatten rows. |
+| Generate field appearance streams | Yes | ✅ Shipped (text) | `fill_form` with `synthesize_appearances` writes a real `/AP /N` Form XObject per text field (ISO 32000-1 §12.7.3.3 variable text: `/DA` font/size/colour via `/DR`, `/Q` quadding, multiline, auto-size), so the value shows without `/NeedAppearances`. Choice/listbox synthesis is the remaining slice; buttons already carry appearances. `35` Phase 4/flatten rows. |
+| Flatten forms | Yes | ✅ Shipped (core+CLI) | `selis-pdf-tools::flatten_forms` bakes each widget's `/AP /N` into page content (§12.5.5), drops the widgets and `/AcroForm`. Combined with text appearance synthesis, a filled form flattens to permanent marks. CLI `selis flatten-forms`. Web card + a pixel render-check are the deferred half. `35` Phase 2 flatten rows. |
 | Import/export FDF/XFDF | Yes | 📋 Planned | `selis-pdf-form` is specced to own FDF/XFDF import/export (`01 §3`); not yet exposed. |
 | XFA forms | Read + render | 🟡 Partial / ⛔ authoring out of scope | Reading/static render of XFA is specced; **XFA authoring is explicitly never built** (`01 §13`; `26 §5`) — a deliberate decision, as XFA is a dead format. |
 
