@@ -722,7 +722,11 @@ mod tests {
             assert!((m.a - 1.0).abs() < 1e-9, "a={}", m.a);
             assert!((m.d - 1.0).abs() < 1e-9, "d={}", m.d);
             assert!((m.e - 5.0).abs() < 1e-9, "e={} (wrong order gives 10)", m.e);
-            assert!((m.f - 10.0).abs() < 1e-9, "f={} (wrong order gives 20)", m.f);
+            assert!(
+                (m.f - 10.0).abs() < 1e-9,
+                "f={} (wrong order gives 20)",
+                m.f
+            );
         }
     }
 

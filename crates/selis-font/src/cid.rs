@@ -53,13 +53,26 @@ pub fn map_cid(map: &CidToGid, cid: u16) -> Option<u16> {
     }
 }
 
-/// One element of a `/W` (or `/W2`) array: a CID, or a width array.
+/// One element of a `/W` (or `/W2`) array: a CID, a width array, or a
+/// contiguous range that shares one width.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CidWidthEntry {
     /// A CID (the first number of a range, or part of a run).
     Cid(u32),
     /// A width array (glyph-space widths, 1000 units per em).
     Widths(Vec<f64>),
+    /// The `c_first c_last w` form (ISO 32000-1 §9.7.4.3): every CID from
+    /// `first` to `last` inclusive takes the single width `w`. The reader
+    /// must emit this directly — flattening it into bare `Cid`s loses the
+    /// range and silently drops those CIDs to `/DW`.
+    Range {
+        /// First CID in the range (inclusive).
+        first: u32,
+        /// Last CID in the range (inclusive).
+        last: u32,
+        /// Width shared by every CID in the range.
+        width: f64,
+    },
 }
 
 /// Resolved CID widths: explicit entries plus a default.
@@ -93,6 +106,9 @@ impl CidWidths {
 /// missing trailing CIDs fall back to `/DW`, never an error.
 #[must_use]
 pub fn resolve_cid_widths(entries: &[CidWidthEntry], default: f64) -> CidWidths {
+    // No 2-byte CID exceeds 65535; cap the resolved map at the next power of
+    // two so a malformed wide `Range` cannot exhaust memory.
+    const MAX_CID_WIDTHS: usize = 1 << 16;
     let mut map = BTreeMap::new();
     let mut pending: Vec<u32> = Vec::new();
     let mut i = 0usize;
@@ -128,6 +144,21 @@ pub fn resolve_cid_widths(entries: &[CidWidthEntry], default: f64) -> CidWidths 
                 pending.clear();
                 i = i.saturating_add(1);
             }
+            Some(CidWidthEntry::Range { first, last, width }) => {
+                // `c_first c_last w`: every CID in the range takes `w`. The
+                // span is bounded (no 2-byte CID exceeds 65535, and the map
+                // is capped regardless) so a malformed `0 4294967295 w`
+                // cannot run away.
+                let mut cid = *first;
+                while cid <= *last && map.len() < MAX_CID_WIDTHS {
+                    map.insert(cid, *width);
+                    if cid == u32::MAX {
+                        break;
+                    }
+                    cid = cid.saturating_add(1);
+                }
+                i = i.saturating_add(1);
+            }
             None => break,
         }
     }
@@ -152,6 +183,88 @@ mod tests {
         assert_eq!(widths.width(56), 600.0);
         assert_eq!(widths.width(57), 700.0);
         assert_eq!(widths.width(58), 1000.0); // default
+    }
+
+    #[test]
+    fn range_c_first_c_last_w() {
+        // /W [ 16 29 333 36 38 722 ] — the `c_first c_last w` form
+        // (ISO 32000-1 §9.7.4.3). Every CID in each span shares the width.
+        // Regression: this form was flattened into bare `Cid`s, so CIDs
+        // 16-29 and 36-38 dropped to `/DW` (visually, bold headings in the
+        // vedantcomputers invoice collapsed — glyphs painted at ~500/1000
+        // advance regardless of the font's real, wider metrics).
+        let widths = resolve_cid_widths(
+            &[
+                CidWidthEntry::Range {
+                    first: 16,
+                    last: 29,
+                    width: 333.0,
+                },
+                CidWidthEntry::Range {
+                    first: 36,
+                    last: 38,
+                    width: 722.0,
+                },
+            ],
+            500.0,
+        );
+        assert_eq!(widths.width(16), 333.0);
+        assert_eq!(widths.width(22), 333.0); // mid-range, not /DW
+        assert_eq!(widths.width(29), 333.0); // inclusive upper bound
+        assert_eq!(widths.width(36), 722.0);
+        assert_eq!(widths.width(38), 722.0);
+        assert_eq!(widths.width(30), 500.0); // gap falls to /DW
+        assert_eq!(widths.width(39), 500.0); // past the range → /DW
+    }
+
+    #[test]
+    fn range_mixed_with_array_forms() {
+        // The real shape from the invoice: array and range forms interleaved.
+        // /W [ 0 [a b c d] 10 [e] 16 29 333 36 38 722 50 [f …] ]
+        let widths = resolve_cid_widths(
+            &[
+                CidWidthEntry::Cid(0),
+                CidWidthEntry::Widths(vec![100.0, 110.0, 120.0, 130.0]),
+                CidWidthEntry::Cid(10),
+                CidWidthEntry::Widths(vec![250.0]),
+                CidWidthEntry::Range {
+                    first: 16,
+                    last: 29,
+                    width: 333.0,
+                },
+                CidWidthEntry::Range {
+                    first: 36,
+                    last: 38,
+                    width: 722.0,
+                },
+                CidWidthEntry::Cid(50),
+                CidWidthEntry::Widths(vec![600.0, 610.0]),
+            ],
+            500.0,
+        );
+        assert_eq!(widths.width(0), 100.0);
+        assert_eq!(widths.width(3), 130.0);
+        assert_eq!(widths.width(10), 250.0);
+        assert_eq!(widths.width(20), 333.0); // the range, not /DW
+        assert_eq!(widths.width(37), 722.0); // the range, not /DW
+        assert_eq!(widths.width(50), 600.0);
+        assert_eq!(widths.width(51), 610.0);
+    }
+
+    #[test]
+    fn range_span_is_bounded() {
+        // A malformed `0 u32::MAX w` must not exhaust memory: the resolved
+        // map is capped, and the width still resolves within the cap.
+        let widths = resolve_cid_widths(
+            &[CidWidthEntry::Range {
+                first: 0,
+                last: u32::MAX,
+                width: 400.0,
+            }],
+            500.0,
+        );
+        assert_eq!(widths.width(0), 400.0);
+        assert_eq!(widths.width(100), 400.0);
     }
 
     #[test]

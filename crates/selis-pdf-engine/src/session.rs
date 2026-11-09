@@ -1455,7 +1455,8 @@ impl Session {
         // the resources the paint walk resolves against: a flattened `GlyphRun`
         // carries only the font name, so text drawn inside a form whose
         // `/Resources` omit `/Font` would otherwise find no face here.
-        let aug_font_res = augment_page_font_resources(self, page.resources.as_ref(), &budget_copy, g);
+        let aug_font_res =
+            augment_page_font_resources(self, page.resources.as_ref(), &budget_copy, g);
         let font_data = move |font_name: &Bytes| -> Option<crate::render::ResolvedFontProgram> {
             let mut bg = budget_copy.guard_with(clock, CancelToken::new());
             let mut res = self.new_resolver(&budget_copy);
@@ -2122,7 +2123,10 @@ fn merge_resources(primary: &Obj, fallback: &Obj) -> Obj {
                 if let (Obj::Dict(pd), Obj::Dict(fd)) = (&*pv, fv) {
                     let mut merged: Vec<(Bytes, Obj)> = fd.clone();
                     for (pk, pval) in pd {
-                        match merged.iter_mut().find(|(mk, _)| mk.as_slice() == pk.as_slice()) {
+                        match merged
+                            .iter_mut()
+                            .find(|(mk, _)| mk.as_slice() == pk.as_slice())
+                        {
                             Some((_, mv)) => *mv = pval.clone(),
                             None => merged.push((pk.clone(), pval.clone())),
                         }
@@ -3076,36 +3080,88 @@ fn parse_descendant_font(
     if let Some(Obj::Real { scaled, scale }) = dict_get_obj(dict, b"DW") {
         dw = *scaled as f64 / 10f64.powi(*scale as i32);
     }
+    let entries = parse_cid_width_entries(dict, g);
+    fd.cid_widths = Some(selis_font::resolve_cid_widths(&entries, dw));
+    Some(fd)
+}
+
+/// Parse a `/W` array into [`selis_font::CidWidthEntry`]s, honouring BOTH
+/// ISO 32000-1 §9.7.4.3 forms. The form of each element is decided by the
+/// type of the element that FOLLOWS the leading CID:
+///
+/// * `c [ w_0 w_1 … ]` — the next element is an array: CID `c` takes `w_0`,
+///   `c+1` takes `w_1`, and so on.
+/// * `c_first c_last w` — the next element is a number: every CID from
+///   `c_first` to `c_last` inclusive takes the single width `w`.
+///
+/// The previous reader flattened every bare number into a `Cid`, which turned
+/// a `c_first c_last w` run into three phantom CIDs (the width `w` among
+/// them) and dropped the whole range to `/DW` — the vedantcomputers invoice's
+/// bold headings collapsed because their metrics live in this form.
+fn parse_cid_width_entries(
+    dict: &[(Bytes, Obj)],
+    g: &mut BudgetGuard<'_>,
+) -> Vec<selis_font::CidWidthEntry> {
+    let number = |o: &Obj| -> Option<f64> {
+        match o {
+            Obj::Int(v) => Some(*v as f64),
+            Obj::Real { scaled, scale } => Some(*scaled as f64 / 10f64.powi(*scale as i32)),
+            _ => None,
+        }
+    };
+    let cid = |o: &Obj| -> Option<u32> {
+        match o {
+            Obj::Int(v) => u32::try_from(*v).ok(),
+            _ => None,
+        }
+    };
     let mut entries = Vec::new();
-    if let Some(Obj::Array(items)) = dict_get_obj(dict, b"W") {
-        for item in items.iter().take(MAX_CID_WIDTH_ENTRIES) {
-            let _ = g.charge_one(selis_sandbox::Resource::Objects);
-            match item {
-                Obj::Int(c) => {
-                    entries.push(selis_font::CidWidthEntry::Cid(
-                        u32::try_from(*c).unwrap_or(u32::MAX),
-                    ));
-                }
-                Obj::Array(widths) => {
-                    let mut values = Vec::new();
-                    for w in widths.iter().take(MAX_CID_WIDTH_ENTRIES) {
-                        let _ = g.charge_one(selis_sandbox::Resource::Objects);
-                        match w {
-                            Obj::Int(v) => values.push(*v as f64),
-                            Obj::Real { scaled, scale } => {
-                                values.push(*scaled as f64 / 10f64.powi(*scale as i32))
-                            }
-                            _ => {}
-                        }
+    let Some(Obj::Array(items)) = dict_get_obj(dict, b"W") else {
+        return entries;
+    };
+    let mut i = 0usize;
+    while i < items.len() && entries.len() < MAX_CID_WIDTH_ENTRIES {
+        let _ = g.charge_one(selis_sandbox::Resource::Objects);
+        let Some(c_first) = items.get(i).and_then(|o| cid(o)) else {
+            // A stray non-integer where a CID was expected: skip it rather
+            // than resync blindly.
+            i = i.saturating_add(1);
+            continue;
+        };
+        match items.get(i.saturating_add(1)) {
+            // `c [ w_0 w_1 … ]`
+            Some(Obj::Array(widths)) => {
+                let mut values = Vec::new();
+                for w in widths.iter().take(MAX_CID_WIDTH_ENTRIES) {
+                    let _ = g.charge_one(selis_sandbox::Resource::Objects);
+                    if let Some(v) = number(w) {
+                        values.push(v);
                     }
-                    entries.push(selis_font::CidWidthEntry::Widths(values));
                 }
-                _ => {}
+                entries.push(selis_font::CidWidthEntry::Cid(c_first));
+                entries.push(selis_font::CidWidthEntry::Widths(values));
+                i = i.saturating_add(2);
+            }
+            // `c_first c_last w`
+            Some(next) if number(next).is_some() => {
+                let c_last = cid(next).unwrap_or(c_first);
+                let width = items.get(i.saturating_add(2)).and_then(|o| number(o));
+                if let Some(width) = width {
+                    entries.push(selis_font::CidWidthEntry::Range {
+                        first: c_first,
+                        last: c_last,
+                        width,
+                    });
+                }
+                i = i.saturating_add(3);
+            }
+            // A trailing CID with nothing after it: nothing to resolve.
+            _ => {
+                i = i.saturating_add(1);
             }
         }
     }
-    fd.cid_widths = Some(selis_font::resolve_cid_widths(&entries, dw));
-    Some(fd)
+    entries
 }
 
 /// A named predefined encoding (ISO 32000-2 Annex D) by its PDF name.
@@ -3295,7 +3351,13 @@ fn resolve_xobject_inner(
     } else {
         let decode = selis_raster::image::Decode::identity(usize::from(components));
         let img = selis_raster::image::decode_image(
-            width, height, components, bpc, &unfiltered, &decode, g,
+            width,
+            height,
+            components,
+            bpc,
+            &unfiltered,
+            &decode,
+            g,
         )?;
         (img.width, img.height, img.rgba8)
     };
