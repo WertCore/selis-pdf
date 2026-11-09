@@ -9,6 +9,14 @@
 # `Manifest::validate_viewer_isolation` unit test and the `wasm-loader`
 # vitest suite.
 
+# The core viewer chunk. It grew from 667 KB to 1.29 MB brotli when
+# `builtin-fallback-fonts` was enabled on the engine dep (the blank-page fix:
+# a PDF that names a non-embedded standard face — Helvetica/Times/Courier —
+# rendered blank in the web viewer with no glyphs to draw). The 12 Liberation
+# faces bake in here, as they already do for the raster and CLI builds. This is
+# a deliberate, accepted drift (the runtime fallback-fetch path SL-3.FONT.12 is
+# not wired in the shell yet); the baseline was moved to accept it, and it stays
+# well under the 3 MB core ceiling.
 [[budget]]
 chunk = "core"
 artifact = "selis_pdf_wasm"
@@ -56,10 +64,18 @@ budget = 900000
 # more round step to 340 000 rather than shipping a form tool that only reads
 # half a form. The growth is in the two operations themselves, not in a
 # dependency, and the 2% rule still gates every later slice.
+# The field-appearance synthesis and flatten-forms slices then carried the
+# chunk to 353 KB — past 340 000 — without the budget being moved with them.
+# Operation 33 (edit text) next became CID-aware (SL-5.TEXTEDIT.02): it reads a
+# font's /ToUnicode CMap and inverts it to re-encode a replacement through the
+# embedded subset's own codes (so a Type0/Chrome-export PDF is editable with no
+# new face shipped), a measured +7.5 KB to 361 KB. The budget moves one 20 KB
+# step to 380 000 to cover both the overdue growth and this slice; the 2% rule
+# still gates every later slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 340000
+budget = 380000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
