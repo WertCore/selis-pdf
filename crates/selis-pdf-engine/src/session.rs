@@ -3290,21 +3290,78 @@ fn resolve_xobject_inner(
     // Terminal image codecs first: DCT/JPX streams carry compressed image
     // data the raw-sample decoder cannot read — silently skipping them is
     // how a scanned page renders blank (SL-2.RAST.13).
-    if let Some(img) = decode_terminal_image_rgba(&dict, &unfiltered, g) {
-        return Ok(Some(selis_pdf_content::exec::DoTarget::Image {
-            width: img.width,
-            height: img.height,
-            rgba8: Bytes::copy_from_slice(&img.rgba8),
-        }));
-    }
-    let decode = selis_raster::image::Decode::identity(usize::from(components));
-    let img =
-        selis_raster::image::decode_image(width, height, components, bpc, &unfiltered, &decode, g)?;
+    let (iw, ih, mut rgba8) = if let Some(img) = decode_terminal_image_rgba(&dict, &unfiltered, g) {
+        (img.width, img.height, img.rgba8)
+    } else {
+        let decode = selis_raster::image::Decode::identity(usize::from(components));
+        let img = selis_raster::image::decode_image(
+            width, height, components, bpc, &unfiltered, &decode, g,
+        )?;
+        (img.width, img.height, img.rgba8)
+    };
+    // The decoders fill the image fully opaque; a transparent logo or icon
+    // carries its alpha in an `/SMask` image, applied here or it renders as a
+    // solid block (ISO 32000-1 §11.6.5.3).
+    apply_image_smask(resolver, &dict, iw, ih, &mut rgba8, g);
     Ok(Some(selis_pdf_content::exec::DoTarget::Image {
-        width: img.width,
-        height: img.height,
-        rgba8: Bytes::copy_from_slice(&img.rgba8),
+        width: iw,
+        height: ih,
+        rgba8: Bytes::copy_from_slice(&rgba8),
     }))
+}
+
+/// Apply an image XObject's `/SMask` — a grayscale image whose samples are the
+/// alpha channel — onto `rgba8` (which the decoders fill opaque + premultiplied).
+/// The mask may be a different resolution, sampled nearest-neighbour; RGB is
+/// scaled by the recovered alpha to keep the premultiplied invariant tiny-skia's
+/// `Pixmap::from_vec` expects. Without it a transparent logo renders as a block.
+#[allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::cast_possible_truncation
+)]
+fn apply_image_smask(
+    resolver: &mut Resolver<'_>,
+    dict: &[(Bytes, Obj)],
+    width: u32,
+    height: u32,
+    rgba8: &mut [u8],
+    g: &mut BudgetGuard<'_>,
+) {
+    let Some(Obj::Ref(r)) = dict_get_obj(dict, b"SMask") else {
+        return;
+    };
+    let Ok(Some((mdict, mdata))) = resolve_stream(resolver, *r, g) else {
+        return;
+    };
+    let Ok(mask) = decode_image_rgba(&mdict, &mdata, g) else {
+        return;
+    };
+    let (w, h) = (width as usize, height as usize);
+    let (mw, mh) = (mask.width as usize, mask.height as usize);
+    if w == 0 || h == 0 || mw == 0 || mh == 0 {
+        return;
+    }
+    for y in 0..h {
+        let my = (y * mh) / h;
+        for x in 0..w {
+            let mx = (x * mw) / w;
+            let mi = (my * mw + mx) * 4;
+            let di = (y * w + x) * 4;
+            if mi + 3 >= mask.rgba8.len() || di + 3 >= rgba8.len() {
+                continue;
+            }
+            // A gray mask stores alpha in each channel; take one. Scale the
+            // already-premultiplied RGB to the new alpha so the pixel stays a
+            // valid premultiplied sample.
+            let a = u16::from(mask.rgba8[mi]);
+            rgba8[di] = ((u16::from(rgba8[di]) * a) / 255) as u8;
+            rgba8[di + 1] = ((u16::from(rgba8[di + 1]) * a) / 255) as u8;
+            rgba8[di + 2] = ((u16::from(rgba8[di + 2]) * a) / 255) as u8;
+            rgba8[di + 3] = a as u8;
+        }
+    }
 }
 
 /// Decode an image stream whose samples are still in a terminal image codec
