@@ -3301,20 +3301,56 @@ function readerTextLayer(doc, page, canvasW) {
 		if (typeof line.text !== "string" || line.text === "" || line.rect == null) continue;
 		const span = document.createElement("span");
 		span.textContent = line.text;
-		const size = line.rect.height * scale;
+		// The text op reports a GENEROUS glyph box — ±font-size around the
+		// baseline, a full 2 em tall (SL-3.TEXT glyph_rect, matched to the
+		// extractor's box so selection and extraction agree). Taken literally
+		// that makes the overlay font twice its true size and each line's box
+		// overlap its neighbours, so dragging one line bled into the next. The
+		// real font size is HALF the box height; the baseline is the box centre.
+		const em = (line.rect.height / 2) * scale;
+		if (!(em > 0)) continue;
+		const baselineUp = line.rect.y + line.rect.height / 2;
 		span.style.left = `${line.rect.x * scale}px`;
-		// The text op's rects are PDF y-up (origin bottom-left); the canvas is
-		// y-down (origin top-left). Flip so a run sits over its rendered glyphs.
-		span.style.top = `${(value.height - line.rect.y - line.rect.height) * scale}px`;
-		span.style.fontSize = `${size}px`;
-		span.style.height = `${size}px`;
-		// Stretch the invisible glyphs across the run's measured width so a
-		// drag-selection box tracks the rendered text, not the browser's font.
-		span.style.width = `${line.rect.width * scale}px`;
+		// Flip PDF y-up → canvas y-down and seat the span so its text baseline
+		// (~0.8 em below the top at line-height:1) lands on the glyph baseline.
+		// The box is now ~1 em tall, so a line no longer reaches into the next.
+		span.style.top = `${(value.height - baselineUp) * scale - em * 0.8}px`;
+		span.style.fontSize = `${em}px`;
+		span.style.height = `${em}px`;
+		// The width the invisible glyphs must span. The browser's font is not the
+		// document's, so the text's NATURAL width differs from the PDF's — left
+		// uncorrected, a drag-selection maps to the wrong characters and the copy
+		// comes out shifted (e.g. "ress: Vedant Com" for a selection of "Vedant
+		// Computers …"). `alignTextLayers` measures each span once it is in the
+		// DOM and applies the horizontal scale that lands the glyphs over the
+		// rendered text, so selection and copy track what the eye sees.
+		span.dataset.tw = `${line.rect.width * scale}`;
 		span.dataset.page = String(page);
 		layer.appendChild(span);
 	}
 	return layer;
+}
+
+/** Scale each text-layer span horizontally so its invisible glyphs sit exactly
+ * over the rendered text. Batched read-then-write (all widths first, then all
+ * transforms) so it reflows once, not once per span. Must run with the spans in
+ * the document — `getBoundingClientRect` needs layout. */
+function alignTextLayers(container) {
+	const spans = Array.from(container.querySelectorAll(".selis-text-layer span"));
+	for (const span of spans) {
+		if (span instanceof HTMLElement) span.style.transform = "none";
+	}
+	// One read phase (a single reflow) for every natural width.
+	const naturals = spans.map((span) =>
+		span instanceof HTMLElement ? span.getBoundingClientRect().width : 0,
+	);
+	spans.forEach((span, i) => {
+		if (!(span instanceof HTMLElement)) return;
+		const target = Number(span.dataset.tw);
+		const natural = naturals[i];
+		span.style.transform =
+			Number.isFinite(target) && target > 0 && natural > 0 ? `scaleX(${target / natural})` : "none";
+	});
 }
 
 /** Build the wrap (canvas + text layer) for one page at the current zoom. */
@@ -3362,6 +3398,7 @@ async function renderDocument() {
 	for (let page = 0; page < opened.pages; page += 1) {
 		el.appendChild(readerBuildPage(opened.doc, page));
 	}
+	alignTextLayers(el);
 	currentPage = 0;
 	return { status: "ok", page: 0, pages: opened.pages, painted: true };
 }
@@ -3378,6 +3415,7 @@ function applyZoom(nextZoom) {
 	for (let page = 0; page < READER.pages; page += 1) {
 		el.appendChild(readerBuildPage(READER.doc, page));
 	}
+	alignTextLayers(el);
 	const label = document.getElementById("selis-zoom-level");
 	if (label !== null) label.textContent = `${Math.round(z * 100)}%`;
 	scrollToPage(anchor);
@@ -3557,7 +3595,9 @@ function openInlineEditor(span) {
 	const fontPx = Math.max(13, Number.parseFloat(span.style.fontSize) || 13);
 	input.style.fontSize = `${fontPx}px`;
 	input.style.minHeight = `${fontPx + 6}px`;
-	input.style.minWidth = `${Math.max(80, Number.parseFloat(span.style.width) || 0)}px`;
+	// The span no longer carries a CSS width (its visible width is a scaleX
+	// transform over the natural text); the target px width is on dataset.tw.
+	input.style.minWidth = `${Math.max(80, Number.parseFloat(span.dataset.tw ?? "") || 0)}px`;
 	layer.appendChild(input);
 	input.focus();
 	input.select();
