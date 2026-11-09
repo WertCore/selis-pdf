@@ -1750,13 +1750,27 @@ body {
 	color: var(--selis-color-accent-fg);
 }
 
+/* In edit mode EVERY text line is visibly highlighted (not just on hover), so a
+ * reader can see what is editable, and selection is off so a click is a clean
+ * click that opens the editor rather than starting a text drag. */
 .selis-editing .selis-text-layer span {
-	cursor: text;
-	outline: 1px dashed rgba(11, 107, 94, 0.4);
+	cursor: pointer;
+	user-select: none;
+	background: rgba(11, 107, 94, 0.16);
+	outline: 1px solid rgba(11, 107, 94, 0.3);
 }
 
 .selis-editing .selis-text-layer span:hover {
-	background: rgba(11, 107, 94, 0.12);
+	background: rgba(11, 107, 94, 0.33);
+}
+
+.selis-edit-hint {
+	margin: 0;
+	padding: 0.55rem clamp(1rem, 4vw, 2rem);
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-fg);
+	border-bottom: 1px solid var(--selis-color-border);
+	font-size: 0.9rem;
 }
 
 .selis-edit-input {

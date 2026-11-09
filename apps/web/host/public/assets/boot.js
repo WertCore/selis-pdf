@@ -3553,9 +3553,11 @@ function openInlineEditor(span) {
 	input.value = original;
 	input.style.left = span.style.left;
 	input.style.top = span.style.top;
-	input.style.height = span.style.height;
-	input.style.fontSize = span.style.fontSize;
-	input.style.minWidth = `${Math.max(60, Number.parseFloat(span.style.width) || 0)}px`;
+	// Never smaller than a comfortably editable size, even over tiny print.
+	const fontPx = Math.max(13, Number.parseFloat(span.style.fontSize) || 13);
+	input.style.fontSize = `${fontPx}px`;
+	input.style.minHeight = `${fontPx + 6}px`;
+	input.style.minWidth = `${Math.max(80, Number.parseFloat(span.style.width) || 0)}px`;
 	layer.appendChild(input);
 	input.focus();
 	input.select();
@@ -3592,6 +3594,25 @@ function openInlineEditor(span) {
 	input.addEventListener("blur", close);
 }
 
+/** The banner that announces edit mode and what to do — without it, toggling
+ * "Edit text" looks like nothing happened (the text layer is transparent). */
+function showEditHint(on) {
+	if (root === null) return;
+	const existing = root.querySelector("#selis-edit-hint");
+	if (!on) {
+		existing?.remove();
+		return;
+	}
+	if (existing !== null) return;
+	const hint = document.createElement("p");
+	hint.id = "selis-edit-hint";
+	hint.className = "selis-edit-hint";
+	hint.textContent = "Edit mode — click any highlighted line of text to change it, then press Done.";
+	const docEl = readerDocEl();
+	if (docEl !== null) root.insertBefore(hint, docEl);
+	else root.appendChild(hint);
+}
+
 function installEditor() {
 	const toggle = document.getElementById("selis-edit-toggle");
 	if (toggle === null || root === null) return;
@@ -3600,6 +3621,7 @@ function installEditor() {
 		readerDocEl()?.classList.toggle("selis-editing", editMode);
 		toggle.textContent = editMode ? "Done" : "Edit text";
 		toggle.setAttribute("aria-pressed", String(editMode));
+		showEditHint(editMode);
 	});
 	root.addEventListener("click", (event) => {
 		if (!editMode) return;
