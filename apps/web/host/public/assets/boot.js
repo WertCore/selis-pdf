@@ -3319,15 +3319,23 @@ function readerTextLayer(doc, page, canvasW) {
 
 /** Build the wrap (canvas + text layer) for one page at the current zoom. */
 function readerBuildPage(doc, page) {
-	const dpi = READER_BASE_DPI * READER.zoom;
+	// Render at the screen's device-pixel ratio (capped so a 3× phone does not
+	// quadruple the raster), then lay the canvas out at the LOGICAL size. The
+	// backing store is denser than the CSS box, so text stays crisp on a hi-DPI
+	// display instead of being upscaled from a 96-DPI bitmap.
+	const dpr = Math.min(3, globalThis.devicePixelRatio || 1);
+	const dpi = READER_BASE_DPI * READER.zoom * dpr;
 	const wrap = document.createElement("div");
 	wrap.className = "selis-page-wrap";
 	wrap.dataset.page = String(page);
 	const raster = readerRenderCanvas(doc, page, dpi);
 	if (raster === null) return wrap;
-	wrap.style.width = `${raster.w}px`;
+	const cssW = raster.w / dpr;
+	raster.canvas.style.width = `${cssW}px`;
+	raster.canvas.style.height = `${raster.h / dpr}px`;
+	wrap.style.width = `${cssW}px`;
 	wrap.appendChild(raster.canvas);
-	const text = readerTextLayer(doc, page, raster.w);
+	const text = readerTextLayer(doc, page, cssW);
 	if (text !== null) wrap.appendChild(text);
 	return wrap;
 }
