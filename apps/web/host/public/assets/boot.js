@@ -3210,6 +3210,8 @@ globalThis.__selisOpenBase64 = async function (base64) {
 		if (pager !== null) pager.hidden = false;
 		const zoom = document.getElementById("selis-zoom");
 		if (zoom !== null) zoom.hidden = false;
+		const edit = document.getElementById("selis-edit-toggle");
+		if (edit !== null) edit.hidden = false;
 		const label = document.getElementById("selis-zoom-level");
 		if (label !== null) label.textContent = `${Math.round(READER.zoom * 100)}%`;
 		updatePager(0, opened.pages ?? 1);
@@ -3422,6 +3424,184 @@ function installReaderScroll() {
 	});
 }
 
+// ── Click-to-edit (SL-5.TEXTEDIT) ────────────────────────────────────────────
+//
+// In edit mode the selectable text layer becomes clickable: click a line, type
+// over it, and the change is applied in place by the same `edit_text` engine the
+// tools grid uses — an incremental update, so the original bytes stay a prefix
+// and any signature over them stays valid. It runs the lazily-instantiated tools
+// WASM chunk through the compiled wire protocol; nothing is uploaded. Text drawn
+// with an embedded subset font (no simple encoding) is refused with a clear
+// message rather than edited wrongly — that case needs font re-embedding, which
+// is a later increment.
+let editMode = false;
+let toolsExports = null;
+
+// The tools-chunk wire protocol (little-endian), replicated here rather than
+// imported so the viewer's CSP/service-worker never block the edit path. See
+// `apps/web/host/src/tools/protocol.ts` + `crates/selis-pdf-wasm-tools`.
+const TOOLS_REQUEST_MAGIC = 0x53_54_4c_53;
+const TOOLS_RESPONSE_MAGIC = 0x52_54_4c_53;
+const TOOLS_EDIT_OP = 33;
+
+/** Instantiate the import-free tools chunk once (lazy, on first edit). */
+async function loadToolsChunk() {
+	if (toolsExports !== null) return toolsExports;
+	const bytes = await fetch("/wasm/selis_pdf_wasm_tools.wasm").then((r) => r.arrayBuffer());
+	const { instance } = await WebAssembly.instantiate(bytes, {});
+	toolsExports = instance.exports;
+	return toolsExports;
+}
+
+/** Run the edit_text op (33) and return the first output's bytes. */
+function toolsRunEdit(ex, options, fileBytes) {
+	const enc = new TextEncoder();
+	const opt = enc.encode(JSON.stringify(options));
+	const name = enc.encode("document.pdf");
+	const req = new Uint8Array(16 + opt.length + 4 + 4 + name.length + 4 + fileBytes.length);
+	const dv = new DataView(req.buffer);
+	let o = 0;
+	const u32 = (v) => {
+		dv.setUint32(o, v, true);
+		o += 4;
+	};
+	u32(TOOLS_REQUEST_MAGIC);
+	u32(1);
+	u32(TOOLS_EDIT_OP);
+	u32(opt.length);
+	req.set(opt, o);
+	o += opt.length;
+	u32(1); // one file
+	u32(name.length);
+	req.set(name, o);
+	o += name.length;
+	u32(fileBytes.length);
+	req.set(fileBytes, o);
+	const reqPtr = ex.selis_tools_alloc(req.length);
+	const outLenPtr = ex.selis_tools_alloc(4);
+	if (reqPtr === 0 || outLenPtr === 0) throw new Error("the tools chunk is out of memory");
+	new Uint8Array(ex.memory.buffer, reqPtr, req.length).set(req);
+	const respPtr = ex.selis_tools_run(reqPtr, req.length, outLenPtr);
+	if (respPtr === 0) {
+		ex.selis_tools_free(reqPtr, req.length);
+		ex.selis_tools_free(outLenPtr, 4);
+		throw new Error("the edit could not run");
+	}
+	const respLen = new DataView(ex.memory.buffer).getUint32(outLenPtr, true);
+	const resp = new Uint8Array(ex.memory.buffer, respPtr, respLen).slice();
+	ex.selis_tools_free(reqPtr, req.length);
+	ex.selis_tools_free(outLenPtr, 4);
+	ex.selis_tools_free(respPtr, respLen);
+	const rdv = new DataView(resp.buffer);
+	let p = 0;
+	const r32 = () => {
+		const v = rdv.getUint32(p, true);
+		p += 4;
+		return v;
+	};
+	if (r32() !== TOOLS_RESPONSE_MAGIC) throw new Error("the tools chunk returned an unexpected response");
+	const status = r32();
+	const msgLen = r32();
+	const message = new TextDecoder().decode(resp.subarray(p, p + msgLen));
+	p += msgLen;
+	const outCount = r32();
+	if (status !== 0) throw new Error(message === "" ? "the edit was refused" : message);
+	if (outCount < 1) throw new Error("the edit produced no document");
+	const nameLen = r32();
+	p += nameLen;
+	const byteLen = r32();
+	return resp.subarray(p, p + byteLen).slice();
+}
+
+/** Replace `find` with `replace` on 0-based `page` and return the edited bytes. */
+globalThis.__selisEditText = async function (page, find, replace) {
+	if (openDocumentSource === null) return { status: "refused", detail: "no document is open" };
+	const bytes = Uint8Array.from(atob(openDocumentSource()), (ch) => ch.charCodeAt(0));
+	try {
+		const ex = await loadToolsChunk();
+		return { status: "ok", bytes: toolsRunEdit(ex, { page, find, replace }, bytes) };
+	} catch (error) {
+		return { status: "refused", detail: error instanceof Error ? error.message : String(error) };
+	}
+};
+
+function base64Of(bytes) {
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+	}
+	return btoa(binary);
+}
+
+/** Open an inline input over a clicked text line; apply the edit on Enter. */
+function openInlineEditor(span) {
+	const layer = span.parentElement;
+	if (layer === null) return;
+	const page = Number(span.dataset.page ?? "0");
+	const original = span.textContent ?? "";
+	const input = document.createElement("input");
+	input.type = "text";
+	input.className = "selis-edit-input";
+	input.value = original;
+	input.style.left = span.style.left;
+	input.style.top = span.style.top;
+	input.style.height = span.style.height;
+	input.style.fontSize = span.style.fontSize;
+	input.style.minWidth = `${Math.max(60, Number.parseFloat(span.style.width) || 0)}px`;
+	layer.appendChild(input);
+	input.focus();
+	input.select();
+	let settled = false;
+	const close = () => {
+		if (settled) return;
+		settled = true;
+		input.remove();
+	};
+	const commit = async () => {
+		if (settled) return;
+		const next = input.value;
+		close();
+		if (next === original || next === "") return;
+		const result = await globalThis.__selisEditText(page, original, next);
+		if (result.status === "ok" && result.bytes instanceof Uint8Array) {
+			clearFailure();
+			await globalThis.__selisOpenBase64(base64Of(result.bytes));
+		} else {
+			void showFailure(
+				{
+					message:
+						result.detail ??
+						"this text could not be edited in place (it may use an embedded subset font)",
+				},
+				"editing the text",
+			);
+		}
+	};
+	input.addEventListener("keydown", (event) => {
+		if (event.key === "Enter") void commit();
+		else if (event.key === "Escape") close();
+	});
+	input.addEventListener("blur", close);
+}
+
+function installEditor() {
+	const toggle = document.getElementById("selis-edit-toggle");
+	if (toggle === null || root === null) return;
+	toggle.addEventListener("click", () => {
+		editMode = !editMode;
+		readerDocEl()?.classList.toggle("selis-editing", editMode);
+		toggle.textContent = editMode ? "Done" : "Edit text";
+		toggle.setAttribute("aria-pressed", String(editMode));
+	});
+	root.addEventListener("click", (event) => {
+		if (!editMode) return;
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) return;
+		const span = target.closest(".selis-text-layer span");
+		if (span instanceof HTMLElement) openInlineEditor(span);
+	});
+}
+
 function installOpenButton() {
 	const button = document.getElementById("selis-open-file-button");
 	const input = document.getElementById("selis-open-file");
@@ -3464,3 +3644,4 @@ function installOpenButton() {
 installOpenButton();
 installPager();
 installZoom();
+installEditor();

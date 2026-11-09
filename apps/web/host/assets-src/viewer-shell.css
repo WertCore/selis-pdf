@@ -263,6 +263,52 @@ body {
 	color: transparent;
 }
 
+/* CLICK-TO-EDIT (SL-5.TEXTEDIT). The toolbar toggle and, in edit mode, the
+ * affordance on each text line plus the inline input that replaces it. */
+.selis-viewer-bar__edit {
+	appearance: none;
+	border: 1px solid var(--selis-color-border);
+	border-radius: var(--selis-radius-md);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 0.85rem;
+	padding: 0.35rem 0.75rem;
+	cursor: pointer;
+}
+
+.selis-viewer-bar__edit[hidden] {
+	display: none;
+}
+
+.selis-viewer-bar__edit[aria-pressed="true"] {
+	background: var(--selis-color-accent);
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent-fg);
+}
+
+.selis-editing .selis-text-layer span {
+	cursor: text;
+	outline: 1px dashed rgba(11, 107, 94, 0.4);
+}
+
+.selis-editing .selis-text-layer span:hover {
+	background: rgba(11, 107, 94, 0.12);
+}
+
+.selis-edit-input {
+	position: absolute;
+	margin: 0;
+	padding: 0 1px;
+	border: 1px solid var(--selis-color-accent);
+	background: #fff;
+	color: var(--selis-color-fg);
+	font-family: var(--selis-font-sans);
+	line-height: 1;
+	z-index: 10;
+	box-shadow: 0 1px 6px rgba(23, 34, 31, 0.2);
+}
+
 /* The disclosure panels + search readout + print status sit below the toolbar,
  * aligned to the same gutter as everything else. */
 #selis-search-result,
