@@ -1022,7 +1022,13 @@ impl Session {
     ) -> Option<u32> {
         let page = self.document.pages.get(page_num)?;
         let mut resolver = self.new_resolver(budget);
-        if let Some(fd) = resolve_font_dict(&mut resolver, page.resources.as_ref(), font_name, g) {
+        // Text is often drawn inside a form XObject whose /Resources omit the
+        // font the page declares elsewhere; fold every reachable face in so
+        // recovery resolves the same font the renderer did — otherwise a
+        // form-embedded run comes back as raw glyph codes.
+        let augmented = augment_page_font_resources(self, page.resources.as_ref(), budget, g);
+        let resources = augmented.as_ref().or(page.resources.as_ref());
+        if let Some(fd) = resolve_font_dict(&mut resolver, resources, font_name, g) {
             if let Some(unicode) = fd
                 .to_unicode
                 .as_ref()
