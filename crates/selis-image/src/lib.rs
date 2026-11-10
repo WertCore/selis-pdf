@@ -733,6 +733,12 @@ pub fn encode_png(image: &Image, level: u8, g: &mut BudgetGuard<'_>) -> Result<V
 /// # Budget
 ///
 /// Charges the RGB buffer it returns against `Bytes`.
+///
+/// # Malformed Input
+///
+/// A buffer whose length is not a whole number of RGBA pixels is flattened
+/// over the pixels it does hold: the trailing bytes are never read, and a
+/// buffer shorter than one pixel yields an empty one.
 pub fn flatten_over_white(rgba: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
     let mut rgb =
         alloc::vec_with_capacity::<u8>(g, rgba.len().saturating_div(4).saturating_mul(3))?;

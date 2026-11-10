@@ -234,6 +234,19 @@ pub fn to_xlsx(title: &str, tables: &[Table]) -> Result<Vec<u8>, String> {
 /// # Errors
 ///
 /// A sentence naming the first table or cell the workbook does not carry.
+///
+/// # Budget
+///
+/// The package's entries are read once and the tables are searched in order;
+/// the work is bounded by the package's size and the number of tables, and
+/// the buffer it holds is charged against `Bytes`.
+///
+/// # Malformed Input
+///
+/// A package that is not a readable ZIP, or that is missing a part the
+/// workbook must have, is refused with a sentence naming what was missing. A
+/// readable ZIP that is not a workbook fails the same way — the parts it must
+/// carry are not there.
 pub fn verify_xlsx(xlsx: &[u8], tables: &[Table]) -> Result<(), String> {
     let entries = read_zip(xlsx)?;
     let has = |name: &str| entries.iter().any(|(entry, _)| entry == name);

@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	CACHE_VERSION,
+	EDITOR_PRECACHE_PATHS,
 	MAX_RUNTIME_ENTRY_BYTES,
 	PRECACHE_PATHS,
 	RUNTIME_CACHE_MAX_ENTRIES,
@@ -122,8 +123,12 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 		expect(new Set(TOOL_PAGE_PATHS).size).toBe(TOOL_PAGE_PATHS.length);
 	});
 
-	it("is exactly the two named groups, in one install list", () => {
-		expect(PRECACHE_PATHS).toEqual([...SHELL_PRECACHE_PATHS, ...TOOLS_PRECACHE_PATHS]);
+	it("is exactly the three named groups, in one install list", () => {
+		expect(PRECACHE_PATHS).toEqual([
+			...SHELL_PRECACHE_PATHS,
+			...TOOLS_PRECACHE_PATHS,
+			...EDITOR_PRECACHE_PATHS,
+		]);
 		expect(PRECACHE_PATHS).toEqual([
 			"/",
 			"/index.html",
@@ -144,7 +149,33 @@ describe("precache set: a small viewer shell and the complete tools surface", ()
 			"/assets/host/tools/security-protocol.js",
 			"/assets/host/tools/sign-protocol.js",
 			"/wasm/selis_pdf_wasm_tools.wasm",
+			"/edit-pdf/",
+			"/assets/editor.css",
+			"/assets/host/editor/editor-page.js",
+			"/assets/host/editor/engine.js",
+			"/assets/host/editor/geometry.js",
+			"/assets/host/editor/history.js",
+			"/assets/host/editor/operations.js",
 		]);
+	});
+
+	it("precaches the editor workspace's page and module graph, and no engine chunk", () => {
+		// The workspace draws the document with the core engine, which is the
+		// reader's up-to-3-MB chunk: fetched on demand into the runtime cache,
+		// never precached, so a first visit is not a multi-megabyte install.
+		expect(EDITOR_PRECACHE_PATHS).toEqual([
+			"/edit-pdf/",
+			"/assets/editor.css",
+			"/assets/host/editor/editor-page.js",
+			"/assets/host/editor/engine.js",
+			"/assets/host/editor/geometry.js",
+			"/assets/host/editor/history.js",
+			"/assets/host/editor/operations.js",
+		]);
+		for (const path of EDITOR_PRECACHE_PATHS) {
+			expect(path.startsWith("/wasm/"), path).toBe(false);
+			expect(path.endsWith(".wasm"), path).toBe(false);
+		}
 	});
 });
 
@@ -403,10 +434,18 @@ describe("shell cache housekeeping", () => {
 			expect(shellLookupPaths(`/${slug}/`)).toEqual([`/${slug}/`, `/${slug}/index.html`]);
 			expect(shellLookupPaths(`/${slug}/index.html`)).toEqual([`/${slug}/index.html`, `/${slug}/`]);
 		}
+		// The editor workspace is one document under two spellings too.
+		expect(shellLookupPaths("/edit-pdf/")).toEqual(["/edit-pdf/", "/edit-pdf/index.html"]);
+		expect(shellLookupPaths("/edit-pdf/index.html")).toEqual([
+			"/edit-pdf/index.html",
+			"/edit-pdf/",
+		]);
 		expect(Object.keys(SHELL_ALIASES).sort()).toEqual(
 			[
 				"/",
 				"/index.html",
+				"/edit-pdf/",
+				"/edit-pdf/index.html",
 				...TOOL_PAGE_SLUGS.flatMap((slug) => [`/${slug}/`, `/${slug}/index.html`]),
 			].sort(),
 		);

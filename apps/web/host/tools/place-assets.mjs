@@ -109,10 +109,14 @@ const ESM_ROOTS = [
 	// page ships only its two modules and the tools page ships its protocol,
 	// input parser, and UI - test files, maps and declarations are excluded
 	// automatically because nothing imports them.
+	//
+	// `editor/editor-page.js` is the editor workspace (pdf-plan/39): the same
+	// walk ships its engine client, its history, its geometry and the tools
+	// protocol it drives.
 	{
 		from: join(workspaceRoot, "apps/web/host/dist"),
 		to: "assets/host",
-		entries: ["page.js", "tools/tools-page.js"],
+		entries: ["page.js", "tools/tools-page.js", "editor/editor-page.js"],
 	},
 ];
 
@@ -492,6 +496,14 @@ const ASSET_COPIES = [
 	{
 		from: join(workspaceRoot, "apps/ui/src/chrome/chrome.css"),
 		to: "assets/ui/css/chrome.css",
+	},
+	{
+		// The editor workspace's own stylesheet (pdf-plan/39). It is NOT
+		// folded into `style.css`: that file is digest-pinned by `viewer.html`,
+		// and a stylesheet the reader does not use has no business changing a
+		// page that is already shipped.
+		from: join(workspaceRoot, "apps/web/host/assets-src/editor.css"),
+		to: "assets/editor.css",
 	},
 ];
 

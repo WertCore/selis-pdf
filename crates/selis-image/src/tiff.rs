@@ -450,6 +450,13 @@ pub fn tiff_strip_rgb(
 /// # Budget
 ///
 /// As [`tiff_page_infos`] and [`tiff_strip_rgb`], for every page held at once.
+///
+/// # Malformed Input
+///
+/// A stream that is not a TIFF, whose directory does not match the bytes it
+/// describes, or whose samples do not fill the size it declares, is refused
+/// with a sentence naming the fault. A compression this engine does not
+/// write is refused rather than guessed at.
 pub fn decode_tiff(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Vec<Image>> {
     let infos = tiff_page_infos(data, g)?;
     let mut images = Vec::with_capacity(infos.len());

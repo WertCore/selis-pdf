@@ -159,6 +159,12 @@ pub enum RequestOp {
         doc: DocHandle,
     },
     /// Render a page (or a tile of one) into the response's attachment.
+    ///
+    /// The response reports the user-space → device transform it used, as
+    /// PDF's six elements `[a b c d e f]` under `ctm`. A shell that lays a
+    /// text layer over the raster needs it: the mapping depends on the page's
+    /// `/Rotate` and on a `/MediaBox` origin that is not (0, 0), and neither
+    /// is otherwise on the wire.
     #[serde(rename_all = "camelCase")]
     Render {
         /// The document handle.

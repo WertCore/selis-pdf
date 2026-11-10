@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { collectAssetReferences } from "./sri.js";
 import { computeSri } from "./sri.js";
-import { PRECACHE_PATHS, SERVICE_WORKER_PATH, SW_SCOPE } from "./sw-policy.js";
+import { findThirdPartyRefs } from "./sri.js";
+import { EDITOR_PRECACHE_PATHS, PRECACHE_PATHS, SERVICE_WORKER_PATH, SW_SCOPE } from "./sw-policy.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const html = readFileSync(join(pkgRoot, "public", "index.html"), "utf8");
@@ -104,5 +105,39 @@ describe("the page registers the worker", () => {
 			new Uint8Array(readFileSync(join(pkgRoot, "public", "assets", "boot.js"))),
 		);
 		expect(viewer).toContain(`integrity="${digest}"`);
+	});
+});
+
+describe("the editor workspace ships what it claims", () => {
+	const editor = readFileSync(join(pkgRoot, "public", "edit-pdf", "index.html"), "utf8");
+
+	it("has a file behind every URL the worker precaches for it", () => {
+		for (const path of EDITOR_PRECACHE_PATHS) {
+			const file = path.endsWith("/")
+				? `${path.replace(/^\//, "")}index.html`
+				: path.replace(/^\//, "");
+			expect(existsSync(join(pkgRoot, "public", file)), `${path} -> ${file}`).toBe(true);
+		}
+	});
+
+	it("loads only same-origin assets", () => {
+		expect(findThirdPartyRefs(editor), "remote script/style hosts are forbidden").toEqual([]);
+		expect(editor).toContain('src="/assets/host/editor/editor-page.js"');
+	});
+
+	it("pins the digest of every stylesheet it loads", () => {
+		// The workspace boots the same up-to-3-MB engine the reader does, so
+		// its assets carry sha384 integrity like the reader's. A stale digest
+		// fails in the browser and nowhere else, which is what this closes.
+		const stylesheets = collectAssetReferences(editor)
+			.filter((ref) => ref.tag === "link")
+			.map((ref) => ref.src);
+		expect(stylesheets).toEqual(["/assets/style.css", "/assets/editor.css"]);
+		for (const href of stylesheets) {
+			const digest = computeSri(
+				new Uint8Array(readFileSync(join(pkgRoot, "public", href.replace(/^\//, "")))),
+			);
+			expect(editor, href).toContain(`integrity="${digest}"`);
+		}
 	});
 });

@@ -1810,6 +1810,18 @@ pub fn encode_webp(image: &Image, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
 /// container, rebuilds the prefix codes, replays the LZ77 copies and undoes the
 /// transforms, and hands back exactly the pixels the encoder was given.
 ///
+/// # Budget
+///
+/// Charges the prefix codes, the LZ77 hash chains and the decoded pixels it
+/// holds against `Bytes`. An image whose working set the budget cannot cover
+/// is refused rather than attempted.
+///
+/// # Malformed Input
+///
+/// A broken container, an incomplete prefix code, a copy that reaches outside
+/// the image, or a stream that ends early is refused as malformed; a
+/// construct this crate does not write is refused as unsupported.
+///
 /// # Errors
 ///
 /// `IMAGE_UNSUPPORTED` for a construct this crate does not write and has no

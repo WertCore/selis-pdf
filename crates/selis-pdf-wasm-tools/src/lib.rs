@@ -1787,8 +1787,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 32 is the privacy op now, so the probe moves past it.
-        let response = run_request(&request(33, b"", &[("doc.pdf", &pdf)]));
+        // Op 33 is the edit-text op, so the probe moves past it.
+        let response = run_request(&request(34, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 

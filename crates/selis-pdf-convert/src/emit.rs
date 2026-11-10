@@ -163,6 +163,17 @@ pub(crate) fn take_num(b: &mut DocumentBuilder) -> u32 {
     n
 }
 
+/// Copy a byte buffer into the document's own storage.
+///
+/// # Budget
+///
+/// The copy is charged against `Bytes` by the builder it is written into.
+///
+/// # Malformed Input
+///
+/// None: every byte sequence is a valid object body. A buffer that is not
+/// valid UTF-8 or not valid PDF is refused later, where the format is
+/// known.
 pub(crate) fn bytes(v: &[u8]) -> Bytes {
     Bytes::copy_from_slice(v)
 }

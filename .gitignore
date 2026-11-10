@@ -80,6 +80,9 @@ apps/web/host/public/assets/host/no-upload.js
 apps/web/host/public/assets/host/sw-policy.js
 apps/web/host/public/assets/host/sw-register.js
 apps/web/host/public/assets/host/tools/
+# The editor workspace's modules, copied from apps/web/host/dist the same way
+# the tools page's are (pdf-plan/39).
+apps/web/host/public/assets/host/editor/
 apps/web/host/public/wasm/
 apps/web/host/public/app-manifest.json
 # The per-tool pages, their manifest, sitemap and robots file are rendered from
@@ -87,6 +90,10 @@ apps/web/host/public/app-manifest.json
 # reaches the deployment root twice (worker + page). Committing the output would
 # let a page drift from the registry it claims to describe.
 apps/web/host/public/*/index.html
+# The editor workspace's page is NOT one of those generated pages: it is
+# hand-authored, like `viewer.html`, and it is the route the workspace is
+# served at. It is committed, so the re-include has to say so.
+!apps/web/host/public/edit-pdf/index.html
 apps/web/host/public/pages.json
 apps/web/host/public/sitemap.xml
 apps/web/host/public/robots.txt

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>selis browser harness - editor</title>
+    <style>
+      iframe { width: 1100px; height: 900px; border: 1px solid #ccc; }
+      #verdict { font: 14px monospace; }
+    </style>
+  </head>
+  <body>
+    <!-- @@SELIS-RESULT@@: the harness stages this page over the app's own index.html. -->
+    <pre id="verdict">PENDING</pre>
+    <iframe id="editor" src="about:blank" title="Selis PDF editor"></iframe>
+    <script type="module">
+      // The editor workspace is a document editor: the thing under test is the
+      // real `/edit-pdf/` page from the staged app tree, loaded in this
+      // same-origin frame. This harness page only drives the DOM and reports,
+      // so the check cannot pass by exercising a fixture that re-implements
+      // the editor.
+      //
+      // The legs, in the order a person would do them:
+      //
+      //   1. open a PDF and wait for the pages to be drawn with a text layer;
+      //   2. click a line of text, change it, and check the page redrew it;
+      //   3. undo, and check the document came back exactly as it was;
+      //   4. redo, and check the change came back;
+      //   5. download, and read the produced bytes back to check they are a
+      //      PDF carrying the change;
+      //   6. check the page's own no-upload assertion, and that nothing was
+      //      fetched from another origin.
+      const out = { schema: 1, check: "editor" };
+      let posted = false;
+
+      function post() {
+        if (posted) return;
+        posted = true;
+        fetch("/__selis_result", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(out),
+        });
+      }
+
+      function fail(error) {
+        out.fatal = String((error && error.stack) || error);
+        post();
+      }
+
+      function frameDocument(frame) {
+        const current = frame.contentDocument;
+        if (!current) throw new Error("the editor iframe had no document");
+        return current;
+      }
+
+      function statusText(doc) {
+        const status = doc.getElementById("selis-editor-status");
+        return status ? status.textContent.trim().replace(/\s+/g, " ") : "";
+      }
+
+      function waitFor(probe, timeoutMs, label) {
+        return new Promise((resolve, reject) => {
+          const started = performance.now();
+          const tick = () => {
+            let value = false;
+            try {
+              value = probe();
+            } catch (_) {
+              value = false;
+            }
+            if (value) {
+              resolve(value);
+              return;
+            }
+            if (performance.now() - started > timeoutMs) {
+              reject(
+                new Error(
+                  "timed out waiting for " + label + " -- the page said: " + statusText(frameDocument(frame)),
+                ),
+              );
+              return;
+            }
+            setTimeout(tick, 40);
+          };
+          tick();
+        });
+      }
+
+      function waitForLoad(frame) {
+        return new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener(
+            "error",
+            () => reject(new Error("the editor iframe failed to load")),
+            { once: true },
+          );
+        });
+      }
+
+      /** The text of every line of the page's text layer, in order. */
+      function lines(doc) {
+        return [...doc.querySelectorAll(".selis-editor-line")].map((line) =>
+          (line.textContent || "").trim(),
+        );
+      }
+
+      async function main() {
+        const frame = document.getElementById("editor");
+        const load = waitForLoad(frame);
+        frame.src = "/edit-pdf/";
+        await load;
+        const doc = frameDocument(frame);
+        const win = frame.contentWindow;
+        if (!win) throw new Error("the editor iframe had no window");
+
+        out.path = win.location.pathname;
+        out.title = doc.title;
+
+        // The page booted: the status line invites a document.
+        await waitFor(
+          () => statusText(doc).includes("Open a PDF"),
+          20_000,
+          "the editor to boot",
+        );
+
+        // The fixture's bytes are read while the origin is still up.
+        const fixtureBytes = new Uint8Array(
+          await fetch("edit.pdf").then((r) => r.arrayBuffer()),
+        );
+
+        // The worker has to be in control before the engine is fetched, or the
+        // engine lands outside the runtime cache and the offline leg has
+        // nothing to serve. The first visit registers the worker; the second
+        // one is controlled by it from the start, which is the situation a
+        // reader is in when they come back.
+        await withTimeout(win.navigator.serviceWorker.ready, 30_000, "the worker to activate");
+        await waitFor(
+          () => win.navigator.serviceWorker.controller !== null,
+          20_000,
+          "the worker to claim the editor page",
+        );
+        const controlled = waitForLoad(frame);
+        frame.contentWindow.location.reload();
+        await controlled;
+        const onlineDoc = frameDocument(frame);
+        const onlineWin = frame.contentWindow;
+        if (!onlineWin) throw new Error("the editor iframe had no window");
+        await waitFor(
+          () => statusText(onlineDoc).includes("Open a PDF"),
+          30_000,
+          "the editor to boot under the worker",
+        );
+
+        out.online = await driveLeg(onlineDoc, onlineWin, fixtureBytes, "edit.pdf", "online");
+        out.before = out.online.before;
+        out.after = out.online.after;
+        out.undone = out.online.undone;
+        out.redone = out.online.redone;
+        out.output = out.online.output;
+
+        // The page's own no-upload assertion, and the origin of everything it
+        // fetched.
+        out.noUpload = onlineDoc.documentElement.dataset.noUpload || "";
+        out.network = readNetwork(onlineWin);
+
+        // Now cut the origin and reload the SAME page: the workspace, its
+        // module graph, its stylesheet, the engine chunk and the tools chunk
+        // must all come back from the worker's cache, and the same edit must
+        // still work with the network gone.
+        const cut = await fetch("/__selis_offline", { method: "POST" });
+        if (!cut.ok) throw new Error("the offline switch returned " + cut.status);
+        const secondLoad = waitForLoad(frame);
+        frame.contentWindow.location.reload();
+        await secondLoad;
+        const offlineDoc = frameDocument(frame);
+        const offlineWin = frame.contentWindow;
+        if (!offlineWin) throw new Error("the offline editor iframe had no window");
+        await waitFor(
+          () => statusText(offlineDoc).includes("Open a PDF"),
+          30_000,
+          "the offline editor to boot",
+        );
+        out.offline = await driveLeg(
+          offlineDoc,
+          offlineWin,
+          fixtureBytes,
+          "edit.pdf",
+          "offline",
+        );
+        out.offlineNetwork = readNetwork(offlineWin);
+        post();
+      }
+
+      function withTimeout(promise, timeoutMs, label) {
+        let timer;
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("timed out waiting for " + label)),
+              timeoutMs,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+      }
+
+      /** Every resource the page fetched, and where from. */
+      function readNetwork(win) {
+        const resources = win.performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => name.startsWith("http"));
+        return {
+          resources: resources.length,
+          foreign: resources.filter((name) => new URL(name).origin !== win.location.origin),
+          paths: resources.map((name) => new URL(name).pathname).sort(),
+        };
+      }
+
+      /**
+       * Open the fixture, change a line of its text, undo it, redo it, and
+       * download the result.
+       *
+       * The same leg runs twice: once online, and once with the origin cut.
+       */
+      async function driveLeg(doc, win, fixtureBytes, fixture, label) {
+        // The fixture's bytes were read while the origin was still up: the
+        // offline leg cannot fetch them, because the origin is answering 503
+        // on purpose.
+        const bytes = fixtureBytes;
+        const file = new File([bytes], fixture, { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+
+        await waitFor(
+          () => doc.querySelectorAll(".selis-editor-page").length > 0,
+          30_000,
+          "the document to be drawn (" + label + ")",
+        );
+        await waitFor(() => lines(doc).length > 0, 20_000, "the text layer (" + label + ")");
+
+        const record = {
+          pages: doc.querySelectorAll(".selis-editor-page").length,
+          before: lines(doc),
+          opened: statusText(doc),
+        };
+
+        // Click a line and change it.
+        const line = doc.querySelector(".selis-editor-line");
+        if (!line) throw new Error("the document drew no clickable text");
+        line.click();
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the inline text editor (" + label + ")",
+        );
+        const area = doc.querySelector(".selis-editor-inline__text");
+        const original = record.before[0];
+        const changed = original.replace("900", "1200");
+        if (changed === original) {
+          throw new Error("the fixture's text did not carry the word the check replaces");
+        }
+        record.replacement = changed;
+        area.value = changed;
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+
+        await waitFor(
+          () => {
+            const now = lines(doc);
+            return now.length > 0 && now[0] !== original;
+          },
+          30_000,
+          "the text to change (" + label + ")",
+        );
+        record.after = lines(doc);
+        record.edited = statusText(doc);
+
+        // Undo must bring the document back exactly as it was.
+        doc.getElementById("selis-undo").click();
+        await waitFor(
+          () => lines(doc)[0] === original,
+          30_000,
+          "the undo to restore the line (" + label + ")",
+        );
+        record.undone = lines(doc);
+        record.undoStatus = statusText(doc);
+
+        // And redo must bring the change back.
+        doc.getElementById("selis-redo").click();
+        await waitFor(
+          () => lines(doc)[0] === changed,
+          30_000,
+          "the redo to restore the change (" + label + ")",
+        );
+        record.redone = lines(doc);
+
+        // The download is a Blob created in the page. The anchor's click is
+        // captured so the bytes can be read back rather than trusted.
+        const captured = {};
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        win.HTMLAnchorElement.prototype.click = function () {
+          captured.href = this.href;
+          captured.download = this.download;
+        };
+        doc.getElementById("selis-download").click();
+        win.HTMLAnchorElement.prototype.click = originalClick;
+        if (!captured.href) throw new Error("the download produced no blob URL");
+        const blob = await win.fetch(captured.href).then((r) => r.blob());
+        const produced = new Uint8Array(await blob.arrayBuffer());
+        record.output = {
+          blob: true,
+          downloadName: captured.download || "",
+          bytes: produced.length,
+          header: String.fromCharCode(...produced.slice(0, 5)),
+          carriesChange: new TextDecoder("latin1").decode(produced).includes(changed),
+        };
+        record.noUpload = doc.documentElement.dataset.noUpload || "";
+        return record;
+      }
+
+      main().catch(fail);
+    </script>
+  </body>
+</html>

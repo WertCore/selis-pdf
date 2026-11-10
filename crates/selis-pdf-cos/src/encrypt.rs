@@ -111,6 +111,18 @@ impl R6Material {
     /// Read a host-supplied blob. `None` unless it is exactly [`Self::LEN`]
     /// bytes — a short or over-long injection is a caller bug, and guessing
     /// which half to drop would be a weaker key without saying so.
+    ///
+    /// # Budget
+    ///
+    /// None: the blob is read in place, and the 64 bytes it must carry are
+    /// copied into the fixed-size fields of the returned value.
+    ///
+    /// # Malformed Input
+    ///
+    /// A blob that is not exactly [`Self::LEN`] bytes is refused with
+    /// `None`. There is no other shape to accept: the key and the four salts
+    /// have fixed widths, and a blob of the wrong length is not a key with a
+    /// recoverable part.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != Self::LEN {
             return None;

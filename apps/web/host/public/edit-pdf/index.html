@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#f2f4f7" />
+		<meta
+			name="description"
+			content="Edit a PDF in your browser: change text where it is drawn, rotate, delete, reorder and duplicate pages. Your document stays on your device — nothing is uploaded."
+		/>
+		<title>Selis PDF Editor — edit your PDF privately, no upload</title>
+		<link rel="canonical" href="https://pdf.selis.com/edit-pdf/" />
+		<!--
+			The editor workspace (pdf-plan/39-EDIT-PDF-WORKSPACE.md).
+
+			Two stylesheets: `style.css` is the viewer's design system — the same
+			tokens, the same shell — so the workspace and the reader are one
+			product; `editor.css` is the workspace's own three-column layout.
+
+			Every stylesheet carries integrity + crossorigin (SL-4.WEB.01). The
+			page's module is a compiled `tsc` output whose bytes change on every
+			build, so it is same-origin rather than digest-pinned: the CSP already
+			forbids a remote script, and a digest that has to be recomputed on
+			every build is a digest that will be wrong one day.
+		-->
+		<link
+			rel="stylesheet"
+			href="/assets/style.css"
+			integrity="sha384-fwGCcm1qoKlOpTXxTvNsDqNBnIjPI36jlqY9nzgeqLhLtpWj3BXPCip9t0esFi/H"
+			crossorigin="anonymous"
+		/>
+		<link
+			rel="stylesheet"
+			href="/assets/editor.css"
+			integrity="sha384-GEqEga+mR5k+AO8zXPUS+d2BRp1Iy5S/zWWSzP/WTC/SGA9FEzTZHOvD3SPB4SaK"
+			crossorigin="anonymous"
+		/>
+	</head>
+	<body class="selis-editor-shell">
+		<a class="selis-visually-hidden" href="#selis-editor">Skip to the document</a>
+
+		<header class="selis-editor-bar">
+			<a class="selis-editor-bar__brand" href="/" aria-label="Selis home">
+				<span class="selis-editor-bar__mark" aria-hidden="true">S</span>
+				<span>Selis <span class="selis-editor-bar__mute">Editor</span></span>
+			</a>
+			<nav class="selis-editor-bar__nav" aria-label="Primary">
+				<button type="button" id="selis-open-file-button" class="selis-editor-bar__open">
+					Open a PDF
+				</button>
+				<input
+					type="file"
+					id="selis-open-file"
+					accept="application/pdf,.pdf"
+					hidden
+				/>
+				<span id="selis-page-indicator" class="selis-editor-bar__pageno" hidden></span>
+				<button type="button" id="selis-undo" disabled>Undo</button>
+				<button type="button" id="selis-redo" disabled>Redo</button>
+				<button type="button" id="selis-download" disabled>Download</button>
+				<a href="/viewer.html">Viewer</a>
+				<a href="/">Tools</a>
+				<span class="selis-editor-bar__pill">No upload</span>
+			</nav>
+		</header>
+
+		<!--
+			The failure panel, a sibling of the workspace so it survives the
+			workspace replacing its own contents, and always present for the
+			editor to populate.
+		-->
+		<div id="selis-editor-failure" class="selis-failure" role="alert" aria-live="assertive"></div>
+
+		<main id="selis-editor" class="selis-editor">
+			<h1 class="selis-visually-hidden">Selis PDF editor</h1>
+
+			<aside class="selis-editor-side" aria-label="Document tools">
+				<section class="selis-editor-panel">
+					<h2>Pages</h2>
+					<ol id="selis-page-list" class="selis-editor-pages"></ol>
+				</section>
+
+				<section class="selis-editor-panel">
+					<h2>Page tools</h2>
+					<div id="selis-page-tools" class="selis-editor-tools">
+						<button type="button" data-op="rotate-90">Rotate 90°</button>
+						<button type="button" data-op="rotate-180">Rotate 180°</button>
+						<button type="button" data-op="duplicate">Duplicate page</button>
+						<button type="button" data-op="blank-after">Insert blank page after</button>
+						<button type="button" data-op="move-up">Move page up</button>
+						<button type="button" data-op="move-down">Move page down</button>
+						<button type="button" data-op="delete">Delete page</button>
+					</div>
+					<p class="selis-editor-hint">
+						The page tools apply to the page selected in the list. Every change
+						can be undone.
+					</p>
+				</section>
+
+				<section class="selis-editor-panel">
+					<h2>Text</h2>
+					<button type="button" id="selis-edit-toggle" aria-pressed="true">
+						Edit text: on
+					</button>
+					<p class="selis-editor-hint">
+						With edit text on, clicking a line of the page opens it for
+						change. <strong>The text is replaced where it is drawn — the line
+						does not re-flow</strong>, so a much longer replacement runs over
+						what follows it. Not every line can be changed: a line drawn as
+						several separate runs can only have one of them replaced, and a
+						line whose words the engine cannot address is left alone.
+					</p>
+				</section>
+			</aside>
+
+			<section class="selis-editor-surface" aria-label="The document">
+				<div id="selis-editor-doc" class="selis-editor-doc" data-edit-text="on"></div>
+				<div id="selis-editor-empty" class="selis-editor-empty">
+					<h2>Open a PDF to start editing</h2>
+					<p>
+						Choose a file, or drop one onto this page. It is read on this
+						device and never uploaded — every change is made here, and the
+						result downloads straight to you.
+					</p>
+				</div>
+			</section>
+		</main>
+
+		<p id="selis-editor-status" class="selis-editor-status" role="status" aria-live="polite"></p>
+
+		<noscript>
+			<p class="selis-editor-status">
+				The Selis PDF editor needs JavaScript — it reads your document on this
+				device, with no upload.
+			</p>
+		</noscript>
+
+		<script type="module" src="/assets/host/editor/editor-page.js"></script>
+	</body>
+</html>

@@ -128,6 +128,15 @@ to = "selis-pdf-filter"
 why = "Stream recompression is the core of the lossless tier."
 
 [[edge]]
+from = "selis-pdf-optimize"
+to = "selis-image"
+why = """
+The lossy tier re-encodes a page's images: a DCTDecode stream is decoded to
+pixels and written back as a smaller JPEG. Image owns the codec selection and
+the pixel buffer; the optimiser owns the decision about which images are
+worth re-encoding."""
+
+[[edge]]
 from = "selis-pdf-content"
 to = "selis-font"
 why = "01-ARCHITECTURE.md §3 — declared exception. Glyph resolution during interpretation."

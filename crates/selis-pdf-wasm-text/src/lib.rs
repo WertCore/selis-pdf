@@ -477,6 +477,15 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 
 /// The safe body of [`selis_text_run`], unit-testable on the host.
 fn run_impl(input: &[u8], op: Op, options: &str) -> Result<(Outputs, u32), String> {
+    // The in-memory backend, for the duration of this call.
+    //
+    // In the browser this chunk is built without `selis-pdf-tools/native-fs`,
+    // so the tools layer reads `in/0` out of the session table and there is
+    // nothing to say. A WORKSPACE build unifies the CLI's `native-fs` feature
+    // into this crate, and then the same read goes to the filesystem, where
+    // `in/0` is not a path — the tools layer's own guard exists for exactly
+    // this, and the tools chunk activates it for the same reason.
+    let _memory = selis_pdf_tools::MemorySession::activate();
     let stem =
         option(options, "name").map_or_else(|| "document".to_string(), |name| file_stem(&name));
     selis_pdf_tools::clear();

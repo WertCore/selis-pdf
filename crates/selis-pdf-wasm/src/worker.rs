@@ -1551,6 +1551,18 @@ impl Worker {
             None => (pixels, serde_json::Value::Null),
         };
         let len = u64::try_from(payload_bytes.len()).unwrap_or(u64::MAX);
+        // The user-space → device transform this render used, as PDF's six
+        // elements `[a b c d e f]`.
+        //
+        // It is reported rather than recomputed by the shell because the shell
+        // CANNOT recompute it: the mapping depends on the page's `/Rotate` and
+        // on a `/MediaBox` origin that is not (0, 0), and neither is on the
+        // wire. A shell that assumed an origin of zero and no rotation would
+        // place a text layer over the wrong pixels on exactly the pages where
+        // it matters — the rotated ones. With the matrix, the placement is
+        // the engine's own arithmetic rather than a second implementation of
+        // it.
+        let ctm_value = serde_json::json!([ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f]);
         let mut value = if tile_json.is_null() {
             serde_json::json!({
                 "page": page,
@@ -1558,6 +1570,7 @@ impl Worker {
                 "height": h,
                 "format": "rgba8",
                 "payload": { "len": len },
+                "ctm": ctm_value,
             })
         } else {
             serde_json::json!({
@@ -1567,6 +1580,7 @@ impl Worker {
                 "format": "rgba8",
                 "payload": { "len": len },
                 "tile": tile_json,
+                "ctm": ctm_value,
             })
         };
         // SL-4.WASM.07: the CJK outcome rides along with the pixels, so the

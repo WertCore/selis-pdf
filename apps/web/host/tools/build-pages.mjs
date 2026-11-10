@@ -47,6 +47,7 @@ export const RESERVED_TOP_LEVEL = Object.freeze({
 	"tools.html": "the card grid mirror",
 	"index.html": "the card grid (home page)",
 	"viewer.html": "the document viewer shell",
+	"edit-pdf": "the editor workspace (pdf-plan/39)",
 	"sw.js": "the service worker",
 	"sw-register.js": "the page-side worker registrar",
 	"pages.json": "the generated manifest",
@@ -147,6 +148,7 @@ const HEADER = `		<header class="site-header">
 			</a>
 			<nav class="site-nav" aria-label="Primary">
 				<a href="/viewer.html">Viewer</a>
+				<a href="/edit-pdf/">Editor</a>
 				<a href="/#tools">All tools</a>
 				<a href="/#roadmap">Roadmap</a>
 				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
@@ -384,12 +386,14 @@ export function renderPagesJson(tools) {
 
 /** Render `sitemap.xml` from the same list the pages were generated from. */
 export function renderSitemap(tools) {
-	const urls = tools
-		.map((tool) => `	<url><loc>${SITE_ORIGIN}/${tool.slug}/</loc></url>`)
-		.join("\n");
+	const urls = tools.map((tool) => `	<url><loc>${SITE_ORIGIN}/${tool.slug}/</loc></url>`);
+	// The editor workspace is not a registry entry — it is a page of its own
+	// (pdf-plan/39) — but it is a real URL, and a sitemap that leaves a
+	// shipped page out is a sitemap that is wrong.
+	urls.push(`	<url><loc>${SITE_ORIGIN}/edit-pdf/</loc></url>`);
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls}
+${urls.join("\n")}
 </urlset>
 `;
 }

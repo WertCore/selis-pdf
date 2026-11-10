@@ -131,6 +131,19 @@ fn opf(title: &str, pages: &[ReflowPage]) -> String {
 /// name the package document, the package document must list every chapter, and
 /// every paragraph's escaped text must appear in its own chapter, in order. A
 /// dropped paragraph is therefore a failure, not a shorter book.
+///
+/// # Budget
+///
+/// The package's entries are read once and the chapters are searched in
+/// order; the work is bounded by the package's size and the number of
+/// paragraphs, and the buffer it holds is charged against `Bytes`.
+///
+/// # Malformed Input
+///
+/// A package that is not a readable ZIP, whose first entry is not `mimetype`,
+/// or whose container does not name the package document, is refused with a
+/// sentence naming what was wrong. A readable ZIP that is not an EPUB fails
+/// the same way — the parts it must carry are not there.
 pub fn verify_epub(epub: &[u8], pages: &[ReflowPage]) -> Result<(), String> {
     let entries = read_stored_zip(epub)?;
     if entries.first().map(|(name, _)| name.as_str()) != Some("mimetype") {

@@ -39,6 +39,19 @@ pub(crate) fn part<'a>(entries: &'a [(String, Vec<u8>)], name: &str) -> Option<&
 }
 
 /// Parse one XML part, naming the part in a malformed-XML diagnostic.
+///
+/// # Budget
+///
+/// The part's bytes are copied once into a `String` and the parsed tree is
+/// charged against `Bytes`; the work is bounded by the part's own size.
+///
+/// # Malformed Input
+///
+/// XML that does not parse is refused with the parser's message and the name
+/// of the part it came from. A part that is not XML at all fails the same
+/// way — the part's bytes are read as text, and a byte sequence that is not
+/// UTF-8 is read lossily, which makes the parse fail rather than the part
+/// pass.
 pub(crate) fn parse_part(bytes: &[u8], during: &'static str, name: &str) -> Result<Element> {
     let text = String::from_utf8_lossy(bytes);
     parse(&text).map_err(|message| malformed(during, format!("{name}: {message}")))

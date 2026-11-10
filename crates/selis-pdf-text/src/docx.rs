@@ -356,6 +356,19 @@ pub fn to_docx_frames(title: &str, pages: &[FramePage]) -> Result<Vec<u8>, Strin
 /// # Errors
 ///
 /// A sentence naming the first line the document does not carry.
+///
+/// # Budget
+///
+/// The package's entries are read once and the pages' lines are searched in
+/// order; the work is bounded by the package's size and the number of lines,
+/// and the buffer it holds is charged against `Bytes`.
+///
+/// # Malformed Input
+///
+/// A package that is not a readable ZIP, or that is missing a part the
+/// facsimile must have, is refused with a sentence naming what was missing.
+/// A package that is a readable ZIP but not a Word document fails the same
+/// way — the parts it must carry are not there.
 pub fn verify_docx_frames(docx: &[u8], pages: &[FramePage]) -> Result<(), String> {
     let entries = read_zip(docx)?;
     for required in ["[Content_Types].xml", "_rels/.rels", "word/document.xml"] {
@@ -420,6 +433,19 @@ pub fn to_docx(title: &str, pages: &[ReflowPage]) -> Result<Vec<u8>, String> {
 /// # Errors
 ///
 /// A sentence naming the first paragraph the document does not carry.
+///
+/// # Budget
+///
+/// The package's entries are read once and the paragraphs are searched in
+/// order; the work is bounded by the package's size and the number of
+/// paragraphs, and the buffer it holds is charged against `Bytes`.
+///
+/// # Malformed Input
+///
+/// A package that is not a readable ZIP, or that is missing a part the
+/// document must have, is refused with a sentence naming what was missing.
+/// A package that is a readable ZIP but not a Word document fails the same
+/// way — the parts it must carry are not there.
 pub fn verify_docx(docx: &[u8], pages: &[ReflowPage]) -> Result<(), String> {
     let entries = read_zip(docx)?;
     for required in ["[Content_Types].xml", "_rels/.rels", "word/document.xml"] {

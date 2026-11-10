@@ -17,5 +17,9 @@ allow = [
     "selis-pdf-wasm-tools",   # Tools chunk boundary (SL-4.TOOLS.01, ADR-P0045) — alloc/free/run only
     "selis-pdf-wasm-sign",    # Signing chunk boundary (SL-4.WASM.02, ADR-P0045) — alloc/free/run only
     "selis-pdf-wasm-cjk",     # CJK font chunk boundary (SL-4.WASM.02 + WASM.07)
+    "selis-pdf-wasm-html",    # HTML chunk boundary (SL-4.WASM.02) — alloc/free/run only
+    "selis-pdf-wasm-raster",  # Raster chunk boundary (SL-4.WASM.02) — alloc/free/run only
+    "selis-pdf-wasm-security", # Security chunk boundary (SL-4.WASM.02) — alloc/free/run only
+    "selis-pdf-wasm-text",    # Text chunk boundary (SL-4.WASM.02) — alloc/free/run only
     "selis-raster",      # proven-identical SIMD kernels only (planned — Phase 2)
 ]

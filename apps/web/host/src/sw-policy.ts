@@ -80,8 +80,12 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * v4 adds one generated page per tool (`/<slug>/`) to the install set. Without
  * the bump an existing install keeps v3 and every new route 503s offline while
  * the old worker still looks healthy.
+ *
+ * v5 adds the editor workspace (`/edit-pdf/`). Same reason: the route and its
+ * module graph are new URLs, and an install that predates them has no entry
+ * to serve them from.
  */
-export const CACHE_VERSION = "4";
+export const CACHE_VERSION = "5";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
@@ -175,12 +179,40 @@ export const TOOLS_PRECACHE_PATHS: readonly string[] = [
 ];
 
 /**
+ * The editor workspace, precached as one install unit (pdf-plan/39).
+ *
+ * The workspace is a third surface: not the reader's shell and not the tools
+ * grid. It has its own page, its own stylesheet and its own module graph, and
+ * it is precached for the same reason the tools surface is — the editor is
+ * useless offline if the page opens and then cannot load the module that
+ * draws the document.
+ *
+ * The core engine is NOT here. It is the same up-to-3-MB chunk the reader
+ * fetches, and it is fetched on demand into the runtime cache for the same
+ * reason the reader does not precache it: a first visit must not be a
+ * multi-megabyte install.
+ */
+export const EDITOR_PRECACHE_PATHS: readonly string[] = [
+	"/edit-pdf/",
+	"/assets/editor.css",
+	"/assets/host/editor/editor-page.js",
+	"/assets/host/editor/engine.js",
+	"/assets/host/editor/geometry.js",
+	"/assets/host/editor/history.js",
+	"/assets/host/editor/operations.js",
+];
+
+/**
  * Everything `install` writes to the shell cache.
  *
  * One list, one `addAll`, one atomic install: a missing tools asset fails the
  * whole install instead of leaving a page that loads online and 503s offline.
  */
-export const PRECACHE_PATHS: readonly string[] = [...SHELL_PRECACHE_PATHS, ...TOOLS_PRECACHE_PATHS];
+export const PRECACHE_PATHS: readonly string[] = [
+	...SHELL_PRECACHE_PATHS,
+	...TOOLS_PRECACHE_PATHS,
+	...EDITOR_PRECACHE_PATHS,
+];
 
 /**
  * One shell path stands in for another when the host routes `/` and
@@ -205,6 +237,11 @@ function toolPageAliases(): Record<string, readonly string[]> {
 export const SHELL_ALIASES: Readonly<Record<string, readonly string[]>> = {
 	"/": ["/index.html"],
 	"/index.html": ["/"],
+	// The editor workspace is one document under two spellings, like every
+	// generated tool page: a host that routes `/edit-pdf/` and
+	// `/edit-pdf/index.html` differently must resolve either one.
+	"/edit-pdf/": ["/edit-pdf/index.html"],
+	"/edit-pdf/index.html": ["/edit-pdf/"],
 	...toolPageAliases(),
 };
 

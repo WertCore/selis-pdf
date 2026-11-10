@@ -1007,6 +1007,66 @@ mod tests {
         assert!(chars_total > 0, "the fixture's text has characters");
     }
 
+    /// The render reports the transform it used, as PDF's six matrix elements.
+    ///
+    /// A shell that lays a text layer over the raster needs it: the mapping
+    /// depends on the page's `/Rotate` and on a `/MediaBox` origin that is not
+    /// (0, 0), and neither is otherwise on the wire. Without it a shell has to
+    /// guess — and a guess is wrong on exactly the pages where it matters.
+    #[test]
+    fn render_reports_the_transform_it_used() {
+        let mut w = Worker::new();
+        let e = env();
+        let out = w.handle(&request(1, open_op(MINIMAL.len() as u64)), MINIMAL, &e);
+        assert!(out.response.ok.unwrap_or(false));
+        let opened = out.response.value.unwrap();
+        let doc = opened["doc"].as_u64().expect("a document handle");
+        let page_w = opened["pageSizes"][0]["width"]
+            .as_f64()
+            .expect("the page's width");
+        let page_h = opened["pageSizes"][0]["height"]
+            .as_f64()
+            .expect("the page's height");
+
+        let out = w.handle(
+            &request(
+                2,
+                protocol::RequestOp::Render {
+                    doc: protocol::DocHandle { raw: doc },
+                    page: 0,
+                    params: protocol::RenderParams {
+                        dpi: 72.0,
+                        ..Default::default()
+                    },
+                },
+            ),
+            &[],
+            &e,
+        );
+        assert!(out.response.ok.unwrap_or(false));
+        let v = out.response.value.unwrap();
+        let canvas_w = v["width"].as_f64().expect("the canvas width");
+        let canvas_h = v["height"].as_f64().expect("the canvas height");
+        let ctm = v["ctm"].as_array().expect("the transform");
+        assert_eq!(ctm.len(), 6, "PDF's matrix has six elements");
+        let m: Vec<f64> = ctm
+            .iter()
+            .map(|part| part.as_f64().expect("every element is a number"))
+            .collect();
+        // The transform scales the page box onto the canvas. The assertion is
+        // written on the LARGER dimension of each so it holds for a rotated
+        // page too, where the canvas swaps its axes.
+        let det = m[0] * m[3] - m[1] * m[2];
+        let scale = det.abs().sqrt();
+        assert!(scale > 0.0, "the transform is not singular");
+        let page = page_w.max(page_h);
+        let canvas = canvas_w.max(canvas_h);
+        assert!(
+            (scale * page - canvas).abs() < 1e-6,
+            "the transform scales the page onto the canvas: {m:?}"
+        );
+    }
+
     /// A page outside the document is a typed `PAGE_OUT_OF_RANGE`, and the
     /// worker stays healthy - a text layer that trapped on a bad page number
     /// would take the whole engine with it.

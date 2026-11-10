@@ -180,6 +180,31 @@ function createOrigin(): Origin {
 				}),
 		);
 	}
+	// The editor workspace (pdf-plan/39): its own page, its own stylesheet and
+	// its own module graph, precached as one unit.
+	origin.serve(
+		"/edit-pdf/",
+		() =>
+			new Response("<!doctype html><title>Selis PDF Editor</title><h1>Editor</h1>", {
+				headers: shellHeaders(),
+			}),
+	);
+	origin.serve(
+		"/assets/editor.css",
+		() => new Response("body{}", { headers: { "Content-Type": "text/css" } }),
+	);
+	for (const module of [
+		"/assets/host/editor/editor-page.js",
+		"/assets/host/editor/engine.js",
+		"/assets/host/editor/geometry.js",
+		"/assets/host/editor/history.js",
+		"/assets/host/editor/operations.js",
+	]) {
+		origin.serve(
+			module,
+			() => new Response("// editor module", { headers: { "Content-Type": "text/javascript" } }),
+		);
+	}
 	return origin;
 }
 

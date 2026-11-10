@@ -90,7 +90,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value as Json};
+use serde_json::{json, Map, Value as Json};
 
 use crate::wasm_browser::{browser_candidates, browser_name};
 
@@ -184,7 +184,7 @@ struct Check {
 
 /// The committed checks, in report order.
 ///
-/// Six now. `service-worker` is the WEB.02 payload: real lifecycle event
+/// Seven now. `service-worker` is the WEB.02 payload: real lifecycle event
 /// delivery, `clients.claim()`, and browser-enforced `respondWith`, over a real
 /// origin. `async-wasm` is the cheap proof that this harness itself works end
 /// to end — a page whose verdict is only written after an awaited
@@ -195,11 +195,13 @@ struct Check {
 /// screen against the built UI and token bridge. Both need the host build, so
 /// they run last. `tools-page` drives the real `/tools.html` through an online
 /// merge and an offline reload, reads the downloaded Blob bytes both times, and
-/// checks the page's no-upload assertion.
+/// checks the page's no-upload assertion. `editor` drives the real
+/// `/edit-pdf/` workspace through a text change, an undo, a redo and a
+/// download, and reads the produced bytes back.
 /// `extension` (SL-4.UI.06) is the only one that loads an unpacked extension;
 /// it needs the extension build and a fixed key so the launcher can name the
 /// page it opens.
-const CHECKS: [Check; 6] = [
+const CHECKS: [Check; 7] = [
     Check {
         id: "service-worker",
         dir: "service-worker",
@@ -237,6 +239,15 @@ const CHECKS: [Check; 6] = [
         id: "tools-page",
         dir: "tools-page",
         verdict: verdict_tools_page,
+    },
+    // The editor workspace (pdf-plan/39). It stages the same built app and
+    // opens the real `/edit-pdf/` route: a document is opened, a line of its
+    // text is changed, the change is undone and redone, and the download is
+    // read back to check the bytes are a PDF carrying the change.
+    Check {
+        id: "editor",
+        dir: "editor",
+        verdict: verdict_editor,
     },
     // SL-4.UI.06's extension leg. It stages the packed extension as an
     // unpacked one instead of serving a page, and it is opened through a
@@ -7168,6 +7179,200 @@ fn verdict_tools_page(report: &Json) -> Result<(), String> {
     Ok(())
 }
 
+/// `editor` (pdf-plan/39): the workspace, with a real document in it.
+///
+/// The claims, in the order the page made them: the route is the real one,
+/// the document was drawn with a clickable text layer, a line of its text
+/// changed, the change was undone and the document came back exactly as it
+/// was, the redo brought it back, and the download is a PDF carrying the
+/// change.
+///
+/// The undo leg is the one that matters most. An editor whose undo restores
+/// something *like* the document it had is not an undo, and only a byte-level
+/// comparison of the text layer can tell the two apart — so the line's text
+/// before the change and after the undo are compared, not just "the undo
+/// button did something".
+fn verdict_editor(report: &Json) -> Result<(), String> {
+    well_formed(report)?;
+    if string_field(report, "check")? != "editor" {
+        return Err("the page did not identify itself as the editor check".into());
+    }
+    if string_field(report, "path")? != "/edit-pdf/" {
+        return Err(format!(
+            "the workspace ran at {:?}, expected \"/edit-pdf/\"",
+            report.get("path")
+        ));
+    }
+
+    let online = report
+        .get("online")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no online leg (online = None)".to_string())?;
+    check_editor_leg(online, "online")?;
+
+    // The offline leg is the same edit with the origin cut: the workspace, its
+    // module graph, its stylesheet, the engine chunk and the tools chunk all
+    // have to come back from the worker's cache, or the editor is a page that
+    // only works while the network is up.
+    let offline = report
+        .get("offline")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no offline leg (offline = None)".to_string())?;
+    check_editor_leg(offline, "offline")?;
+
+    if string_field(report, "noUpload")? != "verified" {
+        return Err(
+            "the page never set data-no-upload=verified; the local request check did not pass"
+                .into(),
+        );
+    }
+
+    let network = report
+        .get("network")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no network object".to_string())?;
+    let foreign = network
+        .get("foreign")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no foreign-resource list".to_string())?;
+    if !foreign.is_empty() {
+        return Err(format!(
+            "the workspace fetched {} resource(s) from another origin: {:?}",
+            foreign.len(),
+            foreign.iter().filter_map(Json::as_str).collect::<Vec<_>>()
+        ));
+    }
+    let paths = network
+        .get("paths")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the page reported no resource paths".to_string())?;
+    for wanted in [
+        "/assets/host/editor/editor-page.js",
+        "/assets/host/editor/engine.js",
+        "/assets/editor.css",
+        "/wasm/selis_pdf_wasm.wasm",
+        "/wasm/selis_pdf_wasm_tools.wasm",
+    ] {
+        if !paths.iter().any(|path| path.as_str() == Some(wanted)) {
+            return Err(format!(
+                "the workspace never fetched {wanted}; the editor could not have drawn or \
+                 changed the document without it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One leg of the editor check: a document opened, a line changed, the change
+/// undone and redone, and a download read back.
+///
+/// The undo leg is the one that matters most. An editor whose undo restores
+/// something *like* the document it had is not an undo, and only a comparison
+/// of the text layer can tell the two apart — so the line's text before the
+/// change and after the undo are compared, not just "the undo button did
+/// something".
+fn check_editor_leg(leg: &Map<String, Json>, label: &str) -> Result<(), String> {
+    let pages = leg
+        .get("pages")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| format!("the {label} leg reported no page count"))?;
+    if pages < 1 {
+        return Err(format!(
+            "the {label} leg drew {pages} pages; the fixture has one"
+        ));
+    }
+
+    let lines = |key: &str| -> Vec<String> {
+        leg.get(key)
+            .and_then(Json::as_array)
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let before = lines("before");
+    let after = lines("after");
+    let undone = lines("undone");
+    let redone = lines("redone");
+    if before.is_empty() {
+        return Err(format!(
+            "the {label} leg recovered no text from the document"
+        ));
+    }
+    let original = before[0].clone();
+    if !original.contains("900") {
+        return Err(format!(
+            "the fixture's first line was {original:?}; the check changes the number in it"
+        ));
+    }
+    if after.is_empty() || after[0] == original {
+        return Err(format!(
+            "the {label} leg did not change the text of the first line (before = {original:?}, \
+             after = {:?})",
+            after.first()
+        ));
+    }
+    if !after[0].contains("1200") {
+        return Err(format!(
+            "the {label} leg changed the line to {:?}, which does not carry the replacement",
+            after[0]
+        ));
+    }
+    if undone.first() != Some(&original) {
+        return Err(format!(
+            "the {label} undo did not restore the line: got {:?}, expected {original:?}",
+            undone.first()
+        ));
+    }
+    if redone.first() != after.first() {
+        return Err(format!(
+            "the {label} redo did not restore the change: got {:?}, expected {:?}",
+            redone.first(),
+            after.first()
+        ));
+    }
+
+    let output = leg
+        .get("output")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the {label} leg reported no output object"))?;
+    if output.get("blob").and_then(Json::as_bool) != Some(true) {
+        return Err(format!("the {label} download was not a Blob URL"));
+    }
+    if output.get("header").and_then(Json::as_str) != Some("%PDF-") {
+        return Err(format!(
+            "the {label} download did not begin with %PDF- (header = {:?})",
+            output.get("header")
+        ));
+    }
+    let bytes = output.get("bytes").and_then(Json::as_u64).unwrap_or(0);
+    if bytes <= 598 {
+        return Err(format!(
+            "the {label} download is only {bytes} bytes; an incremental update of a 598-byte \
+             document is larger than the document"
+        ));
+    }
+    if output.get("carriesChange").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the {label} download does not carry the change the check made"
+        ));
+    }
+    let name = output
+        .get("downloadName")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !name.ends_with(".pdf") {
+        return Err(format!(
+            "the {label} download name {name:?} is not a PDF name"
+        ));
+    }
+    Ok(())
+}
+
 /// `extension` (SL-4.UI.06): the packed viewer, in the extension's own
 /// processes, reads the fixture and a bookmark moves it.
 ///
@@ -7767,7 +7972,13 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
     }
     // `app-shell` drives the app's OWN worker; `chrome` imports the built
     // React entries. Both need the built app on the same origin as the page.
-    if check.id == "app-shell" || check.id == "chrome" || check.id == "tools-page" {
+    // `tools-page` and `editor` drive the two product surfaces of the same
+    // built app.
+    if check.id == "app-shell"
+        || check.id == "chrome"
+        || check.id == "tools-page"
+        || check.id == "editor"
+    {
         if let Err(e) = stage_app(&app_public_dir(), &served) {
             return failed(check.id, format!("cannot stage the built web app: {e}"));
         }
@@ -11875,6 +12086,48 @@ mod tests {
             "fieldRows": 7,
         })
     }
+    /// The edit-text leg: one one-page invoice whose `900` became `1250`,
+    /// written as an incremental update, with the new show-text operator
+    /// proven present in the produced bytes.
+    fn real_tools_edit_text_leg() -> Json {
+        let output = json!({
+            "kind": "pdf",
+            "name": "edit-edited.pdf",
+            "pages": 1,
+            "declaredBytes": 790,
+            "bytes": 790,
+            "blob": true,
+            "previewBlob": true,
+            "downloadName": "edit-edited.pdf",
+            "header": "%PDF-",
+            "zip": false,
+            "found": [true],
+        });
+        json!({
+            "fileRows": 1,
+            "runLabel": "Replace text",
+            "noUpload": "verified",
+            "status": "Done. The result was verified on this device.",
+            "result": {
+                "title": "edit-edited.pdf",
+                "meta": "1 file · 790 B · verified locally",
+                "rows": [
+                    { "label": "Pages", "value": "1 → 1" },
+                    { "label": "Verification", "value": "ok" },
+                ],
+            },
+            "outputs": [output.clone()],
+            "output": output,
+            "network": {
+                "origin": "http://127.0.0.1:1234",
+                "resources": 2,
+                "foreign": [],
+                "paths": [
+                    "/wasm/selis_pdf_wasm_tools.wasm",
+                ],
+            },
+        })
+    }
     /// The Phase 3 text leg: one `.txt` plus its quality report, and a report
     /// that proves the run recovered characters rather than a bare separator.
     fn real_tools_text_leg() -> Json {
@@ -12962,6 +13215,7 @@ mod tests {
         report["pptx"] = convert_format_leg("deck-converted.pdf", 1600, vec![true, true, true], 2);
         report["xlsx"] = convert_format_leg("book2-converted.pdf", 1900, vec![true, true, true], 2);
         report["formFill"] = real_tools_form_fill_leg();
+        report["editText"] = real_tools_edit_text_leg();
         report["text"] = real_tools_text_leg();
         report["word"] = real_tools_word_leg();
         report["slides"] = real_tools_slides_leg();
@@ -13031,6 +13285,7 @@ mod tests {
         report["offline"]["imageWatermark"] = report["imageWatermark"].clone();
         report["offline"]["outline"] = report["outline"].clone();
         report["offline"]["formFill"] = report["formFill"].clone();
+        report["offline"]["editText"] = report["editText"].clone();
         report["offline"]["text"] = report["text"].clone();
         report["offline"]["word"] = report["word"].clone();
         report["offline"]["slides"] = report["slides"].clone();
@@ -13058,7 +13313,11 @@ mod tests {
         assert!(verdict_service_worker(&real_service_worker_report()).is_ok());
         assert!(verdict_async_wasm(&real_async_wasm_report()).is_ok());
         assert!(verdict_extension(&real_extension_report()).is_ok());
-        assert!(verdict_tools_page(&real_tools_page_report()).is_ok());
+        // The reason is in the message: a recorded report that no longer
+        // satisfies the verdict is a verdict and a fixture that have drifted
+        // apart, and "assertion failed" does not say which.
+        let tools = verdict_tools_page(&real_tools_page_report());
+        assert!(tools.is_ok(), "the recorded tools-page report: {tools:?}");
     }
 
     /// The tools verdict's witnesses, withdrawn one at a time. A merge that

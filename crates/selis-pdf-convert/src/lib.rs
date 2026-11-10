@@ -363,6 +363,16 @@ pub(crate) mod testkit {
     use selis_sandbox::{Budget, CancelToken, FixedClock};
 
     /// The output must open with selis's own parser and expose every page.
+    ///
+    /// # Budget
+    ///
+    /// An unlimited budget with a frozen clock: this is a test helper, and
+    /// the budget is what the parser would charge in production.
+    ///
+    /// # Malformed Input
+    ///
+    /// None: the helper panics on a document that does not parse, which is
+    /// the failure a test wants to see.
     pub(crate) fn opens_with_page_count(bytes: &[u8], expected_pages: usize) {
         let budget = Budget::unlimited();
         let mut g = Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new());
