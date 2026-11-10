@@ -7210,6 +7210,45 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         .ok_or_else(|| "the page reported no online leg (online = None)".to_string())?;
     check_editor_leg(online, "online")?;
 
+    // The three ways of changing what is ON the page: a text box, an image,
+    // and a redaction.
+    let text_box = report
+        .get("textBox")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no text-box leg (textBox = None)".to_string())?;
+    let boxed = text_box
+        .get("text")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "the text-box leg reported no text".to_string())?;
+    if text_box.get("carriesText").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "the downloaded document does not carry the text box {boxed:?}"
+        ));
+    }
+
+    let image = report
+        .get("image")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no image leg (image = None)".to_string())?;
+    if image.get("carriesImage").and_then(Json::as_bool) != Some(true) {
+        return Err("the downloaded document does not carry the placed image".into());
+    }
+
+    let redact = report
+        .get("redact")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no redact leg (redact = None)".to_string())?;
+    if redact.get("stillCarriesText").and_then(Json::as_bool) != Some(false) {
+        return Err(
+            "the redacted text is still in the file; a redaction that only covers the text is \
+             not a redaction"
+                .into(),
+        );
+    }
+    if redact.get("coversText").and_then(Json::as_bool) != Some(true) {
+        return Err("the redacted region is not covered by an opaque box".into());
+    }
+
     // The offline leg is the same edit with the origin cut: the workspace, its
     // module graph, its stylesheet, the engine chunk and the tools chunk all
     // have to come back from the worker's cache, or the editor is a page that
@@ -7356,7 +7395,11 @@ fn check_editor_leg(leg: &Map<String, Json>, label: &str) -> Result<(), String> 
              document is larger than the document"
         ));
     }
-    if output.get("carriesChange").and_then(Json::as_bool) != Some(true) {
+    let carried = output
+        .get("carriesText")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !carried.contains("1200 USD") {
         return Err(format!(
             "the {label} download does not carry the change the check made"
         ));

@@ -220,3 +220,135 @@ export function editLandedOnLine(
 	const expected = before.replace(candidate, replacement);
 	return after === expected || after.includes(replacement);
 }
+
+/**
+ * The width of a line of text in the stamp's font, in points.
+ *
+ * The engine MEASURES the text before it draws it, and refuses a line that
+ * does not fit the box it was given. It measures with a coarse per-character
+ * table rather than the font's real metrics — every letter that is not one of
+ * a handful of exceptions is charged as 556/1000 em — and that table is
+ * WIDER than the real Helvetica for most text. A box sized from the browser's
+ * font metrics would therefore be too small, and the engine would refuse it.
+ *
+ * So the table is the same one here. It is a duplication, deliberately: the
+ * two copies can only disagree by a character width, and when they do the
+ * engine refuses the box with a sentence that says so — which is a loud
+ * failure, not a misplaced text.
+ */
+export function stampTextWidth(text: string, fontSize: number): number {
+	let units = 0;
+	for (const byte of new TextEncoder().encode(text)) {
+		if (byte === 0x20) {
+			units += 278;
+		} else if (
+			byte === 0x69 ||
+			byte === 0x6c ||
+			byte === 0x2e ||
+			byte === 0x2c ||
+			byte === 0x27 ||
+			byte === 0x21
+		) {
+			units += 278;
+		} else if (byte === 0x6d || byte === 0x77) {
+			units += 833;
+		} else if (byte === 0x4d || byte === 0x57) {
+			units += 944;
+		} else if (byte >= 0x30 && byte <= 0x39) {
+			units += 556;
+		} else if (byte >= 0x41 && byte <= 0x5a) {
+			units += 667;
+		} else {
+			units += 556;
+		}
+	}
+	return (units * fontSize) / 1000;
+}
+
+// ── placing new content ─────────────────────────────────────────────────────
+
+/** A rectangle in display points: the page as it is displayed, y-up. */
+export interface DisplayRect {
+	readonly x0: number;
+	readonly y0: number;
+	readonly x1: number;
+	readonly y1: number;
+}
+
+/** A rectangle in the page's own user space: points, y-up, at the media box's origin. */
+export interface UserRect {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+}
+
+/**
+ * The options for a text box.
+ *
+ * The engine draws it with its visual stamp: typed lines inside a rectangle,
+ * appended to the page's content stream. The rectangle is in display points
+ * (`x0, y0, x1, y1`, origin at the bottom-left of the displayed page) and the
+ * page is **one-based**, because the stamp's own option is.
+ *
+ * The font is the base-14 Helvetica with WinAnsi encoding, so a character
+ * outside WinAnsi is refused by the engine rather than drawn as a substitute.
+ */
+export function textBoxOptions(
+	page: number,
+	rect: DisplayRect,
+	text: string,
+	fontSize: number,
+): Record<string, unknown> {
+	return {
+		page: page + 1,
+		rect: [rect.x0, rect.y0, rect.x1, rect.y1],
+		lines: [{ text, size: fontSize }],
+		strokes: [],
+		color: [0.05, 0.05, 0.12],
+		strokeWidth: 1.5,
+		fontSize,
+		border: false,
+	};
+}
+
+/**
+ * The options for placing an image.
+ *
+ * The image is the operation's second input file (the browser has no
+ * filesystem, so the bytes are handed over like any other input). `x` and `y`
+ * are the image's lower-left corner in display points, and `scale` is the
+ * points-per-pixel factor: at 1 an image is as wide, in points, as it is in
+ * pixels.
+ *
+ * The page is **one-based**, because the overlay writer's page selection is.
+ */
+export function imageOptions(
+	page: number,
+	x: number,
+	y: number,
+	scale: number,
+): Record<string, unknown> {
+	return {
+		opacity: 1,
+		scale,
+		x,
+		y,
+		pages: String(page + 1),
+		tiled: false,
+	};
+}
+
+/**
+ * The options for a redaction.
+ *
+ * The page is **zero-based**, like every other page selection in the tools
+ * chunk, and each region is `x, y, width, height` in the page's own user
+ * space — the space the content stream is written in.
+ */
+export function redactOptions(page: number, rect: UserRect): Record<string, unknown> {
+	return {
+		page,
+		rects: [[rect.x, rect.y, rect.width, rect.height]],
+	};
+}

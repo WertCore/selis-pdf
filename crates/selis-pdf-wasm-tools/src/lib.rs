@@ -100,6 +100,7 @@ enum Op {
     Fingerprint,
     Privacy,
     EditText,
+    Redact,
 }
 
 impl Op {
@@ -138,6 +139,7 @@ impl Op {
             31 => Some(Self::Fingerprint),
             32 => Some(Self::Privacy),
             33 => Some(Self::EditText),
+            34 => Some(Self::Redact),
             _ => None,
         }
     }
@@ -786,6 +788,21 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                     &options.replace,
                     "out.pdf",
                 )?,
+                over_target: false,
+            }]
+        }
+        Op::Redact => {
+            // The page is zero-based, like every other page selection in this
+            // chunk, and the regions are in the page's own user space.
+            let page = option_u64(&options, "page")
+                .ok_or_else(|| ToolError("a redaction needs a page".to_string()))?;
+            let page = usize::try_from(page)
+                .map_err(|_| ToolError("the redaction's page is out of range".to_string()))?;
+            let rects = option_rects(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-redacted.pdf"),
+                verification: selis_pdf_tools::redact_page("in/0", page, &rects, "out.pdf")?,
                 over_target: false,
             }]
         }
@@ -1546,6 +1563,57 @@ fn option_str(options: &serde_json::Value, key: &str) -> Option<String> {
     options.get(key)?.as_str().map(ToString::to_string)
 }
 
+/// The redaction regions, as `(x, y, width, height)` in the page's user space.
+///
+/// Every region is four numbers, and a region that is not finite or is
+/// degenerate is refused rather than quietly dropped: a redaction that covers
+/// nothing is a redaction the reader believes they made and did not.
+fn option_rects(options: &serde_json::Value) -> Result<Vec<(f64, f64, f64, f64)>, ToolError> {
+    let array = options
+        .get("rects")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| ToolError("a redaction needs a rects array".to_string()))?;
+    if array.is_empty() {
+        return Err(ToolError(
+            "a redaction needs at least one region".to_string(),
+        ));
+    }
+    let mut rects = Vec::with_capacity(array.len());
+    for region in array {
+        let parts = region
+            .as_array()
+            .ok_or_else(|| ToolError("a redaction region must be four numbers".to_string()))?;
+        if parts.len() != 4 {
+            return Err(ToolError(
+                "a redaction region must be x, y, width, height".to_string(),
+            ));
+        }
+        let mut values: Vec<f64> = Vec::with_capacity(4);
+        for part in parts {
+            let value = part.as_f64().ok_or_else(|| {
+                ToolError("a redaction region's numbers must be numbers".to_string())
+            })?;
+            if !value.is_finite() {
+                return Err(ToolError(
+                    "a redaction region's numbers must be finite".to_string(),
+                ));
+            }
+            values.push(value);
+        }
+        let x = values.first().copied().unwrap_or(0.0);
+        let y = values.get(1).copied().unwrap_or(0.0);
+        let width = values.get(2).copied().unwrap_or(0.0);
+        let height = values.get(3).copied().unwrap_or(0.0);
+        if width <= 0.0 || height <= 0.0 {
+            return Err(ToolError(
+                "a redaction region must have a positive width and height".to_string(),
+            ));
+        }
+        rects.push((x, y, width, height));
+    }
+    Ok(rects)
+}
+
 fn option_fields(options: &serde_json::Value) -> Result<Vec<(String, String)>, ToolError> {
     let object = options
         .get("fields")
@@ -1787,8 +1855,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 33 is the edit-text op, so the probe moves past it.
-        let response = run_request(&request(34, b"", &[("doc.pdf", &pdf)]));
+        // Op 34 is the redaction op, so the probe moves past it.
+        let response = run_request(&request(35, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -2126,6 +2194,79 @@ mod tests {
         // no-op that returns the input unchanged.
         let response = run_request(&request(25, b"{}", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("needs the PDF and the image"));
+    }
+
+    /// A one-page PDF whose content stream draws one line of text, so a
+    /// redaction has something to remove.
+    fn text_pdf() -> Vec<u8> {
+        let stream = "BT /F1 12 Tf 20 160 Td (Invoice total: 900 USD) Tj ET";
+        let objects = vec![
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_string(),
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_string(),
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>\nendobj\n".to_string(),
+            format!(
+                "4 0 obj\n<< /Length {} >>\nstream\n{stream}\nendstream\nendobj\n",
+                stream.len()
+            ),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn redact_operation_is_dispatched() {
+        let pdf = text_pdf();
+        let response = run_request(&request(
+            34,
+            br#"{"page":0,"rects":[[10,150,160,24]]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "redact failed: {message}");
+        assert_eq!(message["pages_out"], 1);
+        assert_eq!(outputs[0].0, "doc-redacted.pdf");
+        let text = String::from_utf8_lossy(&outputs[0].1).to_string();
+        assert!(
+            !text.contains("Invoice total"),
+            "the text under the region is removed from the file, not just covered"
+        );
+        assert!(
+            text.contains(" re") || text.contains("0 0 0 rg"),
+            "an opaque box is drawn over the region"
+        );
+
+        // A page outside the document is refused.
+        let response = run_request(&request(
+            34,
+            br#"{"page":9,"rects":[[0,0,10,10]]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        assert!(error_text(&response).contains("out of range"));
+
+        // A region with no size is refused: a redaction that covers nothing is
+        // a redaction the reader believes they made.
+        let response = run_request(&request(
+            34,
+            br#"{"page":0,"rects":[[0,0,0,0]]}"#,
+            &[("doc.pdf", &pdf)],
+        ));
+        assert!(error_text(&response).contains("positive width and height"));
     }
 
     #[test]

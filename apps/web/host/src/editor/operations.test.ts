@@ -13,13 +13,56 @@ import {
 	duplicatePage,
 	editLandedOnLine,
 	editText,
+	imageOptions,
 	insertBlankPages,
 	movePage,
 	pageSelection,
+	redactOptions,
 	reorderPages,
 	rotatePage,
 	searchCandidates,
+	stampTextWidth,
+	textBoxOptions,
 } from "./operations.js";
+
+describe("the text the stamp will draw", () => {
+	it("is measured the way the engine measures it", () => {
+		// The engine charges 667 for a capital, 833 for a wide lower case, 278
+		// for a narrow one and 556 for everything else. "Hello from the
+		// editor" is 10 396 units, which is 124.75 points at 12.
+		expect(stampTextWidth("Hello from the editor", 12)).toBeCloseTo(124.752, 3);
+		expect(stampTextWidth("i", 12)).toBeCloseTo(3.336, 3);
+		expect(stampTextWidth("m", 12)).toBeCloseTo(9.996, 3);
+		expect(stampTextWidth("A", 12)).toBeCloseTo(8.004, 3);
+		expect(stampTextWidth("", 12)).toBe(0);
+	});
+});
+
+describe("the options for placing content", () => {
+	it("places a text box in the engine's stamp shape", () => {
+		const options = textBoxOptions(2, { x0: 10, y0: 20, x1: 110, y1: 40 }, "Hi", 12);
+		expect(options.page).toBe(3);
+		expect(options.rect).toEqual([10, 20, 110, 40]);
+		expect(options.lines).toEqual([{ text: "Hi", size: 12 }]);
+		expect(options.border).toBe(false);
+	});
+
+	it("places an image at a point, opaque and not tiled", () => {
+		const options = imageOptions(1, 30, 40, 0.5);
+		expect(options.opacity).toBe(1);
+		expect(options.scale).toBe(0.5);
+		expect(options.x).toBe(30);
+		expect(options.y).toBe(40);
+		expect(options.tiled).toBe(false);
+		expect(options.pages).toBe("2");
+	});
+
+	it("redacts a region in the page's own user space", () => {
+		const options = redactOptions(0, { x: 5, y: 6, width: 7, height: 8 });
+		expect(options.page).toBe(0);
+		expect(options.rects).toEqual([[5, 6, 7, 8]]);
+	});
+});
 
 describe("the page selection the engine is sent", () => {
 	it("is the engine's own zero-based syntax", () => {

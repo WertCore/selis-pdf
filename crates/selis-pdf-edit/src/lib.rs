@@ -468,6 +468,269 @@ fn is_show_text_operator(word: &[u8]) -> bool {
     matches!(word, b"Tj" | b"TJ" | b"'" | b"\"")
 }
 
+/// A pending operand, as far as the rewriter cares.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pending {
+    /// A number, with its value.
+    Num(f64),
+    /// Anything else: a string, a name, an array.
+    Other,
+}
+
+/// The text line matrix, as the text operators move it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TextMatrix {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    /// The text origin, x.
+    e: f64,
+    /// The text origin, y.
+    f: f64,
+}
+
+impl TextMatrix {
+    /// The identity matrix, which is where `BT` starts.
+    const IDENTITY: TextMatrix = TextMatrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    /// Move the origin by a translation.
+    fn translate(&mut self, x: f64, y: f64) {
+        self.e += x;
+        self.f += y;
+    }
+}
+
+/// Remove the text runs whose origin falls inside one of the given regions.
+///
+/// The regions are in the page's own user space: points, y-up, at the
+/// `/MediaBox`'s lower-left corner. A show operation (`Tj`, `TJ`, `'` or `"`)
+/// is removed when the text matrix puts its origin inside a region — and the
+/// operands it drew go with it, because a string left without its operator is
+/// not a stream a reader can parse.
+///
+/// The text matrix is tracked across `BT`, `Td`, `TD`, `Tm`, `TL` and `T*`, so
+/// the position a show operation draws at is the position the region is tested
+/// against. The page's `cm` is NOT tracked: the text space is the user space
+/// on a page that does not scale its content, and a page that does is outside
+/// what this claims.
+///
+/// Everything else is copied through byte for byte, so a stream with nothing
+/// to remove comes back unchanged.
+///
+/// # Malformed Input
+///
+/// A stream that is not a content stream is copied through unchanged: the
+/// rewriter removes text, and it refuses to guess where the text is.
+#[must_use]
+pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Vec<u8> {
+    let mut cur = Cursor::new(content);
+    let mut out: Vec<u8> = Vec::new();
+    // How much of the input has been copied out.
+    let mut copied = 0usize;
+    // Where the pending operand run starts in `out`, so a dropped show
+    // operation can take its operands with it.
+    let mut operand_start: Option<usize> = None;
+    let mut operands: Vec<Pending> = Vec::new();
+    // The array nesting: a number inside `[...]` is not an operand of the
+    // operator that follows the array.
+    let mut depth = 0usize;
+    let mut tm = TextMatrix::IDENTITY;
+    let mut leading = 0.0f64;
+    let mut in_text = false;
+
+    loop {
+        cur.skip_ws_and_comments();
+        let Some(byte) = cur.peek() else { break };
+        match byte {
+            b'(' => {
+                let _ = cur.read_literal_string();
+                push_operand(&mut operands, &mut operand_start, Pending::Other, out.len());
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b'<' => {
+                if cur.peek_at(1) == Some(b'<') {
+                    cur.skip_dict();
+                } else {
+                    let _ = cur.read_hex_string();
+                }
+                push_operand(&mut operands, &mut operand_start, Pending::Other, out.len());
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b'[' => {
+                cur.bump();
+                depth = depth.saturating_add(1);
+                // The array is one operand, and it starts the run: dropping a
+                // `TJ` has to take the whole array with it.
+                push_operand(&mut operands, &mut operand_start, Pending::Other, out.len());
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b']' => {
+                cur.bump();
+                depth = depth.saturating_sub(1);
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b'/' => {
+                cur.skip_name();
+                push_operand(&mut operands, &mut operand_start, Pending::Other, out.len());
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b'%' => {
+                cur.skip_comment();
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b if b.is_ascii_digit() || b == b'+' || b == b'-' || b == b'.' => {
+                let value = cur.read_number();
+                if depth == 0 {
+                    push_operand(
+                        &mut operands,
+                        &mut operand_start,
+                        Pending::Num(value),
+                        out.len(),
+                    );
+                }
+                copy_to(&mut out, &cur, &mut copied);
+            }
+            b if is_regular_start(b) => {
+                let word = cur.read_word();
+                let op = String::from_utf8_lossy(&word).to_string();
+                let mut drop_it = false;
+                match op.as_str() {
+                    "BT" => {
+                        in_text = true;
+                        tm = TextMatrix::IDENTITY;
+                    }
+                    "ET" => {
+                        in_text = false;
+                    }
+                    "Td" | "TD" => {
+                        if let (Some(x), Some(y)) =
+                            (operand_number(&operands, 0), operand_number(&operands, 1))
+                        {
+                            tm.translate(x, y);
+                            if op == "TD" {
+                                leading = -y;
+                            }
+                        }
+                    }
+                    "TL" => {
+                        if let Some(value) = operand_number(&operands, 0) {
+                            leading = value;
+                        }
+                    }
+                    "Tm" => {
+                        let values = [
+                            operand_number(&operands, 0),
+                            operand_number(&operands, 1),
+                            operand_number(&operands, 2),
+                            operand_number(&operands, 3),
+                            operand_number(&operands, 4),
+                            operand_number(&operands, 5),
+                        ];
+                        if values.iter().all(|value| value.is_some()) {
+                            let number =
+                                |index: usize| values.get(index).copied().flatten().unwrap_or(0.0);
+                            tm = TextMatrix {
+                                a: number(0),
+                                b: number(1),
+                                c: number(2),
+                                d: number(3),
+                                e: number(4),
+                                f: number(5),
+                            };
+                        }
+                    }
+                    "T*" => {
+                        tm.f -= leading;
+                    }
+                    "'" | "\"" => {
+                        // Both move to the start of the next line before they
+                        // show, so the position to test is the moved one.
+                        tm.f -= leading;
+                        drop_it = in_text && inside_any(regions, tm.e, tm.f);
+                    }
+                    "Tj" | "TJ" => {
+                        drop_it = in_text && inside_any(regions, tm.e, tm.f);
+                    }
+                    _ => {}
+                }
+                if drop_it {
+                    // The show operation and the operands it drew both go.
+                    drop_operands(&mut out, &mut operand_start);
+                    operands.clear();
+                    copied = cur.pos();
+                    continue;
+                }
+                copy_to(&mut out, &cur, &mut copied);
+                operands.clear();
+                operand_start = None;
+            }
+            _ => {
+                cur.bump();
+                copy_to(&mut out, &cur, &mut copied);
+            }
+        }
+    }
+    // Whatever is left of the input (a stream with no trailing operator) is
+    // copied through: losing it would change the stream in a way nobody asked
+    // for.
+    if copied < content.len() {
+        out.extend_from_slice(content.get(copied..).unwrap_or(&[]));
+    }
+    out
+}
+
+/// Copy the input up to the cursor's position.
+fn copy_to(out: &mut Vec<u8>, cur: &Cursor<'_>, copied: &mut usize) {
+    let end = cur.pos();
+    if end > *copied {
+        out.extend_from_slice(cur.b.get(*copied..end).unwrap_or(&[]));
+        *copied = end;
+    }
+}
+
+/// Record an operand, remembering where the run started.
+fn push_operand(
+    operands: &mut Vec<Pending>,
+    operand_start: &mut Option<usize>,
+    value: Pending,
+    out_len: usize,
+) {
+    if operand_start.is_none() {
+        *operand_start = Some(out_len);
+    }
+    operands.push(value);
+}
+
+/// Drop the pending operand run from the output.
+fn drop_operands(out: &mut Vec<u8>, operand_start: &mut Option<usize>) {
+    if let Some(start) = operand_start.take() {
+        out.truncate(start);
+    }
+}
+
+/// The numeric value of the operand at `index`, if it is a number.
+fn operand_number(operands: &[Pending], index: usize) -> Option<f64> {
+    match operands.get(index)? {
+        Pending::Num(value) => Some(*value),
+        Pending::Other => None,
+    }
+}
+
+/// Whether a point is inside any of the regions.
+fn inside_any(regions: &[(f64, f64, f64, f64)], x: f64, y: f64) -> bool {
+    regions
+        .iter()
+        .any(|(rx, ry, rw, rh)| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh)
+}
+
 /// A content-stream byte that begins a regular (non-delimiter, non-ws) token.
 fn is_regular_start(b: u8) -> bool {
     !matches!(
@@ -1110,6 +1373,25 @@ impl<'a> Cursor<'a> {
             }
         }
         out
+    }
+
+    /// Read a number, leaving the cursor after it.
+    ///
+    /// A number that does not parse is zero: the rewriter that uses this is
+    /// deciding where text sits, and a number it cannot read is one it cannot
+    /// place anything by either.
+    fn read_number(&mut self) -> f64 {
+        let start = self.i;
+        while let Some(b) = self.peek() {
+            if b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        String::from_utf8_lossy(self.b.get(start..self.i).unwrap_or(&[]))
+            .parse()
+            .unwrap_or(0.0)
     }
 
     /// Read a `(…)` literal, resolving escapes, leaving the cursor after `)`.

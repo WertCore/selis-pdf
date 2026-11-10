@@ -200,6 +200,35 @@
 	gap: var(--selis-space-2);
 }
 
+/* The tool row: what the workspace is armed to do on the page. */
+.selis-editor-tool-row {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: var(--selis-space-2);
+}
+
+.selis-editor-tool-row button {
+	font: inherit;
+	padding: var(--selis-space-3) var(--selis-space-3);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	cursor: pointer;
+}
+
+.selis-editor-tool-row button:hover {
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent-hover);
+}
+
+.selis-editor-tool-row button[aria-pressed="true"] {
+	background: var(--selis-color-accent-subtle);
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent-hover);
+	font-weight: var(--selis-weight-medium);
+}
+
 .selis-editor-tools button {
 	font: inherit;
 	text-align: left;
@@ -318,6 +347,15 @@
 
 .selis-editor-doc[data-edit-text="off"] .selis-editor-line {
 	cursor: text;
+}
+
+/* The rubber band: the rectangle the reader is dragging. */
+.selis-editor-band {
+	position: absolute;
+	border: var(--selis-border-thick) dashed var(--selis-color-accent);
+	background: color-mix(in srgb, var(--selis-color-accent) 12%, transparent);
+	pointer-events: none;
+	z-index: var(--selis-z-panel);
 }
 
 /* The page's own text is invisible: it is a hit target over the rendered

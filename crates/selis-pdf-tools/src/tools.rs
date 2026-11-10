@@ -3383,6 +3383,7 @@ pub(crate) fn strip_metadata(path: &str, output: &str) -> CliResult<Verification
 pub(crate) fn redact(
     path: &str,
     rects: &[(f64, f64, f64, f64)],
+    pages: Option<&str>,
     output: &str,
 ) -> CliResult<Verification> {
     let src = read_file(path)?;
@@ -3395,15 +3396,24 @@ pub(crate) fn redact(
         .map_err(|e| CliError(format!("{path}: cannot open: {e}")))?;
     let page_refs =
         page_refs_of(&src, &doc, &budget, &mut g).map_err(|e| CliError(format!("{path}: {e}")))?;
+    // The selection is zero-based, like every other page selection here. A
+    // region is redacted where the reader pointed, not on every page that
+    // happens to have something in the same place.
+    let selected = match pages {
+        Some(spec) => parse_page_selection(spec, page_refs.len())
+            .map_err(|e| CliError(format!("{path}: {e}")))?,
+        None => (0..page_refs.len()).collect(),
+    };
     let mut out = selis_pdf_cos::doc_writer::DocumentBuilder::new();
     let mut next_num = 3u32;
     let mut kept: Vec<(usize, u32, Ref)> = Vec::new();
     for (idx, page_ref) in page_refs.iter().enumerate() {
+        let page_rects: &[(f64, f64, f64, f64)] = if selected.contains(&idx) { rects } else { &[] };
         let merged_ref = copy_page_redacted(
             &mut out,
             &src,
             *page_ref,
-            rects,
+            page_rects,
             &budget,
             &mut g,
             &mut next_num,
@@ -3427,7 +3437,11 @@ pub(crate) fn redact(
         &budget,
         &mut g,
     )?;
-    eprintln!("redacted {} region(s) -> {output}", rects.len());
+    eprintln!(
+        "redacted {} region(s) on {} page(s) -> {output}",
+        rects.len(),
+        selected.len()
+    );
     verification.emit_line();
     Ok(verification)
 }
@@ -4118,7 +4132,10 @@ fn copy_page_redacted(
     for content_ref in &content_refs {
         let content_obj = resolve_ref_obj(src, &doc, *content_ref, budget, g)?;
         if let Obj::Stream { data, .. } = &content_obj {
-            rebuilt.extend(strip_text_in_regions(data.as_slice(), rects));
+            rebuilt.extend(selis_pdf_edit::strip_text_in_regions(
+                data.as_slice(),
+                rects,
+            ));
             rebuilt.push(b'\n');
         }
     }
@@ -5879,176 +5896,59 @@ fn parse_part(part: &str, count: usize) -> Result<Vec<usize>, String> {
     }
 }
 
-/// A minimal content-stream rewriter: drop `Tj`/`TJ`/`'`/`"` show operations
-/// whose text origin is inside one of `rects`. The token stream is walked
-/// tracking the text line matrix; `BT`/`ET` and state operators pass through.
-fn strip_text_in_regions(content: &[u8], rects: &[(f64, f64, f64, f64)]) -> Vec<u8> {
-    use selis_pdf_cos::{Number, Token};
-    let budget = Budget::unlimited();
-    let clock = crate::shell_clock();
-    let mut g = crate::runtime::cli_guard(&budget, &clock);
-    let mut lexer = selis_pdf_cos::Lexer::new(content);
-    let mut out: Vec<u8> = Vec::new();
-    let mut tm = [1.0f64, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let mut in_text = false;
-    let mut tokens: Vec<Token> = Vec::new();
-    while let Ok(Some(t)) = lexer.next_token(&mut g) {
-        tokens.push(t);
-    }
-    let n = |t: &Token| -> Option<f64> {
-        match t {
-            Token::Number(Number::Int(v)) => Some(*v as f64),
-            Token::Number(Number::Real { scaled, scale }) => {
-                Some(*scaled as f64 / 10f64.powi(i32::from(*scale)))
-            }
-            _ => None,
-        }
-    };
-    let mut i = 0usize;
-    while i < tokens.len() {
-        let t = &tokens[i];
-        match t {
-            Token::Name(name) => {
-                let op = String::from_utf8_lossy(name.as_slice()).to_string();
-                match op.as_str() {
-                    "BT" => {
-                        in_text = true;
-                        tm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-                        emit(&mut out, &tokens[i..=i]);
-                        i += 1;
-                    }
-                    "ET" => {
-                        in_text = false;
-                        emit(&mut out, &tokens[i..=i]);
-                        i += 1;
-                    }
-                    "Td" | "TD" => {
-                        if let (Some(x), Some(y)) =
-                            (tokens.get(i + 1).and_then(n), tokens.get(i + 2).and_then(n))
-                        {
-                            tm[4] += x;
-                            tm[5] += y;
-                            emit(&mut out, &tokens[i..=i.saturating_add(2)]);
-                            i += 3;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    "Tm" => {
-                        if let (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) = (
-                            tokens.get(i + 1).and_then(n),
-                            tokens.get(i + 2).and_then(n),
-                            tokens.get(i + 3).and_then(n),
-                            tokens.get(i + 4).and_then(n),
-                            tokens.get(i + 5).and_then(n),
-                            tokens.get(i + 6).and_then(n),
-                        ) {
-                            tm = [a, b, c, d, e, f];
-                            emit(&mut out, &tokens[i..=i.saturating_add(6)]);
-                            i += 7;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    "Tj" => {
-                        let (x, y) = (tm[4], tm[5]);
-                        if in_text && inside_any(rects, x, y) {
-                            i += 2;
-                        } else {
-                            emit(&mut out, &tokens[i..=i.saturating_add(1)]);
-                            i += 2;
-                        }
-                    }
-                    "'" | "\"" => {
-                        let (x, y) = (tm[4], tm[5]);
-                        if in_text && inside_any(rects, x, y) {
-                            i += 2;
-                        } else {
-                            emit(&mut out, &tokens[i..=i.saturating_add(1)]);
-                            i += 2;
-                        }
-                    }
-                    "TJ" => {
-                        let (x, y) = (tm[4], tm[5]);
-                        if in_text && inside_any(rects, x, y) {
-                            i += 2;
-                        } else {
-                            emit(&mut out, &tokens[i..=i.saturating_add(1)]);
-                            i += 2;
-                        }
-                    }
-                    _ => {
-                        let mut j = i.saturating_add(1);
-                        while j < tokens.len() && !matches!(tokens[j], Token::Name(_)) {
-                            j = j.saturating_add(1);
-                        }
-                        emit(&mut out, &tokens[i..j]);
-                        i = j;
-                    }
-                }
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
-/// Whether a point is inside any rect.
-fn inside_any(rects: &[(f64, f64, f64, f64)], x: f64, y: f64) -> bool {
-    rects
-        .iter()
-        .any(|(rx, ry, rw, rh)| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh)
-}
-
-/// Emit a token slice back to bytes (via the object writer for strings/names).
-fn emit(out: &mut Vec<u8>, toks: &[selis_pdf_cos::Token]) {
-    use selis_pdf_cos::{Number, Token};
-    let mut buf: Vec<u8> = Vec::new();
-    for t in toks {
-        match t {
-            Token::Number(n) => {
-                let s = match n {
-                    Number::Int(v) => format!("{v}"),
-                    Number::Real { scaled, scale } => {
-                        let v = *scaled as f64 / 10f64.powi(i32::from(*scale));
-                        format!("{v:.3}")
-                            .trim_end_matches('0')
-                            .trim_end_matches('.')
-                            .to_string()
-                    }
-                };
-                buf.extend_from_slice(s.as_bytes());
-                buf.push(b' ');
-            }
-            Token::Name(b) => {
-                buf.extend_from_slice(b"/");
-                buf.extend_from_slice(b.as_slice());
-                buf.push(b' ');
-            }
-            Token::String(b) => {
-                buf.push(b'(');
-                for &c in b.as_slice() {
-                    if c == b'(' || c == b')' || c == b'\\' {
-                        buf.push(b'\\');
-                    }
-                    buf.push(c);
-                }
-                buf.push(b')');
-                buf.push(b' ');
-            }
-            _ => {}
-        }
-    }
-    out.extend_from_slice(&buf);
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::{Budget, Obj, Ref};
+
+    /// The redaction's content rewriter, on the content it is given.
+    #[test]
+    fn the_rewriter_drops_the_text_inside_a_region_and_keeps_the_rest() {
+        let content = b"BT /F1 12 Tf 20 160 Td (Inside) Tj 20 40 Td (Outside) Tj ET";
+        let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text inside the region is gone: {text}"
+        );
+        assert!(
+            text.contains("Outside"),
+            "the text outside the region is kept: {text}"
+        );
+        // The stream must still parse: the operators come after their
+        // operands, and nothing is left dangling.
+        assert!(text.contains("20 160 Td"), "the move survives: {text}");
+        assert!(
+            text.contains("20 40 Td"),
+            "the second move survives: {text}"
+        );
+        assert!(text.contains("Tj"), "a show operator survives: {text}");
+    }
+
+    /// A `TJ` operand is an array, and the brackets are part of it.
+    #[test]
+    fn the_rewriter_keeps_a_show_arrays_brackets() {
+        let content = b"BT /F1 12 Tf 20 160 Td [(Kept) -100 (Text)] TJ ET";
+        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 0.0, 10.0, 10.0)]);
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(text.contains('['), "the array keeps its bracket: {text}");
+        assert!(text.contains(']'), "the array keeps its bracket: {text}");
+        assert!(text.contains("Kept"), "the array keeps its text: {text}");
+        assert!(text.contains("TJ"), "the show operator survives: {text}");
+    }
+
+    /// A text matrix moves the text; the rewriter has to follow it.
+    #[test]
+    fn the_rewriter_follows_a_text_matrix() {
+        let content = b"BT /F1 12 Tf 1 0 0 1 20 160 Tm (Inside) Tj ET";
+        let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text at the matrix's position is gone: {text}"
+        );
+    }
 
     /// Build a one-page PDF whose page carries an inline `/Resources` and an
     /// `/Annots` array referencing one annotation object. Offsets are computed

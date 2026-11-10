@@ -32,7 +32,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-GEqEga+mR5k+AO8zXPUS+d2BRp1Iy5S/zWWSzP/WTC/SGA9FEzTZHOvD3SPB4SaK"
+			integrity="sha384-caXW0DlT4X1Qeoe+seX8cr8XLFxeLU594PPnvbwZe/l1r4QeLRMY4AAxrZD4gKJk"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -98,17 +98,25 @@
 				</section>
 
 				<section class="selis-editor-panel">
-					<h2>Text</h2>
-					<button type="button" id="selis-edit-toggle" aria-pressed="true">
-						Edit text: on
-					</button>
+					<h2>On the page</h2>
+					<div id="selis-editor-tools" class="selis-editor-tool-row" role="group" aria-label="What to do on the page">
+						<button type="button" data-tool="text" aria-pressed="true">Edit text</button>
+						<button type="button" data-tool="box" aria-pressed="false">Text box</button>
+						<button type="button" data-tool="image" aria-pressed="false">Image</button>
+						<button type="button" data-tool="redact" aria-pressed="false">Redact</button>
+					</div>
+					<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
+					<input
+						type="file"
+						id="selis-editor-image-input"
+						accept="image/png,image/jpeg"
+						hidden
+					/>
 					<p class="selis-editor-hint">
-						With edit text on, clicking a line of the page opens it for
-						change. <strong>The text is replaced where it is drawn — the line
-						does not re-flow</strong>, so a much longer replacement runs over
-						what follows it. Not every line can be changed: a line drawn as
-						several separate runs can only have one of them replaced, and a
-						line whose words the engine cannot address is left alone.
+						New text and images are drawn <strong>on top of</strong> the page. A
+						redaction removes the <strong>text</strong> under the region and covers
+						it with a black box; anything else under it — an image, a line of
+						art — is covered, not erased.
 					</p>
 				</section>
 			</aside>

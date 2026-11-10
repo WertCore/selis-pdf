@@ -39,6 +39,7 @@ import { type RequestRecorder, installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
 import { hasPdfHeader } from "../tools/inputs.js";
 import { type ToolsWasm, loadTools, runTool } from "../tools/protocol.js";
+import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
@@ -48,11 +49,23 @@ import {
 	duplicatePage,
 	editLandedOnLine,
 	editText,
+	imageOptions,
 	insertBlankPages,
 	movePage,
+	redactOptions,
 	rotatePage,
 	searchCandidates,
+	stampTextWidth,
+	textBoxOptions,
 } from "./operations.js";
+import {
+	type PageGeometry,
+	type Rect,
+	displayRect,
+	fitImage,
+	pageGeometry,
+	userRect,
+} from "./placement.js";
 
 /** The raster's base resolution: one device pixel per CSS pixel at 96 dpi. */
 const BASE_DPI = 96;
@@ -63,14 +76,36 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
 /** How many document states the undo stack keeps. */
 const HISTORY_DEPTH = 25;
 
+/** The font size a new text box is drawn at, in points. */
+const TEXT_BOX_FONT_SIZE = 12;
+
+/** The stamp's padding inside its rectangle, in points, plus a margin. */
+const BOX_PADDING = 8;
+
+/** What the workspace is armed to do on the page. */
+export type EditorTool = "text" | "box" | "image" | "redact";
+
+/** The image the reader has picked, ready to place. */
+interface PickedImage {
+	readonly name: string;
+	readonly bytes: Uint8Array;
+	readonly width: number;
+	readonly height: number;
+}
+
 interface EditorState {
 	engine: EngineClient | null;
 	tools: ToolsWasm | null;
 	toolsPromise: Promise<ToolsWasm> | null;
+	/** The signing chunk, which draws the text boxes. */
+	sign: SignWasm | null;
+	signPromise: Promise<SignWasm> | null;
 	/** The engine's handle for the open document. */
 	doc: number;
 	/** How many pages it has. */
 	pages: number;
+	/** Each page's media box, in points. */
+	pageSizes: readonly { readonly width: number; readonly height: number }[];
 	/** The document's bytes — the state every operation works from. */
 	bytes: Uint8Array | null;
 	/** The document's name, for the download and the produced file names. */
@@ -78,8 +113,12 @@ interface EditorState {
 	history: DocumentHistory;
 	/** The page the page tools apply to, zero-based. */
 	page: number;
-	/** Whether clicking a line opens the text editor. */
-	editText: boolean;
+	/** What the workspace is armed to do on the page. */
+	tool: EditorTool;
+	/** The image the reader has picked, if any. */
+	image: PickedImage | null;
+	/** Each page's geometry, for the placements. */
+	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
 	busy: boolean;
 }
@@ -88,13 +127,18 @@ const state: EditorState = {
 	engine: null,
 	tools: null,
 	toolsPromise: null,
+	sign: null,
+	signPromise: null,
 	doc: 0,
 	pages: 0,
+	pageSizes: [],
 	bytes: null,
 	name: "document.pdf",
 	history: new DocumentHistory(HISTORY_DEPTH),
 	page: 0,
-	editText: true,
+	tool: "text",
+	image: null,
+	geometry: new Map(),
 	busy: false,
 };
 
@@ -121,7 +165,9 @@ const dom = {
 	undo: el<HTMLButtonElement>("selis-undo"),
 	redo: el<HTMLButtonElement>("selis-redo"),
 	download: el<HTMLButtonElement>("selis-download"),
-	editToggle: el<HTMLButtonElement>("selis-edit-toggle"),
+	tools: el<HTMLDivElement>("selis-editor-tools"),
+	toolHint: el<HTMLParagraphElement>("selis-editor-tool-hint"),
+	imageInput: el<HTMLInputElement>("selis-editor-image-input"),
 	failure: el<HTMLDivElement>("selis-editor-failure"),
 	status: el<HTMLParagraphElement>("selis-editor-status"),
 	doc: el<HTMLDivElement>("selis-editor-doc"),
@@ -174,6 +220,23 @@ async function tools(): Promise<ToolsWasm> {
 		return instance;
 	});
 	return state.toolsPromise;
+}
+
+/**
+ * The signing chunk, loaded on the first text box so a visit stays cheap.
+ *
+ * It is the chunk that draws the stamp, which is the only primitive that
+ * writes NEW text at a chosen position.
+ */
+async function signChunk(): Promise<SignWasm> {
+	if (state.sign !== null) {
+		return state.sign;
+	}
+	state.signPromise ??= loadSign().then((instance) => {
+		state.sign = instance;
+		return instance;
+	});
+	return state.signPromise;
 }
 
 /** Assert that nothing the workspace did carried the document off the device. */
@@ -246,10 +309,27 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 	// The raster is denser than the CSS box, so the text stays crisp on a
 	// high-DPI display instead of being upscaled from a 96-DPI bitmap.
 	const cssWidth = raster.width / dpr;
+	const cssHeight = raster.height / dpr;
 	canvas.style.width = `${cssWidth}px`;
-	canvas.style.height = `${raster.height / dpr}px`;
+	canvas.style.height = `${cssHeight}px`;
 	wrap.style.width = `${cssWidth}px`;
 	wrap.appendChild(canvas);
+
+	// The page's geometry, kept for the placements: it is what turns a
+	// rectangle on the canvas into the two spaces the engine's writers use.
+	const size = state.pageSizes[page];
+	state.geometry.set(
+		page,
+		pageGeometry(
+			raster.ctm,
+			raster.width,
+			raster.height,
+			cssWidth,
+			cssHeight,
+			size?.width ?? 0,
+			size?.height ?? 0,
+		),
+	);
 
 	let layer: PageTextLayer | null = null;
 	try {
@@ -391,6 +471,7 @@ async function openInEngine(bytes: Uint8Array): Promise<void> {
 	const previous = state.doc;
 	state.doc = opened.doc;
 	state.pages = opened.pages;
+	state.pageSizes = opened.pageSizes;
 	state.page = Math.min(state.page, Math.max(0, opened.pages - 1));
 	if (previous !== null) {
 		client.close(previous);
@@ -493,16 +574,32 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 
 // ── the text editor ─────────────────────────────────────────────────────────
 
+let inline: InlineEditor | null = null;
+
+/** What the inline editor is doing. */
+type InlineMode =
+	| {
+			/** Changing a run of text that is already on the page. */
+			readonly kind: "edit-line";
+			readonly page: number;
+			readonly line: number;
+			/** The line's text before the change. */
+			readonly before: string;
+	  }
+	| {
+			/** Putting new text in a box the reader drew. */
+			readonly kind: "new-box";
+			readonly page: number;
+			/** The box, in the canvas's CSS pixels. */
+			readonly rect: Rect;
+	  };
+
 /** The inline editor, when one is open. */
 interface InlineEditor {
 	readonly root: HTMLElement;
 	readonly textarea: HTMLTextAreaElement;
-	readonly page: number;
-	readonly line: number;
-	readonly before: string;
+	readonly mode: InlineMode;
 }
-
-let inline: InlineEditor | null = null;
 
 /** Close the inline editor, if one is open. */
 function closeInline(): void {
@@ -510,19 +607,24 @@ function closeInline(): void {
 	inline = null;
 }
 
-/** Open the inline editor over one line. */
-function openInline(page: number, line: number, text: string): void {
+/**
+ * Open the inline editor over a rectangle on the page.
+ *
+ * The rectangle is in the canvas's CSS pixels, relative to the canvas's
+ * top-left corner; the editor is placed over it.
+ */
+function openInlineAt(page: number, rect: Rect, text: string, mode: InlineMode): void {
 	closeInline();
 	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
 	if (wrap === null) {
 		return;
 	}
-	const box = wrap.querySelector(`.selis-editor-line[data-line="${line}"]`);
-	if (!(box instanceof HTMLElement)) {
+	const canvas = wrap.querySelector("canvas");
+	if (!(canvas instanceof HTMLElement)) {
 		return;
 	}
-	const rect = box.getBoundingClientRect();
 	const host = wrap.getBoundingClientRect();
+	const canvasBox = canvas.getBoundingClientRect();
 
 	const root = document.createElement("div");
 	root.className = "selis-editor-inline";
@@ -531,21 +633,27 @@ function openInline(page: number, line: number, text: string): void {
 	textarea.className = "selis-editor-inline__text";
 	textarea.value = text;
 	textarea.rows = 2;
-	textarea.setAttribute("aria-label", "The new text for this line");
-	textarea.style.left = `${rect.left - host.left}px`;
-	textarea.style.top = `${rect.top - host.top}px`;
+	textarea.setAttribute(
+		"aria-label",
+		mode.kind === "new-box" ? "The text to put in this box" : "The new text for this line",
+	);
+	textarea.style.left = `${canvasBox.left - host.left + rect.x}px`;
+	textarea.style.top = `${canvasBox.top - host.top + rect.y}px`;
 	textarea.style.width = `${Math.max(rect.width, 220)}px`;
 	textarea.style.minHeight = `${Math.max(rect.height, 34)}px`;
 
 	const hint = document.createElement("p");
 	hint.className = "selis-editor-inline__hint";
-	hint.textContent = "Enter applies the change · Escape cancels · the line does not re-flow";
+	hint.textContent =
+		mode.kind === "new-box"
+			? "Enter places the text · Escape cancels"
+			: "Enter applies the change · Escape cancels · the line does not re-flow";
 
 	root.appendChild(textarea);
 	root.appendChild(hint);
 	wrap.appendChild(root);
 
-	inline = { root, textarea, page, line, before: text };
+	inline = { root, textarea, mode };
 	textarea.focus();
 	textarea.select();
 
@@ -563,6 +671,40 @@ function openInline(page: number, line: number, text: string): void {
 	});
 }
 
+/** Open the inline editor over one line of existing text. */
+function openInline(page: number, line: number, text: string): void {
+	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
+	if (wrap === null) {
+		return;
+	}
+	const box = wrap.querySelector(`.selis-editor-line[data-line="${line}"]`);
+	if (!(box instanceof HTMLElement)) {
+		return;
+	}
+	const canvas = wrap.querySelector("canvas");
+	if (!(canvas instanceof HTMLElement)) {
+		return;
+	}
+	const rect = box.getBoundingClientRect();
+	const canvasBox = canvas.getBoundingClientRect();
+	openInlineAt(
+		page,
+		{
+			x: rect.left - canvasBox.left,
+			y: rect.top - canvasBox.top,
+			width: rect.width,
+			height: rect.height,
+		},
+		text,
+		{ kind: "edit-line", page, line, before: text },
+	);
+}
+
+/** Open the inline editor over a new box, for text that is not on the page yet. */
+function openBox(page: number, rect: Rect): void {
+	openInlineAt(page, rect, "", { kind: "new-box", page, rect });
+}
+
 /**
  * Apply the inline editor's change.
  *
@@ -577,8 +719,12 @@ async function applyInline(): Promise<void> {
 	if (editor === null || state.busy) {
 		return;
 	}
+	if (editor.mode.kind === "new-box") {
+		await applyTextBox(editor.mode.page, editor.mode.rect, editor.textarea.value);
+		return;
+	}
 	const replacement = editor.textarea.value;
-	if (replacement === editor.before) {
+	if (replacement === editor.mode.before) {
 		closeInline();
 		setStatus("Nothing changed.");
 		return;
@@ -592,12 +738,15 @@ async function applyInline(): Promise<void> {
 		if (bytes === null) {
 			throw new Error("no document is open");
 		}
-		const candidates = searchCandidates(editor.before);
+		const page = editor.mode.page;
+		const line = editor.mode.line;
+		const before = editor.mode.before;
+		const candidates = searchCandidates(before);
 		let firstError: unknown = null;
 		for (const candidate of candidates) {
 			let produced: Uint8Array;
 			try {
-				const operation = editText(editor.page, candidate, replacement);
+				const operation = editText(page, candidate, replacement);
 				const result = runTool(chunk, {
 					op: operation.op,
 					options: operation.options,
@@ -615,21 +764,14 @@ async function applyInline(): Promise<void> {
 			// Did the change land on the line that was clicked? The engine edits
 			// the FIRST run on the page that carries the words, and a page that
 			// repeats them higher up would be edited there instead.
-			const landed = await lineChanged(
-				editor.page,
-				editor.line,
-				editor.before,
-				candidate,
-				replacement,
-				produced,
-			);
+			const landed = await lineChanged(page, line, before, candidate, replacement, produced);
 			if (!landed) {
 				firstError ??= new Error(
 					"that text appears earlier on the page, so the engine changed a different line",
 				);
 				continue;
 			}
-			await commit(produced, `Changed the text on page ${editor.page + 1}`);
+			await commit(produced, `Changed the text on page ${page + 1}`);
 			closeInline();
 			return;
 		}
@@ -672,6 +814,331 @@ async function lineChanged(
 			client.close(handle);
 		}
 	}
+}
+
+// ── placing new content ─────────────────────────────────────────────────────
+
+/** What each tool does, in the reader's words. */
+const TOOL_HINTS: Record<EditorTool, string> = {
+	text: "Click a line of text to change it.",
+	box: "Click where the text should start, then type it.",
+	image: "Pick a PNG or JPEG, then drag a rectangle to place it.",
+	redact:
+		"Drag a rectangle over what should not be there: the text under it is removed and covered. Undo brings it back.",
+};
+
+/** The font size a new text box is drawn at, in points. */
+const BOX_FONT_SIZE = TEXT_BOX_FONT_SIZE;
+
+/** The line height the stamp's font uses, as a multiple of its size. */
+const BOX_LINE_LEADING = 1.25;
+
+/** Arm the workspace for a tool. */
+function setTool(tool: EditorTool): void {
+	state.tool = tool;
+	for (const button of dom.tools.querySelectorAll("button[data-tool]")) {
+		button.setAttribute(
+			"aria-pressed",
+			button.getAttribute("data-tool") === tool ? "true" : "false",
+		);
+	}
+	dom.toolHint.textContent = TOOL_HINTS[tool];
+	dom.doc.dataset.tool = tool;
+	closeInline();
+}
+
+/** A drag in progress. */
+interface Drag {
+	readonly page: number;
+	readonly startX: number;
+	readonly startY: number;
+	x: number;
+	y: number;
+	readonly band: HTMLElement;
+}
+
+let drag: Drag | null = null;
+
+/** The rectangle the drag covers, in the canvas's CSS pixels. */
+function dragRect(current: Drag): Rect {
+	return {
+		x: Math.min(current.startX, current.x),
+		y: Math.min(current.startY, current.y),
+		width: Math.abs(current.x - current.startX),
+		height: Math.abs(current.y - current.startY),
+	};
+}
+
+/** The canvas a pointer event landed on, and where on it. */
+function pointerOnCanvas(
+	event: PointerEvent,
+): { canvas: HTMLCanvasElement; page: number; x: number; y: number } | null {
+	const target = event.target;
+	if (!(target instanceof HTMLCanvasElement)) {
+		return null;
+	}
+	const wrap = target.closest(".selis-editor-page");
+	if (!(wrap instanceof HTMLElement)) {
+		return null;
+	}
+	const page = Number(wrap.dataset.page);
+	if (!Number.isInteger(page)) {
+		return null;
+	}
+	const box = target.getBoundingClientRect();
+	return { canvas: target, page, x: event.clientX - box.left, y: event.clientY - box.top };
+}
+
+/** Start a placement drag. */
+function startDrag(event: PointerEvent): void {
+	if (state.tool === "text") {
+		return;
+	}
+	const hit = pointerOnCanvas(event);
+	if (hit === null) {
+		return;
+	}
+	const wrap = hit.canvas.closest(".selis-editor-page");
+	if (!(wrap instanceof HTMLElement)) {
+		return;
+	}
+	const band = document.createElement("div");
+	band.className = "selis-editor-band";
+	wrap.appendChild(band);
+	drag = { page: hit.page, startX: hit.x, startY: hit.y, x: hit.x, y: hit.y, band };
+	try {
+		hit.canvas.setPointerCapture(event.pointerId);
+	} catch {
+		// Capture is a convenience: it keeps the drag alive when the pointer
+		// leaves the canvas. A browser that refuses it (or a synthetic event)
+		// still delivers the events to the canvas.
+	}
+	event.preventDefault();
+}
+
+/** Follow the drag. */
+function moveDrag(event: PointerEvent): void {
+	if (drag === null) {
+		return;
+	}
+	const hit = pointerOnCanvas(event);
+	if (hit === null) {
+		return;
+	}
+	drag.x = hit.x;
+	drag.y = hit.y;
+	const rect = dragRect(drag);
+	drag.band.style.left = `${rect.x}px`;
+	drag.band.style.top = `${rect.y}px`;
+	drag.band.style.width = `${rect.width}px`;
+	drag.band.style.height = `${rect.height}px`;
+}
+
+/** Finish a placement drag and act on it. */
+function endDrag(event: PointerEvent): void {
+	const current = drag;
+	if (current === null) {
+		return;
+	}
+	drag = null;
+	current.band.remove();
+	const hit = pointerOnCanvas(event);
+	const rect = dragRect(current);
+	const geometry = state.geometry.get(current.page);
+	if (geometry === undefined) {
+		setStatus("That page could not be drawn, so nothing was placed on it.", "error");
+		return;
+	}
+	if (state.tool === "box") {
+		const click = hit === null ? { x: current.startX, y: current.startY } : { x: hit.x, y: hit.y };
+		openBox(current.page, { x: click.x, y: click.y, width: 0, height: 0 });
+		return;
+	}
+	if (state.tool === "image") {
+		void placeImage(current.page, rect, geometry);
+		return;
+	}
+	if (state.tool === "redact") {
+		void redactRegion(current.page, rect, geometry);
+	}
+}
+
+/**
+ * Put a text box on a page.
+ *
+ * The engine draws it with its visual stamp: typed lines inside a rectangle,
+ * appended to the page's content stream. The rectangle is placed at the point
+ * the reader clicked, and sized to the text — the stamp does not wrap, so the
+ * box is the text's own extent rather than a frame around it.
+ */
+async function applyTextBox(page: number, click: Rect, text: string): Promise<void> {
+	if (text.trim() === "") {
+		closeInline();
+		setStatus("Nothing to put in the box.");
+		return;
+	}
+	const geometry = state.geometry.get(page);
+	const bytes = state.bytes;
+	if (geometry === undefined || bytes === null) {
+		closeInline();
+		setStatus("That page could not be drawn.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Adding the text…");
+	try {
+		const chunk = await signChunk();
+		const anchor = displayRect(geometry, click);
+		const lines = text.split("\n");
+		const width = Math.max(
+			40,
+			...lines.map((line) => stampTextWidth(line, BOX_FONT_SIZE) + BOX_PADDING * 2),
+		);
+		const height = lines.length * BOX_FONT_SIZE * BOX_LINE_LEADING + BOX_PADDING;
+		const options = textBoxOptions(
+			page,
+			{
+				x0: anchor.x0,
+				y0: anchor.y0 - height,
+				x1: anchor.x0 + width,
+				y1: anchor.y0,
+			},
+			text,
+			BOX_FONT_SIZE,
+		);
+		const response = runSign(chunk, {
+			op: "stamp",
+			options,
+			file: { name: state.name, bytes },
+		});
+		if (response.kind !== "document") {
+			throw new Error("the signing chunk returned no document");
+		}
+		await commit(response.output.bytes, `Added a text box on page ${page + 1}`);
+		closeInline();
+	} catch (error) {
+		setStatus(`The text box could not be added: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
+}
+
+/**
+ * Put the picked image on a page.
+ *
+ * The image keeps its own aspect ratio and is centred in the rectangle the
+ * reader drew, because the writer scales an image to the rectangle it is
+ * given and would otherwise stretch it.
+ */
+async function placeImage(page: number, rect: Rect, geometry: PageGeometry): Promise<void> {
+	const image = state.image;
+	const bytes = state.bytes;
+	if (image === null) {
+		setStatus("Pick an image first.", "error");
+		return;
+	}
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (rect.width < 6 || rect.height < 6) {
+		setStatus("Drag a rectangle to put the image in.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Adding the image…");
+	try {
+		const chunk = await tools();
+		const fitted = fitImage(displayRect(geometry, rect), image.width, image.height);
+		const result = runTool(chunk, {
+			op: "image_watermark",
+			options: imageOptions(page, fitted.x, fitted.y, fitted.scale),
+			files: [
+				{ name: state.name, bytes },
+				{ name: image.name, bytes: image.bytes },
+			],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Added an image on page ${page + 1}`);
+	} catch (error) {
+		setStatus(`The image could not be added: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
+}
+
+/**
+ * Redact a region of a page.
+ *
+ * The engine removes the **text** inside the region from the content stream
+ * and draws an opaque black box over it. Anything else under the box — an
+ * image, a line of vector art — is covered, not erased, and the page says so.
+ */
+async function redactRegion(page: number, rect: Rect, geometry: PageGeometry): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (rect.width < 6 || rect.height < 6) {
+		setStatus("Drag a rectangle over what to redact.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Redacting…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "redact",
+			options: redactOptions(page, userRect(geometry, rect)),
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Redacted a region on page ${page + 1}`);
+	} catch (error) {
+		setStatus(`The region could not be redacted: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
+}
+
+/** Read an image the reader picked, and remember its size. */
+async function pickImage(file: File): Promise<void> {
+	const buffer = await file.arrayBuffer();
+	const bytes = new Uint8Array(buffer);
+	const head = Array.from(bytes.slice(0, 4));
+	const png = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+	const jpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+	if (!png && !jpeg) {
+		setStatus("That is not a PNG or a JPEG, so the engine cannot place it.", "error");
+		return;
+	}
+	let width = 0;
+	let height = 0;
+	try {
+		const bitmap = await createImageBitmap(new Blob([bytes], { type: file.type }));
+		width = bitmap.width;
+		height = bitmap.height;
+		bitmap.close();
+	} catch {
+		setStatus("That image could not be read on this device.", "error");
+		return;
+	}
+	state.image = { name: file.name === "" ? "image.png" : file.name, bytes, width, height };
+	setTool("image");
+	setStatus(`${file.name} picked — drag a rectangle on the page to place it.`);
 }
 
 // ── undo and redo ───────────────────────────────────────────────────────────
@@ -823,11 +1290,48 @@ function wire(): void {
 	});
 	dom.download.addEventListener("click", download);
 
-	dom.editToggle.addEventListener("click", () => {
-		state.editText = !state.editText;
-		dom.editToggle.setAttribute("aria-pressed", state.editText ? "true" : "false");
-		dom.editToggle.textContent = state.editText ? "Edit text: on" : "Edit text: off";
-		dom.doc.dataset.editText = state.editText ? "on" : "off";
+	// The tool row: what the workspace is armed to do on the page.
+	dom.tools.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) {
+			return;
+		}
+		const tool = target.dataset.tool;
+		if (tool === "image") {
+			// The image tool needs an image, so it opens the picker first and
+			// arms itself once the reader has chosen one.
+			dom.imageInput.click();
+			return;
+		}
+		if (tool === "text" || tool === "box" || tool === "redact") {
+			setTool(tool);
+		}
+	});
+	dom.imageInput.addEventListener("change", () => {
+		const file = dom.imageInput.files?.[0];
+		if (file !== undefined) {
+			void pickImage(file);
+		}
+		dom.imageInput.value = "";
+	});
+
+	// The placement drag. The pointer is captured so the drag survives the
+	// pointer leaving the canvas.
+	dom.doc.addEventListener("pointerdown", (event) => {
+		if (event.button !== 0) {
+			return;
+		}
+		startDrag(event);
+	});
+	dom.doc.addEventListener("pointermove", (event) => {
+		moveDrag(event);
+	});
+	dom.doc.addEventListener("pointerup", (event) => {
+		endDrag(event);
+	});
+	dom.doc.addEventListener("pointercancel", () => {
+		drag?.band.remove();
+		drag = null;
 	});
 
 	dom.pageTools.addEventListener("click", (event) => {
@@ -865,7 +1369,7 @@ function wire(): void {
 	// not on each line, so a document with ten thousand lines has one
 	// listener rather than ten thousand.
 	dom.doc.addEventListener("click", (event) => {
-		if (!state.editText) {
+		if (state.tool !== "text") {
 			return;
 		}
 		const target = event.target;
@@ -884,7 +1388,7 @@ function wire(): void {
 		openInline(page, line, box.textContent ?? "");
 	});
 	dom.doc.addEventListener("keydown", (event) => {
-		if (event.key !== "Enter" || !state.editText) {
+		if (event.key !== "Enter" || state.tool !== "text") {
 			return;
 		}
 		const target = event.target;
@@ -922,6 +1426,7 @@ async function boot(): Promise<void> {
 	recorder = installRequestRecorder();
 	document.documentElement.dataset.noUpload = "watching";
 	wire();
+	setTool("text");
 	renderHistory();
 	setStatus("Open a PDF to start editing. It stays on this device.");
 	await registerServiceWorker();

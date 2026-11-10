@@ -127,6 +127,10 @@
         const fixtureBytes = new Uint8Array(
           await fetch("edit.pdf").then((r) => r.arrayBuffer()),
         );
+        // And so is the image the placement leg puts on the page.
+        const pngBytes = new Uint8Array(
+          await fetch("mark.png").then((r) => r.arrayBuffer()),
+        );
 
         // The worker has to be in control before the engine is fetched, or the
         // engine lands outside the runtime cache and the offline leg has
@@ -157,6 +161,12 @@
         out.undone = out.online.undone;
         out.redone = out.online.redone;
         out.output = out.online.output;
+
+        // The three ways of changing what is ON the page: put new text in it,
+        // put an image in it, and take text out of it.
+        out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
+        out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
+        out.redact = await redactLeg(onlineDoc, onlineWin, "online");
 
         // The page's own no-upload assertion, and the origin of everything it
         // fetched.
@@ -299,8 +309,152 @@
         );
         record.redone = lines(doc);
 
-        // The download is a Blob created in the page. The anchor's click is
-        // captured so the bytes can be read back rather than trusted.
+        record.output = await download(doc, win);
+        record.noUpload = doc.documentElement.dataset.noUpload || "";
+        return record;
+      }
+
+      /**
+       * Add a text box where the reader clicks, and check the document carries
+       * it.
+       */
+      async function textBoxLeg(doc, win, label) {
+        useTool(doc, "box");
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const box = canvas.getBoundingClientRect();
+        const at = { x: 40, y: 220 };
+        const opts = {
+          clientX: box.left + at.x,
+          clientY: box.top + at.y,
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 4,
+          isPrimary: true,
+        };
+        canvas.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
+        canvas.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the text box editor (" + label + ")",
+        );
+        const area = doc.querySelector(".selis-editor-inline__text");
+        const text = "Added by the editor";
+        area.value = text;
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitFor(
+          () => lines(doc).some((line) => line.includes(text)),
+          30_000,
+          "the text box to be drawn (" + label + ")",
+        );
+        const produced = await download(doc, win);
+        return {
+          text,
+          lines: lines(doc),
+          status: statusText(doc),
+          bytes: produced.bytes,
+          carriesText: produced.carriesText.indexOf(text) >= 0,
+        };
+      }
+
+      /**
+       * Place the picked image where the reader drags, and check the document
+       * carries it.
+       */
+      async function imageLeg(doc, win, pngBytes, label) {
+        const file = new File([pngBytes], "mark.png", { type: "image/png" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-editor-image-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => doc.getElementById("selis-editor-doc").dataset.tool === "image",
+          15_000,
+          "the image tool (" + label + ")",
+        );
+        await dragOnCanvas(doc, { x: 30, y: 30 }, { x: 110, y: 90 });
+        await waitFor(
+          () => statusText(doc).startsWith("Added an image"),
+          30_000,
+          "the image to be placed (" + label + ")",
+        );
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          carriesImage: produced.carriesText.indexOf("/Subtype /Image") >= 0,
+        };
+      }
+
+      /**
+       * Redact the region the reader drags over, and check the text under it
+       * is gone from the document.
+       */
+      async function redactLeg(doc, win, label) {
+        useTool(doc, "redact");
+        const line = doc.querySelector(".selis-editor-line");
+        if (!line) throw new Error("the document drew no clickable text");
+        const canvas = doc.querySelector("canvas");
+        const text = line.getBoundingClientRect();
+        const box = canvas.getBoundingClientRect();
+        await dragOnCanvas(
+          doc,
+          { x: text.left - box.left - 4, y: text.top - box.top - 4 },
+          { x: text.right - box.left + 4, y: text.bottom - box.top + 4 },
+        );
+        await waitFor(
+          () => statusText(doc).startsWith("Redacted"),
+          30_000,
+          "the region to be redacted (" + label + ")",
+        );
+        const produced = await download(doc, win);
+        const carried = produced.carriesText;
+        return {
+          status: statusText(doc),
+          lines: lines(doc),
+          bytes: produced.bytes,
+          // The redacted text must be GONE from the file, not merely covered.
+          stillCarriesText: carried.indexOf("Invoice total") >= 0,
+          coversText: carried.indexOf("0 0 0 rg") >= 0,
+        };
+      }
+
+      /** Arm the workspace for a tool. */
+      function useTool(doc, tool) {
+        doc.querySelector('#selis-editor-tools button[data-tool="' + tool + '"]').click();
+      }
+
+      /** Drag on the canvas, in the canvas's own CSS pixels. */
+      async function dragOnCanvas(doc, from, to) {
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const box = canvas.getBoundingClientRect();
+        const at = (point) => ({
+          clientX: box.left + point.x,
+          clientY: box.top + point.y,
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 5,
+          isPrimary: true,
+        });
+        canvas.dispatchEvent(new PointerEvent("pointerdown", { ...at(from), buttons: 1 }));
+        canvas.dispatchEvent(new PointerEvent("pointermove", { ...at(to), buttons: 1 }));
+        canvas.dispatchEvent(new PointerEvent("pointerup", { ...at(to), buttons: 0 }));
+      }
+
+      /**
+       * Download the document and read the bytes back.
+       *
+       * The anchor's click is captured so the bytes can be read rather than
+       * trusted.
+       */
+      async function download(doc, win) {
         const captured = {};
         const originalClick = win.HTMLAnchorElement.prototype.click;
         win.HTMLAnchorElement.prototype.click = function () {
@@ -312,15 +466,13 @@
         if (!captured.href) throw new Error("the download produced no blob URL");
         const blob = await win.fetch(captured.href).then((r) => r.blob());
         const produced = new Uint8Array(await blob.arrayBuffer());
-        record.output = {
+        return {
           blob: true,
           downloadName: captured.download || "",
           bytes: produced.length,
           header: String.fromCharCode(...produced.slice(0, 5)),
-          carriesChange: new TextDecoder("latin1").decode(produced).includes(changed),
+          carriesText: new TextDecoder("latin1").decode(produced),
         };
-        record.noUpload = doc.documentElement.dataset.noUpload || "";
-        return record;
       }
 
       main().catch(fail);

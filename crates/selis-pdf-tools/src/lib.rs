@@ -339,7 +339,30 @@ pub fn redact(
     rects: &[(f64, f64, f64, f64)],
     output: &str,
 ) -> ToolResult<Verification> {
-    tools::redact(path, rects, output)
+    tools::redact(path, rects, None, output)
+}
+
+/// Apply rectangle redactions to one page.
+///
+/// `page` is the **zero-based** index of the page the regions belong to, the
+/// same convention the page-selection syntax uses. Every other page is copied
+/// through unchanged.
+///
+/// The redaction removes the **text** inside each region from the content
+/// stream and draws an opaque black box over it. An image or a line of vector
+/// art under the region is covered by that box, not erased: only text is
+/// removed from the file.
+///
+/// # Errors
+///
+/// As [`merge`], plus a page index outside the document.
+pub fn redact_page(
+    path: &str,
+    page: usize,
+    rects: &[(f64, f64, f64, f64)],
+    output: &str,
+) -> ToolResult<Verification> {
+    tools::redact(path, rects, Some(&page.to_string()), output)
 }
 
 /// Rotate all pages, or the page selection `pages`, by `angle` degrees.
