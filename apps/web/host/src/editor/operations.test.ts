@@ -9,12 +9,15 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	cropOptions,
 	deletePage,
 	duplicatePage,
 	editLandedOnLine,
 	editText,
+	fillFormsOptions,
 	imageOptions,
 	insertBlankPages,
+	metadataOptions,
 	movePage,
 	pageSelection,
 	redactOptions,
@@ -61,6 +64,27 @@ describe("the options for placing content", () => {
 		const options = redactOptions(0, { x: 5, y: 6, width: 7, height: 8 });
 		expect(options.page).toBe(0);
 		expect(options.rects).toEqual([[5, 6, 7, 8]]);
+	});
+
+	it("crops a page by its margins, zero-based", () => {
+		const options = cropOptions({ left: 1, top: 2, right: 3, bottom: 4 }, 2);
+		expect(options).toEqual({ left: 1, top: 2, right: 3, bottom: 4, pages: "2" });
+	});
+
+	it("writes the document's properties under the names the engine uses", () => {
+		const options = metadataOptions({ Title: "A title", Author: "Someone" });
+		expect(options.fields).toEqual({ Title: "A title", Author: "Someone" });
+	});
+
+	it("fills the form's fields by name, in order", () => {
+		const options = fillFormsOptions([
+			{ name: "Name", value: "Selis" },
+			{ name: "Agree", value: "Yes" },
+		]);
+		expect(options.fields).toEqual([
+			{ name: "Name", value: "Selis" },
+			{ name: "Agree", value: "Yes" },
+		]);
 	});
 });
 

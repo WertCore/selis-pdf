@@ -67,6 +67,20 @@ This slice adds the three things a person means by "edit the PDF":
       stamp's width table and the operation builders; and a browser leg that adds a text box, adds
       an image and redacts a region, reading the produced bytes back each time.
 
+## Slice 3 — the document's own properties
+
+- [x] **C1 — The form's fields.** The workspace reads the document's AcroForm fields, shows one
+      input each, and writes the reader's values back into the document. The fields the engine
+      will not write — a read-only field, a signature field, a push button — are shown but not
+      editable: the engine refuses the whole operation if one of them is sent.
+- [x] **C2 — The page's size.** Crop the selected page by its margins, in points, measured on the
+      page as the reader sees it.
+- [x] **C3 — The document's properties.** Title, author, subject and keywords.
+- [x] **C4 — Evidence.** A browser leg that crops a page, sets a title and fills a form field,
+      reading the produced bytes back each time.
+
+The roadmap for what comes next is `41-EDITOR-ROADMAP.md`.
+
 ## A bug this slice found, and fixed
 
 The CLI's redaction rewrote the content stream with a rewriter that assumed a content stream's

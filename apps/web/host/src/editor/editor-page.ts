@@ -45,12 +45,15 @@ import { placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import {
 	type EditorOperation,
+	cropOptions,
 	deletePage,
 	duplicatePage,
 	editLandedOnLine,
 	editText,
+	fillFormsOptions,
 	imageOptions,
 	insertBlankPages,
+	metadataOptions,
 	movePage,
 	redactOptions,
 	rotatePage,
@@ -168,6 +171,11 @@ const dom = {
 	tools: el<HTMLDivElement>("selis-editor-tools"),
 	toolHint: el<HTMLParagraphElement>("selis-editor-tool-hint"),
 	imageInput: el<HTMLInputElement>("selis-editor-image-input"),
+	fields: el<HTMLDivElement>("selis-editor-fields"),
+	fieldsApply: el<HTMLButtonElement>("selis-editor-fields-apply"),
+	fieldsRead: el<HTMLButtonElement>("selis-editor-fields-read"),
+	cropApply: el<HTMLButtonElement>("selis-editor-crop-apply"),
+	propertiesApply: el<HTMLButtonElement>("selis-editor-properties-apply"),
 	failure: el<HTMLDivElement>("selis-editor-failure"),
 	status: el<HTMLParagraphElement>("selis-editor-status"),
 	doc: el<HTMLDivElement>("selis-editor-doc"),
@@ -1141,6 +1149,228 @@ async function pickImage(file: File): Promise<void> {
 	setStatus(`${file.name} picked — drag a rectangle on the page to place it.`);
 }
 
+// ── the document's own properties ────────────────────────────────────────────
+
+/** One field of the document's form, as the engine reported it. */
+interface FormField {
+	readonly name: string;
+	readonly kind: string;
+	readonly value: string;
+	readonly readOnly: boolean;
+}
+
+/**
+ * Read the document's form fields and show them.
+ *
+ * The fields are read on this device, from the document the reader opened —
+ * nothing is uploaded, and the values the reader types go back into the
+ * document the same way.
+ */
+async function readFormFields(): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (state.busy) {
+		return;
+	}
+	state.busy = true;
+	setStatus("Reading the form fields…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "form_fields",
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no report");
+		}
+		const fields = parseFormFields(output.bytes);
+		if (fields === null) {
+			throw new Error("the fields report could not be read");
+		}
+		renderFormFields(fields);
+		const count = fields.length;
+		setStatus(`${count} field${count === 1 ? "" : "s"} found.`);
+	} catch (error) {
+		setStatus(`The fields could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+	}
+}
+
+/** The form fields the engine reported, read out of its JSON report. */
+function parseFormFields(bytes: Uint8Array): FormField[] | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(bytes));
+	} catch {
+		return null;
+	}
+	if (typeof parsed !== "object" || parsed === null) {
+		return null;
+	}
+	const report = parsed as { fields?: unknown };
+	if (!Array.isArray(report.fields)) {
+		return null;
+	}
+	const fields: FormField[] = [];
+	for (const raw of report.fields) {
+		if (typeof raw !== "object" || raw === null) {
+			continue;
+		}
+		const field = raw as {
+			name?: unknown;
+			kind?: unknown;
+			value?: unknown;
+			read_only?: unknown;
+		};
+		if (typeof field.name !== "string" || field.name === "") {
+			continue;
+		}
+		fields.push({
+			name: field.name,
+			kind: typeof field.kind === "string" ? field.kind : "unknown",
+			value: typeof field.value === "string" ? field.value : "",
+			readOnly: field.read_only === true,
+		});
+	}
+	return fields;
+}
+
+/** Show the form's fields, one input each. */
+function renderFormFields(fields: readonly FormField[]): void {
+	const list = dom.fields;
+	list.replaceChildren();
+	if (fields.length === 0) {
+		const note = document.createElement("p");
+		note.className = "selis-editor-hint";
+		note.textContent = "This document has no form fields.";
+		list.appendChild(note);
+		dom.fieldsApply.disabled = true;
+		return;
+	}
+	for (const field of fields) {
+		const row = document.createElement("label");
+		row.className = "selis-editor-field";
+		const name = document.createElement("span");
+		name.className = "selis-editor-field__name";
+		name.textContent = field.kind === "checkbox" ? `${field.name} (checkbox)` : field.name;
+		const input = document.createElement("input");
+		input.type = field.kind === "checkbox" ? "checkbox" : "text";
+		input.className = "selis-editor-field__input";
+		input.dataset.field = field.name;
+		input.value = field.value;
+		input.checked = field.value === "Yes" || field.value === "On";
+		// A field the engine will not fill is shown, but not editable: a
+		// read-only field, a push button and a signature field are all things
+		// the writer refuses to write.
+		const fillable = !field.readOnly && field.kind !== "push_button" && field.kind !== "signature";
+		input.disabled = !fillable;
+		if (!fillable) {
+			name.textContent = `${name.textContent} (not fillable)`;
+		}
+		row.append(name, input);
+		list.appendChild(row);
+	}
+	dom.fieldsApply.disabled = false;
+}
+
+/**
+ * The values the reader put in the form's fields.
+ *
+ * The fields the engine will not write are left out entirely: sending them
+ * would make the engine refuse the whole operation, because it refuses to
+ * override a read-only flag rather than skipping it.
+ */
+function formValues(): { name: string; value: string }[] {
+	const values: { name: string; value: string }[] = [];
+	for (const input of dom.fields.querySelectorAll("input[data-field]")) {
+		if (!(input instanceof HTMLInputElement) || input.disabled) {
+			continue;
+		}
+		const name = input.dataset.field;
+		if (name === undefined) {
+			continue;
+		}
+		const value = input.type === "checkbox" ? (input.checked ? "Yes" : "Off") : input.value;
+		values.push({ name, value });
+	}
+	return values;
+}
+
+/** Write the reader's values into the document's form fields. */
+async function fillFormFields(): Promise<void> {
+	const values = formValues();
+	if (values.length === 0) {
+		setStatus("Read the fields first.", "error");
+		return;
+	}
+	await runOperation({
+		op: "fill_forms",
+		options: fillFormsOptions(values),
+		label: "Filled the form fields",
+	});
+}
+
+/** Crop the selected page by the margins the reader entered. */
+async function cropPage(): Promise<void> {
+	const margins = {
+		left: numberInput("selis-editor-crop-left"),
+		top: numberInput("selis-editor-crop-top"),
+		right: numberInput("selis-editor-crop-right"),
+		bottom: numberInput("selis-editor-crop-bottom"),
+	};
+	if (margins.left === 0 && margins.top === 0 && margins.right === 0 && margins.bottom === 0) {
+		setStatus("Enter at least one margin to crop.", "error");
+		return;
+	}
+	await runOperation({
+		op: "crop",
+		options: cropOptions(margins, state.page),
+		label: `Cropped page ${state.page + 1}`,
+	});
+}
+
+/** Write the document's properties. */
+async function saveProperties(): Promise<void> {
+	const fields: Record<string, string> = {};
+	for (const [id, key] of [
+		["selis-editor-title", "Title"],
+		["selis-editor-author", "Author"],
+		["selis-editor-subject", "Subject"],
+		["selis-editor-keywords", "Keywords"],
+	] as const) {
+		const value = textInput(id).trim();
+		if (value !== "") {
+			fields[key] = value;
+		}
+	}
+	if (Object.keys(fields).length === 0) {
+		setStatus("Fill in at least one property.", "error");
+		return;
+	}
+	await runOperation({
+		op: "metadata",
+		options: metadataOptions(fields),
+		label: "Saved the document's properties",
+	});
+}
+
+/** A number the reader entered, or zero. */
+function numberInput(id: string): number {
+	const value = Number(textInput(id));
+	return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** A text the reader entered. */
+function textInput(id: string): string {
+	const input = document.getElementById(id);
+	return input instanceof HTMLInputElement ? input.value : "";
+}
+
 // ── undo and redo ───────────────────────────────────────────────────────────
 
 /** Step back one change. */
@@ -1313,6 +1543,21 @@ function wire(): void {
 			void pickImage(file);
 		}
 		dom.imageInput.value = "";
+	});
+
+	// The document's own properties: its form fields, its page size, and the
+	// properties a reader sees in their file manager.
+	dom.fieldsRead.addEventListener("click", () => {
+		void readFormFields();
+	});
+	dom.fieldsApply.addEventListener("click", () => {
+		void fillFormFields();
+	});
+	dom.cropApply.addEventListener("click", () => {
+		void cropPage();
+	});
+	dom.propertiesApply.addEventListener("click", () => {
+		void saveProperties();
 	});
 
 	// The placement drag. The pointer is captured so the drag survives the

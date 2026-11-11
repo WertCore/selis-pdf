@@ -58,6 +58,29 @@
         return status ? status.textContent.trim().replace(/\s+/g, " ") : "";
       }
 
+      /**
+       * Wait until the workspace has FINISHED what it was doing.
+       *
+       * The status line carries an ellipsis while an operation runs and drops
+       * it when the operation is done — and the two look alike to a prefix
+       * match ("Cropped page 1…" against "Cropped page 1"). Waiting for the
+       * settled form is what makes the leg read the document the operation
+       * produced rather than the one before it.
+       */
+      async function waitForSettled(doc, prefix, label) {
+        await waitFor(
+          () => {
+            const status = doc.getElementById("selis-editor-status");
+            if (!status || status.dataset.kind === "error") return false;
+            const text = status.textContent.trim().replace(/\s+/g, " ");
+            return text.startsWith(prefix) && !text.endsWith("…");
+          },
+          30_000,
+          label,
+        );
+        return statusText(doc);
+      }
+
       function waitFor(probe, timeoutMs, label) {
         return new Promise((resolve, reject) => {
           const started = performance.now();
@@ -166,7 +189,15 @@
         // put an image in it, and take text out of it.
         out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
+        out.crop = await cropLeg(onlineDoc, onlineWin, "online");
+        out.properties = await propertiesLeg(onlineDoc, onlineWin, "online");
         out.redact = await redactLeg(onlineDoc, onlineWin, "online");
+
+        // The form's fields, on a document that has a form.
+        const formBytes = new Uint8Array(
+          await fetch("form.pdf").then((r) => r.arrayBuffer()),
+        );
+        out.form = await formLeg(onlineDoc, onlineWin, formBytes, "online");
 
         // The page's own no-upload assertion, and the origin of everything it
         // fetched.
@@ -378,11 +409,7 @@
           "the image tool (" + label + ")",
         );
         await dragOnCanvas(doc, { x: 30, y: 30 }, { x: 110, y: 90 });
-        await waitFor(
-          () => statusText(doc).startsWith("Added an image"),
-          30_000,
-          "the image to be placed (" + label + ")",
-        );
+        await waitForSettled(doc, "Added an image", "the image to be placed (" + label + ")");
         const produced = await download(doc, win);
         return {
           status: statusText(doc),
@@ -407,11 +434,7 @@
           { x: text.left - box.left - 4, y: text.top - box.top - 4 },
           { x: text.right - box.left + 4, y: text.bottom - box.top + 4 },
         );
-        await waitFor(
-          () => statusText(doc).startsWith("Redacted"),
-          30_000,
-          "the region to be redacted (" + label + ")",
-        );
+        await waitForSettled(doc, "Redacted", "the region to be redacted (" + label + ")");
         const produced = await download(doc, win);
         const carried = produced.carriesText;
         return {
@@ -427,6 +450,96 @@
       /** Arm the workspace for a tool. */
       function useTool(doc, tool) {
         doc.querySelector('#selis-editor-tools button[data-tool="' + tool + '"]').click();
+      }
+
+      /**
+       * Crop the page by a margin, and check the page got smaller.
+       */
+      async function cropLeg(doc, win, label) {
+        const before = doc.querySelector("canvas").getBoundingClientRect().width;
+        doc.getElementById("selis-editor-crop-right").value = "20";
+        doc.getElementById("selis-editor-crop-apply").click();
+        await waitForSettled(doc, "Cropped", "the page to be cropped (" + label + ")");
+        const after = doc.querySelector("canvas").getBoundingClientRect().width;
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          before: Math.round(before),
+          after: Math.round(after),
+          bytes: produced.bytes,
+          narrowed: after < before,
+        };
+      }
+
+      /**
+       * Write the document's title, and check it is in the file.
+       */
+      async function propertiesLeg(doc, win, label) {
+        doc.getElementById("selis-editor-title").value = "A title from the editor";
+        doc.getElementById("selis-editor-properties-apply").click();
+        await waitForSettled(
+          doc,
+          "Saved the document",
+          "the properties to be saved (" + label + ")",
+        );
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          carriesTitle: produced.carriesText.indexOf("A title from the editor") >= 0,
+        };
+      }
+
+      /**
+       * Read the form's fields, fill one in, and check the value is in the
+       * file.
+       */
+      async function formLeg(doc, win, formBytes, label) {
+        // The form is a document of its own: the workspace holds one document
+        // at a time, so the form replaces what was open.
+        const file = new File([formBytes], "form.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened form.pdf"),
+          30_000,
+          "the form to be opened (" + label + ")",
+        );
+        doc.getElementById("selis-editor-fields-read").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return status.endsWith("found.") && !status.endsWith("…");
+          },
+          30_000,
+          "the form's fields to be read (" + label + ")",
+        );
+        const fields = [...doc.querySelectorAll("#selis-editor-fields input[data-field]")].map(
+          (input) => ({
+            name: input.dataset.field,
+            disabled: input.disabled,
+            value: input.value,
+          }),
+        );
+        // The read-only field is shown but not editable: the engine refuses to
+        // override the flag, and a workspace that offered it would fail the
+        // whole fill.
+        const frozen = fields.find((field) => field.name === "Frozen");
+        const name = doc.querySelector('#selis-editor-fields input[data-field="Name"]');
+        name.value = "Filled by the editor";
+        doc.getElementById("selis-editor-fields-apply").click();
+        await waitForSettled(doc, "Filled the form fields", "the form to be filled (" + label + ")");
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          fields: fields.length,
+          readOnlyNotEditable: frozen ? frozen.disabled === true : false,
+          bytes: produced.bytes,
+          carriesValue: produced.carriesText.indexOf("Filled by the editor") >= 0,
+        };
       }
 
       /** Drag on the canvas, in the canvas's own CSS pixels. */
@@ -455,6 +568,15 @@
        * trusted.
        */
       async function download(doc, win) {
+        // The download button is disabled while an operation runs, and the
+        // status line says the operation is done a moment before the button
+        // comes back. Waiting for the button is what makes the read the
+        // document's real bytes rather than nothing at all.
+        await waitFor(
+          () => !doc.getElementById("selis-download").disabled,
+          20_000,
+          "the download to be ready",
+        );
         const captured = {};
         const originalClick = win.HTMLAnchorElement.prototype.click;
         win.HTMLAnchorElement.prototype.click = function () {

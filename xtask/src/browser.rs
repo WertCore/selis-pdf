@@ -7249,6 +7249,44 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the redacted region is not covered by an opaque box".into());
     }
 
+    // The page's own size, the document's properties, and the form's fields.
+    let crop = report
+        .get("crop")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no crop leg (crop = None)".to_string())?;
+    if crop.get("narrowed").and_then(Json::as_bool) != Some(true) {
+        return Err("the cropped page is not narrower than it was".into());
+    }
+
+    let properties = report
+        .get("properties")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no properties leg (properties = None)".to_string())?;
+    if properties.get("carriesTitle").and_then(Json::as_bool) != Some(true) {
+        return Err("the downloaded document does not carry the title the check set".into());
+    }
+
+    let form = report
+        .get("form")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no form leg (form = None)".to_string())?;
+    if form.get("fields").and_then(Json::as_u64).unwrap_or(0) < 2 {
+        return Err(format!(
+            "the form leg read {} fields; the fixture has seven",
+            form.get("fields").and_then(Json::as_u64).unwrap_or(0)
+        ));
+    }
+    if form.get("readOnlyNotEditable").and_then(Json::as_bool) != Some(true) {
+        return Err(
+            "the form's read-only field was offered for editing; the engine refuses to \
+             override the flag"
+                .into(),
+        );
+    }
+    if form.get("carriesValue").and_then(Json::as_bool) != Some(true) {
+        return Err("the filled form does not carry the value the check wrote".into());
+    }
+
     // The offline leg is the same edit with the origin cut: the workspace, its
     // module graph, its stylesheet, the engine chunk and the tools chunk all
     // have to come back from the worker's cache, or the editor is a page that

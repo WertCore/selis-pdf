@@ -229,6 +229,107 @@
 	font-weight: var(--selis-weight-medium);
 }
 
+/* The document's own panels: its form fields, its page size, its properties. */
+.selis-editor-details {
+	border-top: var(--selis-border-hairline) solid var(--selis-color-border);
+	padding-top: var(--selis-space-3);
+}
+
+.selis-editor-details summary {
+	cursor: pointer;
+	font-weight: var(--selis-weight-medium);
+	color: var(--selis-color-fg);
+	padding: var(--selis-space-1) 0;
+}
+
+.selis-editor-details summary:hover {
+	color: var(--selis-color-accent-hover);
+}
+
+.selis-editor-grid {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	align-items: center;
+	gap: var(--selis-space-2) var(--selis-space-3);
+	margin: var(--selis-space-3) 0;
+}
+
+.selis-editor-grid label {
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-sm);
+}
+
+.selis-editor-grid input {
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	padding: var(--selis-space-1) var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	min-width: 0;
+}
+
+.selis-editor-fields {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-2);
+	margin: var(--selis-space-3) 0;
+}
+
+.selis-editor-field {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	align-items: center;
+	gap: var(--selis-space-3);
+}
+
+.selis-editor-field__name {
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-sm);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.selis-editor-field__input {
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	padding: var(--selis-space-1) var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	min-width: 0;
+}
+
+.selis-editor-actions {
+	display: flex;
+	gap: var(--selis-space-2);
+	flex-wrap: wrap;
+}
+
+.selis-editor-actions button {
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	padding: var(--selis-space-2) var(--selis-space-4);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border-strong);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	cursor: pointer;
+}
+
+.selis-editor-actions button:hover:not(:disabled) {
+	border-color: var(--selis-color-accent);
+	color: var(--selis-color-accent-hover);
+}
+
+.selis-editor-actions button:disabled {
+	color: var(--selis-color-fg-disabled);
+	cursor: not-allowed;
+}
+
 .selis-editor-tools button {
 	font: inherit;
 	text-align: left;

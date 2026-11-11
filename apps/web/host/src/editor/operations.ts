@@ -352,3 +352,51 @@ export function redactOptions(page: number, rect: UserRect): Record<string, unkn
 		rects: [[rect.x, rect.y, rect.width, rect.height]],
 	};
 }
+
+/**
+ * The options for cropping a page by its margins.
+ *
+ * The margins are in points, measured on the page as the reader sees it (the
+ * rotation applied), and the page selection is **zero-based**.
+ */
+export function cropOptions(
+	margins: {
+		readonly left: number;
+		readonly top: number;
+		readonly right: number;
+		readonly bottom: number;
+	},
+	page: number,
+): Record<string, unknown> {
+	return {
+		left: margins.left,
+		top: margins.top,
+		right: margins.right,
+		bottom: margins.bottom,
+		pages: String(page),
+	};
+}
+
+/**
+ * The options for the document's properties.
+ *
+ * The keys are the property names the engine writes (`Title`, `Author`,
+ * `Subject`, `Keywords`), and only the ones the reader filled in are sent: an
+ * empty field is left as it is rather than cleared.
+ */
+export function metadataOptions(fields: Readonly<Record<string, string>>): Record<string, unknown> {
+	return { fields: { ...fields } };
+}
+
+/**
+ * The options for filling the document's form fields.
+ *
+ * Every field is sent with its value, in the order the fields were read: the
+ * engine writes the values into the document's fields, and a field the reader
+ * left alone keeps the value it had.
+ */
+export function fillFormsOptions(
+	fields: readonly { readonly name: string; readonly value: string }[],
+): Record<string, unknown> {
+	return { fields: fields.map((field) => ({ name: field.name, value: field.value })) };
+}

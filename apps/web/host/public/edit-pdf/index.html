@@ -32,7 +32,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-caXW0DlT4X1Qeoe+seX8cr8XLFxeLU594PPnvbwZe/l1r4QeLRMY4AAxrZD4gKJk"
+			integrity="sha384-rgpiv6VhL2M4GCEJTSthSI0m3gp9WOdQf5Y2Q2kcXVbCOK5ZwCO/aS9t8Q6OrAwH"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -118,6 +118,66 @@
 						it with a black box; anything else under it — an image, a line of
 						art — is covered, not erased.
 					</p>
+				</section>
+
+				<section class="selis-editor-panel">
+					<h2>The document</h2>
+
+					<details class="selis-editor-details">
+						<summary>Form fields</summary>
+						<p class="selis-editor-hint">
+							Read the form's fields and fill them in. The values are written
+							into the document on this device; viewers rebuild the field
+							appearances when they open it.
+						</p>
+						<div id="selis-editor-fields" class="selis-editor-fields">
+							<p class="selis-editor-hint">Read the fields to fill them in.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-fields-read">Read the fields</button>
+							<button type="button" id="selis-editor-fields-apply" disabled>Fill them in</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details">
+						<summary>Page size</summary>
+						<p class="selis-editor-hint">
+							Crop the selected page by removing margins, in points.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-crop-left">Left</label>
+							<input id="selis-editor-crop-left" type="number" min="0" step="1" value="0" />
+							<label for="selis-editor-crop-top">Top</label>
+							<input id="selis-editor-crop-top" type="number" min="0" step="1" value="0" />
+							<label for="selis-editor-crop-right">Right</label>
+							<input id="selis-editor-crop-right" type="number" min="0" step="1" value="0" />
+							<label for="selis-editor-crop-bottom">Bottom</label>
+							<input id="selis-editor-crop-bottom" type="number" min="0" step="1" value="0" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-crop-apply">Crop the page</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details">
+						<summary>Properties</summary>
+						<p class="selis-editor-hint">
+							The document's title, author, subject and keywords.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-title">Title</label>
+							<input id="selis-editor-title" type="text" />
+							<label for="selis-editor-author">Author</label>
+							<input id="selis-editor-author" type="text" />
+							<label for="selis-editor-subject">Subject</label>
+							<input id="selis-editor-subject" type="text" />
+							<label for="selis-editor-keywords">Keywords</label>
+							<input id="selis-editor-keywords" type="text" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-properties-apply">Save the properties</button>
+						</div>
+					</details>
 				</section>
 			</aside>
 
