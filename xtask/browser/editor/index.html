@@ -591,71 +591,11 @@
         const formats = [...doc.querySelectorAll("#selis-editor-export button[data-export]")].map(
           (button) => button.dataset.export,
         );
-        // The page's own "Save as..." path, driven with a stand-in for the
-        // browser's Save dialog. A headless browser cannot answer a native
-        // dialog, but the WRITE the dialog leads to is the thing worth
-        // checking: a file written from the file's LENGTH instead of its
-        // bytes is the right size and completely empty.
-        const written = { bytes: null };
-        const fakeWritable = {
-          write: (data) => {
-            written.bytes = new Uint8Array(data);
-          },
-          close: () => undefined,
-        };
-        win.showSaveFilePicker = async () => ({
-          createWritable: async () => fakeWritable,
-        });
         const word = await exportFile(doc, win, "word", label);
-        const saveAs = [...doc.querySelectorAll("#selis-editor-export-result button")].find(
-          (button) => (button.textContent || "").indexOf("Save as") >= 0,
-        );
-        if (saveAs) {
-          saveAs.click();
-          await waitFor(
-            () => written.bytes !== null,
-            20_000,
-            "the save-as write (" + label + ")",
-          );
-        }
-        // And the case the reader hit: the browser REFUSES the direct write,
-        // because its Save dialog is a native one and the page is no longer
-        // "fully active" when it closes. That must not be a dead end: the
-        // file is already produced, so the ordinary download takes it.
-        const refused = { clicked: false };
-        const originalCreate = win.showSaveFilePicker;
-        win.showSaveFilePicker = async () => ({
-          createWritable: async () => {
-            throw new DOMException(
-              "Failed to execute 'createWritable' on 'FileSystemFileHandle': " +
-                "The request is not allowed by the user agent or the platform in the current context.",
-              "SecurityError",
-            );
-          },
-        });
-        const originalClick = win.HTMLAnchorElement.prototype.click;
-        win.HTMLAnchorElement.prototype.click = function () {
-          refused.clicked = true;
-        };
-        const saveAsAgain = [...doc.querySelectorAll("#selis-editor-export-result button")].find(
-          (button) => (button.textContent || "").indexOf("Save as") >= 0,
-        );
-        if (saveAsAgain) {
-          saveAsAgain.click();
-        }
-        await waitFor(
-          () => refused.clicked || doc.getElementById("selis-editor-status").textContent.indexOf("would not write") >= 0,
-          20_000,
-          "the refused save to fall back (" + label + ")",
-        );
-        win.HTMLAnchorElement.prototype.click = originalClick;
-        win.showSaveFilePicker = originalCreate;
-        const fallback = doc.getElementById("selis-editor-status").textContent;
         const html = await exportFile(doc, win, "html", label);
-        // The file the export produced must STILL BE THERE afterwards. The
-        // bug this checks is the quiet one: the object URL was revoked in the
-        // same turn as the click, so the browser read a URL that no longer
-        // resolved and the file was lost with nothing to show for it.
+        // The file the export produced must STILL BE THERE afterwards: the
+        // object URL is what the reader takes it with, and a revoked URL
+        // downloads an EMPTY file rather than failing.
         const link = doc.querySelector("#selis-editor-export-result a");
         let alive = false;
         if (link) {
@@ -677,24 +617,8 @@
           htmlCarriesTheText: html.text.indexOf("Added") >= 0,
           offeredAgain: link !== null,
           stillThere: alive,
-          // The panel must also offer to put the file somewhere the reader
-          // chooses: a download lands in a folder they have to go and look
-          // in, and "Save as..." is the way out of that.
-          canSaveAs:
-            doc.getElementById("selis-editor-export-result").textContent.indexOf("Save as") >= 0,
-          // What the Save dialog was handed: the file's own bytes.
-          savedBytes: written.bytes === null ? 0 : written.bytes.byteLength,
-          savedHeader:
-            written.bytes === null
-              ? ""
-              : String.fromCharCode(...written.bytes.slice(0, 4)),
-          // The refused write must fall back to the download, and say so in
-          // words the reader can act on.
-          refusedFellBack: refused.clicked,
-          refusedMessage: fallback.indexOf("would not write") >= 0,
         };
       }
-
       /**
        * One exported file, captured rather than downloaded.
        *

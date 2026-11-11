@@ -13,7 +13,7 @@
  */
 
 import { installRequestRecorder } from "../no-upload.js";
-import { registerServiceWorker } from "../sw-register.js";
+import { registerServiceWorker, takeUpdateWhenSafe } from "../sw-register.js";
 import { startTheme } from "../theme.js";
 import {
 	TOOLS,
@@ -659,6 +659,15 @@ function batchRows(batch: BatchSummary | undefined): VerificationRow[] {
 	return rows;
 }
 
+/**
+ * The files the reader has picked.
+ *
+ * It is at the module's scope so the update watcher can ask whether the
+ * reader has anything to lose: taking a new worker costs a reload, and a
+ * reload loses the picked files.
+ */
+let files: File[] = [];
+
 function init(): void {
 	const toolsSection = optionalById<HTMLElement>("tools");
 	const toolGrid = optionalById<HTMLDivElement>("tool-grid");
@@ -700,7 +709,7 @@ function init(): void {
 	startTheme();
 
 	let selectedTool: ToolId | null = null;
-	let files: File[] = [];
+
 	/**
 	 * Leaf-page counts read from the file bytes, keyed by File identity.
 	 * Filled when files are added so the list can say "3 pages" before the
@@ -942,10 +951,7 @@ function init(): void {
 		const haystack = new Map<string, string>();
 		for (const tool of TOOLS) {
 			const group = TOOL_GROUPS.find((g) => g.id === tool.group);
-			haystack.set(
-				tool.id,
-				`${tool.title} ${tool.blurb} ${group?.label ?? ""}`.toLowerCase(),
-			);
+			haystack.set(tool.id, `${tool.title} ${tool.blurb} ${group?.label ?? ""}`.toLowerCase());
 		}
 		const apply = (): void => {
 			const query = search.value.trim().toLowerCase();
@@ -970,7 +976,9 @@ function init(): void {
 				section.hidden = !anyShown;
 			}
 			if (sectionNav !== null) {
-				for (const link of Array.from(sectionNav.querySelectorAll<HTMLAnchorElement>("a[href^='#tool-group-']"))) {
+				for (const link of Array.from(
+					sectionNav.querySelectorAll<HTMLAnchorElement>("a[href^='#tool-group-']"),
+				)) {
 					const target = link.getAttribute("href")?.slice(1) ?? "";
 					const section = document.getElementById(target);
 					(link.parentElement ?? link).hidden = section?.hidden ?? false;
@@ -981,7 +989,9 @@ function init(): void {
 			}
 			if (count !== null) {
 				count.textContent =
-					query === "" ? "" : `${shown} ${shown === 1 ? "tool" : "tools"} match “${search.value.trim()}”.`;
+					query === ""
+						? ""
+						: `${shown} ${shown === 1 ? "tool" : "tools"} match “${search.value.trim()}”.`;
 			}
 		};
 		search.addEventListener("input", apply);
@@ -5106,7 +5116,12 @@ async function registerOfflineSupport(): Promise<void> {
 	document.documentElement.dataset.sw = result.ok ? "registered" : result.reason;
 	if (!result.ok) {
 		console.warn("Selis tools: offline support is unavailable:", result.reason);
+		return;
 	}
+	// A new worker carries the new cache namespace, and taking it is what
+	// drops the OLD modules from the cache. It costs a reload, so it is only
+	// taken when the reader has no files picked to lose.
+	takeUpdateWhenSafe(result.registration, () => files.length === 0);
 }
 
 if (typeof document !== "undefined") {

@@ -15,8 +15,17 @@
  * Run through `pnpm --filter @selis/web-host build` (after `tsc`).
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,6 +42,66 @@ const publicRoot = join(pkgRoot, "public");
  * them across two builds would let the page ship without the worker.
  */
 const ENTRIES = ["sw.js", "sw-register.js"];
+
+/**
+ * The build's identity: a hash of the bytes this build serves.
+ *
+ * ## Why the cache namespace has to follow the build
+ *
+ * The runtime cache is CACHE-FIRST: a module that has been fetched once is
+ * served from the cache, and the network is never consulted again. That is
+ * what makes the offline story work, and it is also how a reader can be
+ * left running code from three deploys ago: the browser only re-installs the
+ * worker when the WORKER SCRIPT's bytes change, and the worker's bytes do
+ * not change when a module does.
+ *
+ * So the namespace is stamped with the build's identity. The worker's bytes
+ * change with it, the browser installs the new worker, and `activate` drops
+ * the old caches - and the reader's next load has the new modules.
+ *
+ * It has to be stamped into BOTH files: the version goes into the policy
+ * module (which decides the cache NAMES), and a marker goes into the worker
+ * script itself, because that is the file the browser compares.
+ */
+function buildId() {
+	const hash = createHash("sha256");
+	hash.update("selis-build-v1");
+	const roots = [distRoot, join(pkgRoot, "assets-src")];
+	const wasmDir = join(resolve(pkgRoot, "../../.."), "target", "wasm32-unknown-unknown", "release");
+	for (const root of roots) {
+		hashTree(hash, root, (name) => name.endsWith(".js") || name.endsWith(".css"));
+	}
+	// The WASM chunks: a Rust change is a change to what the page serves.
+	if (existsSync(wasmDir)) {
+		hashTree(hash, wasmDir, (name) => name.endsWith(".wasm"));
+	}
+	return hash.digest("hex").slice(0, 16);
+}
+
+/** Hash every file under a directory that the filter accepts, in a stable order. */
+function hashTree(hash, root, accept) {
+	if (!existsSync(root)) {
+		return;
+	}
+	const walk = (directory) => {
+		const entries = readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+			a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+		);
+		for (const entry of entries) {
+			const full = join(directory, entry.name);
+			if (entry.isDirectory()) {
+				walk(full);
+				continue;
+			}
+			if (!accept(entry.name)) {
+				continue;
+			}
+			hash.update(relative(root, full));
+			hash.update(readFileSync(full));
+		}
+	};
+	walk(root);
+}
 
 /** `import ... from "./x.js"` specifiers, relative and same-directory only. */
 function localImports(source) {
@@ -80,6 +149,28 @@ while (queue.length > 0) {
 	}
 }
 
+// The cache namespace follows the build, and the worker's OWN bytes change
+// with it: the browser compares the worker SCRIPT's bytes to decide whether
+// there is an update, so a marker has to live in the script itself.
+const id = buildId();
+const policyPath = join(publicRoot, "sw-policy.js");
+if (existsSync(policyPath)) {
+	const policy = readFileSync(policyPath, "utf8");
+	const stamped = policy.replace(/(export const CACHE_VERSION = ")[^"]*(";)/, `$1${id}$2`);
+	if (stamped === policy) {
+		console.error(
+			"place-sw: the compiled sw-policy.js has no CACHE_VERSION to stamp - " +
+				"the worker's cache namespace would not follow the build.",
+		);
+		process.exit(1);
+	}
+	writeFileSync(policyPath, stamped, "utf8");
+}
+const workerPath = join(publicRoot, "sw.js");
+if (existsSync(workerPath)) {
+	writeFileSync(workerPath, `${readFileSync(workerPath, "utf8")}\n// selis build: ${id}\n`, "utf8");
+}
+
 // A tiny marker so a deployed root can be checked for the worker's presence
 // without guessing whether the build ran.
 writeFileSync(
@@ -88,4 +179,4 @@ writeFileSync(
 	"utf8",
 );
 
-console.log(`place-sw: copied ${copied.sort().join(", ")} into public/`);
+console.log(`place-sw: copied ${copied.sort().join(", ")} into public/ (build ${id})`);

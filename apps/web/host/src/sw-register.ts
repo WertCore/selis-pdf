@@ -163,3 +163,61 @@ export async function applyUpdate(registration: ServiceWorkerRegistration): Prom
 	}
 	waiting.postMessage({ type: SKIP_WAITING_MESSAGE });
 }
+
+/**
+ * Take a waiting worker when the page can afford the reload.
+ *
+ * ## Why this matters more than it looks
+ *
+ * The runtime cache is CACHE-FIRST, so a module that has been fetched once
+ * is served from the cache and the network is never consulted again. That is
+ * what makes the offline story work — and it is also how a reader ends up
+ * running code from three deploys ago: the browser only re-installs the
+ * worker when the WORKER SCRIPT's bytes change, and a change to a module
+ * does not change them.
+ *
+ * The build's identity is stamped into the worker (see
+ * `tools/place-sw.mjs`), so a deploy DOES change the worker's bytes and the
+ * browser DOES install it. But the new worker waits: it does not take
+ * control while the old one is still in charge, because a worker that
+ * swapped under a page mid-parse would break it.
+ *
+ * So the page has to take it — and it has to be able to say when that is
+ * safe. A page holding a document the reader would lose takes the update
+ * later; a page holding nothing takes it at once.
+ *
+ * @param registration the registration to watch
+ * @param canReload whether reloading now would lose something
+ */
+export function takeUpdateWhenSafe(
+	registration: ServiceWorkerRegistration,
+	canReload: () => boolean,
+): void {
+	let taken = false;
+	const take = (): void => {
+		if (!canReload()) {
+			return;
+		}
+		taken = true;
+		void applyUpdate(registration);
+	};
+	watchForUpdate(registration, () => take());
+	// A worker that installed BEFORE this was called is already WAITING, and
+	// the `updatefound` event has been and gone by the time the listener is
+	// attached. Without this the update is missed and the reader keeps the
+	// old modules for ever - which is exactly the bug the stamped namespace
+	// was meant to fix.
+	if (registration.waiting !== null) {
+		take();
+	}
+	const container = (globalThis as { navigator?: { serviceWorker?: EventTarget } }).navigator
+		?.serviceWorker;
+	container?.addEventListener("controllerchange", () => {
+		// Only a reload we ASKED for: the controller also changes when the
+		// worker is installed for the first time, and reloading a page for
+		// that is a nuisance the reader did not ask for.
+		if (taken && canReload()) {
+			(globalThis as { location?: { reload?: () => void } }).location?.reload?.();
+		}
+	});
+}

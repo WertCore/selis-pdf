@@ -425,10 +425,16 @@ These have all cost time. They are not obvious.
 2. **The service worker serves stale assets — including stale MODULES.** The
    page's modules are in the runtime cache, so a rebuilt module can still be
    the old one. This bites hardest on the editor, whose controller is a big
-   module. When a change "does not take", clear the caches and unregister
-   the workers:
-   `for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();`
-   `for (const n of await caches.keys()) await caches.delete(n);`
+   module. **This is now fixed rather than worked around**: the cache
+   namespace follows the build (`tools/place-sw.mjs` stamps a hash of the
+   served bytes into the worker and into the policy module), so a deploy
+   changes the worker's bytes, the browser installs it, and `activate` drops
+   the stale caches. The page still has to TAKE the update, because the new
+   worker waits — `takeUpdateWhenSafe` does that when a reload costs the
+   reader nothing.
+   When a change "does not take" in a browser you are testing by hand, check
+   the cache list first: `caches.keys()` shows the namespace, and a stale
+   `selis-runtime-v<old>` with entries in it is the answer.
 3. **The stylesheet's digest is pinned in the page.** `public/edit-pdf/index.html`
    carries `integrity="sha384-..."`, and `sw-ship.test.ts` fails if it drifts.
    Recompute it after every CSS change:
@@ -483,6 +489,19 @@ These have all cost time. They are not obvious.
     as three mojibake characters and the file is written back corrupted.
     Write the content to its own UTF-8 file and have an ASCII-only script
     splice it in, or give the script a BOM.
+15. **A file's LENGTH and a file's BYTES are both numbers to the careless
+    eye.** `new Uint8Array(length)` builds an array of that many zeros, so
+    writing one where the bytes belong produces a file of the right size and
+    no content — and nothing says so. The exported file's fields are named
+    `size` and `content` for exactly this reason, and the write takes the
+    bytes themselves so the mistake cannot compile.
+16. **A native dialog takes the page's activation with it.** Chrome's Save
+    dialog is a native one: by the time the reader closes it, the page is no
+    longer "fully active", and `createWritable()` is refused with "The
+    request is not allowed by the user agent or the platform in the current
+    context" — sometimes leaving a 0-byte file at the path the reader chose.
+    The browser's own "Save as…" on a download or a link has no such
+    problem, and leaves nothing behind.
 
 ---
 

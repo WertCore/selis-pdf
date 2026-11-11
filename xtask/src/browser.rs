@@ -7345,29 +7345,6 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if export.get("stillThere").and_then(Json::as_bool) != Some(true) {
         return Err("the exported file's URL was revoked before the browser could read it".into());
     }
-    if export.get("canSaveAs").and_then(Json::as_bool) != Some(true) {
-        return Err("the export did not offer to save the file somewhere the reader chooses".into());
-    }
-    // The Save dialog is handed the file's BYTES. A file written from the
-    // file's LENGTH is the right size and completely empty, and nothing says
-    // so: this is the one failure the reader cannot see until they open it.
-    let saved_bytes = export.get("savedBytes").and_then(Json::as_u64).unwrap_or(0);
-    if saved_bytes == 0 {
-        return Err("the save-as wrote no bytes at all".into());
-    }
-    if export.get("savedHeader").and_then(Json::as_str) != Some("PK\u{3}\u{4}") {
-        return Err("the save-as did not write the exported file's own bytes".into());
-    }
-    // A browser that REFUSES the direct write - which is what Chrome does
-    // when its Save dialog is a native one and the page is no longer fully
-    // active - must fall back to the download rather than dead-ending the
-    // reader with a browser error.
-    if export.get("refusedFellBack").and_then(Json::as_bool) != Some(true) {
-        return Err("a refused save-as did not fall back to the download".into());
-    }
-    if export.get("refusedMessage").and_then(Json::as_bool) != Some(true) {
-        return Err("a refused save-as did not say where the file went".into());
-    }
 
     let bates = report
         .get("bates")

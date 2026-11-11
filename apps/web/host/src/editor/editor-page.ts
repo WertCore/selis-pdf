@@ -36,7 +36,7 @@
  */
 
 import { type RequestRecorder, installRequestRecorder } from "../no-upload.js";
-import { registerServiceWorker } from "../sw-register.js";
+import { registerServiceWorker, takeUpdateWhenSafe } from "../sw-register.js";
 import { type ThemeName, startTheme } from "../theme.js";
 import {
 	EXPORT_FORMATS,
@@ -89,7 +89,6 @@ import {
 	pageGeometry,
 	userRect,
 } from "./placement.js";
-import { type FileHandleLike, writeToHandle } from "./save-as.js";
 
 /** The raster's base resolution: one device pixel per CSS pixel at 96 dpi. */
 const BASE_DPI = 96;
@@ -2830,86 +2829,7 @@ function renderExportResult(): void {
 	link.download = lastExport.name;
 	link.textContent = "Download again";
 	row.append(name, size, link);
-	// "Save as..." asks the reader where the file should go, and writes it
-	// there: no download shelf, nothing to hunt for in a folder. It is not in
-	// every browser, so the button is only offered where it works.
-	if (canSaveAs()) {
-		const saveAs = document.createElement("button");
-		saveAs.type = "button";
-		saveAs.className = "selis-editor-btn";
-		saveAs.textContent = "Save as...";
-		saveAs.addEventListener("click", () => {
-			void saveExportAs();
-		});
-		row.appendChild(saveAs);
-	}
 	panel.appendChild(row);
-}
-
-/** Whether the browser can ask the reader where a file should go. */
-function canSaveAs(): boolean {
-	return typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker === "function";
-}
-
-/**
- * Write the exported file where the reader chooses.
- *
- * The File System Access API opens a Save dialog and hands back a handle to
- * the chosen file; the bytes are then written into it. The reader ends up
- * with the file in a place they picked, rather than in a download folder they
- * have to go and look in.
- */
-async function saveExportAs(): Promise<void> {
-	const file = lastExport;
-	if (file === null) {
-		return;
-	}
-	const picker = (
-		globalThis as {
-			showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle>;
-		}
-	).showSaveFilePicker;
-	if (typeof picker !== "function") {
-		return;
-	}
-	let handle: FileSystemFileHandle;
-	try {
-		handle = await picker.call(globalThis, {
-			suggestedName: file.name,
-		});
-	} catch (error) {
-		// The reader cancelled the dialog. That is not a failure, and it is
-		// not something to report as one: the file is in their downloads.
-		console.info("selis: the save dialog was dismissed", error);
-		setStatus("Cancelled. The file is still in your downloads.");
-		return;
-	}
-	try {
-		// The file's BYTES, not its length. `new Uint8Array(length)` would
-		// build an array of that many zeros, and the reader would get a file
-		// of the right size and no content in it.
-		await writeToHandle(handle as unknown as FileHandleLike, file.content);
-		setStatus(`Saved ${file.name} where you chose.`);
-	} catch (error) {
-		// Chrome refuses the write when the dialog has taken the page's
-		// activation with it: the Save dialog is a NATIVE dialog, so by the
-		// time it closes the page is no longer "fully active", and the
-		// browser answers "The request is not allowed by the user agent or
-		// the platform in the current context".
-		//
-		// That is not a dead end, because the file is already produced: the
-		// ordinary download takes it from here, and the reader is told
-		// plainly where it went rather than being handed a browser error.
-		console.warn("selis: the browser would not write the file directly", error);
-		downloadBytes(
-			file.name,
-			file.content,
-			EXPORT_MEDIA_TYPES[file.kind] ?? "application/octet-stream",
-		);
-		setStatus(
-			`Your browser would not write the file directly, so ${file.name} is in your downloads instead.`,
-		);
-	}
 }
 
 /** Hand the edited document to the user, as a Blob in this tab. */
@@ -3333,7 +3253,13 @@ async function boot(): Promise<void> {
 	renderHistory();
 	renderDirty();
 	setStatus("Open a PDF to start editing. It stays on this device.");
-	await registerServiceWorker();
+	const registration = await registerServiceWorker();
+	if (registration.ok) {
+		// A new worker carries the new cache namespace, and taking it is what
+		// drops the OLD modules from the cache. It costs a reload, so it is
+		// only taken when the reader has nothing open to lose.
+		takeUpdateWhenSafe(registration.registration, () => state.bytes === null);
+	}
 }
 
 void boot().catch((error: unknown) => {

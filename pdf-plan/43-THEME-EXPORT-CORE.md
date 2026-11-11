@@ -271,7 +271,61 @@ save the file wherever the reader wants, from its own menu.** Every browser
 offers "Save as…" on a download and on a link; that route is always
 available, needs no API, and cannot be refused the way a direct write can.
 
-### 2.8 The icons
+### 2.8 The reason the reader never saw the fixes
+
+The reader reported the same symptom four times, and every fix was correct.
+The reason they never took effect is the most important thing in this file.
+
+**The service worker's runtime cache is CACHE-FIRST.** A module that has been
+fetched once is served from the cache, and the network is never consulted
+again — that is what makes the offline story work. And the browser only
+re-installs the worker when the **worker script's** bytes change; a change to
+a module does not change them.
+
+So a reader who loaded the editor once kept running **that day's**
+`editor-page.js` for ever. Every fix went into a module their browser never
+asked for again. The evidence was sitting in the browser's own cache list the
+whole time:
+
+```
+selis-shell-v5:0
+selis-runtime-v5:16          ← sixteen modules, from a build long gone
+selis-shell-v3c5fc9cfd175939d:72
+```
+
+**The fix has three parts.**
+
+1. **The cache namespace follows the build.** `tools/place-sw.mjs` hashes the
+   bytes the build serves — the host's compiled modules, the stylesheets, the
+   WASM chunks — and stamps that hash into the worker script *and* into the
+   policy module that decides the cache NAMES. The worker script's bytes
+   change, so the browser installs the new worker; the new worker's
+   `activate` drops the caches whose names are stale; and the reader's next
+   load has the new modules.
+
+2. **The page takes the update when it can afford it.** The new worker waits
+   — it does not swap under a page mid-parse — so the page has to ask for
+   it. `takeUpdateWhenSafe` does that, and it asks only when a reload costs
+   the reader nothing: the editor takes it when no document is open, the
+   tools page when no file is picked.
+
+3. **The update is not missed.** A worker that installed *before* the watcher
+   was attached is already waiting, and the `updatefound` event has been and
+   gone by then. Without checking `registration.waiting` directly, the
+   update is missed and the reader keeps the old modules for ever — which is
+   the bug the stamped namespace was supposed to fix.
+
+After the change, the same browser's cache list reads:
+
+```
+selis-runtime-v3c5fc9cfd175939d:13   ← the fresh modules, under the new namespace
+```
+
+**The lesson, which is worth more than any of the fixes:** a fix that is not
+REACHABLE is not a fix. A reader's browser is part of the delivery system,
+and the delivery system was three builds behind.
+
+### 2.9 The icons
 
 Each export format carries its own mark — a Word document is a page with a
 "W" on it, a deck is a presentation board, a workbook is a grid, a web page is
@@ -280,7 +334,7 @@ should be able to tell the formats apart without reading the labels, and the
 marks are drawn on the same 24-unit grid with the same stroke weight as the
 rest of the set, so the ribbon reads as one row of tools.
 
-### 2.9 What the check proves
+### 2.10 What the check proves
 
 The browser leg reads the produced files rather than trusting them:
 
