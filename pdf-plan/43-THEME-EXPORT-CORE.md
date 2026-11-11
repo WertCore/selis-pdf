@@ -168,61 +168,36 @@ download, and the inspector's "Last export" panel keeps a link to the file,
 with its own URL, that lives until the next export replaces it. A browser that
 refuses an automatic download still gives the reader the file.
 
-### 2.4 The icons
+### 2.4 What the second report found, and what it changed
 
-Each export format carries its own mark — a Word document is a page with a
-"W" on it, a deck is a presentation board, a workbook is a grid, a web page is
-a pair of angle brackets, an EPUB is an open book, and so on. The reader
-should be able to tell the formats apart without reading the labels, and the
-marks are drawn on the same 24-unit grid with the same stroke weight as the
-rest of the set, so the ribbon reads as one row of tools.
+The report said the file was still not there. The evidence said otherwise, and
+it is worth being exact about it, because the difference matters:
 
-### 2.5 What the check proves
+- the browser's download list held a completed `electricity-bill.docx`,
+  90 135 bytes;
+- unzipping it showed a **valid Word package** — `[Content_Types].xml`,
+  `_rels/.rels`, `word/document.xml` with 222 text runs;
+- a plain blob download, a `data:` URL download and a visible link's click
+  all completed the same way.
 
-The browser leg reads the produced files rather than trusting them:
+So the file was produced, it was handed to the browser, and the browser
+finished with it. What the reader did not have was a **handle on it**: a
+download lands in a folder they have to go and look in, and in an automated
+browser it lands somewhere the reader never sees.
 
-- a **Word document** is a ZIP container, so its bytes start with `PK`;
-- the **HTML** starts with `<!do`, and carries the document's text;
-- the **Bates prefix** the reader typed is in the produced PDF.
+That is a design gap rather than a bug, and it is now closed:
 
-And one more, which is the quiet bug above: the export's file **URL still
-resolves** after the export. That is the property that was broken — the URL
-was revoked in the same turn as the click — and a check that reads the
-produced file's URL back is the only thing in this codebase that could have
-caught it.
+- the export says **where the file went** — "Wrote electricity-bill.docx
+  (90 KB). It is in your downloads — the panel on the right can put it
+  somewhere you choose";
+- the "Last export" panel offers **"Save as…"** as well as "Download again".
+  That is the File System Access API: it opens a Save dialog and writes the
+  bytes where the reader chooses, so the file ends up in a place they picked
+  rather than in a folder they have to hunt for. It is not in every browser,
+  so the button is only offered where it works, and the download is always
+  there underneath it.
 
-## 3. Where the core code lives
+**The lesson worth keeping:** a download that completes is not the same as a
+download the reader can find. The second one is the one that matters.
 
-This is the question that shaped all of the above, and the answer is a
-layering rather than a place:
-
-| Layer | What lives there | Reached by |
-|---|---|---|
-| **The PDF core** (`crates/selis-pdf-*`) | The writers, the rewriters, the readers, the arithmetic. Every byte a document is made of. | The WASM chunks — the same bytes in the web app, a desktop app, and an SDK. |
-| **The design system** (`packages/ui-kit`) | The tokens, the themes, and the decisions about a preference set. | `@selis/ui-kit` — the web app, a desktop app, an SDK. |
-| **The web layer** (`apps/web/host/src`) | The wire: the chunk protocols, the export's names, the DOM. | The web app. |
-
-The rule that follows: **a decision that is not about the DOM belongs
-upstairs.** The export's *writers* are Rust and were always going to be; the
-export's *names* are the web layer's, because a desktop app names its own
-buttons. The theme's *decisions* are the kit's, because every surface makes
-them; the theme's *storage* is the web's.
-
-And the thing that is easiest to get wrong: **a second implementation of the
-engine's arithmetic.** The placement geometry, the stamp's width table and
-the redaction's text matrix all come from the engine. A second copy is a
-second set of bugs, and it is the one thing in the editor that is silently
-wrong rather than loudly broken.
-
----
-
-## 4. The evidence
-
-- `packages/ui-kit/src/preferences.test.ts` — the preference decisions, with
-  the storage and the system's answer supplied as arguments.
-- `apps/web/host/src/tools/export.test.ts` — the format list and the mapping
-  from a format to the chunk that writes it.
-- `apps/web/host/src/editor/operations.test.ts` — the new operation builders.
-- The editor's browser leg grew three legs: `theme` (the switch changed the
-  page and was remembered), `export` (a Word document is a ZIP, the HTML
-  carries the text) and `bates` (the prefix is in the file).
+### 2.5 The icons

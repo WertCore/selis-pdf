@@ -7345,6 +7345,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if export.get("stillThere").and_then(Json::as_bool) != Some(true) {
         return Err("the exported file's URL was revoked before the browser could read it".into());
     }
+    if export.get("canSaveAs").and_then(Json::as_bool) != Some(true) {
+        return Err("the export did not offer to save the file somewhere the reader chooses".into());
+    }
 
     let bates = report
         .get("bates")

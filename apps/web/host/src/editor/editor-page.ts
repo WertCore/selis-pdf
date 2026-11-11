@@ -1393,6 +1393,7 @@ function downloadFile(name: string, bytes: Uint8Array, kind: string): void {
 		url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type })),
 		bytes: bytes.byteLength,
 		kind,
+		content: bytes.slice(),
 	};
 	renderExportResult();
 }
@@ -1450,7 +1451,13 @@ async function runExport(format: ExportFormat): Promise<void> {
 		}
 		await assertLocalOnly();
 		const produced = files.map((file) => file.name).join(", ");
-		setStatus(`Wrote ${produced}.`);
+		const size = files.reduce((total, file) => total + file.bytes.byteLength, 0);
+		// The file has been handed to the browser, and the browser has put it
+		// somewhere the reader may not be looking. Say so, and say what else
+		// they can do about it.
+		setStatus(
+			`Wrote ${produced} (${formatBytes(size)}). It is in your downloads - the panel on the right can put it somewhere you choose.`,
+		);
 	} catch (error) {
 		setStatus(`The ${label.toLowerCase()} was not written: ${messageOf(error)}`, "error");
 	} finally {
@@ -2805,12 +2812,14 @@ interface ExportedFile {
 	readonly url: string;
 	readonly bytes: number;
 	readonly kind: string;
+	/** The file's own bytes, for the "Save as..." that writes them. */
+	readonly content: Uint8Array;
 }
 
 /** The file the last export produced, if there was one. */
 let lastExport: ExportedFile | null = null;
 
-/** Show the file the last export produced, and a link to take it. */
+/** Show the file the last export produced, and the ways to take it. */
 function renderExportResult(): void {
 	const panel = document.getElementById("selis-editor-export-result");
 	if (!(panel instanceof HTMLElement)) {
@@ -2838,7 +2847,64 @@ function renderExportResult(): void {
 	link.download = lastExport.name;
 	link.textContent = "Download again";
 	row.append(name, size, link);
+	// "Save as..." asks the reader where the file should go, and writes it
+	// there: no download shelf, nothing to hunt for in a folder. It is not in
+	// every browser, so the button is only offered where it works.
+	if (canSaveAs()) {
+		const saveAs = document.createElement("button");
+		saveAs.type = "button";
+		saveAs.className = "selis-editor-btn";
+		saveAs.textContent = "Save as...";
+		saveAs.addEventListener("click", () => {
+			void saveExportAs();
+		});
+		row.appendChild(saveAs);
+	}
 	panel.appendChild(row);
+}
+
+/** Whether the browser can ask the reader where a file should go. */
+function canSaveAs(): boolean {
+	return typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker === "function";
+}
+
+/**
+ * Write the exported file where the reader chooses.
+ *
+ * The File System Access API opens a Save dialog and hands back a handle to
+ * the chosen file; the bytes are then written into it. The reader ends up
+ * with the file in a place they picked, rather than in a download folder they
+ * have to go and look in.
+ */
+async function saveExportAs(): Promise<void> {
+	const file = lastExport;
+	if (file === null) {
+		return;
+	}
+	const picker = (
+		globalThis as {
+			showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle>;
+		}
+	).showSaveFilePicker;
+	if (typeof picker !== "function") {
+		return;
+	}
+	try {
+		const handle = await picker.call(globalThis, {
+			suggestedName: file.name,
+		});
+		const writable = await handle.createWritable();
+		try {
+			await writable.write(new Uint8Array(await file.bytes));
+		} finally {
+			await writable.close();
+		}
+		setStatus(`Saved ${file.name} where you chose.`);
+	} catch (error) {
+		// The reader cancelled, or the browser refused: the file is still in
+		// the downloads, and the link in the panel still takes it.
+		setStatus(`Saved nowhere: ${messageOf(error)}`, "error");
+	}
 }
 
 /** Hand the edited document to the user, as a Blob in this tab. */

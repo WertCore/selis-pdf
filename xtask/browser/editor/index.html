@@ -618,6 +618,11 @@
           htmlCarriesTheText: html.text.indexOf("Added") >= 0,
           offeredAgain: link !== null,
           stillThere: alive,
+          // The panel must also offer to put the file somewhere the reader
+          // chooses: a download lands in a folder they have to go and look
+          // in, and "Save as..." is the way out of that.
+          canSaveAs:
+            doc.getElementById("selis-editor-export-result").textContent.indexOf("Save as") >= 0,
         };
       }
 
