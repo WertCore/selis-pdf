@@ -573,6 +573,12 @@ pub struct Redaction {
 /// Everything else is copied through byte for byte, so a stream with nothing
 /// to remove comes back unchanged.
 ///
+/// # Budget
+///
+/// The work is bounded by the length of the content stream: the stream is read
+/// once, and the output is at most the input plus the text that was removed.
+/// Nothing here grows with the number of regions.
+///
 /// # Malformed Input
 ///
 /// A stream that is not a content stream is copied through unchanged: the

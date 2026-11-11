@@ -28,9 +28,9 @@ editor safely.
 | `1a63dbb` | **Slice 1** — the workspace itself: the route, the page, the render, click-to-edit, page tools, undo/redo, download, the no-upload gate, the browser check. |
 | `24503a7` | **Slice 2** — changing what is ON the page: add a text box, add an image, redact. Plus the redaction rewriter fix in `selis-pdf-edit`. |
 | `222e442` | **Slice 3** — the document's own properties: the form's fields, the page's size, the document's properties. |
-| (the next one) | **Slice 4** — the document's bookmarks, and the page size as a named size. Plus the redaction's transform fix (see §2). |
+| `65a3aa8` | **Slice 4** — the document's bookmarks, the page size as a named size, and the redaction's transform fix. |
 
-Slice 4 is in the working tree, uncommitted — see §5.
+The next slice is the one below; nothing is in the working tree.
 
 ---
 
@@ -136,7 +136,7 @@ thing in this editor that is silently wrong.
 
 ## 5. The TODO list
 
-### Slice 3 — the document's own properties (IN THE WORKING TREE, uncommitted)
+### Slice 3 — the document's own properties (shipped in `222e442`)
 
 - [x] **C1 — The form's fields.** Read them (`form_fields`), show one input each, fill them in
       (`fill_forms`). The read-only, signature and push-button fields are shown but not editable —
@@ -148,7 +148,7 @@ thing in this editor that is silently wrong.
       properties, form) and `xtask/src/browser.rs`'s `verdict_editor` checks them.
 - [x] **C5 — Rebuild and commit.** See §7.
 
-### Slice 4 — the document's bookmarks, and the page size as a size (IN THE WORKING TREE, uncommitted)
+### Slice 4 — the document's bookmarks, and the page size as a size (shipped in `65a3aa8`)
 
 - [x] **E1 — The bookmarks.** The workspace reads the document's outline with the core
       engine's `outline` op, shows one row per bookmark (title, page, nesting depth), and
@@ -168,7 +168,7 @@ thing in this editor that is silently wrong.
       position in the **page's** space, and it hands back the inverse of a trailing
       transform so the black box is drawn where the reader pointed. This was a real
       bug in the CLI's `redact` too.
-- [ ] **E4 — Rebuild and commit.** See §7.
+- [x] **E4 — Rebuild and commit.** See §7.
 
 ### Slice 5 — what is next, in the order it is worth doing
 
