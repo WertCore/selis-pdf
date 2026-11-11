@@ -2872,19 +2872,43 @@ async function saveExportAs(): Promise<void> {
 	if (typeof picker !== "function") {
 		return;
 	}
+	let handle: FileSystemFileHandle;
 	try {
-		const handle = await picker.call(globalThis, {
+		handle = await picker.call(globalThis, {
 			suggestedName: file.name,
 		});
+	} catch (error) {
+		// The reader cancelled the dialog. That is not a failure, and it is
+		// not something to report as one: the file is in their downloads.
+		console.info("selis: the save dialog was dismissed", error);
+		setStatus("Cancelled. The file is still in your downloads.");
+		return;
+	}
+	try {
 		// The file's BYTES, not its length. `new Uint8Array(length)` would
 		// build an array of that many zeros, and the reader would get a file
 		// of the right size and no content in it.
 		await writeToHandle(handle as unknown as FileHandleLike, file.content);
 		setStatus(`Saved ${file.name} where you chose.`);
 	} catch (error) {
-		// The reader cancelled, or the browser refused: the file is still in
-		// the downloads, and the link in the panel still takes it.
-		setStatus(`Saved nowhere: ${messageOf(error)}`, "error");
+		// Chrome refuses the write when the dialog has taken the page's
+		// activation with it: the Save dialog is a NATIVE dialog, so by the
+		// time it closes the page is no longer "fully active", and the
+		// browser answers "The request is not allowed by the user agent or
+		// the platform in the current context".
+		//
+		// That is not a dead end, because the file is already produced: the
+		// ordinary download takes it from here, and the reader is told
+		// plainly where it went rather than being handed a browser error.
+		console.warn("selis: the browser would not write the file directly", error);
+		downloadBytes(
+			file.name,
+			file.content,
+			EXPORT_MEDIA_TYPES[file.kind] ?? "application/octet-stream",
+		);
+		setStatus(
+			`Your browser would not write the file directly, so ${file.name} is in your downloads instead.`,
+		);
 	}
 }
 

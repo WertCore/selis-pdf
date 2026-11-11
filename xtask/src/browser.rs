@@ -7358,6 +7358,16 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if export.get("savedHeader").and_then(Json::as_str) != Some("PK\u{3}\u{4}") {
         return Err("the save-as did not write the exported file's own bytes".into());
     }
+    // A browser that REFUSES the direct write - which is what Chrome does
+    // when its Save dialog is a native one and the page is no longer fully
+    // active - must fall back to the download rather than dead-ending the
+    // reader with a browser error.
+    if export.get("refusedFellBack").and_then(Json::as_bool) != Some(true) {
+        return Err("a refused save-as did not fall back to the download".into());
+    }
+    if export.get("refusedMessage").and_then(Json::as_bool) != Some(true) {
+        return Err("a refused save-as did not say where the file went".into());
+    }
 
     let bates = report
         .get("bates")

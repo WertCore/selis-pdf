@@ -242,7 +242,36 @@ replaces it; the automatic download's URL is released by its own grace timer.
 The browser drops the blobs with the document anyway.
 
 
-### 2.7 The icons
+### 2.7 The Save dialog is native, and that is why it failed
+
+The reader's error was Chrome's:
+
+> Failed to execute 'createWritable' on 'FileSystemFileHandle': The request is
+> not allowed by the user agent or the platform in the current context.
+
+The phrase "in the current context" is the clue. `createWritable()` needs the
+page to be **fully active** — and the Save dialog is a **NATIVE** dialog: it
+takes the focus away from the page, and by the time the reader has chosen a
+folder and closed it, the page is no longer the active document. The write is
+refused, and the browser's own wording for it says nothing a reader can act
+on.
+
+**A failure must never be a dead end.** The file is already produced at that
+point, so the refused write now falls back to the ordinary download and says
+so in words the reader can act on:
+
+> Your browser would not write the file directly, so electricity-bill.docx is
+> in your downloads instead.
+
+The two cases are told apart as well: a reader who **cancels** the dialog is
+not told they failed — they are told the file is still in their downloads.
+
+And the panel says the thing that was missing all along: **the browser can
+save the file wherever the reader wants, from its own menu.** Every browser
+offers "Save as…" on a download and on a link; that route is always
+available, needs no API, and cannot be refused the way a direct write can.
+
+### 2.8 The icons
 
 Each export format carries its own mark — a Word document is a page with a
 "W" on it, a deck is a presentation board, a workbook is a grid, a web page is
@@ -251,7 +280,7 @@ should be able to tell the formats apart without reading the labels, and the
 marks are drawn on the same 24-unit grid with the same stroke weight as the
 rest of the set, so the ribbon reads as one row of tools.
 
-### 2.8 What the check proves
+### 2.9 What the check proves
 
 The browser leg reads the produced files rather than trusting them:
 
@@ -264,6 +293,14 @@ resolves** after the export. That is the property that was broken — the URL
 was revoked in the same turn as the click — and a check that reads the
 produced file's URL back is the only thing in this codebase that could have
 caught it.
+
+And two that came out of the reader's reports: the **Save dialog is handed
+the file's own bytes** (a file written from its LENGTH is the right size and
+completely empty), and a **refused write falls back to the download** rather
+than dead-ending the reader with a browser error. The check drives both: it
+stubs the Save dialog with a stand-in that records what it was given, and then
+stubs it again with one that refuses, and asserts the file still reaches the
+reader.
 
 ## 3. Where the core code lives
 

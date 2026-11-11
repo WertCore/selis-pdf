@@ -618,6 +618,39 @@
             "the save-as write (" + label + ")",
           );
         }
+        // And the case the reader hit: the browser REFUSES the direct write,
+        // because its Save dialog is a native one and the page is no longer
+        // "fully active" when it closes. That must not be a dead end: the
+        // file is already produced, so the ordinary download takes it.
+        const refused = { clicked: false };
+        const originalCreate = win.showSaveFilePicker;
+        win.showSaveFilePicker = async () => ({
+          createWritable: async () => {
+            throw new DOMException(
+              "Failed to execute 'createWritable' on 'FileSystemFileHandle': " +
+                "The request is not allowed by the user agent or the platform in the current context.",
+              "SecurityError",
+            );
+          },
+        });
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        win.HTMLAnchorElement.prototype.click = function () {
+          refused.clicked = true;
+        };
+        const saveAsAgain = [...doc.querySelectorAll("#selis-editor-export-result button")].find(
+          (button) => (button.textContent || "").indexOf("Save as") >= 0,
+        );
+        if (saveAsAgain) {
+          saveAsAgain.click();
+        }
+        await waitFor(
+          () => refused.clicked || doc.getElementById("selis-editor-status").textContent.indexOf("would not write") >= 0,
+          20_000,
+          "the refused save to fall back (" + label + ")",
+        );
+        win.HTMLAnchorElement.prototype.click = originalClick;
+        win.showSaveFilePicker = originalCreate;
+        const fallback = doc.getElementById("selis-editor-status").textContent;
         const html = await exportFile(doc, win, "html", label);
         // The file the export produced must STILL BE THERE afterwards. The
         // bug this checks is the quiet one: the object URL was revoked in the
@@ -655,6 +688,10 @@
             written.bytes === null
               ? ""
               : String.fromCharCode(...written.bytes.slice(0, 4)),
+          // The refused write must fall back to the download, and say so in
+          // words the reader can act on.
+          refusedFellBack: refused.clicked,
+          refusedMessage: fallback.indexOf("would not write") >= 0,
         };
       }
 
