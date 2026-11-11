@@ -62,6 +62,10 @@ importers:
         version: 2.1.9(@types/node@24.13.4)
 
   apps/web/host:
+    dependencies:
+      '@selis/ui-kit':
+        specifier: workspace:*
+        version: link:../../../packages/ui-kit
     devDependencies:
       '@types/node':
         specifier: ^24.13.4

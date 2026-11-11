@@ -116,7 +116,7 @@ const ESM_ROOTS = [
 	{
 		from: join(workspaceRoot, "apps/web/host/dist"),
 		to: "assets/host",
-		entries: ["page.js", "tools/tools-page.js", "editor/editor-page.js"],
+		entries: ["page.js", "tools/tools-page.js", "editor/editor-page.js", "theme.js", "theme-boot.js"],
 	},
 ];
 

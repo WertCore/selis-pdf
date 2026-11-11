@@ -539,3 +539,65 @@ export function watermarkOptions(
 		tiled: false,
 	};
 }
+
+/**
+ * The options for flipping a page.
+ *
+ * `horizontal` mirrors the page left to right, `vertical` turns it over top
+ * to bottom. The page selection is **zero-based**.
+ */
+export function flipOptions(
+	axis: "horizontal" | "vertical",
+	page: number,
+): Record<string, unknown> {
+	return { axis, pages: String(page) };
+}
+
+/**
+ * The options for making the document smaller.
+ *
+ * The level is the engine's own spelling: `less`, `recommended` or
+ * `extreme`. The target is a size in KiB the result is measured against, and
+ * the engine says so when the result is still over it.
+ */
+export function compressOptions(
+	level: "less" | "recommended" | "extreme",
+	targetKiB?: number,
+): Record<string, unknown> {
+	return targetKiB === undefined ? { level } : { level, targetKiB };
+}
+
+/**
+ * The options for Bates numbering.
+ *
+ * Each page carries `prefix + the number + suffix`, and the number advances
+ * once per page from `start`, padded to `digits`. It is the legal way to
+ * mark a set of pages.
+ */
+export function batesOptions(
+	prefix: string,
+	start: number,
+	digits: number,
+	position: string,
+): Record<string, unknown> {
+	return {
+		prefix,
+		suffix: "",
+		start,
+		digits,
+		position,
+		margin_x: 36,
+		margin_y: 24,
+		font_size: 8,
+		color: { r: 0, g: 0, b: 0 },
+	};
+}
+
+/**
+ * The options for putting several pages on one sheet.
+ *
+ * The engine takes 2, 4, 6 or 9 pages per sheet and refuses anything else.
+ */
+export function nupOptions(perSheet: number): Record<string, unknown> {
+	return { per_sheet: perSheet };
+}

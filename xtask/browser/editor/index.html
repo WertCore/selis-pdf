@@ -203,6 +203,9 @@
         out.properties = await propertiesLeg(onlineDoc, onlineWin, "online");
         out.redact = await redactLeg(onlineDoc, onlineWin, "online");
         out.shell = await shellLeg(onlineDoc, onlineWin, "online");
+        out.theme = await themeLeg(onlineDoc, onlineWin, "online");
+        out.export = await exportLeg(onlineDoc, onlineWin, "online");
+        out.bates = await batesLeg(onlineDoc, onlineWin, "online");
 
         // The form's fields, on a document that has a form.
         const formBytes = new Uint8Array(
@@ -469,7 +472,18 @@
        * is not a watermark.
        */
       async function shellLeg(doc, win, label) {
-        // The rail draws a thumbnail for every page.
+        // The rail draws a thumbnail for every page. The thumbnail is drawn
+        // out of band - it is a copy of the page's raster, produced
+        // asynchronously - so the check WAITS for it rather than reading the
+        // rail at a moment when the copy has not landed yet.
+        await waitFor(
+          () =>
+            [...doc.querySelectorAll("#selis-page-list img[data-thumb]")].some((img) =>
+              (img.getAttribute("src") || "").startsWith("blob:"),
+            ),
+          20_000,
+          "the rail's thumbnail (" + label + ")",
+        );
         const thumbs = [...doc.querySelectorAll("#selis-page-list img[data-thumb]")];
         const drawn = thumbs.filter((img) =>
           (img.getAttribute("src") || "").startsWith("blob:"),
@@ -530,6 +544,131 @@
           history: history.length,
           bytes: produced.bytes,
           carriesWatermark: produced.carriesText.indexOf("DRAFT") >= 0,
+        };
+      }
+
+      /**
+       * The theme switch.
+       *
+       * The switch is checked against the ROOT ELEMENT and the STORED
+       * choice, because a switch that changed nothing would still look right.
+       */
+      async function themeLeg(doc, win, label) {
+        const before = doc.documentElement.dataset.theme || "";
+        doc.getElementById("selis-theme-toggle").click();
+        await waitFor(
+          () => (doc.documentElement.dataset.theme || "") !== before,
+          10_000,
+          "the theme to switch (" + label + ")",
+        );
+        const after = doc.documentElement.dataset.theme || "";
+        const stored = doc.defaultView.localStorage.getItem("selis-theme");
+        // Put it back, so the rest of the check runs in the theme it started in.
+        doc.getElementById("selis-theme-toggle").click();
+        return {
+          before: before,
+          after: after,
+          stored: stored,
+          switched: after !== before,
+          remembered: stored === after,
+        };
+      }
+
+      /**
+       * The export: the document written out in another format.
+       *
+       * The file is read back rather than trusted: a Word document is a ZIP
+       * container, so its first two bytes are "PK", and a deck and a workbook
+       * are ZIP containers too.
+       */
+      async function exportLeg(doc, win, label) {
+        doc.getElementById("selis-editor-tab-export").click();
+        await waitFor(
+          () => !doc.getElementById("selis-editor-panel-export").hidden,
+          10_000,
+          "the export tab (" + label + ")",
+        );
+        const formats = [...doc.querySelectorAll("#selis-editor-export button[data-export]")].map(
+          (button) => button.dataset.export,
+        );
+        const word = await exportFile(doc, win, "word", label);
+        const html = await exportFile(doc, win, "html", label);
+        return {
+          formats: formats,
+          word: word.name,
+          wordBytes: word.bytes,
+          wordHeader: word.header,
+          html: html.name,
+          htmlBytes: html.bytes,
+          htmlHeader: html.header,
+          htmlCarriesTheText: html.text.indexOf("Added") >= 0,
+        };
+      }
+
+      /**
+       * One exported file, captured rather than downloaded.
+       *
+       * The export is asynchronous, so the anchor's click is captured by
+       * overriding it and the capture is waited for.
+       */
+      async function exportFile(doc, win, format, label) {
+        const captured = {};
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        const originalCreate = win.URL.createObjectURL;
+        // The blob is captured at CREATION, because the page releases the
+        // object URL as soon as the download has been handed to the browser
+        // - and the export is asynchronous, so the check's poll would arrive
+        // after the URL was gone. The Blob itself outlives its URL.
+        const blobs = new Map();
+        win.URL.createObjectURL = function (blob) {
+          const url = originalCreate.call(win.URL, blob);
+          blobs.set(url, blob);
+          return url;
+        };
+        win.HTMLAnchorElement.prototype.click = function () {
+          captured.href = this.href;
+          captured.download = this.download;
+          captured.blob = blobs.get(this.href) || null;
+        };
+        try {
+          doc.querySelector('#selis-editor-export button[data-export="' + format + '"]').click();
+          await waitFor(
+            () => captured.href !== undefined,
+            60_000,
+            "the " + format + " export (" + label + ")",
+          );
+          const blob = captured.blob;
+          if (!blob) {
+            throw new Error("the " + format + " export produced no blob to read");
+          }
+          const produced = new Uint8Array(await blob.arrayBuffer());
+          return {
+            name: captured.download || "",
+            bytes: produced.length,
+            header: String.fromCharCode(...produced.slice(0, 4)),
+            text: new TextDecoder("latin1").decode(produced),
+          };
+        } finally {
+          win.HTMLAnchorElement.prototype.click = originalClick;
+          win.URL.createObjectURL = originalCreate;
+        }
+      }
+
+      /**
+       * The Bates numbers, read back out of the produced file.
+       *
+       * The prefix is the reader's own, so it is the thing worth looking for:
+       * a stamp that is not in the file is not a stamp.
+       */
+      async function batesLeg(doc, win, label) {
+        doc.getElementById("selis-editor-bates-prefix").value = "SELIS-";
+        doc.getElementById("selis-editor-bates-apply").click();
+        await waitForSettled(doc, "Stamped the Bates numbers", "the Bates numbers (" + label + ")");
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          carriesThePrefix: produced.carriesText.indexOf("SELIS-") >= 0,
         };
       }
 

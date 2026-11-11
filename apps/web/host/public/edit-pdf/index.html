@@ -27,7 +27,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-fwGCcm1qoKlOpTXxTvNsDqNBnIjPI36jlqY9nzgeqLhLtpWj3BXPCip9t0esFi/H"
+			integrity="sha384-fJ9XK/6aYKmCujaOyDDPDuvE7XCbNrw9jgNvMYz1eIlO3jCuS9YD3NJVJtnhYrn1"
 			crossorigin="anonymous"
 		/>
 		<link
@@ -116,6 +116,42 @@
 					data-icon="redo"
 					disabled
 				></button>
+				<button
+					type="button"
+					id="selis-theme-toggle"
+					class="selis-editor-iconbtn selis-theme-toggle"
+					title="Switch the theme"
+					aria-label="Switch the theme"
+				>
+					<svg
+						class="selis-theme-toggle__moon"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.75"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+						focusable="false"
+					>
+						<path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2" />
+					</svg>
+					<svg
+						class="selis-theme-toggle__sun"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.75"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+						focusable="false"
+					>
+						<path
+							d="M12 7.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"
+						/>
+					</svg>
+				</button>
 				<span class="selis-editor-bar__rule" aria-hidden="true"></span>
 				<button
 					type="button"
@@ -200,6 +236,16 @@
 				aria-controls="selis-editor-panel-protect"
 			>
 				Protect
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-export"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-export"
+			>
+				Export
 			</button>
 		</div>
 
@@ -449,6 +495,22 @@
 						</button>
 						<button
 							type="button"
+							class="selis-editor-tool"
+							data-op="flip-horizontal"
+							data-icon="flip-horizontal"
+						>
+							<span class="selis-editor-tool__label">Flip across</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="flip-vertical"
+							data-icon="flip-vertical"
+						>
+							<span class="selis-editor-tool__label">Flip down</span>
+						</button>
+						<button
+							type="button"
 							class="selis-editor-tool selis-editor-tool--danger"
 							data-op="delete"
 							data-icon="trash"
@@ -505,6 +567,14 @@
 						>
 							<span class="selis-editor-tool__label">Page labels</span>
 						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:nup"
+							data-icon="nup"
+						>
+							<span class="selis-editor-tool__label">Several per sheet</span>
+						</button>
 					</div>
 					<p class="selis-editor-group__label">Layout</p>
 				</div>
@@ -546,6 +616,27 @@
 						</button>
 					</div>
 					<p class="selis-editor-group__label">Branding</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:compress"
+							data-icon="compress"
+						>
+							<span class="selis-editor-tool__label">Reduce the size</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:bates"
+							data-icon="bates"
+						>
+							<span class="selis-editor-tool__label">Bates numbers</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">The file</p>
 				</div>
 				<div class="selis-editor-group">
 					<div class="selis-editor-group__buttons">
@@ -627,6 +718,33 @@
 						</button>
 					</div>
 					<p class="selis-editor-group__label">Reports</p>
+				</div>
+			</div>
+
+			<!-- EXPORT -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-export"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-export"
+				hidden
+			>
+				<div class="selis-editor-group">
+					<div
+						id="selis-editor-export"
+						class="selis-editor-group__buttons selis-editor-toolrow"
+						role="group"
+						aria-label="Export the document"
+					></div>
+					<p class="selis-editor-group__label">Export</p>
+				</div>
+				<div class="selis-editor-group selis-editor-group--wide">
+					<p class="selis-editor-ribbon__note">
+						The export is made from the document as it is now — with every change
+						you have made — and it is written here, on this device. A deck carries
+						each page as its own picture; a Word document carries the text in
+						reading order.
+					</p>
 				</div>
 			</div>
 		</div>
@@ -825,12 +943,12 @@
 						<div class="selis-editor-grid">
 							<label for="selis-editor-number-position">Position</label>
 							<select id="selis-editor-number-position">
-								<option value="bottom-center">Bottom centre</option>
-								<option value="bottom-right">Bottom right</option>
-								<option value="bottom-left">Bottom left</option>
-								<option value="top-center">Top centre</option>
-								<option value="top-right">Top right</option>
-								<option value="top-left">Top left</option>
+								<option value="bottom_center">Bottom centre</option>
+								<option value="bottom_right">Bottom right</option>
+								<option value="bottom_left">Bottom left</option>
+								<option value="top_center">Top centre</option>
+								<option value="top_right">Top right</option>
+								<option value="top_left">Top left</option>
 							</select>
 							<label for="selis-editor-number-start">Start at</label>
 							<input id="selis-editor-number-start" type="number" min="1" step="1" value="1" />
@@ -840,6 +958,79 @@
 						<div class="selis-editor-actions">
 							<button type="button" id="selis-editor-numbers-apply">
 								Number the pages
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-nup">
+						<summary>Several pages per sheet</summary>
+						<p class="selis-editor-hint">
+							Put the pages side by side on a bigger sheet â€” two on one, four, six
+							or nine. A document that was read becomes one that is printed.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-nup-count">Per sheet</label>
+							<select id="selis-editor-nup-count">
+								<option value="2">2</option>
+								<option value="4">4</option>
+								<option value="6">6</option>
+								<option value="9">9</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-nup-apply">
+								Put them together
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-bates">
+						<summary>Bates numbers</summary>
+						<p class="selis-editor-hint">
+							A number on every page, padded and prefixed — the legal way to
+							mark a set of pages.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-bates-prefix">Prefix</label>
+							<input id="selis-editor-bates-prefix" type="text" placeholder="SELIS-" />
+							<label for="selis-editor-bates-start">Start at</label>
+							<input id="selis-editor-bates-start" type="number" min="1" step="1" value="1" />
+							<label for="selis-editor-bates-digits">Digits</label>
+							<input id="selis-editor-bates-digits" type="number" min="1" max="20" step="1" value="6" />
+							<label for="selis-editor-bates-position">Position</label>
+							<select id="selis-editor-bates-position">
+								<option value="bottom_right">Bottom right</option>
+								<option value="bottom_center">Bottom centre</option>
+								<option value="bottom_left">Bottom left</option>
+								<option value="top_right">Top right</option>
+								<option value="top_center">Top centre</option>
+								<option value="top_left">Top left</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-bates-apply">
+								Stamp the numbers
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-compress">
+						<summary>Reduce the file size</summary>
+						<p class="selis-editor-hint">
+							Rewrite the document more compactly. The pages look the same; the
+							file is smaller.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-compress-level">How hard</label>
+							<select id="selis-editor-compress-level">
+								<option value="recommended">Recommended</option>
+								<option value="less">Lightly</option>
+								<option value="extreme">As small as possible</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-compress-apply">
+								Make it smaller
 							</button>
 						</div>
 					</details>

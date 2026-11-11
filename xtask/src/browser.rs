@@ -7297,6 +7297,53 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the watermark is not in the produced file".into());
     }
 
+    let theme = report
+        .get("theme")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no theme leg (theme = None)".to_string())?;
+    if theme.get("switched").and_then(Json::as_bool) != Some(true) {
+        return Err("the theme switch did not change the page's theme".into());
+    }
+    if theme.get("remembered").and_then(Json::as_bool) != Some(true) {
+        return Err("the theme switch did not remember the reader's choice".into());
+    }
+
+    let export = report
+        .get("export")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no export leg (export = None)".to_string())?;
+    let formats = export
+        .get("formats")
+        .and_then(Json::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    if formats < 4 {
+        return Err(format!(
+            "the editor offered {formats} export formats; it should offer the whole set"
+        ));
+    }
+    // A Word document and an Excel workbook are ZIP containers, so they start
+    // with "PK". A file that does not is not what the button said it was.
+    let word_header = export.get("wordHeader").and_then(Json::as_str).unwrap_or("");
+    if !word_header.starts_with("PK") {
+        return Err(format!("the Word export is not a ZIP container (it starts {word_header:?})"));
+    }
+    let html_header = export.get("htmlHeader").and_then(Json::as_str).unwrap_or("");
+    if !html_header.starts_with("<!do") && !html_header.starts_with("<htm") {
+        return Err(format!("the HTML export does not start with HTML (it starts {html_header:?})"));
+    }
+    if export.get("htmlCarriesTheText").and_then(Json::as_bool) != Some(true) {
+        return Err("the HTML export does not carry the document's text".into());
+    }
+
+    let bates = report
+        .get("bates")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no Bates leg (bates = None)".to_string())?;
+    if bates.get("carriesThePrefix").and_then(Json::as_bool) != Some(true) {
+        return Err("the Bates numbers are not in the produced file".into());
+    }
+
     let properties = report
         .get("properties")
         .and_then(Json::as_object)

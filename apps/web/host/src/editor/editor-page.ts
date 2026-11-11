@@ -37,6 +37,14 @@
 
 import { type RequestRecorder, installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
+import { type ThemeName, startTheme } from "../theme.js";
+import {
+	EXPORT_FORMATS,
+	type ExportFormat,
+	type ExportFormatInfo,
+	exportDocument,
+	exportFormat,
+} from "../tools/export.js";
 import { hasPdfHeader } from "../tools/inputs.js";
 import { type ToolsWasm, loadTools, runTool } from "../tools/protocol.js";
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
@@ -47,17 +55,21 @@ import { type IconName, icon } from "./icons.js";
 import {
 	type EditorOperation,
 	PAGE_SIZES,
+	batesOptions,
+	compressOptions,
 	cropOptions,
 	deletePage,
 	duplicatePage,
 	editLandedOnLine,
 	editText,
 	fillFormsOptions,
+	flipOptions,
 	headerFooterOptions,
 	imageOptions,
 	insertBlankPages,
 	metadataOptions,
 	movePage,
+	nupOptions,
 	outlineOptions,
 	pageLabelsOptions,
 	pageNumbersOptions,
@@ -264,6 +276,11 @@ const dom = {
 	numbersApply: el<HTMLButtonElement>("selis-editor-numbers-apply"),
 	headerApply: el<HTMLButtonElement>("selis-editor-header-apply"),
 	watermarkApply: el<HTMLButtonElement>("selis-editor-watermark-apply"),
+	batesApply: el<HTMLButtonElement>("selis-editor-bates-apply"),
+	compressApply: el<HTMLButtonElement>("selis-editor-compress-apply"),
+	nupApply: el<HTMLButtonElement>("selis-editor-nup-apply"),
+	exportGroup: el<HTMLDivElement>("selis-editor-export"),
+	theme: el<HTMLButtonElement>("selis-theme-toggle"),
 };
 
 /** The ribbon's tabs, and the panel each one shows. */
@@ -273,6 +290,7 @@ const TABS: readonly { readonly tab: string; readonly panel: string }[] = [
 	{ tab: "selis-editor-tab-organize", panel: "selis-editor-panel-organize" },
 	{ tab: "selis-editor-tab-document", panel: "selis-editor-panel-document" },
 	{ tab: "selis-editor-tab-protect", panel: "selis-editor-panel-protect" },
+	{ tab: "selis-editor-tab-export", panel: "selis-editor-panel-export" },
 ];
 
 /** Say what happened, in the status line under the document. */
@@ -1070,6 +1088,66 @@ async function applyWatermark(): Promise<void> {
  * document carries about where it came from. Removing it is a real edit: the
  * bytes come back without it, and the change can be undone.
  */
+/** Stamp a Bates number on every page. */
+async function applyBates(): Promise<void> {
+	const prefix = textInput("selis-editor-bates-prefix");
+	const start = Math.max(1, Math.round(numberInput("selis-editor-bates-start")));
+	const digits = Math.min(20, Math.max(1, Math.round(numberInput("selis-editor-bates-digits"))));
+	const position = selectValue("selis-editor-bates-position");
+	await runOperation({
+		op: "bates",
+		options: batesOptions(prefix, start, digits, position),
+		label: "Stamped the Bates numbers",
+	});
+}
+
+/**
+ * Make the document smaller.
+ *
+ * The size before and after is in the status line, because "smaller" is only
+ * interesting next to how much smaller.
+ */
+async function applyCompress(): Promise<void> {
+	const level = selectValue("selis-editor-compress-level");
+	const before = state.bytes?.length ?? 0;
+	const chosen = level === "less" || level === "extreme" ? level : "recommended";
+	const done = await runOperation({
+		op: "compress",
+		options: compressOptions(chosen),
+		label: "Made the document smaller",
+	});
+	if (!done) {
+		return;
+	}
+	const after = state.bytes?.length ?? 0;
+	setStatus(`Made the document smaller: ${formatBytes(before)} to ${formatBytes(after)}.`);
+}
+
+/** Put several pages on one sheet. */
+async function applyNup(): Promise<void> {
+	const count = Math.round(numberInput("selis-editor-nup-count"));
+	if (![2, 4, 6, 9].includes(count)) {
+		setStatus("Choose 2, 4, 6 or 9 pages per sheet.", "error");
+		return;
+	}
+	await runOperation({
+		op: "nup",
+		options: nupOptions(count),
+		label: `Put ${count} pages on each sheet`,
+	});
+}
+
+/** A byte count in the reader's own units. */
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) {
+		return `${bytes} B`;
+	}
+	if (bytes < 1024 * 1024) {
+		return `${(bytes / 1024).toFixed(1)} KB`;
+	}
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 async function stripMetadata(): Promise<void> {
 	await runOperation({
 		op: "strip_metadata",
@@ -1198,6 +1276,157 @@ function summariseReport(kind: "privacy" | "fingerprint", parsed: unknown): stri
 		lines.push("The report carries nothing to show.");
 	}
 	return lines;
+}
+
+// ── the export ───────────────────────────────────────────────────────────────
+
+/**
+ * The export buttons, one per format the engine can write.
+ *
+ * The list comes from the shared export module, so the editor and the tools
+ * page offer the SAME formats and the same names: a format added there
+ * appears here without a second edit.
+ */
+function renderExportButtons(): void {
+	const group = dom.exportGroup;
+	group.replaceChildren();
+	for (const format of EXPORT_FORMATS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "selis-editor-tool";
+		button.dataset.export = format.id;
+		button.title = format.note;
+		const label = document.createElement("span");
+		label.className = "selis-editor-tool__label";
+		label.textContent = format.label;
+		button.appendChild(label);
+		group.appendChild(button);
+	}
+}
+
+/**
+ * Render every page of the document as a PNG, base64 encoded.
+ *
+ * The deck is the one export that carries the page's own picture: a slide
+ * that shows the page is worth having, and a slide that is a list of text
+ * boxes is not the same thing. The pages are drawn by the editor's own
+ * engine, at the resolution the reader sees.
+ */
+async function pageImages(): Promise<string[]> {
+	const client = await engine();
+	const dpr = devicePixelRatio();
+	const images: string[] = [];
+	for (let page = 0; page < state.pages; page += 1) {
+		const raster = client.render(state.doc, page, BASE_DPI * dpr);
+		const canvas = document.createElement("canvas");
+		canvas.width = raster.width;
+		canvas.height = raster.height;
+		const context = canvas.getContext("2d");
+		if (context === null) {
+			continue;
+		}
+		context.putImageData(
+			new ImageData(
+				new Uint8ClampedArray(
+					raster.pixels.buffer as ArrayBuffer,
+					raster.pixels.byteOffset,
+					raster.pixels.byteLength,
+				),
+				raster.width,
+				raster.height,
+			),
+			0,
+			0,
+		);
+		const url = canvas.toDataURL("image/png");
+		const comma = url.indexOf(",");
+		images.push(comma < 0 ? url : url.slice(comma + 1));
+	}
+	return images;
+}
+
+/** Hand a produced file to the reader, as a Blob in this tab. */
+function downloadFile(name: string, bytes: Uint8Array, kind: string): void {
+	const types: Readonly<Record<string, string>> = {
+		html: "text/html",
+		text: "text/plain",
+		report: "application/json",
+	};
+	const blob = new Blob([new Uint8Array(bytes)], {
+		type: types[kind] ?? "application/octet-stream",
+	});
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = name;
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	setTimeout(() => {
+		URL.revokeObjectURL(url);
+	}, 0);
+}
+
+/**
+ * Write the document out in another format.
+ *
+ * The bytes exported are the document's bytes AS THEY ARE NOW — every change
+ * the reader has made is in them — and the export is written here, on this
+ * device. Nothing is uploaded, and the no-upload assertion runs afterwards
+ * like it does after every other operation.
+ */
+/**
+ * Label the theme button for the theme it switches TO.
+ *
+ * The glyph is chosen by the STYLESHEET — both are in the markup, and the
+ * one for the dark theme is hidden in the light one — so the switch is right
+ * before any script has run. The label is set here, because a title that
+ * says which theme the button will land on is worth more than a glyph.
+ */
+function renderThemeButton(theme: ThemeName): void {
+	const next = theme === "dark" ? "light" : "dark";
+	const label = `Switch to the ${next} theme`;
+	dom.theme.title = label;
+	dom.theme.setAttribute("aria-label", label);
+}
+
+async function runExport(format: ExportFormat): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (state.busy) {
+		return;
+	}
+	const info: ExportFormatInfo | null = exportFormat(format);
+	const label = info?.label ?? format;
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus(`Writing the ${label.toLowerCase()}…`);
+	try {
+		const images = info?.needsPageImages === true ? await pageImages() : undefined;
+		const files = await exportDocument({
+			format,
+			bytes,
+			name: state.name,
+			...(images === undefined ? {} : { slideImages: images }),
+		});
+		if (files.length === 0) {
+			throw new Error("the writer produced no file");
+		}
+		for (const file of files) {
+			downloadFile(file.name, file.bytes, file.kind);
+		}
+		await assertLocalOnly();
+		const produced = files.map((file) => file.name).join(", ");
+		setStatus(`Wrote ${produced}.`);
+	} catch (error) {
+		setStatus(`The ${label.toLowerCase()} was not written: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
 }
 
 // ── the visible history ──────────────────────────────────────────────────────
@@ -2499,6 +2728,20 @@ async function runPageTool(operation: string): Promise<void> {
 		case "rotate-270":
 			await runOperation(rotatePage(page, 270));
 			return;
+		case "flip-horizontal":
+			await runOperation({
+				op: "flip",
+				options: flipOptions("horizontal", page),
+				label: `Flipped page ${page + 1} across`,
+			});
+			return;
+		case "flip-vertical":
+			await runOperation({
+				op: "flip",
+				options: flipOptions("vertical", page),
+				label: `Flipped page ${page + 1} down`,
+			});
+			return;
 		case "duplicate":
 			await runOperation(duplicatePage(page));
 			return;
@@ -2799,6 +3042,15 @@ function wire(): void {
 	dom.watermarkApply.addEventListener("click", () => {
 		void applyWatermark();
 	});
+	dom.batesApply.addEventListener("click", () => {
+		void applyBates();
+	});
+	dom.compressApply.addEventListener("click", () => {
+		void applyCompress();
+	});
+	dom.nupApply.addEventListener("click", () => {
+		void applyNup();
+	});
 
 	// The visible history: choosing a state returns the document to it.
 	dom.historyClear.addEventListener("click", () => {
@@ -2814,6 +3066,23 @@ function wire(): void {
 			void goToState(index);
 		}
 	});
+
+	// The export: one button per format, from the shared list.
+	dom.exportGroup.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const format = target.closest<HTMLElement>("button[data-export]")?.dataset.export;
+		if (format !== undefined) {
+			void runExport(format as ExportFormat);
+		}
+	});
+
+	// The theme: the reader's own choice, remembered across the site. The
+	// switch itself is wired by the shared theme module, so it behaves the
+	// same on every surface.
+	renderThemeButton(startTheme());
 
 	// The inspector can be put away when the reader wants the whole canvas.
 	dom.inspectorToggle.addEventListener("click", () => {
@@ -2844,6 +3113,7 @@ async function boot(): Promise<void> {
 	wire();
 	setTool("text");
 	selectTab("selis-editor-tab-home");
+	renderExportButtons();
 	renderZoom();
 	renderHistory();
 	renderDirty();

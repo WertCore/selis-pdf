@@ -18,8 +18,23 @@
  * ui-kit tokens are remapped here — loaded last in the assembled style.css, so
  * these win — onto the exact site palette. The viewer then renders in the same
  * colours, fonts and accents as the grid.
+ *
+ * The remap is written for BOTH themes. It used to be written for the light
+ * theme only, in a plain `:root` block, and that is why the ui-kit's dark
+ * tokens never took effect: `:root` and `[data-theme="dark"]` have the SAME
+ * specificity, and this file is loaded last — so the light values won
+ * regardless of what the reader chose.
+ *
+ * The fix is the selector, not the palette: `:root:not([data-theme="dark"])`
+ * matches only when the page is in the light theme, and
+ * `:root[data-theme="dark"]` matches only when it is in the dark one. Both
+ * outrank the ui-kit's own `:root`, so the remap is what applies either way.
+ *
+ * The dark palette is the same product at night: the same warm paper-and-green
+ * idea, with the paper dark and the green lightened enough to read against
+ * it. The page of a PDF stays white in both — paper is paper.
  */
-:root {
+:root:not([data-theme="dark"]) {
 	--selis-color-bg: #f4f1e8;
 	--selis-color-bg-raised: #fffdf7;
 	--selis-color-bg-inset: #e9e4d7;
@@ -45,10 +60,97 @@
 	--selis-color-danger-fg: #9d3327;
 	--selis-color-page-placeholder: #e9e4d7;
 	--selis-color-page-placeholder-fg: #65716b;
+}
+
+/*
+ * The dark theme: the same product at night.
+ *
+ * The paper goes dark and warm rather than blue-black, so it still belongs
+ * to the same design; the green is lightened, because the deep green of the
+ * light theme has nothing to read against on a dark ground; and the page of
+ * a PDF stays white in both, because paper is paper.
+ */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--selis-color-bg: #16181b;
+	--selis-color-bg-raised: #1e2124;
+	--selis-color-bg-inset: #0f1113;
+	--selis-color-fg: #e9e7e2;
+	--selis-color-fg-muted: #a8a49c;
+	--selis-color-fg-subtle: #8b8880;
+	--selis-color-fg-disabled: #5f5d58;
+	--selis-color-border: #33363a;
+	--selis-color-border-strong: #565a5f;
+	--selis-color-focus-ring: #5fd3bd;
+	--selis-color-accent: #3fbfa6;
+	--selis-color-accent-hover: #5fd3bd;
+	--selis-color-accent-subtle: #17322e;
+	--selis-color-accent-fg: #0c1513;
+	--selis-color-link: #5fd3bd;
+	--selis-color-selection-bg: #3fbfa6;
+	--selis-color-selection-fg: #0c1513;
+	--selis-color-highlight-bg: #6b5300;
+	--selis-color-highlight-active-bg: #8a6a00;
+	--selis-color-highlight-fg: #f2efe8;
+	--selis-color-danger: #e0705f;
+	--selis-color-danger-subtle: #3a1f1c;
+	--selis-color-danger-fg: #f2938a;
+	--selis-color-page-placeholder: #24272a;
+	--selis-color-page-placeholder-fg: #a8a49c;
+}
+
+/* The type and the radii are the same in both themes: a theme is a colour. */
+:root {
 	--selis-font-sans: "Segoe UI", "Aptos", "Helvetica Neue", Arial, sans-serif;
 	--selis-radius-sm: 7px;
 	--selis-radius-md: 11px;
 	--selis-radius-lg: 16px;
+}
+
+/*
+ * The theme switch.
+ *
+ * The two glyphs are both in the markup and the STYLESHEET picks one, rather
+ * than the script swapping them: the switch is on the page before any
+ * script has run, so it must be right before the script runs too — otherwise
+ * the reader sees a sun in the light theme for a moment.
+ */
+.selis-theme-toggle {
+	display: inline-grid;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: var(--selis-border-hairline) solid transparent;
+	border-radius: var(--selis-radius-sm);
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	transition: background var(--selis-duration-fast) var(--selis-ease-standard);
+}
+
+.selis-theme-toggle:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-theme-toggle svg {
+	width: 1.125rem;
+	height: 1.125rem;
+	flex: none;
+}
+
+/* The sun is for the dark theme, and the moon for the light one: the glyph
+ * names the theme the reader would land on. */
+.selis-theme-toggle__sun {
+	display: none;
+}
+
+:root[data-theme="dark"] .selis-theme-toggle__moon {
+	display: none;
+}
+
+:root[data-theme="dark"] .selis-theme-toggle__sun {
+	display: block;
 }
 
 /* The viewer page is a column: a slim branded header, then the app, then a

@@ -1,7 +1,7 @@
 # 41 — The editor: what is shipped, and what is next
 
 **Status:** living document. **Owner:** AI+ · **Companion to:** `39-EDIT-PDF-WORKSPACE.md`,
-`40-EDIT-PDF-CONTENT-TOOLS.md`.
+`40-EDIT-PDF-CONTENT-TOOLS.md`, `42-EDITOR-UI-REDESIGN.md`, `43-THEME-EXPORT-CORE.md`.
 
 **Why this file exists:** the editor is built across several sessions. If one ends badly, the next
 agent should be able to read this file and carry on without re-deriving the architecture, the
@@ -30,7 +30,8 @@ editor safely.
 | `222e442` | **Slice 3** — the document's own properties: the form's fields, the page's size, the document's properties. |
 | `65a3aa8` | **Slice 4** — the document's bookmarks, the page size as a named size, and the redaction's transform fix. |
 | `b3187e8` | The redaction's contract sections, and this roadmap's state. |
-| (the next one) | **Slice 5** — the editor's face, and the features that came with it: find, zoom, thumbnails, the history panel, page labels, page numbers, a header and a footer, a watermark, the privacy report and the fingerprint. |
+| `8e9bec4` | **Slice 5** — the editor's face, and the features that came with it: find, zoom, thumbnails, the history panel, page labels, page numbers, a header and a footer, a watermark, the privacy report and the fingerprint. |
+| (the next one) | **Slice 6** — the theme, the export, and the rest of the parities the engine already had: flip, compress, Bates numbering, several pages per sheet, and eight export formats. |
 
 The next slice is the one below; nothing is in the working tree.
 
@@ -189,11 +190,11 @@ The verdicts:
 | Replace or move an existing image or box | Nowhere. There is no operation that **addresses** an existing object. | **BLOCKED** — `SL-5.ANNOT.*` |
 | Draw shapes, arrows, freehand | The stamp primitive carries strokes, but they would be page content, not annotations another reader can reply to. | **BLOCKED** — `SL-5.ANNOT.*` |
 | Rotate a page | 90°, 180° and 270°, on the selected page. | **SHIPPED** |
-| Flip a page | The tools page's "Flip". | **BUILDABLE** — the `flip` op exists |
+| Flip a page | The Organize tab's "Flip across" and "Flip down". | **SHIPPED** |
 | Delete, duplicate, insert, reorder pages | All four. | **SHIPPED** |
 | Crop and resize a page | By margins, and to a named size (A3/A4/A5/Letter/Legal). | **SHIPPED** |
 | Split or extract pages | Deleting the pages you do not want is the same operation. | **BUILDABLE** — `delete`/`reorder` exist |
-| Several pages to one sheet | The tools page's "n-up". | **BUILDABLE** — the `nup` op exists |
+| Several pages on one sheet | The editor's "Several pages per sheet" panel. | **SHIPPED** |
 | Header, footer, page numbers, watermark | Four panels in the inspector. | **SHIPPED** |
 | Page labels (i, ii, iii / A-1) | The inspector's "Page labels" panel. | **SHIPPED** |
 | Bookmarks | Read and written, with their nesting depth. | **SHIPPED** |
@@ -203,18 +204,19 @@ The verdicts:
 | Measure an area | Nowhere. It needs the page's vector art, which the engine does not expose. | **BLOCKED** |
 | Compare two documents | Nowhere. The engine has no compare operation. | **BLOCKED** |
 | Comment, highlight, underline, strikeout, reply | Nowhere. There is no annotation writer. | **BLOCKED** — `SL-5.ANNOT.*` |
-| Reduce the file size | The tools page's "Optimise & repair". | **BUILDABLE** — the `compress` op exists |
-| Bates numbering | The tools page has it. | **BUILDABLE** — the `bates` op exists |
+| Reduce the file size | The editor's "Reduce the file size" panel, and the tools page's "Optimise & repair". | **SHIPPED** |
+| Bates numbering | The editor's "Bates numbers" panel, and the tools page's. | **SHIPPED** |
 | Attach a file, detach a file | The tools page's "Attachments". | **BUILDABLE** — `attach`/`detach`/`attachments` exist |
 
 ### Convert
 
 | Feature | Where it is now | Verdict |
 |---|---|---|
-| Export to Word, Excel, PowerPoint | Nowhere. There is no office writer. | **BLOCKED** |
-| Export to HTML | The tools page's "PDF to HTML" — the chunk exists. | **BUILDABLE** — the editor needs a client for it |
+| Export to Word, Excel, PowerPoint | The editor's **Export** tab. The writers have been in `crates/selis-pdf-text` all along — this row was marked BLOCKED, and that was wrong. | **SHIPPED** |
+| Export to HTML | The editor's Export tab, and the tools page's "PDF to HTML". | **SHIPPED** |
+| Export plain text or CSV | The editor's Export tab, and the tools page's text export. | **SHIPPED** |
+| Export to an EPUB book | The editor's Export tab. | **SHIPPED** |
 | Export to PNG, JPG, TIFF, WebP | The tools page's four image cards — the chunk exists. | **BUILDABLE** — the editor needs a client for it |
-| Export plain text or CSV | The tools page's text export — the chunk exists. | **BUILDABLE** — the editor needs a client for it |
 | Convert to PDF/A | Nowhere. | **BLOCKED** |
 | Translate | Nowhere. | **NOT PLANNED** — it needs a service, and the promise is that nothing leaves the device |
 
@@ -254,20 +256,26 @@ The verdicts:
 | Tagged PDF, alt text, reading order | The engine **reads** a document's structure; there is no structure **writer**. | **BLOCKED** for writing |
 | Check the document's accessibility | Nowhere. The `structure` op already reports what the document carries. | **BUILDABLE** — a report, not a rewrite |
 
+### The product itself
+
+| Feature | Where it is now | Verdict |
+|---|---|---|
+| A dark theme | The switch in the app bar, the grid's navigation and the viewer's bar. The decision lives in `@selis/ui-kit`, so the desktop app and the SDK can share it. | **SHIPPED** |
+| The reader's choice is remembered | One key, `selis-theme`, across the site and across sessions. | **SHIPPED** |
+
 ### The one thing the list says that we do not argue with
 
 Every row above that says **BLOCKED** is blocked on the *engine*, not on the
 editor. The engine is further along than the editor's face: thirty-four
-operations are on the wire, and the editor drove eleven of them when this
-inventory was written. **Most of what the market has is a UI away from being
-here** — which is why slice 6 is a list of panels and not a list of engine
-work.
+operations are on the wire, and the editor drives nineteen of them. **Most of
+what the market has is a UI away from being here** — which is why slice 7 is
+a list of panels and not a list of engine work.
 
 ---
 
 ## 6. The TODO list
 
-### Slice 5 — the editor's face, and the features that came with it
+### Slice 5 — the editor's face, and the features that came with it (shipped in `8e9bec4`)
 
 - [x] **G1 — The face.** The app bar, the tab strip, the ribbon, the page rail
       with real thumbnails, the canvas on a neutral surface, the inspector, and
@@ -297,18 +305,33 @@ work.
       whole check instead of reporting what went wrong. Every leg that times
       out from now on will say what it was waiting for.
 
-### Slice 6 — what is next: the features the engine already has
+### Slice 6 — the theme, the export, and the rest of the parities
 
-None of these need engine work. Each is a panel, a button and an operation
-that is already on the wire.
+- [x] **H1 — Flip the page.** The `flip` op, on the selected page, both ways.
+- [x] **H2 — Reduce the file size.** The `compress` op, with the size before
+      and after in the status line.
+- [x] **H3 — Bates numbering.** The `bates` op — prefix, start, digits.
+- [x] **H11 — Several pages to one sheet.** The `nup` op.
+- [x] **H13 — The export.** Eight formats — Word, PowerPoint, Excel, a web
+      page, an EPUB book, a reflowed article, tables as CSV, plain text — all
+      written by the engine's own writers, from the document **as it is**.
+      *The finding:* the writers have been in `crates/selis-pdf-text` all
+      along, and the roadmap's "BLOCKED — no office writer" was wrong.
+- [x] **H14 — The theme.** The switch between the light and the dark theme,
+      on every surface, with the decision in `@selis/ui-kit` so the other
+      products can share it. *The finding:* the dark theme had always been in
+      the tokens and never took effect, because the site's remap and the
+      kit's `[data-theme="dark"]` had the same specificity and the remap was
+      loaded last.
+- [x] **H15 — The shared export layer.** The HTML writer's client, extracted
+      from the tools page, and one module that knows which chunk writes
+      which format — so a format is added once.
+- [x] **H16 — The evidence.** Three more browser legs: the theme switched and
+      was remembered, a Word export is a ZIP container and an HTML export
+      carries the text, and the Bates prefix is in the produced file.
 
-- [ ] **H1 — Flip the page.** The `flip` op (horizontal/vertical). Two lines
-      and a button in the Organize tab.
-- [ ] **H2 — Reduce the file size.** The `compress` op, with the size before
-      and after in the status line. A reader who has just scanned something
-      wants this.
-- [ ] **H3 — Bates numbering.** The `bates` op — prefix, start, digits. The
-      legal feature; the engine has it and the editor does not.
+### Slice 7 — what is next: the features the engine already has
+
 - [ ] **H4 — Split the document.** "Keep these pages": a selection in the
       rail, then `delete`/`reorder` to leave the ones that were chosen.
 - [ ] **H5 — Attach and detach.** The `attach`, `detach` and `attachments`
@@ -317,9 +340,9 @@ that is already on the wire.
 - [ ] **H6 — The accessibility report.** The core engine's `structure` op:
       does the document have a tag tree, are its images tagged, is the
       reading order right. A report, not a rewrite.
-- [ ] **H7 — Export.** PDF to an image (the raster chunk), to HTML (the html
-      chunk), to text (the text chunk). Each needs a client like the tools
-      page's, and each is a download rather than an edit.
+- [ ] **H7 — Export to an image.** The raster chunk (PNG, JPG, TIFF, WebP).
+      The HTML and text exports are done; the image one is the same shape, and
+      the editor's own canvas already renders the pages.
 - [ ] **H8 — Protect with a password.** The security chunk's `protect` and
       `unlock`. A prompt for the password, and the honest note that the
       browser's own memory holds the key while the tab is open.
@@ -329,12 +352,11 @@ that is already on the wire.
 - [ ] **H10 — Measure.** The distance and the angle between two points the
       reader marks, in the page's own user space, drawn as the overlay
       writers draw.
-- [ ] **H11 — Several pages to one sheet.** The `nup` op.
 - [ ] **H12 — A command palette.** Every command is a button; with the
-      ribbon's five tabs and the inspector's ten panels, a box you can type
-      into would be faster than clicking.
+      ribbon's six tabs and the inspector's panels, a box you can type into
+      would be faster than clicking.
 
-### Slice 7 — what needs the engine
+### Slice 8 — what needs the engine
 
 These are the blockers named above, in the order they unlock the most.
 
@@ -361,6 +383,9 @@ These are the blockers named above, in the order they unlock the most.
   from the engine. A second copy is a second set of bugs.
 - **A redaction that fakes removal.** Covering an image is not erasing it,
   and the page says so.
+- **A second copy of a decision.** The theme's decisions are the design
+  system's, the export's writers are the engine's, and the web layer holds
+  only the wire. `43-THEME-EXPORT-CORE.md` says which is which.
 
 ---
 
@@ -441,12 +466,18 @@ These have all cost time. They are not obvious.
     then lands in the wrong place: the geometry knows the page's real width
     and the browser is drawing it at another. The canvas scrolls; the fit
     commands change the zoom.
-12. **A leg that times out must say so.** The browser harness's `waitFor`
+12. **The theme's selector is load-bearing.** The site's palette is a remap of
+    the design system's tokens, and it used to be written in a plain `:root`
+    block: the same specificity as the kit's `[data-theme="dark"]`, and
+    loaded last, so the dark theme could never take effect. The remap is
+    `:root:not([data-theme="dark"])` and `:root[data-theme="dark"]` now. A
+    theme that "does not work" is very often one selector.
+13. **A leg that times out must say so.** The browser harness's `waitFor`
     used to quote a `frame` that only existed inside `main()`, so a timeout
     **threw** instead of rejecting and the promise stayed pending forever: a
     leg that timed out hung the whole check instead of reporting what went
     wrong. The frame is module-level now, and the rejection cannot throw.
-13. **A PowerShell script that contains an em-dash is read as ANSI.** The
+14. **A PowerShell script that contains an em-dash is read as ANSI.** The
     editor's plan files are UTF-8, and `powershell -File` decodes a script
     without a BOM as the system code page — so a here-string's `—` arrives
     as three mojibake characters and the file is written back corrupted.

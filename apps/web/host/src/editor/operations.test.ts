@@ -9,17 +9,21 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	batesOptions,
+	compressOptions,
 	cropOptions,
 	deletePage,
 	duplicatePage,
 	editLandedOnLine,
 	editText,
 	fillFormsOptions,
+	flipOptions,
 	headerFooterOptions,
 	imageOptions,
 	insertBlankPages,
 	metadataOptions,
 	movePage,
+	nupOptions,
 	outlineOptions,
 	pageLabelsOptions,
 	pageNumbersOptions,
@@ -146,6 +150,28 @@ describe("the document's own furniture", () => {
 			{ title: "One", page: 1, level: 0 },
 			{ title: "One A", page: 2, level: 1 },
 		]);
+	});
+
+	it("flips the selected page, in the engine's own vocabulary", () => {
+		expect(flipOptions("horizontal", 2)).toEqual({ axis: "horizontal", pages: "2" });
+		expect(flipOptions("vertical", 0)).toEqual({ axis: "vertical", pages: "0" });
+	});
+
+	it("asks for a smaller document, and says how hard", () => {
+		expect(compressOptions("recommended")).toEqual({ level: "recommended" });
+		expect(compressOptions("extreme", 512)).toEqual({ level: "extreme", targetKiB: 512 });
+	});
+
+	it("stamps the Bates numbers with their prefix and padding", () => {
+		const options = batesOptions("SELIS-", 1, 6, "bottom_right");
+		expect(options.prefix).toBe("SELIS-");
+		expect(options.start).toBe(1);
+		expect(options.digits).toBe(6);
+		expect(options.position).toBe("bottom_right");
+	});
+
+	it("puts the requested number of pages on each sheet", () => {
+		expect(nupOptions(4)).toEqual({ per_sheet: 4 });
 	});
 });
 

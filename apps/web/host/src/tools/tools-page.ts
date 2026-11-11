@@ -14,6 +14,7 @@
 
 import { installRequestRecorder } from "../no-upload.js";
 import { registerServiceWorker } from "../sw-register.js";
+import { startTheme } from "../theme.js";
 import {
 	TOOLS,
 	TOOL_BY_ID,
@@ -694,6 +695,9 @@ function init(): void {
 	// exposes the outcome to the browser check without exposing document data.
 	const requestRecorder = installRequestRecorder();
 	document.documentElement.dataset.noUpload = "watching";
+	// The theme, before anything is drawn: the reader's own choice, or the
+	// system's until they make one.
+	startTheme();
 
 	let selectedTool: ToolId | null = null;
 	let files: File[] = [];

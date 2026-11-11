@@ -57,7 +57,13 @@ export type IconName =
 	| "fit-page"
 	| "lock"
 	| "moon"
-	| "sun";
+	| "sun"
+	| "export"
+	| "flip-horizontal"
+	| "flip-vertical"
+	| "nup"
+	| "compress"
+	| "bates";
 
 /**
  * Each icon's path data, in the 24-unit grid.
@@ -104,6 +110,13 @@ const PATHS: Readonly<Record<IconName, string>> = {
 	lock: "M7 10.5V8a5 5 0 0 1 10 0v2.5M5.5 10.5h13V20h-13zM12 14v2.5",
 	moon: "M20 14.2A8.2 8.2 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2",
 	sun: "M12 7.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4",
+	export:
+		"M12 15.5V3.5m0 0L8 7.5m4-4 4 4M4.5 14.5v4A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5v-4",
+	"flip-horizontal": "M12 3.5v17M9 7 4.5 12 9 17M15 7l4.5 5L15 17",
+	"flip-vertical": "M3.5 12h17M7 9 12 4.5 17 9M7 15l5 4.5 5-4.5",
+	nup: "M4 5.5h7v6H4zM13 5.5h7v6h-7zM4 13.5h7v6H4zM13 13.5h7v6h-7z",
+	compress: "M4 8.5h16M4 12h16M4 15.5h16M9 4.5 12 7.5 15 4.5M9 19.5l3-3 3 3",
+	bates: "M6 4.5h12v15H6zM9 8h6M9 11.5h6M9 15h3",
 };
 
 /**

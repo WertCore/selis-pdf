@@ -37,6 +37,18 @@
  */
 import { registerServiceWorker } from "/sw-register.js";
 
+// The theme, reached by a DYNAMIC import: the viewer pins the digest of
+// every script it loads, and the theme's entry is a compiled module whose
+// bytes change on every build. A dynamic import keeps boot.js's one static
+// import and the viewer's pinned digests, and the page is still in the
+// reader's theme before the viewer is mounted.
+import("/assets/host/theme.js")
+	.then((theme) => theme.startTheme())
+	.catch(() => {
+		// A theme that could not be applied is not a reason to stop the
+		// viewer: the page falls back to the light theme.
+	});
+
 globalThis.__selisBoot = "web-host";
 
 /**

@@ -27,10 +27,26 @@ export {
 } from "./tokens/scale.js";
 export {
 	type ThemePreferences,
+	type ThemeName,
 	type DensityPreference,
 	type ContrastPreference,
 	type MotionPreference,
 	themeAttributeValues,
 	applyTheme,
 } from "./theming.js";
+export {
+	CONTRAST_STORAGE_KEY,
+	DENSITY_STORAGE_KEY,
+	MOTION_STORAGE_KEY,
+	THEME_STORAGE_KEY,
+	type PreferenceStorage,
+	hasChosenTheme,
+	readStoredPreferences,
+	resolvePreferences,
+	withToggledContrast,
+	withToggledDensity,
+	withToggledMotion,
+	withToggledTheme,
+	writeStoredPreferences,
+} from "./preferences.js";
 export { generateTokensCss, TOKENS_CSS_HEADER } from "./tokens-css.js";

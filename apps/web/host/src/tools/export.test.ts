@@ -1,0 +1,64 @@
+/**
+ * The shared export layer (pdf-plan/41, slice 8).
+ *
+ * The writers are the engine's; this module is the wire and the names, and
+ * that is what is tested here: which chunk answers which format, what each
+ * format is called, and which formats carry the page's own picture.
+ *
+ * The writers themselves are tested in Rust, where they live
+ * (`crates/selis-pdf-text`), and the chunks are tested at their own
+ * boundary. What is left for this layer is the mapping, and that is what
+ * would silently break if a format were renamed on one side of it.
+ */
+import { describe, expect, it } from "vitest";
+import { EXPORT_FORMATS, exportFormat, textOpFor } from "./export.js";
+
+describe("the export formats", () => {
+	it("covers the formats the engine can write", () => {
+		const ids = EXPORT_FORMATS.map((format) => format.id);
+		expect(ids).toContain("word");
+		expect(ids).toContain("slides");
+		expect(ids).toContain("workbook");
+		expect(ids).toContain("html");
+		expect(ids).toContain("epub");
+		expect(ids).toContain("text");
+		expect(ids).toContain("tables");
+		expect(ids).toContain("reflow");
+	});
+
+	it("names every format and says what it is", () => {
+		for (const format of EXPORT_FORMATS) {
+			expect(format.label.length).toBeGreaterThan(0);
+			expect(format.note.length).toBeGreaterThan(0);
+			expect(format.extension.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("knows which format needs the page's own picture", () => {
+		// A deck that carries each page as a picture is worth having; the
+		// others carry text.
+		expect(exportFormat("slides")?.needsPageImages).toBe(true);
+		expect(exportFormat("word")?.needsPageImages).toBe(false);
+		expect(exportFormat("nonsense")).toBeNull();
+	});
+
+	it("sends every format but the web page to the text chunk", () => {
+		// The writers live in `crates/selis-pdf-text`, and the text chunk is
+		// how a page reaches them. The web page is the HTML chunk's.
+		expect(textOpFor("word")).toBe("word");
+		expect(textOpFor("slides")).toBe("slides");
+		expect(textOpFor("workbook")).toBe("workbook");
+		expect(textOpFor("epub")).toBe("epub");
+		expect(textOpFor("reflow")).toBe("reflow");
+		expect(textOpFor("tables")).toBe("tables");
+		expect(textOpFor("text")).toBe("text");
+		expect(textOpFor("html")).toBeNull();
+	});
+
+	it("gives every format a writer", () => {
+		for (const format of EXPORT_FORMATS) {
+			const op = textOpFor(format.id);
+			expect(op !== null || format.id === "html", format.id).toBe(true);
+		}
+	});
+});

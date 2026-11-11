@@ -80,6 +80,11 @@ apps/web/host/public/assets/host/no-upload.js
 apps/web/host/public/assets/host/sw-policy.js
 apps/web/host/public/assets/host/sw-register.js
 apps/web/host/public/assets/host/tools/
+# The theme's module and its page entry: the theme is the design system's
+# decision (packages/ui-kit) and this is the web's wire to it, copied from
+# apps/web/host/dist the same way the editor's modules are.
+apps/web/host/public/assets/host/theme.js
+apps/web/host/public/assets/host/theme-boot.js
 # The editor workspace's modules, copied from apps/web/host/dist the same way
 # the tools page's are (pdf-plan/39).
 apps/web/host/public/assets/host/editor/
