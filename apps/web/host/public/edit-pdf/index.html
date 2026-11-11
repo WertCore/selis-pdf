@@ -6,16 +6,17 @@
 		<meta name="theme-color" content="#f2f4f7" />
 		<meta
 			name="description"
-			content="Edit a PDF in your browser: change text where it is drawn, rotate, delete, reorder and duplicate pages. Your document stays on your device — nothing is uploaded."
+			content="Edit a PDF in your browser: change text where it is drawn, add text boxes and images, redact, organize pages, fill forms, and set bookmarks. Your document stays on your device — nothing is uploaded."
 		/>
 		<title>Selis PDF Editor — edit your PDF privately, no upload</title>
 		<link rel="canonical" href="https://pdf.selis.com/edit-pdf/" />
 		<!--
-			The editor workspace (pdf-plan/39-EDIT-PDF-WORKSPACE.md).
+			The editor workspace (pdf-plan/39-EDIT-PDF-WORKSPACE.md, and the
+			redesign in pdf-plan/42-EDITOR-UI-REDESIGN.md).
 
 			Two stylesheets: `style.css` is the viewer's design system — the same
 			tokens, the same shell — so the workspace and the reader are one
-			product; `editor.css` is the workspace's own three-column layout.
+			product; `editor.css` is the workspace's own shell.
 
 			Every stylesheet carries integrity + crossorigin (SL-4.WEB.01). The
 			page's module is a compiled `tsc` output whose bytes change on every
@@ -32,37 +33,603 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-z7ePVrnk3JhTM5qOrGsMP7uZciw8AjuhevKLzgGpaXtvOQjzhs36JEDeB2XTm2cZ"
+			integrity="sha384-PQdhcTYRfNNfo9OI6jF+VzJGfYq51FWg+vuUB+lapQQ9S79ewWQGp6ijyE+Pm5Wv"
 			crossorigin="anonymous"
 		/>
 	</head>
 	<body class="selis-editor-shell">
-		<a class="selis-visually-hidden" href="#selis-editor">Skip to the document</a>
+		<a class="selis-visually-hidden" href="#selis-editor-doc">Skip to the document</a>
 
+		<!--
+			The app bar. Its left half says WHICH document is open, its middle is
+			the one thing a reader reaches for in a long document (find), and its
+			right half is what can be done to the document from anywhere (undo,
+			redo, open, take it away).
+		-->
 		<header class="selis-editor-bar">
-			<a class="selis-editor-bar__brand" href="/" aria-label="Selis home">
-				<span class="selis-editor-bar__mark" aria-hidden="true">S</span>
-				<span>Selis <span class="selis-editor-bar__mute">Editor</span></span>
-			</a>
-			<nav class="selis-editor-bar__nav" aria-label="Primary">
-				<button type="button" id="selis-open-file-button" class="selis-editor-bar__open">
-					Open a PDF
-				</button>
+			<div class="selis-editor-bar__left">
+				<a class="selis-editor-bar__home" href="/" aria-label="All tools">
+					<span class="selis-editor-bar__mark" aria-hidden="true">S</span>
+					<span class="selis-editor-bar__product">Editor</span>
+				</a>
+				<span class="selis-editor-bar__rule" aria-hidden="true"></span>
+				<div class="selis-editor-bar__doc">
+					<span id="selis-editor-filename" class="selis-editor-bar__filename">
+						No document open
+					</span>
+					<span id="selis-editor-dirty" class="selis-editor-bar__dirty" hidden>
+						Unsaved changes
+					</span>
+				</div>
+			</div>
+
+			<div class="selis-editor-bar__find">
+				<label class="selis-visually-hidden" for="selis-editor-search">
+					Find in the document
+				</label>
+				<span class="selis-editor-bar__findicon" data-icon="search" aria-hidden="true"></span>
+				<input
+					id="selis-editor-search"
+					type="search"
+					placeholder="Find in document"
+					autocomplete="off"
+					spellcheck="false"
+					disabled
+				/>
+				<span id="selis-editor-search-count" class="selis-editor-bar__count"></span>
+				<button
+					type="button"
+					id="selis-editor-search-prev"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Previous match"
+					aria-label="Previous match"
+					data-icon="arrow-up"
+					disabled
+				></button>
+				<button
+					type="button"
+					id="selis-editor-search-next"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Next match"
+					aria-label="Next match"
+					data-icon="arrow-down"
+					disabled
+				></button>
+			</div>
+
+			<div class="selis-editor-bar__right">
+				<button
+					type="button"
+					id="selis-undo"
+					class="selis-editor-iconbtn"
+					title="Undo"
+					aria-label="Undo"
+					data-icon="undo"
+					disabled
+				></button>
+				<button
+					type="button"
+					id="selis-redo"
+					class="selis-editor-iconbtn"
+					title="Redo"
+					aria-label="Redo"
+					data-icon="redo"
+					disabled
+				></button>
+				<span class="selis-editor-bar__rule" aria-hidden="true"></span>
+				<button
+					type="button"
+					id="selis-open-file-button"
+					class="selis-editor-btn"
+					data-icon="open"
+					data-label="Open"
+				></button>
 				<input
 					type="file"
 					id="selis-open-file"
 					accept="application/pdf,.pdf"
 					hidden
 				/>
-				<span id="selis-page-indicator" class="selis-editor-bar__pageno" hidden></span>
-				<button type="button" id="selis-undo" disabled>Undo</button>
-				<button type="button" id="selis-redo" disabled>Redo</button>
-				<button type="button" id="selis-download" disabled>Download</button>
-				<a href="/viewer.html">Viewer</a>
-				<a href="/">Tools</a>
-				<span class="selis-editor-bar__pill">No upload</span>
-			</nav>
+				<button
+					type="button"
+					id="selis-download"
+					class="selis-editor-btn selis-editor-btn--primary"
+					data-icon="download"
+					data-label="Download"
+					disabled
+				></button>
+				<span class="selis-editor-bar__pill" title="Nothing leaves this device.">
+					No upload
+				</span>
+			</div>
 		</header>
+
+		<!--
+			The ribbon: the tabs every established editor has, and the commands
+			under each of them. The commands are grouped the way a ribbon groups
+			them — a cluster of related buttons, a rule between the clusters, and
+			the group's name under it.
+		-->
+		<div id="selis-editor-tabs" class="selis-editor-tabs" role="tablist" aria-label="Editor tools">
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-home"
+				class="selis-editor-tab"
+				aria-selected="true"
+				aria-controls="selis-editor-panel-home"
+			>
+				Home
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-edit"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-edit"
+			>
+				Edit
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-organize"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-organize"
+			>
+				Organize
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-document"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-document"
+			>
+				Document
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-protect"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-protect"
+			>
+				Protect
+			</button>
+		</div>
+
+		<div id="selis-editor-ribbon" class="selis-editor-ribbon">
+			<!-- HOME -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-home"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-home"
+			>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-btn selis-editor-btn--primary"
+							data-action="open"
+						>
+							Open a PDF
+						</button>
+						<button
+							type="button"
+							class="selis-editor-btn"
+							data-action="download"
+							data-icon="download"
+							data-label="Download"
+						></button>
+					</div>
+					<p class="selis-editor-group__label">Document</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="undo"
+							data-icon="undo"
+						>
+							<span class="selis-editor-tool__label">Undo</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="redo"
+							data-icon="redo"
+						>
+							<span class="selis-editor-tool__label">Redo</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">History</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:properties"
+							data-icon="properties"
+						>
+							<span class="selis-editor-tool__label">Properties</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:outline"
+							data-icon="bookmark"
+						>
+							<span class="selis-editor-tool__label">Bookmarks</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:fields"
+							data-icon="form"
+						>
+							<span class="selis-editor-tool__label">Form fields</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Structure</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="fit-width"
+							data-icon="fit-width"
+						>
+							<span class="selis-editor-tool__label">Fit width</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="fit-page"
+							data-icon="fit-page"
+						>
+							<span class="selis-editor-tool__label">Fit page</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="zoom-reset"
+							data-icon="zoom-in"
+						>
+							<span class="selis-editor-tool__label">100%</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">View</p>
+				</div>
+			</div>
+
+			<!-- EDIT -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-edit"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-edit"
+				hidden
+			>
+				<div class="selis-editor-group">
+					<div
+						id="selis-editor-tools"
+						class="selis-editor-group__buttons selis-editor-toolrow"
+						role="group"
+						aria-label="What to do on the page"
+					>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-tool="text"
+							data-icon="text"
+							aria-pressed="true"
+						>
+							<span class="selis-editor-tool__label">Edit text</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-tool="box"
+							data-icon="text-box"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Text box</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-tool="image"
+							data-icon="image"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Image</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool selis-editor-tool--danger"
+							data-tool="redact"
+							data-icon="redact"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Redact</span>
+						</button>
+					</div>
+					<input
+						type="file"
+						id="selis-editor-image-input"
+						accept="image/png,image/jpeg"
+						hidden
+					/>
+					<p class="selis-editor-group__label">On the page</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="undo"
+							data-icon="undo"
+						>
+							<span class="selis-editor-tool__label">Undo</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="redo"
+							data-icon="redo"
+						>
+							<span class="selis-editor-tool__label">Redo</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">History</p>
+				</div>
+				<div class="selis-editor-group selis-editor-group--wide">
+					<p class="selis-editor-ribbon__note">
+						Pick a tool, then click the page. Every change can be undone, and
+						nothing leaves this device.
+					</p>
+				</div>
+			</div>
+
+			<!-- ORGANIZE -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-organize"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-organize"
+				hidden
+			>
+				<div class="selis-editor-group">
+					<div
+						id="selis-page-tools"
+						class="selis-editor-group__buttons selis-editor-toolrow"
+						role="group"
+						aria-label="Page tools"
+					>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="rotate-270"
+							data-icon="rotate-left"
+						>
+							<span class="selis-editor-tool__label">Rotate left</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="rotate-90"
+							data-icon="rotate-right"
+						>
+							<span class="selis-editor-tool__label">Rotate right</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="duplicate"
+							data-icon="duplicate"
+						>
+							<span class="selis-editor-tool__label">Duplicate</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="blank-after"
+							data-icon="page-add"
+						>
+							<span class="selis-editor-tool__label">Blank page</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool selis-editor-tool--danger"
+							data-op="delete"
+							data-icon="trash"
+						>
+							<span class="selis-editor-tool__label">Delete</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Pages</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="move-up"
+							data-icon="arrow-up"
+						>
+							<span class="selis-editor-tool__label">Move up</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-op="move-down"
+							data-icon="arrow-down"
+						>
+							<span class="selis-editor-tool__label">Move down</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Arrange</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:size"
+							data-icon="crop"
+						>
+							<span class="selis-editor-tool__label">Crop</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:size"
+							data-icon="resize"
+						>
+							<span class="selis-editor-tool__label">Resize</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:labels"
+							data-icon="page-numbers"
+						>
+							<span class="selis-editor-tool__label">Page labels</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Layout</p>
+				</div>
+			</div>
+
+			<!-- DOCUMENT -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-document"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-document"
+				hidden
+			>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:numbers"
+							data-icon="page-numbers"
+						>
+							<span class="selis-editor-tool__label">Page numbers</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:header"
+							data-icon="header-footer"
+						>
+							<span class="selis-editor-tool__label">Header &amp; footer</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:watermark"
+							data-icon="watermark"
+						>
+							<span class="selis-editor-tool__label">Watermark</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Branding</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:fields"
+							data-icon="form"
+						>
+							<span class="selis-editor-tool__label">Form fields</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:outline"
+							data-icon="bookmark"
+						>
+							<span class="selis-editor-tool__label">Bookmarks</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:properties"
+							data-icon="properties"
+						>
+							<span class="selis-editor-tool__label">Properties</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Structure</p>
+				</div>
+			</div>
+
+			<!-- PROTECT -->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-protect"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-protect"
+				hidden
+			>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool selis-editor-tool--danger"
+							data-action="tool:redact"
+							data-icon="redact"
+						>
+							<span class="selis-editor-tool__label">Redact</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="strip-metadata"
+							data-icon="strip-metadata"
+						>
+							<span class="selis-editor-tool__label">Strip metadata</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Privacy</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="report:privacy"
+							data-icon="shield"
+						>
+							<span class="selis-editor-tool__label">Privacy report</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="report:fingerprint"
+							data-icon="check"
+						>
+							<span class="selis-editor-tool__label">Fingerprint</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Reports</p>
+				</div>
+			</div>
+		</div>
 
 		<!--
 			The failure panel, a sibling of the workspace so it survives the
@@ -74,56 +641,75 @@
 		<main id="selis-editor" class="selis-editor">
 			<h1 class="selis-visually-hidden">Selis PDF editor</h1>
 
-			<aside class="selis-editor-side" aria-label="Document tools">
-				<section class="selis-editor-panel">
-					<h2>Pages</h2>
-					<ol id="selis-page-list" class="selis-editor-pages"></ol>
-				</section>
+			<!--
+				The page rail: the document's own thumbnails, the way every
+				established editor shows it. The pages are drawn by the same
+				engine that draws the canvas, at a fraction of the size.
+			-->
+			<aside class="selis-editor-rail" aria-label="Pages">
+				<div class="selis-editor-rail__head">
+					<h2 class="selis-editor-rail__title">Pages</h2>
+					<span id="selis-editor-page-count" class="selis-editor-rail__count"></span>
+				</div>
+				<ol id="selis-page-list" class="selis-editor-pages"></ol>
+			</aside>
 
-				<section class="selis-editor-panel">
-					<h2>Page tools</h2>
-					<div id="selis-page-tools" class="selis-editor-tools">
-						<button type="button" data-op="rotate-90">Rotate 90°</button>
-						<button type="button" data-op="rotate-180">Rotate 180°</button>
-						<button type="button" data-op="duplicate">Duplicate page</button>
-						<button type="button" data-op="blank-after">Insert blank page after</button>
-						<button type="button" data-op="move-up">Move page up</button>
-						<button type="button" data-op="move-down">Move page down</button>
-						<button type="button" data-op="delete">Delete page</button>
-					</div>
-					<p class="selis-editor-hint">
-						The page tools apply to the page selected in the list. Every change
-						can be undone.
+			<section
+				id="selis-editor-surface"
+				class="selis-editor-surface"
+				aria-label="The document"
+			>
+				<div id="selis-editor-doc" class="selis-editor-doc" data-edit-text="on"></div>
+				<div id="selis-editor-empty" class="selis-editor-empty">
+					<span class="selis-editor-empty__mark" aria-hidden="true">S</span>
+					<h2>Open a PDF to start editing</h2>
+					<p>
+						Choose a file, or drop one onto this page. It is read on this
+						device and never uploaded — every change is made here, and the
+						result downloads straight to you.
 					</p>
-				</section>
+					<button
+						type="button"
+						class="selis-editor-btn selis-editor-btn--primary"
+						data-action="open"
+					>
+						Open a PDF
+					</button>
+				</div>
+			</section>
 
-				<section class="selis-editor-panel">
-					<h2>On the page</h2>
-					<div id="selis-editor-tools" class="selis-editor-tool-row" role="group" aria-label="What to do on the page">
-						<button type="button" data-tool="text" aria-pressed="true">Edit text</button>
-						<button type="button" data-tool="box" aria-pressed="false">Text box</button>
-						<button type="button" data-tool="image" aria-pressed="false">Image</button>
-						<button type="button" data-tool="redact" aria-pressed="false">Redact</button>
-					</div>
-					<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
-					<input
-						type="file"
-						id="selis-editor-image-input"
-						accept="image/png,image/jpeg"
-						hidden
-					/>
-					<p class="selis-editor-hint">
-						New text and images are drawn <strong>on top of</strong> the page. A
-						redaction removes the <strong>text</strong> under the region and covers
-						it with a black box; anything else under it — an image, a line of
-						art — is covered, not erased.
-					</p>
-				</section>
+			<!--
+				The inspector: the document's own panels. A ribbon command that
+				changes the document's structure opens the panel that holds it, so
+				the command and its options are never in different places.
+			-->
+			<aside
+				id="selis-editor-inspector"
+				class="selis-editor-inspector"
+				aria-label="Document panels"
+			>
+				<div class="selis-editor-inspector__head">
+					<h2 class="selis-editor-inspector__title">Document</h2>
+					<button
+						type="button"
+						id="selis-editor-inspector-toggle"
+						class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+						title="Hide the panels"
+						aria-label="Hide the panels"
+						data-icon="chevron-left"
+					></button>
+				</div>
+				<div class="selis-editor-inspector__body">
+					<section class="selis-editor-panel" id="selis-editor-panel-tool">
+						<h3 class="selis-editor-panel__title">Tool</h3>
+						<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
+					</section>
 
-				<section class="selis-editor-panel">
-					<h2>The document</h2>
-
-					<details class="selis-editor-details">
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-fields"
+						open
+					>
 						<summary>Form fields</summary>
 						<p class="selis-editor-hint">
 							Read the form's fields and fill them in. The values are written
@@ -135,11 +721,16 @@
 						</div>
 						<div class="selis-editor-actions">
 							<button type="button" id="selis-editor-fields-read">Read the fields</button>
-							<button type="button" id="selis-editor-fields-apply" disabled>Fill them in</button>
+							<button type="button" id="selis-editor-fields-apply" disabled>
+								Fill them in
+							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details">
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-outline"
+					>
 						<summary>Bookmarks</summary>
 						<p class="selis-editor-hint">
 							The document's bookmarks — what a reader sees in their sidebar. A
@@ -150,13 +741,19 @@
 							<p class="selis-editor-hint">Read the bookmarks to edit them.</p>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-outline-read">Read the bookmarks</button>
-							<button type="button" id="selis-editor-outline-add" disabled>Add a bookmark</button>
-							<button type="button" id="selis-editor-outline-apply" disabled>Save them</button>
+							<button type="button" id="selis-editor-outline-read">
+								Read the bookmarks
+							</button>
+							<button type="button" id="selis-editor-outline-add" disabled>
+								Add a bookmark
+							</button>
+							<button type="button" id="selis-editor-outline-apply" disabled>
+								Save them
+							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details">
+					<details class="selis-editor-details" id="selis-editor-section-size">
 						<summary>Page size</summary>
 						<p class="selis-editor-hint">
 							Crop the selected page by removing margins, in points, or resize it
@@ -186,11 +783,122 @@
 							</select>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-resize-apply">Resize the page</button>
+							<button type="button" id="selis-editor-resize-apply">
+								Resize the page
+							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details">
+					<details class="selis-editor-details" id="selis-editor-section-labels">
+						<summary>Page labels</summary>
+						<p class="selis-editor-hint">
+							The number a reader sees in the page box — the roman numeral of a
+							front matter, the figure of a chapter.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-label-style">Style</label>
+							<select id="selis-editor-label-style">
+								<option value="D">1, 2, 3</option>
+								<option value="r">i, ii, iii</option>
+								<option value="R">I, II, III</option>
+								<option value="a">a, b, c</option>
+								<option value="A">A, B, C</option>
+								<option value="None">None</option>
+							</select>
+							<label for="selis-editor-label-start">Start at</label>
+							<input id="selis-editor-label-start" type="number" min="1" step="1" value="1" />
+							<label for="selis-editor-label-prefix">Prefix</label>
+							<input id="selis-editor-label-prefix" type="text" placeholder="A-" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-labels-apply">
+								Label the pages
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-numbers">
+						<summary>Page numbers</summary>
+						<p class="selis-editor-hint">
+							A number on every page, where the reader expects it.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-number-position">Position</label>
+							<select id="selis-editor-number-position">
+								<option value="bottom-center">Bottom centre</option>
+								<option value="bottom-right">Bottom right</option>
+								<option value="bottom-left">Bottom left</option>
+								<option value="top-center">Top centre</option>
+								<option value="top-right">Top right</option>
+								<option value="top-left">Top left</option>
+							</select>
+							<label for="selis-editor-number-start">Start at</label>
+							<input id="selis-editor-number-start" type="number" min="1" step="1" value="1" />
+							<label for="selis-editor-number-size">Size</label>
+							<input id="selis-editor-number-size" type="number" min="4" max="72" step="1" value="10" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-numbers-apply">
+								Number the pages
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-header">
+						<summary>Header and footer</summary>
+						<p class="selis-editor-hint">
+							A line at the top or the bottom of every page. Use
+							<code>{page}</code> for the page number and <code>{pages}</code>
+							for the page count.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-header-left">Header left</label>
+							<input id="selis-editor-header-left" type="text" />
+							<label for="selis-editor-header-center">Header centre</label>
+							<input id="selis-editor-header-center" type="text" />
+							<label for="selis-editor-header-right">Header right</label>
+							<input id="selis-editor-header-right" type="text" />
+							<label for="selis-editor-footer-left">Footer left</label>
+							<input id="selis-editor-footer-left" type="text" />
+							<label for="selis-editor-footer-center">Footer centre</label>
+							<input id="selis-editor-footer-center" type="text" />
+							<label for="selis-editor-footer-right">Footer right</label>
+							<input id="selis-editor-footer-right" type="text" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-header-apply">
+								Write the header and footer
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-watermark">
+						<summary>Watermark</summary>
+						<p class="selis-editor-hint">
+							A line of text across every page — a draft mark, a confidential
+							stamp.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-watermark-text">Text</label>
+							<input id="selis-editor-watermark-text" type="text" placeholder="DRAFT" />
+							<label for="selis-editor-watermark-size">Size</label>
+							<input id="selis-editor-watermark-size" type="number" min="6" max="200" step="1" value="48" />
+							<label for="selis-editor-watermark-opacity">Opacity</label>
+							<input id="selis-editor-watermark-opacity" type="number" min="0.05" max="1" step="0.05" value="0.2" />
+							<label for="selis-editor-watermark-angle">Angle</label>
+							<select id="selis-editor-watermark-angle">
+								<option value="diagonal">Diagonal</option>
+								<option value="horizontal">Horizontal</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-watermark-apply">
+								Apply the watermark
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-properties">
 						<summary>Properties</summary>
 						<p class="selis-editor-hint">
 							The document's title, author, subject and keywords.
@@ -206,26 +914,120 @@
 							<input id="selis-editor-keywords" type="text" />
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-properties-apply">Save the properties</button>
+							<button type="button" id="selis-editor-properties-apply">
+								Save the properties
+							</button>
 						</div>
 					</details>
-				</section>
-			</aside>
 
-			<section class="selis-editor-surface" aria-label="The document">
-				<div id="selis-editor-doc" class="selis-editor-doc" data-edit-text="on"></div>
-				<div id="selis-editor-empty" class="selis-editor-empty">
-					<h2>Open a PDF to start editing</h2>
-					<p>
-						Choose a file, or drop one onto this page. It is read on this
-						device and never uploaded — every change is made here, and the
-						result downloads straight to you.
-					</p>
+					<details class="selis-editor-details" id="selis-editor-section-history">
+						<summary>History</summary>
+						<p class="selis-editor-hint">
+							Every change, newest first. Undo returns the document to the
+							state before it.
+						</p>
+						<ol id="selis-editor-history" class="selis-editor-history"></ol>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-history-clear" disabled>
+								Back to the original
+							</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-privacy">
+						<summary>Privacy report</summary>
+						<p class="selis-editor-hint">
+							What the document carries about itself. The report is read on
+							this device and changes nothing.
+						</p>
+						<div class="selis-editor-report"></div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-fingerprint">
+						<summary>Fingerprint</summary>
+						<p class="selis-editor-hint">
+							What is inside the document — its pages, its fonts, its images.
+							The report changes nothing.
+						</p>
+						<div class="selis-editor-report"></div>
+					</details>
+
+					<!--
+						The limits, in the same words the plan uses. A document
+						editor that quietly reflowed a line, or that covered an
+						image and called it a redaction, would be promising
+						something this engine cannot do.
+					-->
+					<section class="selis-editor-panel selis-editor-limits">
+						<h3 class="selis-editor-panel__title">What this editor cannot do</h3>
+						<p class="selis-editor-hint">
+							The text is replaced <strong>where it is drawn</strong> — the line
+							does not re-flow, so a much longer replacement runs over what
+							follows it. Not every line can be changed: a line drawn as several
+							separate runs can only have one of them replaced.
+						</p>
+						<p class="selis-editor-hint">
+							New text and images are drawn <strong>on top of</strong> of the
+							page. A redaction removes the <strong>text</strong> under the region
+							and covers it with a black box; anything else under it — an
+							image, a line of art — is covered, not erased.
+						</p>
+						<p class="selis-editor-hint">
+							Nothing leaves this device. The document is read, changed and written
+							here, and the result downloads straight to you.
+						</p>
+					</section>
 				</div>
-			</section>
+			</aside>
 		</main>
 
-		<p id="selis-editor-status" class="selis-editor-status" role="status" aria-live="polite"></p>
+		<footer class="selis-editor-statusbar">
+			<p id="selis-editor-status" class="selis-editor-status" role="status" aria-live="polite"></p>
+			<div class="selis-editor-statusbar__right">
+				<span id="selis-page-indicator" class="selis-editor-statusbar__pageno" hidden></span>
+				<span class="selis-editor-statusbar__rule" aria-hidden="true"></span>
+				<button
+					type="button"
+					id="selis-editor-zoom-out"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Zoom out"
+					aria-label="Zoom out"
+					data-icon="zoom-out"
+				></button>
+				<button
+					type="button"
+					id="selis-editor-zoom-level"
+					class="selis-editor-statusbar__zoom"
+					title="Reset the zoom to 100%"
+				>
+					100%
+				</button>
+				<button
+					type="button"
+					id="selis-editor-zoom-in"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Zoom in"
+					aria-label="Zoom in"
+					data-icon="zoom-in"
+				></button>
+				<button
+					type="button"
+					id="selis-editor-fit-width"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Fit the width"
+					aria-label="Fit the width"
+					data-icon="fit-width"
+				></button>
+				<button
+					type="button"
+					id="selis-editor-fit-page"
+					class="selis-editor-iconbtn selis-editor-iconbtn--tiny"
+					title="Fit the page"
+					aria-label="Fit the page"
+					data-icon="fit-page"
+				></button>
+			</div>
+		</footer>
 
 		<noscript>
 			<p class="selis-editor-status">

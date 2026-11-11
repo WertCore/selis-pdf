@@ -15,17 +15,23 @@ import {
 	editLandedOnLine,
 	editText,
 	fillFormsOptions,
+	headerFooterOptions,
 	imageOptions,
 	insertBlankPages,
 	metadataOptions,
 	movePage,
+	outlineOptions,
+	pageLabelsOptions,
+	pageNumbersOptions,
 	pageSelection,
 	redactOptions,
 	reorderPages,
+	resizeOptions,
 	rotatePage,
 	searchCandidates,
 	stampTextWidth,
 	textBoxOptions,
+	watermarkOptions,
 } from "./operations.js";
 
 describe("the text the stamp will draw", () => {
@@ -84,6 +90,61 @@ describe("the options for placing content", () => {
 		expect(options.fields).toEqual([
 			{ name: "Name", value: "Selis" },
 			{ name: "Agree", value: "Yes" },
+		]);
+	});
+});
+
+describe("the document's own furniture", () => {
+	it("labels the pages in the engine's own one-letter style", () => {
+		expect(pageLabelsOptions("r", 1, "A-")).toEqual({ style: "r", start: 1, prefix: "A-" });
+		expect(pageLabelsOptions("D", 3, "")).toEqual({ style: "D", start: 3, prefix: "" });
+	});
+
+	it("numbers every page from the chosen position", () => {
+		const options = pageNumbersOptions("bottom_right", 5, 11);
+		expect(options.position).toBe("bottom_right");
+		expect(options.start).toBe(5);
+		expect(options.font_size).toBe(11);
+		// No page selection: every page is numbered.
+		expect(options.pages).toBeUndefined();
+	});
+
+	it("writes the header and the footer in their three slots", () => {
+		const options = headerFooterOptions(
+			{ left: "Acme", center: "", right: "{page}" },
+			{ left: "", center: "Confidential", right: "" },
+			9,
+		);
+		expect(options.header).toEqual({ left: "Acme", center: "", right: "{page}" });
+		expect(options.footer).toEqual({ left: "", center: "Confidential", right: "" });
+		expect(options.font_size).toBe(9);
+	});
+
+	it("draws a watermark at the reader's size and opacity", () => {
+		const options = watermarkOptions("DRAFT", 48, 0.2, "diagonal");
+		expect(options.text).toBe("DRAFT");
+		expect(options.font_size).toBe(48);
+		expect(options.opacity).toBe(0.2);
+		expect(options.orientation).toBe("diagonal");
+	});
+
+	it("resizes the selected page only, and says whether to fit the content", () => {
+		expect(resizeOptions(595.28, 841.89, true, 2)).toEqual({
+			width: 595.28,
+			height: 841.89,
+			fit: true,
+			pages: "2",
+		});
+	});
+
+	it("writes the whole outline, with its nesting depth", () => {
+		const options = outlineOptions([
+			{ title: "One", page: 1, level: 0 },
+			{ title: "One A", page: 2, level: 1 },
+		]);
+		expect(options.entries).toEqual([
+			{ title: "One", page: 1, level: 0 },
+			{ title: "One A", page: 2, level: 1 },
 		]);
 	});
 });

@@ -7274,6 +7274,29 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the saved document does not carry the bookmark the check added".into());
     }
 
+    let shell = report
+        .get("shell")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no shell leg (shell = None)".to_string())?;
+    if shell.get("tabs").and_then(Json::as_bool) != Some(true) {
+        return Err("the ribbon's tabs did not swap the commands under them".into());
+    }
+    if shell.get("thumbnails").and_then(Json::as_u64).unwrap_or(0) < 1 {
+        return Err("the page rail drew no thumbnail of the document".into());
+    }
+    if shell.get("matched").and_then(Json::as_u64).unwrap_or(0) < 1 {
+        return Err("the find box found nothing in the document".into());
+    }
+    if shell.get("zoomed").and_then(Json::as_bool) != Some(true) {
+        return Err("the zoom did not change the size of the page".into());
+    }
+    if shell.get("history").and_then(Json::as_u64).unwrap_or(0) < 1 {
+        return Err("the history panel lists no changes".into());
+    }
+    if shell.get("carriesWatermark").and_then(Json::as_bool) != Some(true) {
+        return Err("the watermark is not in the produced file".into());
+    }
+
     let properties = report
         .get("properties")
         .and_then(Json::as_object)

@@ -450,3 +450,92 @@ export function outlineOptions(entries: readonly OutlineEntry[]): Record<string,
 		})),
 	};
 }
+
+// ── the document's own furniture ────────────────────────────────────────────
+
+/**
+ * The options for the pages' labels.
+ *
+ * The label is the number a reader sees in the page box, and it is not the
+ * same thing as the page's number: a front matter is labelled `i, ii, iii`
+ * while the pages themselves are `1, 2, 3`. The style is the engine's own
+ * one-letter spelling (`D`, `r`, `R`, `a`, `A`, `None`).
+ */
+export function pageLabelsOptions(
+	style: string,
+	start: number,
+	prefix: string,
+): Record<string, unknown> {
+	return { style, start, prefix };
+}
+
+/**
+ * The options for numbering the pages.
+ *
+ * The position is the engine's own spelling (`bottom_center`, `top_right`,
+ * …), the number starts at `start`, and the size is in points. No page
+ * selection is sent, so every page is numbered.
+ */
+export function pageNumbersOptions(
+	position: string,
+	start: number,
+	fontSize: number,
+): Record<string, unknown> {
+	return {
+		position,
+		margin_x: 36,
+		margin_y: 24,
+		start,
+		format: "plain",
+		font_size: fontSize,
+		color: { r: 0, g: 0, b: 0 },
+	};
+}
+
+/**
+ * The options for a header and a footer.
+ *
+ * The three slots are the left, the centre and the right of each band, and
+ * each may carry `{page}` (the page's number) and `{pages}` (the page count).
+ * The engine REFUSES an unknown placeholder rather than printing it literally,
+ * so a typo in a placeholder is a visible failure rather than a surprise in
+ * the finished document.
+ */
+export function headerFooterOptions(
+	header: { readonly left: string; readonly center: string; readonly right: string },
+	footer: { readonly left: string; readonly center: string; readonly right: string },
+	fontSize: number,
+): Record<string, unknown> {
+	return {
+		header: { ...header },
+		footer: { ...footer },
+		margin_x: 36,
+		header_margin: 36,
+		footer_margin: 36,
+		font_size: fontSize,
+		color: { r: 0, g: 0, b: 0 },
+	};
+}
+
+/**
+ * The options for a watermark.
+ *
+ * The watermark is one line of text centred on every page, drawn at an
+ * opacity so the page shows through it. The orientation is `diagonal` (up
+ * across the page) or `horizontal`.
+ */
+export function watermarkOptions(
+	text: string,
+	fontSize: number,
+	opacity: number,
+	orientation: "diagonal" | "horizontal",
+): Record<string, unknown> {
+	return {
+		text,
+		orientation,
+		opacity,
+		font_size: fontSize,
+		color: { r: 0, g: 0, b: 0 },
+		tiled: false,
+	};
+}

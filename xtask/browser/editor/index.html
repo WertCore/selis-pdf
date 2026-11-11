@@ -31,6 +31,12 @@
       //      fetched from another origin.
       const out = { schema: 1, check: "editor" };
       let posted = false;
+      // The frame under test. It is module-level because `waitFor` quotes the
+      // page's own status when it gives up, and a frame that only existed
+      // inside `main()` made that message throw — which left the promise
+      // pending forever instead of rejecting, so a leg that timed out hung
+      // the whole check instead of reporting what went wrong.
+      let frame = null;
 
       function post() {
         if (posted) return;
@@ -47,8 +53,8 @@
         post();
       }
 
-      function frameDocument(frame) {
-        const current = frame.contentDocument;
+      function frameDocument(target) {
+        const current = target ? target.contentDocument : null;
         if (!current) throw new Error("the editor iframe had no document");
         return current;
       }
@@ -96,11 +102,13 @@
               return;
             }
             if (performance.now() - started > timeoutMs) {
-              reject(
-                new Error(
-                  "timed out waiting for " + label + " -- the page said: " + statusText(frameDocument(frame)),
-                ),
-              );
+              let said = "";
+              try {
+                said = statusText(frameDocument(frame));
+              } catch (_) {
+                said = "(the page could not be read)";
+              }
+              reject(new Error("timed out waiting for " + label + " -- the page said: " + said));
               return;
             }
             setTimeout(tick, 40);
@@ -128,7 +136,7 @@
       }
 
       async function main() {
-        const frame = document.getElementById("editor");
+        frame = document.getElementById("editor");
         const load = waitForLoad(frame);
         frame.src = "/edit-pdf/";
         await load;
@@ -194,6 +202,7 @@
         out.bookmarks = await bookmarksLeg(onlineDoc, onlineWin, "online");
         out.properties = await propertiesLeg(onlineDoc, onlineWin, "online");
         out.redact = await redactLeg(onlineDoc, onlineWin, "online");
+        out.shell = await shellLeg(onlineDoc, onlineWin, "online");
 
         // The form's fields, on a document that has a form.
         const formBytes = new Uint8Array(
@@ -446,6 +455,81 @@
           // The redacted text must be GONE from the file, not merely covered.
           stillCarriesText: carried.indexOf("Invoice total") >= 0,
           coversText: carried.indexOf("0 0 0 rg") >= 0,
+        };
+      }
+
+      /**
+       * The workspace's own furniture: the ribbon, the rail's thumbnails, the
+       * find box, the zoom, and the history panel.
+       *
+       * These are the parts of the shell a person touches before they change
+       * anything, and each of them is checked against the DOCUMENT rather
+       * than against the DOM alone: the watermark leg reads the produced bytes
+       * back, because a watermark that is on the screen but not in the file
+       * is not a watermark.
+       */
+      async function shellLeg(doc, win, label) {
+        // The rail draws a thumbnail for every page.
+        const thumbs = [...doc.querySelectorAll("#selis-page-list img[data-thumb]")];
+        const drawn = thumbs.filter((img) =>
+          (img.getAttribute("src") || "").startsWith("blob:"),
+        ).length;
+
+        // The ribbon's tabs swap the commands under them.
+        doc.getElementById("selis-editor-tab-organize").click();
+        const organizeShown = !doc.getElementById("selis-editor-panel-organize").hidden;
+        doc.getElementById("selis-editor-tab-edit").click();
+        const editShown = !doc.getElementById("selis-editor-panel-edit").hidden;
+
+        // The find box finds the text the document carries. It searches for
+        // the text the text-box leg added rather than for the fixture's own
+        // line: the redaction leg has already taken the fixture's line out
+        // of the document, and a find box that found nothing would be right
+        // to say so.
+        const search = doc.getElementById("selis-editor-search");
+        search.value = "Added by the editor";
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+        await waitFor(
+          () => doc.querySelectorAll('.selis-editor-line[data-match="true"]').length > 0,
+          20_000,
+          "the find box to match (" + label + ")",
+        );
+        const matched = doc.querySelectorAll('.selis-editor-line[data-match="true"]').length;
+        const counted = doc.getElementById("selis-editor-search-count").textContent;
+
+        // The zoom changes the size of the page on the canvas.
+        const before = doc.querySelector("canvas").getBoundingClientRect().width;
+        doc.getElementById("selis-editor-zoom-in").click();
+        await waitFor(
+          () => doc.querySelector("canvas").getBoundingClientRect().width !== before,
+          30_000,
+          "the zoom to change the page (" + label + ")",
+        );
+        const after = doc.querySelector("canvas").getBoundingClientRect().width;
+        const zoom = doc.getElementById("selis-editor-zoom-level").textContent;
+
+        // The history panel lists what has been done.
+        const history = [
+          ...doc.querySelectorAll("#selis-editor-history .selis-editor-history__item"),
+        ].map((item) => (item.textContent || "").trim());
+
+        // A watermark, read back out of the produced file.
+        doc.getElementById("selis-editor-watermark-text").value = "DRAFT";
+        doc.getElementById("selis-editor-watermark-apply").click();
+        await waitForSettled(doc, "Applied the watermark", "the watermark (" + label + ")");
+        const produced = await download(doc, win);
+
+        return {
+          status: statusText(doc),
+          thumbnails: drawn,
+          tabs: organizeShown && editShown,
+          matched: matched,
+          counted: counted,
+          zoom: zoom,
+          zoomed: after !== before,
+          history: history.length,
+          bytes: produced.bytes,
+          carriesWatermark: produced.carriesText.indexOf("DRAFT") >= 0,
         };
       }
 

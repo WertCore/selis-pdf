@@ -43,6 +43,7 @@ import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
+import { type IconName, icon } from "./icons.js";
 import {
 	type EditorOperation,
 	PAGE_SIZES,
@@ -52,17 +53,21 @@ import {
 	editLandedOnLine,
 	editText,
 	fillFormsOptions,
+	headerFooterOptions,
 	imageOptions,
 	insertBlankPages,
 	metadataOptions,
 	movePage,
 	outlineOptions,
+	pageLabelsOptions,
+	pageNumbersOptions,
 	redactOptions,
 	resizeOptions,
 	rotatePage,
 	searchCandidates,
 	stampTextWidth,
 	textBoxOptions,
+	watermarkOptions,
 } from "./operations.js";
 import {
 	type PageGeometry,
@@ -88,6 +93,25 @@ const TEXT_BOX_FONT_SIZE = 12;
 /** The stamp's padding inside its rectangle, in points, plus a margin. */
 const BOX_PADDING = 8;
 
+/** The zoom levels the zoom buttons step through, as factors of 100%. */
+const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as const;
+
+/** The smallest and largest zoom the workspace allows, as factors of 100%. */
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 4;
+
+/** How wide a rail thumbnail is drawn, in CSS pixels. */
+const THUMBNAIL_WIDTH = 132;
+
+/**
+ * How much room the canvas keeps around the page, in CSS pixels.
+ *
+ * The canvas's own padding, plus a gap on each side, so a fitted page does
+ * not sit flush against the edge — a page flush against the edge reads as a
+ * page that has been cut off rather than as a page that has been fitted.
+ */
+const SURFACE_GUTTER = 72;
+
 /** What the workspace is armed to do on the page. */
 export type EditorTool = "text" | "box" | "image" | "redact";
 
@@ -97,6 +121,16 @@ interface PickedImage {
 	readonly bytes: Uint8Array;
 	readonly width: number;
 	readonly height: number;
+}
+
+/** One place the find box matched. */
+interface SearchMatch {
+	/** The zero-based page the match is on. */
+	readonly page: number;
+	/** The zero-based line the match is on. */
+	readonly line: number;
+	/** The text of the line the match is on. */
+	readonly text: string;
 }
 
 interface EditorState {
@@ -127,6 +161,17 @@ interface EditorState {
 	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
 	busy: boolean;
+	/** How big the document is drawn, as a factor of 100%. */
+	zoom: number;
+	/** Whether the document has changed since it was opened. */
+	dirty: boolean;
+	/** Whether the next draw should fit the page to the surface. */
+	fitOnDraw: boolean;
+	/** Where the find box matched, and which one is the current one. */
+	matches: readonly SearchMatch[];
+	matchIndex: number;
+	/** Each page's rail thumbnail, as an object URL. */
+	thumbnails: Map<number, string>;
 }
 
 const state: EditorState = {
@@ -146,6 +191,12 @@ const state: EditorState = {
 	image: null,
 	geometry: new Map(),
 	busy: false,
+	zoom: 1,
+	dirty: false,
+	fitOnDraw: false,
+	matches: [],
+	matchIndex: 0,
+	thumbnails: new Map(),
 };
 
 let recorder: RequestRecorder | null = null;
@@ -168,6 +219,9 @@ const dom = {
 	openButton: el<HTMLButtonElement>("selis-open-file-button"),
 	fileInput: el<HTMLInputElement>("selis-open-file"),
 	pageIndicator: el<HTMLSpanElement>("selis-page-indicator"),
+	pageCount: el<HTMLSpanElement>("selis-editor-page-count"),
+	filename: el<HTMLSpanElement>("selis-editor-filename"),
+	dirty: el<HTMLSpanElement>("selis-editor-dirty"),
 	undo: el<HTMLButtonElement>("selis-undo"),
 	redo: el<HTMLButtonElement>("selis-redo"),
 	download: el<HTMLButtonElement>("selis-download"),
@@ -187,10 +241,39 @@ const dom = {
 	failure: el<HTMLDivElement>("selis-editor-failure"),
 	status: el<HTMLParagraphElement>("selis-editor-status"),
 	doc: el<HTMLDivElement>("selis-editor-doc"),
+	surface: el<HTMLElement>("selis-editor-surface"),
 	empty: el<HTMLDivElement>("selis-editor-empty"),
 	pageList: el<HTMLOListElement>("selis-page-list"),
 	pageTools: el<HTMLDivElement>("selis-page-tools"),
+	search: el<HTMLInputElement>("selis-editor-search"),
+	searchCount: el<HTMLSpanElement>("selis-editor-search-count"),
+	searchPrev: el<HTMLButtonElement>("selis-editor-search-prev"),
+	searchNext: el<HTMLButtonElement>("selis-editor-search-next"),
+	tabs: el<HTMLDivElement>("selis-editor-tabs"),
+	ribbon: el<HTMLDivElement>("selis-editor-ribbon"),
+	zoomOut: el<HTMLButtonElement>("selis-editor-zoom-out"),
+	zoomIn: el<HTMLButtonElement>("selis-editor-zoom-in"),
+	zoomLevel: el<HTMLButtonElement>("selis-editor-zoom-level"),
+	fitWidth: el<HTMLButtonElement>("selis-editor-fit-width"),
+	fitPage: el<HTMLButtonElement>("selis-editor-fit-page"),
+	inspector: el<HTMLElement>("selis-editor-inspector"),
+	inspectorToggle: el<HTMLButtonElement>("selis-editor-inspector-toggle"),
+	history: el<HTMLOListElement>("selis-editor-history"),
+	historyClear: el<HTMLButtonElement>("selis-editor-history-clear"),
+	labelsApply: el<HTMLButtonElement>("selis-editor-labels-apply"),
+	numbersApply: el<HTMLButtonElement>("selis-editor-numbers-apply"),
+	headerApply: el<HTMLButtonElement>("selis-editor-header-apply"),
+	watermarkApply: el<HTMLButtonElement>("selis-editor-watermark-apply"),
 };
+
+/** The ribbon's tabs, and the panel each one shows. */
+const TABS: readonly { readonly tab: string; readonly panel: string }[] = [
+	{ tab: "selis-editor-tab-home", panel: "selis-editor-panel-home" },
+	{ tab: "selis-editor-tab-edit", panel: "selis-editor-panel-edit" },
+	{ tab: "selis-editor-tab-organize", panel: "selis-editor-panel-organize" },
+	{ tab: "selis-editor-tab-document", panel: "selis-editor-panel-document" },
+	{ tab: "selis-editor-tab-protect", panel: "selis-editor-panel-protect" },
+];
 
 /** Say what happened, in the status line under the document. */
 function setStatus(message: string, kind: "info" | "error" = "info"): void {
@@ -282,7 +365,12 @@ function devicePixelRatio(): number {
  */
 function buildPage(client: EngineClient, page: number): HTMLElement {
 	const dpr = devicePixelRatio();
-	const dpi = BASE_DPI * dpr;
+	// The zoom is a change of RESOLUTION: the page is rendered again at a
+	// higher or lower DPI rather than being scaled by the browser, so the
+	// glyphs stay sharp when the reader zooms in. The CSS box then grows with
+	// the raster, which is what keeps a click's position and the engine's
+	// geometry in step.
+	const dpi = BASE_DPI * dpr * state.zoom;
 	const wrap = document.createElement("div");
 	wrap.className = "selis-editor-page";
 	wrap.dataset.page = String(page);
@@ -331,6 +419,11 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 	wrap.style.width = `${cssWidth}px`;
 	wrap.appendChild(canvas);
 
+	// The rail's thumbnail of this page, drawn from the raster that was just
+	// rendered. It is a copy at a fraction of the size, so it costs one
+	// scaled blit rather than a second render.
+	void makeThumbnail(page, canvas);
+
 	// The page's geometry, kept for the placements: it is what turns a
 	// rectangle on the canvas into the two spaces the engine's writers use.
 	const size = state.pageSizes[page];
@@ -357,6 +450,54 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 		wrap.appendChild(buildTextLayer(layer, raster.ctm, cssWidth / raster.width));
 	}
 	return wrap;
+}
+
+/**
+ * Draw one page's rail thumbnail.
+ *
+ * The thumbnail is a copy of the page's raster at a fraction of the size, so
+ * the rail shows the document rather than a list of numbers. It is produced
+ * out of band — `toBlob` is asynchronous — so a document with many pages does
+ * not block the workspace while they are drawn.
+ *
+ * The object URL is revoked when the document is drawn again, so a session
+ * that edits the same document a hundred times does not hold a hundred
+ * thumbnails.
+ */
+function makeThumbnail(page: number, canvas: HTMLCanvasElement): void {
+	const width = THUMBNAIL_WIDTH;
+	const height = Math.max(1, Math.round((canvas.height / canvas.width) * width));
+	const small = document.createElement("canvas");
+	small.width = width;
+	small.height = height;
+	const context = small.getContext("2d");
+	if (context === null) {
+		return;
+	}
+	context.drawImage(canvas, 0, 0, width, height);
+	small.toBlob((blob) => {
+		if (blob === null) {
+			return;
+		}
+		const previous = state.thumbnails.get(page);
+		if (previous !== undefined) {
+			URL.revokeObjectURL(previous);
+		}
+		const url = URL.createObjectURL(blob);
+		state.thumbnails.set(page, url);
+		const image = dom.pageList.querySelector<HTMLImageElement>(`img[data-thumb="${page}"]`);
+		if (image !== null) {
+			image.src = url;
+		}
+	}, "image/png");
+}
+
+/** Release the thumbnails of a document that is being replaced. */
+function releaseThumbnails(): void {
+	for (const url of state.thumbnails.values()) {
+		URL.revokeObjectURL(url);
+	}
+	state.thumbnails.clear();
 }
 
 /** The text layer's own shape, as the engine reported it. */
@@ -443,36 +584,687 @@ function renderDocument(client: EngineClient): void {
 	dom.empty.hidden = state.pages > 0;
 }
 
-/** Rebuild the page list in the sidebar. */
+/**
+ * Rebuild the page rail.
+ *
+ * The rail is a map of the document: every page drawn small, with its number
+ * under it. A rail of page NUMBERS is a list; a rail of pages is something a
+ * reader can navigate by.
+ */
 function renderPageList(): void {
 	dom.pageList.replaceChildren();
 	for (let page = 0; page < state.pages; page += 1) {
 		const item = document.createElement("li");
+		item.className = "selis-editor-pages__item";
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "selis-editor-pages__page";
 		button.dataset.page = String(page);
-		button.textContent = `Page ${page + 1}`;
 		if (page === state.page) {
 			button.setAttribute("aria-current", "page");
 			button.classList.add("is-current");
 		}
+		const image = document.createElement("img");
+		image.className = "selis-editor-pages__thumb";
+		image.dataset.thumb = String(page);
+		image.alt = "";
+		// The thumbnail takes the page's own shape, so a landscape page is a
+		// landscape thumbnail and the rail is a map of the document rather
+		// than a row of letterboxes.
+		const geometry = state.geometry.get(page);
+		if (geometry !== undefined && geometry.cssHeight > 0) {
+			image.style.aspectRatio = `${geometry.cssWidth} / ${geometry.cssHeight}`;
+		}
+		const source = state.thumbnails.get(page);
+		if (source !== undefined) {
+			image.src = source;
+		}
+		const number = document.createElement("span");
+		number.className = "selis-editor-pages__number";
+		number.textContent = String(page + 1);
+		button.append(image, number);
 		item.appendChild(button);
 		dom.pageList.appendChild(item);
 	}
 	dom.pageIndicator.textContent = `Page ${state.page + 1} of ${state.pages}`;
 	dom.pageIndicator.hidden = state.pages === 0;
+	dom.pageCount.textContent = state.pages === 0 ? "" : `${state.pages}`;
 }
 
-/** Reflect the history's state in the undo and redo buttons. */
+/** Reflect the history's state in the undo and redo buttons, and in the panel. */
 function renderHistory(): void {
 	dom.undo.disabled = !state.history.canUndo;
 	dom.redo.disabled = !state.history.canRedo;
 	const undoLabel = state.history.undoLabel;
 	const redoLabel = state.history.redoLabel;
-	dom.undo.title = undoLabel === null ? "" : `Undo: ${undoLabel}`;
-	dom.redo.title = redoLabel === null ? "" : `Redo: ${redoLabel}`;
+	dom.undo.title = undoLabel === null ? "Undo" : `Undo: ${undoLabel}`;
+	dom.redo.title = redoLabel === null ? "Redo" : `Redo: ${redoLabel}`;
 	dom.download.disabled = state.bytes === null;
+	// The ribbon carries its own undo and redo, and they follow the same
+	// state as the ones in the app bar.
+	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>(
+		"button[data-action='undo'], button[data-action='redo']",
+	)) {
+		if (button.dataset.action === "undo") {
+			button.disabled = !state.history.canUndo;
+		} else {
+			button.disabled = !state.history.canRedo;
+		}
+	}
+	renderHistoryList();
+	dom.historyClear.disabled = state.history.cursor <= 0;
+}
+
+/** Say whether the document has changed since it was opened. */
+function renderDirty(): void {
+	dom.dirty.hidden = !state.dirty;
+}
+
+// ── the shell: the icons, the tabs, the zoom, the find ───────────────────────
+
+/**
+ * Put the icons into the buttons that ask for them.
+ *
+ * The markup NAMES the icon (`data-icon="undo"`) rather than inlining the
+ * SVG, so the paths live in one file and the page stays readable. A button
+ * that also names a label gets it as text, so the accessible name is the
+ * label and never the glyph.
+ */
+function hydrateIcons(): void {
+	for (const host of document.querySelectorAll<HTMLElement>("[data-icon]")) {
+		const name = host.dataset.icon;
+		if (name === undefined) {
+			continue;
+		}
+		host.removeAttribute("data-icon");
+		host.prepend(icon(name as IconName));
+		const label = host.dataset.label;
+		if (label !== undefined) {
+			const span = document.createElement("span");
+			span.className = "selis-editor-btn__label";
+			span.textContent = label;
+			host.appendChild(span);
+		}
+	}
+}
+
+/**
+ * Show one ribbon tab's panel and hide the others.
+ *
+ * The panels are all in the DOM: a ribbon command that opens a panel in the
+ * inspector needs the panel to exist, and a screen reader that reads the
+ * page should find the commands it can reach.
+ */
+function selectTab(tabId: string): void {
+	for (const entry of TABS) {
+		const tab = document.getElementById(entry.tab);
+		const panel = document.getElementById(entry.panel);
+		if (tab === null || panel === null) {
+			continue;
+		}
+		const selected = entry.tab === tabId;
+		tab.setAttribute("aria-selected", selected ? "true" : "false");
+		panel.hidden = !selected;
+	}
+}
+
+/** Open one of the inspector's panels and put the cursor in it. */
+function focusSection(name: string): void {
+	const section = document.getElementById(`selis-editor-section-${name}`);
+	if (!(section instanceof HTMLDetailsElement)) {
+		return;
+	}
+	section.open = true;
+	section.scrollIntoView({ block: "nearest", behavior: "smooth" });
+	const first = section.querySelector<HTMLElement>("input, select, button");
+	first?.focus();
+}
+
+/**
+ * Run one of the ribbon's commands.
+ *
+ * The ribbon carries its commands as `data-action`, so the HTML says what
+ * each button does and this function is the only place that decides what
+ * that means.
+ */
+async function runAction(action: string): Promise<void> {
+	if (action.startsWith("section:")) {
+		focusSection(action.slice("section:".length));
+		return;
+	}
+	switch (action) {
+		case "open":
+			dom.fileInput.click();
+			return;
+		case "download":
+			download();
+			return;
+		case "undo":
+			await undo();
+			return;
+		case "redo":
+			await redo();
+			return;
+		case "fit-width":
+			await fitToWidth();
+			return;
+		case "fit-page":
+			await fitToPage();
+			return;
+		case "zoom-reset":
+			await setZoom(1);
+			return;
+		case "tool:redact":
+			setTool("redact");
+			selectTab("selis-editor-tab-edit");
+			return;
+		case "strip-metadata":
+			await stripMetadata();
+			return;
+		case "report:privacy":
+			await runReport("privacy");
+			return;
+		case "report:fingerprint":
+			await runReport("fingerprint");
+			return;
+		default:
+			setStatus("That command is not wired up yet.", "error");
+	}
+}
+
+// ── the zoom ─────────────────────────────────────────────────────────────────
+
+/** Show the zoom in the status bar, and say what the buttons can do. */
+function renderZoom(): void {
+	const percent = Math.round(state.zoom * 100);
+	dom.zoomLevel.textContent = `${percent}%`;
+	dom.zoomOut.disabled = state.zoom <= ZOOM_MIN;
+	dom.zoomIn.disabled = state.zoom >= ZOOM_MAX;
+}
+
+/**
+ * Draw the document at a new size.
+ *
+ * The zoom is a change of **resolution**, not a change of scale: the page is
+ * rendered again at a higher or lower DPI, so the glyphs stay sharp when the
+ * reader zooms in instead of being stretched. The placements follow, because
+ * the geometry is derived from the transform the render reported.
+ */
+async function setZoom(zoom: number): Promise<void> {
+	const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+	if (Math.abs(next - state.zoom) < 0.001) {
+		return;
+	}
+	state.zoom = next;
+	renderZoom();
+	await redraw();
+}
+
+/** Step the zoom up or down to the next size on the ladder. */
+async function stepZoom(direction: "in" | "out"): Promise<void> {
+	const current = state.zoom;
+	const ladder = direction === "in" ? ZOOM_STEPS : [...ZOOM_STEPS].reverse();
+	const next = ladder.find((step) => (direction === "in" ? step > current : step < current));
+	await setZoom(next ?? current);
+}
+
+/** Draw the document again, at the zoom it is already at. */
+async function redraw(): Promise<void> {
+	// The guard is the PAGE COUNT, not the bytes: the fit that runs when a
+	// document is opened happens before the bytes are stored, and a redraw
+	// that refused to draw then would leave the page at the wrong size.
+	if (state.pages === 0) {
+		return;
+	}
+	const client = await engine();
+	renderDocument(client);
+	paintMatches();
+}
+
+/**
+ * Fit the page to the width of the canvas.
+ *
+ * The factor is worked out from the page as it is drawn now, so the fit is
+ * exact for a turned page and for a page whose media box does not start at
+ * the origin.
+ */
+async function fitToWidth(): Promise<void> {
+	const box = pageBox();
+	if (box === null || box.width <= 0) {
+		return;
+	}
+	const available = dom.surface.clientWidth - SURFACE_GUTTER;
+	if (available <= 0) {
+		return;
+	}
+	await setZoom(state.zoom * (available / box.width));
+}
+
+/** Fit the whole page to the canvas, in both directions. */
+async function fitToPage(): Promise<void> {
+	const box = pageBox();
+	if (box === null || box.width <= 0 || box.height <= 0) {
+		return;
+	}
+	const availableWidth = dom.surface.clientWidth - SURFACE_GUTTER;
+	const availableHeight = dom.surface.clientHeight - SURFACE_GUTTER;
+	if (availableWidth <= 0 || availableHeight <= 0) {
+		return;
+	}
+	const factor = Math.min(availableWidth / box.width, availableHeight / box.height);
+	await setZoom(state.zoom * factor);
+}
+
+/**
+ * The size of the selected page as it is drawn, in CSS pixels.
+ *
+ * This is the page's own layout size, NOT the size of its box on screen: the
+ * canvas scrolls, so a page wider than the canvas is not shrunk to fit, and a
+ * fit that measured the visible box would measure the wrong thing.
+ */
+function pageBox(): { readonly width: number; readonly height: number } | null {
+	const geometry = state.geometry.get(state.page);
+	if (geometry !== undefined) {
+		return { width: geometry.cssWidth, height: geometry.cssHeight };
+	}
+	const canvas = dom.doc.querySelector<HTMLCanvasElement>(".selis-editor-page__canvas");
+	if (canvas === null) {
+		return null;
+	}
+	const box = canvas.getBoundingClientRect();
+	return { width: box.width, height: box.height };
+}
+
+// ── the find box ─────────────────────────────────────────────────────────────
+
+/**
+ * Find the lines that carry what the reader typed.
+ *
+ * The engine's own search primitive does the work, so a match is a match
+ * against the document's real text and not against what the page happens to
+ * be showing. The matches are then painted onto the text layer.
+ */
+async function runSearch(): Promise<void> {
+	const query = dom.search.value.trim();
+	clearMatches();
+	if (query === "" || state.bytes === null) {
+		dom.searchCount.textContent = "";
+		dom.searchPrev.disabled = true;
+		dom.searchNext.disabled = true;
+		return;
+	}
+	if (state.busy) {
+		return;
+	}
+	state.busy = true;
+	try {
+		const client = await engine();
+		const found = client.search(state.doc, query);
+		state.matches = found.matches;
+		state.matchIndex = 0;
+		paintMatches();
+		const total = found.total;
+		dom.searchCount.textContent =
+			total === 0 ? "no matches" : `${state.matchIndex + 1} of ${total}`;
+		dom.searchPrev.disabled = total === 0;
+		dom.searchNext.disabled = total === 0;
+		if (total === 0) {
+			setStatus(`Nothing in the document carries "${query}".`);
+		} else {
+			setStatus(`${total} place${total === 1 ? "" : "s"} in the document carries "${query}".`);
+			goToMatch(0);
+		}
+	} catch (error) {
+		setStatus(`The document could not be searched: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+	}
+}
+
+/** Forget the matches and take the highlights off the page. */
+function clearMatches(): void {
+	state.matches = [];
+	state.matchIndex = 0;
+	for (const line of dom.doc.querySelectorAll(".selis-editor-line")) {
+		line.removeAttribute("data-match");
+		line.removeAttribute("data-current");
+	}
+}
+
+/**
+ * Paint the matches onto the text layer.
+ *
+ * The highlight sits UNDER the glyphs — the line's own text is transparent
+ * and the raster below shows through — so a matched line is marked without
+ * the words becoming unreadable.
+ */
+function paintMatches(): void {
+	for (const line of dom.doc.querySelectorAll(".selis-editor-line")) {
+		line.removeAttribute("data-match");
+		line.removeAttribute("data-current");
+	}
+	const current = state.matches[state.matchIndex];
+	for (const match of state.matches) {
+		const line = dom.doc.querySelector(
+			`.selis-editor-page[data-page="${match.page}"] .selis-editor-line[data-line="${match.line}"]`,
+		);
+		if (line instanceof HTMLElement) {
+			line.setAttribute("data-match", "true");
+		}
+	}
+	if (current === undefined) {
+		return;
+	}
+	const line = dom.doc.querySelector(
+		`.selis-editor-page[data-page="${current.page}"] .selis-editor-line[data-line="${current.line}"]`,
+	);
+	if (line instanceof HTMLElement) {
+		line.setAttribute("data-current", "true");
+	}
+}
+
+/** Show one of the matches, and take the page to it. */
+function goToMatch(index: number): void {
+	if (state.matches.length === 0) {
+		return;
+	}
+	state.matchIndex = ((index % state.matches.length) + state.matches.length) % state.matches.length;
+	paintMatches();
+	const match = state.matches[state.matchIndex];
+	if (match === undefined) {
+		return;
+	}
+	dom.searchCount.textContent = `${state.matchIndex + 1} of ${state.matches.length}`;
+	state.page = match.page;
+	renderPageList();
+	const line = dom.doc.querySelector(
+		`.selis-editor-page[data-page="${match.page}"] .selis-editor-line[data-line="${match.line}"]`,
+	);
+	if (line instanceof HTMLElement) {
+		line.scrollIntoView({ block: "center", behavior: "smooth" });
+	}
+}
+
+// ── the document's own furniture ────────────────────────────────────────────
+
+/** Label the pages, so a reader sees `i, ii, iii` or `A-1, A-2`. */
+async function applyPageLabels(): Promise<void> {
+	const style = selectValue("selis-editor-label-style");
+	const start = Math.max(1, Math.round(numberInput("selis-editor-label-start")));
+	const prefix = textInput("selis-editor-label-prefix");
+	await runOperation({
+		op: "page_labels",
+		options: pageLabelsOptions(style, start, prefix),
+		label: "Labelled the pages",
+	});
+}
+
+/** Number the pages. */
+async function applyPageNumbers(): Promise<void> {
+	const position = selectValue("selis-editor-number-position");
+	const start = Math.max(1, Math.round(numberInput("selis-editor-number-start")));
+	const size = Math.min(72, Math.max(4, Math.round(numberInput("selis-editor-number-size"))));
+	await runOperation({
+		op: "page_numbers",
+		options: pageNumbersOptions(position, start, size),
+		label: "Numbered the pages",
+	});
+}
+
+/** Write a header and a footer on every page. */
+async function applyHeaderFooter(): Promise<void> {
+	const header = {
+		left: textInput("selis-editor-header-left"),
+		center: textInput("selis-editor-header-center"),
+		right: textInput("selis-editor-header-right"),
+	};
+	const footer = {
+		left: textInput("selis-editor-footer-left"),
+		center: textInput("selis-editor-footer-center"),
+		right: textInput("selis-editor-footer-right"),
+	};
+	if (
+		header.left === "" &&
+		header.center === "" &&
+		header.right === "" &&
+		footer.left === "" &&
+		footer.center === "" &&
+		footer.right === ""
+	) {
+		setStatus("There is no header or footer to write.", "error");
+		return;
+	}
+	await runOperation({
+		op: "header_footer",
+		options: headerFooterOptions(header, footer, 9),
+		label: "Wrote the header and footer",
+	});
+}
+
+/** Draw a watermark across every page. */
+async function applyWatermark(): Promise<void> {
+	const text = textInput("selis-editor-watermark-text").trim();
+	if (text === "") {
+		setStatus("The watermark needs some text.", "error");
+		return;
+	}
+	const size = Math.min(200, Math.max(6, Math.round(numberInput("selis-editor-watermark-size"))));
+	const opacity = Math.min(1, Math.max(0.05, numberInput("selis-editor-watermark-opacity")));
+	const angle = selectValue("selis-editor-watermark-angle");
+	await runOperation({
+		op: "watermark",
+		options: watermarkOptions(
+			text,
+			size,
+			opacity,
+			angle === "horizontal" ? "horizontal" : "diagonal",
+		),
+		label: "Applied the watermark",
+	});
+}
+
+/**
+ * Take the document's metadata out of it.
+ *
+ * The metadata is what a file manager shows in its details pane, and what a
+ * document carries about where it came from. Removing it is a real edit: the
+ * bytes come back without it, and the change can be undone.
+ */
+async function stripMetadata(): Promise<void> {
+	await runOperation({
+		op: "strip_metadata",
+		options: {},
+		label: "Removed the document's metadata",
+	});
+}
+
+/**
+ * Read one of the engine's reports about the document.
+ *
+ * The privacy report says what the document might leak; the fingerprint says
+ * what is inside it. Neither rewrites anything, so neither is a change to
+ * undo — the report is shown, not committed.
+ */
+async function runReport(kind: "privacy" | "fingerprint"): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (state.busy) {
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus(kind === "privacy" ? "Scanning the document…" : "Reading the document…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: kind,
+			options: {},
+			files: [{ name: state.name, bytes }],
+		});
+		const produced = result.outputs[0];
+		if (produced === undefined) {
+			throw new Error("the engine produced no report");
+		}
+		const text = new TextDecoder().decode(produced.bytes);
+		showReport(kind, text);
+		setStatus(
+			kind === "privacy"
+				? "The privacy report is in the document's panels."
+				: "The fingerprint is in the document's panels.",
+		);
+	} catch (error) {
+		setStatus(`The report could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
+}
+
+/** Show a report in the inspector, in the reader's own words. */
+function showReport(kind: "privacy" | "fingerprint", json: string): void {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(json);
+	} catch {
+		parsed = null;
+	}
+	const panel = document.getElementById(
+		kind === "privacy" ? "selis-editor-section-privacy" : "selis-editor-section-fingerprint",
+	);
+	if (!(panel instanceof HTMLElement)) {
+		return;
+	}
+	const body = panel.querySelector(".selis-editor-report");
+	if (body === null) {
+		return;
+	}
+	body.replaceChildren();
+	const lines = summariseReport(kind, parsed);
+	if (kind === "privacy") {
+		focusSection("privacy");
+	} else {
+		focusSection("fingerprint");
+	}
+	for (const line of lines) {
+		const row = document.createElement("p");
+		row.className = "selis-editor-report__row";
+		row.textContent = line;
+		body.appendChild(row);
+	}
+	panel.classList.add("is-open");
+}
+
+/**
+ * Turn a report into the few lines a reader can act on.
+ *
+ * The reports are JSON with a great deal in them; a person opening the
+ * privacy report wants to know what was found, not to read a schema.
+ */
+function summariseReport(kind: "privacy" | "fingerprint", parsed: unknown): string[] {
+	if (typeof parsed !== "object" || parsed === null) {
+		return ["The report could not be read."];
+	}
+	const record = parsed as Record<string, unknown>;
+	const lines: string[] = [];
+	if (kind === "privacy") {
+		const status = typeof record.status === "string" ? record.status : "unknown";
+		lines.push(`Status: ${status}.`);
+		const risks = record.risks;
+		if (Array.isArray(risks)) {
+			for (const risk of risks.slice(0, 20)) {
+				if (typeof risk === "string") {
+					lines.push(risk);
+				} else if (typeof risk === "object" && risk !== null) {
+					const item = risk as Record<string, unknown>;
+					const kind2 = typeof item.kind === "string" ? item.kind : "risk";
+					const detail = typeof item.detail === "string" ? item.detail : JSON.stringify(item);
+					lines.push(`${kind2}: ${detail}`);
+				}
+			}
+		}
+	} else {
+		lines.push(`Status: ${typeof record.status === "string" ? record.status : "unknown"}.`);
+		for (const key of ["pages", "identifiers", "fonts", "images"]) {
+			const value = record[key];
+			if (value !== undefined) {
+				lines.push(`${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+			}
+		}
+	}
+	if (lines.length === 0) {
+		lines.push("The report carries nothing to show.");
+	}
+	return lines;
+}
+
+// ── the visible history ──────────────────────────────────────────────────────
+
+/**
+ * Show the undo stack.
+ *
+ * The stack has always been there; this is the reader's view of it. Each row
+ * is a state the document has been in, and choosing one returns the document
+ * to it — which is the same thing the undo button does, one step at a time.
+ */
+function renderHistoryList(): void {
+	const list = dom.history;
+	list.replaceChildren();
+	const entries = state.history.entries;
+	if (entries.length === 0) {
+		const note = document.createElement("li");
+		note.className = "selis-editor-hint";
+		note.textContent = "Nothing has been changed yet.";
+		list.appendChild(note);
+		return;
+	}
+	entries.forEach((entry, index) => {
+		const item = document.createElement("li");
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "selis-editor-history__item";
+		button.dataset.state = String(index);
+		if (index === state.history.cursor) {
+			button.classList.add("is-current");
+		}
+		const dot = document.createElement("span");
+		dot.className = "selis-editor-history__dot";
+		const label = document.createElement("span");
+		label.textContent = entry.label;
+		button.append(dot, label);
+		item.appendChild(button);
+		list.appendChild(item);
+	});
+}
+
+/** Return the document to a state in the history. */
+async function goToState(index: number): Promise<void> {
+	const entries = state.history.entries;
+	const entry = entries[index];
+	if (entry === undefined) {
+		return;
+	}
+	if (index === state.history.cursor) {
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus(`${entry.label}…`);
+	try {
+		await openInEngine(entry.bytes);
+		state.bytes = entry.bytes;
+		state.history.setCursor(index);
+		state.dirty = true;
+		await assertLocalOnly();
+		setStatus(`Back at: ${entry.label}`);
+	} catch (error) {
+		setStatus(`That state could not be restored: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
 }
 
 // ── the document ────────────────────────────────────────────────────────────
@@ -492,9 +1284,17 @@ async function openInEngine(bytes: Uint8Array): Promise<void> {
 	if (previous !== null) {
 		client.close(previous);
 	}
+	releaseThumbnails();
 	renderDocument(client);
 	renderPageList();
 	renderHistory();
+	// The document is drawn once at the size the reader last chose, and once
+	// more to fit the canvas — but only when a NEW document was opened. A
+	// change to the open document must not resize it under the reader.
+	if (state.fitOnDraw) {
+		state.fitOnDraw = false;
+		await fitToWidth();
+	}
 }
 
 /**
@@ -507,6 +1307,8 @@ async function commit(bytes: Uint8Array, label: string): Promise<void> {
 	await openInEngine(bytes);
 	state.bytes = bytes;
 	state.history.push(label, bytes);
+	state.dirty = true;
+	renderDirty();
 	await assertLocalOnly();
 	setStatus(label);
 }
@@ -529,9 +1331,13 @@ async function openFile(file: File): Promise<void> {
 		clearFailure();
 		state.name = file.name === "" ? "document.pdf" : file.name;
 		state.page = 0;
+		state.fitOnDraw = true;
+		state.dirty = false;
+		dom.filename.textContent = state.name;
 		await openInEngine(bytes);
 		state.bytes = bytes;
 		state.history.reset(`Opened ${state.name}`, bytes);
+		renderDirty();
 		await assertLocalOnly();
 		setStatus(`Opened ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}.`);
 	} catch (error) {
@@ -834,13 +1640,20 @@ async function lineChanged(
 
 // ── placing new content ─────────────────────────────────────────────────────
 
-/** What each tool does, in the reader's words. */
+/**
+ * What each tool does, in the reader's words.
+ *
+ * The hints carry the tool's LIMIT as well as its promise: the page says
+ * what it cannot do, so a reader is never surprised by a line that ran over
+ * what followed it or by an image that was covered rather than removed.
+ */
 const TOOL_HINTS: Record<EditorTool, string> = {
-	text: "Click a line of text to change it.",
-	box: "Click where the text should start, then type it.",
-	image: "Pick a PNG or JPEG, then drag a rectangle to place it.",
+	text: "Click a line of text to change it. The text is replaced where it is drawn — the line does not re-flow, so a much longer replacement runs over what follows it.",
+	box: "Click where the text should start, then type it. The text is drawn on top of the page.",
+	image:
+		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
 	redact:
-		"Drag a rectangle over what should not be there: the text under it is removed and covered. Undo brings it back.",
+		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. Anything else under it — an image, a line of art — is covered, not erased.",
 };
 
 /** The font size a new text box is drawn at, in points. */
@@ -1683,6 +2496,9 @@ async function runPageTool(operation: string): Promise<void> {
 		case "rotate-180":
 			await runOperation(rotatePage(page, 180));
 			return;
+		case "rotate-270":
+			await runOperation(rotatePage(page, 270));
+			return;
 		case "duplicate":
 			await runOperation(duplicatePage(page));
 			return;
@@ -1745,12 +2561,16 @@ function wire(): void {
 	dom.download.addEventListener("click", download);
 
 	// The tool row: what the workspace is armed to do on the page.
+	//
+	// The click may land on the icon or the label rather than on the button
+	// itself, so the target is walked UP to the button that carries the tool.
 	dom.tools.addEventListener("click", (event) => {
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) {
+		if (!(target instanceof Element)) {
 			return;
 		}
-		const tool = target.dataset.tool;
+		const button = target.closest<HTMLElement>("button[data-tool]");
+		const tool = button?.dataset.tool;
 		if (tool === "image") {
 			// The image tool needs an image, so it opens the picker first and
 			// arms itself once the reader has chosen one.
@@ -1832,10 +2652,10 @@ function wire(): void {
 
 	dom.pageTools.addEventListener("click", (event) => {
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) {
+		if (!(target instanceof Element)) {
 			return;
 		}
-		const operation = target.dataset.op;
+		const operation = target.closest<HTMLElement>("button[data-op]")?.dataset.op;
 		if (operation !== undefined) {
 			void runPageTool(operation);
 		}
@@ -1843,10 +2663,10 @@ function wire(): void {
 
 	dom.pageList.addEventListener("click", (event) => {
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) {
+		if (!(target instanceof Element)) {
 			return;
 		}
-		const page = Number(target.dataset.page);
+		const page = Number(target.closest<HTMLElement>("button[data-page]")?.dataset.page);
 		if (!Number.isInteger(page)) {
 			return;
 		}
@@ -1903,6 +2723,105 @@ function wire(): void {
 		}
 	});
 
+	// The ribbon: the tabs, and the commands under them.
+	dom.tabs.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const tab = target.closest<HTMLElement>("button[role='tab']");
+		const id = tab?.id;
+		if (id !== undefined) {
+			selectTab(id);
+		}
+	});
+	dom.ribbon.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const action = target.closest<HTMLElement>("button[data-action]")?.dataset.action;
+		if (action !== undefined) {
+			void runAction(action);
+		}
+	});
+
+	// The find box.
+	let searchTimer: number | undefined;
+	dom.search.addEventListener("input", () => {
+		if (searchTimer !== undefined) {
+			window.clearTimeout(searchTimer);
+		}
+		searchTimer = window.setTimeout(() => {
+			void runSearch();
+		}, 250);
+	});
+	dom.search.addEventListener("keydown", (event) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			void runSearch();
+		}
+	});
+	dom.searchNext.addEventListener("click", () => {
+		goToMatch(state.matchIndex + 1);
+	});
+	dom.searchPrev.addEventListener("click", () => {
+		goToMatch(state.matchIndex - 1);
+	});
+
+	// The zoom.
+	dom.zoomIn.addEventListener("click", () => {
+		void stepZoom("in");
+	});
+	dom.zoomOut.addEventListener("click", () => {
+		void stepZoom("out");
+	});
+	dom.zoomLevel.addEventListener("click", () => {
+		void setZoom(1);
+	});
+	dom.fitWidth.addEventListener("click", () => {
+		void fitToWidth();
+	});
+	dom.fitPage.addEventListener("click", () => {
+		void fitToPage();
+	});
+
+	// The document's own furniture.
+	dom.labelsApply.addEventListener("click", () => {
+		void applyPageLabels();
+	});
+	dom.numbersApply.addEventListener("click", () => {
+		void applyPageNumbers();
+	});
+	dom.headerApply.addEventListener("click", () => {
+		void applyHeaderFooter();
+	});
+	dom.watermarkApply.addEventListener("click", () => {
+		void applyWatermark();
+	});
+
+	// The visible history: choosing a state returns the document to it.
+	dom.historyClear.addEventListener("click", () => {
+		void goToState(0);
+	});
+	dom.history.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const index = Number(target.closest<HTMLElement>("button[data-state]")?.dataset.state);
+		if (Number.isInteger(index)) {
+			void goToState(index);
+		}
+	});
+
+	// The inspector can be put away when the reader wants the whole canvas.
+	dom.inspectorToggle.addEventListener("click", () => {
+		const hidden = dom.inspector.classList.toggle("is-hidden");
+		dom.inspectorToggle.title = hidden ? "Show the panels" : "Hide the panels";
+		dom.inspectorToggle.setAttribute("aria-label", dom.inspectorToggle.title);
+	});
+
 	// Dragging a file onto the page opens it, the way the reader does.
 	for (const eventName of ["dragover", "drop"]) {
 		document.addEventListener(eventName, (event) => {
@@ -1921,9 +2840,13 @@ function wire(): void {
 async function boot(): Promise<void> {
 	recorder = installRequestRecorder();
 	document.documentElement.dataset.noUpload = "watching";
+	hydrateIcons();
 	wire();
 	setTool("text");
+	selectTab("selis-editor-tab-home");
+	renderZoom();
 	renderHistory();
+	renderDirty();
 	setStatus("Open a PDF to start editing. It stays on this device.");
 	await registerServiceWorker();
 }

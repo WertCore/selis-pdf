@@ -96,6 +96,35 @@ export class DocumentHistory {
 	}
 
 	/**
+	 * The states the history holds, oldest first.
+	 *
+	 * This is the reader's view of the stack: a panel that lists them makes
+	 * the undo visible, and a reader who can see it can also pick the state
+	 * they want to go back to.
+	 */
+	get entries(): readonly DocumentState[] {
+		return this.#states;
+	}
+
+	/** Which of the states the document is in now. */
+	get cursor(): number {
+		return this.#cursor;
+	}
+
+	/**
+	 * Move the cursor to a state without changing it.
+	 *
+	 * The caller restores the bytes itself — this only says which state the
+	 * document is in, so the history and the document agree afterwards.
+	 */
+	setCursor(index: number): void {
+		if (!Number.isInteger(index) || index < 0 || index >= this.#states.length) {
+			throw new RangeError("that state is not in the history");
+		}
+		this.#cursor = index;
+	}
+
+	/**
 	 * Start a session with the document as it was opened.
 	 *
 	 * The baseline is not an undo step: there is nothing before it to return

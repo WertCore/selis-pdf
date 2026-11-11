@@ -117,6 +117,26 @@ export interface TextLayerLine {
 	};
 }
 
+/** One place a search query was found. */
+export interface SearchMatch {
+	/** The zero-based page the match is on. */
+	readonly page: number;
+	/** The zero-based line the match is on. */
+	readonly line: number;
+	/** The text of the line the match is on. */
+	readonly text: string;
+}
+
+/** What a search found. */
+export interface SearchResults {
+	/** The matches, in the order the engine found them. */
+	readonly matches: readonly SearchMatch[];
+	/** How many matches the document holds, which may exceed the list. */
+	readonly total: number;
+	/** Whether the list was cut short because the engine's cap was reached. */
+	readonly truncated: boolean;
+}
+
 /** A page's text layer. */
 export interface PageTextLayer {
 	/** The zero-based page number. */
@@ -409,6 +429,45 @@ export class EngineClient {
 			height: numberField(value, "height"),
 			lowConfidence: value.lowConfidence === true,
 			lines,
+		};
+	}
+
+	/**
+	 * Find the lines that carry a query.
+	 *
+	 * The engine's own search primitive folds case, so the query is matched
+	 * without regard to case; the engine refuses a case-sensitive request
+	 * rather than answering it as if it were case-insensitive, and this client
+	 * does not ask for one.
+	 */
+	search(doc: number, query: string, maxMatches = 500): SearchResults {
+		const value = this.#value({
+			op: "search",
+			doc,
+			query,
+			opts: { matchCase: false, maxMatches },
+		});
+		if (!isRecord(value)) {
+			throw new EngineError("the engine's search reply is malformed");
+		}
+		const rawMatches = Array.isArray(value.matches) ? value.matches : [];
+		const matches: SearchMatch[] = [];
+		for (const raw of rawMatches) {
+			if (!isRecord(raw)) {
+				continue;
+			}
+			const page = raw.page;
+			const line = raw.line;
+			const text = raw.text;
+			if (typeof page !== "number" || typeof line !== "number" || typeof text !== "string") {
+				continue;
+			}
+			matches.push({ page, line, text });
+		}
+		return {
+			matches,
+			total: typeof value.total === "number" ? value.total : matches.length,
+			truncated: value.truncated === true,
 		};
 	}
 }

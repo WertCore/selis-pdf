@@ -105,3 +105,39 @@ describe("the undo stack", () => {
 		expect(HISTORY_LIMIT).toBeGreaterThan(1);
 	});
 });
+
+describe("the history as the reader sees it", () => {
+	it("lists every state, oldest first, and says which one it is in", () => {
+		const history = new DocumentHistory();
+		history.reset("Opened", bytes("one"));
+		history.push("Rotated page 1", bytes("two"));
+		history.push("Added a text box", bytes("three"));
+
+		expect(history.entries.map((entry) => entry.label)).toEqual([
+			"Opened",
+			"Rotated page 1",
+			"Added a text box",
+		]);
+		expect(history.cursor).toBe(2);
+	});
+
+	it("moves the cursor to a chosen state without changing it", () => {
+		const history = new DocumentHistory();
+		history.reset("Opened", bytes("one"));
+		history.push("Changed", bytes("two"));
+
+		history.setCursor(0);
+		expect(history.cursor).toBe(0);
+		expect(history.canUndo).toBe(false);
+		expect(history.canRedo).toBe(true);
+		// The bytes are still the ones that were pushed.
+		expect(text(history.current ?? { bytes: bytes("") })).toBe("one");
+	});
+
+	it("refuses a state that is not in the history", () => {
+		const history = new DocumentHistory();
+		history.reset("Opened", bytes("one"));
+		expect(() => history.setCursor(1)).toThrow(RangeError);
+		expect(() => history.setCursor(-1)).toThrow(RangeError);
+	});
+});
