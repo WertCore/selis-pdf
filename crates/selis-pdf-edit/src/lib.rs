@@ -508,6 +508,54 @@ impl TextMatrix {
     }
 }
 
+/// A six-element matrix, in PDF's `[a b c d e f]` order.
+type Matrix6 = [f64; 6];
+
+/// The identity matrix.
+const IDENTITY: Matrix6 = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// Compose two matrices: `outer` applied after `inner`.
+fn compose(outer: Matrix6, inner: Matrix6) -> Matrix6 {
+    [
+        outer[0] * inner[0] + outer[1] * inner[2],
+        outer[0] * inner[1] + outer[1] * inner[3],
+        outer[2] * inner[0] + outer[3] * inner[2],
+        outer[2] * inner[1] + outer[3] * inner[3],
+        outer[4] * inner[0] + outer[5] * inner[2] + inner[4],
+        outer[4] * inner[1] + outer[5] * inner[3] + inner[5],
+    ]
+}
+
+/// The inverse of a matrix, or `None` when it is singular.
+fn invert(matrix: Matrix6) -> Option<Matrix6> {
+    let det = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    if !det.is_finite() || det == 0.0 {
+        return None;
+    }
+    let inverse_det = 1.0 / det;
+    Some([
+        matrix[3] * inverse_det,
+        -matrix[1] * inverse_det,
+        -matrix[2] * inverse_det,
+        matrix[0] * inverse_det,
+        (matrix[2] * matrix[5] - matrix[3] * matrix[4]) * inverse_det,
+        (matrix[1] * matrix[4] - matrix[0] * matrix[5]) * inverse_det,
+    ])
+}
+
+/// What a redaction removed, and how to draw the box over it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Redaction {
+    /// The content stream, with the text inside the regions removed.
+    pub content: Vec<u8>,
+    /// The inverse of the content's own transform at the end of the stream.
+    ///
+    /// The caller multiplies a **user-space** rectangle by it to draw the box
+    /// in the content's own space. `None` when the content's transform is the
+    /// identity, which is the usual case.
+    pub inverse_transform: Option<Matrix6>,
+}
+
 /// Remove the text runs whose origin falls inside one of the given regions.
 ///
 /// The regions are in the page's own user space: points, y-up, at the
@@ -516,11 +564,11 @@ impl TextMatrix {
 /// operands it drew go with it, because a string left without its operator is
 /// not a stream a reader can parse.
 ///
-/// The text matrix is tracked across `BT`, `Td`, `TD`, `Tm`, `TL` and `T*`, so
-/// the position a show operation draws at is the position the region is tested
-/// against. The page's `cm` is NOT tracked: the text space is the user space
-/// on a page that does not scale its content, and a page that does is outside
-/// what this claims.
+/// The text matrix is tracked across `BT`, `Td`, `TD`, `Tm`, `TL` and `T*`, and
+/// the content's own transform across `q`, `Q` and `cm`, so the position a show
+/// operation draws at is compared in the page's space — which is the space the
+/// regions are in. A page whose content is scaled (a resize writes exactly
+/// that) would otherwise be redacted in the wrong place.
 ///
 /// Everything else is copied through byte for byte, so a stream with nothing
 /// to remove comes back unchanged.
@@ -530,7 +578,7 @@ impl TextMatrix {
 /// A stream that is not a content stream is copied through unchanged: the
 /// rewriter removes text, and it refuses to guess where the text is.
 #[must_use]
-pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Vec<u8> {
+pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Redaction {
     let mut cur = Cursor::new(content);
     let mut out: Vec<u8> = Vec::new();
     // How much of the input has been copied out.
@@ -545,6 +593,9 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
     let mut tm = TextMatrix::IDENTITY;
     let mut leading = 0.0f64;
     let mut in_text = false;
+    // The content's own transform, and the stack `q`/`Q` keep.
+    let mut ctm: Matrix6 = IDENTITY;
+    let mut stack: Vec<Matrix6> = Vec::new();
 
     loop {
         cur.skip_ws_and_comments();
@@ -650,14 +701,47 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
                     "T*" => {
                         tm.f -= leading;
                     }
+                    "q" => {
+                        stack.push(ctm);
+                    }
+                    "Q" => {
+                        if let Some(saved) = stack.pop() {
+                            ctm = saved;
+                        }
+                    }
+                    "cm" => {
+                        let values = [
+                            operand_number(&operands, 0),
+                            operand_number(&operands, 1),
+                            operand_number(&operands, 2),
+                            operand_number(&operands, 3),
+                            operand_number(&operands, 4),
+                            operand_number(&operands, 5),
+                        ];
+                        if values.iter().all(|value| value.is_some()) {
+                            let number =
+                                |index: usize| values.get(index).copied().flatten().unwrap_or(0.0);
+                            ctm = compose(
+                                [
+                                    number(0),
+                                    number(1),
+                                    number(2),
+                                    number(3),
+                                    number(4),
+                                    number(5),
+                                ],
+                                ctm,
+                            );
+                        }
+                    }
                     "'" | "\"" => {
                         // Both move to the start of the next line before they
                         // show, so the position to test is the moved one.
                         tm.f -= leading;
-                        drop_it = in_text && inside_any(regions, tm.e, tm.f);
+                        drop_it = in_text && inside_any(regions, tm.e, tm.f, ctm);
                     }
                     "Tj" | "TJ" => {
-                        drop_it = in_text && inside_any(regions, tm.e, tm.f);
+                        drop_it = in_text && inside_any(regions, tm.e, tm.f, ctm);
                     }
                     _ => {}
                 }
@@ -684,7 +768,10 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
     if copied < content.len() {
         out.extend_from_slice(content.get(copied..).unwrap_or(&[]));
     }
-    out
+    Redaction {
+        content: out,
+        inverse_transform: invert(ctm),
+    }
 }
 
 /// Copy the input up to the cursor's position.
@@ -725,10 +812,16 @@ fn operand_number(operands: &[Pending], index: usize) -> Option<f64> {
 }
 
 /// Whether a point is inside any of the regions.
-fn inside_any(regions: &[(f64, f64, f64, f64)], x: f64, y: f64) -> bool {
+///
+/// The point is the text's origin in the **page's** space: the text matrix
+/// places it in the content's own space, and the content's transform carries
+/// it into the page's.
+fn inside_any(regions: &[(f64, f64, f64, f64)], x: f64, y: f64, ctm: Matrix6) -> bool {
+    let px = ctm[0] * x + ctm[2] * y + ctm[4];
+    let py = ctm[1] * x + ctm[3] * y + ctm[5];
     regions
         .iter()
-        .any(|(rx, ry, rw, rh)| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh)
+        .any(|(rx, ry, rw, rh)| px >= *rx && px <= rx + rw && py >= *ry && py <= ry + rh)
 }
 
 /// A content-stream byte that begins a regular (non-delimiter, non-ws) token.

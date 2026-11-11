@@ -7258,6 +7258,22 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the cropped page is not narrower than it was".into());
     }
 
+    let resize = report
+        .get("resize")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no resize leg (resize = None)".to_string())?;
+    if resize.get("resized").and_then(Json::as_bool) != Some(true) {
+        return Err("the resized page is the same size as it was".into());
+    }
+
+    let bookmarks = report
+        .get("bookmarks")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no bookmarks leg (bookmarks = None)".to_string())?;
+    if bookmarks.get("carriesBookmark").and_then(Json::as_bool) != Some(true) {
+        return Err("the saved document does not carry the bookmark the check added".into());
+    }
+
     let properties = report
         .get("properties")
         .and_then(Json::as_object)

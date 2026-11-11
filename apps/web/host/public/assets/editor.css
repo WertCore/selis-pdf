@@ -330,6 +330,53 @@
 	cursor: not-allowed;
 }
 
+/* The document's bookmarks: one row each, indented by their nesting depth. */
+.selis-editor-outline {
+	display: flex;
+	flex-direction: column;
+	gap: var(--selis-space-2);
+	margin: var(--selis-space-3) 0;
+}
+
+.selis-editor-bookmark {
+	display: grid;
+	grid-template-columns: 1fr 4rem auto;
+	align-items: center;
+	gap: var(--selis-space-2);
+}
+
+.selis-editor-bookmark__title,
+.selis-editor-bookmark__page {
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	padding: var(--selis-space-1) var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg);
+	min-width: 0;
+}
+
+.selis-editor-bookmark__page {
+	text-align: right;
+}
+
+.selis-editor-bookmark__remove {
+	font: inherit;
+	line-height: 1;
+	padding: var(--selis-space-1) var(--selis-space-2);
+	border-radius: var(--selis-radius-sm);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	background: var(--selis-color-bg-raised);
+	color: var(--selis-color-fg-muted);
+	cursor: pointer;
+}
+
+.selis-editor-bookmark__remove:hover {
+	border-color: var(--selis-color-danger);
+	color: var(--selis-color-danger-fg);
+}
+
 .selis-editor-tools button {
 	font: inherit;
 	text-align: left;

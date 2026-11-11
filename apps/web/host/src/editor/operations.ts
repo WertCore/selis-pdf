@@ -400,3 +400,53 @@ export function fillFormsOptions(
 ): Record<string, unknown> {
 	return { fields: fields.map((field) => ({ name: field.name, value: field.value })) };
 }
+
+/** The page sizes the editor offers, in points, as the tools page offers them. */
+export const PAGE_SIZES: Readonly<Record<string, readonly [number, number]>> = {
+	a3: [841.89, 1190.55],
+	a4: [595.28, 841.89],
+	a5: [419.53, 595.28],
+	letter: [612, 792],
+	legal: [612, 1008],
+};
+
+/**
+ * The options for resizing a page.
+ *
+ * The size is in points, and `fit` says whether the content is scaled to the
+ * new page or left alone (and clipped). The page selection is **zero-based**.
+ */
+export function resizeOptions(
+	width: number,
+	height: number,
+	fit: boolean,
+	page: number,
+): Record<string, unknown> {
+	return { width, height, fit, pages: String(page) };
+}
+
+/** One bookmark, as the editor holds it. */
+export interface OutlineEntry {
+	/** The title a reader sees. */
+	readonly title: string;
+	/** The **one-based** page the bookmark points at. */
+	readonly page: number;
+	/** The nesting depth: 0 is a top-level bookmark. */
+	readonly level: number;
+}
+
+/**
+ * The options for the document's bookmarks.
+ *
+ * The engine replaces the WHOLE outline with the list, so the editor sends
+ * every entry it read, in reading order, with its nesting depth.
+ */
+export function outlineOptions(entries: readonly OutlineEntry[]): Record<string, unknown> {
+	return {
+		entries: entries.map((entry) => ({
+			title: entry.title,
+			page: entry.page,
+			level: entry.level,
+		})),
+	};
+}

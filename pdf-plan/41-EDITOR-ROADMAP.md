@@ -27,9 +27,10 @@ editor safely.
 |---|---|
 | `1a63dbb` | **Slice 1** — the workspace itself: the route, the page, the render, click-to-edit, page tools, undo/redo, download, the no-upload gate, the browser check. |
 | `24503a7` | **Slice 2** — changing what is ON the page: add a text box, add an image, redact. Plus the redaction rewriter fix in `selis-pdf-edit`. |
-| (the next one) | **Slice 3** — the document's own properties: the form's fields, the page's size, the document's properties. |
+| `222e442` | **Slice 3** — the document's own properties: the form's fields, the page's size, the document's properties. |
+| (the next one) | **Slice 4** — the document's bookmarks, and the page size as a named size. Plus the redaction's transform fix (see §2). |
 
-Slice 3 is in the working tree, uncommitted — see §5.
+Slice 4 is in the working tree, uncommitted — see §5.
 
 ---
 
@@ -64,8 +65,16 @@ from the shell.
 - **Taking text out** → the tools chunk's `redact` (op 34): `{page (0-based), rects [[x,y,w,h]] in
   user space}`. It strips the **text** inside the region from the content stream and draws an
   opaque black box over it. Anything else under the region is covered, not erased.
+  The region is in the PAGE's space: the rewriter tracks the content's own transform
+  (`q`, `Q`, `cm`) and compares the text's position there, so a page whose content
+  has been scaled (which is what the editor's own resize does) is redacted where the
+  reader pointed.
 - **The page's own size** → the tools chunk's `crop` (op 14): `{left, top, right, bottom, pages}`,
-  the margins in points on the page as the reader sees it.
+  the margins in points on the page as the reader sees it; and `resize` (op 18):
+  `{width, height, fit, pages}`, the size in points.
+- **The document's bookmarks** — the core engine's `outline` op READS them (a tree: title,
+  target, children); the tools chunk's `outline` op (26) WRITES them:
+  `{entries: [{title, page (one-based), level}]}` — the whole list, in reading order.
 - **The document's properties** → the tools chunk's `metadata` (op 6): `{fields: {Title, Author,
   Subject, Keywords}}` — the keys are capitalised.
 - **The form's fields** → `form_fields` (op 29) reports them as JSON; `fill_forms` (op 30) takes
@@ -139,27 +148,51 @@ thing in this editor that is silently wrong.
       properties, form) and `xtask/src/browser.rs`'s `verdict_editor` checks them.
 - [x] **C5 — Rebuild and commit.** See §7.
 
-### Slice 4 — what is next, in the order it is worth doing
+### Slice 4 — the document's bookmarks, and the page size as a size (IN THE WORKING TREE, uncommitted)
 
-- [ ] **D1 — The bookmarks.** The tools chunk's `outline` op (op 26) can add, rename, retarget and
-      remove bookmarks, and the tools page already has a tree UI for it
-      (`src/tools/tools-page.ts`). The editor needs a panel that reads the outline (the core
-      engine's `outline` op reads it) and writes it back.
-      *Watch:* the outline is document structure, not page content — say so in the copy.
-- [ ] **D2 — Page size as a size, not as margins.** The tools chunk has `resize` (op 18) as well as
-      `crop` (op 14): a named size (A4, Letter, …) or a scale. The editor's page-size panel
-      should offer both, and the crop panel should keep the margins.
-- [ ] **D3 — Undo that reads as a history.** The undo stack is a stack of bytes with labels; a
-      panel that lists them ("Rotated page 2", "Added a text box") and jumps to any of them would
-      make the stack visible. The stack is already there (`DocumentHistory`) — it only needs a
-      reader and a way to select a state.
-- [ ] **D4 — Select and move.** **Blocked on the engine.** There is no operation that addresses an
-      existing object, so "move the box you drew" cannot be built without `SL-5.ANNOT.*`. Do not
-      fake it with a delete-and-redraw: that loses the object's identity and the document's
-      structure.
-- [ ] **D5 — A redaction that removes more than text.** Also blocked: the redaction strips text and
-      covers the rest. Removing an image under a region means rewriting the page's XObjects
-      (`SL-5.REDACT.*`). Until then the page must keep saying that only text is removed.
+- [x] **E1 — The bookmarks.** The workspace reads the document's outline with the core
+      engine's `outline` op, shows one row per bookmark (title, page, nesting depth), and
+      writes the whole list back with the tools chunk's `outline` op.
+      *Watch:* the reader's page numbers are **zero-based** and the writer's are
+      **one-based**; the editor converts. A bookmark that points at a **named
+      destination** cannot be written back (the writer takes a page), so the save is
+      refused and the reader is told which bookmark to remove — rather than quietly
+      repointing it at page 1.
+- [x] **E2 — The page size as a size.** The page-size panel offers the named sizes the
+      tools page offers (A3, A4, A5, Letter, Legal) alongside the crop margins, and
+      resizes with the tools chunk's `resize` op.
+- [x] **E3 — The redaction's own transform.** The redaction's region is in the page's
+      own space, but a content stream's text lives in the content's space — and a
+      resize scales the content, so the two differ. The rewriter in `selis-pdf-edit`
+      now tracks the content's transform (`q`, `Q`, `cm`) and compares the text's
+      position in the **page's** space, and it hands back the inverse of a trailing
+      transform so the black box is drawn where the reader pointed. This was a real
+      bug in the CLI's `redact` too.
+- [ ] **E4 — Rebuild and commit.** See §7.
+
+### Slice 5 — what is next, in the order it is worth doing
+
+- [ ] **F1 — Undo that reads as a history.** The undo stack is a stack of bytes with
+      labels; a panel that lists them ("Rotated page 2", "Added a text box") and jumps
+      to any of them would make the stack visible. The stack is already there
+      (`DocumentHistory`) — it only needs a reader and a way to select a state.
+- [ ] **F2 — The document's own structure, more of it.** The outline op can also
+      retarget a bookmark at a different page; the editor's bookmark rows take a page
+      number already, so this is a UI change rather than an engine one.
+- [ ] **F3 — Select and move.** **Blocked on the engine.** There is no operation that
+      addresses an existing object, so "move the box you drew" cannot be built without
+      `SL-5.ANNOT.*`. Do not fake it with a delete-and-redraw: that loses the object's
+      identity and the document's structure.
+- [ ] **F4 — A redaction that removes more than text.** Also blocked: the redaction
+      strips text and covers the rest. Removing an image under a region means
+      rewriting the page's XObjects (`SL-5.REDACT.*`). Until then the page must keep
+      saying that only text is removed.
+- [ ] **F5 — The last of the document-level operations.** The tools chunk's `privacy`
+      and `fingerprint` reports, and the `security` chunk's unlock/protect, are
+      document-level rather than page-level: they belong in the same panel as the
+      properties, and they are worth having. The security chunk is a **separate WASM
+      chunk** with its own protocol (`src/tools/security-protocol.ts`) — the editor
+      would need a client for it.
 
 ### Things that are NOT worth doing
 

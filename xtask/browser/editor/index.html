@@ -190,6 +190,8 @@
         out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
         out.crop = await cropLeg(onlineDoc, onlineWin, "online");
+        out.resize = await resizeLeg(onlineDoc, onlineWin, "online");
+        out.bookmarks = await bookmarksLeg(onlineDoc, onlineWin, "online");
         out.properties = await propertiesLeg(onlineDoc, onlineWin, "online");
         out.redact = await redactLeg(onlineDoc, onlineWin, "online");
 
@@ -472,10 +474,60 @@
       }
 
       /**
+       * Resize the page to a named size, and check the page changed size.
+       */
+      async function resizeLeg(doc, win, label) {
+        const before = doc.querySelector("canvas").getBoundingClientRect();
+        const select = doc.getElementById("selis-editor-size");
+        select.value = "a5";
+        doc.getElementById("selis-editor-resize-apply").click();
+        await waitForSettled(doc, "Resized", "the page to be resized (" + label + ")");
+        const after = doc.querySelector("canvas").getBoundingClientRect();
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          before: Math.round(before.width) + "x" + Math.round(before.height),
+          after: Math.round(after.width) + "x" + Math.round(after.height),
+          bytes: produced.bytes,
+          resized: Math.round(after.width) !== Math.round(before.width),
+        };
+      }
+
+      /**
+       * Read the document's bookmarks, add one, save them, and check the file
+       * carries the new bookmark.
+       */
+      async function bookmarksLeg(doc, win, label) {
+        doc.getElementById("selis-editor-outline-read").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return status.endsWith("read.") && !status.endsWith("…");
+          },
+          30_000,
+          "the bookmarks to be read (" + label + ")",
+        );
+        const read = [...doc.querySelectorAll("#selis-editor-outline .selis-editor-bookmark")].length;
+        doc.getElementById("selis-editor-outline-add").click();
+        const title = doc.querySelector(
+          "#selis-editor-outline .selis-editor-bookmark:last-child input[data-title]",
+        );
+        title.value = "A bookmark from the editor";
+        doc.getElementById("selis-editor-outline-apply").click();
+        await waitForSettled(doc, "Saved the bookmarks", "the bookmarks to be saved (" + label + ")");
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          read: read,
+          bytes: produced.bytes,
+          carriesBookmark: produced.carriesText.indexOf("A bookmark from the editor") >= 0,
+        };
+      }
+
+      /**
        * Write the document's title, and check it is in the file.
        */
-      async function propertiesLeg(doc, win, label) {
-        doc.getElementById("selis-editor-title").value = "A title from the editor";
+      async function propertiesLeg(doc, win, label) {        doc.getElementById("selis-editor-title").value = "A title from the editor";
         doc.getElementById("selis-editor-properties-apply").click();
         await waitForSettled(
           doc,

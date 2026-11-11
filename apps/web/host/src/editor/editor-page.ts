@@ -45,6 +45,7 @@ import { placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import {
 	type EditorOperation,
+	PAGE_SIZES,
 	cropOptions,
 	deletePage,
 	duplicatePage,
@@ -55,7 +56,9 @@ import {
 	insertBlankPages,
 	metadataOptions,
 	movePage,
+	outlineOptions,
 	redactOptions,
+	resizeOptions,
 	rotatePage,
 	searchCandidates,
 	stampTextWidth,
@@ -174,7 +177,12 @@ const dom = {
 	fields: el<HTMLDivElement>("selis-editor-fields"),
 	fieldsApply: el<HTMLButtonElement>("selis-editor-fields-apply"),
 	fieldsRead: el<HTMLButtonElement>("selis-editor-fields-read"),
+	outline: el<HTMLDivElement>("selis-editor-outline"),
+	outlineApply: el<HTMLButtonElement>("selis-editor-outline-apply"),
+	outlineRead: el<HTMLButtonElement>("selis-editor-outline-read"),
+	outlineAdd: el<HTMLButtonElement>("selis-editor-outline-add"),
 	cropApply: el<HTMLButtonElement>("selis-editor-crop-apply"),
+	resizeApply: el<HTMLButtonElement>("selis-editor-resize-apply"),
 	propertiesApply: el<HTMLButtonElement>("selis-editor-properties-apply"),
 	failure: el<HTMLDivElement>("selis-editor-failure"),
 	status: el<HTMLParagraphElement>("selis-editor-status"),
@@ -1371,6 +1379,222 @@ function textInput(id: string): string {
 	return input instanceof HTMLInputElement ? input.value : "";
 }
 
+// ── the document's bookmarks ─────────────────────────────────────────────────
+
+/** One bookmark, as the editor holds it. */
+interface Bookmark {
+	readonly title: string;
+	/** The **one-based** page the bookmark points at, or 0 when it does not. */
+	readonly page: number;
+	/** The nesting depth: 0 is a top-level bookmark. */
+	readonly level: number;
+	/** Whether the bookmark can be edited here. */
+	readonly editable: boolean;
+}
+
+/**
+ * Read the document's bookmarks and show them.
+ *
+ * The core engine reads the outline as a tree; the writer takes a flat list
+ * with a nesting depth, so the tree is flattened on the way in and the depth
+ * is carried along.
+ */
+async function readOutline(): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (state.busy) {
+		return;
+	}
+	state.busy = true;
+	setStatus("Reading the bookmarks…");
+	try {
+		const client = await engine();
+		const reply = client.dispatch({ op: "outline", doc: state.doc });
+		const value = reply.response.ok === true ? reply.response.value : null;
+		const items =
+			value !== null && typeof value === "object" ? (value as { items?: unknown }).items : null;
+		if (!Array.isArray(items)) {
+			throw new Error("the outline could not be read");
+		}
+		const bookmarks: Bookmark[] = [];
+		const flatten = (nodes: readonly unknown[], level: number): void => {
+			for (const node of nodes) {
+				if (typeof node !== "object" || node === null) {
+					continue;
+				}
+				const entry = node as {
+					title?: unknown;
+					target?: { kind?: unknown; page?: unknown } | null;
+					children?: unknown;
+				};
+				const title = typeof entry.title === "string" ? entry.title : "";
+				const kind = entry.target?.kind;
+				const page =
+					kind === "page" && typeof entry.target?.page === "number" ? entry.target.page + 1 : 0;
+				bookmarks.push({ title, page, level, editable: page > 0 });
+				if (Array.isArray(entry.children)) {
+					flatten(entry.children, level + 1);
+				}
+			}
+		};
+		flatten(items, 0);
+		renderBookmarks(bookmarks);
+		setStatus(`${bookmarks.length} bookmark${bookmarks.length === 1 ? "" : "s"} read.`);
+	} catch (error) {
+		setStatus(`The bookmarks could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+	}
+}
+
+/** Show the document's bookmarks, one row each. */
+function renderBookmarks(bookmarks: readonly Bookmark[]): void {
+	const list = dom.outline;
+	list.replaceChildren();
+	if (bookmarks.length === 0) {
+		const note = document.createElement("p");
+		note.className = "selis-editor-hint";
+		note.textContent = "This document has no bookmarks.";
+		list.appendChild(note);
+		dom.outlineApply.disabled = false;
+		dom.outlineAdd.disabled = false;
+		return;
+	}
+	bookmarks.forEach((bookmark, index) => {
+		const row = document.createElement("div");
+		row.className = "selis-editor-bookmark";
+		row.dataset.level = String(bookmark.level);
+		row.style.paddingLeft = `${bookmark.level * 12}px`;
+		const title = document.createElement("input");
+		title.type = "text";
+		title.className = "selis-editor-bookmark__title";
+		title.dataset.title = String(index);
+		title.value = bookmark.title;
+		title.disabled = !bookmark.editable;
+		const page = document.createElement("input");
+		page.type = "number";
+		page.min = "1";
+		page.step = "1";
+		page.className = "selis-editor-bookmark__page";
+		page.dataset.page = String(index);
+		page.value = bookmark.page > 0 ? String(bookmark.page) : "";
+		page.disabled = !bookmark.editable;
+		page.setAttribute("aria-label", `The page bookmark ${index + 1} points at`);
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.className = "selis-editor-bookmark__remove";
+		remove.dataset.remove = String(index);
+		remove.textContent = "×";
+		remove.setAttribute("aria-label", `Remove bookmark ${index + 1}`);
+		row.append(title, page, remove);
+		list.appendChild(row);
+	});
+	dom.outlineApply.disabled = false;
+	dom.outlineAdd.disabled = false;
+}
+
+/**
+ * The bookmarks the editor holds, read back out of the list.
+ *
+ * A bookmark that points at a named destination cannot be written back: the
+ * writer takes a page and nothing else. Rather than quietly repointing it at
+ * page 1, the save is refused and the reader is told which bookmark to remove.
+ */
+function bookmarkValues(): {
+	readonly entries: { title: string; page: number; level: number }[];
+	readonly refusal: string | null;
+} {
+	const entries: { title: string; page: number; level: number }[] = [];
+	let refusal: string | null = null;
+	const rows = [...dom.outline.querySelectorAll(".selis-editor-bookmark")];
+	for (const row of rows) {
+		const title = row.querySelector("input[data-title]");
+		const page = row.querySelector("input[data-page]");
+		if (!(title instanceof HTMLInputElement) || !(page instanceof HTMLInputElement)) {
+			continue;
+		}
+		const level = Number(row.getAttribute("data-level") ?? "0");
+		if (title.disabled) {
+			refusal ??= `the bookmark "${title.value}" points at a named destination, which the \
+				writer cannot express; remove it to save the others`;
+			continue;
+		}
+		const number = Number(page.value);
+		entries.push({
+			title: title.value,
+			page: Number.isFinite(number) && number >= 1 ? number : 1,
+			level,
+		});
+	}
+	return { entries, refusal };
+}
+
+/** Write the document's bookmarks. */
+async function saveOutline(): Promise<void> {
+	const { entries, refusal } = bookmarkValues();
+	if (refusal !== null) {
+		setStatus(`The bookmarks were not saved: ${refusal}.`, "error");
+		return;
+	}
+	await runOperation({
+		op: "outline",
+		options: outlineOptions(entries),
+		label: "Saved the bookmarks",
+	});
+}
+
+/** Add a bookmark pointing at the selected page. */
+function addBookmark(): void {
+	const index = dom.outline.querySelectorAll(".selis-editor-bookmark").length;
+	const row = document.createElement("div");
+	row.className = "selis-editor-bookmark";
+	row.dataset.level = "0";
+	const title = document.createElement("input");
+	title.type = "text";
+	title.className = "selis-editor-bookmark__title";
+	title.dataset.title = String(index);
+	title.value = `Bookmark ${index + 1}`;
+	const page = document.createElement("input");
+	page.type = "number";
+	page.min = "1";
+	page.step = "1";
+	page.className = "selis-editor-bookmark__page";
+	page.dataset.page = String(index);
+	page.value = String(state.page + 1);
+	page.setAttribute("aria-label", "The page the new bookmark points at");
+	const remove = document.createElement("button");
+	remove.type = "button";
+	remove.className = "selis-editor-bookmark__remove";
+	remove.dataset.remove = String(index);
+	remove.textContent = "×";
+	remove.setAttribute("aria-label", "Remove the new bookmark");
+	row.append(title, page, remove);
+	dom.outline.appendChild(row);
+}
+
+/** Resize the selected page to a named size. */
+async function resizePage(): Promise<void> {
+	const size = PAGE_SIZES[selectValue("selis-editor-size")];
+	if (size === undefined) {
+		setStatus("Choose a page size.", "error");
+		return;
+	}
+	await runOperation({
+		op: "resize",
+		options: resizeOptions(size[0], size[1], true, state.page),
+		label: `Resized page ${state.page + 1}`,
+	});
+}
+
+/** The value of a select the reader chose. */
+function selectValue(id: string): string {
+	const select = document.getElementById(id);
+	return select instanceof HTMLSelectElement ? select.value : "";
+}
+
 // ── undo and redo ───────────────────────────────────────────────────────────
 
 /** Step back one change. */
@@ -1556,8 +1780,35 @@ function wire(): void {
 	dom.cropApply.addEventListener("click", () => {
 		void cropPage();
 	});
+	dom.resizeApply.addEventListener("click", () => {
+		void resizePage();
+	});
 	dom.propertiesApply.addEventListener("click", () => {
 		void saveProperties();
+	});
+
+	// The document's bookmarks.
+	dom.outlineRead.addEventListener("click", () => {
+		void readOutline();
+	});
+	dom.outlineAdd.addEventListener("click", () => {
+		addBookmark();
+	});
+	dom.outlineApply.addEventListener("click", () => {
+		void saveOutline();
+	});
+	dom.outline.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) {
+			return;
+		}
+		if (target.dataset.remove === undefined) {
+			return;
+		}
+		const row = target.closest(".selis-editor-bookmark");
+		if (row instanceof HTMLElement) {
+			row.remove();
+		}
 	});
 
 	// The placement drag. The pointer is captured so the drag survives the

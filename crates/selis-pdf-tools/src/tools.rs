@@ -4128,24 +4128,52 @@ fn copy_page_redacted(
 
     // Rebuild the content streams with redaction: strip text inside the
     // regions, then append black fills over them.
-    let mut rebuilt = Vec::new();
+    // The page's content streams are CONCATENATED before they are rewritten:
+    // the transform a page's content carries can span them (a resize writes
+    // `q <matrix> cm` into one stream and the matching `Q` into another), and
+    // a rewriter that saw each stream on its own would compare the text
+    // against the region in the wrong space.
+    let mut joined = Vec::new();
     for content_ref in &content_refs {
         let content_obj = resolve_ref_obj(src, &doc, *content_ref, budget, g)?;
         if let Obj::Stream { data, .. } = &content_obj {
-            rebuilt.extend(selis_pdf_edit::strip_text_in_regions(
-                data.as_slice(),
-                rects,
-            ));
-            rebuilt.push(b'\n');
+            joined.extend_from_slice(data.as_slice());
+            joined.push(b'\n');
         }
     }
+    // The inverse of the content's own transform, so a black box drawn in the
+    // page's space lands where the reader pointed even on a page whose
+    // content is scaled.
+    let redaction = selis_pdf_edit::strip_text_in_regions(&joined, rects);
+    let inverse = redaction.inverse_transform;
+    let mut rebuilt = redaction.content;
     // Append black rects over the regions.
     let mut cb = selis_pdf_cos::doc_writer::ContentBuilder::new();
     cb.set_fill(0.0, 0.0, 0.0);
     for (x, y, w, h) in rects {
         cb.fill_rect(*x, *y, *w, *h);
     }
+    // The box is drawn in the page's space, so the content's own transform is
+    // undone around it.
+    if let Some(matrix) = inverse {
+        rebuilt.extend_from_slice(b"q\n");
+        rebuilt.extend_from_slice(
+            format!(
+                "{} {} {} {} {} {} cm\n",
+                trim_number(matrix[0]),
+                trim_number(matrix[1]),
+                trim_number(matrix[2]),
+                trim_number(matrix[3]),
+                trim_number(matrix[4]),
+                trim_number(matrix[5]),
+            )
+            .as_bytes(),
+        );
+    }
     rebuilt.extend_from_slice(&cb.to_bytes());
+    if inverse.is_some() {
+        rebuilt.extend_from_slice(b"Q\n");
+    }
 
     // Copy the (rebuilt) content as a fresh stream, then the resources.
     let content_num = merged.allocate();
@@ -5907,7 +5935,7 @@ mod tests {
     fn the_rewriter_drops_the_text_inside_a_region_and_keeps_the_rest() {
         let content = b"BT /F1 12 Tf 20 160 Td (Inside) Tj 20 40 Td (Outside) Tj ET";
         let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
-        let text = String::from_utf8_lossy(&out).to_string();
+        let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),
             "the text inside the region is gone: {text}"
@@ -5926,12 +5954,119 @@ mod tests {
         assert!(text.contains("Tj"), "a show operator survives: {text}");
     }
 
+    /// A page whose content is scaled (a resize writes exactly that) puts its
+    /// text in the content's own space, and the rewriter has to compare it in
+    /// the page's space â€” the space the regions are in.
+    #[test]
+    fn the_rewriter_follows_the_contents_own_transform() {
+        // The content is scaled by half: the text is at (10, 80) in the PAGE's
+        // space, and at (20, 160) in the content's own.
+        let content = b"q 0.5 0 0 0.5 0 0 cm BT /F1 12 Tf 20 160 Td (Inside) Tj ET Q";
+        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
+        let text = String::from_utf8_lossy(&out.content).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text under the region is gone: {text}"
+        );
+        // The `Q` restores the transform, so the box the caller draws after
+        // the content lands in the page's space and needs no correction.
+        let inverse = out.inverse_transform.expect("the inverse");
+        assert!(
+            (inverse[0] - 1.0).abs() < 1e-9,
+            "the transform is back where it started: {inverse:?}"
+        );
+    }
+
+    /// A content that ENDS with a scaled transform leaves the box the caller
+    /// draws in the wrong space, so the rewriter hands back the inverse.
+    #[test]
+    fn the_rewriter_reports_the_inverse_of_a_trailing_transform() {
+        let content = b"0.5 0 0 0.5 0 0 cm BT /F1 12 Tf 20 160 Td (Inside) Tj ET";
+        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
+        let text = String::from_utf8_lossy(&out.content).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text under the region is gone: {text}"
+        );
+        let inverse = out.inverse_transform.expect("the inverse");
+        assert!(
+            (inverse[0] - 2.0).abs() < 1e-9,
+            "the inverse scales back: {inverse:?}"
+        );
+    }
+
+    /// The page's content streams are concatenated before they are rewritten,
+    /// because a page's transform can span them: a resize writes `q <matrix>
+    /// cm` into one stream and the matching `Q` into another.
+    #[test]
+    fn a_transform_that_spans_two_streams_is_still_followed() {
+        let src = split_content_pdf();
+        let out = std::env::temp_dir().join("selis-redact-split-streams-out.pdf");
+        let verification = super::redact(
+            &src.to_string_lossy(),
+            &[(0.0, 70.0, 100.0, 20.0)],
+            Some("0"),
+            &out.to_string_lossy(),
+        )
+        .expect("the redaction");
+        assert_eq!(verification.pages_out, 1);
+        let produced = std::fs::read(&out).expect("the output");
+        let text = String::from_utf8_lossy(&produced).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text under the region is gone: {text}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A one-page PDF whose content is three streams: a `q <matrix> cm`, the
+    /// text, and the `Q` that closes it.
+    fn split_content_pdf() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join("selis-redact-split-streams.pdf");
+        let streams: [&[u8]; 3] = [
+            b"q 0.5 0 0 0.5 0 0 cm",
+            b"BT /F1 12 Tf 20 160 Td (Inside) Tj ET",
+            b"Q",
+        ];
+        let mut objects: Vec<String> = vec![
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_string(),
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_string(),
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents [4 0 R 5 0 R 6 0 R] >>\nendobj\n".to_string(),
+        ];
+        for (index, stream) in streams.iter().enumerate() {
+            objects.push(format!(
+                "{} 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+                index + 4,
+                stream.len(),
+                String::from_utf8_lossy(stream),
+            ));
+        }
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = objects.len() + 1;
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        std::fs::write(&path, out).expect("the fixture");
+        path
+    }
     /// A `TJ` operand is an array, and the brackets are part of it.
     #[test]
     fn the_rewriter_keeps_a_show_arrays_brackets() {
         let content = b"BT /F1 12 Tf 20 160 Td [(Kept) -100 (Text)] TJ ET";
         let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 0.0, 10.0, 10.0)]);
-        let text = String::from_utf8_lossy(&out).to_string();
+        let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(text.contains('['), "the array keeps its bracket: {text}");
         assert!(text.contains(']'), "the array keeps its bracket: {text}");
         assert!(text.contains("Kept"), "the array keeps its text: {text}");
@@ -5943,7 +6078,7 @@ mod tests {
     fn the_rewriter_follows_a_text_matrix() {
         let content = b"BT /F1 12 Tf 1 0 0 1 20 160 Tm (Inside) Tj ET";
         let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
-        let text = String::from_utf8_lossy(&out).to_string();
+        let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),
             "the text at the matrix's position is gone: {text}"

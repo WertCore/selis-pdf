@@ -32,7 +32,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-rgpiv6VhL2M4GCEJTSthSI0m3gp9WOdQf5Y2Q2kcXVbCOK5ZwCO/aS9t8Q6OrAwH"
+			integrity="sha384-z7ePVrnk3JhTM5qOrGsMP7uZciw8AjuhevKLzgGpaXtvOQjzhs36JEDeB2XTm2cZ"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -140,9 +140,27 @@
 					</details>
 
 					<details class="selis-editor-details">
+						<summary>Bookmarks</summary>
+						<p class="selis-editor-hint">
+							The document's bookmarks — what a reader sees in their sidebar. A
+							bookmark that points at a named destination is shown, but it
+							cannot be edited here.
+						</p>
+						<div id="selis-editor-outline" class="selis-editor-outline">
+							<p class="selis-editor-hint">Read the bookmarks to edit them.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-outline-read">Read the bookmarks</button>
+							<button type="button" id="selis-editor-outline-add" disabled>Add a bookmark</button>
+							<button type="button" id="selis-editor-outline-apply" disabled>Save them</button>
+						</div>
+					</details>
+
+					<details class="selis-editor-details">
 						<summary>Page size</summary>
 						<p class="selis-editor-hint">
-							Crop the selected page by removing margins, in points.
+							Crop the selected page by removing margins, in points, or resize it
+							to a named size.
 						</p>
 						<div class="selis-editor-grid">
 							<label for="selis-editor-crop-left">Left</label>
@@ -156,6 +174,19 @@
 						</div>
 						<div class="selis-editor-actions">
 							<button type="button" id="selis-editor-crop-apply">Crop the page</button>
+						</div>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-size">Size</label>
+							<select id="selis-editor-size">
+								<option value="a4">A4</option>
+								<option value="a3">A3</option>
+								<option value="a5">A5</option>
+								<option value="letter">Letter</option>
+								<option value="legal">Legal</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-resize-apply">Resize the page</button>
 						</div>
 					</details>
 
