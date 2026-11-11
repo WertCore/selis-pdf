@@ -89,6 +89,7 @@ import {
 	pageGeometry,
 	userRect,
 } from "./placement.js";
+import { type FileHandleLike, writeToHandle } from "./save-as.js";
 
 /** The raster's base resolution: one device pixel per CSS pixel at 96 dpi. */
 const BASE_DPI = 96;
@@ -1391,7 +1392,7 @@ function downloadFile(name: string, bytes: Uint8Array, kind: string): void {
 	lastExport = {
 		name,
 		url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type })),
-		bytes: bytes.byteLength,
+		size: bytes.byteLength,
 		kind,
 		content: bytes.slice(),
 	};
@@ -2782,25 +2783,6 @@ function releaseDownload(url: string): void {
 }
 
 /**
- * Release every download's object URL.
- *
- * The page is going away, so nothing is in flight that could still need
- * one - and the browser releases the blobs with the document anyway.
- */
-function releaseDownloads(): void {
-	while (pendingDownloads.length > 0) {
-		const url = pendingDownloads.pop();
-		if (url !== undefined) {
-			URL.revokeObjectURL(url);
-		}
-	}
-	if (lastExport !== null) {
-		URL.revokeObjectURL(lastExport.url);
-		lastExport = null;
-	}
-}
-
-/**
  * The file the last export produced, and the URL it can be taken from.
  *
  * The export is written to a file the reader can see: the button starts the
@@ -2810,7 +2792,8 @@ function releaseDownloads(): void {
 interface ExportedFile {
 	readonly name: string;
 	readonly url: string;
-	readonly bytes: number;
+	/** How many bytes the file is. NOT the bytes: `content` is those. */
+	readonly size: number;
 	readonly kind: string;
 	/** The file's own bytes, for the "Save as..." that writes them. */
 	readonly content: Uint8Array;
@@ -2840,7 +2823,7 @@ function renderExportResult(): void {
 	name.textContent = lastExport.name;
 	const size = document.createElement("span");
 	size.className = "selis-editor-exported__size";
-	size.textContent = formatBytes(lastExport.bytes);
+	size.textContent = formatBytes(lastExport.size);
 	const link = document.createElement("a");
 	link.className = "selis-editor-btn";
 	link.href = lastExport.url;
@@ -2893,12 +2876,10 @@ async function saveExportAs(): Promise<void> {
 		const handle = await picker.call(globalThis, {
 			suggestedName: file.name,
 		});
-		const writable = await handle.createWritable();
-		try {
-			await writable.write(new Uint8Array(await file.bytes));
-		} finally {
-			await writable.close();
-		}
+		// The file's BYTES, not its length. `new Uint8Array(length)` would
+		// build an array of that many zeros, and the reader would get a file
+		// of the right size and no content in it.
+		await writeToHandle(handle as unknown as FileHandleLike, file.content);
 		setStatus(`Saved ${file.name} where you chose.`);
 	} catch (error) {
 		// The reader cancelled, or the browser refused: the file is still in
@@ -3273,6 +3254,11 @@ function wire(): void {
 	});
 
 	// The export: one button per format, from the shared list.
+	//
+	// The produced file's object URL is deliberately NOT released when the
+	// page goes away: the "Download again" link points at it, and a link
+	// whose URL has been revoked downloads an EMPTY file rather than
+	// failing. The browser drops the blob with the document anyway.
 	dom.exportGroup.addEventListener("click", (event) => {
 		const target = event.target;
 		if (!(target instanceof Element)) {
@@ -3294,12 +3280,6 @@ function wire(): void {
 		const hidden = dom.inspector.classList.toggle("is-hidden");
 		dom.inspectorToggle.title = hidden ? "Show the panels" : "Hide the panels";
 		dom.inspectorToggle.setAttribute("aria-label", dom.inspectorToggle.title);
-	});
-
-	// The page is going away: the downloads' object URLs are released with
-	// it, and the browser drops the blobs anyway.
-	window.addEventListener("pagehide", () => {
-		releaseDownloads();
 	});
 
 	// Dragging a file onto the page opens it, the way the reader does.

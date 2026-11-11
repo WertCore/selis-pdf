@@ -200,4 +200,103 @@ That is a design gap rather than a bug, and it is now closed:
 **The lesson worth keeping:** a download that completes is not the same as a
 download the reader can find. The second one is the one that matters.
 
-### 2.5 The icons
+
+### 2.5 The empty file, and the field that caused it
+
+The reader reported the download as **0 KB**, and that was the clue that
+settled it. A file that is 0 KB is not a file that was never handed over: it
+is a file that WAS handed over and was **empty**.
+
+And it was empty because of a field name:
+
+```ts
+interface ExportedFile {
+	readonly bytes: number;      // how many bytes the file IS
+	readonly content: Uint8Array; // the bytes themselves
+}
+...
+await writable.write(new Uint8Array(await file.bytes));
+```
+
+`file.bytes` is the file's **LENGTH**. `new Uint8Array(90135)` builds an
+array of ninety-one thousand **zeros** — the right size, no content in it. The
+reader got a file that Word opens and finds nothing in.
+
+The fix is not a guard, it is a **type**: the write takes the bytes
+themselves, and the length has its own name (`size`), so the two cannot be
+confused again. The write lives in `src/editor/save-as.ts`, on its own,
+because it is the one piece of the export that can be tested without a
+browser — and it has to be tested, because the mistake it is prone to is
+silent.
+
+### 2.6 A second way to write an empty file
+
+The `pagehide` handler released the downloads' object URLs when the page went
+away — **including the URL the "Download again" link pointed at**. A link whose
+URL has been revoked does not fail: the browser starts the download and
+writes the empty result, so the reader got a **0 KB** file from clicking
+"Download again".
+
+The URL the reader can still click is now released only when the NEXT export
+replaces it; the automatic download's URL is released by its own grace timer.
+The browser drops the blobs with the document anyway.
+
+
+### 2.7 The icons
+
+Each export format carries its own mark — a Word document is a page with a
+"W" on it, a deck is a presentation board, a workbook is a grid, a web page is
+a pair of angle brackets, an EPUB is an open book, and so on. The reader
+should be able to tell the formats apart without reading the labels, and the
+marks are drawn on the same 24-unit grid with the same stroke weight as the
+rest of the set, so the ribbon reads as one row of tools.
+
+### 2.8 What the check proves
+
+The browser leg reads the produced files rather than trusting them:
+
+- a **Word document** is a ZIP container, so its bytes start with `PK`;
+- the **HTML** starts with `<!do`, and carries the document's text;
+- the **Bates prefix** the reader typed is in the produced PDF.
+
+And one more, which is the quiet bug above: the export's file **URL still
+resolves** after the export. That is the property that was broken — the URL
+was revoked in the same turn as the click — and a check that reads the
+produced file's URL back is the only thing in this codebase that could have
+caught it.
+
+## 3. Where the core code lives
+
+This is the question that shaped all of the above, and the answer is a
+layering rather than a place:
+
+| Layer | What lives there | Reached by |
+|---|---|---|
+| **The PDF core** (`crates/selis-pdf-*`) | The writers, the rewriters, the readers, the arithmetic. Every byte a document is made of. | The WASM chunks — the same bytes in the web app, a desktop app, and an SDK. |
+| **The design system** (`packages/ui-kit`) | The tokens, the themes, and the decisions about a preference set. | `@selis/ui-kit` — the web app, a desktop app, an SDK. |
+| **The web layer** (`apps/web/host/src`) | The wire: the chunk protocols, the export's names, the DOM. | The web app. |
+
+The rule that follows: **a decision that is not about the DOM belongs
+upstairs.** The export's *writers* are Rust and were always going to be; the
+export's *names* are the web layer's, because a desktop app names its own
+buttons. The theme's *decisions* are the kit's, because every surface makes
+them; the theme's *storage* is the web's.
+
+And the thing that is easiest to get wrong: **a second implementation of the
+engine's arithmetic.** The placement geometry, the stamp's width table and
+the redaction's text matrix all come from the engine. A second copy is a
+second set of bugs, and it is the one thing in the editor that is silently
+wrong rather than loudly broken.
+
+---
+
+## 4. The evidence
+
+- `packages/ui-kit/src/preferences.test.ts` — the preference decisions, with
+  the storage and the system's answer supplied as arguments.
+- `apps/web/host/src/tools/export.test.ts` — the format list and the mapping
+  from a format to the chunk that writes it.
+- `apps/web/host/src/editor/operations.test.ts` — the new operation builders.
+- The editor's browser leg grew three legs: `theme` (the switch changed the
+  page and was remembered), `export` (a Word document is a ZIP, the HTML
+  carries the text) and `bates` (the prefix is in the file).
