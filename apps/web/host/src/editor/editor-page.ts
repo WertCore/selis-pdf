@@ -1456,7 +1456,7 @@ async function runExport(format: ExportFormat): Promise<void> {
 		// somewhere the reader may not be looking. Say so, and say what else
 		// they can do about it.
 		setStatus(
-			`Wrote ${produced} (${formatBytes(size)}). It is in your downloads - the panel on the right can put it somewhere you choose.`,
+			`Wrote ${produced} (${formatBytes(size)}). The panel on the right has it - your browser can save it wherever you want.`,
 		);
 	} catch (error) {
 		setStatus(`The ${label.toLowerCase()} was not written: ${messageOf(error)}`, "error");
@@ -2829,6 +2829,18 @@ function renderExportResult(): void {
 	link.download = lastExport.name;
 	link.textContent = "Download again";
 	row.append(name, size, link);
+	// The browser's OWN save route, which is the one that always reaches the
+	// disk: right-click the link, or open it and save it. A download goes
+	// through the browser's download manager, and a browser that swallows
+	// those (an automated one, a policy, a kiosk) never gives the reader the
+	// file at all - while the link is right there.
+	const open = document.createElement("a");
+	open.className = "selis-editor-btn";
+	open.href = lastExport.url;
+	open.target = "_blank";
+	open.rel = "noopener";
+	open.textContent = "Open";
+	row.appendChild(open);
 	panel.appendChild(row);
 }
 

@@ -1,16 +1,3 @@
-# 43 — The theme, the export, and where the core code lives
-
-**Status:** shipped. **Owner:** AI+ · **Companion to:** `41-EDITOR-ROADMAP.md`,
-`42-EDITOR-UI-REDESIGN.md`.
-
-**Why this file exists:** three questions came up together — how the reader
-switches between the light and the dark theme, how a document is exported to
-another format, and where code that is not UI belongs. This records the
-answers, because the answers are decisions rather than features, and the next
-change to any of them should be made against a reason.
-
----
-
 ## 1. The theme
 
 ### 1.1 Why the dark theme did not work, and what it took
@@ -93,301 +80,165 @@ right before any script has run. Only the label is set by the script.
 
 ## 2. The export
 
-### 2.1 The engine has always been able to do this
+The engine has always been able to write a PDF's text out as a Word
+document, a PowerPoint deck, an Excel workbook, an EPUB book, a CSV of its
+tables, a reflowed article, plain text, or a positioned HTML page. The
+writers are in `crates/selis-pdf-text` (`docx.rs`, `pptx.rs`, `xlsx.rs`,
+`epub.rs`, `html.rs`, `export.rs`) and the lazy text chunk puts them on the
+wire. The tools page has had a card for them all along.
 
-This is the finding that matters: **the writers were already there.** The
-roadmap had "PDF to Word / Excel / PowerPoint" marked **BLOCKED — no office
-writer**, and that was wrong:
-
-| | |
-|---|---|
-| `crates/selis-pdf-text/src/docx.rs` | PDF → a Word document |
-| `crates/selis-pdf-text/src/pptx.rs` | PDF → a PowerPoint deck |
-| `crates/selis-pdf-text/src/xlsx.rs` | PDF → an Excel workbook |
-| `crates/selis-pdf-text/src/html.rs` | PDF → a positioned HTML page |
-| `crates/selis-pdf-text/src/export.rs` | PDF → text, Markdown, JSON |
-| `crates/selis-pdf-text/src/epub.rs` | PDF → an EPUB book |
-
-and the lazy **text chunk** (`crates/selis-pdf-wasm-text`) put them on the
-wire as the `word`, `slides`, `workbook`, `epub`, `reflow`, `tables` and
-`text` operations, with a separate **HTML chunk** for the positioned web
-page. The tools page has had a card for them all along.
-
-So the export in the editor was never an engine problem. It was a **UI
-problem**, and the fix is what the roadmap said it would be: a panel.
-
-### 2.2 The shared layer
-
-The HTML writer's client was written inline in the tools page, which made it
-the one export the editor could not have — a client buried in another page's
-function body is not a client. So:
+**The roadmap said "PDF to Word / Excel / PowerPoint: BLOCKED — no office
+writer". That was wrong**, and finding out why is the point of this section:
+the export was never an engine problem. It was a UI problem, and the fix is
+what the roadmap said it would be — a panel.
 
 | | |
 |---|---|
-| `apps/web/host/src/tools/html-protocol.ts` | The HTML chunk's client, extracted. Both surfaces call it. |
-| `apps/web/host/src/tools/export.ts` | Which chunk answers which format, what each format is called, and what the caller has to supply. |
+| `apps/web/host/src/tools/html-protocol.ts` | The HTML chunk's client, extracted from the tools page so both surfaces call it. |
+| `apps/web/host/src/tools/export.ts` | Which chunk writes which format, what each format is called, and what the caller must supply. |
 
-The editor's **Export** tab offers eight formats, and the export is made from
-the document **as it is** — with every change the reader has made — and
-written here, on this device.
+### 2.1 What was wrong, in the order the reports found it
 
-A deck carries each page as its own picture (the editor renders the pages it
-already has), so the deck looks like the document rather than like a list of
-text boxes.
-
-### 2.3 The download, and the bug that made it not happen
-
-The export produced the file and the page said so, and **the file never
-arrived**. The cause was the object URL:
+### 2.2 The object URL was revoked in the same turn as the click
 
 ```ts
 const url = URL.createObjectURL(blob);
 link.href = url;
 link.click();
-setTimeout(() => URL.revokeObjectURL(url), 0);   // <-- the bug
+setTimeout(() => URL.revokeObjectURL(url), 0);   // the bug
 ```
 
-Chrome resolves the blob on a **background thread**, and the download request
-is created a task or two after the click. A URL revoked on the next turn is
-already dead by the time the browser reads it, and the download fails
-**silently**: the page says "Wrote invoice.docx", the browser says nothing,
-and the reader has no file and no error. The same pattern was in the PDF
-download, so the editor's own "Download" button was broken the same way.
+Chrome resolves the blob on a **background thread**, and the download
+request is created a task or two after the click. A URL revoked on the next
+turn can be dead by the time the browser reads it — and the download then
+fails **silently**: the page says "Wrote invoice.docx", the browser says
+nothing, and the reader has no file and no error.
 
-The fix is a lifetime, not a delay:
+The fix is a lifetime, not a delay: the URL is released after a **grace
+period**, the link stays in the document until the next turn, and every
+pending URL is released when the page goes away.
 
-- the object URL is **released after a grace period** (thirty seconds), not
-  in the next turn — long enough for the background read, short enough not
-  to hold anything;
-- the link stays in the document until the next turn, because a link removed
-  in the same turn as its click can be missed by the browser;
-- every pending URL is released when the page goes away (`pagehide`).
+### 2.3 The reader had no handle on the file
 
-And the export is offered **twice on purpose**: the button starts the
-download, and the inspector's "Last export" panel keeps a link to the file,
-with its own URL, that lives until the next export replaces it. A browser that
-refuses an automatic download still gives the reader the file.
+A download lands in a folder the reader has to go and look in. The
+inspector gained a **"Last export"** panel: the file's name, its size, and a
+link to take it again.
 
-### 2.4 What the second report found, and what it changed
+### 2.4 The file's LENGTH and the file's BYTES are both numbers
 
-The report said the file was still not there. The evidence said otherwise, and
-it is worth being exact about it, because the difference matters:
-
-- the browser's download list held a completed `electricity-bill.docx`,
-  90 135 bytes;
-- unzipping it showed a **valid Word package** — `[Content_Types].xml`,
-  `_rels/.rels`, `word/document.xml` with 222 text runs;
-- a plain blob download, a `data:` URL download and a visible link's click
-  all completed the same way.
-
-So the file was produced, it was handed to the browser, and the browser
-finished with it. What the reader did not have was a **handle on it**: a
-download lands in a folder they have to go and look in, and in an automated
-browser it lands somewhere the reader never sees.
-
-That is a design gap rather than a bug, and it is now closed:
-
-- the export says **where the file went** — "Wrote electricity-bill.docx
-  (90 KB). It is in your downloads — the panel on the right can put it
-  somewhere you choose";
-- the "Last export" panel offers **"Save as…"** as well as "Download again".
-  That is the File System Access API: it opens a Save dialog and writes the
-  bytes where the reader chooses, so the file ends up in a place they picked
-  rather than in a folder they have to hunt for. It is not in every browser,
-  so the button is only offered where it works, and the download is always
-  there underneath it.
-
-**The lesson worth keeping:** a download that completes is not the same as a
-download the reader can find. The second one is the one that matters.
-
-
-### 2.5 The empty file, and the field that caused it
-
-The reader reported the download as **0 KB**, and that was the clue that
-settled it. A file that is 0 KB is not a file that was never handed over: it
-is a file that WAS handed over and was **empty**.
-
-And it was empty because of a field name:
+The exported file carried its length in a field called `bytes` and its bytes
+in a field called `content`, and the write was handed the wrong one:
 
 ```ts
-interface ExportedFile {
-	readonly bytes: number;      // how many bytes the file IS
-	readonly content: Uint8Array; // the bytes themselves
-}
-...
 await writable.write(new Uint8Array(await file.bytes));
 ```
 
-`file.bytes` is the file's **LENGTH**. `new Uint8Array(90135)` builds an
-array of ninety-one thousand **zeros** — the right size, no content in it. The
-reader got a file that Word opens and finds nothing in.
+`file.bytes` is the file's LENGTH. `new Uint8Array(90135)` builds an array
+of ninety-one thousand **zeros** — the right size, no content in it. The
+fields are now named `size` and `content`, and the write takes the bytes
+themselves so the mistake cannot compile.
 
-The fix is not a guard, it is a **type**: the write takes the bytes
-themselves, and the length has its own name (`size`), so the two cannot be
-confused again. The write lives in `src/editor/save-as.ts`, on its own,
-because it is the one piece of the export that can be tested without a
-browser — and it has to be tested, because the mistake it is prone to is
-silent.
+### 2.5 A native dialog takes the page's activation with it
 
-### 2.6 A second way to write an empty file
+Chrome's Save dialog is a **native** dialog: it takes the focus away from
+the page, and by the time the reader closes it the page is no longer "fully
+active", so `createWritable()` is refused with
 
-The `pagehide` handler released the downloads' object URLs when the page went
-away — **including the URL the "Download again" link pointed at**. A link whose
-URL has been revoked does not fail: the browser starts the download and
-writes the empty result, so the reader got a **0 KB** file from clicking
-"Download again".
+> The request is not allowed by the user agent or the platform in the current
+> context.
 
-The URL the reader can still click is now released only when the NEXT export
-replaces it; the automatic download's URL is released by its own grace timer.
-The browser drops the blobs with the document anyway.
+Sometimes Chrome has already created the file at the path the reader chose,
+which leaves a **0-byte file** there. So the File System Access route was
+removed: it duplicates what the browser already does, less reliably.
 
+### 2.6 The reason the reader never saw the fixes
 
-### 2.7 The Save dialog is native, and that is why it failed
-
-The reader's error was Chrome's:
-
-> Failed to execute 'createWritable' on 'FileSystemFileHandle': The request is
-> not allowed by the user agent or the platform in the current context.
-
-The phrase "in the current context" is the clue. `createWritable()` needs the
-page to be **fully active** — and the Save dialog is a **NATIVE** dialog: it
-takes the focus away from the page, and by the time the reader has chosen a
-folder and closed it, the page is no longer the active document. The write is
-refused, and the browser's own wording for it says nothing a reader can act
-on.
-
-**A failure must never be a dead end.** The file is already produced at that
-point, so the refused write now falls back to the ordinary download and says
-so in words the reader can act on:
-
-> Your browser would not write the file directly, so electricity-bill.docx is
-> in your downloads instead.
-
-The two cases are told apart as well: a reader who **cancels** the dialog is
-not told they failed — they are told the file is still in their downloads.
-
-And the panel says the thing that was missing all along: **the browser can
-save the file wherever the reader wants, from its own menu.** Every browser
-offers "Save as…" on a download and on a link; that route is always
-available, needs no API, and cannot be refused the way a direct write can.
-
-### 2.8 The reason the reader never saw the fixes
-
-The reader reported the same symptom four times, and every fix was correct.
-The reason they never took effect is the most important thing in this file.
-
-**The service worker's runtime cache is CACHE-FIRST.** A module that has been
-fetched once is served from the cache, and the network is never consulted
-again — that is what makes the offline story work. And the browser only
-re-installs the worker when the **worker script's** bytes change; a change to
-a module does not change them.
+**The service worker's runtime cache is CACHE-FIRST.** A module that has
+been fetched once is served from the cache and the network is never
+consulted again — that is what makes the offline story work. And the browser
+only re-installs the worker when the **worker script's** bytes change; a
+change to a module does not change them.
 
 So a reader who loaded the editor once kept running **that day's**
 `editor-page.js` for ever. Every fix went into a module their browser never
-asked for again. The evidence was sitting in the browser's own cache list the
-whole time:
+asked for again. The evidence was in the browser's own cache list:
 
 ```
-selis-shell-v5:0
 selis-runtime-v5:16          ← sixteen modules, from a build long gone
-selis-shell-v3c5fc9cfd175939d:72
 ```
 
-**The fix has three parts.**
+Three fixes, and together they are the delivery system:
 
 1. **The cache namespace follows the build.** `tools/place-sw.mjs` hashes the
    bytes the build serves — the host's compiled modules, the stylesheets, the
    WASM chunks — and stamps that hash into the worker script *and* into the
-   policy module that decides the cache NAMES. The worker script's bytes
-   change, so the browser installs the new worker; the new worker's
-   `activate` drops the caches whose names are stale; and the reader's next
-   load has the new modules.
-
+   policy module that decides the cache NAMES. The worker's bytes change, so
+   the browser installs the new worker; the new worker's `activate` drops the
+   caches whose names are stale; the reader's next load has the new modules.
 2. **The page takes the update when it can afford it.** The new worker waits
    — it does not swap under a page mid-parse — so the page has to ask for
-   it. `takeUpdateWhenSafe` does that, and it asks only when a reload costs
-   the reader nothing: the editor takes it when no document is open, the
-   tools page when no file is picked.
+   it. `takeUpdateWhenSafe` does that, and asks only when a reload costs the
+   reader nothing: the editor when no document is open, the tools page when
+   no file is picked.
+3. **The update is not missed.** A worker that installed *before* the
+   watcher was attached is already waiting, and the `updatefound` event has
+   been and gone by then. Without checking `registration.waiting` directly
+   the update is missed and the reader keeps the old modules for ever.
 
-3. **The update is not missed.** A worker that installed *before* the watcher
-   was attached is already waiting, and the `updatefound` event has been and
-   gone by then. Without checking `registration.waiting` directly, the
-   update is missed and the reader keeps the old modules for ever — which is
-   the bug the stamped namespace was supposed to fix.
-
-After the change, the same browser's cache list reads:
+After the change the same browser reads:
 
 ```
 selis-runtime-v3c5fc9cfd175939d:13   ← the fresh modules, under the new namespace
 ```
 
-**The lesson, which is worth more than any of the fixes:** a fix that is not
-REACHABLE is not a fix. A reader's browser is part of the delivery system,
-and the delivery system was three builds behind.
+### 2.7 The download was never the problem
 
-### 2.9 The icons
+The last report was the clearest one: the reader saw
+
+> Wrote evidence.docx (6.1 KB). It is in your downloads …
+
+and no file, and no download shelf at all.
+
+The browser's own download list said:
+
+```
+evidence.docx | 6258 B | completed     ← eleven times
+evidence.pdf | 829530 B | completed
+```
+
+**The download had completed every time.** The browser the reader was using
+**intercepts downloads** and routes them into its own capture area — so there
+is no shelf, no bubble, and nothing in a file manager. That is the
+environment, not the editor.
+
+**The lesson, which is worth more than any of the fixes:** a download that
+completes is not the same as a download the reader can find; and a fix that
+is not REACHABLE is not a fix.
+
+The routes that always reach the disk are the browser's **own** dialogs:
+right-click the link in the "Last export" panel and choose **Save as…**, or
+open the link and save it. The panel now says so, and offers **Open** as
+well as **Download again**.
+
+### 2.8 The icons
 
 Each export format carries its own mark — a Word document is a page with a
-"W" on it, a deck is a presentation board, a workbook is a grid, a web page is
-a pair of angle brackets, an EPUB is an open book, and so on. The reader
+**W** on it, a deck is a presentation board, a workbook is a grid, a web page
+is a pair of angle brackets, an EPUB is an open book, a reflowed article is a
+document with lines, a table is a table, plain text is plain lines. The reader
 should be able to tell the formats apart without reading the labels, and the
 marks are drawn on the same 24-unit grid with the same stroke weight as the
-rest of the set, so the ribbon reads as one row of tools.
+rest of the set, so the ribbon reads as one row of tools rather than eight
+labels.
 
-### 2.10 What the check proves
+## 3. The evidence
 
-The browser leg reads the produced files rather than trusting them:
+The browser leg's export leg checks the produced files rather than trusting
+them:
 
 - a **Word document** is a ZIP container, so its bytes start with `PK`;
 - the **HTML** starts with `<!do`, and carries the document's text;
-- the **Bates prefix** the reader typed is in the produced PDF.
+- the produced file's **URL still resolves** after the export — the
+  property that was broken when it was revoked in the same turn as the click,
+  and the one a revoked URL fails by downloading nothing.
 
-And one more, which is the quiet bug above: the export's file **URL still
-resolves** after the export. That is the property that was broken — the URL
-was revoked in the same turn as the click — and a check that reads the
-produced file's URL back is the only thing in this codebase that could have
-caught it.
-
-And two that came out of the reader's reports: the **Save dialog is handed
-the file's own bytes** (a file written from its LENGTH is the right size and
-completely empty), and a **refused write falls back to the download** rather
-than dead-ending the reader with a browser error. The check drives both: it
-stubs the Save dialog with a stand-in that records what it was given, and then
-stubs it again with one that refuses, and asserts the file still reaches the
-reader.
-
-## 3. Where the core code lives
-
-This is the question that shaped all of the above, and the answer is a
-layering rather than a place:
-
-| Layer | What lives there | Reached by |
-|---|---|---|
-| **The PDF core** (`crates/selis-pdf-*`) | The writers, the rewriters, the readers, the arithmetic. Every byte a document is made of. | The WASM chunks — the same bytes in the web app, a desktop app, and an SDK. |
-| **The design system** (`packages/ui-kit`) | The tokens, the themes, and the decisions about a preference set. | `@selis/ui-kit` — the web app, a desktop app, an SDK. |
-| **The web layer** (`apps/web/host/src`) | The wire: the chunk protocols, the export's names, the DOM. | The web app. |
-
-The rule that follows: **a decision that is not about the DOM belongs
-upstairs.** The export's *writers* are Rust and were always going to be; the
-export's *names* are the web layer's, because a desktop app names its own
-buttons. The theme's *decisions* are the kit's, because every surface makes
-them; the theme's *storage* is the web's.
-
-And the thing that is easiest to get wrong: **a second implementation of the
-engine's arithmetic.** The placement geometry, the stamp's width table and
-the redaction's text matrix all come from the engine. A second copy is a
-second set of bugs, and it is the one thing in the editor that is silently
-wrong rather than loudly broken.
-
----
-
-## 4. The evidence
-
-- `packages/ui-kit/src/preferences.test.ts` — the preference decisions, with
-  the storage and the system's answer supplied as arguments.
-- `apps/web/host/src/tools/export.test.ts` — the format list and the mapping
-  from a format to the chunk that writes it.
-- `apps/web/host/src/editor/operations.test.ts` — the new operation builders.
-- The editor's browser leg grew three legs: `theme` (the switch changed the
-  page and was remembered), `export` (a Word document is a ZIP, the HTML
-  carries the text) and `bates` (the prefix is in the file).
