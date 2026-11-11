@@ -7335,6 +7335,16 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if export.get("htmlCarriesTheText").and_then(Json::as_bool) != Some(true) {
         return Err("the HTML export does not carry the document's text".into());
     }
+    if export.get("offeredAgain").and_then(Json::as_bool) != Some(true) {
+        return Err("the export did not offer the file again".into());
+    }
+    // The object URL of the produced file must still resolve after the
+    // export. The bug this catches is the quiet one: the URL was revoked in
+    // the same turn as the click, so the browser read a URL that no longer
+    // resolved and the file was lost with nothing to show for it.
+    if export.get("stillThere").and_then(Json::as_bool) != Some(true) {
+        return Err("the exported file's URL was revoked before the browser could read it".into());
+    }
 
     let bates = report
         .get("bates")

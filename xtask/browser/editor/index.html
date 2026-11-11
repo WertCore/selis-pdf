@@ -593,6 +593,20 @@
         );
         const word = await exportFile(doc, win, "word", label);
         const html = await exportFile(doc, win, "html", label);
+        // The file the export produced must STILL BE THERE afterwards. The
+        // bug this checks is the quiet one: the object URL was revoked in the
+        // same turn as the click, so the browser read a URL that no longer
+        // resolved and the file was lost with nothing to show for it.
+        const link = doc.querySelector("#selis-editor-export-result a");
+        let alive = false;
+        if (link) {
+          try {
+            const response = await doc.defaultView.fetch(link.getAttribute("href"));
+            alive = response.ok;
+          } catch (_) {
+            alive = false;
+          }
+        }
         return {
           formats: formats,
           word: word.name,
@@ -602,6 +616,8 @@
           htmlBytes: html.bytes,
           htmlHeader: html.header,
           htmlCarriesTheText: html.text.indexOf("Added") >= 0,
+          offeredAgain: link !== null,
+          stillThere: alive,
         };
       }
 

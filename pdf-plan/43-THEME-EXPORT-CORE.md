@@ -135,13 +135,61 @@ A deck carries each page as its own picture (the editor renders the pages it
 already has), so the deck looks like the document rather than like a list of
 text boxes.
 
-### 2.3 What the check proves
+### 2.3 The download, and the bug that made it not happen
+
+The export produced the file and the page said so, and **the file never
+arrived**. The cause was the object URL:
+
+```ts
+const url = URL.createObjectURL(blob);
+link.href = url;
+link.click();
+setTimeout(() => URL.revokeObjectURL(url), 0);   // <-- the bug
+```
+
+Chrome resolves the blob on a **background thread**, and the download request
+is created a task or two after the click. A URL revoked on the next turn is
+already dead by the time the browser reads it, and the download fails
+**silently**: the page says "Wrote invoice.docx", the browser says nothing,
+and the reader has no file and no error. The same pattern was in the PDF
+download, so the editor's own "Download" button was broken the same way.
+
+The fix is a lifetime, not a delay:
+
+- the object URL is **released after a grace period** (thirty seconds), not
+  in the next turn — long enough for the background read, short enough not
+  to hold anything;
+- the link stays in the document until the next turn, because a link removed
+  in the same turn as its click can be missed by the browser;
+- every pending URL is released when the page goes away (`pagehide`).
+
+And the export is offered **twice on purpose**: the button starts the
+download, and the inspector's "Last export" panel keeps a link to the file,
+with its own URL, that lives until the next export replaces it. A browser that
+refuses an automatic download still gives the reader the file.
+
+### 2.4 The icons
+
+Each export format carries its own mark — a Word document is a page with a
+"W" on it, a deck is a presentation board, a workbook is a grid, a web page is
+a pair of angle brackets, an EPUB is an open book, and so on. The reader
+should be able to tell the formats apart without reading the labels, and the
+marks are drawn on the same 24-unit grid with the same stroke weight as the
+rest of the set, so the ribbon reads as one row of tools.
+
+### 2.5 What the check proves
 
 The browser leg reads the produced files rather than trusting them:
 
 - a **Word document** is a ZIP container, so its bytes start with `PK`;
 - the **HTML** starts with `<!do`, and carries the document's text;
 - the **Bates prefix** the reader typed is in the produced PDF.
+
+And one more, which is the quiet bug above: the export's file **URL still
+resolves** after the export. That is the property that was broken — the URL
+was revoked in the same turn as the click — and a check that reads the
+produced file's URL back is the only thing in this codebase that could have
+caught it.
 
 ## 3. Where the core code lives
 

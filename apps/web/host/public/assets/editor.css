@@ -820,6 +820,32 @@
 	color: var(--selis-color-fg);
 }
 
+/* The file the last export produced, and the link that takes it again. */
+.selis-editor-exported {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	flex-wrap: wrap;
+	margin: var(--selis-space-3) 0;
+}
+
+.selis-editor-exported__name {
+	font-size: var(--selis-text-sm);
+	font-weight: var(--selis-weight-medium);
+	color: var(--selis-color-fg);
+	overflow-wrap: anywhere;
+}
+
+.selis-editor-exported__size {
+	font-size: var(--selis-text-xs);
+	color: var(--selis-color-fg-subtle);
+	font-variant-numeric: tabular-nums;
+}
+
+.selis-editor-exported .selis-editor-btn {
+	text-decoration: none;
+}
+
 /* The label a button carries beside its icon. */
 .selis-editor-btn__label {
 	white-space: nowrap;

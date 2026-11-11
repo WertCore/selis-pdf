@@ -1296,6 +1296,10 @@ function renderExportButtons(): void {
 		button.className = "selis-editor-tool";
 		button.dataset.export = format.id;
 		button.title = format.note;
+		// Each format carries its own mark: a Word document is not a deck, and
+		// the reader should be able to tell them apart without reading the
+		// labels.
+		button.prepend(icon(EXPORT_ICONS[format.id]));
 		const label = document.createElement("span");
 		label.className = "selis-editor-tool__label";
 		label.textContent = format.label;
@@ -1303,6 +1307,18 @@ function renderExportButtons(): void {
 		group.appendChild(button);
 	}
 }
+
+/** The mark each export format is drawn with. */
+const EXPORT_ICONS: Readonly<Record<ExportFormat, IconName>> = {
+	word: "word",
+	slides: "slides",
+	workbook: "workbook",
+	html: "html",
+	epub: "epub",
+	reflow: "reflow",
+	tables: "tables",
+	text: "text",
+};
 
 /**
  * Render every page of the document as a PNG, base64 encoded.
@@ -1345,26 +1361,40 @@ async function pageImages(): Promise<string[]> {
 	return images;
 }
 
-/** Hand a produced file to the reader, as a Blob in this tab. */
+/** The media type each kind of exported file is served as. */
+const EXPORT_MEDIA_TYPES: Readonly<Record<string, string>> = {
+	html: "text/html",
+	text: "text/plain",
+	report: "application/json",
+	tables: "text/csv",
+};
+
+/**
+ * Hand a produced file to the reader, and record it.
+ *
+ * The file is offered twice on purpose: the download starts as soon as the
+ * button is pressed, and the link in the inspector takes it again. A browser
+ * that refuses an automatic download - or a reader who missed the first one -
+ * still gets the file.
+ */
 function downloadFile(name: string, bytes: Uint8Array, kind: string): void {
-	const types: Readonly<Record<string, string>> = {
-		html: "text/html",
-		text: "text/plain",
-		report: "application/json",
+	const type = EXPORT_MEDIA_TYPES[kind] ?? "application/octet-stream";
+	// The automatic download gets its own object URL, released as soon as the
+	// browser has certainly read it.
+	downloadBytes(name, bytes, type);
+	// The link the reader can take the file with gets its OWN, and lives
+	// until the next export replaces it: a link that has quietly stopped
+	// working is worse than no link at all.
+	if (lastExport !== null) {
+		URL.revokeObjectURL(lastExport.url);
+	}
+	lastExport = {
+		name,
+		url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type })),
+		bytes: bytes.byteLength,
+		kind,
 	};
-	const blob = new Blob([new Uint8Array(bytes)], {
-		type: types[kind] ?? "application/octet-stream",
-	});
-	const url = URL.createObjectURL(blob);
-	const link = document.createElement("a");
-	link.href = url;
-	link.download = name;
-	document.body.appendChild(link);
-	link.click();
-	link.remove();
-	setTimeout(() => {
-		URL.revokeObjectURL(url);
-	}, 0);
+	renderExportResult();
 }
 
 /**
@@ -2691,26 +2721,135 @@ async function redo(): Promise<void> {
 
 // ── download ────────────────────────────────────────────────────────────────
 
+/**
+ * How long a download's object URL is kept before it is released.
+ *
+ * Chrome resolves the blob on a background thread, so a URL revoked
+ * immediately after the click can lose the file: the reader sees a status
+ * that says "Downloaded" and no file at all. Thirty seconds is far longer
+ * than the read takes, and short enough not to hold anything.
+ */
+const DOWNLOAD_GRACE_MS = 30_000;
+
+/** The object URLs of the downloads this page has started. */
+const pendingDownloads: string[] = [];
+
+/**
+ * Hand a file to the reader, as a download in this tab.
+ *
+ * The object URL is NOT revoked in the same turn as the click - that is the
+ * bug this function exists to fix - and the link stays in the document until
+ * the next turn, because a link removed in the same turn as its click can be
+ * missed by the browser.
+ *
+ * @returns the object URL, so the file can be offered again
+ */
+function downloadBytes(name: string, bytes: Uint8Array, type: string): string {
+	// The copy matters: a `Uint8Array` over a shared buffer is not a
+	// `BlobPart`, and the blob is what the browser reads.
+	const blob = new Blob([new Uint8Array(bytes)], { type });
+	const url = URL.createObjectURL(blob);
+	pendingDownloads.push(url);
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = name;
+	link.rel = "noopener";
+	document.body.appendChild(link);
+	link.click();
+	window.setTimeout(() => {
+		link.remove();
+	}, 0);
+	window.setTimeout(() => {
+		releaseDownload(url);
+	}, DOWNLOAD_GRACE_MS);
+	return url;
+}
+
+/** Release one download's object URL. */
+function releaseDownload(url: string): void {
+	const index = pendingDownloads.indexOf(url);
+	if (index >= 0) {
+		pendingDownloads.splice(index, 1);
+	}
+	URL.revokeObjectURL(url);
+}
+
+/**
+ * Release every download's object URL.
+ *
+ * The page is going away, so nothing is in flight that could still need
+ * one - and the browser releases the blobs with the document anyway.
+ */
+function releaseDownloads(): void {
+	while (pendingDownloads.length > 0) {
+		const url = pendingDownloads.pop();
+		if (url !== undefined) {
+			URL.revokeObjectURL(url);
+		}
+	}
+	if (lastExport !== null) {
+		URL.revokeObjectURL(lastExport.url);
+		lastExport = null;
+	}
+}
+
+/**
+ * The file the last export produced, and the URL it can be taken from.
+ *
+ * The export is written to a file the reader can see: the button starts the
+ * download, and this is the link that takes it again - because a browser
+ * that refuses an automatic download still gives the reader the file.
+ */
+interface ExportedFile {
+	readonly name: string;
+	readonly url: string;
+	readonly bytes: number;
+	readonly kind: string;
+}
+
+/** The file the last export produced, if there was one. */
+let lastExport: ExportedFile | null = null;
+
+/** Show the file the last export produced, and a link to take it. */
+function renderExportResult(): void {
+	const panel = document.getElementById("selis-editor-export-result");
+	if (!(panel instanceof HTMLElement)) {
+		return;
+	}
+	panel.replaceChildren();
+	if (lastExport === null) {
+		const note = document.createElement("p");
+		note.className = "selis-editor-hint";
+		note.textContent = "Nothing exported yet.";
+		panel.appendChild(note);
+		return;
+	}
+	const row = document.createElement("div");
+	row.className = "selis-editor-exported";
+	const name = document.createElement("span");
+	name.className = "selis-editor-exported__name";
+	name.textContent = lastExport.name;
+	const size = document.createElement("span");
+	size.className = "selis-editor-exported__size";
+	size.textContent = formatBytes(lastExport.bytes);
+	const link = document.createElement("a");
+	link.className = "selis-editor-btn";
+	link.href = lastExport.url;
+	link.download = lastExport.name;
+	link.textContent = "Download again";
+	row.append(name, size, link);
+	panel.appendChild(row);
+}
+
 /** Hand the edited document to the user, as a Blob in this tab. */
 function download(): void {
 	const bytes = state.bytes;
 	if (bytes === null) {
 		return;
 	}
-	const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
-	const url = URL.createObjectURL(blob);
-	const link = document.createElement("a");
-	link.href = url;
-	link.download = state.name === "" ? "edited.pdf" : state.name;
-	document.body.appendChild(link);
-	link.click();
-	link.remove();
-	// The object URL is released on the next turn: the download has already
-	// been handed to the browser by then.
-	setTimeout(() => {
-		URL.revokeObjectURL(url);
-	}, 0);
-	setStatus(`Downloaded ${link.download}.`);
+	const name = state.name === "" ? "edited.pdf" : state.name;
+	downloadBytes(name, bytes, "application/pdf");
+	setStatus(`Downloaded ${name}.`);
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────────
@@ -3089,6 +3228,12 @@ function wire(): void {
 		const hidden = dom.inspector.classList.toggle("is-hidden");
 		dom.inspectorToggle.title = hidden ? "Show the panels" : "Hide the panels";
 		dom.inspectorToggle.setAttribute("aria-label", dom.inspectorToggle.title);
+	});
+
+	// The page is going away: the downloads' object URLs are released with
+	// it, and the browser drops the blobs anyway.
+	window.addEventListener("pagehide", () => {
+		releaseDownloads();
 	});
 
 	// Dragging a file onto the page opens it, the way the reader does.

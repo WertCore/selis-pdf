@@ -63,7 +63,14 @@ export type IconName =
 	| "flip-vertical"
 	| "nup"
 	| "compress"
-	| "bates";
+	| "bates"
+	| "word"
+	| "slides"
+	| "workbook"
+	| "html"
+	| "epub"
+	| "reflow"
+	| "tables";
 
 /**
  * Each icon's path data, in the 24-unit grid.
@@ -117,6 +124,17 @@ const PATHS: Readonly<Record<IconName, string>> = {
 	nup: "M4 5.5h7v6H4zM13 5.5h7v6h-7zM4 13.5h7v6H4zM13 13.5h7v6h-7z",
 	compress: "M4 8.5h16M4 12h16M4 15.5h16M9 4.5 12 7.5 15 4.5M9 19.5l3-3 3 3",
 	bates: "M6 4.5h12v15H6zM9 8h6M9 11.5h6M9 15h3",
+
+	// The export formats, each with its own mark. A Word document is not a
+	// deck and not a workbook, and the reader should be able to tell them
+	// apart without reading the labels.
+	word: "M6 3.5h8l4 4v13H6zM14 3.5v4h4M8.5 11l1.5 5.5 1.5-4 1.5 4 1.5-5.5",
+	slides: "M3.5 4.5h17v11h-17zM12 15.5v4M8.5 19.5h7M12 12.5v.01",
+	workbook: "M4 5.5h16v13H4zM4 9.5h16M4 13.5h16M9.5 5.5v13",
+	html: "M8.5 8 4 12l4.5 4M15.5 8 20 12l-4.5 4M13.5 5.5l-3 13",
+	epub: "M4 5.5h6a2.5 2.5 0 0 1 2 2v12a2.5 2.5 0 0 0-2-1.5H4zM20 5.5h-6a2.5 2.5 0 0 0-2 2v12a2.5 2.5 0 0 1 2-1.5h6z",
+	reflow: "M6.5 3.5h11v17h-11zM9.5 8h5M9.5 11.5h5M9.5 15h3",
+	tables: "M3.5 6.5h17v11h-17zM3.5 10.5h17M3.5 14.5h17M9 6.5v11",
 };
 
 /**

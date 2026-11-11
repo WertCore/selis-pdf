@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-PQdhcTYRfNNfo9OI6jF+VzJGfYq51FWg+vuUB+lapQQ9S79ewWQGp6ijyE+Pm5Wv"
+			integrity="sha384-ULOtmBOIPfE5R9XXPbbJ+kCLW6SnhkfI+qZ6J1IBSyJrE+M8xNO6yGnBGnPlu9zn"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -823,9 +823,16 @@
 						<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
 					</section>
 
-					<details
-						class="selis-editor-details"
-						id="selis-editor-section-fields"
+					<details class="selis-editor-details" id="selis-editor-section-export" open>
+						<summary>Last export</summary>
+						<p class="selis-editor-hint">
+							The file the last export produced. The download starts as soon as
+							you press the button; this link takes it again.
+						</p>
+						<div id="selis-editor-export-result"></div>
+					</details>
+
+					<details class="selis-editor-details" id="selis-editor-section-fields"
 						open
 					>
 						<summary>Form fields</summary>
@@ -965,7 +972,7 @@
 					<details class="selis-editor-details" id="selis-editor-section-nup">
 						<summary>Several pages per sheet</summary>
 						<p class="selis-editor-hint">
-							Put the pages side by side on a bigger sheet â€” two on one, four, six
+							Put the pages side by side on a bigger sheet — two on one, four, six
 							or nine. A document that was read becomes one that is printed.
 						</p>
 						<div class="selis-editor-grid">
