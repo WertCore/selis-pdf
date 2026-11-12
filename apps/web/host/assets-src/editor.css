@@ -749,6 +749,19 @@
 	pointer-events: auto;
 }
 
+/*
+ * The lines are the target of the TEXT tool and nothing else.
+ *
+ * A line that takes the pointer while a placement tool is armed is a line
+ * that swallows the click: the reader drags a text box over a paragraph and
+ * nothing happens, because the word under the pointer took the event. The
+ * tool decides what the page is for - to be read, or to be drawn on - and
+ * the workspace has to say so in the pointer, not only in the ribbon.
+ */
+.selis-editor-doc:not([data-tool="text"]) .selis-editor-line {
+	pointer-events: none;
+}
+
 /* The line being edited: the reader can see where they are without the
  * editor being a box around the text. */
 .selis-editor-line.is-editing {
@@ -1259,13 +1272,24 @@
 	pointer-events: none;
 }
 
-/* The chip under the editor: a hint, not a paragraph. */
-.selis-editor-inline__hint {
+/*
+ * The row under the editor: the formatting controls for a new text box, and
+ * the hint.
+ *
+ * The competitors put a formatting bar next to the text being typed
+ * (Acrobat's is a floating strip, Foxit's is a properties pane), so the
+ * reader can choose a size and a colour BEFORE the text is placed rather
+ * than after - and then live with the result.
+ */
+.selis-editor-inline__tools {
 	position: absolute;
 	left: 0;
 	top: calc(100% + 6px);
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-2);
 	margin: 0;
-	padding: var(--selis-space-1) var(--selis-space-3);
+	padding: var(--selis-space-1) var(--selis-space-2);
 	border-radius: var(--selis-radius-full);
 	background: var(--selis-color-bg-raised);
 	border: var(--selis-border-hairline) solid var(--selis-color-border);
@@ -1274,6 +1298,41 @@
 	font-size: var(--selis-text-xs);
 	line-height: 1.4;
 	white-space: nowrap;
+	/* The controls need the pointer, even though the row is decoration. */
+	pointer-events: auto;
+}
+
+/* The size: the ladder every other editor offers. */
+.selis-editor-inline__size {
+	height: 22px;
+	padding: 0 var(--selis-space-1);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-sm);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The colours: the classic four, as swatches. */
+.selis-editor-inline__swatch {
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: var(--selis-border-thick) solid transparent;
+	border-radius: var(--selis-radius-full);
+	box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18);
+	cursor: pointer;
+}
+
+.selis-editor-inline__swatch[aria-pressed="true"] {
+	border-color: var(--selis-color-accent);
+	box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 2px var(--selis-color-bg-raised);
+}
+
+/* The hint: a hint, not a paragraph. */
+.selis-editor-inline__hint {
+	color: var(--selis-color-fg-muted);
 	pointer-events: none;
 }
 

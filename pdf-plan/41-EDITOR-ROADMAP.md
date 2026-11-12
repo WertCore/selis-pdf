@@ -361,6 +361,17 @@ a list of panels and not a list of engine work.
       at the element the browser would **actually hit**), `inline` (the
       baseline, the size, the place, and the click-away commit) and `face`
       (the invitation's button asks for a file).
+- [x] **J7 — The lines only take the pointer for the text tool.** A line
+      that takes the pointer while a placement tool is armed swallows the
+      click: the reader drags a box across a paragraph and nothing happens.
+      The tool decides what the page is for, and the **pointer** has to say
+      so, not only the ribbon.
+- [x] **J8 — The formatting row.** Every serious editor puts a bar next to
+      the text being typed; Acrobat's is a floating strip, Foxit's is a
+      properties pane. Ours carries the **size** (a ladder, not a free
+      field) and the **colour** (the classic four), the editor's own text
+      follows the choice, and the colour is read back out of the produced
+      file — a swatch that only changes the editor's text is decoration.
 
 ### Slice 7 — what is next: the features the engine already has
 

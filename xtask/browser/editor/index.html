@@ -393,6 +393,23 @@
           "the text box editor (" + label + ")",
         );
         const area = doc.querySelector(".selis-editor-inline__text");
+
+        // The formatting row: the size and the colour the reader chooses
+        // BEFORE the text is placed, the way Acrobat and Foxit do it. The
+        // controls are checked against the DOCUMENT, not against the DOM:
+        // the colour has to be IN the file.
+        const tools = doc.querySelector(".selis-editor-inline__tools");
+        const select = tools ? tools.querySelector("select") : null;
+        const swatches = tools ? [...tools.querySelectorAll("button[data-color]")] : [];
+        if (select) {
+          select.value = "24";
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        const red = swatches.find((swatch) => swatch.dataset.color === "Red");
+        if (red) red.click();
+        const chosenSize = select ? select.value : "";
+        const chosenColour = red && red.getAttribute("aria-pressed") === "true" ? "Red" : "";
+
         const text = "Added by the editor";
         area.value = text;
         area.dispatchEvent(
@@ -410,6 +427,11 @@
           status: statusText(doc),
           bytes: produced.bytes,
           carriesText: produced.carriesText.indexOf(text) >= 0,
+          chosenSize: chosenSize,
+          chosenColour: chosenColour,
+          // The stamp writes the colour into the content stream as
+          // "r g b rg". A red box has to be red in the FILE.
+          carriesColour: produced.carriesText.indexOf("1 0 0 rg") >= 0,
         };
       }
 
@@ -963,30 +985,81 @@
       async function placementLeg(doc, win, label) {
         const canvas = doc.querySelector("canvas");
         if (!canvas) throw new Error("the document drew no canvas");
-        const box = canvas.getBoundingClientRect();
-        // A spot on the page with no text on it.
-        const x = box.left + 60;
-        const y = box.top + Math.round(box.height * 0.72);
-        const target = doc.elementFromPoint(x, y);
-        if (!target) throw new Error("the page had nothing at that point");
-        const hit = target.className || target.tagName;
+        // The tool is armed FIRST: the reader picks the tool, then clicks
+        // the page, and what the page is for - to be read, or to be drawn on
+        // - is decided by the tool.
         useTool(doc, "box");
+        const box = canvas.getBoundingClientRect();
+
+        // The blank part of the page: a click there must reach the canvas.
+        // While the text layer took the pointer, it did not, and every
+        // placement tool was dead on any page the reader did not click
+        // exactly on a word.
+        let blank = null;
+        let hit = "";
+        for (const share of [0.72, 0.62, 0.82, 0.52, 0.9]) {
+          const candidate = doc.elementFromPoint(box.left + 60, box.top + Math.round(box.height * share));
+          if (candidate === canvas) {
+            blank = { x: box.left + 60, y: box.top + Math.round(box.height * share) };
+            hit = candidate.className || candidate.tagName;
+            break;
+          }
+        }
+        if (!blank) {
+          throw new Error("no blank spot on the page reached the canvas");
+        }
+
+        // And a click OVER TEXT must reach it too: a reader drags a text box
+        // across a paragraph as often as not, and a word that takes the
+        // event is a word that swallows the drag.
+        // A line that actually carries words: the text layer can carry an
+        // empty run, and an empty run has no width to click on.
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          return (candidate.textContent || "").trim() !== "" && rect.width > 4;
+        });
+        if (!line) throw new Error("the document drew no clickable text");
+        const lineBox = line.getBoundingClientRect();
+        const over = { x: lineBox.left + 2, y: lineBox.top + lineBox.height / 2 };
+        const stack = doc.elementsFromPoint(over.x, over.y);
+        const overTarget = stack[0];
+        // The point is geometrically over the line's own box, and the line
+        // is NOT in the stack: with a placement tool armed the line does not
+        // take the pointer, so the click goes to the canvas underneath.
+        const overText =
+          over.x >= lineBox.left &&
+          over.x <= lineBox.right &&
+          over.y >= lineBox.top &&
+          over.y <= lineBox.bottom;
+
         const opts = {
-          clientX: x,
-          clientY: y,
+          clientX: over.x,
+          clientY: over.y,
           bubbles: true,
           cancelable: true,
           button: 0,
           pointerId: 6,
           isPrimary: true,
         };
-        target.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
-        target.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
-        await waitFor(
-          () => doc.querySelector(".selis-editor-inline__text") !== null,
-          10_000,
-          "the text box editor on empty space (" + label + ")",
-        );
+        overTarget.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
+        overTarget.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+        try {
+          await waitFor(
+            () => doc.querySelector(".selis-editor-inline__text") !== null,
+            10_000,
+            "the text box editor on empty space (" + label + ")",
+          );
+        } catch (error) {
+          throw new Error(
+            String(error) +
+              " -- the hit was " +
+              hit +
+              ", the tool was " +
+              doc.getElementById("selis-editor-doc").dataset.tool +
+              ", the status said " +
+              statusText(doc),
+          );
+        }
         // The editor is cancelled, so the document is left as it was.
         doc.querySelector(".selis-editor-inline__text").dispatchEvent(
           new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
@@ -998,7 +1071,17 @@
         );
         return {
           hit: hit,
-          onCanvas: target === canvas,
+          onCanvas: blank !== null,
+          overText: overText,
+          overTheCanvas: overTarget === canvas,
+          lineBox: [
+            Math.round(lineBox.left),
+            Math.round(lineBox.top),
+            Math.round(lineBox.right),
+            Math.round(lineBox.bottom),
+          ],
+          over: [Math.round(over.x), Math.round(over.y)],
+          stack: stack.map((element) => element.className || element.tagName),
           opened: true,
         };
       }

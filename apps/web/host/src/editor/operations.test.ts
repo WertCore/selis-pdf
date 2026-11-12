@@ -58,6 +58,20 @@ describe("the options for placing content", () => {
 		expect(options.rect).toEqual([10, 20, 110, 40]);
 		expect(options.lines).toEqual([{ text: "Hi", size: 12 }]);
 		expect(options.border).toBe(false);
+		expect(options.color).toEqual([0.05, 0.05, 0.12]);
+	});
+
+	it("places a text box in the colour the reader chose", () => {
+		const options = textBoxOptions(
+			2,
+			{ x0: 10, y0: 20, x1: 110, y1: 40 },
+			"Hi",
+			18,
+			[1, 0, 0],
+		);
+		expect(options.color).toEqual([1, 0, 0]);
+		expect(options.fontSize).toBe(18);
+		expect(options.lines).toEqual([{ text: "Hi", size: 18 }]);
 	});
 
 	it("places an image at a point, opaque and not tiled", () => {

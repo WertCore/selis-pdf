@@ -299,13 +299,14 @@ export function textBoxOptions(
 	rect: DisplayRect,
 	text: string,
 	fontSize: number,
+	color: readonly [number, number, number] = [0.05, 0.05, 0.12],
 ): Record<string, unknown> {
 	return {
 		page: page + 1,
 		rect: [rect.x0, rect.y0, rect.x1, rect.y1],
 		lines: [{ text, size: fontSize }],
 		strokes: [],
-		color: [0.05, 0.05, 0.12],
+		color: [color[0], color[1], color[2]],
 		strokeWidth: 1.5,
 		fontSize,
 		border: false,

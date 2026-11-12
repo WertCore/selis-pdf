@@ -102,6 +102,39 @@ const HISTORY_DEPTH = 25;
 /** The font size a new text box is drawn at, in points. */
 const TEXT_BOX_FONT_SIZE = 12;
 
+/** The colour a new text box is drawn in, unless the reader chooses one. */
+const BOX_COLOR_BLACK: readonly [number, number, number] = [0.05, 0.05, 0.12];
+
+/** That colour as the browser draws it, for the swatch and the editor. */
+const BOX_COLOR_CSS = "#0d0d1f";
+
+/**
+ * The sizes a new text box can be drawn at, in points.
+ *
+ * Acrobat, Foxit and Word all offer a ladder rather than a free field,
+ * because a free field invites a size the document's font cannot draw.
+ */
+const BOX_SIZES = [8, 10, 12, 14, 18, 24] as const;
+
+/**
+ * The colours a new text box can be drawn in, as the stamp wants them:
+ * red, green and blue between 0 and 1.
+ *
+ * The palette is the classic one — black, blue, red, green — because a
+ * reader reaching for a colour expects the colours every other editor
+ * offers, not a spectrum picker.
+ */
+const BOX_COLORS: readonly {
+	readonly name: string;
+	readonly rgb: readonly [number, number, number];
+	readonly css: string;
+}[] = [
+	{ name: "Black", rgb: BOX_COLOR_BLACK, css: "#0d0d1f" },
+	{ name: "Blue", rgb: [0, 0, 1], css: "#0000ff" },
+	{ name: "Red", rgb: [1, 0, 0], css: "#ff0000" },
+	{ name: "Green", rgb: [0, 0.5, 0], css: "#008000" },
+];
+
 /** The stamp's padding inside its rectangle, in points, plus a margin. */
 const BOX_PADDING = 8;
 
@@ -169,6 +202,10 @@ interface EditorState {
 	tool: EditorTool;
 	/** The image the reader has picked, if any. */
 	image: PickedImage | null;
+	/** The size a new text box is drawn at, in points. */
+	boxSize: number;
+	/** The colour a new text box is drawn in. */
+	boxColor: readonly [number, number, number];
 	/** Each page's geometry, for the placements. */
 	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
@@ -201,6 +238,8 @@ const state: EditorState = {
 	page: 0,
 	tool: "text",
 	image: null,
+	boxSize: TEXT_BOX_FONT_SIZE,
+	boxColor: BOX_COLOR_BLACK,
 	geometry: new Map(),
 	busy: false,
 	zoom: 1,
@@ -1800,6 +1839,11 @@ function openInlineAt(
 	root.style.left = `${canvasBox.left - host.left + rect.x}px`;
 	root.style.top = `${canvasBox.top - host.top + rect.y}px`;
 
+	// The size the editor draws its text at. It can change while the editor
+	// is open - a new text box can be drawn at another size - so it is a
+	// variable and not a constant.
+	let fontSize = metrics.fontSize;
+
 	const textarea = document.createElement("textarea");
 	textarea.className = "selis-editor-inline__text";
 	textarea.value = text;
@@ -1809,7 +1853,7 @@ function openInlineAt(
 		"aria-label",
 		mode.kind === "new-box" ? "The text to put in this box" : "The new text for this line",
 	);
-	textarea.style.fontSize = `${metrics.fontSize}px`;
+	textarea.style.fontSize = `${fontSize}px`;
 	// The text starts where the line's own text starts, so the two share a
 	// baseline. Everything else about the editor follows from this.
 	textarea.style.top = `${metrics.textTop}px`;
@@ -1819,19 +1863,77 @@ function openInlineAt(
 	// caret ends up outside the box.
 	const mirror = document.createElement("span");
 	mirror.className = "selis-editor-inline__measure";
-	mirror.style.fontSize = `${metrics.fontSize}px`;
+	mirror.style.fontSize = `${fontSize}px`;
 	mirror.textContent = text;
 
-	const hint = document.createElement("p");
+	// The row under the editor: the formatting controls for a NEW text box,
+	// and the hint. Editing text that is already on the page cannot change
+	// its size or its colour - the engine splices the string and the size
+	// stays - so in that case the row carries the hint alone, rather than
+	// offering controls that would do nothing.
+	const tools = document.createElement("div");
+	tools.className = "selis-editor-inline__tools";
+
+	const hint = document.createElement("span");
 	hint.className = "selis-editor-inline__hint";
 	hint.textContent =
 		mode.kind === "new-box"
 			? "Enter places the text · Escape cancels"
 			: "Enter applies · Escape cancels";
 
+	if (mode.kind === "new-box") {
+		const select = document.createElement("select");
+		select.className = "selis-editor-inline__size";
+		select.setAttribute("aria-label", "The size of the new text");
+		for (const size of BOX_SIZES) {
+			const option = document.createElement("option");
+			option.value = String(size);
+			option.textContent = String(size);
+			option.selected = size === state.boxSize;
+			select.appendChild(option);
+		}
+		select.addEventListener("change", () => {
+			const chosen = Number(select.value);
+			if (!Number.isFinite(chosen)) {
+				return;
+			}
+			state.boxSize = chosen;
+			fontSize = (chosen * 96) / 72;
+			textarea.style.fontSize = `${fontSize}px`;
+			mirror.style.fontSize = `${fontSize}px`;
+			fit();
+		});
+		tools.appendChild(select);
+
+		for (const swatch of BOX_COLORS) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "selis-editor-inline__swatch";
+			button.dataset.color = swatch.name;
+			button.title = swatch.name;
+			button.setAttribute("aria-label", `The text in ${swatch.name.toLowerCase()}`);
+			button.setAttribute("aria-pressed", swatch.css === BOX_COLOR_CSS ? "true" : "false");
+			button.style.background = swatch.css;
+			button.addEventListener("click", () => {
+				state.boxColor = swatch.rgb;
+				textarea.style.color = swatch.css;
+				for (const other of tools.querySelectorAll("button[data-color]")) {
+					other.setAttribute(
+						"aria-pressed",
+						other.getAttribute("aria-label") === button.getAttribute("aria-label")
+							? "true"
+							: "false",
+					);
+				}
+			});
+			tools.appendChild(button);
+		}
+	}
+	tools.appendChild(hint);
+
 	root.appendChild(textarea);
 	root.appendChild(mirror);
-	root.appendChild(hint);
+	root.appendChild(tools);
 	wrap.appendChild(root);
 
 	// The line under the editor is marked, so the reader can see where they
@@ -1846,9 +1948,9 @@ function openInlineAt(
 	/** Fit the editor to what has been typed. */
 	const fit = (): void => {
 		textarea.style.height = "auto";
-		textarea.style.height = `${Math.max(textarea.scrollHeight, metrics.fontSize)}px`;
+		textarea.style.height = `${Math.max(textarea.scrollHeight, fontSize)}px`;
 		mirror.textContent = textarea.value;
-		const width = Math.max(floor, mirror.offsetWidth + metrics.fontSize);
+		const width = Math.max(floor, mirror.offsetWidth + fontSize);
 		root.style.width = `${width}px`;
 		textarea.style.width = `${width}px`;
 		root.style.height = `${Math.max(rect.height, metrics.textTop + textarea.offsetHeight)}px`;
@@ -1914,9 +2016,9 @@ function openInline(page: number, line: number, text: string): void {
 
 /** Open the inline editor over a new box, for text that is not on the page yet. */
 function openBox(page: number, rect: Rect): void {
-	// A new box is drawn at the document's body size, which is the size the
-	// stamp will draw it at.
-	const fontSize = (BOX_FONT_SIZE * 96) / 72;
+	// A new box is drawn at the size the reader chose, in the colour they
+	// chose, and the editor shows them both while they type.
+	const fontSize = (state.boxSize * 96) / 72;
 	openInlineAt(
 		page,
 		rect,
@@ -2076,7 +2178,6 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 };
 
 /** The font size a new text box is drawn at, in points. */
-const BOX_FONT_SIZE = TEXT_BOX_FONT_SIZE;
 
 /** The line height the stamp's font uses, as a multiple of its size. */
 const BOX_LINE_LEADING = 1.25;
@@ -2239,11 +2340,12 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 		const chunk = await signChunk();
 		const anchor = displayRect(geometry, click);
 		const lines = text.split("\n");
+		const size = state.boxSize;
 		const width = Math.max(
 			40,
-			...lines.map((line) => stampTextWidth(line, BOX_FONT_SIZE) + BOX_PADDING * 2),
+			...lines.map((line) => stampTextWidth(line, size) + BOX_PADDING * 2),
 		);
-		const height = lines.length * BOX_FONT_SIZE * BOX_LINE_LEADING + BOX_PADDING;
+		const height = lines.length * size * BOX_LINE_LEADING + BOX_PADDING;
 		const options = textBoxOptions(
 			page,
 			{
@@ -2253,7 +2355,8 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 				y1: anchor.y0,
 			},
 			text,
-			BOX_FONT_SIZE,
+			size,
+			state.boxColor,
 		);
 		const response = runSign(chunk, {
 			op: "stamp",

@@ -65,7 +65,7 @@ So the editor was rebuilt:
 | The box | a border, a shadow, a raised panel | the paper and the ink |
 | The chrome | always there | a hairline, and only while it has the keyboard |
 
-### The baseline is the whole thing
+### 2.1 The baseline is the whole thing
 
 The text layer draws its own overlay text at `origin.y - 0.8em` from the top
 of the line's box — that is where the overlay's baseline lands. The editor
@@ -79,7 +79,7 @@ text **0.3em below** the line's — 5px at 100%, 15px when zoomed in. The
 check now measures the gap between the editor's text and the line's own
 overlay text, and it is **0**.
 
-### The paper and the ink
+### 2.2 The paper and the ink
 
 The editor writes **on the page**, so it is the page's colours and not the
 theme's: a page of paper is white in the light theme and in the dark one, and
@@ -87,11 +87,27 @@ the ink on it is dark in both. Two custom properties carry it —
 `--selis-editor-paper` and `--selis-editor-ink` — so the rule is stated
 once.
 
-### The editor grows with the words
+### 2.3 The editor grows with the words
 
 The editor's width follows the text: a hidden mirror of the words is
 measured, and the box is as wide as the widest thing in it. A caret that
 ends up outside the box is a caret the reader cannot see.
+
+### 2.4 The lines only take the pointer for the text tool
+
+The lines are the target of the **text** tool and of nothing else. A line
+that takes the pointer while a placement tool is armed is a line that
+swallows the click: the reader drags a text box across a paragraph and
+nothing happens, because the word under the pointer took the event.
+
+The tool decides what the page is for - to be read, or to be drawn on - and
+the workspace has to say so in the **pointer**, not only in the ribbon:
+
+```css
+.selis-editor-doc:not([data-tool="text"]) .selis-editor-line {
+	pointer-events: none;
+}
+```
 
 ---
 
@@ -145,6 +161,37 @@ next to it is a trap, and the trap is in the engine, not in the shell.
 
 ---
 
+## 4b. The formatting row: what the competitors have and we did not
+
+Every serious editor puts a **formatting bar** next to the text being typed:
+Acrobat's is a floating strip, Foxit's is a properties pane, and Word's is
+the ribbon. The reader chooses a size and a colour **before** the text is
+placed - not after, and not not at all.
+
+Our text box was always 12pt black, because the editor never asked.
+
+So the row under the editor now carries:
+
+- the **size**, as the ladder every other editor offers (8, 10, 12, 14, 18,
+  24) - a ladder and not a free field, because a free field invites a size
+  the document's font cannot draw;
+- the **colour**, as the classic four swatches (black, blue, red, green) -
+  a reader reaching for a colour expects the colours every other editor
+  offers, not a spectrum picker;
+- the **hint**, which was there already.
+
+The editor's own text follows the choice as it is made: the reader sees the
+words at the size they will be drawn, in the ink they will be drawn in. And
+the choice reaches the **file**: the stamp writes the colour into the content
+stream as `r g b rg`, and the check reads it back out of the produced
+bytes. A swatch that only changes the editor's own text is decoration.
+
+Editing text that is **already on the page** gets the hint but not the
+controls: the engine splices the string and the size stays what it was, so
+offering a size there would be offering something that does not happen.
+
+---
+
 ## 5. The evidence
 
 The browser check grew three legs, and each one measures the thing that was
@@ -160,11 +207,15 @@ broken rather than the thing that was easy to measure:
   size, the editor must be over the line, and **clicking away must commit
   the change**.
 - **`face`** — the invitation's own "Open a PDF" button must ask for a file.
+- **`textBox`** — the text box is placed in the size and the colour the
+  reader chose, and the colour is read back out of the **produced file**.
 
 ```json
-{"placement": {"hit": "selis-editor-page__canvas", "onCanvas": true, "opened": true},
+{"placement": {"hit": "selis-editor-page__canvas", "onCanvas": true,
+                   "overText": true, "overTheCanvas": true, "opened": true},
  "inline": {"committedOnClickAway": true, "gap": 0,
             "lineSize": "23.52px", "overTheLine": true, "size": "23.52px"},
+ "textBox": {"chosenSize": "24", "chosenColour": "Red", "carriesColour": true},
  "face": {"pickerAsked": true}}
 ```
 

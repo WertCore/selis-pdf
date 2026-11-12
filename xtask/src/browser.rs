@@ -7225,6 +7225,18 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
             "the downloaded document does not carry the text box {boxed:?}"
         ));
     }
+    // The formatting row: the size and the colour the reader chose before
+    // the text was placed. The colour has to be IN the file - a swatch that
+    // only changes the editor's own text is decoration.
+    if text_box.get("chosenSize").and_then(Json::as_str) != Some("24") {
+        return Err("the text box's size was not chosen from the formatting row".into());
+    }
+    if text_box.get("chosenColour").and_then(Json::as_str) != Some("Red") {
+        return Err("the text box's colour was not chosen from the formatting row".into());
+    }
+    if text_box.get("carriesColour").and_then(Json::as_bool) != Some(true) {
+        return Err("the text box is not red in the produced file".into());
+    }
 
     // The placement tools, tested through the browser's own hit test.
     let placement = report
@@ -7240,6 +7252,15 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     }
     if placement.get("opened").and_then(Json::as_bool) != Some(true) {
         return Err("the text box did not open on a click on the page's empty space".into());
+    }
+    // And the placement has to work over TEXT too: a reader who drags a box
+    // across a paragraph is not asking for an exception, and a word that
+    // takes the pointer is a word that swallows the drag.
+    if placement.get("overText").and_then(Json::as_bool) != Some(true) {
+        return Err("the placement was not proved over the page's text".into());
+    }
+    if placement.get("overTheCanvas").and_then(Json::as_bool) != Some(true) {
+        return Err("a click over the page's text did not reach the canvas".into());
     }
 
     // The inline editor must BE the line it is over.
