@@ -197,20 +197,20 @@ The verdicts:
 | Flip a page | The Organize tab's "Flip across" and "Flip down". | **SHIPPED** |
 | Delete, duplicate, insert, reorder pages | All four. | **SHIPPED** |
 | Crop and resize a page | By margins, and to a named size (A3/A4/A5/Letter/Legal). | **SHIPPED** |
-| Split or extract pages | Deleting the pages you do not want is the same operation. | **BUILDABLE** — `delete`/`reorder` exist |
+| Split or extract pages | The editor's "Keep these pages" panel, and the page tools. | **SHIPPED** |
 | Several pages on one sheet | The editor's "Several pages per sheet" panel. | **SHIPPED** |
 | Header, footer, page numbers, watermark | Four panels in the inspector. | **SHIPPED** |
 | Page labels (i, ii, iii / A-1) | The inspector's "Page labels" panel. | **SHIPPED** |
 | Bookmarks | Read and written, with their nesting depth. | **SHIPPED** |
 | Find | The app bar's find box, with the matches highlighted. | **SHIPPED** |
 | Find and replace across the document | Nowhere. `edit_text` is per page, and the editor's click-to-edit is the safe way in. | **BUILDABLE** — the search op finds the page; the click-to-edit does the rest |
-| Measure a distance or an angle | Nowhere. Two points on the page are already in user space. | **BUILDABLE** — the editor's own geometry |
+| Measure a distance or an angle | The editor's "Measure" tool: the distance and the angle, in the page's own points and millimetres. A reading, not an edit — it is not put in the document. | **SHIPPED** |
 | Measure an area | Nowhere. It needs the page's vector art, which the engine does not expose. | **BLOCKED** |
 | Compare two documents | Nowhere. The engine has no compare operation. | **BLOCKED** |
 | Comment, highlight, underline, strikeout, reply | Nowhere. There is no annotation writer. | **BLOCKED** — `SL-5.ANNOT.*` |
 | Reduce the file size | The editor's "Reduce the file size" panel, and the tools page's "Optimise & repair". | **SHIPPED** |
 | Bates numbering | The editor's "Bates numbers" panel, and the tools page's. | **SHIPPED** |
-| Attach a file, detach a file | The tools page's "Attachments". | **BUILDABLE** — `attach`/`detach`/`attachments` exist |
+| Attach a file, detach a file | The editor's "Attachments" panel, and the tools page's. | **SHIPPED** |
 
 ### Convert
 
@@ -220,7 +220,7 @@ The verdicts:
 | Export to HTML | The editor's Export tab, and the tools page's "PDF to HTML". | **SHIPPED** |
 | Export plain text or CSV | The editor's Export tab, and the tools page's text export. | **SHIPPED** |
 | Export to an EPUB book | The editor's Export tab. | **SHIPPED** |
-| Export to PNG, JPG, TIFF, WebP | The tools page's four image cards — the chunk exists. | **BUILDABLE** — the editor needs a client for it |
+| Export to PNG, JPG, TIFF, WebP | The editor's Export tab, and the tools page's four image cards. | **SHIPPED** |
 | Convert to PDF/A | Nowhere. | **BLOCKED** |
 | Translate | Nowhere. | **NOT PLANNED** — it needs a service, and the promise is that nothing leaves the device |
 
@@ -233,8 +233,8 @@ The verdicts:
 | Find the sensitive text for me (AI redaction) | Nowhere. | **NOT PLANNED** — it needs an inference service |
 | Remove the document's metadata | The Protect tab's "Strip metadata". | **SHIPPED** |
 | See what the document leaks | The privacy report and the fingerprint, in the inspector. | **SHIPPED** |
-| Password protect, unlock, permissions | The tools page's four password cards — the security chunk exists. | **BUILDABLE** — the editor needs a client and a prompt |
-| Sign: type or draw a signature | The sign chunk's typed stamp, which the editor already drives for the text box. | **BUILDABLE** — the same primitive, a different label |
+| Password protect, unlock, permissions | The editor's "Password" panel, and the tools page's four password cards. | **SHIPPED** |
+| Sign: draw a signature | The editor's "Sign" tool: the reader draws it on the page and it is stamped there. A visual stamp, not a cryptographic signature — the panel says so. | **SHIPPED** — for the drawn one |
 | Sign with a certificate | The tools page's "certificate" card. | **BUILDABLE** — the editor needs a client and a key picker |
 | Fill a form | Read the fields, write the values back. | **SHIPPED** |
 
@@ -258,7 +258,7 @@ The verdicts:
 | Feature | Where it is now | Verdict |
 |---|---|---|
 | Tagged PDF, alt text, reading order | The engine **reads** a document's structure; there is no structure **writer**. | **BLOCKED** for writing |
-| Check the document's accessibility | Nowhere. The `structure` op already reports what the document carries. | **BUILDABLE** — a report, not a rewrite |
+| Check the document's accessibility | The editor's "Accessibility" panel: whether the document is tagged, its headings, images and links, and the images with no alternative text. | **SHIPPED** — a report, not a rewrite |
 
 ### The product itself
 
@@ -373,7 +373,40 @@ a list of panels and not a list of engine work.
       follows the choice, and the colour is read back out of the produced
       file — a swatch that only changes the editor's text is decoration.
 
-### Slice 7 — what is next: the features the engine already has
+### Slice 7 — the features the engine already had (shipped)
+
+- [x] **H12 — The command palette.** Every command in the workspace, in one
+      box, on Ctrl+K (Cmd+K on a Mac). It is a **view over the ribbon**: the
+      commands are read out of the markup when the palette opens, so a
+      command that is in the ribbon is in the palette with the same label and
+      the same behaviour, and running one runs the ribbon's own button. The
+      two cannot drift.
+- [x] **H4 — Keep these pages.** The engine's `split` operation takes a
+      page range and produces the document that carries only those pages.
+- [x] **H5 — Attach and detach.** Read the files the document carries,
+      carry a new one inside it, and take them all out again.
+- [x] **H6 — The accessibility report.** What the document says about
+      itself: whether it is tagged, how many headings, images and links it
+      has, and which of its images carry no alternative text. A **report and
+      not a repair** — the engine can read a document's structure but it
+      cannot write one — and the engine's own rule is kept: an untagged
+      document is untagged, not "a document with no headings".
+- [x] **H8 — Protect with a password.** The security chunk's `protect` and
+      `unlock`. The password is used here, on this device, and the browser
+      holds it in memory only while the tab is open — the panel says so.
+- [x] **H10 — Measure.** The distance and the angle between two points, in
+      the page's own points and millimetres. A **reading, not an edit**: the
+      measurement is drawn on the screen and is NOT put in the document,
+      exactly as Acrobat and Foxit draw theirs.
+- [x] **H9 — Sign.** The reader draws their signature on the page, where
+      they want it, and it is stamped there. It is a **visual stamp**: page
+      content, not a cryptographic signature, and the panel says so.
+- [x] **H7 — Export to an image.** The raster chunk (PNG, JPG, TIFF, WebP),
+      with the chunk's client extracted out of the tools page into
+      `src/tools/raster-protocol.ts` — for the same reason the HTML
+      writer's client was: a client buried in another page's function body is
+      not a client, and the editor needs the same writer on its own bytes.
+      Four more formats, twelve in all.
 
 - [ ] **H4 — Split the document.** "Keep these pages": a selection in the
       rail, then `delete`/`reorder` to leave the ones that were chosen.

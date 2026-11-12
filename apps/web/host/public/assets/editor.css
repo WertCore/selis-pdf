@@ -950,6 +950,60 @@
 	border-bottom: 0;
 }
 
+/*
+ * The measurement on the page.
+ *
+ * A reading, not an edit: the line and its number are drawn over the page
+ * and are NOT part of the document. The line is the accent colour so it
+ * reads as the workspace's own mark rather than as something on the paper.
+ */
+.selis-editor-measure {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.selis-editor-measure__line {
+	stroke: var(--selis-color-accent);
+	stroke-width: 1.5;
+	stroke-dasharray: 4 3;
+}
+
+.selis-editor-measure__label {
+	fill: var(--selis-color-accent);
+	font-family: var(--selis-font-sans);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	text-anchor: middle;
+	paint-order: stroke;
+	stroke: var(--selis-editor-paper);
+	stroke-width: 3px;
+	stroke-linejoin: round;
+}
+
+/*
+ * The signature, drawn on the page.
+ *
+ * The live path is the reader's own ink, so it is drawn in the ink's
+ * colour rather than in the accent: the point is to see what you are
+ * about to sign.
+ */
+.selis-editor-sign {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.selis-editor-sign__path {
+	fill: none;
+	stroke: var(--selis-editor-ink);
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
 /* ── the status bar ─────────────────────────────────────────────────────────── */
 
 /*

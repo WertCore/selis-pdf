@@ -184,7 +184,49 @@ A change that vanishes because the reader looked elsewhere is a silent
 loss, and a silent loss is worse than a visible change. Clicking away now
 commits the edit, the way Acrobat does.
 
-## 7. What is still missing from the face
+## 7. The command palette, and the tools that act on the page
+
+Three things landed after the face was first drawn, and each of them is a
+rule rather than a feature.
+
+### 7.1 The palette is a view over the ribbon
+
+Every serious tool that has outgrown a handful of commands has a box you
+can type into. Ours reads its commands **out of the ribbon's markup** when
+it opens, and running one runs the ribbon's own button. So a command that
+is in the ribbon is in the palette, with the same label and the same
+behaviour, and a new command needs no second list to be kept in step.
+
+The alternative — a list of commands in the palette's own code — is a list
+that drifts, and a drifted list is a command that appears in the palette
+and does nothing.
+
+### 7.2 A reading is not an edit
+
+The **measure** tool draws its line and its number on the screen and puts
+**nothing** in the document. That is what Acrobat and Foxit do, and it is
+the right answer: a measurement is a reading, and a reading does not change
+what the reader is reading.
+
+The **signature** is the opposite, and it says so: it is stamped onto the
+page as part of the document's own drawing. It is not a cryptographic
+signature and it does not prove who drew it, and the panel says exactly
+that.
+
+### 7.3 The controls that cannot act, do not show
+
+The zoom controls are about a document. While the workspace is empty there
+is nothing to zoom, nothing to fit to the width and nothing to fit to the
+page, so the status bar's zoom group and the ribbon's View group are
+hidden until a document is open.
+
+The status bar was also the one band of the shell with **no styles at
+all** — it was never styled, which is why the zoom controls read as a row
+of loose buttons at the bottom of the page rather than as part of the
+workspace. It is a band now: quiet chrome, a hairline, a tabular page
+number. Every class the page uses is styled somewhere, and a check says so.
+
+## 8. What is still missing from the face
 
 - **A customisable ribbon.** Acrobat lets the reader hide the groups they do
   not use. It is a nice-to-have, and it is a real accessibility win for a
@@ -200,7 +242,7 @@ commits the edit, the way Acrobat does.
 
 ---
 
-## 8. Where the files are
+## 9. Where the files are
 
 | | |
 |---|---|
@@ -222,7 +264,7 @@ remap is written for BOTH themes so the kit's dark tokens can take effect.
 
 ---
 
-## 9. The evidence
+## 10. The evidence
 
 The editor's browser leg grew a `shell` leg that checks the face against the
 **document**, not against the DOM alone:

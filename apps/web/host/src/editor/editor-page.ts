@@ -47,12 +47,19 @@ import {
 } from "../tools/export.js";
 import { hasPdfHeader } from "../tools/inputs.js";
 import { type ToolsWasm, loadTools, runTool } from "../tools/protocol.js";
+import {
+	type SecurityWasm,
+	loadSecurity,
+	randomKeyMaterial,
+	runSecurity,
+} from "../tools/security-protocol.js";
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { type AccessibilityReport, reportStructure } from "./accessibility.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import { type IconName, icon } from "./icons.js";
+import { measureOnCanvas, measurementText } from "./measure.js";
 import {
 	type EditorOperation,
 	PAGE_SIZES,
@@ -165,7 +172,7 @@ const THUMBNAIL_WIDTH = 132;
 const SURFACE_GUTTER = 72;
 
 /** What the workspace is armed to do on the page. */
-export type EditorTool = "text" | "box" | "image" | "redact";
+export type EditorTool = "text" | "box" | "image" | "redact" | "measure" | "sign";
 
 /** The image the reader has picked, ready to place. */
 interface PickedImage {
@@ -342,6 +349,10 @@ const dom = {
 	splitFrom: el<HTMLInputElement>("selis-editor-split-from"),
 	splitTo: el<HTMLInputElement>("selis-editor-split-to"),
 	splitApply: el<HTMLButtonElement>("selis-editor-split-apply"),
+	password: el<HTMLInputElement>("selis-editor-password"),
+	ownerPassword: el<HTMLInputElement>("selis-editor-owner-password"),
+	protectApply: el<HTMLButtonElement>("selis-editor-protect-apply"),
+	unlockApply: el<HTMLButtonElement>("selis-editor-unlock-apply"),
 	theme: el<HTMLButtonElement>("selis-theme-toggle"),
 };
 
@@ -1401,6 +1412,12 @@ const EXPORT_ICONS: Readonly<Record<ExportFormat, IconName>> = {
 	reflow: "reflow",
 	tables: "tables",
 	text: "text",
+	// The image formats are all the same mark: they are the same writer
+	// with a different suffix.
+	png: "image",
+	jpg: "image",
+	tiff: "image",
+	webp: "image",
 };
 
 /**
@@ -1760,6 +1777,23 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 		state.busy = false;
 		renderHistory();
 	}
+}
+
+/**
+ * The security chunk, loaded once.
+ *
+ * The chunk is only fetched when the reader asks for a password: it is a
+ * lazy chunk, and a reader who never protects a document never downloads
+ * it.
+ */
+let securityPromise: Promise<SecurityWasm> | null = null;
+
+function securityChunk(): Promise<SecurityWasm> {
+	securityPromise ??= loadSecurity().catch((error: unknown) => {
+		securityPromise = null;
+		throw error;
+	});
+	return securityPromise;
 }
 
 // ── the text editor ─────────────────────────────────────────────────────────
@@ -2213,6 +2247,9 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
 	redact:
 		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. Anything else under it — an image, a line of art — is covered, not erased.",
+	measure:
+		"Drag between two points to measure the page. The measurement is drawn on the screen and is not put in the document.",
+	sign: "Draw your signature on the page. It is stamped onto the page as part of the document's own drawing, not as a cryptographic signature.",
 };
 
 /** The font size a new text box is drawn at, in points. */
@@ -2231,6 +2268,13 @@ function setTool(tool: EditorTool): void {
 	}
 	dom.toolHint.textContent = TOOL_HINTS[tool];
 	dom.doc.dataset.tool = tool;
+	// The measurement and the signature belong to the tool that drew them.
+	if (tool !== "measure") {
+		clearMeasurement();
+	}
+	if (tool !== "sign") {
+		clearSignature();
+	}
 	closeInline();
 }
 
@@ -2241,7 +2285,9 @@ interface Drag {
 	readonly startY: number;
 	x: number;
 	y: number;
-	readonly band: HTMLElement;
+	readonly band: HTMLElement | null;
+	/** The points the pointer has made, for the signature's own path. */
+	readonly path: { x: number; y: number }[];
 }
 
 let drag: Drag | null = null;
@@ -2289,10 +2335,26 @@ function startDrag(event: PointerEvent): void {
 	if (!(wrap instanceof HTMLElement)) {
 		return;
 	}
-	const band = document.createElement("div");
-	band.className = "selis-editor-band";
-	wrap.appendChild(band);
-	drag = { page: hit.page, startX: hit.x, startY: hit.y, x: hit.x, y: hit.y, band };
+	// The measure tool draws a LINE, so it has no rubber band; the other
+	// placement tools do.
+	const band =
+		state.tool === "measure"
+			? null
+			: (() => {
+					const made = document.createElement("div");
+					made.className = "selis-editor-band";
+					wrap.appendChild(made);
+					return made;
+				})();
+	drag = {
+		page: hit.page,
+		startX: hit.x,
+		startY: hit.y,
+		x: hit.x,
+		y: hit.y,
+		band,
+		path: [{ x: hit.x, y: hit.y }],
+	};
 	try {
 		hit.canvas.setPointerCapture(event.pointerId);
 	} catch {
@@ -2314,6 +2376,17 @@ function moveDrag(event: PointerEvent): void {
 	}
 	drag.x = hit.x;
 	drag.y = hit.y;
+	if (state.tool === "sign") {
+		// The signature's path: every point the pointer made.
+		drag.path.push({ x: hit.x, y: hit.y });
+		drawSignaturePath(drag.page, drag.path);
+		return;
+	}
+	if (drag.band === null) {
+		// The measure tool's own line, drawn as the pointer moves.
+		drawMeasurement(drag.page, { x: drag.startX, y: drag.startY }, { x: drag.x, y: drag.y });
+		return;
+	}
 	const rect = dragRect(drag);
 	drag.band.style.left = `${rect.x}px`;
 	drag.band.style.top = `${rect.y}px`;
@@ -2328,12 +2401,27 @@ function endDrag(event: PointerEvent): void {
 		return;
 	}
 	drag = null;
-	current.band.remove();
+	current.band?.remove();
 	const hit = pointerOnCanvas(event);
 	const rect = dragRect(current);
 	const geometry = state.geometry.get(current.page);
 	if (geometry === undefined) {
 		setStatus("That page could not be drawn, so nothing was placed on it.", "error");
+		return;
+	}
+	if (state.tool === "sign") {
+		// The signature is stamped where it was drawn.
+		const path = current.path;
+		clearSignature();
+		void stampSignature(current.page, path);
+		return;
+	}
+	if (state.tool === "measure") {
+		// The measurement is a reading, not a change: it is drawn on the
+		// screen and the document is left exactly as it was.
+		const to = hit === null ? { x: current.startX, y: current.startY } : { x: hit.x, y: hit.y };
+		const text = drawMeasurement(current.page, { x: current.startX, y: current.startY }, to);
+		setStatus(text === "" ? "That page could not be measured." : `Measured: ${text}`);
 		return;
 	}
 	if (state.tool === "box") {
@@ -2899,6 +2987,305 @@ async function keepPages(): Promise<void> {
 		await commit(output.bytes, `Kept pages ${from} to ${to}`);
 	} catch (error) {
 		setStatus(`Those pages could not be kept: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * The document's password.
+ *
+ * The password is used here, on this device, and it goes nowhere: the
+ * security chunk holds it while the request is in flight and zeroes it
+ * afterwards. The browser keeps the protected document's bytes in memory
+ * while this tab is open, which is the honest limit of a document you have
+ * just encrypted in a tab - the page says so.
+ */
+async function protectDocument(): Promise<void> {
+	const userPassword = dom.password.value;
+	const ownerPassword = dom.ownerPassword.value;
+	if (userPassword === "" && ownerPassword === "") {
+		setStatus("Enter an open password, an owner password, or both.", "error");
+		return;
+	}
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Protecting the document…");
+	try {
+		const wasm = await securityChunk();
+		const result = runSecurity(wasm, {
+			op: "protect",
+			options: {
+				userPassword,
+				ownerPassword,
+				// The editor grants everything: it is a workspace, not a
+				// publishing desk, and a reader who restricts the document
+				// here would only restrict their own copy of it.
+				permissions: { print: true, modify: true, copy: true, annotate: true },
+				encryptMetadata: false,
+				keyMaterial: randomKeyMaterial(),
+			},
+			file: { name: state.name, bytes },
+		});
+		await commit(result.output.bytes, "Protected the document");
+		dom.unlockApply.disabled = false;
+		setStatus(
+			`The document is protected with ${result.outcome.algorithm ?? "a password"}. The password is held in this tab's memory only.`,
+		);
+	} catch (error) {
+		setStatus(`The document could not be protected: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Take the password off the document. */
+async function unlockDocument(): Promise<void> {
+	const password = dom.password.value;
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Taking the password off…");
+	try {
+		const wasm = await securityChunk();
+		const result = runSecurity(wasm, {
+			op: "unlock",
+			options: { password },
+			file: { name: state.name, bytes },
+		});
+		await commit(result.output.bytes, "Removed the password");
+		setStatus(
+			result.outcome.encrypted === true
+				? "The password is off and the result was verified on this device."
+				: "This document had no password, so its own bytes were copied.",
+		);
+	} catch (error) {
+		setStatus(`The password could not be taken off: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * The measurement on the page.
+ *
+ * A reading, not an edit: the measurement is drawn on the screen and it is
+ * NOT put in the document, exactly as Acrobat and Foxit draw theirs. The
+ * reader can measure a page without changing it.
+ */
+function measureOverlay(page: number): SVGSVGElement | null {
+	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
+	if (wrap === null) {
+		return null;
+	}
+	let overlay = wrap.querySelector<SVGSVGElement>(".selis-editor-measure");
+	if (overlay === null) {
+		overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		overlay.classList.add("selis-editor-measure");
+		const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+		line.classList.add("selis-editor-measure__line");
+		const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+		label.classList.add("selis-editor-measure__label");
+		overlay.append(line, label);
+		wrap.appendChild(overlay);
+	}
+	return overlay;
+}
+
+/** Take the measurement off the page. */
+function clearMeasurement(): void {
+	for (const overlay of dom.doc.querySelectorAll(".selis-editor-measure")) {
+		overlay.remove();
+	}
+}
+
+/**
+ * Draw the measurement between two points on the canvas.
+ *
+ * The distance is the page's own: the canvas is drawn at a known size and
+ * the page's geometry knows how many CSS pixels a point is, so the number
+ * is the document's and not the screen's.
+ */
+function drawMeasurement(
+	page: number,
+	from: { readonly x: number; readonly y: number },
+	to: { readonly x: number; readonly y: number },
+): string {
+	const geometry = state.geometry.get(page);
+	if (geometry === undefined) {
+		return "";
+	}
+	// The page's own scale: device pixels per point, carried into CSS
+	// pixels. The length of the transform's linear part is the scale, so
+	// this is right for a turned page too.
+	const cssPerDevice = geometry.cssWidth / geometry.rasterWidth;
+	const cssPerPoint = geometry.scale * cssPerDevice;
+	const measurement = measureOnCanvas(from, to, cssPerPoint);
+	const overlay = measureOverlay(page);
+	if (overlay === null) {
+		return "";
+	}
+	overlay.setAttribute("viewBox", `0 0 ${geometry.cssWidth} ${geometry.cssHeight}`);
+	const line = overlay.querySelector(".selis-editor-measure__line");
+	const label = overlay.querySelector(".selis-editor-measure__label");
+	if (line instanceof SVGLineElement && label instanceof SVGTextElement) {
+		line.setAttribute("x1", String(from.x));
+		line.setAttribute("y1", String(from.y));
+		line.setAttribute("x2", String(to.x));
+		line.setAttribute("y2", String(to.y));
+		label.setAttribute("x", String((from.x + to.x) / 2));
+		label.setAttribute("y", String((from.y + to.y) / 2 - 6));
+		label.textContent = measurementText(measurement);
+	}
+	return measurementText(measurement);
+}
+
+/**
+ * A signature, drawn on the page.
+ *
+ * Acrobat and Foxit both let the reader draw their signature straight onto
+ * the page, and that is what this does: the pointer's path is captured on
+ * the canvas, drawn live while the finger or the mouse is down, and stamped
+ * onto the page when the pointer is lifted.
+ *
+ * The honest part: this is a **visual stamp**, so it is page content and not
+ * an annotation. Another reader sees the signature as part of the page's
+ * drawing, and it is not a cryptographic signature. The panel says so.
+ */
+
+/** The signature's ink. */
+const SIGN_COLOR: readonly [number, number, number] = [0.05, 0.05, 0.12];
+
+/** The signature's stroke width, in points. */
+const SIGN_WIDTH = 1.5;
+
+/**
+ * The live path, drawn over the page while the pointer is down.
+ *
+ * The path is an SVG polyline in the page's own CSS pixels, so it is drawn
+ * exactly where the pointer went and it costs nothing until the pointer
+ * moves.
+ */
+function signOverlay(page: number): SVGSVGElement | null {
+	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
+	if (wrap === null) {
+		return null;
+	}
+	let overlay = wrap.querySelector<SVGSVGElement>(".selis-editor-sign");
+	if (overlay === null) {
+		overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		overlay.classList.add("selis-editor-sign");
+		const path = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+		path.classList.add("selis-editor-sign__path");
+		overlay.appendChild(path);
+		wrap.appendChild(overlay);
+	}
+	return overlay;
+}
+
+/** Take the live path off the page. */
+function clearSignature(): void {
+	for (const overlay of dom.doc.querySelectorAll(".selis-editor-sign")) {
+		overlay.remove();
+	}
+}
+
+/** Draw the path the pointer has made so far. */
+function drawSignaturePath(page: number, points: readonly { x: number; y: number }[]): void {
+	const geometry = state.geometry.get(page);
+	const overlay = signOverlay(page);
+	if (geometry === undefined || overlay === null) {
+		return;
+	}
+	overlay.setAttribute("viewBox", `0 0 ${geometry.cssWidth} ${geometry.cssHeight}`);
+	const path = overlay.querySelector(".selis-editor-sign__path");
+	if (path instanceof SVGPolylineElement) {
+		path.setAttribute("points", points.map((point) => `${point.x},${point.y}`).join(" "));
+	}
+}
+
+/**
+ * Stamp the signature onto the page.
+ *
+ * The stamp takes normalised points inside its rectangle: `(0,0)` is the
+ * rectangle's bottom-left and `(1,1)` its top-right. The canvas is y-down
+ * and the stamp is y-up, so the vertical is flipped on the way in.
+ */
+async function stampSignature(
+	page: number,
+	points: readonly { x: number; y: number }[],
+): Promise<void> {
+	const bytes = state.bytes;
+	const geometry = state.geometry.get(page);
+	if (bytes === null || geometry === undefined) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	if (points.length < 2) {
+		setStatus("Draw your signature on the page.");
+		return;
+	}
+	const first = points[0];
+	if (first === undefined) {
+		setStatus("Draw your signature on the page.");
+		return;
+	}
+	let left = first.x;
+	let right = first.x;
+	let top = first.y;
+	let bottom = first.y;
+	for (const point of points) {
+		left = Math.min(left, point.x);
+		right = Math.max(right, point.x);
+		top = Math.min(top, point.y);
+		bottom = Math.max(bottom, point.y);
+	}
+	const width = Math.max(right - left, 1);
+	const height = Math.max(bottom - top, 1);
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Signing…");
+	try {
+		const chunk = await signChunk();
+		const anchor = displayRect(geometry, { x: left, y: top, width, height });
+		const strokes = [
+			{
+				points: points.map((point) => [(point.x - left) / width, (bottom - point.y) / height]),
+			},
+		];
+		const options = {
+			page: page + 1,
+			rect: [anchor.x0, anchor.y0, anchor.x1, anchor.y1],
+			lines: [],
+			strokes,
+			color: [SIGN_COLOR[0], SIGN_COLOR[1], SIGN_COLOR[2]],
+			strokeWidth: SIGN_WIDTH,
+			fontSize: 11,
+			border: false,
+		};
+		const response = runSign(chunk, {
+			op: "stamp",
+			options,
+			file: { name: state.name, bytes },
+		});
+		if (response.kind !== "document") {
+			throw new Error("the signing chunk returned no document");
+		}
+		await commit(response.output.bytes, `Signed page ${page + 1}`);
+	} catch (error) {
+		setStatus(`The signature could not be placed: ${messageOf(error)}`, "error");
 	} finally {
 		state.busy = false;
 		dom.download.disabled = state.bytes === null;
@@ -3638,6 +4025,13 @@ function wire(): void {
 		void keepPages();
 	});
 
+	dom.protectApply.addEventListener("click", () => {
+		void protectDocument();
+	});
+	dom.unlockApply.addEventListener("click", () => {
+		void unlockDocument();
+	});
+
 	// The command palette: the button, the shortcut, and the keys.
 	dom.paletteButton.addEventListener("click", () => {
 		openPalette();
@@ -3703,7 +4097,13 @@ function wire(): void {
 			dom.imageInput.click();
 			return;
 		}
-		if (tool === "text" || tool === "box" || tool === "redact") {
+		if (
+			tool === "text" ||
+			tool === "box" ||
+			tool === "redact" ||
+			tool === "measure" ||
+			tool === "sign"
+		) {
 			setTool(tool);
 		}
 	});
@@ -3772,7 +4172,7 @@ function wire(): void {
 		endDrag(event);
 	});
 	dom.doc.addEventListener("pointercancel", () => {
-		drag?.band.remove();
+		drag?.band?.remove();
 		drag = null;
 	});
 

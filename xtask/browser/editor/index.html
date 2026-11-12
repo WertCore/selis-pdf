@@ -203,6 +203,7 @@
         out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
         out.palette = await paletteLeg(onlineDoc, onlineWin, "online");
         out.panels = await panelsLeg(onlineDoc, onlineWin, "online");
+        out.tools = await toolsLeg(onlineDoc, onlineWin, "online");
         out.placement = await placementLeg(onlineDoc, onlineWin, "online");
         out.inline = await inlineLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
@@ -678,6 +679,7 @@
         );
         const word = await exportFile(doc, win, "word", label);
         const html = await exportFile(doc, win, "html", label);
+        const png = await exportFile(doc, win, "png", label);
         // The file the export produced must STILL BE THERE afterwards: the
         // object URL is what the reader takes it with, and a revoked URL
         // downloads an EMPTY file rather than failing.
@@ -699,6 +701,10 @@
           html: html.name,
           htmlBytes: html.bytes,
           htmlHeader: html.header,
+          png: png.name,
+          pngBytes: png.bytes,
+          // A PNG starts with the four bytes 89 50 4E 47.
+          pngHeader: png.header,
           htmlCarriesTheText: html.text.indexOf("Added") >= 0,
           offeredAgain: link !== null,
           stillThere: alive,
@@ -1291,6 +1297,79 @@
           attachments: attachments,
           kept: kept,
           pages: doc.querySelectorAll(".selis-editor-page").length,
+        };
+      }
+
+
+      /**
+       * The measure tool and the signature.
+       *
+       * Both are tools the reader uses on the page itself, and both are
+       * checked against the DOCUMENT: the measurement must be the page's own
+       * distance, and the signature must be IN the file.
+       */
+      async function toolsLeg(doc, win, label) {
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const box = canvas.getBoundingClientRect();
+        const at = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: box.left + x,
+            clientY: box.top + y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 7,
+            isPrimary: true,
+          });
+
+        // The measurement: a drag between two points, and the number is the
+        // page's own.
+        useTool(doc, "measure");
+        canvas.dispatchEvent(at(100, 100, 1, "pointerdown"));
+        canvas.dispatchEvent(at(400, 300, 1, "pointermove"));
+        canvas.dispatchEvent(at(400, 300, 0, "pointerup"));
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Measured");
+          },
+          20_000,
+          "the measurement (" + label + ")",
+        );
+        const measured = statusText(doc);
+        const overlay = doc.querySelectorAll(".selis-editor-measure").length;
+
+        // The signature: a drawn path, stamped onto the page.
+        const before = doc.querySelectorAll(".selis-editor-line").length;
+        useTool(doc, "sign");
+        canvas.dispatchEvent(at(100, 200, 1, "pointerdown"));
+        for (let i = 0; i <= 20; i += 1) {
+          canvas.dispatchEvent(at(100 + i * 10, 200 - Math.sin(i / 2) * 30, 1, "pointermove"));
+        }
+        canvas.dispatchEvent(at(300, 200, 0, "pointerup"));
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Signed");
+          },
+          30_000,
+          "the signature (" + label + ")",
+        );
+        const signed = statusText(doc);
+        const produced = await download(doc, win);
+
+        return {
+          measured: measured,
+          overlay: overlay,
+          signed: signed,
+          bytes: produced.bytes,
+          // The signature is a stamp on the page: the produced file carries
+          // the stroke it drew. The stamp writes a freehand stroke as a
+          // moveto and a run of linetos.
+          carriesTheSignature: produced.carriesText.indexOf(" l\n") >= 0,
+          linesBefore: before,
         };
       }
 

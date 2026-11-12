@@ -29,6 +29,12 @@ import { HtmlProtocolError, type HtmlWasm, loadHtmlWasm, writeHtml } from "./htm
  * no DOM.
  */
 import {
+	loadRasterWasm,
+	type RasterFormat,
+	type RasterWasm,
+	renderPages,
+} from "./raster-protocol.js";
+import {
 	type TextOp,
 	type TextOutput,
 	type TextWasm,
@@ -45,7 +51,11 @@ export type ExportFormat =
 	| "epub"
 	| "text"
 	| "tables"
-	| "reflow";
+	| "reflow"
+	| "png"
+	| "jpg"
+	| "tiff"
+	| "webp";
 
 /** What the reader is told about a format. */
 export interface ExportFormatInfo {
@@ -125,7 +135,58 @@ export const EXPORT_FORMATS: readonly ExportFormatInfo[] = [
 		extension: "txt",
 		needsPageImages: false,
 	},
+	{
+		id: "png",
+		label: "PNG image",
+		note: "A .png of every page, as the page is drawn.",
+		extension: "png",
+		needsPageImages: false,
+	},
+	{
+		id: "jpg",
+		label: "JPEG image",
+		note: "A .jpg of every page, as the page is drawn.",
+		extension: "jpg",
+		needsPageImages: false,
+	},
+	{
+		id: "tiff",
+		label: "TIFF image",
+		note: "A .tif of every page, as the page is drawn.",
+		extension: "tif",
+		needsPageImages: false,
+	},
+	{
+		id: "webp",
+		label: "WebP image",
+		note: "A .webp of every page, as the page is drawn.",
+		extension: "webp",
+		needsPageImages: false,
+	},
 ];
+
+/**
+ * The image formats, and the raster format each one names.
+ *
+ * The four are the chunk's own: the raster chunk writes PNG, JPEG, TIFF and
+ * WebP, and the tools page has a card for each.
+ */
+const RASTER_FORMAT: Readonly<Partial<Record<ExportFormat, RasterFormat>>> = {
+	png: "png",
+	jpg: "jpg",
+	tiff: "tiff",
+	webp: "webp",
+};
+
+/**
+ * The raster format a format names, when it names one.
+ *
+ * The image formats are the raster chunk's; every other format belongs to
+ * the text chunk or the HTML one.
+ */
+export function rasterFormatFor(format: ExportFormat): RasterFormat | null {
+	return RASTER_FORMAT[format] ?? null;
+}
 
 /** The text chunk's operation for a format, when it has one. */
 const TEXT_OP: Readonly<Record<ExportFormat, TextOp | null>> = {
@@ -137,6 +198,11 @@ const TEXT_OP: Readonly<Record<ExportFormat, TextOp | null>> = {
 	text: "text",
 	tables: "tables",
 	reflow: "reflow",
+	// The image formats are the raster chunk's, not the text chunk's.
+	png: null,
+	jpg: null,
+	tiff: null,
+	webp: null,
 };
 
 /**
@@ -180,12 +246,15 @@ export interface ExportDeps {
 	loadText?: () => Promise<TextWasm>;
 	/** Load the HTML chunk. */
 	loadHtml?: () => Promise<HtmlWasm>;
+	/** Load the raster chunk. */
+	loadRaster?: () => Promise<RasterWasm>;
 }
 
 /** The default loaders: the chunks the page serves. */
 const DEFAULT_DEPS: Required<ExportDeps> = {
 	loadText: () => loadTextChunk(),
 	loadHtml: () => loadHtmlWasm(),
+	loadRaster: () => loadRasterWasm(),
 };
 
 /**
@@ -218,6 +287,18 @@ export async function exportDocument(
 			kind: output.kind,
 			bytes: output.bytes,
 		}));
+	}
+
+	const raster = RASTER_FORMAT[request.format];
+	if (raster !== undefined) {
+		const wasm = await loaders.loadRaster();
+		const rendered = renderPages(wasm, {
+			bytes: request.bytes,
+			name: request.name,
+			format: raster,
+			...(request.pages === undefined ? {} : { pages: request.pages }),
+		});
+		return [{ name: rendered.name, kind: "file", bytes: rendered.bytes }];
 	}
 
 	if (request.format === "html") {

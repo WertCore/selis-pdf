@@ -49,6 +49,8 @@ export type IconName =
 	| "split"
 	| "accessibility"
 	| "attachment"
+	| "measure"
+	| "sign"
 	| "properties"
 	| "shield"
 	| "watermark"
@@ -115,6 +117,8 @@ const PATHS: Readonly<Record<IconName, string>> = {
 		"M12 4.5a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2M6.5 8.5h11M12 8.5v5m0 0-2.5 6M12 13.5l2.5 6",
 	attachment:
 		"M9 12.5 15.5 6a2.1 2.1 0 0 1 3 3L12 15.5a3.5 3.5 0 0 1-5-5L14.5 3a4.5 4.5 0 0 1 6.4 6.4L13 17.3",
+	measure: "M3.5 14.5 14.5 3.5l6 6-11 11zM7 11l2 2M10 8l2 2M4.5 20.5h15",
+	sign: "M4 16.5c3.5 0 4.5-9 8-9 2.5 0 1 7 3.5 7 1.5 0 2.5-3 4.5-3M4.5 20.5h15",
 	properties: "M5 7h14M5 12h14M5 17h14M9 5.5v3M15 10.5v3M11 15.5v3",
 	shield: "M12 3.5 19 6v6c0 4.2-2.9 7.4-7 8.5-4.1-1.1-7-4.3-7-8.5V6zM9 12l2.2 2.2L15.5 10",
 	watermark: "M4 5.5h16v13H4zM7.5 15 16.5 8.5",

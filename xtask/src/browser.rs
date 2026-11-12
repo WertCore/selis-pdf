@@ -7304,6 +7304,26 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err(format!("the pages were not kept: {kept:?}"));
     }
 
+    // The measure tool and the signature.
+    let tools = report
+        .get("tools")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no tools leg (tools = None)".to_string())?;
+    let measured = tools.get("measured").and_then(Json::as_str).unwrap_or("");
+    if !measured.contains("pt") || !measured.contains("mm") {
+        return Err(format!("the measurement said nothing about the page: {measured:?}"));
+    }
+    if tools.get("overlay").and_then(Json::as_u64).unwrap_or(0) < 1 {
+        return Err("the measurement was not drawn on the page".into());
+    }
+    let signed = tools.get("signed").and_then(Json::as_str).unwrap_or("");
+    if !signed.contains("Signed") {
+        return Err(format!("the signature was not placed: {signed:?}"));
+    }
+    if tools.get("carriesTheSignature").and_then(Json::as_bool) != Some(true) {
+        return Err("the signature is not in the produced file".into());
+    }
+
     // The inline editor must BE the line it is over.
     let inline = report
         .get("inline")
@@ -7445,6 +7465,17 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
             "the editor offered {formats} export formats; it should offer the whole set"
         ));
     }
+    // A PNG is a PNG: it starts with the four bytes 89 50 4E 47.
+    let png_header = export
+        .get("pngHeader")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !png_header.starts_with("\u{89}PNG") && !png_header.contains("PNG") {
+        return Err(format!(
+            "the PNG export is not a PNG (it starts {png_header:?})"
+        ));
+    }
+
     // A Word document and an Excel workbook are ZIP containers, so they start
     // with "PK". A file that does not is not what the button said it was.
     let word_header = export

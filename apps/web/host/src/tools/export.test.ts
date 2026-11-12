@@ -11,7 +11,7 @@
  * would silently break if a format were renamed on one side of it.
  */
 import { describe, expect, it } from "vitest";
-import { EXPORT_FORMATS, exportFormat, textOpFor } from "./export.js";
+import { EXPORT_FORMATS, exportFormat, rasterFormatFor, textOpFor } from "./export.js";
 
 describe("the export formats", () => {
 	it("covers the formats the engine can write", () => {
@@ -24,6 +24,10 @@ describe("the export formats", () => {
 		expect(ids).toContain("text");
 		expect(ids).toContain("tables");
 		expect(ids).toContain("reflow");
+		expect(ids).toContain("png");
+		expect(ids).toContain("jpg");
+		expect(ids).toContain("tiff");
+		expect(ids).toContain("webp");
 	});
 
 	it("names every format and says what it is", () => {
@@ -58,7 +62,18 @@ describe("the export formats", () => {
 	it("gives every format a writer", () => {
 		for (const format of EXPORT_FORMATS) {
 			const op = textOpFor(format.id);
-			expect(op !== null || format.id === "html", format.id).toBe(true);
+			expect(
+				op !== null || format.id === "html" || rasterFormatFor(format.id) !== null,
+				format.id,
+			).toBe(true);
 		}
+	});
+
+	it("sends the image formats to the raster chunk", () => {
+		expect(rasterFormatFor("png")).toBe("png");
+		expect(rasterFormatFor("jpg")).toBe("jpg");
+		expect(rasterFormatFor("tiff")).toBe("tiff");
+		expect(rasterFormatFor("webp")).toBe("webp");
+		expect(rasterFormatFor("word")).toBeNull();
 	});
 });

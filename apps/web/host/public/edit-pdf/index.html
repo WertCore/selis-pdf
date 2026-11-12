@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-HLjshyBLfO7tZpg6iiqfUyvyAwA+j//9725zTZY2mDAq2OZFDwvgCtxEaL+DRrB7"
+			integrity="sha384-iSBQVXMfG/nJ2TtKa8G8C2UljPuRxIhucrwVm5HM3B+Jh55AARIDUSS/Z00jBzSV"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -406,6 +406,24 @@
 						</button>
 						<button
 							type="button"
+							class="selis-editor-tool"
+							data-tool="measure"
+							data-icon="measure"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Measure</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-tool="sign"
+							data-icon="sign"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Sign</span>
+						</button>
+						<button
+							type="button"
 							class="selis-editor-tool selis-editor-tool--danger"
 							data-tool="redact"
 							data-icon="redact"
@@ -740,6 +758,14 @@
 						<button
 							type="button"
 							class="selis-editor-tool"
+							data-action="section:protect"
+							data-icon="lock"
+						>
+							<span class="selis-editor-tool__label">Password</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
 							data-action="report:fingerprint"
 							data-icon="check"
 						>
@@ -977,6 +1003,55 @@
 							</button>
 						</div>
 						<input type="file" id="selis-editor-attachment-input" hidden />
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-protect"
+					>
+						<summary>Password</summary>
+						<p class="selis-editor-hint">
+							Put a password on the document, or take one off. The password
+							is never sent anywhere: it is used here, on this device, and
+							the browser holds it in memory only while this tab is open.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-password">Open password</label>
+							<input
+								id="selis-editor-password"
+								type="password"
+								autocomplete="new-password"
+								spellcheck="false"
+							/>
+							<label for="selis-editor-owner-password">Owner password</label>
+							<input
+								id="selis-editor-owner-password"
+								type="password"
+								autocomplete="new-password"
+								spellcheck="false"
+							/>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-protect-apply">
+								Protect it
+							</button>
+							<button type="button" id="selis-editor-unlock-apply" disabled>
+								Take the password off
+							</button>
+						</div>
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-sign"
+					>
+						<summary>Signature</summary>
+						<p class="selis-editor-hint">
+							Draw your signature on the page, where you want it to be. It
+							is stamped onto the page as part of the document's own
+							drawing — it is not a cryptographic signature, and it does not
+							prove who drew it.
+						</p>
 					</details>
 
 					<details class="selis-editor-details" id="selis-editor-section-size">
