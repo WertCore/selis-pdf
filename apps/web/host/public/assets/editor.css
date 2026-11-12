@@ -412,6 +412,11 @@
 	min-width: 0;
 }
 
+/* A group that is hidden: the View commands are about a document. */
+.selis-editor-group[hidden] {
+	display: none;
+}
+
 .selis-editor-group__buttons {
 	display: flex;
 	align-items: flex-start;
@@ -817,6 +822,220 @@
 	background: color-mix(in srgb, var(--selis-color-accent) 12%, transparent);
 	pointer-events: none;
 	z-index: var(--selis-z-panel);
+}
+
+/*
+ * The command palette.
+ *
+ * Every command in the workspace is a button, and the ribbon's six tabs and
+ * the inspector's panels put a lot of them a long way from each other. A
+ * box the reader can type into reaches all of them in one place, which is
+ * what VS Code, Figma and every other tool that has grown past a handful of
+ * commands does.
+ *
+ * The palette is a VIEW over the ribbon: the commands are read out of the
+ * markup, so a command that is in the ribbon is in the palette, with the
+ * same label and the same behaviour, and a new command needs no second
+ * list to be kept in step.
+ */
+.selis-editor-palette {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	max-width: 560px;
+	width: calc(100% - 32px);
+	margin-top: 12vh;
+}
+
+.selis-editor-palette::backdrop {
+	background: rgb(15 23 32 / 0.45);
+}
+
+.selis-editor-palette__box {
+	display: flex;
+	flex-direction: column;
+	max-height: 60vh;
+	overflow: hidden;
+	border-radius: var(--selis-radius-lg);
+	background: var(--selis-color-bg-raised);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	box-shadow: 0 18px 48px rgb(15 23 32 / 0.28);
+}
+
+.selis-editor-palette__field {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	padding: var(--selis-space-4);
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
+}
+
+.selis-editor-palette__field input {
+	flex: 1;
+	min-width: 0;
+	border: 0;
+	background: transparent;
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: var(--selis-text-lg);
+}
+
+.selis-editor-palette__field input:focus {
+	outline: none;
+}
+
+.selis-editor-palette__hint {
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-xs);
+	white-space: nowrap;
+}
+
+.selis-editor-palette__list {
+	list-style: none;
+	margin: 0;
+	padding: var(--selis-space-2);
+	overflow-y: auto;
+}
+
+.selis-editor-palette__item {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-3);
+	width: 100%;
+	padding: var(--selis-space-2) var(--selis-space-3);
+	border: 0;
+	border-radius: var(--selis-radius-sm);
+	background: transparent;
+	color: var(--selis-color-fg);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.selis-editor-palette__item[aria-selected="true"] {
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-fg);
+}
+
+/* The ribbon's group, so the reader knows WHERE the command lives. */
+.selis-editor-palette__where {
+	margin-left: auto;
+	color: var(--selis-color-fg-subtle);
+	font-size: var(--selis-text-xs);
+}
+
+.selis-editor-palette__empty {
+	padding: var(--selis-space-5);
+	color: var(--selis-color-fg-muted);
+	text-align: center;
+}
+
+/* A list of things the document carries: the files inside it. */
+.selis-editor-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.selis-editor-list li {
+	padding: var(--selis-space-1) 0;
+	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
+	font-size: var(--selis-text-sm);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.selis-editor-list li:last-child {
+	border-bottom: 0;
+}
+
+/* ── the status bar ─────────────────────────────────────────────────────────── */
+
+/*
+ * The band that says where you are and how big the document is drawn.
+ *
+ * It was the one band of the shell with no styles at all, which is why the
+ * zoom controls read as a row of loose buttons at the bottom of the page
+ * rather than as part of the workspace.
+ */
+.selis-editor-statusbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--selis-space-4);
+	flex: none;
+	min-height: 36px;
+	padding: 0 var(--selis-space-5);
+	background: var(--selis-color-bg-raised);
+	border-top: var(--selis-border-hairline) solid var(--selis-color-border);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+}
+
+.selis-editor-status {
+	margin: 0;
+	/* The status line must never push the band taller than it is. */
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.selis-editor-status[data-kind="error"] {
+	color: var(--selis-color-danger-fg);
+}
+
+.selis-editor-statusbar__right {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-1);
+	flex: none;
+}
+
+/* The zoom group: hidden while there is no document to zoom. */
+.selis-editor-statusbar__view {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-1);
+}
+
+/*
+ * The `hidden` attribute must win.
+ *
+ * A class that sets `display` beats the user agent's `[hidden] { display:
+ * none }`, so a hidden element with a flex rule is still on the screen. The
+ * same rule is written out for every element the workspace hides.
+ */
+.selis-editor-statusbar__view[hidden] {
+	display: none;
+}
+
+.selis-editor-statusbar__rule {
+	width: 1px;
+	height: 16px;
+	margin: 0 var(--selis-space-2);
+	background: var(--selis-color-border);
+}
+
+.selis-editor-statusbar__pageno {
+	font-variant-numeric: tabular-nums;
+}
+
+/* The zoom level is a button, because it resets the zoom to 100%. */
+.selis-editor-statusbar__zoom {
+	min-width: 3.5em;
+	padding: var(--selis-space-1) var(--selis-space-2);
+	border: 0;
+	border-radius: var(--selis-radius-sm);
+	background: transparent;
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+	cursor: pointer;
+}
+
+.selis-editor-statusbar__zoom:hover {
+	background: var(--selis-color-bg-inset);
 }
 
 /* ── the inspector ───────────────────────────────────────────────────────── */

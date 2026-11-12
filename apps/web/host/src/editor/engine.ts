@@ -138,6 +138,36 @@ export interface SearchResults {
 }
 
 /** A page's text layer. */
+/**
+ * One node of the document's tag structure.
+ *
+ * The engine reports what the document says about itself; it never invents
+ * a role, so a node with no title is a node with no title.
+ */
+export interface StructureNode {
+	/** The node's role, as the document states it ("H1", "Figure", ...). */
+	readonly role: string;
+	/** The node's title, when the document carries one. */
+	readonly title?: string;
+	/** The node's alternative text, when the document carries one. */
+	readonly alt?: string;
+	/** The node's children, in reading order. */
+	readonly children: readonly StructureNode[];
+}
+
+/**
+ * What the document says about its own structure.
+ *
+ * An untagged document answers with `tagged: false` and NO root: "there is
+ * nothing here" and "there is nothing navigable in here" are different
+ * facts, and a shell that renders both as "no headings" has claimed a
+ * measurement it never made.
+ */
+export interface Structure {
+	readonly tagged: boolean;
+	readonly root?: StructureNode;
+}
+
 export interface PageTextLayer {
 	/** The zero-based page number. */
 	readonly page: number;
@@ -207,6 +237,36 @@ function numberField(value: Record<string, unknown>, key: string): number {
  * One per page: the editor keeps a single document open and closes it when
  * the document changes, so the instance itself lives as long as the tab.
  */
+/**
+ * Read one structure node, and its children.
+ *
+ * The tree is walked with a depth bound: a document is untrusted input, and
+ * a structure tree that points at itself must not spin the reader.
+ */
+function readStructureNode(raw: Record<string, unknown>, depth: number): StructureNode {
+	const role = typeof raw.role === "string" ? raw.role : "";
+	const node: {
+		role: string;
+		title?: string;
+		alt?: string;
+		children: StructureNode[];
+	} = { role, children: [] };
+	if (typeof raw.title === "string") {
+		node.title = raw.title;
+	}
+	if (typeof raw.alt === "string") {
+		node.alt = raw.alt;
+	}
+	if (depth < 64 && Array.isArray(raw.children)) {
+		for (const child of raw.children) {
+			if (isRecord(child)) {
+				node.children.push(readStructureNode(child, depth + 1));
+			}
+		}
+	}
+	return node;
+}
+
 export class EngineClient {
 	readonly #exports: EngineExports;
 	#nextId = 1;
@@ -394,6 +454,28 @@ export class EngineClient {
 			pixels: attachment,
 			ctm: { a, b, c, d, e, f },
 		};
+	}
+
+	/**
+	 * Read the document's tag structure.
+	 *
+	 * A READ-ONLY report: the engine can read a document's structure but it
+	 * cannot write one, so this says what the document carries rather than
+	 * changing anything.
+	 */
+	structure(doc: number): Structure {
+		const value = this.#value({ op: "structure", doc });
+		if (!isRecord(value)) {
+			throw new EngineError("the engine's structure reply is malformed");
+		}
+		if (value.tagged !== true) {
+			return { tagged: false };
+		}
+		const root = value.root;
+		if (!isRecord(root)) {
+			return { tagged: false };
+		}
+		return { tagged: true, root: readStructureNode(root, 0) };
 	}
 
 	/** Read one page's text layer. */

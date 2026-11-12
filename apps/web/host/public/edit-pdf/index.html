@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-zW3JvW8BiM833Cv1wc3sPctkAWE/DHQRC2SLxe/adTHFr7v2P6tjVf5wrEJOPmId"
+			integrity="sha384-HLjshyBLfO7tZpg6iiqfUyvyAwA+j//9725zTZY2mDAq2OZFDwvgCtxEaL+DRrB7"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -98,6 +98,14 @@
 			</div>
 
 			<div class="selis-editor-bar__right">
+				<button
+					type="button"
+					id="selis-editor-palette-button"
+					class="selis-editor-iconbtn"
+					title="Every command (Ctrl+K)"
+					aria-label="Every command"
+					data-icon="command"
+				></button>
 				<button
 					type="button"
 					id="selis-undo"
@@ -174,9 +182,6 @@
 					data-label="Download"
 					disabled
 				></button>
-				<span class="selis-editor-bar__pill" title="Nothing leaves this device.">
-					No upload
-				</span>
 			</div>
 		</header>
 
@@ -326,7 +331,7 @@
 					</div>
 					<p class="selis-editor-group__label">Structure</p>
 				</div>
-				<div class="selis-editor-group">
+				<div class="selis-editor-group" id="selis-editor-view-group" hidden>
 					<div class="selis-editor-group__buttons">
 						<button
 							type="button"
@@ -575,6 +580,14 @@
 						>
 							<span class="selis-editor-tool__label">Several per sheet</span>
 						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:split"
+							data-icon="split"
+						>
+							<span class="selis-editor-tool__label">Keep these pages</span>
+						</button>
 					</div>
 					<p class="selis-editor-group__label">Layout</p>
 				</div>
@@ -634,6 +647,22 @@
 							data-icon="bates"
 						>
 							<span class="selis-editor-tool__label">Bates numbers</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:accessibility"
+							data-icon="accessibility"
+						>
+							<span class="selis-editor-tool__label">Accessibility</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-action="section:attachments"
+							data-icon="attachment"
+						>
+							<span class="selis-editor-tool__label">Attachments</span>
 						</button>
 					</div>
 					<p class="selis-editor-group__label">The file</p>
@@ -878,6 +907,76 @@
 								Save them
 							</button>
 						</div>
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-split"
+					>
+						<summary>Keep these pages</summary>
+						<p class="selis-editor-hint">
+							Take a run of pages out of the document and leave the rest
+							behind. The pages you keep become the document; the ones you
+							drop are gone from it.
+						</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-split-from">From page</label>
+							<input id="selis-editor-split-from" type="number" min="1" step="1" value="1" />
+							<label for="selis-editor-split-to">To page</label>
+							<input id="selis-editor-split-to" type="number" min="1" step="1" value="1" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-split-apply">
+								Keep those pages
+							</button>
+						</div>
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-accessibility"
+					>
+						<summary>Accessibility</summary>
+						<p class="selis-editor-hint">
+							What the document says about itself: whether it is tagged,
+							and what a screen reader would find in it. The engine can read
+							a document's structure but it cannot write one, so this is a
+							report and not a repair.
+						</p>
+						<div id="selis-editor-accessibility" class="selis-editor-report">
+							<p class="selis-editor-hint">Check the document to see how it reads.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-accessibility-check">
+								Check it
+							</button>
+						</div>
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-attachments"
+					>
+						<summary>Attachments</summary>
+						<p class="selis-editor-hint">
+							Files carried inside the document. They travel with it, and
+							they are read on this device like everything else.
+						</p>
+						<div id="selis-editor-attachments" class="selis-editor-report">
+							<p class="selis-editor-hint">Read the attachments to see what is there.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-attachments-read">
+								Read them
+							</button>
+							<button type="button" id="selis-editor-attachments-add">
+								Attach a file
+							</button>
+							<button type="button" id="selis-editor-attachments-clear" disabled>
+								Remove them
+							</button>
+						</div>
+						<input type="file" id="selis-editor-attachment-input" hidden />
 					</details>
 
 					<details class="selis-editor-details" id="selis-editor-section-size">
@@ -1186,6 +1285,7 @@
 			<div class="selis-editor-statusbar__right">
 				<span id="selis-page-indicator" class="selis-editor-statusbar__pageno" hidden></span>
 				<span class="selis-editor-statusbar__rule" aria-hidden="true"></span>
+				<div class="selis-editor-statusbar__view" id="selis-editor-zoom-bar" hidden>
 				<button
 					type="button"
 					id="selis-editor-zoom-out"
@@ -1226,8 +1326,35 @@
 					aria-label="Fit the page"
 					data-icon="fit-page"
 				></button>
+				</div>
 			</div>
 		</footer>
+
+		<!--
+			The command palette: every command in the workspace, in one box.
+			It is a VIEW over the ribbon - the commands are read out of the
+			markup when the palette opens - so a command that is in the ribbon
+			is in the palette, with the same label and the same behaviour.
+		-->
+		<dialog id="selis-editor-palette" class="selis-editor-palette">
+			<div class="selis-editor-palette__box">
+				<div class="selis-editor-palette__field">
+					<span data-icon="search" aria-hidden="true"></span>
+					<label class="selis-visually-hidden" for="selis-editor-palette-input">
+						Type a command
+					</label>
+					<input
+						id="selis-editor-palette-input"
+						type="text"
+						placeholder="Type a command"
+						autocomplete="off"
+						spellcheck="false"
+					/>
+					<span class="selis-editor-palette__hint">Enter runs it</span>
+				</div>
+				<ul id="selis-editor-palette-list" class="selis-editor-palette__list"></ul>
+			</div>
+		</dialog>
 
 		<noscript>
 			<p class="selis-editor-status">

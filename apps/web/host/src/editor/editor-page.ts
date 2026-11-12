@@ -48,6 +48,7 @@ import {
 import { hasPdfHeader } from "../tools/inputs.js";
 import { type ToolsWasm, loadTools, runTool } from "../tools/protocol.js";
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
+import { type AccessibilityReport, reportStructure } from "./accessibility.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
@@ -81,6 +82,12 @@ import {
 	textBoxOptions,
 	watermarkOptions,
 } from "./operations.js";
+import {
+	type CommandSource,
+	type PaletteCommand,
+	filterCommands,
+	readCommands,
+} from "./palette.js";
 import {
 	type PageGeometry,
 	type Rect,
@@ -302,6 +309,12 @@ const dom = {
 	searchNext: el<HTMLButtonElement>("selis-editor-search-next"),
 	tabs: el<HTMLDivElement>("selis-editor-tabs"),
 	ribbon: el<HTMLDivElement>("selis-editor-ribbon"),
+	palette: el<HTMLDialogElement>("selis-editor-palette"),
+	paletteButton: el<HTMLButtonElement>("selis-editor-palette-button"),
+	paletteInput: el<HTMLInputElement>("selis-editor-palette-input"),
+	paletteList: el<HTMLUListElement>("selis-editor-palette-list"),
+	zoomBar: el<HTMLDivElement>("selis-editor-zoom-bar"),
+	viewGroup: el<HTMLDivElement>("selis-editor-view-group"),
 	zoomOut: el<HTMLButtonElement>("selis-editor-zoom-out"),
 	zoomIn: el<HTMLButtonElement>("selis-editor-zoom-in"),
 	zoomLevel: el<HTMLButtonElement>("selis-editor-zoom-level"),
@@ -319,6 +332,16 @@ const dom = {
 	compressApply: el<HTMLButtonElement>("selis-editor-compress-apply"),
 	nupApply: el<HTMLButtonElement>("selis-editor-nup-apply"),
 	exportGroup: el<HTMLDivElement>("selis-editor-export"),
+	accessibility: el<HTMLDivElement>("selis-editor-accessibility"),
+	accessibilityCheck: el<HTMLButtonElement>("selis-editor-accessibility-check"),
+	attachments: el<HTMLDivElement>("selis-editor-attachments"),
+	attachmentsRead: el<HTMLButtonElement>("selis-editor-attachments-read"),
+	attachmentsAdd: el<HTMLButtonElement>("selis-editor-attachments-add"),
+	attachmentsClear: el<HTMLButtonElement>("selis-editor-attachments-clear"),
+	attachmentInput: el<HTMLInputElement>("selis-editor-attachment-input"),
+	splitFrom: el<HTMLInputElement>("selis-editor-split-from"),
+	splitTo: el<HTMLInputElement>("selis-editor-split-to"),
+	splitApply: el<HTMLButtonElement>("selis-editor-split-apply"),
 	theme: el<HTMLButtonElement>("selis-theme-toggle"),
 };
 
@@ -645,6 +668,7 @@ function renderDocument(client: EngineClient): void {
 	// out that they have not opened a file yet.
 	dom.empty.hidden = state.pages > 0;
 	dom.surface.classList.toggle("is-empty", state.pages === 0);
+	renderDocumentState();
 }
 
 /**
@@ -692,6 +716,20 @@ function renderPageList(): void {
 	dom.pageIndicator.textContent = `Page ${state.page + 1} of ${state.pages}`;
 	dom.pageIndicator.hidden = state.pages === 0;
 	dom.pageCount.textContent = state.pages === 0 ? "" : `${state.pages}`;
+}
+
+/**
+ * Reflect whether there is a document to work on.
+ *
+ * The zoom controls are about a document: there is nothing to zoom, nothing
+ * to fit to the width and nothing to fit to the page while the workspace is
+ * empty. Showing them anyway is noise, and a control that cannot do
+ * anything is a control that reads as broken.
+ */
+function renderDocumentState(): void {
+	const empty = state.pages === 0;
+	dom.zoomBar.hidden = empty;
+	dom.viewGroup.hidden = empty;
 }
 
 /** Reflect the history's state in the undo and redo buttons, and in the panel. */
@@ -2492,6 +2530,381 @@ async function pickImage(file: File): Promise<void> {
 	setStatus(`${file.name} picked — drag a rectangle on the page to place it.`);
 }
 
+/**
+ * The command palette.
+ *
+ * The commands are read out of the ribbon when the palette opens, so the
+ * two cannot drift: a command that is in the ribbon is in the palette, and
+ * running a command from the palette runs the ribbon's own button.
+ */
+interface PaletteState {
+	/** Every command the ribbon carries. */
+	readonly commands: readonly PaletteCommand[];
+	/** The commands that match what has been typed. */
+	shown: readonly PaletteCommand[];
+	/** Which of them is selected. */
+	selected: number;
+}
+
+let palette: PaletteState | null = null;
+
+/** The ribbon's buttons, as the palette sees them. */
+function paletteSources(): CommandSource[] {
+	const sources: CommandSource[] = [];
+	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>("button[data-action]")) {
+		const action = button.dataset.action ?? "";
+		const group = button.closest(".selis-editor-group");
+		sources.push({
+			label: button.getAttribute("aria-label") ?? button.textContent ?? "",
+			where: group?.querySelector(".selis-editor-group__label")?.textContent ?? "",
+			icon: button.dataset.icon ?? null,
+			action,
+		});
+	}
+	return sources;
+}
+
+/** The ribbon's button a command stands for. */
+function paletteButtonFor(action: string): HTMLButtonElement | null {
+	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>("button[data-action]")) {
+		if (button.dataset.action === action) {
+			return button;
+		}
+	}
+	return null;
+}
+
+/** Draw the palette's list. */
+function renderPalette(): void {
+	if (palette === null) {
+		return;
+	}
+	dom.paletteList.replaceChildren();
+	if (palette.shown.length === 0) {
+		const empty = document.createElement("li");
+		empty.className = "selis-editor-palette__empty";
+		empty.textContent = "No command matches that.";
+		dom.paletteList.appendChild(empty);
+		return;
+	}
+	palette.shown.forEach((command, index) => {
+		const item = document.createElement("li");
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "selis-editor-palette__item";
+		button.setAttribute("aria-selected", index === palette?.selected ? "true" : "false");
+		if (command.icon !== null) {
+			const mark = document.createElement("span");
+			mark.dataset.icon = command.icon;
+			mark.setAttribute("aria-hidden", "true");
+			button.appendChild(mark);
+		}
+		const label = document.createElement("span");
+		label.textContent = command.label;
+		button.appendChild(label);
+		if (command.where !== "") {
+			const where = document.createElement("span");
+			where.className = "selis-editor-palette__where";
+			where.textContent = command.where;
+			button.appendChild(where);
+		}
+		button.addEventListener("click", () => {
+			runPaletteCommand(command);
+		});
+		item.appendChild(button);
+		dom.paletteList.appendChild(item);
+	});
+	hydrateIcons();
+}
+
+/** Run a command from the palette: the ribbon's own button, pressed. */
+function runPaletteCommand(command: PaletteCommand): void {
+	const button = paletteButtonFor(command.action);
+	closePalette();
+	if (button === null) {
+		setStatus("That command is not there any more.");
+		return;
+	}
+	button.click();
+}
+
+/** Open the palette. */
+function openPalette(): void {
+	const commands = readCommands(paletteSources());
+	palette = { commands, shown: commands, selected: 0 };
+	renderPalette();
+	if (!dom.palette.open) {
+		dom.palette.showModal();
+	}
+	dom.paletteInput.value = "";
+	dom.paletteInput.focus();
+}
+
+/** Close the palette. */
+function closePalette(): void {
+	palette = null;
+	if (dom.palette.open) {
+		dom.palette.close();
+	}
+}
+
+/** Filter the palette's list by what has been typed. */
+function filterPalette(): void {
+	if (palette === null) {
+		return;
+	}
+	palette.shown = filterCommands(palette.commands, dom.paletteInput.value);
+	palette.selected = 0;
+	renderPalette();
+}
+
+/** Move the palette's selection. */
+function movePalette(delta: number): void {
+	if (palette === null || palette.shown.length === 0) {
+		return;
+	}
+	const count = palette.shown.length;
+	palette.selected = (palette.selected + delta + count) % count;
+	renderPalette();
+	const items = dom.paletteList.querySelectorAll<HTMLButtonElement>(".selis-editor-palette__item");
+	items[palette.selected]?.scrollIntoView({ block: "nearest" });
+}
+
+/**
+ * The accessibility report.
+ *
+ * A READ-ONLY report: the engine can read a document's tag structure but it
+ * cannot write one, so this says what the document carries rather than
+ * changing anything. The engine's own rule is kept: an untagged document
+ * is untagged, not "a document with no headings".
+ */
+async function checkAccessibility(): Promise<void> {
+	const client = await engine();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Reading the document's structure…");
+	let handle: number | null = null;
+	try {
+		const opened = client.open(bytes);
+		handle = opened.doc;
+		const report = reportStructure(client.structure(handle));
+		renderAccessibility(report);
+		setStatus(
+			report.tagged
+				? "Read the document's structure."
+				: "This document is not tagged: a screen reader will read it as one long flow.",
+		);
+	} catch (error) {
+		setStatus(`The structure could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		if (handle !== null) {
+			client.close(handle);
+		}
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Draw the accessibility report. */
+function renderAccessibility(report: AccessibilityReport): void {
+	dom.accessibility.replaceChildren();
+	if (!report.tagged) {
+		const line = document.createElement("p");
+		line.className = "selis-editor-hint";
+		line.textContent =
+			"This document is not tagged. A screen reader reads it as one long flow of text, with no headings, no lists and no descriptions for its images.";
+		dom.accessibility.appendChild(line);
+		return;
+	}
+	const summary = document.createElement("p");
+	summary.className = "selis-editor-hint";
+	summary.textContent = `This document is tagged: ${report.headings} heading(s), ${report.images} image(s) and ${report.links} link(s).`;
+	dom.accessibility.appendChild(summary);
+	if (report.imagesWithoutAlt > 0) {
+		const missing = document.createElement("p");
+		missing.className = "selis-editor-hint";
+		missing.textContent = `${report.imagesWithoutAlt} image(s) carry no alternative text${report.undescribed.length > 0 ? `: ${report.undescribed.join(", ")}` : ""}.`;
+		dom.accessibility.appendChild(missing);
+	}
+}
+
+/**
+ * The document's attachments.
+ *
+ * The engine's `attachments` operation EXTRACTS the files, so reading the
+ * list costs the extraction; the names are what the panel shows, and the
+ * bytes are never written anywhere.
+ */
+async function readAttachments(): Promise<void> {
+	const chunk = await tools();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Reading the attachments…");
+	try {
+		const result = runTool(chunk, {
+			op: "attachments",
+			files: [{ name: state.name, bytes }],
+		});
+		const names = result.outputs.map((output) => output.name);
+		renderAttachments(names);
+		dom.attachmentsClear.disabled = names.length === 0;
+		setStatus(
+			names.length === 0
+				? "This document carries no files."
+				: `This document carries ${names.length} file(s).`,
+		);
+	} catch (error) {
+		renderAttachments([]);
+		dom.attachmentsClear.disabled = true;
+		setStatus(`This document carries no files: ${messageOf(error)}`);
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Draw the attachments list. */
+function renderAttachments(names: readonly string[]): void {
+	dom.attachments.replaceChildren();
+	if (names.length === 0) {
+		const line = document.createElement("p");
+		line.className = "selis-editor-hint";
+		line.textContent = "This document carries no files.";
+		dom.attachments.appendChild(line);
+		return;
+	}
+	const list = document.createElement("ul");
+	list.className = "selis-editor-list";
+	for (const name of names) {
+		const item = document.createElement("li");
+		item.textContent = name;
+		list.appendChild(item);
+	}
+	dom.attachments.appendChild(list);
+}
+
+/** Carry a file inside the document. */
+async function attachFile(file: File): Promise<void> {
+	const chunk = await tools();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Attaching the file…");
+	try {
+		const carried = new Uint8Array(await file.arrayBuffer());
+		const result = runTool(chunk, {
+			op: "attach",
+			files: [
+				{ name: state.name, bytes },
+				{ name: file.name === "" ? "attachment.bin" : file.name, bytes: carried },
+			],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Attached ${file.name}`);
+		setStatus(`${file.name} now travels with the document.`);
+	} catch (error) {
+		setStatus(`The file could not be attached: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Take every file out of the document. */
+async function clearAttachments(): Promise<void> {
+	const chunk = await tools();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Removing the attachments…");
+	try {
+		const result = runTool(chunk, {
+			op: "detach",
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, "Removed the attachments");
+		renderAttachments([]);
+		dom.attachmentsClear.disabled = true;
+	} catch (error) {
+		setStatus(`The attachments could not be removed: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * Keep a run of pages and drop the rest.
+ *
+ * The engine's `split` operation takes a page range and produces the
+ * document that carries only those pages, so "keep these pages" is that
+ * operation with the range the reader typed.
+ */
+async function keepPages(): Promise<void> {
+	const chunk = await tools();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	const from = Number(dom.splitFrom.value);
+	const to = Number(dom.splitTo.value);
+	if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from) {
+		setStatus("Choose the pages to keep: a first page and a last page.", "error");
+		return;
+	}
+	if (to > state.pages) {
+		setStatus(`This document has ${state.pages} page(s).`, "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Keeping those pages…");
+	try {
+		const result = runTool(chunk, {
+			op: "split",
+			// The engine's pages are zero-based; the editor's are one-based.
+			options: { mode: "range", from: from - 1, to: to - 1 },
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Kept pages ${from} to ${to}`);
+	} catch (error) {
+		setStatus(`Those pages could not be kept: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
 // ── the document's own properties ────────────────────────────────────────────
 
 /** One field of the document's form, as the engine reported it. */
@@ -3200,6 +3613,78 @@ function wire(): void {
 		void redo();
 	});
 	dom.download.addEventListener("click", download);
+
+	// The panels that read and change the document.
+	dom.accessibilityCheck.addEventListener("click", () => {
+		void checkAccessibility();
+	});
+	dom.attachmentsRead.addEventListener("click", () => {
+		void readAttachments();
+	});
+	dom.attachmentsAdd.addEventListener("click", () => {
+		dom.attachmentInput.click();
+	});
+	dom.attachmentInput.addEventListener("change", () => {
+		const file = dom.attachmentInput.files?.[0];
+		if (file !== undefined) {
+			void attachFile(file);
+		}
+		dom.attachmentInput.value = "";
+	});
+	dom.attachmentsClear.addEventListener("click", () => {
+		void clearAttachments();
+	});
+	dom.splitApply.addEventListener("click", () => {
+		void keepPages();
+	});
+
+	// The command palette: the button, the shortcut, and the keys.
+	dom.paletteButton.addEventListener("click", () => {
+		openPalette();
+	});
+	dom.paletteInput.addEventListener("input", () => {
+		filterPalette();
+	});
+	dom.paletteInput.addEventListener("keydown", (event) => {
+		if (event.key === "ArrowDown") {
+			event.preventDefault();
+			movePalette(1);
+			return;
+		}
+		if (event.key === "ArrowUp") {
+			event.preventDefault();
+			movePalette(-1);
+			return;
+		}
+		if (event.key === "Enter") {
+			event.preventDefault();
+			const command = palette?.shown[palette?.selected ?? 0];
+			if (command !== undefined) {
+				runPaletteCommand(command);
+			}
+		}
+	});
+	dom.palette.addEventListener("close", () => {
+		palette = null;
+	});
+	// The shortcut is the one every other tool uses: Ctrl+K (Cmd+K on a
+	// Mac). The palette is a VIEW over the ribbon, so it must never be a
+	// dead key - the shortcut opens it whatever the reader is doing.
+	document.addEventListener("keydown", (event) => {
+		if (event.key.toLowerCase() !== "k" || !(event.ctrlKey || event.metaKey)) {
+			return;
+		}
+		const target = event.target;
+		if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+			return;
+		}
+		event.preventDefault();
+		if (dom.palette.open) {
+			closePalette();
+		} else {
+			openPalette();
+		}
+	});
 
 	// The tool row: what the workspace is armed to do on the page.
 	//

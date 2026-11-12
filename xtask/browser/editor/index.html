@@ -201,6 +201,8 @@
         // The three ways of changing what is ON the page: put new text in it,
         // put an image in it, and take text out of it.
         out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
+        out.palette = await paletteLeg(onlineDoc, onlineWin, "online");
+        out.panels = await panelsLeg(onlineDoc, onlineWin, "online");
         out.placement = await placementLeg(onlineDoc, onlineWin, "online");
         out.inline = await inlineLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
@@ -1176,6 +1178,119 @@
           overTheLine:
             Math.abs(rootBox.top - lineBox.top) < 1 && Math.abs(rootBox.left - lineBox.left) < 1,
           committedOnClickAway: committed,
+        };
+      }
+
+
+      /**
+       * The command palette.
+       *
+       * The palette is a VIEW over the ribbon, so the leg checks that it
+       * really is one: it must offer the ribbon's commands, it must narrow
+       * to what was typed, and running one must open the panel that command
+       * opens.
+       */
+      async function paletteLeg(doc, win, label) {
+        doc.getElementById("selis-editor-palette-button").click();
+        await waitFor(
+          () => doc.getElementById("selis-editor-palette").open,
+          10_000,
+          "the palette to open (" + label + ")",
+        );
+        const all = doc.querySelectorAll(".selis-editor-palette__item").length;
+        const input = doc.getElementById("selis-editor-palette-input");
+        input.value = "watermark";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await waitFor(
+          () =>
+            doc.querySelectorAll(".selis-editor-palette__item").length > 0 &&
+            doc.querySelectorAll(".selis-editor-palette__item").length < all,
+          10_000,
+          "the palette to narrow (" + label + ")",
+        );
+        const narrowed = doc.querySelectorAll(".selis-editor-palette__item").length;
+        const text = doc.querySelector(".selis-editor-palette__item").textContent;
+        // Running the command must open the panel that command opens.
+        doc.querySelector(".selis-editor-palette__item").click();
+        await waitFor(
+          () => !doc.getElementById("selis-editor-palette").open,
+          10_000,
+          "the palette to close (" + label + ")",
+        );
+        const section = doc.getElementById("selis-editor-section-watermark");
+        return {
+          commands: all,
+          narrowed: narrowed,
+          matched: text,
+          ran: section !== null && section.open,
+        };
+      }
+
+      /**
+       * The panels that read and change the document: the accessibility
+       * report, the attachments and "keep these pages".
+       */
+      async function panelsLeg(doc, win, label) {
+        // The accessibility report. The fixture carries no tag tree, so the
+        // honest answer is "not tagged" - and the leg checks that the
+        // report says that rather than claiming headings it never saw.
+        doc.getElementById("selis-editor-accessibility-check").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("tagged");
+          },
+          30_000,
+          "the accessibility report (" + label + ")",
+        );
+        const report = doc.getElementById("selis-editor-accessibility").textContent.trim();
+
+        // The attachments: a file is attached, and it travels.
+        const carried = new File([new Uint8Array([104, 105])], "notes.txt", { type: "text/plain" });
+        const transfer = new DataTransfer();
+        transfer.items.add(carried);
+        const input = doc.getElementById("selis-editor-attachment-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("notes.txt");
+          },
+          30_000,
+          "the file to be attached (" + label + ")",
+        );
+        doc.getElementById("selis-editor-attachments-read").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("carries");
+          },
+          30_000,
+          "the attachments to be read (" + label + ")",
+        );
+        const attachments = doc.getElementById("selis-editor-attachments").textContent.trim();
+
+        // "Keep these pages": the first page of the first page is still
+        // the first page.
+        doc.getElementById("selis-editor-split-from").value = "1";
+        doc.getElementById("selis-editor-split-to").value = "1";
+        doc.getElementById("selis-editor-split-apply").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Kept");
+          },
+          30_000,
+          "the pages to be kept (" + label + ")",
+        );
+        const kept = statusText(doc);
+
+        return {
+          report: report,
+          attachments: attachments,
+          kept: kept,
+          pages: doc.querySelectorAll(".selis-editor-page").length,
         };
       }
 

@@ -26,6 +26,7 @@ export type IconName =
 	| "undo"
 	| "redo"
 	| "search"
+	| "command"
 	| "close"
 	| "check"
 	| "chevron-left"
@@ -45,6 +46,9 @@ export type IconName =
 	| "resize"
 	| "form"
 	| "bookmark"
+	| "split"
+	| "accessibility"
+	| "attachment"
 	| "properties"
 	| "shield"
 	| "watermark"
@@ -85,6 +89,7 @@ const PATHS: Readonly<Record<IconName, string>> = {
 	undo: "M9 8.5 5 12l4 3.5M5 12h8.5a5.5 5.5 0 0 1 0 11H12",
 	redo: "m15 8.5 4 3.5-4 3.5M19 12h-8.5a5.5 5.5 0 0 0 0 11H12",
 	search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14m5 12 4 4",
+	command: "M5.5 7.5 10 12l-4.5 4.5M12.5 17h6",
 	close: "m6 6 12 12M18 6 6 18",
 	check: "m5 12.5 4.5 4.5L19 7.5",
 	"chevron-left": "m14.5 5-7 7 7 7",
@@ -105,6 +110,11 @@ const PATHS: Readonly<Record<IconName, string>> = {
 	resize: "M4.5 9.5v-5h5M19.5 14.5v5h-5M4.5 4.5 10 10m9.5 9.5L14 14",
 	form: "M6 3.5h12v17H6zM9 8h6M9 12h6M9 16h4",
 	bookmark: "M7 4.5h10v16l-5-3.5-5 3.5z",
+	split: "M4 4.5h16v15H4zM12 4.5v15M7 9h2M7 12h2M15 9h2M15 12h2",
+	accessibility:
+		"M12 4.5a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2M6.5 8.5h11M12 8.5v5m0 0-2.5 6M12 13.5l2.5 6",
+	attachment:
+		"M9 12.5 15.5 6a2.1 2.1 0 0 1 3 3L12 15.5a3.5 3.5 0 0 1-5-5L14.5 3a4.5 4.5 0 0 1 6.4 6.4L13 17.3",
 	properties: "M5 7h14M5 12h14M5 17h14M9 5.5v3M15 10.5v3M11 15.5v3",
 	shield: "M12 3.5 19 6v6c0 4.2-2.9 7.4-7 8.5-4.1-1.1-7-4.3-7-8.5V6zM9 12l2.2 2.2L15.5 10",
 	watermark: "M4 5.5h16v13H4zM7.5 15 16.5 8.5",

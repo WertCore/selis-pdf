@@ -7263,6 +7263,47 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("a click over the page's text did not reach the canvas".into());
     }
 
+    // The command palette: a view over the ribbon.
+    let palette = report
+        .get("palette")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no palette leg (palette = None)".to_string())?;
+    let commands = palette.get("commands").and_then(Json::as_u64).unwrap_or(0);
+    if commands < 8 {
+        return Err(format!(
+            "the palette offered {commands} commands; it should offer the whole ribbon"
+        ));
+    }
+    let narrowed = palette.get("narrowed").and_then(Json::as_u64).unwrap_or(0);
+    if narrowed == 0 || narrowed >= commands {
+        return Err("the palette did not narrow to what was typed".into());
+    }
+    if palette.get("ran").and_then(Json::as_bool) != Some(true) {
+        return Err("a command run from the palette did not do what it does in the ribbon".into());
+    }
+
+    // The panels that read and change the document.
+    let panels = report
+        .get("panels")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no panels leg (panels = None)".to_string())?;
+    let report_text = panels.get("report").and_then(Json::as_str).unwrap_or("");
+    if !report_text.contains("tagged") {
+        return Err(format!(
+            "the accessibility report said nothing about the document's tags: {report_text:?}"
+        ));
+    }
+    let attachments = panels.get("attachments").and_then(Json::as_str).unwrap_or("");
+    if !attachments.contains("notes.txt") {
+        return Err(format!(
+            "the attached file is not in the document's list of attachments: {attachments:?}"
+        ));
+    }
+    let kept = panels.get("kept").and_then(Json::as_str).unwrap_or("");
+    if !kept.contains("Kept") {
+        return Err(format!("the pages were not kept: {kept:?}"));
+    }
+
     // The inline editor must BE the line it is over.
     let inline = report
         .get("inline")
