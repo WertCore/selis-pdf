@@ -7356,6 +7356,26 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err(format!("the mark was not removed: {removed:?}"));
     }
 
+    // The session: the document survives a reload, and the app bar says
+    // what there is to do.
+    let session = report
+        .get("session")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no session leg (session = None)".to_string())?;
+    if session.get("openHidden").and_then(Json::as_bool) != Some(true) {
+        return Err("the Open button is still offered while a document is open".into());
+    }
+    if session.get("closeHidden").and_then(Json::as_bool) != Some(false) {
+        return Err("the Close button is missing while a document is open".into());
+    }
+    if session.get("restoredPages").and_then(Json::as_u64).unwrap_or(0) < 1 {
+        return Err("the document did not survive the reload".into());
+    }
+    let restored = session.get("restoredStatus").and_then(Json::as_str).unwrap_or("");
+    if !restored.contains("Restored") {
+        return Err(format!("the reload did not restore the document: {restored:?}"));
+    }
+
     // The inline editor must BE the line it is over.
     let inline = report
         .get("inline")
@@ -7482,6 +7502,23 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if collapsed == 0 || collapsed >= restored {
         return Err("the panel could not be put away and brought back".into());
     }
+
+    // The app bar in its empty state: there is nothing to download and
+    // nothing to close.
+    let empty_bar = face
+        .get("emptyBar")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no app-bar state (emptyBar = None)".to_string())?;
+    if empty_bar.get("downloadHidden").and_then(Json::as_bool) != Some(true) {
+        return Err("the Download button is offered while there is nothing to download".into());
+    }
+    if empty_bar.get("openHidden").and_then(Json::as_bool) != Some(false) {
+        return Err("the Open button is missing while there is no document".into());
+    }
+    if empty_bar.get("closeHidden").and_then(Json::as_bool) != Some(true) {
+        return Err("the Close button is offered while there is no document".into());
+    }
+
 
     let export = report
         .get("export")

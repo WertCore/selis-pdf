@@ -168,6 +168,21 @@
 					data-icon="open"
 					data-label="Open"
 				></button>
+				<!--
+					The Close button takes the Open button's place while a
+					document is open: the two are one button doing the opposite
+					thing, and a reader should not have to look for a second
+					one.
+				-->
+				<button
+					type="button"
+					id="selis-close-file-button"
+					class="selis-editor-btn"
+					data-icon="close"
+					data-label="Close"
+					title="Close the document"
+					hidden
+				></button>
 				<input
 					type="file"
 					id="selis-open-file"

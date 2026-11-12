@@ -149,8 +149,8 @@
 
         // The page booted: the status line invites a document.
         await waitFor(
-          () => statusText(doc).includes("Open a PDF"),
-          20_000,
+          () => statusText(doc) !== "" && !statusText(doc).endsWith("…"),
+          30_000,
           "the editor to boot",
         );
 
@@ -181,7 +181,7 @@
         const onlineWin = frame.contentWindow;
         if (!onlineWin) throw new Error("the editor iframe had no window");
         await waitFor(
-          () => statusText(onlineDoc).includes("Open a PDF"),
+          () => statusText(onlineDoc) !== "" && !statusText(onlineDoc).endsWith("…"),
           30_000,
           "the editor to boot under the worker",
         );
@@ -229,6 +229,10 @@
         out.noUpload = onlineDoc.documentElement.dataset.noUpload || "";
         out.network = readNetwork(onlineWin);
 
+        // The session leg RELOADS the frame, so it runs after every leg
+        // that holds the frame's document.
+        out.session = await sessionLeg(onlineDoc, onlineWin, "online");
+
         // Now cut the origin and reload the SAME page: the workspace, its
         // module graph, its stylesheet, the engine chunk and the tools chunk
         // must all come back from the worker's cache, and the same edit must
@@ -242,7 +246,7 @@
         const offlineWin = frame.contentWindow;
         if (!offlineWin) throw new Error("the offline editor iframe had no window");
         await waitFor(
-          () => statusText(offlineDoc).includes("Open a PDF"),
+          () => statusText(offlineDoc) !== "" && !statusText(offlineDoc).endsWith("…"),
           30_000,
           "the offline editor to boot",
         );
@@ -306,6 +310,11 @@
           30_000,
           "the document to be drawn (" + label + ")",
         );
+        // The open is FINISHED when the status says so: the workspace keeps
+        // a copy of the document for a reload, and that copy is written
+        // before the open is announced as done. A leg that edits while the
+        // open is still holding the workspace is testing the wrong thing.
+        await waitForSettled(doc, "Opened", "the document to be opened (" + label + ")");
         await waitFor(() => lines(doc).length > 0, 20_000, "the text layer (" + label + ")");
 
         const record = {
@@ -335,24 +344,57 @@
           new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
         );
 
-        await waitFor(
-          () => {
-            const now = lines(doc);
-            return now.length > 0 && now[0] !== original;
-          },
-          30_000,
-          "the text to change (" + label + ")",
-        );
+        try {
+          await waitFor(
+            () => {
+              const now = lines(doc);
+              return now.length > 0 && now[0] !== original;
+            },
+            30_000,
+            "the text to change (" + label + ")",
+          );
+        } catch (error) {
+          throw new Error(
+            String(error) +
+              " -- the editor was " +
+              (doc.querySelector(".selis-editor-inline__text") === null ? "closed" : "open") +
+              ", the lines were " +
+              JSON.stringify(lines(doc)) +
+              ", and the status said " +
+              statusText(doc) +
+              ", the busy flag was " +
+              (doc.getElementById("selis-editor-doc").dataset.busy || "?") +
+              ", the inline state was " +
+              (doc.getElementById("selis-editor-doc").dataset.inline || "?"),
+          );
+        }
         record.after = lines(doc);
         record.edited = statusText(doc);
+        // The change is DONE when the status says so: the lines change as
+        // soon as the new document is drawn, which is before the workspace
+        // has finished with it.
+        await waitForSettled(doc, "Changed the text", "the edit to settle (" + label + ")");
 
         // Undo must bring the document back exactly as it was.
-        doc.getElementById("selis-undo").click();
-        await waitFor(
-          () => lines(doc)[0] === original,
-          30_000,
-          "the undo to restore the line (" + label + ")",
-        );
+        const undoButton = doc.getElementById("selis-undo");
+        undoButton.click();
+        try {
+          await waitFor(
+            () => lines(doc)[0] === original,
+            30_000,
+            "the undo to restore the line (" + label + ")",
+          );
+        } catch (error) {
+          throw new Error(
+            String(error) +
+              " -- the undo button was " +
+              (undoButton.disabled ? "disabled" : "enabled") +
+              ", the lines were " +
+              JSON.stringify(lines(doc)) +
+              ", and the status said " +
+              statusText(doc),
+          );
+        }
         record.undone = lines(doc);
         record.undoStatus = statusText(doc);
 
@@ -611,6 +653,14 @@
         card.querySelector('button[data-action="open"]').click();
         fileInput.click = nativeClick;
 
+        // The app bar with nothing open: there is nothing to download and
+        // nothing to close.
+        const emptyBar = {
+          downloadHidden: doc.getElementById("selis-download").hidden,
+          openHidden: doc.getElementById("selis-open-file-button").hidden,
+          closeHidden: doc.getElementById("selis-close-file-button").hidden,
+        };
+
         const inspector = doc.getElementById("selis-editor-inspector");
         const toggle = doc.getElementById("selis-editor-inspector-toggle");
         const open = Math.round(inspector.getBoundingClientRect().width);
@@ -625,6 +675,7 @@
         return {
           emptyVisible: emptyVisible,
           nothingToScroll: nothingToScroll,
+          emptyBar: emptyBar,
           open: open,
           collapsed: collapsed,
           restored: restored,
@@ -1524,6 +1575,45 @@
           // The annotation is IN the file, and it is a standard one.
           carriesTheAnnotation: produced.carriesText.indexOf("/Subtype /Highlight") >= 0,
           carriesTheAppearance: produced.carriesText.indexOf("/Subtype /Form") >= 0,
+        };
+      }
+
+
+      /**
+       * The session: the document the reader had open survives a reload.
+       *
+       * The frame is reloaded and the document must come back, because a
+       * reader who hits reload by accident must not lose their work. The
+       * app bar's buttons are checked too: with a document open the Open
+       * button becomes a Close button, and with nothing open there is
+       * nothing to download.
+       */
+      async function sessionLeg(doc, win, label) {
+        const openHidden = doc.getElementById("selis-open-file-button").hidden;
+        const closeHidden = doc.getElementById("selis-close-file-button").hidden;
+
+        // Reload the frame: the document must come back.
+        const reloaded = waitForLoad(frame);
+        frame.contentWindow.location.reload();
+        await reloaded;
+        const after = frameDocument(frame);
+        await waitFor(
+          () => {
+            const status = statusText(after);
+            return !status.endsWith("…") && status.includes("Restored");
+          },
+          30_000,
+          "the document to be restored (" + label + ")",
+        );
+        const pages = after.querySelectorAll(".selis-editor-page").length;
+        const filename = (after.getElementById("selis-editor-filename").textContent || "").trim();
+        const status = statusText(after);
+        return {
+          openHidden: openHidden,
+          closeHidden: closeHidden,
+          restoredPages: pages,
+          restoredName: filename,
+          restoredStatus: status,
         };
       }
 

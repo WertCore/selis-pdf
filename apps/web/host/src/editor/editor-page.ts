@@ -113,6 +113,7 @@ import {
 	pageGeometry,
 	userRect,
 } from "./placement.js";
+import { forgetDocument, keepDocument, readKeptDocument } from "./session.js";
 
 /** The raster's base resolution: one device pixel per CSS pixel at 96 dpi. */
 const BASE_DPI = 96;
@@ -234,6 +235,8 @@ interface EditorState {
 	markupKind: MarkupKind;
 	/** The annotations on the page the editor is showing. */
 	annotations: readonly EditorAnnotation[];
+	/** Whether the document is kept between visits to this page. */
+	kept: boolean;
 	/** Each page's geometry, for the placements. */
 	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
@@ -270,6 +273,7 @@ const state: EditorState = {
 	boxColor: BOX_COLOR_BLACK,
 	markupKind: "highlight",
 	annotations: [],
+	kept: false,
 	geometry: new Map(),
 	busy: false,
 	zoom: 1,
@@ -298,6 +302,7 @@ function el<T extends HTMLElement>(id: string): T {
 
 const dom = {
 	openButton: el<HTMLButtonElement>("selis-open-file-button"),
+	closeButton: el<HTMLButtonElement>("selis-close-file-button"),
 	fileInput: el<HTMLInputElement>("selis-open-file"),
 	pageIndicator: el<HTMLSpanElement>("selis-page-indicator"),
 	pageCount: el<HTMLSpanElement>("selis-editor-page-count"),
@@ -754,11 +759,19 @@ function renderPageList(): void {
  * to fit to the width and nothing to fit to the page while the workspace is
  * empty. Showing them anyway is noise, and a control that cannot do
  * anything is a control that reads as broken.
+ *
+ * The app bar says the same thing: the Open button becomes a **Close**
+ * button while a document is open — the two are one button doing the
+ * opposite thing, and a reader should not have to look for a second one —
+ * and the Download button is HIDDEN while there is nothing to download.
  */
 function renderDocumentState(): void {
 	const empty = state.pages === 0;
 	dom.zoomBar.hidden = empty;
 	dom.viewGroup.hidden = empty;
+	dom.openButton.hidden = !empty;
+	dom.closeButton.hidden = empty;
+	dom.download.hidden = empty;
 }
 
 /** Reflect the history's state in the undo and redo buttons, and in the panel. */
@@ -1707,12 +1720,24 @@ async function openInEngine(bytes: Uint8Array): Promise<void> {
  * the stack never describes a state the workspace is not in.
  */
 async function commit(bytes: Uint8Array, label: string): Promise<void> {
-	await openInEngine(bytes);
-	state.bytes = bytes;
-	state.history.push(label, bytes);
-	state.dirty = true;
-	renderDirty();
-	await assertLocalOnly();
+	try {
+		await openInEngine(bytes);
+		state.bytes = bytes;
+		state.history.push(label, bytes);
+		state.dirty = true;
+		renderDirty();
+		await assertLocalOnly();
+		// The reader's own document, kept so a reload does not lose it. The
+		// copy lands before the change is announced as done, so a reload
+		// straight afterwards finds it.
+		await rememberDocument();
+	} finally {
+		state.busy = false;
+		renderHistory();
+	}
+	// The status comes AFTER the workspace is free: a line that says
+	// "done" while the workspace is still holding the reader is a lie, and
+	// the reader's next click is ignored.
 	setStatus(label);
 }
 
@@ -1724,6 +1749,8 @@ async function openFile(file: File): Promise<void> {
 	state.busy = true;
 	dom.download.disabled = true;
 	setStatus(`Reading ${file.name}…`);
+	let opened = "";
+	let failed: string | null = null;
 	try {
 		const buffer = await file.arrayBuffer();
 		const bytes = new Uint8Array(buffer);
@@ -1741,15 +1768,150 @@ async function openFile(file: File): Promise<void> {
 		state.bytes = bytes;
 		state.history.reset(`Opened ${state.name}`, bytes);
 		renderDirty();
+		renderDocumentState();
 		await assertLocalOnly();
-		setStatus(`Opened ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}.`);
+		await rememberDocument();
+		opened = `Opened ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}.`;
 	} catch (error) {
 		showFailure(`The document could not be opened: ${messageOf(error)}`);
-		setStatus("The document could not be opened.", "error");
+		failed = "The document could not be opened.";
 	} finally {
 		state.busy = false;
 		renderHistory();
 	}
+	// The status comes after the workspace is free, for the same reason the
+	// commit's does.
+	if (failed !== null) {
+		setStatus(failed, "error");
+	} else {
+		setStatus(opened);
+	}
+}
+
+/**
+ * The session: the document the reader had open, and what the app bar says
+ * about it.
+ */
+
+/**
+ * Keep the document the reader has open, so a reload does not lose it.
+ *
+ * The copy is written after every change ✓ — the reader's own document ✓ —
+ * and it is on the reader's device ✓: the bytes never leave it ✓.
+/**
+ * Keep the document the reader has open, so a reload does not lose it.
+ *
+ * The copy is written after every change - the reader's own document - and
+ * it is on the reader's device: the bytes never leave it.
+ *
+ * It is a BACKGROUND side effect: the workspace must not make the reader
+ * wait for the browser's storage to answer before their next keystroke
+ * lands. The writes are chained, so the copy in the storage is always the
+ * LAST one and never an older document that arrived late.
+ */
+let keeping: Promise<void> = Promise.resolve();
+
+async function rememberDocument(): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		return;
+	}
+	const name = state.name;
+	const dirty = state.dirty;
+	// The writes are chained, so the copy in the storage is always the LAST
+	// one and never an older document that arrived late.
+	await keeping
+		.then(async () => {
+			state.kept = await keepDocument({ name, bytes, dirty });
+		})
+		.catch(() => {
+			// The storage is not there, or it refused. The workspace simply
+			// does not promise a restore.
+			state.kept = false;
+		});
+}
+
+/**
+ * Put the document back, if there is one.
+ *
+ * The reader comes back to the document they left ✓ — the way the browser's
+ * own viewer does ✓ — and the status line says so ✓, because a document that
+ * came back on its own would otherwise look like a document that never
+ * closed ✓.
+ */
+async function restoreDocument(): Promise<void> {
+	const kept = await readKeptDocument();
+	if (kept === null) {
+		return;
+	}
+	state.name = kept.name;
+	state.page = 0;
+	state.fitOnDraw = true;
+	state.dirty = kept.dirty;
+	dom.filename.textContent = state.name;
+	try {
+		await openInEngine(kept.bytes);
+		state.bytes = kept.bytes;
+		state.history.reset(`Restored ${state.name}`, kept.bytes);
+		renderDirty();
+		renderDocumentState();
+		await assertLocalOnly();
+		setStatus(
+			`Restored ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}. It was the document you had open.`,
+		);
+	} catch (error) {
+		showFailure(`The document could not be restored: ${messageOf(error)}`);
+		setStatus("The document you had open could not be restored.", "error");
+	}
+}
+
+/**
+ * Close the document.
+ *
+ * The reader asked for it to be closed ✓, so the workspace forgets it ✓ —
+ * there is no undo for a closed document ✓, and the reader can open it again
+ * from their own files ✓.
+ */
+async function closeDocument(): Promise<void> {
+	if (state.busy || state.bytes === null) {
+		return;
+	}
+	state.busy = true;
+	setStatus("Closing the document…");
+	try {
+		state.bytes = null;
+		state.name = "document.pdf";
+		state.page = 0;
+		state.dirty = false;
+		state.history.reset("Closed the document", new Uint8Array(0));
+		state.annotations = [];
+		await forgetDocument();
+		renderDirty();
+		renderHistory();
+		renderDocumentState();
+		clearFailure();
+		setStatus("The document is closed. The copy the workspace kept is gone.");
+	} finally {
+		state.busy = false;
+	}
+}
+
+/**
+ * Warn the reader before the page goes away with changes in it.
+ *
+ * The browser's own dialog, the one every other site uses.
+ *
+ * But ONLY when the changes are not already kept: the workspace keeps the
+ * document in the browser's own storage, so a reload or a closed tab does
+ * not lose the work, and a prompt for something that is safe is a wall the
+ * reader has to dismiss every time they press F5.
+ */
+function warnBeforeUnload(event: BeforeUnloadEvent): void {
+	if (!state.dirty || state.bytes === null || state.kept) {
+		return;
+	}
+	event.preventDefault();
+	event.returnValue = "";
 }
 
 // ── running an operation ────────────────────────────────────────────────────
@@ -4362,6 +4524,13 @@ function wire(): void {
 	});
 	dom.download.addEventListener("click", download);
 
+	// The session: the document is kept, restored, and the reader is warned
+	// before the page goes away with changes in it.
+	dom.closeButton.addEventListener("click", () => {
+		void closeDocument();
+	});
+	window.addEventListener("beforeunload", warnBeforeUnload);
+
 	// The panels that read and change the document.
 	dom.accessibilityCheck.addEventListener("click", () => {
 		void checkAccessibility();
@@ -4832,7 +5001,22 @@ async function boot(): Promise<void> {
 	renderZoom();
 	renderHistory();
 	renderDirty();
-	setStatus("Open a PDF to start editing. It stays on this device.");
+	// The app bar: with no document there is nothing to download and nothing
+	// to close.
+	renderDocumentState();
+	// The document the reader had open, if there was one: a reload must not
+	// close the document under them. The restore WAITS for the page: a
+	// document that comes back while the reader is already editing is a
+	// document that comes back into the wrong engine handle.
+	state.busy = true;
+	await restoreDocument();
+	state.busy = false;
+	// The invitation is only for an EMPTY workspace: a restored document has
+	// its own line in the status bar, and overwriting it with "open a PDF"
+	// would tell the reader their document is gone when it is on the screen.
+	if (state.pages === 0) {
+		setStatus("Open a PDF to start editing. It stays on this device.");
+	}
 	const registration = await registerServiceWorker();
 	if (registration.ok) {
 		// A new worker carries the new cache namespace, and taking it is what
