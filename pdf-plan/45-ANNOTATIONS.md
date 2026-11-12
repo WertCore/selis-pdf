@@ -128,11 +128,12 @@ and the stamp rewrites the page — or in the text layer's reading of the
 rewritten page. **The cause is not yet known, and the fix is not yet made.**
 What is known:
 
-- it happens when the page carries **more than one content stream** after the
-  stamp (the stamp appends its own);
-- it does not happen on its own: the edit, the undo, the redo, the split, the
-  attach and the signature were each tried on their own, and none of them
-  did it.
+- it needs **both** an edited page and a stamp. A stamp on a page whose text
+  was never edited measures fine (488px, then 426px for the box itself), and
+  an edit on its own measures fine (516px). The edit followed by the stamp
+  gives 27px.
+- it is not the undo, the redo, the split, the attach or the signature: each
+  was tried on its own, and none of them did it.
 
 Until it is fixed, the editor's own check picks a line whose measured width
 is real, because a line whose width has collapsed cannot be clicked at all.
