@@ -65,6 +65,14 @@ workspace — because it falls out of the work rather than out of a sketch:
 5. **Nothing is hidden behind a gesture.** Every command is a button with a
    name. The only keyboard-only things are the shortcuts a reader already
    expects (Enter on a line to edit it).
+6. **The editor is the document, not a form over it.** A line being edited
+   BECOMES an editor: the same size, the same place, the same baseline.
+   The only chrome is a hairline, and it appears only while the editor
+   holds the keyboard. A raised box floating near the text is a form, and
+   editing a document does not feel like filling one in.
+7. **Nothing that covers the page takes the pointer.** An overlay that is a
+   scaffold — the text layer — must let the clicks through to the page;
+   only its own children are targets.
 
 ## 3. What changed, and what it cost
 
@@ -145,7 +153,38 @@ state, and the browser check collapses the panel and brings it back.
 with the thing it controls is a one-way door. If a panel can be hidden, the
 control that hides it must outlive the hiding.
 
-## 6. What is still missing from the face
+## 6. Two things the face got wrong, and what they cost
+
+Both were found by a reader, and both are the kind of thing that only shows
+up when someone actually uses the thing. `44-EDITOR-NATIVE-EDITING.md` has
+the long version.
+
+### 6.1 The text layer was eating the page
+
+The layer of clickable lines covers the whole page — it has to, a line can
+be anywhere on it — and it was taking the pointer as well. So a click on
+**empty space** never reached the canvas, and every tool that puts
+something on the page was dead unless the reader clicked exactly on a
+word. A text box, an image, a redaction: all three were "not working".
+
+The layer is now `pointer-events: none` and the **lines** are the targets.
+
+### 6.2 The inline editor was a form
+
+It was a raised box with a border and a shadow, floating near the text. It
+is now the line itself: the same size, the same place, and — the part that
+mattered — the **same baseline**. The first rebuilt version put the typed
+text 0.3em below the printed line, because the browser's half-leading
+decided where the baseline fell. The editor now starts its text where the
+text layer starts its overlay, and the check measures the gap: it is 0.
+
+### 6.3 Clicking away used to throw the edit away
+
+A change that vanishes because the reader looked elsewhere is a silent
+loss, and a silent loss is worse than a visible change. Clicking away now
+commits the edit, the way Acrobat does.
+
+## 7. What is still missing from the face
 
 - **A customisable ribbon.** Acrobat lets the reader hide the groups they do
   not use. It is a nice-to-have, and it is a real accessibility win for a
@@ -161,7 +200,7 @@ control that hides it must outlive the hiding.
 
 ---
 
-## 7. Where the files are
+## 8. Where the files are
 
 | | |
 |---|---|
@@ -183,7 +222,7 @@ remap is written for BOTH themes so the kit's dark tokens can take effect.
 
 ---
 
-## 8. The evidence
+## 9. The evidence
 
 The editor's browser leg grew a `shell` leg that checks the face against the
 **document**, not against the DOM alone:

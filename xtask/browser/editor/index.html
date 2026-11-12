@@ -201,6 +201,8 @@
         // The three ways of changing what is ON the page: put new text in it,
         // put an image in it, and take text out of it.
         out.textBox = await textBoxLeg(onlineDoc, onlineWin, "online");
+        out.placement = await placementLeg(onlineDoc, onlineWin, "online");
+        out.inline = await inlineLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
         out.crop = await cropLeg(onlineDoc, onlineWin, "online");
         out.resize = await resizeLeg(onlineDoc, onlineWin, "online");
@@ -572,6 +574,17 @@
         // Nothing to scroll: the canvas holds exactly what is on the screen.
         const nothingToScroll = surface.scrollHeight <= surface.clientHeight + 1;
 
+        // The invitation's own button must ask for a file: a button that
+        // says "Open a PDF" and does nothing is worse than no button.
+        const fileInput = doc.getElementById("selis-open-file");
+        let pickerAsked = 0;
+        const nativeClick = fileInput.click;
+        fileInput.click = function () {
+          pickerAsked += 1;
+        };
+        card.querySelector('button[data-action="open"]').click();
+        fileInput.click = nativeClick;
+
         const inspector = doc.getElementById("selis-editor-inspector");
         const toggle = doc.getElementById("selis-editor-inspector-toggle");
         const open = Math.round(inspector.getBoundingClientRect().width);
@@ -590,6 +603,7 @@
           collapsed: collapsed,
           restored: restored,
           buttonThere: buttonThere,
+          pickerAsked: pickerAsked > 0,
           label: toggleLabel,
         };
       }
@@ -930,6 +944,155 @@
           bytes: produced.length,
           header: String.fromCharCode(...produced.slice(0, 5)),
           carriesText: new TextDecoder("latin1").decode(produced),
+        };
+      }
+
+      /**
+       * The placement tools, tested the way a reader uses them.
+       *
+       * The check dispatches the click at the element the browser would
+       * actually hit. The text layer covers the whole page, so while it took
+       * the pointer, a click on EMPTY SPACE landed on the layer and never
+       * reached the canvas - and every tool that puts something on the page
+       * was dead on any page the reader did not click exactly on a word.
+       *
+       * Dispatching on the canvas directly, as the older leg did, is exactly
+       * what hid the bug: it bypassed the hit test that a reader goes
+       * through.
+       */
+      async function placementLeg(doc, win, label) {
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const box = canvas.getBoundingClientRect();
+        // A spot on the page with no text on it.
+        const x = box.left + 60;
+        const y = box.top + Math.round(box.height * 0.72);
+        const target = doc.elementFromPoint(x, y);
+        if (!target) throw new Error("the page had nothing at that point");
+        const hit = target.className || target.tagName;
+        useTool(doc, "box");
+        const opts = {
+          clientX: x,
+          clientY: y,
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 6,
+          isPrimary: true,
+        };
+        target.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
+        target.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the text box editor on empty space (" + label + ")",
+        );
+        // The editor is cancelled, so the document is left as it was.
+        doc.querySelector(".selis-editor-inline__text").dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") === null,
+          10_000,
+          "the editor to close (" + label + ")",
+        );
+        return {
+          hit: hit,
+          onCanvas: target === canvas,
+          opened: true,
+        };
+      }
+
+      /**
+       * The inline editor must BE the line it is over.
+       *
+       * The editor's text and the printed line's text have to share a
+       * baseline: an editor that floats below the line it is editing is a
+       * form, and a form is not editing a document. The size has to be the
+       * line's own size, for the same reason.
+       */
+      async function inlineLeg(doc, win, label) {
+        useTool(doc, "text");
+        const line = doc.querySelector(".selis-editor-line");
+        if (!line) throw new Error("the document drew no clickable text");
+        line.click();
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the inline editor (" + label + ")",
+        );
+        const overlay = line.querySelector(".selis-editor-line__text");
+        const area = doc.querySelector(".selis-editor-inline__text");
+        const root = doc.querySelector(".selis-editor-inline");
+        const overlayBox = overlay.getBoundingClientRect();
+        const areaBox = area.getBoundingClientRect();
+        const rootBox = root.getBoundingClientRect();
+        const lineBox = line.getBoundingClientRect();
+        const gap = Math.round((areaBox.top - overlayBox.top) * 100) / 100;
+        const size = getComputedStyle(area).fontSize;
+        const lineSize = getComputedStyle(overlay).fontSize;
+        // Cancel, so the document is left as it was.
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") === null,
+          10_000,
+          "the editor to close (" + label + ")",
+        );
+
+        // Clicking away COMMITS the change, the way Acrobat does: an edit
+        // that is thrown away because the reader looked elsewhere is a
+        // silent loss, and a silent loss is worse than a visible change.
+        line.click();
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the inline editor again (" + label + ")",
+        );
+        const again = doc.querySelector(".selis-editor-inline__text");
+        const before = line.textContent;
+        const changed = before.replace("1200", "1500");
+        if (changed === before) {
+          throw new Error("the fixture's text did not carry the word the check replaces");
+        }
+        again.value = changed;
+        const canvas = doc.querySelector("canvas");
+        const canvasBox = canvas.getBoundingClientRect();
+        canvas.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            clientX: canvasBox.left + 40,
+            clientY: canvasBox.top + Math.round(canvasBox.height * 0.8),
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons: 1,
+            pointerId: 8,
+            isPrimary: true,
+          }),
+        );
+        await waitFor(
+          () => lines(doc)[0] === changed,
+          30_000,
+          "the change to be committed by clicking away (" + label + ")",
+        );
+        const committed = lines(doc)[0] === changed;
+        // And undo puts it back, so the rest of the check sees the document
+        // it was given.
+        doc.getElementById("selis-undo").click();
+        await waitFor(
+          () => lines(doc)[0] === before,
+          30_000,
+          "the undo to restore the line (" + label + ")",
+        );
+
+        return {
+          gap: gap,
+          size: size,
+          lineSize: lineSize,
+          overTheLine:
+            Math.abs(rootBox.top - lineBox.top) < 1 && Math.abs(rootBox.left - lineBox.left) < 1,
+          committedOnClickAway: committed,
         };
       }
 

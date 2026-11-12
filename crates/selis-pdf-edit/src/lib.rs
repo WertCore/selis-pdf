@@ -25,8 +25,11 @@
 //!   re-encoded into the SAME codes, so the edit draws with the glyphs the
 //!   embedded subset already carries. A font this slice cannot read a code map
 //!   for is refused, never mangled;
-//! * it rewrites a page whose `/Contents` is a single Flate or raw stream;
-//!   a multi-stream page or an unsupported stream filter is refused;
+//! * it rewrites a page whose `/Contents` is one Flate or raw stream, or
+//!   several of them: a page whose content was split by a stamp is read as
+//!   one run of operators and written back as one stream, so the text stays
+//!   editable after a text box or an image has been put on the page. An
+//!   unsupported stream filter is still refused;
 //! * it does not extend or re-subset a font, so every replacement character
 //!   must be one the page's font already carries a glyph for — a character it
 //!   does not (a letter the original run never used) is refused rather than
@@ -149,21 +152,38 @@ pub fn edit_text(
             "the page is not a dictionary".to_string(),
         ));
     };
-    let content_ref = single_content_ref(&page_dict)?;
-    let content_obj = resolve_ref(src, &doc, content_ref, budget, g)
-        .map_err(|e| EditError::Unresolvable(format!("cannot read the page content: {e}")))?;
-    let Obj::Stream {
-        dict: stream_dict,
-        data,
-    } = content_obj
-    else {
-        return Err(EditError::Malformed(
-            "the page content is not a stream".to_string(),
-        ));
-    };
+    let content_refs = content_refs(&page_dict)?;
 
-    let filter = stream_filter(&stream_dict)?;
-    let decoded = decode_content(filter.clone(), data.as_slice(), budget, g)?;
+    // The page's content, read as ONE run of operators: the streams are drawn
+    // in order, so joining them with a newline is what the reader sees.
+    let mut decoded: Vec<u8> = Vec::new();
+    let mut filter: Option<Bytes> = None;
+    let mut stream_dict: Vec<(Bytes, Obj)> = Vec::new();
+    for (index, content_ref) in content_refs.iter().enumerate() {
+        let content_obj = resolve_ref(src, &doc, *content_ref, budget, g)
+            .map_err(|e| EditError::Unresolvable(format!("cannot read the page content: {e}")))?;
+        let Obj::Stream {
+            dict: part_dict,
+            data,
+        } = content_obj
+        else {
+            return Err(EditError::Malformed(
+                "the page content is not a stream".to_string(),
+            ));
+        };
+        let part_filter = stream_filter(&part_dict)?;
+        let part = decode_content(part_filter.clone(), data.as_slice(), budget, g)?;
+        if index == 0 {
+            // The first stream's filter is the one the merged stream is
+            // written back in: the page keeps the encoding it had.
+            filter = part_filter;
+            stream_dict = part_dict;
+        }
+        if !decoded.is_empty() {
+            decoded.push(b'\n');
+        }
+        decoded.extend_from_slice(&part);
+    }
 
     // A font whose glyph codes are not its characters (a Type0/CID subset, the
     // common case for Chrome/Office exports) carries a `/ToUnicode` CMap; load
@@ -188,7 +208,22 @@ pub fn edit_text(
     let (encoded, filter_name) = encode_content(filter, &rewritten);
     let new_stream = rebuild_stream(&stream_dict, encoded, filter_name);
     let trailer = carried_trailer(&doc)?;
-    let out = write_incremental_update(src, &[(content_ref.num, new_stream)], &trailer, budget, g)
+    let mut objects: Vec<(u32, Obj)> = vec![(content_refs[0].num, new_stream)];
+    if content_refs.len() > 1 {
+        // The page drew its content from several streams; it now draws it
+        // from one. The page dictionary is rewritten to point at it, and every
+        // other entry of the page is carried over untouched.
+        let mut page: Vec<(Bytes, Obj)> = Vec::with_capacity(page_dict.len());
+        for (key, value) in &page_dict {
+            if key.as_slice() == b"Contents" {
+                page.push((key.clone(), Obj::Ref(content_refs[0])));
+            } else {
+                page.push((key.clone(), value.clone()));
+            }
+        }
+        objects.push((page_ref.num, Obj::Dict(page)));
+    }
+    let out = write_incremental_update(src, &objects, &trailer, budget, g)
         .map_err(|e| EditError::Unresolvable(format!("cannot write the update: {e}")))?;
 
     let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
@@ -274,19 +309,40 @@ fn collect_pages(
     Ok(())
 }
 
-/// The single content-stream reference of a page, or a typed refusal.
-fn single_content_ref(page_dict: &[(Bytes, Obj)]) -> Result<Ref, EditError> {
+/// The content-stream references of a page, in the order the page draws them.
+///
+/// A page may carry its content in one stream or in several. Several is the
+/// NORMAL shape once anything has been stamped on the page: a text box, an
+/// image or a redaction appends its own stream and leaves the page's
+/// `/Contents` an array. The streams are drawn in order, exactly as if their
+/// contents had been written one after another, so an edit reads them all and
+/// writes them back as one.
+fn content_refs(page_dict: &[(Bytes, Obj)]) -> Result<Vec<Ref>, EditError> {
     match dict_get(page_dict, b"Contents") {
-        Some(Obj::Ref(r)) => Ok(*r),
-        Some(Obj::Array(items)) => match items.as_slice() {
-            [Obj::Ref(r)] => Ok(*r),
-            _ => Err(EditError::Unsupported(
-                "this page's content is split across several streams; that is not editable yet"
-                    .to_string(),
-            )),
-        },
+        Some(Obj::Ref(r)) => Ok(vec![*r]),
+        Some(Obj::Array(items)) => {
+            let mut refs = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Obj::Ref(r) => refs.push(*r),
+                    _ => {
+                        return Err(EditError::Unsupported(
+                            "this page's content is split across several streams; that is not \
+                             editable yet"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            if refs.is_empty() {
+                return Err(EditError::Unsupported(
+                    "this page has no content stream to edit".to_string(),
+                ));
+            }
+            Ok(refs)
+        }
         _ => Err(EditError::Unsupported(
-            "this page has no single content stream to edit".to_string(),
+            "this page has no content stream to edit".to_string(),
         )),
     }
 }
@@ -1663,6 +1719,53 @@ mod tests {
         ])
     }
 
+    /// A one-page document whose content is split across two streams.
+    ///
+    /// This is the shape a page takes once something has been stamped on it:
+    /// the text box, the image or the redaction appends its own stream and
+    /// leaves the page's `/Contents` an array. The text on such a page has
+    /// to stay editable, or the editor can only be used once.
+    fn page_with_split_content(first: &[u8], second: &[u8]) -> Vec<u8> {
+        let stream = |body: &[u8]| {
+            let mut s = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            s.extend_from_slice(body);
+            s.extend_from_slice(b"\nendstream");
+            s
+        };
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents [4 0 R 6 0 R] /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+            ),
+            (4, stream(first)),
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+            ),
+            (6, stream(second)),
+        ])
+    }
+
+    /// The page's `/Contents` in the newest revision, as it is written there.
+    fn page_contents(out: &[u8]) -> Obj {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(out, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(out, startxref, &budget, &mut g).expect("parse");
+        let Obj::Dict(pairs) =
+            resolve_ref(out, &doc, Ref::new(3, 0), &budget, &mut g).expect("page")
+        else {
+            panic!("the page is not a dictionary");
+        };
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Contents")
+            .map(|(_, v)| v.clone())
+            .expect("the page has no /Contents")
+    }
+
     fn run(src: &[u8], find: &str, replace: &str) -> Result<(Vec<u8>, EditReport), EditError> {
         let budget = Budget::unlimited();
         let mut g = budget.guard();
@@ -1689,6 +1792,42 @@ mod tests {
         } else {
             data.as_slice().to_vec()
         }
+    }
+
+    #[test]
+    fn edits_a_page_whose_content_was_split_by_a_stamp() {
+        // A page whose text lives in one stream, and a stamp in another.
+        let src = page_with_split_content(
+            b"BT /F1 12 Tf 10 100 Td (Hello World) Tj ET\n",
+            b"BT /F1 12 Tf 10 50 Td (Added by the editor) Tj ET\n",
+        );
+        let (out, report) = run(&src, "World", "Rust").expect("edit");
+        assert_eq!(report.replaced, 1);
+
+        // The new stream carries BOTH parts: the page still draws the stamp.
+        let content = page_content_text(&out);
+        let text = String::from_utf8_lossy(&content);
+        assert!(
+            text.contains("(Hello Rust)"),
+            "the text was not changed: {text}"
+        );
+        assert!(
+            text.contains("(Added by the editor)"),
+            "the stamp was lost: {text}"
+        );
+
+        // And the page draws it from ONE stream now.
+        assert!(
+            matches!(page_contents(&out), Obj::Ref(_)),
+            "the page should point at a single content stream"
+        );
+
+        // The original bytes are still a byte-identical prefix.
+        assert_eq!(
+            out.get(..src.len()),
+            Some(src.as_slice()),
+            "original preserved"
+        );
     }
 
     #[test]

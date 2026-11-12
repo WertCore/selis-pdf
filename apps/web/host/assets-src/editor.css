@@ -45,6 +45,15 @@
 /* ── the shell ───────────────────────────────────────────────────────────── */
 
 .selis-editor-shell {
+	/*
+	 * The paper and the ink.
+	 *
+	 * The editor writes ON the page, so it is the page's colours and not the
+	 * theme's: a page of paper is white in the light theme and in the dark
+	 * one, and the ink on it is dark in both.
+	 */
+	--selis-editor-paper: #ffffff;
+	--selis-editor-ink: #14181c;
 	margin: 0;
 	background: var(--selis-color-bg);
 	color: var(--selis-color-fg);
@@ -719,6 +728,14 @@
 	position: absolute;
 	inset: 0;
 	overflow: hidden;
+	/*
+	 * The layer is a scaffold for the clickable lines, not a target in its
+	 * own right: it covers the whole page, so while it took the pointer, a
+	 * click on EMPTY SPACE never reached the canvas - and every tool that
+	 * places something (a text box, an image, a redaction) was dead on any
+	 * page the reader did not click exactly on a word.
+	 */
+	pointer-events: none;
 }
 
 .selis-editor-line {
@@ -728,6 +745,15 @@
 	color: transparent;
 	cursor: text;
 	outline: none;
+	/* The LINES are the targets; the layer around them is not. */
+	pointer-events: auto;
+}
+
+/* The line being edited: the reader can see where they are without the
+ * editor being a box around the text. */
+.selis-editor-line.is-editing {
+	background: color-mix(in srgb, var(--selis-color-accent) 10%, transparent);
+	border-radius: 2px;
 }
 
 /* A line the find box matched. The highlight sits UNDER the text, so the
@@ -1167,107 +1193,89 @@
 	background: var(--selis-color-accent);
 }
 
-/* ── the inline text editor ──────────────────────────────────────────────── */
-
+/*
+ * The inline editor.
+ *
+ * The competitors (Acrobat, Foxit, PDF.js) all do the same thing: the line
+ * being edited BECOMES an editor - the same size, the same place, the same
+ * baseline - so the reader is editing the document rather than filling in a
+ * field that happens to be near it. A raised box with a border and a shadow
+ * floating over the page is not that, and it is why editing here did not feel
+ * like editing a document.
+ *
+ * So the editor is the paper and the ink, the paper being the page's own
+ * white (a page of paper is white in both themes), and the only chrome is a
+ * hairline that appears when the editor takes the keyboard.
+ */
 .selis-editor-inline {
 	position: absolute;
 	left: 0;
 	top: 0;
 	z-index: var(--selis-z-dialog);
+	/* The paper. */
+	background: var(--selis-editor-paper);
+	border-radius: 2px;
+	/* The editor grows with the words; the ring grows with it. */
+	box-shadow: 0 0 0 0 transparent;
+	transition: box-shadow var(--selis-duration-fast) var(--selis-ease-standard);
+}
+
+/* The hairline: only while the editor holds the keyboard. */
+.selis-editor-inline:focus-within {
+	box-shadow: 0 0 0 2px var(--selis-color-accent);
 }
 
 .selis-editor-inline__text {
 	position: absolute;
-	font: inherit;
-	font-size: var(--selis-text-md);
-	line-height: var(--selis-leading-normal);
-	padding: var(--selis-space-3);
-	border: var(--selis-border-thick) solid var(--selis-color-accent);
-	border-radius: var(--selis-radius-sm);
-	background: var(--selis-color-bg-raised);
-	color: var(--selis-color-fg);
-	box-shadow: var(--selis-shadow-2);
-	resize: vertical;
-}
-
-.selis-editor-inline__text:focus {
-	outline: none;
-}
-
-.selis-editor-inline__hint {
-	margin: var(--selis-space-2) 0 0;
-	font-size: var(--selis-text-xs);
-	color: var(--selis-color-fg-muted);
-	background: var(--selis-color-bg-raised);
-	padding: var(--selis-space-1) var(--selis-space-3);
-	border-radius: var(--selis-radius-sm);
-	display: inline-block;
-}
-
-/* ── the status bar ──────────────────────────────────────────────────────── */
-
-.selis-editor-statusbar {
-	flex: none;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--selis-space-5);
-	height: 32px;
-	padding: 0 var(--selis-space-5);
-	border-top: var(--selis-border-hairline) solid var(--selis-color-border);
-	background: var(--selis-color-bg-raised);
-	color: var(--selis-color-fg-muted);
-	font-size: var(--selis-text-xs);
-}
-
-.selis-editor-status {
+	left: 0;
 	margin: 0;
+	padding: 0;
+	border: 0;
+	outline: none;
+	resize: none;
 	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: pre;
+	/* The editor sits ON the page, so it is the ink on the paper - in both
+	 * themes, because a page of paper is white in both. */
+	background: transparent;
+	color: var(--selis-editor-ink);
+	font-family: inherit;
+	/* One line's worth of leading: the baseline is placed by the editor's
+	 * own geometry, not by the browser's half-leading. */
+	line-height: 1;
+	box-shadow: none;
+	caret-color: var(--selis-editor-ink);
+}
+
+/* The mirror: it measures the words, and it is not seen. */
+.selis-editor-inline__measure {
+	position: absolute;
+	left: 0;
+	top: 0;
+	visibility: hidden;
+	white-space: pre;
+	font-family: inherit;
+	line-height: 1;
+	pointer-events: none;
+}
+
+/* The chip under the editor: a hint, not a paragraph. */
+.selis-editor-inline__hint {
+	position: absolute;
+	left: 0;
+	top: calc(100% + 6px);
+	margin: 0;
+	padding: var(--selis-space-1) var(--selis-space-3);
+	border-radius: var(--selis-radius-full);
+	background: var(--selis-color-bg-raised);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	box-shadow: var(--selis-shadow-1);
+	color: var(--selis-color-fg-muted);
+	font-size: var(--selis-text-xs);
+	line-height: 1.4;
 	white-space: nowrap;
+	pointer-events: none;
 }
-
-.selis-editor-status[data-kind="error"] {
-	color: var(--selis-color-danger-fg);
-}
-
-.selis-editor-statusbar__right {
-	display: flex;
-	align-items: center;
-	gap: var(--selis-space-2);
-	flex: none;
-}
-
-.selis-editor-statusbar__rule {
-	width: var(--selis-border-hairline);
-	height: 16px;
-	background: var(--selis-color-border);
-	margin: 0 var(--selis-space-2);
-}
-
-.selis-editor-statusbar__pageno {
-	font-variant-numeric: tabular-nums;
-}
-
-.selis-editor-statusbar__zoom {
-	font: inherit;
-	font-variant-numeric: tabular-nums;
-	min-width: 3.25rem;
-	padding: 0 var(--selis-space-2);
-	height: 22px;
-	border: var(--selis-border-hairline) solid transparent;
-	border-radius: var(--selis-radius-sm);
-	background: none;
-	color: inherit;
-	cursor: pointer;
-}
-
-.selis-editor-statusbar__zoom:hover {
-	background: var(--selis-color-bg-inset);
-	color: var(--selis-color-fg);
-}
-
-/* ── narrow screens ──────────────────────────────────────────────────────── */
 
 @media (max-width: 1180px) {
 	.selis-editor {

@@ -31,7 +31,8 @@ editor safely.
 | `65a3aa8` | **Slice 4** — the document's bookmarks, the page size as a named size, and the redaction's transform fix. |
 | `b3187e8` | The redaction's contract sections, and this roadmap's state. |
 | `8e9bec4` | **Slice 5** — the editor's face, and the features that came with it: find, zoom, thumbnails, the history panel, page labels, page numbers, a header and a footer, a watermark, the privacy report and the fingerprint. |
-| (the next one) | **Slice 6** — the theme, the export, and the rest of the parities the engine already had: flip, compress, Bates numbering, several pages per sheet, and eight export formats. |
+| `5961ab3` | **Slice 6** — the theme, the export, and the rest of the parities the engine already had: flip, compress, Bates numbering, several pages per sheet, and eight export formats. |
+| (the next one) | **Slice 6b** — the editor that feels native: the text layer stops eating the page, the inline editor becomes the line it is over, clicking away commits the edit, and the core reads a page whose content was split by a stamp. See `44-EDITOR-NATIVE-EDITING.md`. |
 
 The next slice is the one below; nothing is in the working tree.
 
@@ -56,6 +57,9 @@ from the shell.
   It replaces the **first show-text operand on the page that carries `find` as a substring**. A
   line's text is *assembled* from several operands, so the editor tries the whole line first and
   then its longest words, and afterwards reads the line back to check it changed the clicked one.
+  A page whose content was **split** — which is what a text box, an image or a redaction leaves
+  behind — is read as one run of operators and written back as one stream, so the text stays
+  editable after something has been put on the page (`44-EDITOR-NATIVE-EDITING.md` §4).
 - **New text on the page** → the signing chunk's `stamp` (op 1): `{page (1-based), rect [x0,y0,x1,y1]
   in display points, lines [{text, size}], strokes, color, strokeWidth, fontSize, border}`. The
   engine **measures** the text with its own coarse width table and refuses a line that does not fit
@@ -330,6 +334,34 @@ a list of panels and not a list of engine work.
       was remembered, a Word export is a ZIP container and an HTML export
       carries the text, and the Bates prefix is in the produced file.
 
+### Slice 6b — the editor that feels native (shipped)
+
+- [x] **J1 — The text layer stops eating the page.** The layer covers the whole
+      page, so while it took the pointer, a click on **empty space** never
+      reached the canvas — and every tool that puts something on the page
+      (a text box, an image, a redaction) was dead unless the reader clicked
+      exactly on a word. The layer is `pointer-events: none`; the **lines**
+      are the targets.
+- [x] **J2 — The inline editor IS the line.** The same size, the same place,
+      the **same baseline** (the measured gap is 0), the paper and the ink
+      rather than a raised box, and a hairline that appears only while the
+      editor holds the keyboard. The editor grows with the words.
+- [x] **J3 — Clicking away commits the edit.** It used to be thrown away
+      silently. The commit happens in the capture phase, so the click that
+      ends the edit cannot also open another editor on a page that is about
+      to change underneath it.
+- [x] **J4 — The core reads a page whose content was split.** A text box, an
+      image or a redaction appends its own stream, and the in-place text
+      editor refused any page whose `/Contents` was an array — so the editor
+      could be used exactly once. Fixed in `crates/selis-pdf-edit`.
+- [x] **J5 — The invitation's own button opens the picker.** The `data-action`
+      dispatcher moved from the ribbon to the document, because the empty
+      state's button lives on the canvas.
+- [x] **J6 — The evidence.** Three legs: `placement` (the click is dispatched
+      at the element the browser would **actually hit**), `inline` (the
+      baseline, the size, the place, and the click-away commit) and `face`
+      (the invitation's button asks for a file).
+
 ### Slice 7 — what is next: the features the engine already has
 
 - [ ] **H4 — Split the document.** "Keep these pages": a selection in the
@@ -502,6 +534,21 @@ These have all cost time. They are not obvious.
     context" — sometimes leaving a 0-byte file at the path the reader chose.
     The browser's own "Save as…" on a download or a link has no such
     problem, and leaves nothing behind.
+
+17. **A transparent overlay that covers everything is a mouse trap.** The
+    text layer covers the whole page, so while it took the pointer, a click
+    on empty space never reached the canvas and every placement tool was
+    dead. The layer is `pointer-events: none` and the **lines** are the
+    targets.
+18. **A tool that puts something on a page must not take away the ability to
+    change what was already there.** A text box appends its own content
+    stream, and the in-place text editor used to refuse a page whose
+    `/Contents` was an array — so adding a text box made the page's text
+    uneditable. The trap was in the core, not in the shell.
+19. **A test that bypasses the browser's hit test is not a test.** The old
+    placement leg dispatched its pointer events on the canvas element
+    directly, which is exactly what hid the pointer-events bug: a reader's
+    click goes through `elementFromPoint`, and the leg did not.
 
 ---
 

@@ -49,7 +49,7 @@ import { hasPdfHeader } from "../tools/inputs.js";
 import { type ToolsWasm, loadTools, runTool } from "../tools/protocol.js";
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
-import { placeLine } from "./geometry.js";
+import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import { type IconName, icon } from "./icons.js";
 import {
@@ -578,6 +578,7 @@ function buildTextLayer(
 		text.style.transform = `rotate(${placement.angle}deg)`;
 		box.appendChild(text);
 		container.appendChild(box);
+		linePlacements.set(box, placement);
 		placed.push({ box, text, runWidth: placement.runWidth });
 	});
 	// The overlay's own text is a different face from the document's, so it is
@@ -1688,6 +1689,15 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 
 let inline: InlineEditor | null = null;
 
+/**
+ * Whether an edit is on its way to the engine.
+ *
+ * While it is, the workspace must not open another editor: the reader's
+ * click that ended the last edit would otherwise land on a page that is
+ * about to change underneath it.
+ */
+let inlineCommitting = false;
+
 /** What the inline editor is doing. */
 type InlineMode =
 	| {
@@ -1706,15 +1716,51 @@ type InlineMode =
 			readonly rect: Rect;
 	  };
 
+/**
+ * Where each line's text sits on the canvas.
+ *
+ * The editor needs the line's own metrics - the size the text is drawn at and
+ * where its baseline runs - to be INVISIBLE: the reader must not be able to
+ * tell an edited line from an untouched one until they type.
+ */
+const linePlacements = new WeakMap<HTMLElement, LinePlacement>();
+
 /** The inline editor, when one is open. */
 interface InlineEditor {
 	readonly root: HTMLElement;
 	readonly textarea: HTMLTextAreaElement;
 	readonly mode: InlineMode;
+	/** The line under the editor, when there is one. */
+	readonly line: HTMLElement | null;
+}
+
+/**
+ * What the editor needs to know to BE the thing it is editing.
+ *
+ * The competitors (Acrobat, Foxit, PDF.js) all put the editor exactly where
+ * the text is: the same size, the same place, the same baseline. A box with a
+ * border and a shadow floating near the line is not that, and it is why
+ * editing here felt like filling in a form.
+ */
+interface InlineMetrics {
+	/** The editor's font size, in CSS pixels. */
+	readonly fontSize: number;
+	/**
+	 * Where the editor's text starts, measured down from the top of the
+	 * box it is over.
+	 *
+	 * This is the text layer's own rule - the overlay's text starts here
+	 * too - so the editor's text and the printed text share a baseline to
+	 * the pixel, whatever the font's own metrics happen to be.
+	 */
+	readonly textTop: number;
+	/** The line under the editor, when there is one. */
+	readonly line: HTMLElement | null;
 }
 
 /** Close the inline editor, if one is open. */
 function closeInline(): void {
+	inline?.line?.classList.remove("is-editing");
 	inline?.root.remove();
 	inline = null;
 }
@@ -1724,8 +1770,19 @@ function closeInline(): void {
  *
  * The rectangle is in the canvas's CSS pixels, relative to the canvas's
  * top-left corner; the editor is placed over it.
+ *
+ * The editor is built to BE the line it is over: the same size, the same
+ * place, the same baseline. It is transparent until it is focused, it is the
+ * ink on the paper, and the only chrome is a hairline and the line's own
+ * highlight.
  */
-function openInlineAt(page: number, rect: Rect, text: string, mode: InlineMode): void {
+function openInlineAt(
+	page: number,
+	rect: Rect,
+	text: string,
+	mode: InlineMode,
+	metrics: InlineMetrics,
+): void {
 	closeInline();
 	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
 	if (wrap === null) {
@@ -1740,32 +1797,65 @@ function openInlineAt(page: number, rect: Rect, text: string, mode: InlineMode):
 
 	const root = document.createElement("div");
 	root.className = "selis-editor-inline";
+	root.style.left = `${canvasBox.left - host.left + rect.x}px`;
+	root.style.top = `${canvasBox.top - host.top + rect.y}px`;
 
 	const textarea = document.createElement("textarea");
 	textarea.className = "selis-editor-inline__text";
 	textarea.value = text;
-	textarea.rows = 2;
+	textarea.rows = 1;
+	textarea.spellcheck = false;
 	textarea.setAttribute(
 		"aria-label",
 		mode.kind === "new-box" ? "The text to put in this box" : "The new text for this line",
 	);
-	textarea.style.left = `${canvasBox.left - host.left + rect.x}px`;
-	textarea.style.top = `${canvasBox.top - host.top + rect.y}px`;
-	textarea.style.width = `${Math.max(rect.width, 220)}px`;
-	textarea.style.minHeight = `${Math.max(rect.height, 34)}px`;
+	textarea.style.fontSize = `${metrics.fontSize}px`;
+	// The text starts where the line's own text starts, so the two share a
+	// baseline. Everything else about the editor follows from this.
+	textarea.style.top = `${metrics.textTop}px`;
+
+	// A mirror of the text, hidden, that measures how wide the words are:
+	// the editor has to be wide enough for what the reader typed, or the
+	// caret ends up outside the box.
+	const mirror = document.createElement("span");
+	mirror.className = "selis-editor-inline__measure";
+	mirror.style.fontSize = `${metrics.fontSize}px`;
+	mirror.textContent = text;
 
 	const hint = document.createElement("p");
 	hint.className = "selis-editor-inline__hint";
 	hint.textContent =
 		mode.kind === "new-box"
 			? "Enter places the text · Escape cancels"
-			: "Enter applies the change · Escape cancels · the line does not re-flow";
+			: "Enter applies · Escape cancels";
 
 	root.appendChild(textarea);
+	root.appendChild(mirror);
 	root.appendChild(hint);
 	wrap.appendChild(root);
 
-	inline = { root, textarea, mode };
+	// The line under the editor is marked, so the reader can see where they
+	// are without the editor being a box around the text.
+	metrics.line?.classList.add("is-editing");
+
+	inline = { root, textarea, mode, line: metrics.line };
+
+	// A new box is at least a sentence wide; a line is as wide as the line.
+	const floor = mode.kind === "new-box" ? 240 : rect.width;
+
+	/** Fit the editor to what has been typed. */
+	const fit = (): void => {
+		textarea.style.height = "auto";
+		textarea.style.height = `${Math.max(textarea.scrollHeight, metrics.fontSize)}px`;
+		mirror.textContent = textarea.value;
+		const width = Math.max(floor, mirror.offsetWidth + metrics.fontSize);
+		root.style.width = `${width}px`;
+		textarea.style.width = `${width}px`;
+		root.style.height = `${Math.max(rect.height, metrics.textTop + textarea.offsetHeight)}px`;
+	};
+	fit();
+	textarea.addEventListener("input", fit);
+
 	textarea.focus();
 	textarea.select();
 
@@ -1799,6 +1889,9 @@ function openInline(page: number, line: number, text: string): void {
 	}
 	const rect = box.getBoundingClientRect();
 	const canvasBox = canvas.getBoundingClientRect();
+	// The line's own size and baseline: the editor has to BE the line, not
+	// sit near it.
+	const placement = linePlacements.get(box);
 	openInlineAt(
 		page,
 		{
@@ -1809,16 +1902,56 @@ function openInline(page: number, line: number, text: string): void {
 		},
 		text,
 		{ kind: "edit-line", page, line, before: text },
+		{
+			fontSize: placement?.em ?? 14,
+			// The text layer puts its own text here, and the editor's text
+			// has to start in the same place to share the baseline.
+			textTop: (placement?.origin.y ?? 14) - (placement?.em ?? 14) * 0.8,
+			line: box,
+		},
 	);
 }
 
 /** Open the inline editor over a new box, for text that is not on the page yet. */
 function openBox(page: number, rect: Rect): void {
-	openInlineAt(page, rect, "", { kind: "new-box", page, rect });
+	// A new box is drawn at the document's body size, which is the size the
+	// stamp will draw it at.
+	const fontSize = (BOX_FONT_SIZE * 96) / 72;
+	openInlineAt(
+		page,
+		rect,
+		"",
+		{ kind: "new-box", page, rect },
+		{
+			fontSize,
+			textTop: 0,
+			line: null,
+		},
+	);
 }
 
 /**
  * Apply the inline editor's change.
+ *
+ * The editor is closed only once the engine has answered, so the reader sees
+ * the change land on the page rather than a box disappear and a promise
+ * appear in the status bar.
+ */
+async function applyInline(): Promise<void> {
+	const editor = inline;
+	if (editor === null || state.busy) {
+		return;
+	}
+	inlineCommitting = true;
+	try {
+		await applyInlineNow(editor);
+	} finally {
+		inlineCommitting = false;
+	}
+}
+
+/**
+ * Apply one editor's change.
  *
  * The engine replaces the first run of text on the page that carries the
  * words. A line is often drawn as several runs, so the editor tries the whole
@@ -1826,11 +1959,7 @@ function openBox(page: number, rect: Rect): void {
  * line the user clicked is the line that changed, because the page may carry
  * the same words earlier.
  */
-async function applyInline(): Promise<void> {
-	const editor = inline;
-	if (editor === null || state.busy) {
-		return;
-	}
+async function applyInlineNow(editor: InlineEditor): Promise<void> {
 	if (editor.mode.kind === "new-box") {
 		await applyTextBox(editor.mode.page, editor.mode.rect, editor.textarea.value);
 		return;
@@ -3090,6 +3219,45 @@ function wire(): void {
 		}
 	});
 
+	/*
+	 * Clicking away from the editor commits the change.
+	 *
+	 * This is what Acrobat does, and it is what a reader expects: an edit
+	 * that is thrown away because the reader looked at another part of the
+	 * page is a silent loss, and a silent loss is worse than a change the
+	 * reader did not mean to make - because the change is visible and can be
+	 * undone, and the loss is not.
+	 *
+	 * The handler is in the CAPTURE phase, so it runs before the click
+	 * handlers below: the click that ends the edit cannot also open another
+	 * editor on a page that is about to change underneath it.
+	 */
+	document.addEventListener(
+		"pointerdown",
+		(event) => {
+			const editor = inline;
+			if (editor === null || inlineCommitting) {
+				return;
+			}
+			const target = event.target;
+			if (target instanceof Node && editor.root.contains(target)) {
+				return;
+			}
+			// An editor nobody typed in just goes away. One somebody DID
+			// change is committed, because a change that vanishes when the
+			// reader looks elsewhere is a silent loss.
+			const value = editor.textarea.value;
+			const changed =
+				editor.mode.kind === "new-box" ? value.trim() !== "" : value !== editor.mode.before;
+			if (!changed) {
+				closeInline();
+				return;
+			}
+			void applyInline();
+		},
+		true,
+	);
+
 	// Clicking a line opens the editor over it. The handler is on the layer,
 	// not on each line, so a document with ten thousand lines has one
 	// listener rather than ten thousand.
@@ -3110,6 +3278,11 @@ function wire(): void {
 		if (!Number.isInteger(line) || !Number.isInteger(page)) {
 			return;
 		}
+		// An editor is already open, or one is on its way to the engine:
+		// this click belongs to the edit that is finishing, not to a new one.
+		if (inline !== null || inlineCommitting) {
+			return;
+		}
 		openInline(page, line, box.textContent ?? "");
 	});
 	dom.doc.addEventListener("keydown", (event) => {
@@ -3127,7 +3300,7 @@ function wire(): void {
 		event.preventDefault();
 		const line = Number(box.dataset.line);
 		const page = Number(box.dataset.page);
-		if (Number.isInteger(line) && Number.isInteger(page)) {
+		if (Number.isInteger(line) && Number.isInteger(page) && inline === null && !inlineCommitting) {
 			openInline(page, line, box.textContent ?? "");
 		}
 	});
@@ -3144,7 +3317,13 @@ function wire(): void {
 			selectTab(id);
 		}
 	});
-	dom.ribbon.addEventListener("click", (event) => {
+	/*
+	 * The `data-action` dispatcher is on the DOCUMENT, not on the ribbon:
+	 * the empty state's own "Open a PDF" button carries an action too, and it
+	 * lives on the canvas, not in the ribbon. A command that only works in
+	 * one corner of the page is a command that looks broken everywhere else.
+	 */
+	document.addEventListener("click", (event) => {
 		const target = event.target;
 		if (!(target instanceof Element)) {
 			return;

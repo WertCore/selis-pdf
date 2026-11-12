@@ -7226,6 +7226,44 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         ));
     }
 
+    // The placement tools, tested through the browser's own hit test.
+    let placement = report
+        .get("placement")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no placement leg (placement = None)".to_string())?;
+    if placement.get("onCanvas").and_then(Json::as_bool) != Some(true) {
+        return Err(format!(
+            "a click on the page's empty space landed on {:?}, not on the canvas; the text \\
+             layer is swallowing every click that is not exactly on a word",
+            placement.get("hit")
+        ));
+    }
+    if placement.get("opened").and_then(Json::as_bool) != Some(true) {
+        return Err("the text box did not open on a click on the page's empty space".into());
+    }
+
+    // The inline editor must BE the line it is over.
+    let inline = report
+        .get("inline")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no inline leg (inline = None)".to_string())?;
+    let gap = inline.get("gap").and_then(Json::as_f64).unwrap_or(f64::NAN);
+    if !gap.is_finite() || gap.abs() > 0.5 {
+        return Err(format!(
+            "the inline editor's text sits {gap}px from the line's own baseline; it has to \\
+             share the baseline to look like editing the document"
+        ));
+    }
+    if inline.get("size").and_then(Json::as_str) != inline.get("lineSize").and_then(Json::as_str) {
+        return Err("the inline editor is not the line's own size".into());
+    }
+    if inline.get("overTheLine").and_then(Json::as_bool) != Some(true) {
+        return Err("the inline editor is not over the line it is editing".into());
+    }
+    if inline.get("committedOnClickAway").and_then(Json::as_bool) != Some(true) {
+        return Err("clicking away from the editor threw the edit away instead of keeping it".into());
+    }
+
     let image = report
         .get("image")
         .and_then(Json::as_object)
@@ -7321,6 +7359,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     }
     if face.get("buttonThere").and_then(Json::as_bool) != Some(true) {
         return Err("the panel's button disappeared with the panel".into());
+    }
+    if face.get("pickerAsked").and_then(Json::as_bool) != Some(true) {
+        return Err("the invitation's own button did not ask for a file".into());
     }
     let collapsed = face.get("collapsed").and_then(Json::as_u64).unwrap_or(0);
     let restored = face.get("restored").and_then(Json::as_u64).unwrap_or(0);
