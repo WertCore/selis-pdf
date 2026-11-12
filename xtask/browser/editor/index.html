@@ -186,6 +186,11 @@
           "the editor to boot under the worker",
         );
 
+        // The workspace's FACE, before a document is opened: the invitation to
+        // open a file must be on the screen (not below the fold), and the
+        // panels must be able to go away and come back.
+        out.face = await faceLeg(onlineDoc, onlineWin, "online");
+
         out.online = await driveLeg(onlineDoc, onlineWin, fixtureBytes, "edit.pdf", "online");
         out.before = out.online.before;
         out.after = out.online.after;
@@ -544,6 +549,48 @@
           history: history.length,
           bytes: produced.bytes,
           carriesWatermark: produced.carriesText.indexOf("DRAFT") >= 0,
+        };
+      }
+
+      /**
+       * The workspace's face, before any document is open.
+       *
+       * Two things a reader meets in the first second: the invitation to
+       * open a file, and the panel they can put away. The first must be ON
+       * the screen - a reader who has to scroll to find out that they have
+       * not opened a file yet has been told the wrong thing - and the second
+       * must be a door and not a wall: a control that disappears with the
+       * thing it controls is a one-way door.
+       */
+      async function faceLeg(doc, win, label) {
+        const surface = doc.getElementById("selis-editor-surface");
+        const card = doc.getElementById("selis-editor-empty");
+        const surfaceBox = surface.getBoundingClientRect();
+        const cardBox = card.getBoundingClientRect();
+        const emptyVisible =
+          cardBox.top >= surfaceBox.top && cardBox.bottom <= surfaceBox.bottom;
+        // Nothing to scroll: the canvas holds exactly what is on the screen.
+        const nothingToScroll = surface.scrollHeight <= surface.clientHeight + 1;
+
+        const inspector = doc.getElementById("selis-editor-inspector");
+        const toggle = doc.getElementById("selis-editor-inspector-toggle");
+        const open = Math.round(inspector.getBoundingClientRect().width);
+        toggle.click();
+        const collapsed = Math.round(inspector.getBoundingClientRect().width);
+        // The button is still there, and it is still a button.
+        const buttonThere =
+          toggle.offsetParent !== null && toggle.getBoundingClientRect().width > 0;
+        const toggleLabel = toggle.getAttribute("aria-label");
+        toggle.click();
+        const restored = Math.round(inspector.getBoundingClientRect().width);
+        return {
+          emptyVisible: emptyVisible,
+          nothingToScroll: nothingToScroll,
+          open: open,
+          collapsed: collapsed,
+          restored: restored,
+          buttonThere: buttonThere,
+          label: toggleLabel,
         };
       }
 

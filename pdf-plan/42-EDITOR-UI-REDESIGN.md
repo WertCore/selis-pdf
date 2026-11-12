@@ -111,25 +111,57 @@ The thumbnails are `<img>` elements, not `<canvas>`: the browser check finds
 the document's canvas with `querySelector("canvas")`, and a canvas in the rail
 would be that one.
 
-## 5. What is still missing from the face
+## 5. Two things the first version of the face got wrong
 
-- **A theme.** The design system's tokens carry a dark theme, but
-  `assets-src/viewer-shell.css` remaps them onto the site's warm palette in
-  `:root` and is loaded last — so the dark tokens lose, site-wide. A dark
-  workspace is a **site-wide** decision, not an editor one, and the editor
-  follows the product's palette rather than being a different product.
+Both were found by a reader, and both are the kind of thing that only shows
+up when someone actually uses the thing.
+
+### 5.1 The invitation to open a file was below the fold
+
+The canvas is a scroll container, and the document's box carries
+`min-height: 100%` — so with no document open, the empty state started a
+full screen **below** an empty screen. A reader had to scroll to find out
+that they had not opened a file yet, which is the wrong message at the wrong
+moment.
+
+The canvas now carries an `is-empty` class, and in that state it is a grid
+that centres the card and hides the (empty) document box. The card is
+**inside the visible box** and the canvas has **nothing to scroll** — and the
+browser check now asserts both, because "the reader has to scroll" is a
+statement about the layout that only a measurement can make.
+
+### 5.2 The panel's button was a one-way door
+
+The inspector carried a button that put the panel away. The button lived
+**inside** the panel, so putting the panel away took the button with it —
+there was no way back, and the reader had to reload the page to get the
+panels.
+
+A collapsed panel is now a narrow strip that **keeps the button**, exactly
+where the reader last saw it. The button's glyph and its label flip with the
+state, and the browser check collapses the panel and brings it back.
+
+**The rule, which is worth more than the fix:** a control that disappears
+with the thing it controls is a one-way door. If a panel can be hidden, the
+control that hides it must outlive the hiding.
+
+## 6. What is still missing from the face
+
 - **A customisable ribbon.** Acrobat lets the reader hide the groups they do
   not use. It is a nice-to-have, and it is a real accessibility win for a
   small screen.
 - **Touch.** The drag is a pointer drag with pointer capture; a finger works,
   but there is no pinch-zoom and no long-press menu.
 - **A command palette.** Every command is a button now. With the ribbon's
-  five tabs and the inspector's ten panels, a "type a command" box would get
+  six tabs and the inspector's ten panels, a "type a command" box would get
   busy work done faster than clicking.
+- **A collapsible rail.** The page rail is always there. A reader working on a
+  narrow screen would want it away, and the inspector's collapse is the
+  pattern to copy.
 
 ---
 
-## 6. Where the files are
+## 7. Where the files are
 
 | | |
 |---|---|
@@ -145,15 +177,13 @@ would be that one.
 node -e "const {createHash}=require('node:crypto');const fs=require('node:fs');const b=fs.readFileSync('apps/web/host/assets-src/editor.css');console.log('sha384-'+createHash('sha384').update(b).digest('base64'))"
 ```
 
-**The service worker serves stale modules.** When a change "does not take",
-clear the caches and unregister the workers:
+**The dark theme** is described in `43-THEME-EXPORT-CORE.md`: the site's
+palette is remapped onto the tokens in `assets-src/viewer-shell.css`, and the
+remap is written for BOTH themes so the kit's dark tokens can take effect.
 
-```js
-for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
-for (const n of await caches.keys()) await caches.delete(n);
-```
+---
 
-## 7. The evidence
+## 8. The evidence
 
 The editor's browser leg grew a `shell` leg that checks the face against the
 **document**, not against the DOM alone:
@@ -165,6 +195,13 @@ The editor's browser leg grew a `shell` leg that checks the face against the
 - the history panel listed the changes that had been made;
 - a **watermark** was applied and read back out of the produced bytes — a
   watermark that is on the screen but not in the file is not a watermark.
+
+And a `face` leg, which measures the two things §5 is about:
+
+- the invitation to open a file is **inside the canvas's visible box**, and
+  the canvas has **nothing to scroll**;
+- the inspector collapses to a narrow strip, **the button is still there**,
+  and the panel comes back.
 
 `xtask/src/browser.rs`'s `verdict_editor` fails the check if any of those is
 false.

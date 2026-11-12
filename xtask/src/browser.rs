@@ -7308,6 +7308,26 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the theme switch did not remember the reader's choice".into());
     }
 
+    // The FACE, before any document is open.
+    let face = report
+        .get("face")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no face leg (face = None)".to_string())?;
+    if face.get("emptyVisible").and_then(Json::as_bool) != Some(true) {
+        return Err("the invitation to open a file is not on the screen".into());
+    }
+    if face.get("nothingToScroll").and_then(Json::as_bool) != Some(true) {
+        return Err("the workspace has to be scrolled to see that no file is open".into());
+    }
+    if face.get("buttonThere").and_then(Json::as_bool) != Some(true) {
+        return Err("the panel's button disappeared with the panel".into());
+    }
+    let collapsed = face.get("collapsed").and_then(Json::as_u64).unwrap_or(0);
+    let restored = face.get("restored").and_then(Json::as_u64).unwrap_or(0);
+    if collapsed == 0 || collapsed >= restored {
+        return Err("the panel could not be put away and brought back".into());
+    }
+
     let export = report
         .get("export")
         .and_then(Json::as_object)
@@ -7324,13 +7344,23 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     }
     // A Word document and an Excel workbook are ZIP containers, so they start
     // with "PK". A file that does not is not what the button said it was.
-    let word_header = export.get("wordHeader").and_then(Json::as_str).unwrap_or("");
+    let word_header = export
+        .get("wordHeader")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     if !word_header.starts_with("PK") {
-        return Err(format!("the Word export is not a ZIP container (it starts {word_header:?})"));
+        return Err(format!(
+            "the Word export is not a ZIP container (it starts {word_header:?})"
+        ));
     }
-    let html_header = export.get("htmlHeader").and_then(Json::as_str).unwrap_or("");
+    let html_header = export
+        .get("htmlHeader")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     if !html_header.starts_with("<!do") && !html_header.starts_with("<htm") {
-        return Err(format!("the HTML export does not start with HTML (it starts {html_header:?})"));
+        return Err(format!(
+            "the HTML export does not start with HTML (it starts {html_header:?})"
+        ));
     }
     if export.get("htmlCarriesTheText").and_then(Json::as_bool) != Some(true) {
         return Err("the HTML export does not carry the document's text".into());

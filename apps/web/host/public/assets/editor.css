@@ -627,6 +627,22 @@
 	min-height: 100%;
 }
 
+/*
+ * With no document open, the canvas holds ONE thing: the invitation to open
+ * a file. It is centred, so it is the first thing on the screen rather than
+ * something below the fold - a reader must never have to scroll to find out
+ * that they have not opened a file yet.
+ */
+.selis-editor-surface.is-empty {
+	display: grid;
+	place-items: center;
+	padding: var(--selis-space-8);
+}
+
+.selis-editor-surface.is-empty .selis-editor-doc {
+	display: none;
+}
+
 .selis-editor-empty {
 	display: flex;
 	flex-direction: column;
@@ -639,7 +655,7 @@
 	color: var(--selis-color-fg-muted);
 	background: var(--selis-color-bg-raised);
 	max-width: 520px;
-	margin: var(--selis-space-9) auto;
+	margin: 0 auto;
 }
 
 .selis-editor-empty[hidden] {
@@ -800,9 +816,25 @@
 	padding: 0 var(--selis-space-5) var(--selis-space-8);
 }
 
-/* The inspector can be put away, for a reader who wants the whole canvas. */
+/*
+ * The inspector can be put away, for a reader who wants the whole canvas.
+ *
+ * It does NOT disappear: it becomes a narrow strip that keeps the button, so
+ * the way back is exactly where the reader last saw the panel. A control that
+ * disappears with the thing it controls is a one-way door.
+ */
 .selis-editor-inspector.is-hidden {
+	width: 40px;
+}
+
+.selis-editor-inspector.is-hidden .selis-editor-inspector__title,
+.selis-editor-inspector.is-hidden .selis-editor-inspector__body {
 	display: none;
+}
+
+.selis-editor-inspector.is-hidden .selis-editor-inspector__head {
+	justify-content: center;
+	padding: var(--selis-space-4) 0;
 }
 
 /* The limits: the panel that says what the editor cannot do. */

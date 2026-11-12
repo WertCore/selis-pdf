@@ -599,7 +599,12 @@ function renderDocument(client: EngineClient): void {
 	for (let page = 0; page < state.pages; page += 1) {
 		dom.doc.appendChild(buildPage(client, page));
 	}
+	// The empty state is the canvas's whole content when there is no
+	// document, so the surface centres it rather than pushing it below the
+	// document's (empty) box. The reader must never have to scroll to find
+	// out that they have not opened a file yet.
 	dom.empty.hidden = state.pages > 0;
+	dom.surface.classList.toggle("is-empty", state.pages === 0);
 }
 
 /**
@@ -1406,6 +1411,25 @@ function downloadFile(name: string, bytes: Uint8Array, kind: string): void {
  * device. Nothing is uploaded, and the no-upload assertion runs afterwards
  * like it does after every other operation.
  */
+/**
+ * Show or hide the inspector.
+ *
+ * A collapsed panel keeps a narrow strip with the button in it, so the way
+ * back is exactly where the reader last saw the panel - a control that
+ * disappears with the thing it controls is a one-way door.
+ */
+function toggleInspector(): void {
+	const hidden = dom.inspector.classList.toggle("is-hidden");
+	const label = hidden ? "Show the panels" : "Hide the panels";
+	dom.inspectorToggle.title = label;
+	dom.inspectorToggle.setAttribute("aria-label", label);
+	const glyph = dom.inspectorToggle.querySelector("svg");
+	if (glyph !== null) {
+		glyph.remove();
+	}
+	dom.inspectorToggle.prepend(icon(hidden ? "chevron-right" : "chevron-left"));
+}
+
 /**
  * Label the theme button for the theme it switches TO.
  *
@@ -3233,9 +3257,7 @@ function wire(): void {
 
 	// The inspector can be put away when the reader wants the whole canvas.
 	dom.inspectorToggle.addEventListener("click", () => {
-		const hidden = dom.inspector.classList.toggle("is-hidden");
-		dom.inspectorToggle.title = hidden ? "Show the panels" : "Hide the panels";
-		dom.inspectorToggle.setAttribute("aria-label", dom.inspectorToggle.title);
+		toggleInspector();
 	});
 
 	// Dragging a file onto the page opens it, the way the reader does.
