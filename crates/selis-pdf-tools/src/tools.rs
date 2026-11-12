@@ -3740,6 +3740,82 @@ fn materialize_resources(
 /// references (copy the objects it references, renumber the value, and store
 /// it as its own object so the page holds a valid indirect reference).
 /// Dropping these loses the page's fonts/XObjects/annotations.
+/// Copy a page's annotations WITHOUT the entry that points at the old page.
+///
+/// An annotation's `/P` names the page it is on. When the page is REWRITTEN
+/// - as a redaction rewrites it - an annotation that still points at the old
+/// page drags that page into the output, and with it the page's old content
+/// stream: the very text a redaction is there to remove, still readable in the
+/// file.
+///
+/// So the annotations are copied with their `/P` dropped. `/P` is OPTIONAL
+/// (ISO 32000-1 12.5.3), and the page's own `/Annots` array says which page
+/// each annotation is on.
+fn materialize_annotations(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    annots: Option<Obj>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Obj>, String> {
+    let Some(annots) = annots else {
+        return Ok(None);
+    };
+    let items = match annots {
+        Obj::Ref(reference) => match resolve_ref_obj(src, doc, reference, budget, g)? {
+            Obj::Array(items) => items,
+            _ => return Ok(None),
+        },
+        Obj::Array(items) => items,
+        _ => return Ok(None),
+    };
+    let mut out: Vec<Obj> = Vec::new();
+    for item in items {
+        let Obj::Ref(reference) = item else {
+            continue;
+        };
+        let Ok(Obj::Dict(pairs)) = resolve_ref_obj(src, doc, reference, budget, g) else {
+            continue;
+        };
+        // The annotation without its page pointer.
+        let mut trimmed: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(pairs.len());
+        let mut held: Vec<Ref> = Vec::new();
+        for (key, value) in &pairs {
+            if key.as_slice() == b"P" {
+                continue;
+            }
+            collect_refs_in(value, &mut held);
+            trimmed.push((key.clone(), value.clone()));
+        }
+        let remap = if held.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            let (objects, remap) = selis_pdf_cos::copy::collect_objects_with_doc(
+                src,
+                doc,
+                &held,
+                merged.next_num_mut(),
+                budget,
+                g,
+            )
+            .map_err(|e| format!("copy annotation: {e}"))?;
+            for (num, obj) in objects {
+                merged.add_object(num, obj);
+            }
+            remap
+        };
+        let renumbered = selis_pdf_cos::copy::renumber(Obj::Dict(trimmed), &remap);
+        let num = merged.allocate();
+        merged.add_object(num, renumbered);
+        out.push(Obj::Ref(Ref::new(num, 0)));
+    }
+    if out.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Obj::Array(out)))
+}
+
 fn materialize_object(
     merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
     src: &[u8],
@@ -4189,8 +4265,8 @@ fn copy_page_redacted(
     );
     let new_resources = materialize_resources(merged, src, &doc, resources_ref, budget, g)?;
     let mut extra = rotate_extra(rotate);
-    if let Some(annots_ref) = materialize_object(merged, src, &doc, annots, budget, g)? {
-        extra.push((b"Annots".to_vec(), Obj::Ref(annots_ref)));
+    if let Some(annots) = materialize_annotations(merged, src, &doc, annots, budget, g)? {
+        extra.push((b"Annots".to_vec(), annots));
     }
     let page = merged.add_page_with_extra(
         media.0,
@@ -6017,6 +6093,100 @@ mod tests {
             "the text under the region is gone: {text}"
         );
         let _ = std::fs::remove_file(&out);
+    }
+
+    /// A redaction of a page that CARRIES AN ANNOTATION must not leave the
+    /// redacted text in the file.
+    ///
+    /// An annotation's `/P` names the page it is on. When the redaction
+    /// rewrites the page, an annotation that still points at the old page
+    /// drags that page into the output - and with it the page's old content
+    /// stream, which is the very text the redaction is there to remove.
+    #[test]
+    fn a_redaction_of_an_annotated_page_removes_the_text_from_the_file() {
+        let src = annotated_page_pdf();
+        let out = std::env::temp_dir().join("selis-redact-annotated-out.pdf");
+        let verification = super::redact(
+            &src.to_string_lossy(),
+            &[(0.0, 150.0, 100.0, 20.0)],
+            Some("0"),
+            &out.to_string_lossy(),
+        )
+        .expect("the redaction");
+        assert_eq!(verification.pages_out, 1);
+        let produced = std::fs::read(&out).expect("the output");
+        let text = String::from_utf8_lossy(&produced).to_string();
+        assert!(
+            !text.contains("Inside"),
+            "the text under the region is gone from the FILE: {text}"
+        );
+        // The annotation itself is kept: a redaction is not a way to lose a
+        // reader's comments.
+        assert!(
+            text.contains("/Subtype /Highlight"),
+            "the annotation survived the redaction: {text}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A one-page PDF whose page carries an annotation that points at it.
+    fn annotated_page_pdf() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join("selis-redact-annotated.pdf");
+        let content = b"BT /F1 12 Tf 20 160 Td (Inside) Tj ET";
+        let mut objects: Vec<String> = vec![
+            "1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+".to_string(),
+            "2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+".to_string(),
+            "3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [6 0 R] /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+".to_string(),
+            format!(
+                "4 0 obj
+<< /Length {} >>
+stream
+{}
+endstream
+endobj
+",
+                content.len(),
+                String::from_utf8_lossy(content),
+            ),
+            "5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+".to_string(),
+            // The annotation points at the page, as every writer's does.
+            "6 0 obj
+<< /Type /Annot /Subtype /Highlight /Rect [20 160 100 180] /P 3 0 R /C [1 0.92 0.23] /F 4 >>
+endobj
+".to_string(),
+        ];
+        let mut out = b"%PDF-1.4
+".to_vec();
+        let mut offsets = Vec::new();
+        for object in &mut objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = objects.len() + 1;
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        std::fs::write(&path, out).expect("the fixture");
+        path
     }
 
     /// A one-page PDF whose content is three streams: a `q <matrix> cm`, the

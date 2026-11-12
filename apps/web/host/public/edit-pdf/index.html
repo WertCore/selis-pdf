@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-iSBQVXMfG/nJ2TtKa8G8C2UljPuRxIhucrwVm5HM3B+Jh55AARIDUSS/Z00jBzSV"
+			integrity="sha384-hbFgYhIcsG3F6WoHo+nf78b5hAClJODIdiAau93vgzDm73YlcfWTS5RFFKCOjtr5"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -439,6 +439,47 @@
 						hidden
 					/>
 					<p class="selis-editor-group__label">On the page</p>
+				</div>
+				<div class="selis-editor-group">
+					<div class="selis-editor-group__buttons">
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-markup="highlight"
+							data-icon="highlight"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Highlight</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-markup="underline"
+							data-icon="underline"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Underline</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-markup="strikeout"
+							data-icon="strikeout"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Strike out</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-markup="note"
+							data-icon="note"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Note</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Markup</p>
 				</div>
 				<div class="selis-editor-group">
 					<div class="selis-editor-group__buttons">
@@ -1052,6 +1093,25 @@
 							drawing — it is not a cryptographic signature, and it does not
 							prove who drew it.
 						</p>
+					</details>
+
+					<details
+						class="selis-editor-details"
+						id="selis-editor-section-comments"
+					>
+						<summary>Comments</summary>
+						<p class="selis-editor-hint">
+							The notes and marks in the document. A mark is a standard PDF
+							annotation, so every other reader sees it too.
+						</p>
+						<div id="selis-editor-comments" class="selis-editor-report">
+							<p class="selis-editor-hint">Read the comments to see what is there.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-comments-read">
+								Read them
+							</button>
+						</div>
 					</details>
 
 					<details class="selis-editor-details" id="selis-editor-section-size">

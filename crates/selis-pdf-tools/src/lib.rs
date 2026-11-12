@@ -28,6 +28,7 @@
     )
 )]
 
+pub mod annot;
 pub mod attachments;
 pub mod batch;
 #[cfg(feature = "text")]
@@ -61,6 +62,7 @@ mod zip;
 
 use selis_sandbox::Clock;
 
+pub use annot::{annotate, annotations, AnnotateOptions};
 pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
 #[cfg(feature = "text")]
 pub use compare::{compare_pdfs, ComparisonReport, PageComparison};

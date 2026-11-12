@@ -1,0 +1,24 @@
+[package]
+name = "selis-pdf-annot"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Forwarded to the COS layer; see `selis-pdf-cos`.
+rng = ["selis-pdf-cos/rng"]
+
+[dependencies]
+selis-error = { workspace = true }
+selis-bytes = { workspace = true }
+selis-sandbox = { workspace = true }
+selis-geom = { workspace = true }
+selis-pdf-cos = { workspace = true }
+selis-log = { workspace = true }

@@ -59,6 +59,14 @@ import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import { type IconName, icon } from "./icons.js";
+import {
+	type AnnotateOptions,
+	MARKUP_COLOURS,
+	type MarkupKind,
+	type PageAnnotation,
+	markupLabel,
+	readAnnotationsReport,
+} from "./markup.js";
 import { measureOnCanvas, measurementText } from "./measure.js";
 import {
 	type EditorOperation,
@@ -172,7 +180,7 @@ const THUMBNAIL_WIDTH = 132;
 const SURFACE_GUTTER = 72;
 
 /** What the workspace is armed to do on the page. */
-export type EditorTool = "text" | "box" | "image" | "redact" | "measure" | "sign";
+export type EditorTool = "text" | "box" | "image" | "redact" | "measure" | "sign" | "markup";
 
 /** The image the reader has picked, ready to place. */
 interface PickedImage {
@@ -220,6 +228,8 @@ interface EditorState {
 	boxSize: number;
 	/** The colour a new text box is drawn in. */
 	boxColor: readonly [number, number, number];
+	/** The kind of markup the markup tool leaves. */
+	markupKind: MarkupKind;
 	/** Each page's geometry, for the placements. */
 	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
@@ -254,6 +264,7 @@ const state: EditorState = {
 	image: null,
 	boxSize: TEXT_BOX_FONT_SIZE,
 	boxColor: BOX_COLOR_BLACK,
+	markupKind: "highlight",
 	geometry: new Map(),
 	busy: false,
 	zoom: 1,
@@ -340,6 +351,8 @@ const dom = {
 	nupApply: el<HTMLButtonElement>("selis-editor-nup-apply"),
 	exportGroup: el<HTMLDivElement>("selis-editor-export"),
 	accessibility: el<HTMLDivElement>("selis-editor-accessibility"),
+	comments: el<HTMLDivElement>("selis-editor-comments"),
+	commentsRead: el<HTMLButtonElement>("selis-editor-comments-read"),
 	accessibilityCheck: el<HTMLButtonElement>("selis-editor-accessibility-check"),
 	attachments: el<HTMLDivElement>("selis-editor-attachments"),
 	attachmentsRead: el<HTMLButtonElement>("selis-editor-attachments-read"),
@@ -1825,6 +1838,13 @@ type InlineMode =
 			readonly page: number;
 			/** The box, in the canvas's CSS pixels. */
 			readonly rect: Rect;
+	  }
+	| {
+			/** Writing the comment on a note. */
+			readonly kind: "new-note";
+			readonly page: number;
+			/** Where the note goes, in the canvas's CSS pixels. */
+			readonly rect: Rect;
 	  };
 
 /**
@@ -1923,7 +1943,11 @@ function openInlineAt(
 	textarea.spellcheck = false;
 	textarea.setAttribute(
 		"aria-label",
-		mode.kind === "new-box" ? "The text to put in this box" : "The new text for this line",
+		mode.kind === "new-box"
+			? "The text to put in this box"
+			: mode.kind === "new-note"
+				? "The comment on this note"
+				: "The new text for this line",
 	);
 	textarea.style.fontSize = `${fontSize}px`;
 	// The text starts where the line's own text starts, so the two share a
@@ -1951,7 +1975,9 @@ function openInlineAt(
 	hint.textContent =
 		mode.kind === "new-box"
 			? "Enter places the text · Escape cancels"
-			: "Enter applies · Escape cancels";
+			: mode.kind === "new-note"
+				? "Enter leaves the note · Escape cancels"
+				: "Enter applies · Escape cancels";
 
 	if (mode.kind === "new-box") {
 		const select = document.createElement("select");
@@ -2086,6 +2112,22 @@ function openInline(page: number, line: number, text: string): void {
 	);
 }
 
+/**
+ * Open the inline editor over a place for a note.
+ *
+ * The note's comment is written where the note will go, so the reader sees
+ * the comment where they put it.
+ */
+function openNote(page: number, rect: Rect): void {
+	openInlineAt(
+		page,
+		{ x: rect.x - 12, y: rect.y - 12, width: 24, height: 24 },
+		"",
+		{ kind: "new-note", page, rect },
+		{ fontSize: 13, textTop: 0, line: null },
+	);
+}
+
 /** Open the inline editor over a new box, for text that is not on the page yet. */
 function openBox(page: number, rect: Rect): void {
 	// A new box is drawn at the size the reader chose, in the colour they
@@ -2136,6 +2178,18 @@ async function applyInline(): Promise<void> {
 async function applyInlineNow(editor: InlineEditor): Promise<void> {
 	if (editor.mode.kind === "new-box") {
 		await applyTextBox(editor.mode.page, editor.mode.rect, editor.textarea.value);
+		return;
+	}
+	if (editor.mode.kind === "new-note") {
+		const geometry = state.geometry.get(editor.mode.page);
+		if (geometry === undefined) {
+			closeInline();
+			setStatus("That page could not be marked.", "error");
+			return;
+		}
+		const comment = editor.textarea.value;
+		closeInline();
+		await placeMarkup(editor.mode.page, editor.mode.rect, geometry, comment);
 		return;
 	}
 	const replacement = editor.textarea.value;
@@ -2250,6 +2304,8 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 	measure:
 		"Drag between two points to measure the page. The measurement is drawn on the screen and is not put in the document.",
 	sign: "Draw your signature on the page. It is stamped onto the page as part of the document's own drawing, not as a cryptographic signature.",
+	markup:
+		"Drag over the words to mark them up. A mark is a standard PDF annotation, so every other reader sees it too.",
 };
 
 /** The font size a new text box is drawn at, in points. */
@@ -2407,6 +2463,19 @@ function endDrag(event: PointerEvent): void {
 	const geometry = state.geometry.get(current.page);
 	if (geometry === undefined) {
 		setStatus("That page could not be drawn, so nothing was placed on it.", "error");
+		return;
+	}
+	if (state.tool === "markup") {
+		const kind = state.markupKind;
+		if (kind === "note") {
+			// A note is a CLICK: the reader writes the comment, and the
+			// editor asks for it where the note will go.
+			const click =
+				hit === null ? { x: current.startX, y: current.startY } : { x: hit.x, y: hit.y };
+			openNote(current.page, { x: click.x, y: click.y, width: 0, height: 0 });
+			return;
+		}
+		void placeMarkup(current.page, rect, geometry, "");
 		return;
 	}
 	if (state.tool === "sign") {
@@ -3292,6 +3361,148 @@ async function stampSignature(
 	}
 }
 
+/**
+ * The markup: the marks a reader leaves on a document.
+ *
+ * The mark is a **standard PDF annotation** with a generated appearance
+ * stream, written by the engine's annotation crate, so every other reader
+ * sees it too (ADR-P0026). The editor chooses where it goes and what colour
+ * it is; the engine draws it.
+ */
+
+/**
+ * Put a mark on the page.
+ *
+ * The rectangle is the reader's own drag, in the canvas's CSS pixels, and it
+ * is turned into the page's own space by the editor's geometry - the same
+ * conversion every other placement uses.
+ */
+async function placeMarkup(
+	page: number,
+	rect: Rect,
+	geometry: PageGeometry,
+	contents: string,
+): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	const kind = state.markupKind;
+	const user = userRect(geometry, rect);
+	const options: AnnotateOptions = {
+		// The engine's annotate operation takes a 0-based page, like every
+		// other operation the tools chunk carries.
+		page,
+		kind,
+		rect: [user.x, user.y, user.x + user.width, user.y + user.height],
+		quads: [[user.x, user.y, user.x + user.width, user.y + user.height]],
+		colour: MARKUP_COLOURS[kind],
+		...(contents === "" ? {} : { contents }),
+	};
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus(kind === "note" ? "Adding the note…" : "Adding the mark…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "annotate",
+			options: options as unknown as Record<string, unknown>,
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(
+			output.bytes,
+			kind === "note"
+				? `Added a note on page ${page + 1}`
+				: `Added a mark on page ${page + 1}`,
+		);
+	} catch (error) {
+		setStatus(`The mark could not be added: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * Read the annotations the document carries.
+ *
+ * The engine's report is a read-only view: it changes nothing and writes
+ * nothing.
+ */
+async function readComments(): Promise<void> {
+	const chunk = await tools();
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Reading the comments…");
+	try {
+		const result = runTool(chunk, {
+			op: "annotations",
+			options: { page: state.page },
+			files: [{ name: state.name, bytes }],
+		});
+		const report = result.outputs[0];
+		if (report === undefined) {
+			throw new Error("the engine produced no report");
+		}
+		const parsed = readAnnotationsReport(new TextDecoder().decode(report.bytes));
+		renderComments(parsed.annotations);
+		setStatus(
+			parsed.annotations.length === 0
+				? "This page carries no comments."
+				: `This page carries ${parsed.annotations.length} comment(s).`,
+		);
+	} catch (error) {
+		setStatus(`The comments could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Draw the comments the document carries. */
+function renderComments(annotations: readonly PageAnnotation[]): void {
+	dom.comments.replaceChildren();
+	if (annotations.length === 0) {
+		const line = document.createElement("p");
+		line.className = "selis-editor-hint";
+		line.textContent = "This page carries no comments.";
+		dom.comments.appendChild(line);
+		return;
+	}
+	const list = document.createElement("ul");
+	list.className = "selis-editor-list";
+	for (const annotation of annotations) {
+		const item = document.createElement("li");
+		const kind = document.createElement("strong");
+		kind.textContent = markupLabel(annotation.subtype);
+		item.appendChild(kind);
+		if (annotation.contents !== "") {
+			const text = document.createElement("span");
+			text.className = "selis-editor-comment";
+			text.textContent = ` — ${annotation.contents}`;
+			item.appendChild(text);
+		}
+		if (annotation.author !== "") {
+			const who = document.createElement("span");
+			who.className = "selis-editor-comment__who";
+			who.textContent = ` (${annotation.author})`;
+			item.appendChild(who);
+		}
+		list.appendChild(item);
+	}
+	dom.comments.appendChild(list);
+}
+
 // ── the document's own properties ────────────────────────────────────────────
 
 /** One field of the document's form, as the engine reported it. */
@@ -4005,6 +4216,9 @@ function wire(): void {
 	dom.accessibilityCheck.addEventListener("click", () => {
 		void checkAccessibility();
 	});
+	dom.commentsRead.addEventListener("click", () => {
+		void readComments();
+	});
 	dom.attachmentsRead.addEventListener("click", () => {
 		void readAttachments();
 	});
@@ -4084,6 +4298,21 @@ function wire(): void {
 	//
 	// The click may land on the icon or the label rather than on the button
 	// itself, so the target is walked UP to the button that carries the tool.
+	// The markup's kinds are their own buttons: a reader reaching for a
+	// highlight wants a highlight, not a tool with a dropdown.
+	for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-markup]")) {
+		button.addEventListener("click", () => {
+			const kind = button.dataset.markup;
+			if (kind === undefined) {
+				return;
+			}
+			state.markupKind = kind as MarkupKind;
+			setTool("markup");
+			for (const other of document.querySelectorAll<HTMLButtonElement>("button[data-markup]")) {
+				other.setAttribute("aria-pressed", other.dataset.markup === kind ? "true" : "false");
+			}
+		});
+	}
 	dom.tools.addEventListener("click", (event) => {
 		const target = event.target;
 		if (!(target instanceof Element)) {
@@ -4236,7 +4465,7 @@ function wire(): void {
 			// reader looks elsewhere is a silent loss.
 			const value = editor.textarea.value;
 			const changed =
-				editor.mode.kind === "new-box" ? value.trim() !== "" : value !== editor.mode.before;
+				editor.mode.kind === "edit-line" ? value !== editor.mode.before : value.trim() !== "";
 			if (!changed) {
 				closeInline();
 				return;

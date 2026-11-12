@@ -1004,6 +1004,15 @@
 	stroke-linejoin: round;
 }
 
+/* A comment in the comments panel: what kind, what it says, who said it. */
+.selis-editor-comment {
+	color: var(--selis-color-fg);
+}
+
+.selis-editor-comment__who {
+	color: var(--selis-color-fg-subtle);
+}
+
 /* ── the status bar ─────────────────────────────────────────────────────────── */
 
 /*

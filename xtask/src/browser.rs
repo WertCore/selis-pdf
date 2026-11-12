@@ -7324,6 +7324,29 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the signature is not in the produced file".into());
     }
 
+    // The markup: the marks a reader leaves on a document.
+    let markup = report
+        .get("markup")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no markup leg (markup = None)".to_string())?;
+    let marked = markup.get("marked").and_then(Json::as_str).unwrap_or("");
+    if !marked.contains("mark") {
+        return Err(format!("the mark was not placed: {marked:?}"));
+    }
+    // The annotation must be IN the file, and it must be a standard one with
+    // an appearance: a highlight that is only on the screen is not a
+    // highlight.
+    if markup.get("carriesTheAnnotation").and_then(Json::as_bool) != Some(true) {
+        return Err("the highlight is not in the produced file".into());
+    }
+    if markup.get("carriesTheAppearance").and_then(Json::as_bool) != Some(true) {
+        return Err("the highlight has no appearance stream in the produced file".into());
+    }
+    let comments = markup.get("comments").and_then(Json::as_str).unwrap_or("");
+    if !comments.contains("Highlight") {
+        return Err(format!("the document's own report does not list the mark: {comments:?}"));
+    }
+
     // The inline editor must BE the line it is over.
     let inline = report
         .get("inline")

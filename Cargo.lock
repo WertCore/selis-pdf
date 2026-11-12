@@ -1749,6 +1749,18 @@ name = "selis-log"
 version = "0.1.0"
 
 [[package]]
+name = "selis-pdf-annot"
+version = "0.1.0"
+dependencies = [
+ "selis-bytes",
+ "selis-error",
+ "selis-geom",
+ "selis-log",
+ "selis-pdf-cos",
+ "selis-sandbox",
+]
+
+[[package]]
 name = "selis-pdf-content"
 version = "0.1.0"
 dependencies = [
@@ -1919,6 +1931,7 @@ dependencies = [
  "selis-font",
  "selis-image",
  "selis-io",
+ "selis-pdf-annot",
  "selis-pdf-cos",
  "selis-pdf-doc",
  "selis-pdf-edit",

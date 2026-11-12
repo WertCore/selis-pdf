@@ -207,7 +207,7 @@ The verdicts:
 | Measure a distance or an angle | The editor's "Measure" tool: the distance and the angle, in the page's own points and millimetres. A reading, not an edit — it is not put in the document. | **SHIPPED** |
 | Measure an area | Nowhere. It needs the page's vector art, which the engine does not expose. | **BLOCKED** |
 | Compare two documents | Nowhere. The engine has no compare operation. | **BLOCKED** |
-| Comment, highlight, underline, strikeout, reply | Nowhere. There is no annotation writer. | **BLOCKED** — `SL-5.ANNOT.*` |
+| Comment, highlight, underline, strikeout | The editor's **Markup** group: a mark is a drag over the words, a note is a click. Standard PDF annotations with generated appearances, so every other reader sees them too. | **SHIPPED** — for the four; a reply is not |
 | Reduce the file size | The editor's "Reduce the file size" panel, and the tools page's "Optimise & repair". | **SHIPPED** |
 | Bates numbering | The editor's "Bates numbers" panel, and the tools page's. | **SHIPPED** |
 | Attach a file, detach a file | The editor's "Attachments" panel, and the tools page's. | **SHIPPED** |
@@ -432,15 +432,32 @@ a list of panels and not a list of engine work.
       ribbon's six tabs and the inspector's panels, a box you can type into
       would be faster than clicking.
 
-### Slice 8 — what needs the engine
+### Slice 8 — what needs the engine (the first slice shipped)
+
+- [x] **I1a — The annotation writer.** The crate the architecture already
+      named: `crates/selis-pdf-annot`. Highlight, underline, strikeout, a
+      note, a drawn mark and a box, written as **spec-conformant PDF
+      annotations with generated `/AP` appearance streams** (ADR-P0026), so
+      every other reader sees them too. The editor's ribbon carries the four
+      a reader reaches for; a mark is a drag over the words, and a note is a
+      click with the comment written where the note goes. See
+      `45-ANNOTATIONS.md`.
+- [x] **I1b — The redaction's proof obligation, met.** Writing an
+      annotation exposed a real failure: a redaction of a page that carried
+      an annotation left the **redacted text in the file**, because the
+      annotation's `/P` dragged the old page along. The redaction now drops
+      the annotations' `/P` (it is optional) and the proof has a test.
+- [ ] **I1c — Moving and editing an annotation.** Addressing one ("the
+      third highlight on page 2") and moving it, with the selection the
+      editor needs. `SL-5.ANNOT.07`.
+- [ ] **I1d — Replies and review state.** `SL-5.ANNOT.04`.
+- [ ] **I1e — Flattening through the model, and XFDF.** `SL-5.ANNOT.05`,
+      `SL-5.ANNOT.06`.
+
+### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.
 
-- [ ] **I1 — The annotation writer (`SL-5.ANNOT.*`).** It unlocks the whole
-      of "Comment & Annotate" — highlight, underline, strikeout, a sticky
-      note, a freehand mark, a reply, and the selection that moves an
-      existing object. It is the largest single gap between us and the
-      market's feature list.
 - [ ] **I2 — A redaction that removes more than text (`SL-5.REDACT.*`).**
       Today the redaction strips text and covers everything else. Removing an
       image under the region means rewriting the page's XObjects.

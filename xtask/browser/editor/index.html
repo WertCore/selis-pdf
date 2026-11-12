@@ -204,6 +204,7 @@
         out.palette = await paletteLeg(onlineDoc, onlineWin, "online");
         out.panels = await panelsLeg(onlineDoc, onlineWin, "online");
         out.tools = await toolsLeg(onlineDoc, onlineWin, "online");
+        out.markup = await markupLeg(onlineDoc, onlineWin, "online");
         out.placement = await placementLeg(onlineDoc, onlineWin, "online");
         out.inline = await inlineLeg(onlineDoc, onlineWin, "online");
         out.image = await imageLeg(onlineDoc, onlineWin, pngBytes, "online");
@@ -1370,6 +1371,103 @@
           // moveto and a run of linetos.
           carriesTheSignature: produced.carriesText.indexOf(" l\n") >= 0,
           linesBefore: before,
+        };
+      }
+
+
+      /**
+       * The markup: the marks a reader leaves on a document.
+       *
+       * The mark must be IN the file, and it must be a standard PDF
+       * annotation - a highlight that is only on the screen is not a
+       * highlight. The check reads the produced bytes for the annotation
+       * itself and reads the document's own report back.
+       */
+      async function markupLeg(doc, win, label) {
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) =>
+          (candidate.textContent || "").trim() !== "",
+        );
+        if (!line) throw new Error("the document drew no clickable text");
+        const box = line.getBoundingClientRect();
+        const at = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 9,
+            isPrimary: true,
+          });
+
+        // The highlight: a drag over the words.
+        doc.getElementById("selis-editor-tab-edit").click();
+        doc.querySelector('button[data-markup="highlight"]').click();
+        canvas.dispatchEvent(at(box.left, box.top, 1, "pointerdown"));
+        canvas.dispatchEvent(at(box.right, box.bottom, 1, "pointermove"));
+        canvas.dispatchEvent(at(box.right, box.bottom, 0, "pointerup"));
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("mark");
+          },
+          30_000,
+          "the highlight (" + label + ")",
+        );
+        const marked = statusText(doc);
+        const produced = await download(doc, win);
+
+        // The note: a click, and the comment is written where the note goes.
+        // The canvas is looked up AGAIN: the highlight redrew the page, so
+        // the canvas the drag was on is no longer in the document.
+        doc.querySelector('button[data-markup="note"]').click();
+        const fresh = doc.querySelector("canvas");
+        const freshBox = fresh.getBoundingClientRect();
+        fresh.dispatchEvent(at(freshBox.left + 40, freshBox.top + 160, 1, "pointerdown"));
+        fresh.dispatchEvent(at(freshBox.left + 40, freshBox.top + 160, 0, "pointerup"));
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          15_000,
+          "the note's comment (" + label + ")",
+        );
+        const area = doc.querySelector(".selis-editor-inline__text");
+        area.value = "A comment from the check";
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("note");
+          },
+          30_000,
+          "the note (" + label + ")",
+        );
+        const noted = statusText(doc);
+
+        // And the document's own report must list both.
+        doc.getElementById("selis-editor-comments-read").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("comment");
+          },
+          30_000,
+          "the comments to be read (" + label + ")",
+        );
+        const comments = doc.getElementById("selis-editor-comments").textContent.trim();
+
+        return {
+          marked: marked,
+          noted: noted,
+          comments: comments,
+          bytes: produced.bytes,
+          // The annotation is IN the file, and it is a standard one.
+          carriesTheAnnotation: produced.carriesText.indexOf("/Subtype /Highlight") >= 0,
+          carriesTheAppearance: produced.carriesText.indexOf("/Subtype /Form") >= 0,
         };
       }
 

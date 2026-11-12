@@ -104,7 +104,8 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ## 5.ANNOT — Annotations
 
-- [ ] **SL-5.ANNOT.01 — Annotation model + appearance-stream generation** · owner: AI+
+- [x] **SL-5.ANNOT.01 — Annotation model + appearance-stream generation** · owner: AI+
+  - **Done (first slice):** `selis-pdf-annot` writes highlight, underline, strikeout, note, ink and box as spec-conformant annotations with generated `/AP` streams, and reads them back. Moving an existing annotation, replies, review state and flattening remain open.
   - **Do:** All markup subtypes: Text (note), Highlight, Underline, StrikeOut, Squiggly, Square,
     Circle, Line, Polygon, PolyLine, Ink, FreeText, Stamp, Caret, FileAttachment, Sound, Redact.
     Generate conformant `/AP` streams for each (ADR-P0026) so every other viewer shows them.

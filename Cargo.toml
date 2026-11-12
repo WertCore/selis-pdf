@@ -128,6 +128,7 @@ selis-job        = { path = "crates/selis-job", version = "0.1.0" }
 selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0" }
 selis-pdf-tools   = { path = "crates/selis-pdf-tools", version = "0.1.0", default-features = false }
 selis-pdf-sign    = { path = "crates/selis-pdf-sign", version = "0.1.0" }
+selis-pdf-annot   = { path = "crates/selis-pdf-annot", version = "0.1.0" }
 selis-pdf-wasm-tools = { path = "crates/selis-pdf-wasm-tools", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------

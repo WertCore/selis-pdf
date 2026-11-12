@@ -160,6 +160,16 @@ font model (ToUnicode CMaps, the AGL, glyph-name conventions); the font crate
 is a leaf L2 with no reverse dependency."""
 
 [[edge]]
+from = "selis-pdf-annot"
+to = "selis-pdf-cos"
+why = """
+An annotation is written as a COS object with an appearance stream, and it is
+appended as an incremental revision: the writer reads the catalog and the page
+dictionary and serialises COS objects. COS is a leaf with no reverse dependency
+on the annotation model. Same declared sideways edge as the sign and form
+models, which write their own dictionaries."""
+
+[[edge]]
 from = "selis-pdf-form"
 to = "selis-pdf-annot"
 why = "01-ARCHITECTURE.md §3 — declared exception. Widget annotations are field appearances."
